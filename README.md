@@ -21,7 +21,7 @@ TeraPad の置き換えを目指した Windows 用テキストエディタ。
 - 行番号表示 (常時)
 - IME インライン変換
 - ファイルのドラッグ&ドロップで開く
-- コマンドライン引数でファイル指定可 (`petapad-tauri.exe file.txt`)
+- コマンドライン引数でファイル指定可 (`petapad.exe file.txt`)
 - お気に入りバー・アドレスバー・フォルダビュー
 
 ### エンコーディング / 改行コード
@@ -87,12 +87,39 @@ ui/                     フロントエンド (TypeScript)
 
 ## ビルド
 
+事前に以下をインストールする。
+
+- Node.js (npmを含む)
+- Rust
+- Microsoft C++ Build Tools
+- WebView2 Runtime (Windows 10/11では通常導入済み)
+
+PowerShellでリポジトリ直下のスクリプトを実行する。
+
+```powershell
+.\build_tauri_release.ps1
 ```
-npm install
-npm run tauri dev       # 開発起動
-./build_tauri_release.ps1   # リリース exe + インストーラー生成
-cargo test --manifest-path core/Cargo.toml  # core/ の単体テスト
+
+このスクリプトがNode依存パッケージの導入、フロントエンドのビルド、Rust/Tauriの
+リリースビルドを順番に実行する。成果物は `release/` に生成される。
+
+- `release/petapad.exe`: 単体実行版
+- `release/*-setup.exe`: Windowsインストーラー
+
+開発起動と単体テスト:
+
+```powershell
+npm run tauri dev
+cargo test --manifest-path core/Cargo.toml
 ```
+
+## インストール
+
+通常は `release/` 内の `*-setup.exe` を実行し、画面の案内に従う。
+
+インストールせず使う場合は、`release/petapad.exe` を好きなフォルダへ置いて
+そのまま実行する。WindowsからWebView2 Runtimeを要求された場合は、Microsoftの
+WebView2 Runtimeをインストールする。
 
 ## 既知の仕様
 - グラフェム単位ではなく char (Unicode スカラー値) 単位のカーソル移動
