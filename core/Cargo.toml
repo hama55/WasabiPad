@@ -1,0 +1,25 @@
+[package]
+name = "petapad-core"
+version = "0.1.0"
+edition = "2021"
+
+# UI非依存のコア: 文書モデル(mmap/overlay) + 編集 + 検索 + 保存。
+# Tauriバックエンドとネイティブアプリの両方から共有される。
+[lib]
+name = "petapad_core"
+path = "src/lib.rs"
+
+[dependencies]
+encoding_rs = "0.8"
+memchr = "2"
+miniz_oxide = "0.8"
+serde = { version = "1", features = ["derive"] }
+
+[dependencies.windows-sys]
+version = "0.60"
+features = [
+    "Win32_Foundation",
+    "Win32_System_Memory",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+]

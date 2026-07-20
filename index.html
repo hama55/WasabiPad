@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PetaPad</title>
+  <link rel="stylesheet" href="/ui/style.css" />
+</head>
+<body>
+  <div id="titlebar">
+    <div id="menubar">
+      <button class="menubtn" id="menu-file">ファイル</button>
+      <button class="menubtn" id="menu-view">表示</button>
+    </div>
+    <div id="titletext" data-tauri-drag-region>PetaPad</div>
+    <div id="wincontrols">
+      <button id="win-min" title="最小化">&#xE921;</button>
+      <button id="win-max" title="最大化">&#xE922;</button>
+      <button id="win-close" title="閉じる">&#xE8BB;</button>
+    </div>
+  </div>
+  <div id="topbar">
+    <button id="addressbar-open" title="ファイルを選択...">📁</button>
+    <input id="addressbar" spellcheck="false" autocomplete="off" placeholder="パスを入力して Enter で開く" />
+    <button id="addressbar-fav" title="現在のファイルをお気に入りに追加">☆</button>
+  </div>
+  <div id="favbar"></div>
+  <div id="main">
+    <div id="sidebar" hidden></div>
+    <div id="splitter" hidden></div>
+    <div id="editorhost"></div>
+    <div id="loading" role="status" aria-live="polite" hidden>
+      <span class="loading-spinner" aria-hidden="true"></span>
+      <span>読み込み中…</span>
+    </div>
+  </div>
+  <div id="statusbar">
+    <span id="st-mode"></span>
+    <button id="st-pos" title="指定行へ移動">1行 1列</button>
+    <span id="st-size"></span>
+    <button id="st-lines" title="最後の行へ移動">1 行</button>
+    <span class="st-spacer"></span>
+    <button id="st-font" title="フォントを変更"></button>
+    <button id="st-font-size" title="フォントサイズを変更"></button>
+    <button id="st-wrap" title="折り返し切替">折り返し: オフ</button>
+    <select id="st-enc" title="文字コード">
+      <option value="utf8">UTF-8</option>
+      <option value="utf8bom">UTF-8 (BOM)</option>
+      <option value="sjis">Shift-JIS</option>
+      <option value="utf16le">UTF-16LE</option>
+    </select>
+    <select id="st-eol" title="改行コード">
+      <option value="crlf">CRLF</option>
+      <option value="lf">LF</option>
+    </select>
+    <button id="st-theme" title="配色モード切替"></button>
+  </div>
+  <div id="dropdown" hidden></div>
+  <script type="module" src="/ui/main.ts"></script>
+</body>
+</html>
