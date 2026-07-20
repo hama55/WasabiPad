@@ -115,11 +115,26 @@ cargo test --manifest-path core/Cargo.toml
 
 ## インストール
 
+最新版はGitHubの [Releases](https://github.com/hama55/PetaPad/releases) から取得できる。
+
+- `PetaPad_*-setup.exe`: 通常のインストーラー
+- `petapad.exe`: インストール不要の単体実行版
+
 通常は `release/` 内の `*-setup.exe` を実行し、画面の案内に従う。
 
 インストールせず使う場合は、`release/petapad.exe` を好きなフォルダへ置いて
 そのまま実行する。WindowsからWebView2 Runtimeを要求された場合は、Microsoftの
 WebView2 Runtimeをインストールする。
+
+## リリース
+
+`v0.2.0` のようなバージョンタグをpushすると、GitHub ActionsがWindows版を
+ビルドし、GitHub Releaseへインストーラーと単体実行版を自動登録する。
+
+```powershell
+git tag v0.2.0
+git push origin v0.2.0
+```
 
 ## 既知の仕様
 - グラフェム単位ではなく char (Unicode スカラー値) 単位のカーソル移動
