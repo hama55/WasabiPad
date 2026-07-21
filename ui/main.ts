@@ -153,6 +153,18 @@ const sidebar = new Sidebar(
     editor.goTo(result.line, result.col);
   }
 );
+let folderRefreshRunning = false;
+window.setInterval(async () => {
+  if (!session.folderRoot || folderRefreshRunning) return;
+  folderRefreshRunning = true;
+  try {
+    await sidebar.refreshFolderEntries();
+  } catch {
+    // 一時的に列挙できなくても、次の周期で再試行する。
+  } finally {
+    folderRefreshRunning = false;
+  }
+}, 3000);
 const favbar = new FavBar(
   $("favbar"),
   (p, newWindow) => newWindow ? api.launchNew(p) : openFile(p),

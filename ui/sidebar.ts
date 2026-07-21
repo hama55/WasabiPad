@@ -162,6 +162,40 @@ export class Sidebar {
     this.render();
   }
 
+  async refreshFolderEntries() {
+    const oldRows = this.rows;
+    const oldByPath = new Map(oldRows.map((row) => [row.relPath, row]));
+    const archiveChildren = new Map<string, Row[]>();
+    for (let i = 0; i < oldRows.length; i++) {
+      const row = oldRows[i];
+      if (row.kind !== "archive" || !row.childrenLoaded) continue;
+      const children: Row[] = [];
+      for (let j = i + 1; j < oldRows.length && oldRows[j].depth > row.depth; j++) children.push(oldRows[j]);
+      archiveChildren.set(row.relPath, children);
+    }
+
+    const rebuild = async (entries: FolderEntry[], depth: number, parent: string): Promise<Row[]> => {
+      const rows = this.folderRows(entries, depth, parent);
+      const groups = await Promise.all(rows.map(async (row) => {
+        const old = oldByPath.get(row.relPath);
+        if (!old || old.kind !== row.kind) return [row];
+        row.expanded = old.expanded;
+        row.childrenLoaded = old.childrenLoaded;
+        if (row.kind === "dir" && row.childrenLoaded) {
+          const children = await this.onExpandFolder(row.relPath);
+          return [row, ...await rebuild(children, depth + 1, row.relPath)];
+        }
+        if (row.kind === "archive" && row.childrenLoaded) return [row, ...(archiveChildren.get(row.relPath) ?? [])];
+        return [row];
+      }));
+      return groups.flat();
+    };
+
+    this.rows = await rebuild(await this.onExpandFolder(""), 0, "");
+    if (this.sel && !this.rows.some((row) => row.kind !== "dir" && row.relPath === this.sel)) this.sel = null;
+    this.render();
+  }
+
   setArchiveEntries(names: string[]) {
     this.rows = this.buildRows(names, 0, "", () => "archiveEntry");
     this.sel = null;
