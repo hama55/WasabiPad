@@ -59,7 +59,7 @@ body {
   background: var(--bg-title);
   flex: none;
 }
-#menubar { display: flex; }
+#menubar { display: flex; align-items: center; }
 .menubtn {
   background: none; border: none; color: var(--fg);
   padding: 0 10px; font-size: 13px; font-family: var(--font-ui);
@@ -100,6 +100,7 @@ body {
   border: 1px solid var(--border); border-radius: 4px;
   font-size: 14px; cursor: default;
 }
+#toggle-sidebar, #toggle-favbar { background: var(--bg-title); }
 #addressbar-fav:hover, #addressbar-open:hover, #toggle-sidebar:hover, #toggle-favbar:hover { background: var(--hover); color: var(--fg); }
 
 /* ---- お気に入りバー ---- */
