@@ -141,7 +141,7 @@ fn parse_cfb(data: &[u8]) -> Option<Cfb<'_>> {
     }
     for e in dir_bytes.chunks_exact(128) {
         let nlen = u16le(e, 64)? as usize;
-        if nlen < 2 || nlen > 64 {
+        if !(2..=64).contains(&nlen) {
             cfb.dir.push((String::new(), 0, 0));
             continue;
         }

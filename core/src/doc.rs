@@ -491,7 +491,7 @@ impl Doc {
             .source
             .folder_root()
             .map(Path::to_path_buf)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "フォルダを開いていません"))?;
+            .ok_or_else(|| io::Error::other("フォルダを開いていません"))?;
         let dir = match rel_dir {
             Some(r) if !r.is_empty() => join_relative(&root, r),
             _ => root.clone(),
@@ -503,7 +503,7 @@ impl Doc {
         std::fs::write(&path, b"")?;
         let mut d = Doc::open_file(&path)?;
         let selected = into_folder_selection(d.source)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "作成した文書を開けません"))?;
+            .ok_or_else(|| io::Error::other("作成した文書を開けません"))?;
         d.source = DocumentSource::Folder { root, selected };
         let path_str = path.to_string_lossy().into_owned();
         let info = d.info(path_str);
@@ -518,11 +518,11 @@ impl Doc {
             .source
             .folder_root()
             .map(Path::to_path_buf)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "フォルダを開いていません"))?;
+            .ok_or_else(|| io::Error::other("フォルダを開いていません"))?;
         let old_abs = join_relative(&root, rel_path);
         let parent = old_abs
             .parent()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "不正なパスです"))?;
+            .ok_or_else(|| io::Error::other("不正なパスです"))?;
         let new_abs = parent.join(new_name);
         std::fs::rename(&old_abs, &new_abs)?;
         if let DocumentSource::Folder { selected, .. } = &mut self.source {
@@ -846,7 +846,7 @@ fn bytes_eq(a: &[u8], b: &[u8], case: bool) -> bool {
         && if case {
             a == b
         } else {
-            a.iter().zip(b).all(|(x, y)| x.to_ascii_lowercase() == y.to_ascii_lowercase())
+            a.iter().zip(b).all(|(x, y)| x.eq_ignore_ascii_case(y))
         }
 }
 
@@ -867,8 +867,8 @@ fn multiline_match_at(buf: &TextBuffer, segs: &[&str], l: usize, match_case: boo
     if !first.is_char_boundary(col0) || !bytes_eq(&first.as_bytes()[col0..], s0.as_bytes(), match_case) {
         return None;
     }
-    for k in 1..m - 1 {
-        if !bytes_eq(buf.line(l + k).as_bytes(), segs[k].as_bytes(), match_case) {
+    for (k, segment) in segs.iter().enumerate().take(m - 1).skip(1) {
+        if !bytes_eq(buf.line(l + k).as_bytes(), segment.as_bytes(), match_case) {
             return None;
         }
     }
@@ -1041,7 +1041,7 @@ fn find_ascii_case_insensitive(line: &str, pat: &str, from: usize) -> Option<usi
     while pos <= haystack.len() - needle.len() {
         let mut j = needle.len();
         while j > 0
-            && haystack[pos + j - 1].to_ascii_lowercase() == needle[j - 1].to_ascii_lowercase()
+            && haystack[pos + j - 1].eq_ignore_ascii_case(&needle[j - 1])
         {
             j -= 1;
         }

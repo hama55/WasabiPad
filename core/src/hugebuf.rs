@@ -104,7 +104,7 @@ impl HugeBuf {
                 break;
             }
             for p in memchr::memchr_iter(b'\n', &buf[..n]) {
-                if nlines % CHUNK == 0 {
+                if nlines.is_multiple_of(CHUNK) {
                     checkpoints.push(offset + p as u64 + 1);
                 }
                 nlines += 1;
