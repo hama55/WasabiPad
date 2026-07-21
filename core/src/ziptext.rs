@@ -76,6 +76,7 @@ fn decode_name(raw: &[u8], utf8_flag: bool) -> String {
 // フォルダを再帰列挙し (相対パス, 絶対パス) の一覧を返す。中身は読まない —
 // フォルダの子は ZIP/xls のような合成テキストではなく実ファイルなので、
 // 選択時に個別に mmap オープンして編集・保存できるようにする (doc.rs 側の責務)。
+#[cfg(test)]
 pub fn list_dir(root: &std::path::Path) -> Option<Vec<(String, std::path::PathBuf)>> {
     const MAX_FILES: usize = 2000;
     fn collect(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(String, std::path::PathBuf)>) {

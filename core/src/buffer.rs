@@ -38,6 +38,7 @@ impl TextBuffer {
         TextBuffer { store: Store::Huge(Box::new(h)) }
     }
 
+    #[cfg(test)]
     pub fn is_huge(&self) -> bool {
         matches!(self.store, Store::Huge(_))
     }
@@ -69,57 +70,6 @@ impl TextBuffer {
         match &self.store {
             Store::Small(lines) => Some(lines),
             Store::Huge(_) => None,
-        }
-    }
-
-    pub fn end_pos(&self) -> Pos {
-        let line = self.line_count() - 1;
-        Pos { line, col: self.line_len(line) }
-    }
-
-    pub fn clamp(&self, mut p: Pos) -> Pos {
-        if p.line >= self.line_count() {
-            return self.end_pos();
-        }
-        let s = self.line(p.line);
-        if p.col > s.len() {
-            p.col = s.len();
-        }
-        while p.col < s.len() && !s.is_char_boundary(p.col) {
-            p.col -= 1;
-        }
-        p
-    }
-
-    // 1 char 左の col。行頭なら None
-    pub fn prev_col(&self, p: Pos) -> Option<usize> {
-        let s = self.line(p.line);
-        s[..p.col].char_indices().next_back().map(|(i, _)| i)
-    }
-
-    // 1 char 右の col。行末なら None
-    pub fn next_col(&self, p: Pos) -> Option<usize> {
-        let s = self.line(p.line);
-        s[p.col..].chars().next().map(|c| p.col + c.len_utf8())
-    }
-
-    pub fn prev_pos(&self, p: Pos) -> Option<Pos> {
-        if let Some(col) = self.prev_col(p) {
-            Some(Pos { line: p.line, col })
-        } else if p.line > 0 {
-            Some(Pos { line: p.line - 1, col: self.line_len(p.line - 1) })
-        } else {
-            None
-        }
-    }
-
-    pub fn next_pos(&self, p: Pos) -> Option<Pos> {
-        if let Some(col) = self.next_col(p) {
-            Some(Pos { line: p.line, col })
-        } else if p.line + 1 < self.line_count() {
-            Some(Pos { line: p.line + 1, col: 0 })
-        } else {
-            None
         }
     }
 
@@ -173,6 +123,7 @@ impl TextBuffer {
         }
     }
 
+    #[cfg(test)]
     pub fn range_text(&self, start: Pos, end: Pos) -> String {
         match &self.store {
             Store::Small(lines) => {

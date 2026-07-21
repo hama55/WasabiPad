@@ -2,22 +2,16 @@
 // 文書本体は core::Doc が所有し、フロントへは可視スライスだけを渡す (全文は渡さない)。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use petapad_core::bookmarks;
-use petapad_core::doc::{
-    Doc, DocInfo, EditResult, FindCursor, FindOutcome, FindResult, FolderEntry, PosC,
-    ReplaceChunkResult, WorkspaceSearchResult,
+mod state;
+
+use petapad_core::{
+    self, BookmarkNode, Doc, DocInfo, EditResult, EncodingId, Eol, FindCursor, FindOutcome,
+    FindResult, FolderEntry, PosC, ReplaceChunkResult, WorkspaceSearchResult,
 };
-use petapad_core::fileio::{EncodingId, Eol};
+use state::{with_doc, DocState, State};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Mutex;
-
-// HugeBuf は mmap の生ポインタ / Rc キャッシュを持つため自動では Send にならないが、
-// 常に Mutex 越しの排他アクセスで、ポインタは mmap 領域 (プロセス内で有効) を指すのみ。
-struct DocState(Doc);
-unsafe impl Send for DocState {}
-
-type State<'a> = tauri::State<'a, Mutex<DocState>>;
 
 #[tauri::command]
 fn open_path(path: String, state: State) -> Result<DocInfo, String> {
@@ -28,37 +22,33 @@ fn open_path(path: String, state: State) -> Result<DocInfo, String> {
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or(path);
     let info = d.info(info_path);
-    state.lock().unwrap().0 = d;
+    with_doc(&state, |doc| *doc = d);
     Ok(info)
 }
 
 #[tauri::command]
 fn new_doc(state: State) {
-    state.lock().unwrap().0 = Doc::empty();
+    with_doc(&state, |doc| *doc = Doc::empty());
 }
 
 #[tauri::command]
 fn close_doc(state: State) {
-    state.lock().unwrap().0 = Doc::empty(); // mmap解放 (ファイルロック解除)
+    with_doc(&state, |doc| *doc = Doc::empty()); // mmap解放 (ファイルロック解除)
 }
 
 #[tauri::command]
 fn lines(start: usize, count: usize, state: State) -> Vec<String> {
-    state.lock().unwrap().0.lines(start, count)
+    with_doc(&state, |doc| doc.lines(start, count))
 }
 
 #[tauri::command]
 fn line_char_len(line: usize, state: State) -> usize {
-    state.lock().unwrap().0.line_char_len(line)
+    with_doc(&state, |doc| doc.line_char_len(line))
 }
 
 #[tauri::command]
 fn select_entry(rel_path: String, state: State) -> Result<DocInfo, String> {
-    state
-        .lock()
-        .unwrap()
-        .0
-        .select_entry(&rel_path)
+    with_doc(&state, |doc| doc.select_entry(&rel_path))
         .ok_or_else(|| "no entry".into())
 }
 
@@ -66,53 +56,33 @@ fn select_entry(rel_path: String, state: State) -> Result<DocInfo, String> {
 // rel_path が空文字なら直接開いているアーカイブ自身、それ以外はフォルダ内の相対パス。
 #[tauri::command]
 fn list_archive_entries(rel_path: String, state: State) -> Result<Vec<String>, String> {
-    state
-        .lock()
-        .unwrap()
-        .0
-        .list_archive_entries(&rel_path)
+    with_doc(&state, |doc| doc.list_archive_entries(&rel_path))
         .ok_or_else(|| "no entries".into())
 }
 
 // フォルダの展開時に、その直下だけを取得する。
 #[tauri::command]
 fn list_folder_entries(rel_dir: String, state: State) -> Result<Vec<FolderEntry>, String> {
-    state
-        .lock()
-        .unwrap()
-        .0
-        .list_folder_entries(&rel_dir)
+    with_doc(&state, |doc| doc.list_folder_entries(&rel_dir))
         .ok_or_else(|| "no entries".into())
 }
 
 #[tauri::command]
 fn workspace_search(pat: String, match_case: bool, state: State) -> Result<Vec<WorkspaceSearchResult>, String> {
-    let root = state
-        .lock()
-        .unwrap()
-        .0
-        .workspace_root()
+    let root = with_doc(&state, |doc| doc.workspace_root())
         .ok_or_else(|| "folder is not open".to_string())?;
-    Ok(petapad_core::doc::search_workspace(&root, &pat, match_case))
+    Ok(petapad_core::search_workspace(&root, &pat, match_case))
 }
 
 #[tauri::command]
 fn create_note(dir: Option<String>, name: String, state: State) -> Result<DocInfo, String> {
-    state
-        .lock()
-        .unwrap()
-        .0
-        .create_note(dir.as_deref(), &name)
+    with_doc(&state, |doc| doc.create_note(dir.as_deref(), &name))
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn rename_entry(rel_path: String, new_name: String, state: State) -> Result<DocInfo, String> {
-    state
-        .lock()
-        .unwrap()
-        .0
-        .rename_entry(&rel_path, &new_name)
+    with_doc(&state, |doc| doc.rename_entry(&rel_path, &new_name))
         .map_err(|e| e.to_string())
 }
 
@@ -140,21 +110,17 @@ fn edit(
     coalesce: bool,
     state: State,
 ) -> EditResult {
-    state
-        .lock()
-        .unwrap()
-        .0
-        .edit(start, end, caret_before, &text, coalesce)
+    with_doc(&state, |doc| doc.edit(start, end, caret_before, &text, coalesce))
 }
 
 #[tauri::command]
 fn undo(state: State) -> Option<EditResult> {
-    state.lock().unwrap().0.undo()
+    with_doc(&state, Doc::undo)
 }
 
 #[tauri::command]
 fn redo(state: State) -> Option<EditResult> {
-    state.lock().unwrap().0.redo()
+    with_doc(&state, Doc::redo)
 }
 
 #[tauri::command]
@@ -165,11 +131,7 @@ fn find(
     match_case: bool,
     state: State,
 ) -> Option<FindResult> {
-    state
-        .lock()
-        .unwrap()
-        .0
-        .find(&pat, from, forward, match_case)
+    with_doc(&state, |doc| doc.find(&pat, from, forward, match_case))
 }
 
 #[tauri::command]
@@ -181,11 +143,7 @@ fn find_step(
     budget: usize,
     state: State,
 ) -> FindOutcome {
-    state
-        .lock()
-        .unwrap()
-        .0
-        .find_step(&pat, from, match_case, cursor, budget)
+    with_doc(&state, |doc| doc.find_step(&pat, from, match_case, cursor, budget))
 }
 
 #[tauri::command]
@@ -196,46 +154,38 @@ fn replace_all_chunk(
     budget: usize,
     state: State,
 ) -> ReplaceChunkResult {
-    state
-        .lock()
-        .unwrap()
-        .0
-        .replace_all_chunk(&pat, &rep, match_case, budget)
+    with_doc(&state, |doc| doc.replace_all_chunk(&pat, &rep, match_case, budget))
 }
 
 #[tauri::command]
 fn replace_all_cancel(state: State) -> EditResult {
-    state.lock().unwrap().0.replace_all_cancel()
+    with_doc(&state, Doc::replace_all_cancel)
 }
 
 #[tauri::command]
 fn save_file(path: String, enc: EncodingId, eol: Eol, state: State) -> Result<(), String> {
-    state
-        .lock()
-        .unwrap()
-        .0
-        .save(&PathBuf::from(path), enc.into(), eol)
+    with_doc(&state, |doc| doc.save(&PathBuf::from(path), enc.into(), eol))
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn set_encoding(enc: EncodingId, state: State) {
-    state.lock().unwrap().0.set_enc(enc.into());
+    with_doc(&state, |doc| doc.set_enc(enc.into()));
 }
 
 #[tauri::command]
 fn set_eol(eol: Eol, state: State) {
-    state.lock().unwrap().0.set_eol(eol);
+    with_doc(&state, |doc| doc.set_eol(eol));
 }
 
 #[tauri::command]
-fn load_bookmarks() -> Vec<bookmarks::Node> {
-    bookmarks::load()
+fn load_bookmarks() -> Vec<BookmarkNode> {
+    petapad_core::load_bookmarks()
 }
 
 #[tauri::command]
-fn save_bookmarks(nodes: Vec<bookmarks::Node>) -> Result<(), String> {
-    bookmarks::save(&nodes).map_err(|e| e.to_string())
+fn save_bookmarks(nodes: Vec<BookmarkNode>) -> Result<(), String> {
+    petapad_core::save_bookmarks(&nodes).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
