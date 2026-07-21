@@ -38,11 +38,7 @@ jobs:
 
       - name: Collect files
         shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force release | Out-Null
-          Copy-Item target/release/petapad.exe release/petapad.exe
-          Get-ChildItem target/release/bundle/nsis/*-setup.exe |
-            Copy-Item -Destination release
+        run: ./scripts/collect-release.ps1
 
       - name: Publish release
         shell: pwsh
