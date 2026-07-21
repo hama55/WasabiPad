@@ -201,7 +201,7 @@ body {
   position: absolute; left: var(--gutter-w); right: 0; top: 0; bottom: 0;
   overflow: auto; overflow-anchor: none; outline: none;
 }
-.ve-inner { position: relative; min-height: 100%; }
+.ve-inner { position: relative; min-height: 100%; overflow: clip; }
 .ve-line {
   position: absolute; left: 0; height: var(--line-h);
   line-height: var(--line-h); font-size: var(--ve-font);
@@ -236,11 +236,19 @@ body {
   line-height: var(--line-h); white-space: pre;
 }
 .ve-input.ime {
-  color: var(--editor-fg); background: transparent;
+  color: var(--editor-fg); background: var(--bg-editor);
   caret-color: var(--caret); z-index: 4;
 }
 .ve-sel, .ve-caret { pointer-events: none; }
-.ve-scroll.wrap .ve-input.ime { white-space: pre-wrap; overflow-wrap: anywhere; max-width: calc(100% - var(--ve-pad-left)); }
+.ve-scroll.wrap .ve-input.ime {
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  max-width: calc(100% - var(--ve-pad-left));
+  background:
+    linear-gradient(var(--bg-editor), var(--bg-editor)) var(--ime-indent) 0 /
+      calc(100% - var(--ime-indent)) var(--line-h) no-repeat,
+    linear-gradient(var(--bg-editor), var(--bg-editor)) 0 var(--line-h) /
+      100% calc(100% - var(--line-h)) no-repeat;
+}
 
 /* ---- 検索/置換バー ---- */
 .ve-find {

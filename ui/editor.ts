@@ -22,59 +22,6 @@ const OVERSCAN = 8;
 // (ve-scale モード)。
 const MAX_SAFE_HEIGHT = 5_000_000;
 
-// 折り返し数は可視域近傍だけ保持する。全行配列にすると巨大文書でWebViewの
-// メモリを本文以上に消費するため、未測定行は1表示行として近似する。
-class WrapRows {
-  private rows = new Map<number, number>();
-  private readonly maxEntries = 4096;
-
-  clear() {
-    this.rows.clear();
-  }
-
-  get(line: number): number {
-    return this.rows.get(line) ?? 1;
-  }
-
-  set(line: number, rows: number, center: number): boolean {
-    const previous = this.get(line);
-    if (rows === previous) return false;
-    if (rows === 1) this.rows.delete(line);
-    else this.rows.set(line, rows);
-    this.prune(center);
-    return true;
-  }
-
-  sum(end: number): number {
-    let total = end;
-    for (const [line, rows] of this.rows) {
-      if (line < end) total += rows - 1;
-    }
-    return total;
-  }
-
-  lowerBound(target: number, lineCount: number): number {
-    let lo = 0;
-    let hi = Math.max(0, lineCount - 1);
-    while (lo < hi) {
-      const mid = lo + Math.floor((hi - lo) / 2);
-      if (this.sum(mid + 1) >= target) hi = mid;
-      else lo = mid + 1;
-    }
-    return lo;
-  }
-
-  private prune(center: number) {
-    if (this.rows.size <= this.maxEntries) return;
-    let farthest: number | undefined;
-    for (const line of this.rows.keys()) {
-      if (farthest === undefined || Math.abs(line - center) > Math.abs(farthest - center)) farthest = line;
-    }
-    if (farthest !== undefined) this.rows.delete(farthest);
-  }
-}
-
-
 export interface EditorPorts {
   onDocChange: (lineCount: number) => void;
   onCursor: (line: number, col: number) => void;
@@ -105,7 +52,8 @@ export class VirtualEditor {
   private readonly paddingLeft: number;
   private readonly gutterWidth: number;
   private wrap = false;
-  private wrapRows = new WrapRows();
+  private wrapIntraLinePx = 0;
+  private localRowTops = new Map<number, number>();
   private scaleMode = false; // 行数×行高が MAX_SAFE_HEIGHT を超える巨大文書
   private scrollHeight = 0; // ve-inner に実際に設定する高さ (scaleMode 時は丸め)
   private viewTop = 0; // 直近 render() 時点の scroll.scrollTop
@@ -191,6 +139,7 @@ export class VirtualEditor {
     this.input.addEventListener("compositionstart", () => {
       this.composing = true;
       this.input.classList.add("ime"); // 変換中は textarea を可視化
+      this.placeCaret();
       this.resizeImeInput();
       this.caretEl.classList.remove("on");
     });
@@ -205,12 +154,13 @@ export class VirtualEditor {
     });
 
     new ResizeObserver(() => {
-      const topLine = this.scaleMode ? this.topLineF : this.pxToLine(this.scroll.scrollTop);
+      const topLine = this.wrap || this.scaleMode ? this.topLineF : this.pxToLine(this.scroll.scrollTop);
+      const intraLinePx = this.wrapIntraLinePx;
       const wasAtBottom = topLine >= this.maxTopLine();
-      // 幅が変わるとCSSの折り返し数も変わる。古い実測値を使うと行位置がずれる。
-      if (this.wrap) this.wrapRows.clear();
       this.updateMetrics();
-      this.setTopLine(wasAtBottom ? this.maxTopLine() : topLine);
+      const nextTopLine = wasAtBottom ? this.maxTopLine() : topLine;
+      if (this.wrap) this.setWrapAnchor(nextTopLine, nextTopLine === topLine ? intraLinePx : 0);
+      else this.setTopLine(nextTopLine);
       this.schedule();
     }).observe(this.scroll);
   }
@@ -218,7 +168,7 @@ export class VirtualEditor {
   // ---- 文書ロード ----
   open(lineCount: number, readOnly: boolean) {
     this.lineCount = Math.max(1, lineCount);
-    this.wrapRows.clear();
+    this.wrapIntraLinePx = 0;
     this.readOnly = readOnly;
     this.cache.clear();
     this.pending.clear();
@@ -255,10 +205,10 @@ export class VirtualEditor {
 
   setWrap(on: boolean) {
     if (this.wrap === on) return;
-    const topLine = this.scaleMode ? this.topLineF : this.pxToLine(this.scroll.scrollTop);
+    const topLine = this.wrap || this.scaleMode ? this.topLineF : this.pxToLine(this.scroll.scrollTop);
     const wasAtBottom = topLine >= this.maxTopLine();
     this.wrap = on;
-    this.wrapRows.clear();
+    this.wrapIntraLinePx = 0;
     this.scroll.classList.toggle("wrap", on);
     this.scroll.scrollLeft = 0;
     this.maxWidth = 0;
@@ -268,7 +218,7 @@ export class VirtualEditor {
   }
 
   setFont(fontFamily: string, fontSize: number) {
-    const topLine = this.scaleMode ? this.topLineF : this.pxToLine(this.scroll.scrollTop);
+    const topLine = this.wrap || this.scaleMode ? this.topLineF : this.pxToLine(this.scroll.scrollTop);
     const wasAtBottom = topLine >= this.maxTopLine();
     this.fontFamily = fontFamily;
     this.fontSize = Math.max(8, Math.min(72, fontSize));
@@ -276,9 +226,7 @@ export class VirtualEditor {
     this.scroll.parentElement!.style.setProperty("--ve-font-family", this.fontFamily);
     this.scroll.parentElement!.style.setProperty("--ve-font", `${this.fontSize}px`);
     this.scroll.parentElement!.style.setProperty("--line-h", `${this.lineHeight}px`);
-    if (this.wrap) {
-      this.wrapRows.clear();
-    }
+    if (this.wrap) this.wrapIntraLinePx = 0;
     this.maxWidth = 0;
     this.updateMetrics();
     this.setTopLine(wasAtBottom ? this.maxTopLine() : topLine);
@@ -288,7 +236,9 @@ export class VirtualEditor {
 
   // ---- 座標マッピング (scaleMode: 巨大文書では行位置とスクロール位置を比例配分) ----
   private updateMetrics() {
-    const ideal = (this.wrap ? this.wrapRows.sum(this.lineCount) : this.lineCount) * this.lineHeight;
+    // スクロールバーは常に論理行数の近似を示す。折り返し高さは可視域だけで
+    // 測定し、文書先頭からの累積値にはしない。
+    const ideal = this.lineCount * this.lineHeight;
     this.scaleMode = ideal > MAX_SAFE_HEIGHT;
     this.scrollHeight = this.scaleMode ? MAX_SAFE_HEIGHT : ideal;
     this.inner.style.height = `${Math.max(this.scrollHeight, 1)}px`;
@@ -305,18 +255,17 @@ export class VirtualEditor {
   }
 
   private maxTopLine(): number {
-    if (!this.wrap) return Math.max(0, this.lineCount - this.visibleRows());
-    const maxTopRow = Math.max(0, this.wrapRows.sum(this.lineCount) - this.visibleRows());
-    return this.wrapRows.lowerBound(maxTopRow + 1, this.lineCount);
+    // 折り返し時は末尾行自身がviewportより高い可能性があるため、末尾行まで
+    // anchorにできる必要がある。可視行数からの逆算は行わない。
+    if (this.wrap) return Math.max(0, this.lineCount - 1);
+    return Math.max(0, this.lineCount - this.visibleRows());
   }
 
   // 行番号 -> その行を可視域の先頭に置くための scrollTop (ensureVisible/goto 用)
   private lineToPx(line: number): number {
     if (this.wrap) {
-      const row = this.wrapRows.sum(line);
-      if (!this.scaleMode) return row * this.lineHeight;
-      const maxTopRow = Math.max(0, this.wrapRows.sum(this.lineCount) - this.visibleRows());
-      return maxTopRow ? (Math.min(row, maxTopRow) / maxTopRow) * this.maxScroll() : 0;
+      const maxTopLine = this.maxTopLine();
+      return maxTopLine ? (Math.min(line, maxTopLine) / maxTopLine) * this.maxScroll() : 0;
     }
     if (!this.scaleMode) return line * this.lineHeight;
     const maxTopLine = this.maxTopLine();
@@ -326,10 +275,9 @@ export class VirtualEditor {
   // scrollTop -> その位置に対応する行番号 (render の基準行)
   private pxToLine(px: number): number {
     if (this.wrap) {
-      if (!this.scaleMode) return this.wrapRows.lowerBound(px / this.lineHeight + 1, this.lineCount);
-      const maxTopRow = Math.max(0, this.wrapRows.sum(this.lineCount) - this.visibleRows());
-      const row = this.maxScroll() ? (px / this.maxScroll()) * maxTopRow : 0;
-      return this.wrapRows.lowerBound(row + 1, this.lineCount);
+      const ms = this.maxScroll();
+      if (ms <= 0) return 0;
+      return Math.round(Math.min(1, Math.max(0, px / ms)) * this.maxTopLine());
     }
     if (!this.scaleMode) return Math.floor(px / this.lineHeight);
     const ms = this.maxScroll();
@@ -345,17 +293,43 @@ export class VirtualEditor {
   // (scrollTop はネイティブスクロールバーのつまみ位置を近似するためだけに使う)。
   private setTopLine(line: number) {
     this.topLineF = Math.max(0, Math.min(this.maxTopLine(), line));
+    if (this.wrap) this.wrapIntraLinePx = 0;
     this.scroll.scrollTop = this.lineToPx(this.topLineF);
+  }
+
+  private setWrapAnchor(line: number, intraLinePx: number) {
+    this.topLineF = Math.max(0, Math.min(this.maxTopLine(), Math.floor(line)));
+    this.wrapIntraLinePx = Math.max(0, intraLinePx);
+    this.scroll.scrollTop = this.lineToPx(this.topLineF);
+  }
+
+  private wrappedLineHeight(line: number): number {
+    const elem = this.lineElem(line);
+    return elem ? Math.max(this.lineHeight, elem.getBoundingClientRect().height) : this.lineHeight;
+  }
+
+  private scrollWrapBy(deltaPx: number) {
+    let line = Math.round(this.topLineF);
+    let intra = this.wrapIntraLinePx + deltaPx;
+    while (intra >= this.wrappedLineHeight(line) && line < this.lineCount - 1) {
+      intra -= this.wrappedLineHeight(line);
+      line++;
+    }
+    while (intra < 0 && line > 0) {
+      line--;
+      intra += this.wrappedLineHeight(line);
+    }
+    if (line === 0) intra = Math.max(0, intra);
+    if (line === this.lineCount - 1) {
+      intra = Math.min(intra, Math.max(0, this.wrappedLineHeight(line) - this.scroll.clientHeight));
+    }
+    this.setWrapAnchor(line, intra);
   }
 
   // 行 i の描画用 top (px)。scaleMode では viewTopLine を viewTop に固定し、
   // 可視域内は常に行高の間隔で並べる (行密度が px 密度を上回っても崩れない)。
   private rowTop(i: number): number {
-    if (this.wrap) {
-      const y = this.wrapRows.sum(i) * this.lineHeight;
-      if (!this.scaleMode) return y;
-      return this.viewTop + y - this.wrapRows.sum(this.viewTopLine) * this.lineHeight;
-    }
+    if (this.wrap) return this.localRowTops.get(i) ?? this.viewTop;
     return this.scaleMode ? this.viewTop + (i - this.viewTopLine) * this.lineHeight : i * this.lineHeight;
   }
 
@@ -398,7 +372,10 @@ export class VirtualEditor {
   }
 
   private onScroll() {
-    if (!this.scaleMode || this.scrollbarDragging) {
+    if (this.wrap && this.scrollbarDragging) {
+      this.topLineF = this.pxToLine(this.scroll.scrollTop);
+      this.wrapIntraLinePx = 0;
+    } else if (!this.wrap && (!this.scaleMode || this.scrollbarDragging)) {
       this.topLineF = this.pxToLine(this.scroll.scrollTop);
     }
     this.schedule();
@@ -411,10 +388,10 @@ export class VirtualEditor {
     this.viewTop = top;
     this.viewTopLine = topLine;
     const visibleRows = Math.ceil(h / this.lineHeight) + 1;
-    const first = Math.max(0, topLine - OVERSCAN);
-    const last = this.wrap
-      ? Math.min(this.lineCount, this.wrapRows.lowerBound(this.wrapRows.sum(topLine) + visibleRows + OVERSCAN, this.lineCount) + 1)
-      : Math.min(this.lineCount, topLine + visibleRows + OVERSCAN);
+    const first = Math.max(0, topLine - (this.wrap ? visibleRows : 0) - OVERSCAN);
+    // 1論理行の最小高はlineHeight→この件数なら折り返し量に関係なく
+    // viewportとoverscanを必ず埋められる。
+    const last = Math.min(this.lineCount, topLine + visibleRows + OVERSCAN);
 
     // 未取得チャンクを要求
     let needFetch = false;
@@ -434,24 +411,25 @@ export class VirtualEditor {
       this.anchor.col === 0 && this.caret.col === 0 && this.caret.line > this.anchor.line;
     const curLine = wholeLineSelectEnd ? this.caret.line - 1 : this.caret.line;
     const frag = document.createDocumentFragment();
-    const gfrag = document.createDocumentFragment();
     for (let i = first; i < last; i++) {
-      const rowTop = this.rowTop(i);
       const text = this.lineText(i);
       const line = el("div", "ve-line");
-      line.style.top = `${rowTop}px`;
       line.dataset.line = String(i);
       line.textContent = text ?? "…";
       frag.appendChild(line);
+    }
 
+    this.linesLayer.replaceChildren(frag);
+    this.layoutVisibleLines(first, last, topLine, top);
+
+    const gfrag = document.createDocumentFragment();
+    for (let i = first; i < last; i++) {
       const g = el("div", "ve-gnum");
-      g.style.top = `${rowTop - top}px`;
+      g.style.top = `${this.rowTop(i) - top}px`;
       g.textContent = this.formatLineNumber(i + 1);
       if (i === curLine) g.classList.add("cur");
       gfrag.appendChild(g);
     }
-
-    this.linesLayer.replaceChildren(frag);
     this.gutter.replaceChildren(gfrag);
 
     // 新しい可視行DOMを基準にRangeを測定する。旧DOMを測るとスクロール後に欠落する。
@@ -459,32 +437,39 @@ export class VirtualEditor {
     this.appendSelection(selectionFrag, first, last);
     this.linesLayer.prepend(selectionFrag);
 
-    if (this.wrap) this.measureWrappedRows(first, last);
-
     // 横スクロール用に inner 幅を可視行の最大幅へ更新
     this.updateWidth();
     this.placeCaret();
     if (!needFetch) this.updateGutterWidth();
   }
 
-  private measureWrappedRows(first: number, last: number) {
-    let changed = false;
-    for (let i = first; i < last; i++) {
+  private layoutVisibleLines(first: number, last: number, topLine: number, viewTop: number) {
+    this.localRowTops.clear();
+    if (!this.wrap) {
+      for (let i = first; i < last; i++) {
+        const line = this.lineElem(i);
+        if (line) line.style.top = `${this.rowTop(i)}px`;
+      }
+      return;
+    }
+
+    // topLineだけをviewportへ固定し、前後は今回生成したDOMの実測高だけで並べる。
+    // 可視外の折り返し数や文書先頭からの累積値は保持しない。
+    let y = viewTop - this.wrapIntraLinePx;
+    for (let i = topLine; i < last; i++) {
       const line = this.lineElem(i);
       if (!line) continue;
-      // CSSの line-height は整数px指定だが、DPI倍率で実測値には微小な誤差が入る。
-      // ceil だと 3.0001 行を4行と誤認して、折り返し間に空行を作ってしまう。
-      const rows = Math.max(1, Math.round(line.getBoundingClientRect().height / this.lineHeight));
-      changed = this.wrapRows.set(i, rows, this.viewTopLine) || changed;
+      this.localRowTops.set(i, y);
+      line.style.top = `${y}px`;
+      y += Math.max(this.lineHeight, line.getBoundingClientRect().height);
     }
-    // フォント変更直後は、古い行高で置いたDOMを次フレームまで残すと空行に見える。
-    // 実測値が変わったら同じ描画サイクル内で位置を置き直す。
-    if (changed) {
-      const topLine = this.topLineF;
-      const wasAtBottom = topLine >= this.maxTopLine();
-      this.updateMetrics();
-      this.setTopLine(wasAtBottom ? this.maxTopLine() : topLine);
-      this.render();
+    y = viewTop - this.wrapIntraLinePx;
+    for (let i = topLine - 1; i >= first; i--) {
+      const line = this.lineElem(i);
+      if (!line) continue;
+      y -= Math.max(this.lineHeight, line.getBoundingClientRect().height);
+      this.localRowTops.set(i, y);
+      line.style.top = `${y}px`;
     }
   }
 
@@ -551,7 +536,16 @@ export class VirtualEditor {
     this.caretEl.style.left = `${x}px`;
     // IME 変換窓を追従させるため textarea も同座標へ
     this.input.style.top = `${y}px`;
-    this.input.style.left = `${x}px`;
+    if (this.composing && this.wrap) {
+      this.input.style.left = `${this.paddingLeft}px`;
+      const indent = Math.max(0, x - this.paddingLeft);
+      this.input.style.textIndent = `${indent}px`;
+      this.input.style.setProperty("--ime-indent", `${indent}px`);
+    } else {
+      this.input.style.left = `${x}px`;
+      this.input.style.removeProperty("text-indent");
+      this.input.style.removeProperty("--ime-indent");
+    }
   }
 
   private wrapPoint(lineEl: HTMLElement, s: string, col: number): { x: number; y: number } | null {
@@ -623,21 +617,18 @@ export class VirtualEditor {
 
   private ensureVisible() {
     if (this.wrap) {
-      const y = this.lineToPx(this.caret.line);
-      const height = this.wrapRows.get(this.caret.line) * this.lineHeight;
-      const top = this.scroll.scrollTop;
-      if (!this.scaleMode) {
-        if (y < top) this.setTopLine(this.caret.line);
-        else if (y + height > top + this.scroll.clientHeight) {
-          this.setTopLine(this.pxToLine(y + height - this.scroll.clientHeight));
-        }
-      } else {
-        const visibleRows = Math.max(1, Math.floor(this.scroll.clientHeight / this.lineHeight));
-        let topLine = this.topLineF;
-        if (this.caret.line < topLine) topLine = this.caret.line;
-        else if (this.caret.line >= topLine + visibleRows) topLine = this.caret.line - visibleRows + 1;
-        if (topLine !== this.topLineF) this.setTopLine(topLine);
+      const lineEl = this.lineElem(this.caret.line);
+      if (!lineEl) {
+        this.setTopLine(this.caret.line);
+        return;
       }
+      const s = this.lineText(this.caret.line) ?? "";
+      const point = this.wrapPoint(lineEl, s, this.caret.col);
+      if (!point) return;
+      const top = this.viewTop;
+      const bottom = top + this.scroll.clientHeight - this.lineHeight;
+      if (point.y < top) this.scrollWrapBy(point.y - top);
+      else if (point.y > bottom) this.scrollWrapBy(point.y - bottom);
       return;
     }
     if (this.scaleMode) {
@@ -818,14 +809,16 @@ export class VirtualEditor {
   }
 
   private applyResult(r: api.EditResult, fromLine: number) {
-    const oldTopLine = this.scaleMode ? this.topLineF : this.pxToLine(this.scroll.scrollTop);
+    const oldTopLine = this.wrap || this.scaleMode ? this.topLineF : this.pxToLine(this.scroll.scrollTop);
+    const oldIntraLinePx = this.wrapIntraLinePx;
     const wasAtBottom = oldTopLine >= this.maxTopLine();
     this.lineCount = Math.max(1, r.line_count);
-    this.wrapRows.clear();
     this.updateMetrics();
     // 行数変更前後の座標系を混在させない。末尾表示中は新しい末尾へ追従し、
     // それ以外は同じ先頭行を維持する。
-    this.setTopLine(wasAtBottom ? this.maxTopLine() : oldTopLine);
+    const nextTopLine = wasAtBottom ? this.maxTopLine() : oldTopLine;
+    if (this.wrap) this.setWrapAnchor(nextTopLine, nextTopLine === oldTopLine ? oldIntraLinePx : 0);
+    else this.setTopLine(nextTopLine);
     // 編集で fromLine 以降の行番号がずれるためキャッシュを破棄
     for (const c of [...this.cache.keys()]) {
       if (c * CHUNK + CHUNK > fromLine) this.cache.delete(c);
@@ -1011,13 +1004,15 @@ export class VirtualEditor {
     this.input.classList.remove("ime");
     this.input.style.removeProperty("width");
     this.input.style.removeProperty("height");
+    this.input.style.removeProperty("text-indent");
+    this.input.style.removeProperty("--ime-indent");
     if (document.activeElement === this.input) this.caretEl.classList.add("on");
     this.flushInput();
   }
 
   private resizeImeInput() {
     if (this.wrap) {
-      const available = Math.max(1, this.scroll.clientWidth - this.input.offsetLeft - 4);
+      const available = Math.max(1, this.scroll.clientWidth - this.paddingLeft - 4);
       this.input.style.width = `${available}px`;
       this.input.style.height = "1px";
       this.input.style.height = `${Math.max(this.lineHeight, this.input.scrollHeight)}px`;
@@ -1035,6 +1030,22 @@ export class VirtualEditor {
     if (e.ctrlKey) {
       e.preventDefault();
       if (e.deltaY) this.setFont(this.fontFamily, this.fontSize + (e.deltaY < 0 ? 1 : -1));
+      return;
+    }
+    if (this.wrap) {
+      e.preventDefault();
+      if (e.deltaX) this.scroll.scrollLeft += e.deltaX;
+      const pages = Math.max(1, this.scroll.clientHeight - this.lineHeight);
+      const deltaPx = e.deltaMode === 1 ? e.deltaY * this.lineHeight
+        : e.deltaMode === 2 ? e.deltaY * pages
+        : e.deltaY;
+      if (deltaPx) {
+        // 未測定行を仮の1行高で何画面も通過しない。1イベントの移動量を
+        // 現在生成済みのDOMで必ず測定できる範囲へ制限する。
+        const limited = Math.max(-this.scroll.clientHeight, Math.min(this.scroll.clientHeight, deltaPx));
+        this.scrollWrapBy(limited);
+        this.schedule();
+      }
       return;
     }
     if (!this.scaleMode) return;
