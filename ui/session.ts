@@ -1,4 +1,5 @@
 import type { DocInfo, Encoding, Eol } from "./api";
+import { basename } from "./path";
 
 export interface DocumentSession {
   displayPath: string;
@@ -45,5 +46,5 @@ export function sessionFromDocInfo(
 
 export function displayName(session: DocumentSession): string {
   const path = session.savePath ?? (session.readOnly ? session.displayPath : "");
-  return path.replace(/\\/g, "/").split("/").pop() || "無題";
+  return path ? basename(path) : "無題";
 }

@@ -7,7 +7,16 @@ import { Sidebar, ContextTarget } from "./sidebar";
 import { FavBar } from "./favbar";
 import { showMenu, MenuItem } from "./menu";
 import { promptFields } from "./prompt";
-import { displayName, initialSession, sessionFromDocInfo } from "./session";
+import { initialSession, sessionFromDocInfo } from "./session";
+import { showError } from "./dialogs";
+import {
+  formatByteSize,
+  formatCursor,
+  formatFontFamily,
+  formatLineCount,
+  formatWindowTitle,
+} from "./format";
+import { basename, dirname, joinWindowsRoot, relativePathFromRoot } from "./path";
 
 const win = getCurrentWindow();
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -50,7 +59,7 @@ function setLoading(active: boolean) {
 }
 
 function updateFontStatus() {
-  $("st-font").textContent = fontFamily.split(",")[0].replaceAll("\"", "").trim();
+  $("st-font").textContent = formatFontFamily(fontFamily);
   $("st-font-size").textContent = `${fontSize}px`;
 }
 
@@ -66,11 +75,11 @@ const editor = new VirtualEditor(
       updateTitle();
     }
     session.lineCount = lineCount;
-    $("st-lines").textContent = `${lineCount.toLocaleString("ja-JP")} 行`;
+    $("st-lines").textContent = formatLineCount(lineCount);
   },
   (line, col) => {
     currentLine = line;
-    $("st-pos").textContent = `${line}行 ${col}列`;
+    $("st-pos").textContent = formatCursor(line, col);
   },
   (family, size) => {
     fontFamily = family;
@@ -148,7 +157,7 @@ const favbar = new FavBar(
 );
 
 function updateTitle() {
-  const t = `${session.dirty ? "● " : ""}${displayName(session)} — PetaPad`;
+  const t = formatWindowTitle(session);
   $("titletext").textContent = t;
   win.setTitle(t);
 }
@@ -159,32 +168,17 @@ function setSidebar(on: boolean, label = "") {
   $("st-mode").textContent = label;
 }
 
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  const units = ["KB", "MB", "GB", "TB"];
-  let v = bytes / 1024;
-  for (const u of units) {
-    if (v < 1024 || u === units[units.length - 1]) return `${v.toFixed(1)} ${u}`;
-    v /= 1024;
-  }
-  return `${v.toFixed(1)} TB`;
-}
-
 // アーカイブ選択後/フォルダのエントリ切替後で共通の状態反映
 function applyDocInfo(o: api.DocInfo) {
   session = sessionFromDocInfo(session, o);
   $<HTMLSelectElement>("st-enc").value = session.encoding;
   $<HTMLSelectElement>("st-eol").value = session.eol;
   addressbar.value = o.path;
-  $("st-size").textContent = formatSize(o.byte_len);
-  $("st-lines").textContent = `${o.line_count.toLocaleString("ja-JP")} 行`;
+  $("st-size").textContent = formatByteSize(o.byte_len);
+  $("st-lines").textContent = formatLineCount(o.line_count);
   editor.open(o.line_count, session.readOnly);
   editor.focus();
   updateTitle();
-}
-
-function displayNameOf(path: string): string {
-  return path.replace(/\\/g, "/").split("/").pop() || path;
 }
 
 // ---- ファイル操作 ----
@@ -201,7 +195,7 @@ async function openFile(path: string) {
         sidebar.setArchiveEntries(o.entries);
       } else {
         // zip/xlsx/xls は展開前: 名前だけの1行を表示し、展開ボタンで初めて中身を取得する
-        sidebar.setArchiveRoot(displayNameOf(o.path));
+        sidebar.setArchiveRoot(basename(o.path));
       }
     } else if (o.folder_entries) {
       setSidebar(true, "");
@@ -213,7 +207,7 @@ async function openFile(path: string) {
     }
     applyDocInfo(o);
   } catch (e) {
-    await ask(`開けませんでした:\n${e}`, { title: "PetaPad", kind: "error" });
+    await showError("開けませんでした", e);
   } finally {
     setLoading(false);
   }
@@ -256,7 +250,7 @@ async function doSave(): Promise<boolean> {
     updateTitle();
     return true;
   } catch (e) {
-    await ask(`保存できませんでした:\n${e}`, { title: "PetaPad", kind: "error" });
+    await showError("保存できませんでした", e);
     return false;
   }
 }
@@ -278,7 +272,7 @@ async function pickAndOpen(directory: boolean) {
 
 // ---- フォルダビューの右クリックメニュー (新規メモ作成・名前を変更・エクスプローラで開く) ----
 function relToAbs(relPath: string): string {
-  return `${session.folderRoot}\\${relPath.replace(/\//g, "\\")}`;
+  return joinWindowsRoot(session.folderRoot!, relPath);
 }
 
 function sidebarContextMenu(x: number, y: number, target: ContextTarget | null) {
@@ -287,17 +281,12 @@ function sidebarContextMenu(x: number, y: number, target: ContextTarget | null) 
   if (target) {
     items.push({ label: "名前を変更...", action: () => renameEntry(target.relPath) });
   }
-  const createDir = target ? (target.isDir ? target.relPath : dirNameOf(target.relPath)) : null;
+  const createDir = target ? (target.isDir ? target.relPath : dirname(target.relPath)) : null;
   items.push({ label: "新規メモ作成...", action: () => createNote(createDir) });
   const revealPath = target ? relToAbs(target.relPath) : session.folderRoot;
   const revealIsDir = target ? target.isDir : true;
   items.push({ label: "エクスプローラで開く", action: () => revealInExplorer(revealPath, revealIsDir) });
   showMenu(x, y, items);
-}
-
-function dirNameOf(relPath: string): string | null {
-  const i = relPath.lastIndexOf("/");
-  return i < 0 ? null : relPath.slice(0, i);
 }
 
 async function createNote(dir: string | null) {
@@ -314,12 +303,12 @@ async function createNote(dir: string | null) {
     sidebar.selectByRelPath(rel);
     applyDocInfo(info);
   } catch (e) {
-    await ask(`作成できませんでした:\n${e}`, { title: "PetaPad", kind: "error" });
+    await showError("作成できませんでした", e);
   }
 }
 
 async function renameEntry(relPath: string) {
-  const cur = relPath.split("/").pop() ?? relPath;
+  const cur = basename(relPath);
   const result = await promptFields("名前を変更", [{ label: "新しい名前", value: cur }]);
   const newName = result?.[0].trim();
   if (!newName || newName === cur) return;
@@ -331,12 +320,12 @@ async function renameEntry(relPath: string) {
       session.displayPath = info.path;
       session.savePath = session.readOnly ? null : info.path;
       updateTitle();
-      const rel = info.path.slice(session.folderRoot.length).replace(/^[\\/]/, "").replace(/\\/g, "/");
+      const rel = relativePathFromRoot(session.folderRoot, info.path);
       session.selectedRelPath = rel;
       sidebar.selectByRelPath(rel);
     }
   } catch (e) {
-    await ask(`名前を変更できませんでした:\n${e}`, { title: "PetaPad", kind: "error" });
+    await showError("名前を変更できませんでした", e);
   }
 }
 
@@ -344,7 +333,7 @@ async function revealInExplorer(path: string, isDir: boolean) {
   try {
     await api.revealInExplorer(path, isDir);
   } catch (e) {
-    await ask(`開けませんでした:\n${e}`, { title: "PetaPad", kind: "error" });
+    await showError("開けませんでした", e);
   }
 }
 
