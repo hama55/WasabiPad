@@ -94,3 +94,37 @@ pub fn save(nodes: &[Node]) -> io::Result<()> {
     serialize_into(nodes, 0, &mut out);
     std::fs::write(store_path(), out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serialize_parse_roundtrip_preserves_nested_tree() {
+        let nodes = vec![Node::Group {
+            name: "work".to_string(),
+            children: vec![
+                Node::File { name: "memo".to_string(), path: r"C:\work\memo.txt".to_string() },
+                Node::Directory { name: "src".to_string(), path: r"C:\work\src".to_string() },
+            ],
+        }];
+        let mut text = String::new();
+        serialize_into(&nodes, 0, &mut text);
+
+        let parsed = parse(&text);
+        let mut reparsed_text = String::new();
+        serialize_into(&parsed, 0, &mut reparsed_text);
+
+        assert_eq!(reparsed_text, text);
+    }
+
+    #[test]
+    fn legacy_link_record_is_still_loaded_as_file() {
+        let parsed = parse("l\tmemo\tC:\\missing\\memo.txt\n");
+        assert!(matches!(
+            parsed.as_slice(),
+            [Node::File { name, path }]
+                if name == "memo" && path == r"C:\missing\memo.txt"
+        ));
+    }
+}

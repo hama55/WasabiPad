@@ -5,7 +5,7 @@
 // 列の単位: IPC境界では Unicode スカラー(char)index、内部では UTF-8 バイト col。
 // 変換は to_byte / to_char が担う (グラフェムは非対応 = ネイティブ版と同じ割り切り)。
 use crate::buffer::{Pos, TextBuffer};
-use crate::fileio::{self, Encoding, Eol};
+use crate::fileio::{self, Encoding, EncodingId, Eol};
 use crate::undo::{Edit, UndoEntry, UndoStack};
 use crate::ziptext::Entry;
 use serde::Serialize;
@@ -15,12 +15,16 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+fn join_relative(root: &Path, relative: &str) -> PathBuf {
+    root.join(relative.replace('/', std::path::MAIN_SEPARATOR_STR))
+}
+
 pub struct Doc {
     buf: TextBuffer,
     undo: UndoStack,
-    pub enc: Encoding,
-    pub eol: Eol,
-    pub path: Option<PathBuf>,
+    enc: Encoding,
+    eol: Eol,
+    path: Option<PathBuf>,
     entries: Option<Vec<Entry>>, // ZIP/.xls の展開エントリ (閲覧専用)
     folder_root: Option<PathBuf>, // フォルダ閲覧中のルート絶対パス (新規作成/リネーム/子一覧取得の起点)
     view_only: bool, // アーカイブ閲覧・フォルダ選択前は編集不可
@@ -45,12 +49,19 @@ pub struct FolderEntry {
     pub is_dir: bool,
 }
 
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum DocKind {
+    Text,
+    Archive,
+}
+
 #[derive(Serialize)]
 pub struct DocInfo {
-    pub kind: String, // "text" | "archive"
+    pub kind: DocKind,
     pub line_count: usize,
-    pub enc: String,
-    pub eol: String,
+    pub enc: EncodingId,
+    pub eol: Eol,
     pub path: String,
     pub entries: Option<Vec<String>>, // archive(zip/xls) の閲覧専用エントリ名
     pub folder_entries: Option<Vec<FolderEntry>>, // フォルダ直下の子 (サブフォルダ含む、再帰しない)
@@ -120,40 +131,11 @@ struct ReplaceProgress {
     count: usize,
 }
 
-pub fn enc_to_str(e: Encoding) -> &'static str {
-    match e {
-        Encoding::Utf8 { bom: false } => "utf8",
-        Encoding::Utf8 { bom: true } => "utf8bom",
-        Encoding::ShiftJis => "sjis",
-        Encoding::Utf16Le => "utf16le",
-    }
-}
-
-pub fn str_to_enc(s: &str) -> Encoding {
-    match s {
-        "utf8bom" => Encoding::Utf8 { bom: true },
-        "sjis" => Encoding::ShiftJis,
-        "utf16le" => Encoding::Utf16Le,
-        _ => Encoding::Utf8 { bom: false },
-    }
-}
-
-pub fn eol_to_str(e: Eol) -> &'static str {
-    match e {
-        Eol::Crlf => "crlf",
-        Eol::Lf => "lf",
-    }
-}
-
-pub fn str_to_eol(s: &str) -> Eol {
-    if s == "lf" {
-        Eol::Lf
-    } else {
-        Eol::Crlf
-    }
-}
-
 impl Doc {
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
     pub fn empty() -> Doc {
         Doc {
             buf: TextBuffer::new(),
@@ -193,7 +175,7 @@ impl Doc {
         let dir = if rel_dir.is_empty() {
             root.to_path_buf()
         } else {
-            root.join(rel_dir.replace('/', &std::path::MAIN_SEPARATOR.to_string()))
+            join_relative(root, rel_dir)
         };
         let rd = std::fs::read_dir(&dir).ok()?;
         let mut items: Vec<FolderEntry> = rd
@@ -279,13 +261,13 @@ impl Doc {
             // "text" 扱い (folder_entries 側でツリーを組み立てる)。folder_root が無い場合のみ、
             // 直接開いたアーカイブ (またはその1エントリ表示中) を "archive" とする。
             kind: if self.folder_root.is_none() && (self.entries.is_some() || self.archive_path.is_some()) {
-                "archive".into()
+                DocKind::Archive
             } else {
-                "text".into()
+                DocKind::Text
             },
             line_count: self.buf.line_count(),
-            enc: enc_to_str(self.enc).into(),
-            eol: eol_to_str(self.eol).into(),
+            enc: self.enc.into(),
+            eol: self.eol,
             path,
             entries: self
                 .entries
@@ -331,11 +313,10 @@ impl Doc {
     pub fn select_entry(&mut self, rel_path: &str) -> Option<DocInfo> {
         if let Some(root) = self.folder_root.clone() {
             if let Some((archive_rel, entry_name)) = rel_path.split_once("::") {
-                let archive_real = root.join(archive_rel.replace('/', &std::path::MAIN_SEPARATOR.to_string()));
+                let archive_real = join_relative(&root, archive_rel);
                 let source_file = fileio::open_exclusive(&archive_real).ok()?;
                 let bytes = fileio::read_locked(&source_file).ok()?;
-                let text = crate::ziptext::decode_one(&bytes, entry_name)
-                    .or_else(|| crate::xlstext::decode_one(&bytes, entry_name))?;
+                let text = crate::archive::decode_one(&bytes, entry_name)?;
                 self.byte_len = text.len() as u64;
                 self.buf = TextBuffer::from_text(&text);
                 self.undo.clear();
@@ -344,7 +325,7 @@ impl Doc {
                 self.recovery_temp = None;
                 return Some(self.info(archive_real.to_string_lossy().into_owned()));
             }
-            let path = root.join(rel_path.replace('/', &std::path::MAIN_SEPARATOR.to_string()));
+            let path = join_relative(&root, rel_path);
             if self.path.as_deref() == Some(path.as_path()) {
                 return Some(self.info(path.to_string_lossy().into_owned()));
             }
@@ -357,8 +338,7 @@ impl Doc {
         }
         if let Some(archive_path) = self.archive_path.clone() {
             let bytes = fileio::read_locked(self.source_file.as_ref()?).ok()?;
-            let text = crate::ziptext::decode_one(&bytes, rel_path)
-                .or_else(|| crate::xlstext::decode_one(&bytes, rel_path))?;
+            let text = crate::archive::decode_one(&bytes, rel_path)?;
             self.byte_len = text.len() as u64;
             self.buf = TextBuffer::from_text(&text);
             self.undo.clear();
@@ -380,10 +360,10 @@ impl Doc {
         let bytes = if rel_path.is_empty() {
             fileio::read_locked(self.source_file.as_ref()?).ok()?
         } else {
-            let path = self.folder_root.as_ref()?.join(rel_path.replace('/', &std::path::MAIN_SEPARATOR.to_string()));
+            let path = join_relative(self.folder_root.as_ref()?, rel_path);
             std::fs::read(path).ok()?
         };
-        crate::ziptext::list_names(&bytes).or_else(|| crate::xlstext::list_sheet_names(&bytes))
+        crate::archive::list(&bytes)
     }
 
     // フォルダ内に空の新規ファイルを作り、その場で開く (サイドバーの「新規メモ作成」)。
@@ -394,7 +374,7 @@ impl Doc {
             .clone()
             .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "フォルダを開いていません"))?;
         let dir = match rel_dir {
-            Some(r) if !r.is_empty() => root.join(r.replace('/', &std::path::MAIN_SEPARATOR.to_string())),
+            Some(r) if !r.is_empty() => join_relative(&root, r),
             _ => root.clone(),
         };
         let path = dir.join(name);
@@ -417,7 +397,7 @@ impl Doc {
             .folder_root
             .clone()
             .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "フォルダを開いていません"))?;
-        let old_abs = root.join(rel_path.replace('/', &std::path::MAIN_SEPARATOR.to_string()));
+        let old_abs = join_relative(&root, rel_path);
         let parent = old_abs
             .parent()
             .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "不正なパスです"))?;
@@ -1158,6 +1138,41 @@ mod tests {
     }
 
     #[test]
+    fn replace_all_completion_is_one_undo_entry() {
+        let mut d = doc("foo a\nx\nfoo b\nfoo");
+        let result = loop {
+            let result = d.replace_all_chunk("foo", "bar", true, 1);
+            if result.done {
+                break result;
+            }
+        };
+
+        assert_eq!(result.count, 3);
+        assert_eq!(d.lines(0, 10), vec!["bar a", "x", "bar b", "bar"]);
+        d.undo().unwrap();
+        assert_eq!(d.lines(0, 10), vec!["foo a", "x", "foo b", "foo"]);
+        assert!(d.undo().is_none());
+        d.redo().unwrap();
+        assert_eq!(d.lines(0, 10), vec!["bar a", "x", "bar b", "bar"]);
+    }
+
+    #[test]
+    fn replace_all_cancel_commits_partial_work_as_one_undo_entry() {
+        let mut d = doc("foo\nfoo\nfoo");
+        let result = d.replace_all_chunk("foo", "bar", true, 1);
+        assert!(!result.done);
+        assert_eq!(result.count, 1);
+
+        d.replace_all_cancel();
+        assert_eq!(d.lines(0, 10), vec!["bar", "foo", "foo"]);
+        d.undo().unwrap();
+        assert_eq!(d.lines(0, 10), vec!["foo", "foo", "foo"]);
+        assert!(d.undo().is_none());
+        d.redo().unwrap();
+        assert_eq!(d.lines(0, 10), vec!["bar", "foo", "foo"]);
+    }
+
+    #[test]
     fn view_only_rejects_edit() {
         let mut d = doc("abc");
         d.view_only = true;
@@ -1214,7 +1229,7 @@ mod tests {
         let info2 = d.select_entry("b.txt").unwrap();
         assert!(File::open(root.join("a.txt")).is_ok(), "選択解除したファイルはロックを解放する");
         assert!(std::fs::OpenOptions::new().write(true).open(root.join("b.txt")).is_err(), "新しく選択したファイルを書き込み禁止にする");
-        assert_eq!(info2.kind, "text");
+        assert_eq!(info2.kind, DocKind::Text);
         assert!(!info2.view_only);
         assert!(info2.path.ends_with("b.txt"));
         assert_eq!(d.lines(0, 1), vec!["world"]);
@@ -1311,7 +1326,7 @@ mod tests {
         assert_eq!(names, vec!["memo.txt".to_string()]);
 
         let info = d.select_entry("memo.txt").unwrap();
-        assert_eq!(info.kind, "archive");
+        assert_eq!(info.kind, DocKind::Archive);
         assert_eq!(d.lines(0, 1), vec!["secret text"]);
 
         drop(d);
@@ -1345,7 +1360,7 @@ mod tests {
         let info = d.select_entry("data.zip::a.txt").unwrap();
         // フォルダ閲覧中は kind は "text" のまま (folder_entries でツリーを組み立てるため)。
         // 実際に編集不可であることは view_only で示す。
-        assert_eq!(info.kind, "text");
+        assert_eq!(info.kind, DocKind::Text);
         assert!(info.view_only);
         assert_eq!(d.lines(0, 1), vec!["ZIPCONTENT"]);
         assert!(d.folder_root.is_some(), "フォルダルートは選択後も維持される");

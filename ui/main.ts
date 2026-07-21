@@ -7,6 +7,7 @@ import { Sidebar, ContextTarget } from "./sidebar";
 import { FavBar } from "./favbar";
 import { showMenu, MenuItem } from "./menu";
 import { promptFields } from "./prompt";
+import { displayName, initialSession, sessionFromDocInfo } from "./session";
 
 const win = getCurrentWindow();
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -31,17 +32,11 @@ $("st-theme").addEventListener("click", () => {
 });
 
 // ---- アプリ状態 ----
-let filePath: string | null = null; // 保存先 (アーカイブ/フォルダ閲覧時は null)
-let viewOnly = false; // アーカイブ/フォルダ = 編集不可
-let dirty = false;
-let enc = "utf8";
-let eol = "crlf";
+let session = initialSession();
 let wrap = false;
-let folderRoot: string | null = null; // フォルダ閲覧中のルート絶対パス (アーカイブ閲覧時は null)
 let fontFamily = "Consolas, \"MS Gothic\", monospace";
 let fontSize = 14;
 let currentLine = 1;
-let currentLineCount = 1;
 
 const editorHost = $("editorhost");
 const sidebarEl = $("sidebar");
@@ -66,11 +61,11 @@ function applyFont() {
 const editor = new VirtualEditor(
   editorHost,
   (lineCount) => {
-    if (!dirty) {
-      dirty = true;
+    if (!session.dirty) {
+      session.dirty = true;
       updateTitle();
     }
-    currentLineCount = lineCount;
+    session.lineCount = lineCount;
     $("st-lines").textContent = `${lineCount.toLocaleString("ja-JP")} 行`;
   },
   (line, col) => {
@@ -105,10 +100,10 @@ $("st-wrap").addEventListener("click", () => {
 });
 $("st-pos").addEventListener("click", async () => {
   const result = await promptFields("指定行へ移動", [
-    { label: `行番号 (1〜${currentLineCount.toLocaleString("ja-JP")})`, value: String(currentLine) },
+    { label: `行番号 (1〜${session.lineCount.toLocaleString("ja-JP")})`, value: String(currentLine) },
   ]);
   const line = Number(result?.[0]);
-  if (Number.isInteger(line) && line >= 1 && line <= currentLineCount) editor.goTo(line - 1, 0);
+  if (Number.isInteger(line) && line >= 1 && line <= session.lineCount) editor.goTo(line - 1, 0);
 });
 $("st-lines").addEventListener("click", async () => {
   const ok = await ask("最後の行に移動しますか?", {
@@ -117,21 +112,20 @@ $("st-lines").addEventListener("click", async () => {
     okLabel: "移動",
     cancelLabel: "キャンセル",
   });
-  if (ok) editor.goTo(currentLineCount - 1, 0);
+  if (ok) editor.goTo(session.lineCount - 1, 0);
 });
-let sidebarSel = ""; // フォルダ選択中のキャンセル時に表示を戻すため
 const sidebar = new Sidebar(
   sidebarEl,
   async (relPath, newWindow) => {
     if (newWindow) {
-      if (folderRoot) await api.launchNew(relToAbs(relPath));
+      if (session.folderRoot) await api.launchNew(relToAbs(relPath));
       return;
     }
     if (!(await confirmDiscard())) {
-      sidebar.select(sidebarSel);
+      sidebar.select(session.selectedRelPath);
       return;
     }
-    sidebarSel = relPath;
+    session.selectedRelPath = relPath;
     const info = await api.selectEntry(relPath);
     applyDocInfo(info);
   },
@@ -141,7 +135,7 @@ const sidebar = new Sidebar(
   (pat, matchCase) => api.workspaceSearch(pat, matchCase),
   async (result) => {
     if (!(await confirmDiscard())) return;
-    sidebarSel = result.rel_path;
+    session.selectedRelPath = result.rel_path;
     const info = await api.selectEntry(result.rel_path);
     applyDocInfo(info);
     editor.goTo(result.line, result.col);
@@ -150,16 +144,11 @@ const sidebar = new Sidebar(
 const favbar = new FavBar(
   $("favbar"),
   (p, newWindow) => newWindow ? api.launchNew(p) : openFile(p),
-  () => addressbar.value.trim() || null
+  () => session.displayPath || null
 );
 
 function updateTitle() {
-  const name = filePath
-    ? filePath.replace(/\\/g, "/").split("/").pop()
-    : viewOnly
-      ? addressbar.value.replace(/\\/g, "/").split("/").pop()
-      : "無題";
-  const t = `${dirty ? "● " : ""}${name} — PetaPad`;
+  const t = `${session.dirty ? "● " : ""}${displayName(session)} — PetaPad`;
   $("titletext").textContent = t;
   win.setTitle(t);
 }
@@ -183,19 +172,13 @@ function formatSize(bytes: number): string {
 
 // アーカイブ選択後/フォルダのエントリ切替後で共通の状態反映
 function applyDocInfo(o: api.DocInfo) {
-  enc = o.enc;
-  eol = o.eol;
-  $<HTMLSelectElement>("st-enc").value = enc;
-  $<HTMLSelectElement>("st-eol").value = eol;
+  session = sessionFromDocInfo(session, o);
+  $<HTMLSelectElement>("st-enc").value = session.encoding;
+  $<HTMLSelectElement>("st-eol").value = session.eol;
   addressbar.value = o.path;
-  dirty = false;
-  viewOnly = o.view_only;
-  filePath = viewOnly ? null : o.path; // アーカイブは元ファイルを上書きで壊さないので null
-  folderRoot = o.folder_root;
   $("st-size").textContent = formatSize(o.byte_len);
   $("st-lines").textContent = `${o.line_count.toLocaleString("ja-JP")} 行`;
-  currentLineCount = o.line_count;
-  editor.open(o.line_count, viewOnly);
+  editor.open(o.line_count, session.readOnly);
   editor.focus();
   updateTitle();
 }
@@ -210,7 +193,7 @@ async function openFile(path: string) {
   setLoading(true);
   try {
     const o = await api.openPath(path);
-    sidebarSel = "";
+    session.selectedRelPath = "";
     if (o.kind === "archive") {
       setSidebar(true, "閲覧モード");
       sidebar.setWorkspaceSearch(false);
@@ -239,18 +222,12 @@ async function openFile(path: string) {
 async function newFile() {
   if (!(await confirmDiscard())) return;
   await api.newDoc();
-  filePath = null;
-  viewOnly = false;
-  dirty = false;
-  folderRoot = null;
-  enc = "utf8";
-  eol = "crlf";
-  $<HTMLSelectElement>("st-enc").value = enc;
-  $<HTMLSelectElement>("st-eol").value = eol;
+  session = initialSession();
+  $<HTMLSelectElement>("st-enc").value = session.encoding;
+  $<HTMLSelectElement>("st-eol").value = session.eol;
   addressbar.value = "";
   $("st-size").textContent = "";
   $("st-lines").textContent = "1 行";
-  currentLineCount = 1;
   setSidebar(false);
   sidebar.setWorkspaceSearch(false);
   editor.open(1, false);
@@ -261,20 +238,21 @@ async function newFile() {
 async function saveAs(): Promise<boolean> {
   const p = await saveDialog({
     filters: [{ name: "テキスト", extensions: ["txt"] }, { name: "すべて", extensions: ["*"] }],
-    defaultPath: filePath ?? undefined,
+    defaultPath: session.savePath ?? undefined,
   });
   if (!p) return false;
-  filePath = p;
+  session.savePath = p;
+  session.displayPath = p;
   addressbar.value = p;
   return doSave();
 }
 
 async function doSave(): Promise<boolean> {
-  if (viewOnly) return false;
-  if (!filePath) return saveAs();
+  if (session.readOnly) return false;
+  if (!session.savePath) return saveAs();
   try {
-    await api.saveFile(filePath, enc, eol);
-    dirty = false;
+    await api.saveFile(session.savePath, session.encoding, session.eol);
+    session.dirty = false;
     updateTitle();
     return true;
   } catch (e) {
@@ -284,7 +262,7 @@ async function doSave(): Promise<boolean> {
 }
 
 async function confirmDiscard(): Promise<boolean> {
-  if (!dirty || viewOnly) return true;
+  if (!session.dirty || session.readOnly) return true;
   return ask("変更が保存されていません。破棄しますか?", {
     title: "PetaPad",
     kind: "warning",
@@ -300,18 +278,18 @@ async function pickAndOpen(directory: boolean) {
 
 // ---- フォルダビューの右クリックメニュー (新規メモ作成・名前を変更・エクスプローラで開く) ----
 function relToAbs(relPath: string): string {
-  return `${folderRoot}\\${relPath.replace(/\//g, "\\")}`;
+  return `${session.folderRoot}\\${relPath.replace(/\//g, "\\")}`;
 }
 
 function sidebarContextMenu(x: number, y: number, target: ContextTarget | null) {
-  if (!folderRoot) return; // アーカイブ閲覧中はファイル操作の対象がない
+  if (!session.folderRoot) return; // アーカイブ閲覧中はファイル操作の対象がない
   const items: MenuItem[] = [];
   if (target) {
     items.push({ label: "名前を変更...", action: () => renameEntry(target.relPath) });
   }
   const createDir = target ? (target.isDir ? target.relPath : dirNameOf(target.relPath)) : null;
   items.push({ label: "新規メモ作成...", action: () => createNote(createDir) });
-  const revealPath = target ? relToAbs(target.relPath) : folderRoot;
+  const revealPath = target ? relToAbs(target.relPath) : session.folderRoot;
   const revealIsDir = target ? target.isDir : true;
   items.push({ label: "エクスプローラで開く", action: () => revealInExplorer(revealPath, revealIsDir) });
   showMenu(x, y, items);
@@ -330,7 +308,7 @@ async function createNote(dir: string | null) {
   try {
     const info = await api.createNote(dir, name);
     const rel = dir ? `${dir}/${name}` : name;
-    sidebarSel = rel;
+    session.selectedRelPath = rel;
     setSidebar(true, "");
     sidebar.setEntries(info.folder_entries ?? []);
     sidebar.selectByRelPath(rel);
@@ -348,12 +326,13 @@ async function renameEntry(relPath: string) {
   try {
     const info = await api.renameEntry(relPath, newName);
     sidebar.setEntries(info.folder_entries ?? []);
-    if (info.path && folderRoot) {
+    if (info.path && session.folderRoot) {
       addressbar.value = info.path;
-      filePath = viewOnly ? null : info.path;
+      session.displayPath = info.path;
+      session.savePath = session.readOnly ? null : info.path;
       updateTitle();
-      const rel = info.path.slice(folderRoot.length).replace(/^[\\/]/, "").replace(/\\/g, "/");
-      sidebarSel = rel;
+      const rel = info.path.slice(session.folderRoot.length).replace(/^[\\/]/, "").replace(/\\/g, "/");
+      session.selectedRelPath = rel;
       sidebar.selectByRelPath(rel);
     }
   } catch (e) {
@@ -408,12 +387,12 @@ $("menu-view").addEventListener("click", (e) => {
 });
 
 $<HTMLSelectElement>("st-enc").addEventListener("change", (e) => {
-  enc = (e.target as HTMLSelectElement).value;
-  if (!viewOnly) { dirty = true; updateTitle(); }
+  session.encoding = (e.target as HTMLSelectElement).value as api.Encoding;
+  if (!session.readOnly) { session.dirty = true; updateTitle(); }
 });
 $<HTMLSelectElement>("st-eol").addEventListener("change", (e) => {
-  eol = (e.target as HTMLSelectElement).value;
-  if (!viewOnly) { dirty = true; updateTitle(); }
+  session.eol = (e.target as HTMLSelectElement).value as api.Eol;
+  if (!session.readOnly) { session.dirty = true; updateTitle(); }
 });
 
 addressbar.addEventListener("keydown", (e) => {

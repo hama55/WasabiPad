@@ -6,11 +6,14 @@ export interface Pos {
   col: number;
 }
 
+export type Encoding = "utf8" | "utf8bom" | "sjis" | "utf16le";
+export type Eol = "crlf" | "lf";
+
 export interface DocInfo {
   kind: "text" | "archive";
   line_count: number;
-  enc: string;
-  eol: string;
+  enc: Encoding;
+  eol: Eol;
   path: string;
   entries: string[] | null; // ZIP/.xls の閲覧専用エントリ名
   folder_entries: FolderEntry[] | null; // フォルダ直下の子
@@ -133,10 +136,10 @@ export const replaceAllChunk = (pat: string, rep: string, matchCase: boolean, bu
 // 進行中の全置換を打ち切り、ここまでの変更を1つの undo エントリとして確定する
 export const replaceAllCancel = () => invoke<EditResult>("replace_all_cancel");
 
-export const saveFile = (path: string, enc: string, eol: string) =>
+export const saveFile = (path: string, enc: Encoding, eol: Eol) =>
   invoke<void>("save_file", { path, enc, eol });
-export const setEncoding = (enc: string) => invoke<void>("set_encoding", { enc });
-export const setEol = (eol: string) => invoke<void>("set_eol", { eol });
+export const setEncoding = (enc: Encoding) => invoke<void>("set_encoding", { enc });
+export const setEol = (eol: Eol) => invoke<void>("set_eol", { eol });
 
 export const loadBookmarks = () => invoke<BmNode[]>("load_bookmarks");
 export const saveBookmarks = (nodes: BmNode[]) => invoke<void>("save_bookmarks", { nodes });

@@ -4,9 +4,10 @@
 
 use petapad_core::bookmarks;
 use petapad_core::doc::{
-    str_to_enc, str_to_eol, Doc, DocInfo, EditResult, FindCursor, FindOutcome, FindResult,
-    FolderEntry, PosC, ReplaceChunkResult, WorkspaceSearchResult,
+    Doc, DocInfo, EditResult, FindCursor, FindOutcome, FindResult, FolderEntry, PosC,
+    ReplaceChunkResult, WorkspaceSearchResult,
 };
+use petapad_core::fileio::{EncodingId, Eol};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Mutex;
@@ -23,8 +24,7 @@ fn open_path(path: String, state: State) -> Result<DocInfo, String> {
     let d = Doc::open(&PathBuf::from(&path)).map_err(|e| e.to_string())?;
     // フォルダを開いた場合 d.path は先頭の実ファイルを指す (フォルダ自体は保存先を持たない)
     let info_path = d
-        .path
-        .as_ref()
+        .path()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or(path);
     let info = d.info(info_path);
@@ -209,25 +209,23 @@ fn replace_all_cancel(state: State) -> EditResult {
 }
 
 #[tauri::command]
-fn save_file(path: String, enc: String, eol: String, state: State) -> Result<(), String> {
-    let e = str_to_enc(&enc);
-    let nl = str_to_eol(&eol);
+fn save_file(path: String, enc: EncodingId, eol: Eol, state: State) -> Result<(), String> {
     state
         .lock()
         .unwrap()
         .0
-        .save(&PathBuf::from(path), e, nl)
+        .save(&PathBuf::from(path), enc.into(), eol)
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn set_encoding(enc: String, state: State) {
-    state.lock().unwrap().0.set_enc(str_to_enc(&enc));
+fn set_encoding(enc: EncodingId, state: State) {
+    state.lock().unwrap().0.set_enc(enc.into());
 }
 
 #[tauri::command]
-fn set_eol(eol: String, state: State) {
-    state.lock().unwrap().0.set_eol(str_to_eol(&eol));
+fn set_eol(eol: Eol, state: State) {
+    state.lock().unwrap().0.set_eol(eol);
 }
 
 #[tauri::command]

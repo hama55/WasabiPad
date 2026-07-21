@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "check:ipc": "node scripts/check-ipc-contract.mjs",
+    "check:config": "node scripts/check-config.mjs",
+    "build": "npm run check:config && npm run check:ipc && tsc --noEmit && vite build",
     "tauri": "tauri"
   },
   "dependencies": {

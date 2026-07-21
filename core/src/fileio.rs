@@ -3,6 +3,7 @@
 use crate::buffer::{Store, TextBuffer};
 use crate::hugebuf::HugeBuf;
 use encoding_rs::SHIFT_JIS;
+use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
@@ -29,7 +30,42 @@ impl Encoding {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum EncodingId {
+    #[serde(rename = "utf8")]
+    Utf8,
+    #[serde(rename = "utf8bom")]
+    Utf8Bom,
+    #[serde(rename = "sjis")]
+    ShiftJis,
+    #[serde(rename = "utf16le")]
+    Utf16Le,
+}
+
+impl From<Encoding> for EncodingId {
+    fn from(value: Encoding) -> Self {
+        match value {
+            Encoding::Utf8 { bom: false } => Self::Utf8,
+            Encoding::Utf8 { bom: true } => Self::Utf8Bom,
+            Encoding::ShiftJis => Self::ShiftJis,
+            Encoding::Utf16Le => Self::Utf16Le,
+        }
+    }
+}
+
+impl From<EncodingId> for Encoding {
+    fn from(value: EncodingId) -> Self {
+        match value {
+            EncodingId::Utf8 => Self::Utf8 { bom: false },
+            EncodingId::Utf8Bom => Self::Utf8 { bom: true },
+            EncodingId::ShiftJis => Self::ShiftJis,
+            EncodingId::Utf16Le => Self::Utf16Le,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Eol {
     Crlf,
     Lf,
@@ -93,8 +129,7 @@ pub fn is_archive_handle(file: &File) -> bool {
     if f.take(8).read_to_end(&mut head).is_err() {
         return false;
     }
-    head.starts_with(b"PK\x03\x04")
-        || head.starts_with(&[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1])
+    crate::archive::has_container_signature(&head)
 }
 
 // 実ファイル1つを開く。フォルダの展開は doc.rs (Doc::open) の責務。
@@ -106,7 +141,7 @@ pub fn open_buffer(path: &Path) -> io::Result<Opened> {
     if is_archive {
         // ZIP (xlsx/docx/zip) と CFB (.xls) はフォルダビューで開く
         let bytes = read_locked(&source_file)?;
-        if let Some(v) = crate::ziptext::parse(&bytes).or_else(|| crate::xlstext::parse(&bytes)) {
+        if let Some(v) = crate::archive::parse(&bytes) {
             return Ok(opened_from_entries(v, source_file));
         }
         // シグネチャはあるが解析不能 → 通常テキストとして扱う
@@ -155,12 +190,37 @@ fn decode(bytes: &[u8]) -> (String, Encoding) {
     }
 }
 
-fn detect_eol(text: &str) -> Eol {
-    match text.find('\n') {
-        Some(i) if i > 0 && text.as_bytes()[i - 1] == b'\r' => Eol::Crlf,
-        Some(_) => Eol::Lf,
-        None => Eol::Crlf, // 既定
+pub(crate) fn detect_mmap_format(bytes: &[u8]) -> Option<(Encoding, usize, Eol)> {
+    if bytes.starts_with(&[0xFF, 0xFE]) {
+        return None;
     }
+    let (enc, bom) = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        (Encoding::Utf8 { bom: true }, 3)
+    } else if valid_utf8_prefix(bytes) {
+        (Encoding::Utf8 { bom: false }, 0)
+    } else {
+        (Encoding::ShiftJis, 0)
+    };
+    Some((enc, bom, detect_eol_bytes(bytes)))
+}
+
+fn valid_utf8_prefix(bytes: &[u8]) -> bool {
+    match std::str::from_utf8(bytes) {
+        Ok(_) => true,
+        Err(error) => error.error_len().is_none() && bytes.len() - error.valid_up_to() < 4,
+    }
+}
+
+fn detect_eol_bytes(bytes: &[u8]) -> Eol {
+    match memchr::memchr(b'\n', bytes) {
+        Some(i) if i > 0 && bytes[i - 1] == b'\r' => Eol::Crlf,
+        Some(_) => Eol::Lf,
+        None => Eol::Crlf,
+    }
+}
+
+fn detect_eol(text: &str) -> Eol {
+    detect_eol_bytes(text.as_bytes())
 }
 
 fn encode_str<'a>(enc: Encoding, s: &'a str) -> Cow<'a, [u8]> {
@@ -255,6 +315,14 @@ fn write_stream<W: Write>(w: &mut W, buf: &TextBuffer, enc: Encoding, eol: Eol) 
 mod tests {
     use super::*;
 
+    fn unique_temp_path(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "petapad_{label}_{}_{}.txt",
+            std::process::id(),
+            TEMP_SEQ.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
     fn assert_exclusive_until_drop(path: &Path, opened: Opened) {
         assert!(File::open(path).is_ok(), "読み取り専用アクセスは許可するはず");
         assert!(OpenOptions::new().write(true).open(path).is_err(), "書き込みを拒否するはず");
@@ -320,5 +388,38 @@ mod tests {
         let o = open_buffer(&path).unwrap();
         assert!(!o.buf.is_huge());
         assert_exclusive_until_drop(&path, o);
+    }
+
+    #[test]
+    fn mmap_and_ram_buffers_apply_edits_identically() {
+        let mut original = (0..4100).map(|i| i.to_string()).collect::<Vec<_>>().join("\n");
+        original.replace_range(
+            original.match_indices('\n').nth(4095).unwrap().0 + 1
+                ..original.match_indices('\n').nth(4096).unwrap().0,
+            "日本語",
+        );
+        let path = unique_temp_path("buffer_equivalence");
+        std::fs::write(&path, &original).unwrap();
+        let opened = open_buffer(&path).unwrap();
+        let Opened { mut buf, source_file, .. } = opened;
+        let mut ram = TextBuffer::from_text(&original);
+
+        let insert_at = crate::buffer::Pos { line: 4096, col: "日".len() };
+        let huge_end = buf.insert(insert_at, "X\nY");
+        let ram_end = ram.insert(insert_at, "X\nY");
+        assert_eq!(huge_end, ram_end);
+
+        let delete_from = crate::buffer::Pos { line: 4094, col: 1 };
+        let delete_to = crate::buffer::Pos { line: 4098, col: 1 };
+        assert_eq!(buf.range_text(delete_from, delete_to), ram.range_text(delete_from, delete_to));
+        assert_eq!(buf.delete(delete_from, delete_to), ram.delete(delete_from, delete_to));
+        assert_eq!(buf.line_count(), ram.line_count());
+        for line in 0..buf.line_count() {
+            assert_eq!(buf.line(line), ram.line(line));
+        }
+
+        drop(buf);
+        drop(source_file);
+        std::fs::remove_file(path).unwrap();
     }
 }

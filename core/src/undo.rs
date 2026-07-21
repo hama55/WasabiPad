@@ -95,3 +95,52 @@ impl UndoStack {
         Some((caret, touched))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn insert_entry(pos: Pos, text: &str, caret_after: Pos) -> UndoEntry {
+        UndoEntry {
+            edits: vec![Edit::Insert { pos, text: text.to_string() }],
+            caret_before: pos,
+            caret_after,
+        }
+    }
+
+    #[test]
+    fn consecutive_typing_is_one_undo_entry() {
+        let mut buf = TextBuffer::new();
+        let mut undo = UndoStack::new();
+
+        let first = Pos { line: 0, col: 0 };
+        let second = buf.insert(first, "a");
+        undo.push(insert_entry(first, "a", second), true);
+        let end = buf.insert(second, "b");
+        undo.push(insert_entry(second, "b", end), true);
+
+        assert_eq!(buf.line(0), "ab");
+        assert_eq!(undo.undo(&mut buf).map(|v| v.0), Some(first));
+        assert_eq!(buf.line(0), "");
+        assert!(undo.undo(&mut buf).is_none());
+        assert_eq!(undo.redo(&mut buf).map(|v| v.0), Some(end));
+        assert_eq!(buf.line(0), "ab");
+    }
+
+    #[test]
+    fn new_edit_discards_redo_history() {
+        let mut buf = TextBuffer::new();
+        let mut undo = UndoStack::new();
+
+        let start = Pos { line: 0, col: 0 };
+        let end = buf.insert(start, "old");
+        undo.push(insert_entry(start, "old", end), false);
+        undo.undo(&mut buf).unwrap();
+
+        let replacement_end = buf.insert(start, "new");
+        undo.push(insert_entry(start, "new", replacement_end), false);
+
+        assert!(undo.redo(&mut buf).is_none());
+        assert_eq!(buf.line(0), "new");
+    }
+}

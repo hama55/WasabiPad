@@ -23,7 +23,6 @@ struct Mapping {
     ptr: *const u8,
     len: usize,
 }
-
 impl Mapping {
     fn open(file: std::fs::File, len: u64) -> io::Result<Mapping> {
         unsafe {
@@ -89,20 +88,8 @@ impl HugeBuf {
         let head_len = len.min(1024 * 1024) as usize;
         let mut head = vec![0u8; head_len];
         file.read_exact(&mut head)?;
-        if head.starts_with(&[0xFF, 0xFE]) {
+        let Some((enc, bom, eol)) = crate::fileio::detect_mmap_format(&head) else {
             return Ok(None);
-        }
-        let (enc, bom) = if head.starts_with(&[0xEF, 0xBB, 0xBF]) {
-            (Encoding::Utf8 { bom: true }, 3usize)
-        } else if valid_utf8_prefix(&head) {
-            (Encoding::Utf8 { bom: false }, 0)
-        } else {
-            (Encoding::ShiftJis, 0)
-        };
-        let eol = match memchr::memchr(b'\n', &head) {
-            Some(i) if i > 0 && head[i - 1] == b'\r' => Eol::Crlf,
-            Some(_) => Eol::Lf,
-            None => Eol::Crlf,
         };
 
         // 行インデックス走査: CHUNK 行ごとのチェックポイントだけ保持
@@ -362,13 +349,5 @@ impl HugeBuf {
             }
         }
         out
-    }
-}
-
-// 途中で切れたマルチバイト列を許容する UTF-8 判定
-fn valid_utf8_prefix(b: &[u8]) -> bool {
-    match std::str::from_utf8(b) {
-        Ok(_) => true,
-        Err(e) => e.error_len().is_none() && b.len() - e.valid_up_to() < 4,
     }
 }
