@@ -12,8 +12,6 @@ use serde::Serialize;
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 
 fn join_relative(root: &Path, relative: &str) -> PathBuf {
     root.join(relative.replace('/', std::path::MAIN_SEPARATOR_STR))
@@ -1012,7 +1010,7 @@ fn find_chunk(
     }
 }
 
-fn find_in_line(line: &str, pat: &str, from: usize, match_case: bool) -> Option<usize> {
+pub(crate) fn find_in_line(line: &str, pat: &str, from: usize, match_case: bool) -> Option<usize> {
     if from > line.len() {
         return None;
     }
@@ -1059,111 +1057,10 @@ fn find_ascii_case_insensitive(line: &str, pat: &str, from: usize) -> Option<usi
     None
 }
 
-pub fn search_workspace(root: &Path, pat: &str, match_case: bool) -> Vec<WorkspaceSearchResult> {
-    const MAX_FILE_SIZE: u64 = 16 * 1024 * 1024;
-    const MAX_FILES: usize = 20_000;
-    const MAX_RESULTS: usize = 200;
-    if pat.is_empty() {
-        return Vec::new();
-    }
-
-    let mut files = Vec::new();
-    collect_search_files(root, root, &mut files, MAX_FILES, MAX_FILE_SIZE);
-    let files = Arc::new(files);
-    let next = AtomicUsize::new(0);
-    let results = Mutex::new(Vec::new());
-    let workers = std::thread::available_parallelism().map_or(1, |n| n.get()).min(4);
-
-    std::thread::scope(|scope| {
-        for _ in 0..workers {
-            scope.spawn(|| loop {
-                if results.lock().unwrap().len() >= MAX_RESULTS {
-                    return;
-                }
-                let index = next.fetch_add(1, Ordering::Relaxed);
-                let Some(path) = files.get(index) else { return };
-                let rel_path = path
-                    .strip_prefix(root)
-                    .unwrap_or(path)
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if find_in_line(file_name, pat, 0, match_case).is_some() {
-                    let mut out = results.lock().unwrap();
-                    if out.len() < MAX_RESULTS {
-                        out.push((0, WorkspaceSearchResult {
-                            rel_path: rel_path.clone(),
-                            line: 0,
-                            col: 0,
-                            preview: format!("ファイル名: {file_name}"),
-                        }));
-                    }
-                }
-                let Ok(bytes) = std::fs::read(path) else { continue };
-                if bytes.contains(&0) {
-                    continue;
-                }
-                let text = decode_search_text(&bytes);
-                for (line, text) in text.lines().enumerate() {
-                    let Some(col) = find_in_line(text, pat, 0, match_case) else { continue };
-                    let mut out = results.lock().unwrap();
-                    if out.len() >= MAX_RESULTS {
-                        return;
-                    }
-                    out.push((1, WorkspaceSearchResult {
-                        rel_path: rel_path.clone(),
-                        line,
-                        col: text[..col].chars().count(),
-                        preview: text.trim().chars().take(180).collect(),
-                    }));
-                }
-            });
-        }
-    });
-
-    let mut out = results.into_inner().unwrap();
-    out.sort_by(|a, b| (a.0, &a.1.rel_path, a.1.line, a.1.col).cmp(&(b.0, &b.1.rel_path, b.1.line, b.1.col)));
-    out.into_iter().map(|(_, result)| result).collect()
-}
-
-fn collect_search_files(dir: &Path, root: &Path, files: &mut Vec<PathBuf>, max_files: usize, max_file_size: u64) {
-    if files.len() >= max_files {
-        return;
-    }
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
-    for entry in entries.flatten() {
-        if files.len() >= max_files {
-            return;
-        }
-        let path = entry.path();
-        let Ok(kind) = entry.file_type() else { continue };
-        if kind.is_dir() {
-            if path != root && matches!(entry.file_name().to_str(), Some(".git" | "node_modules" | "target")) {
-                continue;
-            }
-            collect_search_files(&path, root, files, max_files, max_file_size);
-        } else if kind.is_file() && entry.metadata().map_or(false, |m| m.len() <= max_file_size) {
-            files.push(path);
-        }
-    }
-}
-
-fn decode_search_text(bytes: &[u8]) -> String {
-    if bytes.starts_with(&[0xFF, 0xFE]) {
-        return encoding_rs::UTF_16LE.decode(&bytes[2..]).0.into_owned();
-    }
-    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        return String::from_utf8_lossy(&bytes[3..]).into_owned();
-    }
-    match std::str::from_utf8(bytes) {
-        Ok(text) => text.to_owned(),
-        Err(_) => encoding_rs::SHIFT_JIS.decode(bytes).0.into_owned(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workspace_search::search_workspace;
 
     fn doc(t: &str) -> Doc {
         Doc {
