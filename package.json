@@ -8,7 +8,8 @@
     "check:ipc": "node scripts/check-ipc-contract.mjs",
     "check:config": "node scripts/check-config.mjs",
     "sync:version": "node scripts/sync-version.mjs",
-    "build": "npm run check:config && npm run check:ipc && tsc --noEmit && vite build",
+    "test": "vitest run",
+    "build": "npm test && npm run check:config && npm run check:ipc && tsc --noEmit && vite build",
     "tauri": "tauri"
   },
   "dependencies": {
@@ -18,6 +19,7 @@
   "devDependencies": {
     "@tauri-apps/cli": "^2",
     "typescript": "^5",
-    "vite": "^6"
+    "vite": "^6",
+    "vitest": "^4.1.10"
   }
 }
