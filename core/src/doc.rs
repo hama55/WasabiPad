@@ -24,15 +24,9 @@ pub struct Doc {
     undo: UndoStack,
     enc: Encoding,
     eol: Eol,
-    path: Option<PathBuf>,
-    entries: Option<Vec<Entry>>, // ZIP/.xls の展開エントリ (閲覧専用)
-    folder_root: Option<PathBuf>, // フォルダ閲覧中のルート絶対パス (新規作成/リネーム/子一覧取得の起点)
-    view_only: bool, // アーカイブ閲覧・フォルダ選択前は編集不可
+    source: DocumentSource,
     replace_progress: Option<ReplaceProgress>, // 全置換のチャンク間進行状態
     byte_len: u64, // ステータスバー表示用。開いた実体のバイト数
-    archive_path: Option<PathBuf>, // フォルダ非経由で直接開いた zip/xlsx/xls 自身 (未展開)
-    source_file: Option<File>, // 現在表示中の実ファイルを読み取り共有・書き込み拒否で保持
-    recovery_temp: Option<RecoveryTemp>, // 保存差し替え失敗時に編集内容を保持する backing file
 }
 
 struct RecoveryTemp(PathBuf);
@@ -54,6 +48,132 @@ pub struct FolderEntry {
 pub enum DocKind {
     Text,
     Archive,
+}
+
+enum DocumentSource {
+    Untitled { recovery_temp: Option<RecoveryTemp> },
+    File {
+        path: PathBuf,
+        source_file: Option<File>,
+        recovery_temp: Option<RecoveryTemp>,
+    },
+    Folder { root: PathBuf, selected: FolderSelection },
+    Archive {
+        path: PathBuf,
+        source_file: File,
+        entries: Option<Vec<Entry>>,
+    },
+}
+
+enum FolderSelection {
+    None,
+    File {
+        path: PathBuf,
+        source_file: Option<File>,
+        recovery_temp: Option<RecoveryTemp>,
+    },
+    Archive {
+        path: PathBuf,
+        source_file: File,
+        entries: Option<Vec<Entry>>,
+    },
+}
+
+impl DocumentSource {
+    fn path(&self) -> Option<&Path> {
+        match self {
+            Self::File { path, .. } => Some(path),
+            Self::Folder { selected: FolderSelection::File { path, .. }, .. } => Some(path),
+            _ => None,
+        }
+    }
+
+    fn folder_root(&self) -> Option<&Path> {
+        match self {
+            Self::Folder { root, .. } => Some(root),
+            _ => None,
+        }
+    }
+
+    fn entries(&self) -> Option<&[Entry]> {
+        match self {
+            Self::Archive { entries: Some(entries), .. }
+            | Self::Folder { selected: FolderSelection::Archive { entries: Some(entries), .. }, .. } => {
+                Some(entries)
+            }
+            _ => None,
+        }
+    }
+
+    fn is_view_only(&self) -> bool {
+        !matches!(
+            self,
+            Self::Untitled { .. }
+                | Self::File { .. }
+                | Self::Folder { selected: FolderSelection::File { .. }, .. }
+        )
+    }
+
+    fn kind(&self) -> DocKind {
+        if matches!(self, Self::Archive { .. }) {
+            DocKind::Archive
+        } else {
+            DocKind::Text
+        }
+    }
+
+    fn display_path(&self) -> Option<&Path> {
+        match self {
+            Self::File { path, .. } | Self::Archive { path, .. } => Some(path),
+            Self::Folder { selected: FolderSelection::File { path, .. }, .. }
+            | Self::Folder { selected: FolderSelection::Archive { path, .. }, .. } => Some(path),
+            _ => None,
+        }
+    }
+
+    fn take_recovery(&mut self) -> Option<RecoveryTemp> {
+        match self {
+            Self::Untitled { recovery_temp }
+            | Self::File { recovery_temp, .. }
+            | Self::Folder {
+                selected: FolderSelection::File { recovery_temp, .. }, ..
+            } => recovery_temp.take(),
+            _ => None,
+        }
+    }
+
+    fn set_recovery(&mut self, recovery: RecoveryTemp) {
+        match self {
+            Self::Untitled { recovery_temp }
+            | Self::File { recovery_temp, .. }
+            | Self::Folder {
+                selected: FolderSelection::File { recovery_temp, .. }, ..
+            } => *recovery_temp = Some(recovery),
+            _ => {}
+        }
+    }
+
+    fn set_source_file(&mut self, source: Option<File>) {
+        match self {
+            Self::File { source_file, .. }
+            | Self::Folder { selected: FolderSelection::File { source_file, .. }, .. } => {
+                *source_file = source
+            }
+            _ => {}
+        }
+    }
+}
+
+fn into_folder_selection(source: DocumentSource) -> Option<FolderSelection> {
+    match source {
+        DocumentSource::File { path, source_file, recovery_temp } => {
+            Some(FolderSelection::File { path, source_file, recovery_temp })
+        }
+        DocumentSource::Archive { path, source_file, entries } => {
+            Some(FolderSelection::Archive { path, source_file, entries })
+        }
+        _ => None,
+    }
 }
 
 #[derive(Serialize)]
@@ -133,7 +253,7 @@ struct ReplaceProgress {
 
 impl Doc {
     pub fn path(&self) -> Option<&Path> {
-        self.path.as_deref()
+        self.source.path()
     }
 
     pub fn empty() -> Doc {
@@ -142,15 +262,9 @@ impl Doc {
             undo: UndoStack::new(),
             enc: Encoding::Utf8 { bom: false },
             eol: Eol::Crlf,
-            path: None,
-            entries: None,
-            folder_root: None,
-            view_only: false,
+            source: DocumentSource::Untitled { recovery_temp: None },
             replace_progress: None,
             byte_len: 0,
-            archive_path: None,
-            source_file: None,
-            recovery_temp: None,
         }
     }
 
@@ -160,10 +274,12 @@ impl Doc {
     // ZIP/.xls/単一ファイルは open_file へ委譲。
     pub fn open(path: &Path) -> io::Result<Doc> {
         if path.is_dir() {
-            let mut d = Doc::empty();
-            d.folder_root = Some(path.to_path_buf());
-            d.view_only = true; // まだ何も選択されていないので編集不可
-            return Ok(d);
+            let mut doc = Doc::empty();
+            doc.source = DocumentSource::Folder {
+                root: path.to_path_buf(),
+                selected: FolderSelection::None,
+            };
+            return Ok(doc);
         }
         Doc::open_file(path)
     }
@@ -192,11 +308,11 @@ impl Doc {
 
     // ツリーの展開ボタン用の公開API。
     pub fn list_folder_entries(&self, rel_dir: &str) -> Option<Vec<FolderEntry>> {
-        Self::list_folder_children(self.folder_root.as_ref()?, rel_dir)
+        Self::list_folder_children(self.source.folder_root()?, rel_dir)
     }
 
     pub fn workspace_root(&self) -> Option<PathBuf> {
-        self.folder_root.clone()
+        self.source.folder_root().map(Path::to_path_buf)
     }
 
     // zip/xlsx/xls は拡張子で判定し、中身は読まないまま「未展開」状態で開く。
@@ -219,39 +335,39 @@ impl Doc {
                 undo: UndoStack::new(),
                 enc: Encoding::Utf8 { bom: false },
                 eol: Eol::Lf,
-                path: None, // アーカイブは元ファイルを壊さないよう保存先を持たない
-                entries: None,
-                folder_root: None,
-                view_only: true,
+                source: DocumentSource::Archive {
+                    path: path.to_path_buf(),
+                    source_file,
+                    entries: None,
+                },
                 replace_progress: None,
                 byte_len,
-                archive_path: Some(path.to_path_buf()),
-                    source_file: Some(source_file),
-                    recovery_temp: None,
                 });
             }
         }
 
         let o = fileio::open_buffer(path)?;
-        let view_only = o.entries.is_some();
+        let source = if let Some(entries) = o.entries {
+            DocumentSource::Archive {
+                path: path.to_path_buf(),
+                source_file: o.source_file,
+                entries: Some(entries),
+            }
+        } else {
+            DocumentSource::File {
+                path: path.to_path_buf(),
+                source_file: Some(o.source_file),
+                recovery_temp: None,
+            }
+        };
         Ok(Doc {
             buf: o.buf,
             undo: UndoStack::new(),
             enc: o.enc,
             eol: o.eol,
-            path: if view_only {
-                None // アーカイブは元ファイルを壊さないよう保存先を持たない
-            } else {
-                Some(path.to_path_buf())
-            },
-            entries: o.entries,
-            folder_root: None,
-            view_only,
+            source,
             replace_progress: None,
             byte_len: o.byte_len,
-            archive_path: None,
-            source_file: Some(o.source_file),
-            recovery_temp: None,
         })
     }
 
@@ -260,29 +376,19 @@ impl Doc {
             // フォルダ閲覧中はどの子ファイル (アーカイブ内エントリ含む) を表示していても
             // "text" 扱い (folder_entries 側でツリーを組み立てる)。folder_root が無い場合のみ、
             // 直接開いたアーカイブ (またはその1エントリ表示中) を "archive" とする。
-            kind: if self.folder_root.is_none() && (self.entries.is_some() || self.archive_path.is_some()) {
-                DocKind::Archive
-            } else {
-                DocKind::Text
-            },
+            kind: self.source.kind(),
             line_count: self.buf.line_count(),
             enc: self.enc.into(),
             eol: self.eol,
             path,
-            entries: self
-                .entries
-                .as_ref()
-                .map(|v| v.iter().map(|e| e.name.clone()).collect()),
+            entries: self.source.entries().map(|v| v.iter().map(|e| e.name.clone()).collect()),
             // ルート直下だけを毎回安価に取り直す (再帰しない読み取り専用の read_dir 1回分)
             folder_entries: self
-                .folder_root
-                .as_ref()
+                .source
+                .folder_root()
                 .and_then(|root| Self::list_folder_children(root, "")),
-            folder_root: self
-                .folder_root
-                .as_ref()
-                .map(|p| p.to_string_lossy().into_owned()),
-            view_only: self.view_only,
+            folder_root: self.source.folder_root().map(|p| p.to_string_lossy().into_owned()),
+            view_only: self.source.is_view_only(),
             byte_len: self.byte_len,
         }
     }
@@ -311,7 +417,7 @@ impl Doc {
     // - 直接開いた (フォルダ非経由) zip/xlsx/xls の1エントリ ("Sheet1"): エントリ名そのもの
     // - 従来の一括展開済みアーカイブ (上記以外の拡張子。docx 等): entries をエントリ名で検索
     pub fn select_entry(&mut self, rel_path: &str) -> Option<DocInfo> {
-        if let Some(root) = self.folder_root.clone() {
+        if let Some(root) = self.source.folder_root().map(Path::to_path_buf) {
             if let Some((archive_rel, entry_name)) = rel_path.split_once("::") {
                 let archive_real = join_relative(&root, archive_rel);
                 let source_file = fileio::open_exclusive(&archive_real).ok()?;
@@ -320,37 +426,44 @@ impl Doc {
                 self.byte_len = text.len() as u64;
                 self.buf = TextBuffer::from_text(&text);
                 self.undo.clear();
-                self.view_only = true;
-                self.source_file = Some(source_file);
-                self.recovery_temp = None;
+                self.source = DocumentSource::Folder {
+                    root,
+                    selected: FolderSelection::Archive {
+                        path: archive_real.clone(),
+                        source_file,
+                        entries: None,
+                    },
+                };
                 return Some(self.info(archive_real.to_string_lossy().into_owned()));
             }
             let path = join_relative(&root, rel_path);
-            if self.path.as_deref() == Some(path.as_path()) {
+            if self.source.path() == Some(path.as_path()) {
                 return Some(self.info(path.to_string_lossy().into_owned()));
             }
             let mut d = Doc::open_file(&path).ok()?;
             let path_str = path.to_string_lossy().into_owned();
-            d.folder_root = Some(root);
+            let selected = into_folder_selection(d.source)?;
+            d.source = DocumentSource::Folder { root, selected };
             let info = d.info(path_str);
             *self = d;
             return Some(info);
         }
-        if let Some(archive_path) = self.archive_path.clone() {
-            let bytes = fileio::read_locked(self.source_file.as_ref()?).ok()?;
-            let text = crate::archive::decode_one(&bytes, rel_path)?;
-            self.byte_len = text.len() as u64;
-            self.buf = TextBuffer::from_text(&text);
-            self.undo.clear();
-            self.view_only = true;
-            return Some(self.info(archive_path.to_string_lossy().into_owned()));
-        }
-        let text = self.entries.as_ref()?.iter().find(|e| e.name == rel_path)?.text.clone();
+        let (archive_path, text) = match &self.source {
+            DocumentSource::Archive { path, source_file, entries } => {
+                let text = if let Some(entries) = entries {
+                    entries.iter().find(|entry| entry.name == rel_path)?.text.clone()
+                } else {
+                    let bytes = fileio::read_locked(source_file).ok()?;
+                    crate::archive::decode_one(&bytes, rel_path)?
+                };
+                (path.to_string_lossy().into_owned(), text)
+            }
+            _ => return None,
+        };
         self.byte_len = text.len() as u64;
         self.buf = TextBuffer::from_text(&text);
         self.undo.clear();
-        self.view_only = true;
-        Some(self.info(String::new()))
+        Some(self.info(archive_path))
     }
 
     // ツリーの展開ボタン用。zip/xlsx/xls の中身 (エントリ名一覧) だけを安価に取得する
@@ -358,9 +471,16 @@ impl Doc {
     // それ以外はフォルダ内の実ファイル (zip/xlsx/xls) の相対パス。
     pub fn list_archive_entries(&self, rel_path: &str) -> Option<Vec<String>> {
         let bytes = if rel_path.is_empty() {
-            fileio::read_locked(self.source_file.as_ref()?).ok()?
+            let source_file = match &self.source {
+                DocumentSource::Archive { source_file, .. }
+                | DocumentSource::Folder {
+                    selected: FolderSelection::Archive { source_file, .. }, ..
+                } => source_file,
+                _ => return None,
+            };
+            fileio::read_locked(source_file).ok()?
         } else {
-            let path = join_relative(self.folder_root.as_ref()?, rel_path);
+            let path = join_relative(self.source.folder_root()?, rel_path);
             std::fs::read(path).ok()?
         };
         crate::archive::list(&bytes)
@@ -370,8 +490,9 @@ impl Doc {
     // rel_dir はフォルダルートからの相対パス(サブフォルダ見出しを右クリックした場合)。
     pub fn create_note(&mut self, rel_dir: Option<&str>, name: &str) -> io::Result<DocInfo> {
         let root = self
-            .folder_root
-            .clone()
+            .source
+            .folder_root()
+            .map(Path::to_path_buf)
             .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "フォルダを開いていません"))?;
         let dir = match rel_dir {
             Some(r) if !r.is_empty() => join_relative(&root, r),
@@ -383,7 +504,9 @@ impl Doc {
         }
         std::fs::write(&path, b"")?;
         let mut d = Doc::open_file(&path)?;
-        d.folder_root = Some(root);
+        let selected = into_folder_selection(d.source)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "作成した文書を開けません"))?;
+        d.source = DocumentSource::Folder { root, selected };
         let path_str = path.to_string_lossy().into_owned();
         let info = d.info(path_str);
         *self = d;
@@ -394,8 +517,9 @@ impl Doc {
     // その配下がリネーム対象なら、パス表記だけを追従させる (バッファは開き直さない)。
     pub fn rename_entry(&mut self, rel_path: &str, new_name: &str) -> io::Result<DocInfo> {
         let root = self
-            .folder_root
-            .clone()
+            .source
+            .folder_root()
+            .map(Path::to_path_buf)
             .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "フォルダを開いていません"))?;
         let old_abs = join_relative(&root, rel_path);
         let parent = old_abs
@@ -403,16 +527,21 @@ impl Doc {
             .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "不正なパスです"))?;
         let new_abs = parent.join(new_name);
         std::fs::rename(&old_abs, &new_abs)?;
-        if let Some(cur) = self.path.clone() {
-            if let Ok(rest) = cur.strip_prefix(&old_abs) {
-                self.path = Some(if rest.as_os_str().is_empty() { new_abs.clone() } else { new_abs.join(rest) });
+        if let DocumentSource::Folder { selected, .. } = &mut self.source {
+            let current = match selected {
+                FolderSelection::File { path, .. } | FolderSelection::Archive { path, .. } => path,
+                FolderSelection::None => return Ok(self.info(String::new())),
+            };
+            if let Ok(rest) = current.strip_prefix(&old_abs) {
+                *current = if rest.as_os_str().is_empty() {
+                    new_abs.clone()
+                } else {
+                    new_abs.join(rest)
+                };
             }
         }
-        let path_str = self
-            .path
-            .as_ref()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_default();
+        let path_str = self.source.display_path()
+            .map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
         Ok(self.info(path_str))
     }
 
@@ -426,7 +555,7 @@ impl Doc {
         text: &str,
         coalesce: bool,
     ) -> EditResult {
-        if self.view_only {
+        if self.source.is_view_only() {
             return EditResult {
                 caret: caret_before,
                 line_count: self.buf.line_count(),
@@ -539,7 +668,7 @@ impl Doc {
         match_case: bool,
         budget: usize,
     ) -> ReplaceChunkResult {
-        if self.view_only || pat.is_empty() {
+        if self.source.is_view_only() || pat.is_empty() {
             return ReplaceChunkResult {
                 done: true,
                 count: 0,
@@ -629,32 +758,45 @@ impl Doc {
 
     // 保存。tempへ全量書出し後、排他とmmapを短時間だけ解放して差し替え、即座に再取得する。
     pub fn save(&mut self, path: &Path, enc: Encoding, eol: Eol) -> io::Result<()> {
+        if self.source.is_view_only() {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "閲覧専用文書は保存できません"));
+        }
         let tmp = fileio::save_buffer(path, &self.buf, enc, eol)?;
-        let same_target = self.path.as_deref() == Some(path);
-        let old_recovery = self.recovery_temp.take();
+        let same_target = self.source.path() == Some(path);
+        let workspace_root = self.source.folder_root().map(Path::to_path_buf);
+        let old_recovery = self.source.take_recovery();
         self.buf = TextBuffer::new();
         if same_target {
-            self.source_file = None;
+            self.source.set_source_file(None);
         }
         if let Err(rename_error) = std::fs::rename(&tmp, path) {
             // 差し替えに失敗しても、書き出し済みtempから編集中内容を復元する。
             let recovered = fileio::open_buffer(&tmp)?;
             self.buf = recovered.buf;
             if same_target {
-                self.source_file = fileio::open_exclusive(path).ok();
+                self.source.set_source_file(fileio::open_exclusive(path).ok());
             }
             drop(old_recovery);
-            self.recovery_temp = Some(RecoveryTemp(tmp));
+            self.source.set_recovery(RecoveryTemp(tmp));
             return Err(rename_error);
         }
-        self.source_file = None;
         let o = fileio::open_buffer(path)?;
         self.buf = o.buf;
-        self.source_file = Some(o.source_file);
         drop(old_recovery);
         self.enc = enc;
         self.eol = eol;
-        self.path = Some(path.to_path_buf());
+        let selected = FolderSelection::File {
+            path: path.to_path_buf(),
+            source_file: Some(o.source_file),
+            recovery_temp: None,
+        };
+        self.source = if let Some(root) = workspace_root {
+            DocumentSource::Folder { root, selected }
+        } else if let FolderSelection::File { path, source_file, recovery_temp } = selected {
+            DocumentSource::File { path, source_file, recovery_temp }
+        } else {
+            unreachable!()
+        };
         self.undo.break_coalescing();
         Ok(())
     }
@@ -1028,15 +1170,9 @@ mod tests {
             undo: UndoStack::new(),
             enc: Encoding::Utf8 { bom: false },
             eol: Eol::Lf,
-            path: None,
-            entries: None,
-            folder_root: None,
-            view_only: false,
+            source: DocumentSource::Untitled { recovery_temp: None },
             replace_progress: None,
             byte_len: 0,
-            archive_path: None,
-            source_file: None,
-            recovery_temp: None,
         }
     }
     fn p(line: usize, col: usize) -> PosC {
@@ -1175,9 +1311,35 @@ mod tests {
     #[test]
     fn view_only_rejects_edit() {
         let mut d = doc("abc");
-        d.view_only = true;
+        d.source = DocumentSource::Folder {
+            root: PathBuf::new(),
+            selected: FolderSelection::None,
+        };
         d.edit(p(0, 0), p(0, 0), p(0, 0), "X", false);
         assert_eq!(d.lines(0, 1), vec!["abc"]);
+    }
+
+    #[test]
+    fn document_source_derives_kind_and_editability() {
+        let untitled = DocumentSource::Untitled { recovery_temp: None };
+        assert!(!untitled.is_view_only());
+        assert_eq!(untitled.kind(), DocKind::Text);
+
+        let file = DocumentSource::File {
+            path: PathBuf::from("memo.txt"),
+            source_file: None,
+            recovery_temp: None,
+        };
+        assert!(!file.is_view_only());
+        assert_eq!(file.path(), Some(Path::new("memo.txt")));
+
+        let folder = DocumentSource::Folder {
+            root: PathBuf::from("workspace"),
+            selected: FolderSelection::None,
+        };
+        assert!(folder.is_view_only());
+        assert_eq!(folder.kind(), DocKind::Text);
+        assert_eq!(folder.folder_root(), Some(Path::new("workspace")));
     }
 
     #[test]
@@ -1205,7 +1367,7 @@ mod tests {
 
         let mut d = Doc::open(&root).unwrap();
         assert!(File::open(root.join("a.txt")).is_ok(), "フォルダ一覧だけでは子ファイルをロックしない");
-        assert!(d.view_only, "何も選択されていない間は編集不可");
+        assert!(d.source.is_view_only(), "何も選択されていない間は編集不可");
         assert_eq!(d.lines(0, 1), vec![""], "フォルダを開いた直後は何も表示しない");
 
         let root_children = d.list_folder_entries("").unwrap();
@@ -1218,7 +1380,7 @@ mod tests {
         assert!(std::fs::OpenOptions::new().write(true).open(root.join("a.txt")).is_err(), "選択した実ファイルだけを書き込み禁止にする");
         assert!(!info.view_only, "フォルダの子ファイルは編集可能なはず");
         assert_eq!(d.lines(0, 1), vec!["hello"]);
-        assert!(d.path.as_ref().unwrap().ends_with("a.txt"));
+        assert!(d.path().unwrap().ends_with("a.txt"));
 
         // 編集して保存できる (実ファイルとして扱われている)
         let r = d.edit(p(0, 5), p(0, 5), p(0, 5), "!", false);
@@ -1233,7 +1395,7 @@ mod tests {
         assert!(!info2.view_only);
         assert!(info2.path.ends_with("b.txt"));
         assert_eq!(d.lines(0, 1), vec!["world"]);
-        assert!(d.folder_root.is_some(), "フォルダルートは切替後も保持される");
+        assert!(d.workspace_root().is_some(), "フォルダルートは切替後も保持される");
 
         drop(d); // 選択中ファイルの排他を解放してからfixtureを削除
         std::fs::remove_dir_all(&root).unwrap();
@@ -1318,9 +1480,9 @@ mod tests {
 
         let mut d = Doc::open(&zpath).unwrap();
         assert!(std::fs::OpenOptions::new().write(true).open(&zpath).is_err(), "直接開いたアーカイブを書き込み禁止にする");
-        assert!(d.view_only);
+        assert!(d.source.is_view_only());
         assert_eq!(d.lines(0, 1), vec![""], "展開前は中身が空のはず");
-        assert!(d.folder_root.is_none());
+        assert!(d.workspace_root().is_none());
 
         let names = d.list_archive_entries("").unwrap();
         assert_eq!(names, vec!["memo.txt".to_string()]);
@@ -1328,6 +1490,11 @@ mod tests {
         let info = d.select_entry("memo.txt").unwrap();
         assert_eq!(info.kind, DocKind::Archive);
         assert_eq!(d.lines(0, 1), vec!["secret text"]);
+        let save_target = root.join("must-not-save.txt");
+        let error = d.save(&save_target, Encoding::Utf8 { bom: false }, Eol::Lf).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(d.lines(0, 1), vec!["secret text"]);
+        assert!(!save_target.exists());
 
         drop(d);
         std::fs::remove_dir_all(&root).unwrap();
@@ -1348,7 +1515,7 @@ mod tests {
 
         let mut d = Doc::open(&root).unwrap();
         assert_eq!(d.lines(0, 1), vec![""], "フォルダを開いた直後は何も選択されていない");
-        assert!(d.view_only);
+        assert!(d.source.is_view_only());
 
         let root_children = d.list_folder_entries("").unwrap();
         let names: Vec<&str> = root_children.iter().map(|e| e.name.as_str()).collect();
@@ -1363,7 +1530,7 @@ mod tests {
         assert_eq!(info.kind, DocKind::Text);
         assert!(info.view_only);
         assert_eq!(d.lines(0, 1), vec!["ZIPCONTENT"]);
-        assert!(d.folder_root.is_some(), "フォルダルートは選択後も維持される");
+        assert!(d.workspace_root().is_some(), "フォルダルートは選択後も維持される");
 
         drop(d);
         std::fs::remove_dir_all(&root).unwrap();
