@@ -19,6 +19,6 @@ jobs:
           components: rustfmt, clippy
       - run: npm ci
       - run: npm run build
-      - run: cargo test --manifest-path core/Cargo.toml
-      - run: cargo clippy --manifest-path core/Cargo.toml --all-targets
-      - run: cargo check --manifest-path src-tauri/Cargo.toml
+      - run: cargo test --workspace --locked
+      - run: cargo clippy --workspace --all-targets --locked
+      - run: cargo check --workspace --locked

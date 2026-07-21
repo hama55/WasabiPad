@@ -1,7 +1,7 @@
 [package]
 name = "petapad-core"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 
 # UI非依存のコア: 文書モデル(mmap/overlay) + 編集 + 検索 + 保存。
 # Tauriバックエンドとネイティブアプリの両方から共有される。

@@ -1,7 +1,9 @@
 node_modules
 dist
+/target
+# workspace移行前のローカルbuild cache
+core/target
 src-tauri/target
 src-tauri/gen
-core/target
 .claude/
 release/

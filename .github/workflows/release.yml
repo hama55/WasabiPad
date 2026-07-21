@@ -30,8 +30,8 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force release | Out-Null
-          Copy-Item src-tauri/target/release/petapad.exe release/petapad.exe
-          Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe |
+          Copy-Item target/release/petapad.exe release/petapad.exe
+          Get-ChildItem target/release/bundle/nsis/*-setup.exe |
             Copy-Item -Destination release
 
       - name: Publish release

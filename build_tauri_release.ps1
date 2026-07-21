@@ -11,11 +11,11 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $outputDir = Join-Path $PSScriptRoot "release"
 New-Item -ItemType Directory -Force $outputDir | Out-Null
 
-$builtExe = Join-Path $PSScriptRoot "src-tauri\target\release\petapad.exe"
+$builtExe = Join-Path $PSScriptRoot "target\release\petapad.exe"
 $exe = Join-Path $outputDir "petapad.exe"
 Copy-Item $builtExe $exe -Force
 
-$installer = Get-ChildItem (Join-Path $PSScriptRoot "src-tauri\target\release\bundle\nsis\*.exe") |
+$installer = Get-ChildItem (Join-Path $PSScriptRoot "target\release\bundle\nsis\*.exe") |
     Sort-Object LastWriteTime -Descending |
     Select-Object -First 1
 
