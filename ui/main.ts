@@ -18,6 +18,7 @@ import {
 } from "./format";
 import { basename, dirname, joinWindowsRoot, relativePathFromRoot } from "./path";
 import { createCommandRegistry, globalCommandForEvent, CommandId } from "./commands";
+import { DEFAULT_EDITOR_CONFIG } from "./editor-config";
 
 const win = getCurrentWindow();
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -44,8 +45,8 @@ $("st-theme").addEventListener("click", () => {
 // ---- アプリ状態 ----
 let session = initialSession();
 let wrap = false;
-let fontFamily = "Consolas, \"MS Gothic\", monospace";
-let fontSize = 14;
+let fontFamily = DEFAULT_EDITOR_CONFIG.fontFamily;
+let fontSize = DEFAULT_EDITOR_CONFIG.fontSize;
 let currentLine = 1;
 
 const editorHost = $("editorhost");

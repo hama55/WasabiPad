@@ -179,12 +179,9 @@ body {
 .ve {
   position: relative;
   background: var(--bg-editor);
-  --line-h: 20px;
-  --ve-font: 14px;
-  --ve-font-family: var(--font-mono);
 }
 .ve-gutter {
-  position: absolute; left: 0; top: 0; bottom: 0; width: 60px;
+  position: absolute; left: 0; top: 0; bottom: 0; width: var(--gutter-w);
   overflow: hidden; background: var(--bg-editor);
   z-index: 2; border-right: 1px solid var(--border-strong);
 }
@@ -196,7 +193,7 @@ body {
 }
 .ve-gnum.cur { color: var(--fg); }
 .ve-scroll {
-  position: absolute; left: 60px; right: 0; top: 0; bottom: 0;
+  position: absolute; left: var(--gutter-w); right: 0; top: 0; bottom: 0;
   overflow: auto; overflow-anchor: none; outline: none;
 }
 .ve-inner { position: relative; min-height: 100%; }
@@ -204,7 +201,7 @@ body {
   position: absolute; left: 0; height: var(--line-h);
   line-height: var(--line-h); font-size: var(--ve-font);
   font-family: var(--ve-font-family); white-space: pre;
-  color: var(--editor-fg); padding-left: 8px; tab-size: 8;
+  color: var(--editor-fg); padding-left: var(--ve-pad-left); tab-size: 8;
   user-select: none;
 }
 .ve-scroll.wrap { overflow-x: hidden; }

@@ -1,9 +1,9 @@
 import * as api from "./api";
 import type { Pos } from "./api";
 import { FindBar } from "./findbar";
+import { DEFAULT_EDITOR_CONFIG, EditorConfig } from "./editor-config";
 import { showMenu, type MenuItem } from "./menu";
 
-const PAD_L = 8; // 行テキストの左パディング
 const CHUNK = 512; // 行取得のバックエンド往復単位
 const CACHE_MAX = 64;
 const OVERSCAN = 8;
@@ -147,9 +147,12 @@ export class VirtualEditor {
   private pending = new Set<number>();
   private raf = 0;
   private maxWidth = 0;
-  private fontFamily = "Consolas, \"MS Gothic\", monospace";
-  private fontSize = 14;
-  private lineHeight = 20;
+  private fontFamily: string;
+  private fontSize: number;
+  private lineHeight: number;
+  private readonly lineHeightExtra: number;
+  private readonly paddingLeft: number;
+  private readonly gutterWidth: number;
   private wrap = false;
   private wrapRows = new WrapRows();
   private scaleMode = false; // 行数×行高が MAX_SAFE_HEIGHT を超える巨大文書
@@ -181,12 +184,24 @@ export class VirtualEditor {
     host: HTMLElement,
     onDocChange: (lineCount: number) => void,
     onCursor: (line: number, col: number) => void,
-    onFontChange: (fontFamily: string, fontSize: number) => void
+    onFontChange: (fontFamily: string, fontSize: number) => void,
+    config: EditorConfig = DEFAULT_EDITOR_CONFIG
   ) {
     this.onDocChange = onDocChange;
     this.onCursor = onCursor;
     this.onFontChange = onFontChange;
+    this.fontFamily = config.fontFamily;
+    this.fontSize = config.fontSize;
+    this.lineHeightExtra = config.lineHeightExtra;
+    this.lineHeight = config.fontSize + config.lineHeightExtra;
+    this.paddingLeft = config.paddingLeft;
+    this.gutterWidth = config.gutterWidth;
     host.classList.add("ve");
+    host.style.setProperty("--ve-font-family", this.fontFamily);
+    host.style.setProperty("--ve-font", `${this.fontSize}px`);
+    host.style.setProperty("--line-h", `${this.lineHeight}px`);
+    host.style.setProperty("--ve-pad-left", `${this.paddingLeft}px`);
+    host.style.setProperty("--gutter-w", `${this.gutterWidth}px`);
 
     this.gutter = el("div", "ve-gutter");
     this.scroll = el("div", "ve-scroll");
@@ -308,7 +323,7 @@ export class VirtualEditor {
     const wasAtBottom = topLine >= this.maxTopLine();
     this.fontFamily = fontFamily;
     this.fontSize = Math.max(8, Math.min(72, fontSize));
-    this.lineHeight = this.fontSize + 6;
+    this.lineHeight = this.fontSize + this.lineHeightExtra;
     this.scroll.parentElement!.style.setProperty("--ve-font-family", this.fontFamily);
     this.scroll.parentElement!.style.setProperty("--ve-font", `${this.fontSize}px`);
     this.scroll.parentElement!.style.setProperty("--line-h", `${this.lineHeight}px`);
@@ -543,24 +558,23 @@ export class VirtualEditor {
     if (!context) return;
     context.font = style.font;
     const numberWidth = context.measureText(this.formatLineNumber(this.lineCount)).width;
-    const w = Math.max(48, Math.ceil(numberWidth + 24));
-    this.gutter.style.width = `${w}px`;
-    this.scroll.style.left = `${w}px`;
+    const w = Math.max(this.gutterWidth, Math.ceil(numberWidth + 24));
+    this.scroll.parentElement!.style.setProperty("--gutter-w", `${w}px`);
   }
 
   private formatLineNumber(line: number) {
     return String(line).replace(/\B(?=(\d{3})+(?!\d))/g, "\u200a");
   }
 
-  // 指定行内の col(char) の x ピクセル (行左端 PAD_L 基準)
+  // 指定行内の col(char) の x ピクセル (行左端padding基準)
   private colToX(lineEl: HTMLElement, s: string, col: number): number {
     const node = lineEl.firstChild;
-    if (!node || node.nodeType !== Node.TEXT_NODE) return PAD_L;
+    if (!node || node.nodeType !== Node.TEXT_NODE) return this.paddingLeft;
     const u = charToU16(s, col);
     const r = document.createRange();
     r.setStart(node, 0);
     r.setEnd(node, Math.min(u, (node.textContent ?? "").length));
-    return PAD_L + r.getBoundingClientRect().width;
+    return this.paddingLeft + r.getBoundingClientRect().width;
   }
 
   private lineElem(i: number): HTMLElement | null {
@@ -575,12 +589,12 @@ export class VirtualEditor {
       // 超えてスクロール範囲自体が変わる。入力フォーカスだけ表示領域内で維持する。
       this.caretEl.classList.remove("on");
       this.input.style.top = `${this.viewTop}px`;
-      this.input.style.left = `${this.scroll.scrollLeft + PAD_L}px`;
+      this.input.style.left = `${this.scroll.scrollLeft + this.paddingLeft}px`;
       return;
     }
     this.caretEl.classList.toggle("on", document.activeElement === this.input);
     const point = lineEl && this.wrap ? this.wrapPoint(lineEl, s, this.caret.col) : null;
-    const x = point?.x ?? (lineEl ? this.colToX(lineEl, s, this.caret.col) : PAD_L);
+    const x = point?.x ?? (lineEl ? this.colToX(lineEl, s, this.caret.col) : this.paddingLeft);
     const y = point?.y ?? this.rowTop(this.caret.line);
     this.caretEl.style.top = `${y}px`;
     this.caretEl.style.left = `${x}px`;
@@ -631,8 +645,8 @@ export class VirtualEditor {
       const lineEl = this.lineElem(i);
       const c0 = i === s.line ? s.col : 0;
       const c1 = i === e.line ? e.col : charLen(str);
-      const x0 = lineEl ? this.colToX(lineEl, str, c0) : PAD_L;
-      let x1 = lineEl ? this.colToX(lineEl, str, c1) : PAD_L;
+      const x0 = lineEl ? this.colToX(lineEl, str, c0) : this.paddingLeft;
+      let x1 = lineEl ? this.colToX(lineEl, str, c1) : this.paddingLeft;
       if (i < e.line) x1 += 6; // 行末(改行)まで選択している見た目
       const box = el("div", "ve-sel");
       box.style.top = `${this.rowTop(i)}px`;
@@ -702,7 +716,7 @@ export class VirtualEditor {
       const x = this.colToX(lineEl, s, this.caret.col);
       const sl = this.scroll.scrollLeft;
       const w = this.scroll.clientWidth;
-      if (x < sl + PAD_L) this.scroll.scrollLeft = Math.max(0, x - PAD_L);
+      if (x < sl + this.paddingLeft) this.scroll.scrollLeft = Math.max(0, x - this.paddingLeft);
       else if (x > sl + w - 20) this.scroll.scrollLeft = x - w + 20;
     }
   }
@@ -771,7 +785,7 @@ export class VirtualEditor {
     if (this.goalX === null) {
       const s = this.lineText(c.line) ?? "";
       const lineEl = this.lineElem(c.line);
-      this.goalX = lineEl ? this.colToX(lineEl, s, c.col) - PAD_L : 0;
+      this.goalX = lineEl ? this.colToX(lineEl, s, c.col) - this.paddingLeft : 0;
     }
     // 目標 x に最も近い列へ (行が描画済みでなければ列を長さで近似)
     await this.ensureLine(targetLine);
@@ -779,18 +793,18 @@ export class VirtualEditor {
     const s = this.lineText(targetLine) ?? "";
     const lineEl = this.lineElem(targetLine);
     let col = charLen(s);
-    if (lineEl) col = this.xToCol(lineEl, s, PAD_L + this.goalX);
+    if (lineEl) col = this.xToCol(lineEl, s, this.paddingLeft + this.goalX);
     this.moveTo({ line: targetLine, col }, extend, true);
   }
 
-  // xピクセル -> col(char)。caretRangeFromPoint はPAD_L付近の境界で行の
+  // xピクセル -> col(char)。caretRangeFromPoint はpadding付近の境界で行の
   // テキストノードでなく親要素にヒットすることがあり、その場合 col が行末に
   // 化けて誤ったジャンプを起こす(長い行の先頭付近をドラッグすると全選択に
   // 化けて画面が末尾まで飛ぶ不具合の原因だった)。colToX(単調増加)の逆写像を
   // 2分探索で求めることで、ヒットテストに頼らず正確な col を得る。
   private xToCol(lineEl: HTMLElement, s: string, x: number): number {
     const len = charLen(s);
-    if (len === 0 || x <= PAD_L) return 0;
+    if (len === 0 || x <= this.paddingLeft) return 0;
     let lo = 0;
     let hi = len;
     while (lo < hi) {
