@@ -3,6 +3,15 @@ import type { Pos } from "./api";
 import { FindBar } from "./findbar";
 import { DEFAULT_EDITOR_CONFIG, EditorConfig } from "./editor-config";
 import { showMenu, type MenuItem } from "./menu";
+import {
+  charClass,
+  charLen,
+  charToU16,
+  comparePos as cmp,
+  findProgressPercent,
+  u16ToChar,
+  unescapePattern,
+} from "./editor-math";
 
 const CHUNK = 512; // 行取得のバックエンド往復単位
 const CACHE_MAX = 64;
@@ -65,69 +74,11 @@ class WrapRows {
   }
 }
 
-// char index <-> UTF-16 offset (行文字列内)。backend は char 単位、DOM は UTF-16。
-function charToU16(s: string, charIdx: number): number {
-  let u = 0;
-  let c = 0;
-  for (const ch of s) {
-    if (c === charIdx) return u;
-    u += ch.length;
-    c++;
-  }
-  return s.length;
-}
-function charLen(s: string): number {
-  let c = 0;
-  for (const _ of s) c++;
-  return c;
-}
-function u16ToChar(s: string, offset: number): number {
-  let u = 0;
-  let c = 0;
-  for (const ch of s) {
-    if (u >= offset) break;
-    u += ch.length;
-    c++;
-  }
-  return c;
-}
-// 検索/置換欄の \n \t \\ を実際の改行・タブ・バックスラッシュへ解釈する (他のバックスラッシュ列はそのまま)
-function unescapePattern(s: string): string {
-  let out = "";
-  for (let i = 0; i < s.length; i++) {
-    if (s[i] === "\\" && i + 1 < s.length) {
-      const next = s[i + 1];
-      if (next === "n") { out += "\n"; i++; continue; }
-      if (next === "t") { out += "\t"; i++; continue; }
-      if (next === "\\") { out += "\\"; i++; continue; }
-    }
-    out += s[i];
-  }
-  return out;
-}
 
-// チャンク分割検索の進捗率。開始行(from)から末尾まで進み、そこで折り返して
-// from行手前まで進む1周分(総行数)を分母とする概算値。
-function findProgressPercent(cursor: api.FindCursor, fromLine: number, totalLines: number): number {
-  if (totalLines <= 0) return 100;
-  const scanned = cursor.wrapped ? totalLines - fromLine + cursor.line : cursor.line - fromLine;
-  return Math.min(99, Math.max(0, Math.round((scanned / totalLines) * 100)));
-}
-
-function cmp(a: Pos, b: Pos): number {
-  return a.line !== b.line ? a.line - b.line : a.col - b.col;
-}
-// 単語移動用の文字クラス: 0=空白 / 1=語(英数・非ASCII) / 2=記号
-function charClass(ch: string): number {
-  if (ch === " " || ch === "\t") return 0;
-  const code = ch.codePointAt(0)!;
-  const isWord =
-    (code >= 48 && code <= 57) ||
-    (code >= 65 && code <= 90) ||
-    (code >= 97 && code <= 122) ||
-    code === 95 ||
-    code > 127;
-  return isWord ? 1 : 2;
+export interface EditorPorts {
+  onDocChange: (lineCount: number) => void;
+  onCursor: (line: number, col: number) => void;
+  onFontChange: (fontFamily: string, fontSize: number) => void;
 }
 
 // 全ファイル共通の仮想スクロールエディタ。文書は backend(mmap/overlay)が所有し、
@@ -182,14 +133,12 @@ export class VirtualEditor {
 
   constructor(
     host: HTMLElement,
-    onDocChange: (lineCount: number) => void,
-    onCursor: (line: number, col: number) => void,
-    onFontChange: (fontFamily: string, fontSize: number) => void,
+    ports: EditorPorts,
     config: EditorConfig = DEFAULT_EDITOR_CONFIG
   ) {
-    this.onDocChange = onDocChange;
-    this.onCursor = onCursor;
-    this.onFontChange = onFontChange;
+    this.onDocChange = ports.onDocChange;
+    this.onCursor = ports.onCursor;
+    this.onFontChange = ports.onFontChange;
     this.fontFamily = config.fontFamily;
     this.fontSize = config.fontSize;
     this.lineHeightExtra = config.lineHeightExtra;

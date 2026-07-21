@@ -71,7 +71,8 @@ function applyFont() {
 
 const editor = new VirtualEditor(
   editorHost,
-  (lineCount) => {
+  {
+  onDocChange: (lineCount) => {
     if (!session.dirty) {
       session.dirty = true;
       updateTitle();
@@ -79,14 +80,15 @@ const editor = new VirtualEditor(
     session.lineCount = lineCount;
     $("st-lines").textContent = formatLineCount(lineCount);
   },
-  (line, col) => {
+  onCursor: (line, col) => {
     currentLine = line;
     $("st-pos").textContent = formatCursor(line, col);
   },
-  (family, size) => {
+  onFontChange: (family, size) => {
     fontFamily = family;
     fontSize = size;
     updateFontStatus();
+  },
   }
 );
 applyFont();
