@@ -223,12 +223,16 @@ fn detect_eol(text: &str) -> Eol {
     detect_eol_bytes(text.as_bytes())
 }
 
-fn encode_str<'a>(enc: Encoding, s: &'a str) -> Cow<'a, [u8]> {
-    match enc {
+fn encode_str<'a>(enc: Encoding, s: &'a str) -> io::Result<Cow<'a, [u8]>> {
+    Ok(match enc {
         Encoding::Utf8 { .. } => Cow::Borrowed(s.as_bytes()),
-        Encoding::ShiftJis => match SHIFT_JIS.encode(s).0 {
-            Cow::Borrowed(b) => Cow::Borrowed(b),
-            Cow::Owned(v) => Cow::Owned(v),
+        Encoding::ShiftJis => match SHIFT_JIS.encode(s) {
+            (_, _, true) => return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Shift-JISで表現できない文字が含まれています",
+            )),
+            (Cow::Borrowed(b), _, false) => Cow::Borrowed(b),
+            (Cow::Owned(v), _, false) => Cow::Owned(v),
         },
         Encoding::Utf16Le => {
             let mut v = Vec::with_capacity(s.len() * 2);
@@ -237,7 +241,7 @@ fn encode_str<'a>(enc: Encoding, s: &'a str) -> Cow<'a, [u8]> {
             }
             Cow::Owned(v)
         }
-    }
+    })
 }
 
 static TEMP_SEQ: AtomicUsize = AtomicUsize::new(0);
@@ -298,11 +302,16 @@ pub fn begin_save(
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(format!(".mptmp-{}-{}", std::process::id(), TEMP_SEQ.fetch_add(1, Ordering::Relaxed)));
     let tmp = PathBuf::from(tmp);
-    {
+    let write_result = (|| -> io::Result<()> {
         let f = std::fs::File::create(&tmp)?;
         let mut w = BufWriter::with_capacity(1 << 20, f);
         write_stream(&mut w, buf, enc, eol)?;
         w.flush()?;
+        Ok(())
+    })();
+    if let Err(error) = write_result {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(error);
     }
     Ok(SaveTransaction { temp: Some(tmp) })
 }
@@ -313,14 +322,14 @@ fn write_stream<W: Write>(w: &mut W, buf: &TextBuffer, enc: Encoding, eol: Eol) 
         Encoding::Utf16Le => w.write_all(&[0xFF, 0xFE])?,
         _ => {}
     }
-    let sep = encode_str(enc, eol.as_str());
+    let sep = encode_str(enc, eol.as_str())?;
     match &buf.store {
         Store::Small(lines) => {
             for (i, l) in lines.iter().enumerate() {
                 if i > 0 {
                     w.write_all(&sep)?;
                 }
-                w.write_all(&encode_str(enc, l))?;
+                w.write_all(&encode_str(enc, l)?)?;
             }
         }
         Store::Huge(h) => {
@@ -332,7 +341,7 @@ fn write_stream<W: Write>(w: &mut W, buf: &TextBuffer, enc: Encoding, eol: Eol) 
                         if !first {
                             w.write_all(&sep)?;
                         }
-                        w.write_all(&encode_str(enc, l))?;
+                        w.write_all(&encode_str(enc, l)?)?;
                         first = false;
                     }
                 } else if same {
@@ -347,7 +356,7 @@ fn write_stream<W: Write>(w: &mut W, buf: &TextBuffer, enc: Encoding, eol: Eol) 
                         if !first {
                             w.write_all(&sep)?;
                         }
-                        w.write_all(&encode_str(enc, l))?;
+                        w.write_all(&encode_str(enc, l)?)?;
                         first = false;
                     }
                 }
@@ -402,6 +411,14 @@ mod tests {
         let mut out = Vec::new();
         write_stream(&mut out, &buf, Encoding::Utf8 { bom: false }, Eol::Crlf).unwrap();
         assert_eq!(out, "あ\r\nb".as_bytes());
+    }
+
+    #[test]
+    fn shift_jis_save_rejects_unrepresentable_characters() {
+        let buf = TextBuffer::from_text("日本語😀");
+        let mut out = Vec::new();
+        let error = write_stream(&mut out, &buf, Encoding::ShiftJis, Eol::Crlf).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 
     #[test]

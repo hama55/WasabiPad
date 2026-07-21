@@ -8,6 +8,7 @@ export interface DocumentSession {
   readOnly: boolean;
   dirty: boolean;
   encoding: Encoding;
+  sourceEncoding: Encoding;
   eol: Eol;
   lineCount: number;
   selectedRelPath: string;
@@ -21,6 +22,7 @@ export function initialSession(): DocumentSession {
     readOnly: false,
     dirty: false,
     encoding: "utf8",
+    sourceEncoding: "utf8",
     eol: "crlf",
     lineCount: 1,
     selectedRelPath: "",
@@ -31,13 +33,15 @@ export function sessionFromDocInfo(
   previous: DocumentSession,
   info: DocInfo
 ): DocumentSession {
+  const folderDraft = info.folder_root === info.path;
   return {
     displayPath: info.path,
-    savePath: info.view_only ? null : info.path,
+    savePath: info.view_only || folderDraft ? null : info.path,
     folderRoot: info.folder_root,
     readOnly: info.view_only,
     dirty: false,
     encoding: info.enc,
+    sourceEncoding: info.enc,
     eol: info.eol,
     lineCount: info.line_count,
     selectedRelPath: previous.selectedRelPath,

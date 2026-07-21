@@ -13,6 +13,7 @@
       <button class="menubtn" id="menu-view">表示</button>
     </div>
     <div id="titletext" data-tauri-drag-region>PetaPad</div>
+    <span id="save-notice" aria-live="polite"></span>
     <div id="wincontrols">
       <button id="win-min" title="最小化">&#xE921;</button>
       <button id="win-max" title="最大化">&#xE922;</button>
@@ -20,9 +21,11 @@
     </div>
   </div>
   <div id="topbar">
+    <button id="toggle-sidebar" title="フォルダビューを表示/非表示">☰</button>
+    <button id="toggle-favbar" title="お気に入りバーを表示/非表示">★</button>
     <button id="addressbar-open" title="ファイルを選択...">📁</button>
     <input id="addressbar" spellcheck="false" autocomplete="off" placeholder="パスを入力して Enter で開く" />
-    <button id="addressbar-fav" title="現在のファイルをお気に入りに追加">☆</button>
+    <button id="addressbar-fav" title="お気に入りに追加">☆</button>
   </div>
   <div id="favbar"></div>
   <div id="main">
@@ -43,7 +46,8 @@
     <button id="st-font" title="フォントを変更"></button>
     <button id="st-font-size" title="フォントサイズを変更"></button>
     <button id="st-wrap" title="折り返し切替">折り返し: オフ</button>
-    <select id="st-enc" title="文字コード">
+    <span id="st-source-enc" title="読み込み時文字コード"></span>
+    <select id="st-enc" title="保存時文字コード">
       <option value="utf8">UTF-8</option>
       <option value="utf8bom">UTF-8 (BOM)</option>
       <option value="sjis">Shift-JIS</option>

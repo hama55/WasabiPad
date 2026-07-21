@@ -23,6 +23,7 @@ describe("DocumentSession", () => {
       readOnly: false,
       dirty: false,
       encoding: "utf8",
+      sourceEncoding: "utf8",
       eol: "crlf",
       lineCount: 1,
     });
@@ -33,6 +34,7 @@ describe("DocumentSession", () => {
     expect(editable.savePath).toBe("C:\\work\\memo.txt");
     expect(editable.folderRoot).toBe("C:\\work");
     expect(editable.encoding).toBe("sjis");
+    expect(editable.sourceEncoding).toBe("sjis");
 
     const archive = sessionFromDocInfo(editable, info({ view_only: true, kind: "archive" }));
     expect(archive.savePath).toBeNull();

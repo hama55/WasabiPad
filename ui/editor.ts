@@ -835,7 +835,7 @@ export class VirtualEditor {
   }
 
   private async renderAfterEdit() {
-    this.ensureVisible();
+    const previousScrollLeft = this.scroll.scrollLeft;
     const visibleRows = Math.ceil(this.scroll.clientHeight / this.lineHeight) + OVERSCAN;
     const topLine = this.scaleMode ? Math.round(this.topLineF) : this.pxToLine(this.scroll.scrollTop);
     const first = Math.max(0, topLine - OVERSCAN);
@@ -844,6 +844,9 @@ export class VirtualEditor {
       await this.fetchChunk(c);
     }
     this.render();
+    if (!this.wrap) this.scroll.scrollLeft = previousScrollLeft;
+    this.ensureVisible();
+    this.placeCaret();
     this.notifyCursor();
   }
 
@@ -1005,11 +1008,19 @@ export class VirtualEditor {
     this.composing = false;
     this.input.classList.remove("ime");
     this.input.style.removeProperty("width");
+    this.input.style.removeProperty("height");
     if (document.activeElement === this.input) this.caretEl.classList.add("on");
     this.flushInput();
   }
 
   private resizeImeInput() {
+    if (this.wrap) {
+      const available = Math.max(1, this.scroll.clientWidth - this.input.offsetLeft - 4);
+      this.input.style.width = `${available}px`;
+      this.input.style.height = "1px";
+      this.input.style.height = `${Math.max(this.lineHeight, this.input.scrollHeight)}px`;
+      return;
+    }
     this.input.style.width = "1px";
     this.input.style.width = `${this.input.scrollWidth + 2}px`;
   }
@@ -1080,6 +1091,12 @@ export class VirtualEditor {
       const text = this.lineText(line) ?? "";
       if (point?.offsetNode === target.firstChild) {
         return { line, col: u16ToChar(text, point.offset) };
+      }
+      const legacy = (document as Document & {
+        caretRangeFromPoint?: (x: number, y: number) => Range | null;
+      }).caretRangeFromPoint?.(cx, cy);
+      if (legacy?.startContainer === target.firstChild) {
+        return { line, col: u16ToChar(text, legacy.startOffset) };
       }
       return { line, col: this.posFromLineAndX(line, cx, text).col };
     }

@@ -1,12 +1,12 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { open as openDialog, save as saveDialog, ask } from "@tauri-apps/plugin-dialog";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import * as api from "./api";
 import { VirtualEditor } from "./editor";
 import { Sidebar, ContextTarget } from "./sidebar";
 import { FavBar } from "./favbar";
 import { showMenu, MenuItem } from "./menu";
-import { promptFields } from "./prompt";
+import { confirmMessage, promptFields } from "./prompt";
 import { initialSession, sessionFromDocInfo } from "./session";
 import { showError } from "./dialogs";
 import {
@@ -16,7 +16,7 @@ import {
   formatLineCount,
   formatWindowTitle,
 } from "./format";
-import { basename, dirname, joinWindowsRoot, relativePathFromRoot } from "./path";
+import { basename, joinWindowsRoot, rebaseWindowsPath, relativePathFromRoot, relativePathWithinRoot } from "./path";
 import { createCommandRegistry, globalCommandForEvent, CommandId } from "./commands";
 import { DEFAULT_EDITOR_CONFIG } from "./editor-config";
 
@@ -48,6 +48,10 @@ let wrap = false;
 let fontFamily = DEFAULT_EDITOR_CONFIG.fontFamily;
 let fontSize = DEFAULT_EDITOR_CONFIG.fontSize;
 let currentLine = 1;
+let sidebarAvailable = false;
+let sidebarVisible = true;
+let saveNoticeTimer: number | undefined;
+const STARTUP_PATH_KEY = "startupPath";
 
 const editorHost = $("editorhost");
 const sidebarEl = $("sidebar");
@@ -119,12 +123,7 @@ $("st-pos").addEventListener("click", async () => {
   if (Number.isInteger(line) && line >= 1 && line <= session.lineCount) editor.goTo(line - 1, 0);
 });
 $("st-lines").addEventListener("click", async () => {
-  const ok = await ask("最後の行に移動しますか?", {
-    title: "PetaPad",
-    kind: "info",
-    okLabel: "移動",
-    cancelLabel: "キャンセル",
-  });
+  const ok = await confirmMessage("最後の行へ移動", "最後の行に移動する", "移動");
   if (ok) editor.goTo(session.lineCount - 1, 0);
 });
 const sidebar = new Sidebar(
@@ -157,7 +156,8 @@ const sidebar = new Sidebar(
 const favbar = new FavBar(
   $("favbar"),
   (p, newWindow) => newWindow ? api.launchNew(p) : openFile(p),
-  () => session.displayPath || null
+  () => session.displayPath || null,
+  setStartupPath
 );
 
 function updateTitle() {
@@ -167,15 +167,29 @@ function updateTitle() {
 }
 
 function setSidebar(on: boolean, label = "") {
-  sidebarEl.hidden = !on;
-  splitter.hidden = !on;
+  sidebarAvailable = on;
+  const shown = on && sidebarVisible;
+  sidebarEl.hidden = !shown;
+  splitter.hidden = !shown;
+  $<HTMLButtonElement>("toggle-sidebar").disabled = !on;
   $("st-mode").textContent = label;
+}
+
+function setStartupPath(path: string) {
+  localStorage.setItem(STARTUP_PATH_KEY, path);
+}
+
+function showSavedNotice() {
+  $("save-notice").textContent = "保存しました";
+  window.clearTimeout(saveNoticeTimer);
+  saveNoticeTimer = window.setTimeout(() => { $("save-notice").textContent = ""; }, 2000);
 }
 
 // アーカイブ選択後/フォルダのエントリ切替後で共通の状態反映
 function applyDocInfo(o: api.DocInfo) {
   session = sessionFromDocInfo(session, o);
   $<HTMLSelectElement>("st-enc").value = session.encoding;
+  renderEncodingStatus();
   $<HTMLSelectElement>("st-eol").value = session.eol;
   addressbar.value = o.path;
   $("st-size").textContent = formatByteSize(o.byte_len);
@@ -186,8 +200,8 @@ function applyDocInfo(o: api.DocInfo) {
 }
 
 // ---- ファイル操作 ----
-async function openFile(path: string) {
-  if (!(await confirmDiscard())) return;
+async function openFile(path: string): Promise<boolean> {
+  if (!(await confirmDiscard())) return false;
   setLoading(true);
   try {
     const o = await api.openPath(path);
@@ -210,8 +224,10 @@ async function openFile(path: string) {
       setSidebar(false);
     }
     applyDocInfo(o);
+    return true;
   } catch (e) {
     await showError("開けませんでした", e);
+    return false;
   } finally {
     setLoading(false);
   }
@@ -223,6 +239,7 @@ async function newFile() {
   session = initialSession();
   $<HTMLSelectElement>("st-enc").value = session.encoding;
   $<HTMLSelectElement>("st-eol").value = session.eol;
+  renderEncodingStatus();
   addressbar.value = "";
   $("st-size").textContent = "";
   $("st-lines").textContent = "1 行";
@@ -234,24 +251,83 @@ async function newFile() {
 }
 
 async function saveAs(): Promise<boolean> {
+  if (session.folderRoot && !session.savePath && !session.selectedRelPath) return saveFolderDraft();
+  let defaultPath = session.savePath ?? undefined;
+  if (!defaultPath) {
+    const spec = await promptMemoSpec();
+    if (!spec) return false;
+    defaultPath = `${spec.stem}${spec.extension ? `.${spec.extension}` : ""}`;
+  }
   const p = await saveDialog({
-    filters: [{ name: "テキスト", extensions: ["txt"] }, { name: "すべて", extensions: ["*"] }],
-    defaultPath: session.savePath ?? undefined,
+    filters: [
+      { name: "テキスト", extensions: ["txt"] },
+      { name: "Markdown", extensions: ["md"] },
+      { name: "ログ", extensions: ["log"] },
+      { name: "すべて", extensions: ["*"] },
+    ],
+    defaultPath,
   });
   if (!p) return false;
-  session.savePath = p;
-  session.displayPath = p;
-  addressbar.value = p;
-  return doSave();
+  return saveTo(p);
 }
 
 async function doSave(): Promise<boolean> {
   if (session.readOnly) return false;
   if (!session.savePath) return saveAs();
+  return saveTo(session.savePath);
+}
+
+async function promptMemoSpec(): Promise<{ stem: string; extension: string } | null> {
+  const result = await promptFields("新規メモ作成", [
+    { label: "ファイル名", value: "memo" },
+    { label: "拡張子", value: "txt", options: [
+      { label: ".txt", value: "txt" },
+      { label: ".md", value: "md" },
+      { label: ".log", value: "log" },
+      { label: "拡張子なし", value: "" },
+    ] },
+  ]);
+  const stem = result?.[0].trim();
+  return stem ? { stem, extension: result![1] } : null;
+}
+
+async function saveFolderDraft(): Promise<boolean> {
+  const root = session.folderRoot;
+  if (!root) return false;
+  const spec = await promptMemoSpec();
+  if (!spec) return false;
   try {
-    await api.saveFile(session.savePath, session.encoding, session.eol);
+    const path = await api.nextMemoPath(root, spec.stem, spec.extension);
+    return saveTo(path, root);
+  } catch (e) {
+    await showError("ファイル名を決められませんでした", e);
+    return false;
+  }
+}
+
+async function saveTo(path: string, folderDraftRoot: string | null = null): Promise<boolean> {
+  try {
+    await api.saveFile(path, session.encoding, session.eol);
+    session.savePath = path;
+    session.displayPath = path;
+    session.sourceEncoding = session.encoding;
     session.dirty = false;
+    addressbar.value = path;
+    renderEncodingStatus();
     updateTitle();
+    showSavedNotice();
+    if (folderDraftRoot) {
+      const rel = relativePathWithinRoot(folderDraftRoot, path);
+      if (rel !== null) {
+        session.selectedRelPath = rel;
+        try {
+          sidebar.setEntries(await api.listFolderEntries(""));
+          sidebar.selectByRelPath(rel);
+        } catch {
+          // 保存自体は成功しているため、一覧更新の失敗でdirtyへ戻さない。
+        }
+      }
+    }
     return true;
   } catch (e) {
     await showError("保存できませんでした", e);
@@ -261,12 +337,8 @@ async function doSave(): Promise<boolean> {
 
 async function confirmDiscard(): Promise<boolean> {
   if (!session.dirty || session.readOnly) return true;
-  return ask("変更が保存されていません。破棄しますか?", {
-    title: "PetaPad",
-    kind: "warning",
-    okLabel: "破棄",
-    cancelLabel: "キャンセル",
-  });
+  if (session.folderRoot && !session.savePath && !session.selectedRelPath) return doSave();
+  return confirmMessage("未保存の変更", "変更が保存されていない。破棄する", "破棄");
 }
 
 async function pickAndOpen(directory: boolean) {
@@ -274,7 +346,7 @@ async function pickAndOpen(directory: boolean) {
   if (typeof p === "string") openFile(p);
 }
 
-// ---- フォルダビューの右クリックメニュー (新規メモ作成・名前を変更・エクスプローラで開く) ----
+// ---- フォルダビューの右クリックメニュー ----
 function relToAbs(relPath: string): string {
   return joinWindowsRoot(session.folderRoot!, relPath);
 }
@@ -285,30 +357,14 @@ function sidebarContextMenu(x: number, y: number, target: ContextTarget | null) 
   if (target) {
     items.push({ label: "名前を変更...", action: () => renameEntry(target.relPath) });
   }
-  const createDir = target ? (target.isDir ? target.relPath : dirname(target.relPath)) : null;
-  items.push({ label: "新規メモ作成...", action: () => createNote(createDir) });
   const revealPath = target ? relToAbs(target.relPath) : session.folderRoot;
   const revealIsDir = target ? target.isDir : true;
+  items.push(
+    { label: "お気に入りに追加", action: () => favbar.addExternal(revealPath) },
+    { label: "デフォルトに設定", action: () => setStartupPath(revealPath) }
+  );
   items.push({ label: "エクスプローラで開く", action: () => revealInExplorer(revealPath, revealIsDir) });
   showMenu(x, y, items);
-}
-
-async function createNote(dir: string | null) {
-  if (!(await confirmDiscard())) return;
-  const result = await promptFields("新規メモ作成", [{ label: "ファイル名", value: "" }]);
-  const name = result?.[0].trim();
-  if (!name) return;
-  try {
-    const info = await api.createNote(dir, name);
-    const rel = dir ? `${dir}/${name}` : name;
-    session.selectedRelPath = rel;
-    setSidebar(true, "");
-    sidebar.setEntries(info.folder_entries ?? []);
-    sidebar.selectByRelPath(rel);
-    applyDocInfo(info);
-  } catch (e) {
-    await showError("作成できませんでした", e);
-  }
 }
 
 async function renameEntry(relPath: string) {
@@ -316,6 +372,9 @@ async function renameEntry(relPath: string) {
   const result = await promptFields("名前を変更", [{ label: "新しい名前", value: cur }]);
   const newName = result?.[0].trim();
   if (!newName || newName === cur) return;
+  const oldAbsolute = relToAbs(relPath);
+  const newRelative = relPath.includes("/") ? `${relPath.slice(0, relPath.lastIndexOf("/") + 1)}${newName}` : newName;
+  const newAbsolute = relToAbs(newRelative);
   try {
     const info = await api.renameEntry(relPath, newName);
     sidebar.setEntries(info.folder_entries ?? []);
@@ -328,6 +387,9 @@ async function renameEntry(relPath: string) {
       session.selectedRelPath = rel;
       sidebar.selectByRelPath(rel);
     }
+    const startupPath = localStorage.getItem(STARTUP_PATH_KEY);
+    const rebased = startupPath && rebaseWindowsPath(startupPath, oldAbsolute, newAbsolute);
+    if (rebased) setStartupPath(rebased);
   } catch (e) {
     await showError("名前を変更できませんでした", e);
   }
@@ -391,6 +453,7 @@ $("menu-view").addEventListener("click", (e) => {
   const r = (e.target as HTMLElement).getBoundingClientRect();
   showMenu(r.left, r.bottom, [
     commandMenuItem("find"),
+    { label: "起動時のデフォルトを解除", action: () => localStorage.removeItem(STARTUP_PATH_KEY), sep: true },
   ]);
 });
 
@@ -408,6 +471,24 @@ addressbar.addEventListener("keydown", (e) => {
 });
 $("addressbar-fav").addEventListener("click", () => favbar.addCurrent());
 $("addressbar-open").addEventListener("click", () => pickAndOpen(false));
+$("toggle-sidebar").addEventListener("click", () => {
+  if (!sidebarAvailable) return;
+  sidebarVisible = !sidebarVisible;
+  setSidebar(sidebarAvailable, $("st-mode").textContent ?? "");
+});
+$("toggle-favbar").addEventListener("click", () => {
+  $("favbar").hidden = !$("favbar").hidden;
+});
+
+document.addEventListener("contextmenu", (e) => e.preventDefault());
+
+function encodingLabel(enc: api.Encoding): string {
+  return ({ utf8: "UTF-8", utf8bom: "UTF-8 (BOM)", sjis: "Shift-JIS", utf16le: "UTF-16LE" })[enc];
+}
+
+function renderEncodingStatus() {
+  $("st-source-enc").textContent = `読込: ${encodingLabel(session.sourceEncoding)} → 保存:`;
+}
 
 // サイドバー幅のドラッグ変更
 splitter.addEventListener("mousedown", (e) => {
@@ -455,9 +536,12 @@ win.onCloseRequested(async (e) => {
 (async () => {
   await syncMaxIcon();
   await favbar.init();
-  const p = await api.initialPath();
-  if (p) await openFile(p);
-  else {
+  const cliPath = await api.initialPath();
+  const startupPath = localStorage.getItem(STARTUP_PATH_KEY);
+  const p = cliPath || startupPath;
+  const opened = p ? await openFile(p) : false;
+  if (!opened) {
+    if (!cliPath && startupPath) localStorage.removeItem(STARTUP_PATH_KEY);
     editor.open(1, false);
     editor.focus();
   }

@@ -2,7 +2,7 @@
 // 簡易モーダルを自前実装する (お気に入りの名前/パス編集などに使用)。
 export function promptFields(
   title: string,
-  fields: { label: string; value: string }[]
+  fields: { label: string; value: string; options?: { label: string; value: string }[] }[]
 ): Promise<string[] | null> {
   return new Promise((resolve) => {
     const overlay = document.createElement("div");
@@ -20,9 +20,18 @@ export function promptFields(
       row.className = "pf-row";
       const label = document.createElement("label");
       label.textContent = f.label;
-      const input = document.createElement("input");
+      const input = f.options ? document.createElement("select") : document.createElement("input");
+      if (f.options) {
+        for (const option of f.options) {
+          const el = document.createElement("option");
+          el.value = option.value;
+          el.textContent = option.label;
+          input.appendChild(el);
+        }
+      } else {
+        input.spellcheck = false;
+      }
       input.value = f.value;
-      input.spellcheck = false;
       row.appendChild(label);
       row.appendChild(input);
       box.appendChild(row);
@@ -67,6 +76,64 @@ export function promptFields(
     window.addEventListener("keydown", onKey, true);
 
     inputs[0]?.focus();
-    inputs[0]?.select();
+    if (inputs[0] instanceof HTMLInputElement) inputs[0].select();
+  });
+}
+
+export function showMessage(title: string, message: string, okLabel = "OK"): Promise<void> {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "pf-overlay";
+    overlay.innerHTML = `<div class="pf-box"><div class="pf-title"></div><div class="pf-message"></div><div class="pf-btns"><button class="pf-ok"></button></div></div>`;
+    overlay.querySelector<HTMLElement>(".pf-title")!.textContent = title;
+    overlay.querySelector<HTMLElement>(".pf-message")!.textContent = message;
+    const ok = overlay.querySelector<HTMLButtonElement>(".pf-ok")!;
+    ok.textContent = okLabel;
+    document.body.appendChild(overlay);
+    const finish = () => {
+      overlay.remove();
+      window.removeEventListener("keydown", onKey, true);
+      resolve();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" || e.key === "Enter") { e.preventDefault(); finish(); }
+    };
+    ok.addEventListener("click", finish);
+    window.addEventListener("keydown", onKey, true);
+    ok.focus();
+  });
+}
+
+export function confirmMessage(
+  title: string,
+  message: string,
+  okLabel: string,
+  cancelLabel = "キャンセル"
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "pf-overlay";
+    overlay.innerHTML = `<div class="pf-box"><div class="pf-title"></div><div class="pf-message"></div><div class="pf-btns"><button class="pf-cancel"></button><button class="pf-ok"></button></div></div>`;
+    overlay.querySelector<HTMLElement>(".pf-title")!.textContent = title;
+    overlay.querySelector<HTMLElement>(".pf-message")!.textContent = message;
+    const cancel = overlay.querySelector<HTMLButtonElement>(".pf-cancel")!;
+    const ok = overlay.querySelector<HTMLButtonElement>(".pf-ok")!;
+    cancel.textContent = cancelLabel;
+    ok.textContent = okLabel;
+    document.body.appendChild(overlay);
+    const finish = (value: boolean) => {
+      overlay.remove();
+      window.removeEventListener("keydown", onKey, true);
+      resolve(value);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { e.preventDefault(); finish(false); }
+      if (e.key === "Enter") { e.preventDefault(); finish(true); }
+    };
+    cancel.addEventListener("click", () => finish(false));
+    ok.addEventListener("click", () => finish(true));
+    overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) finish(false); });
+    window.addEventListener("keydown", onKey, true);
+    ok.focus();
   });
 }

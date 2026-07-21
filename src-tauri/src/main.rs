@@ -194,6 +194,25 @@ fn path_is_directory(path: String) -> bool {
 }
 
 #[tauri::command]
+fn next_memo_path(directory: String, stem: String, extension: String) -> Result<String, String> {
+    let stem = stem.trim();
+    if stem.is_empty() || stem == "." || stem == ".." || stem.contains(['/', '\\']) {
+        return Err("ファイル名が正しくありません".into());
+    }
+    let dir = PathBuf::from(directory);
+    let ext = extension.trim_start_matches('.');
+    for number in 1.. {
+        let numbered = if number == 1 { stem.to_string() } else { format!("{stem}{number}") };
+        let name = if ext.is_empty() { numbered } else { format!("{numbered}.{ext}") };
+        let candidate = dir.join(name);
+        if !candidate.exists() {
+            return Ok(candidate.to_string_lossy().into_owned());
+        }
+    }
+    unreachable!()
+}
+
+#[tauri::command]
 fn initial_path() -> Option<String> {
     std::env::args().nth(1)
 }
@@ -234,6 +253,7 @@ fn main() {
             load_bookmarks,
             save_bookmarks,
             path_is_directory,
+            next_memo_path,
             initial_path,
             launch_new,
         ])

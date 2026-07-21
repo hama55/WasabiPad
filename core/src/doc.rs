@@ -64,7 +64,7 @@ enum DocumentSource {
 }
 
 enum FolderSelection {
-    None,
+    None { recovery_temp: Option<RecoveryTemp> },
     File {
         path: PathBuf,
         source_file: Option<File>,
@@ -108,6 +108,7 @@ impl DocumentSource {
             self,
             Self::Untitled { .. }
                 | Self::File { .. }
+                | Self::Folder { selected: FolderSelection::None { .. }, .. }
                 | Self::Folder { selected: FolderSelection::File { .. }, .. }
         )
     }
@@ -135,6 +136,9 @@ impl DocumentSource {
             | Self::File { recovery_temp, .. }
             | Self::Folder {
                 selected: FolderSelection::File { recovery_temp, .. }, ..
+            }
+            | Self::Folder {
+                selected: FolderSelection::None { recovery_temp }, ..
             } => recovery_temp.take(),
             _ => None,
         }
@@ -146,6 +150,9 @@ impl DocumentSource {
             | Self::File { recovery_temp, .. }
             | Self::Folder {
                 selected: FolderSelection::File { recovery_temp, .. }, ..
+            }
+            | Self::Folder {
+                selected: FolderSelection::None { recovery_temp }, ..
             } => *recovery_temp = Some(recovery),
             _ => {}
         }
@@ -275,7 +282,7 @@ impl Doc {
             let mut doc = Doc::empty();
             doc.source = DocumentSource::Folder {
                 root: path.to_path_buf(),
-                selected: FolderSelection::None,
+                selected: FolderSelection::None { recovery_temp: None },
             };
             return Ok(doc);
         }
@@ -528,7 +535,7 @@ impl Doc {
         if let DocumentSource::Folder { selected, .. } = &mut self.source {
             let current = match selected {
                 FolderSelection::File { path, .. } | FolderSelection::Archive { path, .. } => path,
-                FolderSelection::None => return Ok(self.info(String::new())),
+                FolderSelection::None { .. } => return Ok(self.info(String::new())),
             };
             if let Ok(rest) = current.strip_prefix(&old_abs) {
                 *current = if rest.as_os_str().is_empty() {
@@ -1207,14 +1214,14 @@ mod tests {
     }
 
     #[test]
-    fn view_only_rejects_edit() {
+    fn empty_folder_selection_accepts_draft_edit() {
         let mut d = doc("abc");
         d.source = DocumentSource::Folder {
             root: PathBuf::new(),
-            selected: FolderSelection::None,
+            selected: FolderSelection::None { recovery_temp: None },
         };
         d.edit(p(0, 0), p(0, 0), p(0, 0), "X", false);
-        assert_eq!(d.lines(0, 1), vec!["abc"]);
+        assert_eq!(d.lines(0, 1), vec!["Xabc"]);
     }
 
     #[test]
@@ -1233,9 +1240,9 @@ mod tests {
 
         let folder = DocumentSource::Folder {
             root: PathBuf::from("workspace"),
-            selected: FolderSelection::None,
+            selected: FolderSelection::None { recovery_temp: None },
         };
-        assert!(folder.is_view_only());
+        assert!(!folder.is_view_only());
         assert_eq!(folder.kind(), DocKind::Text);
         assert_eq!(folder.folder_root(), Some(Path::new("workspace")));
     }
@@ -1255,7 +1262,7 @@ mod tests {
     }
 
     // フォルダを開いた直後は何も選択されておらず (メモビューは空)、ルート直下の一覧だけが
-    // 安価に取れる。ファイルを選択して初めて編集可能な通常文書として開く。
+    // 安価に取れる。ファイル未選択中も新規メモの下書きを入力できる。
     #[test]
     fn open_folder_lists_root_children_lazily_and_selects_files() {
         let root = std::env::temp_dir().join(format!("petapad_doctest_{}", std::process::id()));
@@ -1265,7 +1272,7 @@ mod tests {
 
         let mut d = Doc::open(&root).unwrap();
         assert!(File::open(root.join("a.txt")).is_ok(), "フォルダ一覧だけでは子ファイルをロックしない");
-        assert!(d.source.is_view_only(), "何も選択されていない間は編集不可");
+        assert!(!d.source.is_view_only(), "何も選択されていない間は下書きを編集できる");
         assert_eq!(d.lines(0, 1), vec![""], "フォルダを開いた直後は何も表示しない");
 
         let root_children = d.list_folder_entries("").unwrap();
@@ -1413,7 +1420,7 @@ mod tests {
 
         let mut d = Doc::open(&root).unwrap();
         assert_eq!(d.lines(0, 1), vec![""], "フォルダを開いた直後は何も選択されていない");
-        assert!(d.source.is_view_only());
+        assert!(!d.source.is_view_only());
 
         let root_children = d.list_folder_entries("").unwrap();
         let names: Vec<&str> = root_children.iter().map(|e| e.name.as_str()).collect();

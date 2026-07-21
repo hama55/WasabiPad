@@ -10,7 +10,8 @@ export class FavBar {
   constructor(
     private host: HTMLElement,
     private onOpen: (path: string, newWindow: boolean) => void,
-    private currentFile: () => string | null
+    private currentFile: () => string | null,
+    private onSetDefault: (path: string) => void
   ) {
     this.host.addEventListener("contextmenu", (e) => {
       if (e.target !== this.host) return;
@@ -136,7 +137,10 @@ export class FavBar {
         { label: "グループを追加...", action: () => this.addGroup(path) }
       );
     } else {
-      items.push({ label: "編集...", action: () => this.editPath(path) });
+      items.push(
+        { label: "デフォルトに設定", action: () => this.onSetDefault(node.path) },
+        { label: "編集...", action: () => this.editPath(path) }
+      );
     }
     items.push(
       { label: "移動", action: () => {}, sub: this.moveDestinations(path) },
@@ -240,6 +244,10 @@ export class FavBar {
   async addCurrent() {
     const raw = this.currentFile();
     if (raw) await this.addPaths([raw.replace(/[\\/]+$/, "") || raw]);
+  }
+
+  async addExternal(path: string) {
+    await this.addPaths([path.replace(/[\\/]+$/, "") || path]);
   }
 
   private async editPath(path: NodePath) {

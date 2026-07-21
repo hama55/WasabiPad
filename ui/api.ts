@@ -144,5 +144,7 @@ export const setEol = (eol: Eol) => invoke<void>("set_eol", { eol });
 export const loadBookmarks = () => invoke<BmNode[]>("load_bookmarks");
 export const saveBookmarks = (nodes: BmNode[]) => invoke<void>("save_bookmarks", { nodes });
 export const pathIsDirectory = (path: string) => invoke<boolean>("path_is_directory", { path });
+export const nextMemoPath = (directory: string, stem: string, extension: string) =>
+  invoke<string>("next_memo_path", { directory, stem, extension });
 export const initialPath = () => invoke<string | null>("initial_path");
 export const launchNew = (path: string) => invoke<void>("launch_new", { path });
