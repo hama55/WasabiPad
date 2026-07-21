@@ -81,15 +81,32 @@ fn decode_bytes(enc: Encoding, mut b: &[u8]) -> String {
 
 impl HugeBuf {
     // UTF-16 (行分割が byte 単位でできない) は None → 通常読込へフォールバック
-    pub fn open(mut file: File) -> io::Result<Option<(HugeBuf, Encoding, Eol)>> {
+    pub fn open(file: File) -> io::Result<Option<(HugeBuf, Encoding, Eol)>> {
+        Self::open_with_encoding(file, None)
+    }
+
+    pub fn open_as(file: File, enc: Encoding) -> io::Result<Option<(HugeBuf, Encoding, Eol)>> {
+        Self::open_with_encoding(file, Some(enc))
+    }
+
+    fn open_with_encoding(mut file: File, forced: Option<Encoding>) -> io::Result<Option<(HugeBuf, Encoding, Eol)>> {
         let len = file.metadata()?.len();
         file.seek(SeekFrom::Start(0))?;
         // 先頭 1MB でエンコーディング/EOL 判定
         let head_len = len.min(1024 * 1024) as usize;
         let mut head = vec![0u8; head_len];
         file.read_exact(&mut head)?;
-        let Some((enc, bom, eol)) = crate::fileio::detect_mmap_format(&head) else {
-            return Ok(None);
+        let (enc, bom, eol) = match forced {
+            Some(Encoding::Utf16Le) => return Ok(None),
+            Some(Encoding::ShiftJis) => (Encoding::ShiftJis, 0, crate::fileio::detect_eol_bytes(&head)),
+            Some(Encoding::Utf8 { .. }) => {
+                let bom = usize::from(head.starts_with(&[0xEF, 0xBB, 0xBF])) * 3;
+                (Encoding::Utf8 { bom: bom > 0 }, bom, crate::fileio::detect_eol_bytes(&head))
+            }
+            None => match crate::fileio::detect_mmap_format(&head) {
+                Some(format) => format,
+                None => return Ok(None),
+            },
         };
 
         // 行インデックス走査: CHUNK 行ごとのチェックポイントだけ保持

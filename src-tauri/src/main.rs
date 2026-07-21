@@ -194,6 +194,11 @@ fn path_is_directory(path: String) -> bool {
 }
 
 #[tauri::command]
+fn reload_with_encoding(enc: EncodingId, state: State) -> Result<DocInfo, String> {
+    with_doc(&state, |doc| doc.reload_with_encoding(enc.into())).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn next_memo_path(directory: String, stem: String, extension: String) -> Result<String, String> {
     let stem = stem.trim();
     if stem.is_empty() || stem == "." || stem == ".." || stem.contains(['/', '\\']) {
@@ -248,6 +253,7 @@ fn main() {
             replace_all_chunk,
             replace_all_cancel,
             save_file,
+            reload_with_encoding,
             set_encoding,
             set_eol,
             load_bookmarks,

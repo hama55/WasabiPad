@@ -451,11 +451,13 @@ export class VirtualEditor {
       gfrag.appendChild(g);
     }
 
-    // 選択ハイライト
-    this.appendSelection(frag, first, last);
-
     this.linesLayer.replaceChildren(frag);
     this.gutter.replaceChildren(gfrag);
+
+    // 新しい可視行DOMを基準にRangeを測定する。旧DOMを測るとスクロール後に欠落する。
+    const selectionFrag = document.createDocumentFragment();
+    this.appendSelection(selectionFrag, first, last);
+    this.linesLayer.prepend(selectionFrag);
 
     if (this.wrap) this.measureWrappedRows(first, last);
 
@@ -560,7 +562,7 @@ export class VirtualEditor {
     range.collapse(true);
     const rect = range.getClientRects()[0] ?? lineEl.getBoundingClientRect();
     const inner = this.inner.getBoundingClientRect();
-    return { x: rect.left - inner.left + this.scroll.scrollLeft, y: rect.top - inner.top + this.scroll.scrollTop };
+    return { x: rect.left - inner.left, y: rect.top - inner.top };
   }
 
   private appendSelection(frag: DocumentFragment, first: number, last: number) {
@@ -580,8 +582,8 @@ export class VirtualEditor {
         range.setEnd(node, charToU16(str, c1));
         for (const rect of range.getClientRects()) {
           const box = el("div", "ve-sel");
-          box.style.top = `${rect.top - inner.top + this.scroll.scrollTop}px`;
-          box.style.left = `${rect.left - inner.left + this.scroll.scrollLeft}px`;
+          box.style.top = `${rect.top - inner.top}px`;
+          box.style.left = `${rect.left - inner.left}px`;
           box.style.width = `${Math.max(2, rect.width)}px`;
           box.style.height = `${rect.height}px`;
           frag.insertBefore(box, frag.firstChild);

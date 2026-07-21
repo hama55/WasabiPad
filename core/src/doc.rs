@@ -376,6 +376,40 @@ impl Doc {
         })
     }
 
+    pub fn reload_with_encoding(&mut self, enc: Encoding) -> io::Result<DocInfo> {
+        let path = self.source.path().map(Path::to_path_buf)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::PermissionDenied, "この文書は文字コードを指定して再読込できません"))?;
+        let folder_root = self.source.folder_root().map(Path::to_path_buf);
+        let o = fileio::open_buffer_as(&path, enc)?;
+        let source = match folder_root {
+            Some(root) => DocumentSource::Folder {
+                root,
+                selected: FolderSelection::File {
+                    path: path.clone(),
+                    source_file: Some(o.source_file),
+                    recovery_temp: None,
+                },
+            },
+            None => DocumentSource::File {
+                path: path.clone(),
+                source_file: Some(o.source_file),
+                recovery_temp: None,
+            },
+        };
+        let replacement = Doc {
+            buf: o.buf,
+            undo: UndoStack::new(),
+            enc: o.enc,
+            eol: o.eol,
+            source,
+            replace_progress: None,
+            byte_len: o.byte_len,
+        };
+        let info = replacement.info(path.to_string_lossy().into_owned());
+        *self = replacement;
+        Ok(info)
+    }
+
     pub fn info(&self, path: String) -> DocInfo {
         DocInfo {
             // フォルダ閲覧中はどの子ファイル (アーカイブ内エントリ含む) を表示していても

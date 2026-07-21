@@ -476,18 +476,41 @@ $("toggle-sidebar").addEventListener("click", () => {
   sidebarVisible = !sidebarVisible;
   setSidebar(sidebarAvailable, $("st-mode").textContent ?? "");
 });
+$<HTMLSelectElement>("st-source-enc").addEventListener("change", async (e) => {
+  const select = e.target as HTMLSelectElement;
+  const requested = select.value as api.ReadEncoding;
+  const current = session.sourceEncoding === "utf8bom" ? "utf8" : session.sourceEncoding;
+  if (requested === current) return;
+  if (session.dirty) {
+    const confirmed = await confirmMessage(
+      "文字コードを指定して再読込",
+      "未保存の変更を破棄して、元ファイルを再読込する",
+      "再読込"
+    );
+    if (!confirmed) { select.value = current; return; }
+  }
+  setLoading(true);
+  try {
+    const info = await api.reloadWithEncoding(requested);
+    applyDocInfo(info);
+  } catch (error) {
+    select.value = current;
+    await showError("再読込できませんでした", error);
+  } finally {
+    setLoading(false);
+  }
+});
 $("toggle-favbar").addEventListener("click", () => {
-  $("favbar").hidden = !$("favbar").hidden;
+  $("navbars").hidden = !$("navbars").hidden;
 });
 
 document.addEventListener("contextmenu", (e) => e.preventDefault());
 
-function encodingLabel(enc: api.Encoding): string {
-  return ({ utf8: "UTF-8", utf8bom: "UTF-8 (BOM)", sjis: "Shift-JIS", utf16le: "UTF-16LE" })[enc];
-}
-
 function renderEncodingStatus() {
-  $("st-source-enc").textContent = `読込: ${encodingLabel(session.sourceEncoding)} → 保存:`;
+  const source = $<HTMLSelectElement>("st-source-enc");
+  source.value = session.sourceEncoding === "utf8bom" ? "utf8" : session.sourceEncoding;
+  source.disabled = session.readOnly || !session.savePath;
+  source.title = session.sourceEncoding === "utf8bom" ? "読込文字コード: UTF-8 (BOMあり)" : "読込文字コード";
 }
 
 // サイドバー幅のドラッグ変更

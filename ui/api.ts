@@ -7,6 +7,7 @@ export interface Pos {
 }
 
 export type Encoding = "utf8" | "utf8bom" | "sjis" | "utf16le";
+export type ReadEncoding = "utf8" | "sjis" | "utf16le";
 export type Eol = "crlf" | "lf";
 
 export interface DocInfo {
@@ -138,6 +139,8 @@ export const replaceAllCancel = () => invoke<EditResult>("replace_all_cancel");
 
 export const saveFile = (path: string, enc: Encoding, eol: Eol) =>
   invoke<void>("save_file", { path, enc, eol });
+export const reloadWithEncoding = (enc: ReadEncoding) =>
+  invoke<DocInfo>("reload_with_encoding", { enc });
 export const setEncoding = (enc: Encoding) => invoke<void>("set_encoding", { enc });
 export const setEol = (eol: Eol) => invoke<void>("set_eol", { eol });
 

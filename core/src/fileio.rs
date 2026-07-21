@@ -190,6 +190,48 @@ fn decode(bytes: &[u8]) -> (String, Encoding) {
     }
 }
 
+pub fn open_buffer_as(path: &Path, requested: Encoding) -> io::Result<Opened> {
+    const MAX_UTF16_BYTES: u64 = 256 * 1024 * 1024;
+    let source_file = open_exclusive(path)?;
+    if is_archive_handle(&source_file) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "アーカイブは文字コードを指定して再読込できません"));
+    }
+    let len = source_file.metadata()?.len();
+    if requested == Encoding::Utf16Le && len > MAX_UTF16_BYTES {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "256MBを超えるUTF-16LEファイルは指定再読込できません"));
+    }
+    if len > 0 {
+        if let Some((h, enc, eol)) = HugeBuf::open_as(source_file.try_clone()?, requested)? {
+            return Ok(Opened { buf: TextBuffer::from_huge(h), enc, eol, entries: None, byte_len: len, source_file });
+        }
+    }
+    let bytes = read_locked(&source_file)?;
+    let (text, enc) = decode_as(&bytes, requested)?;
+    let eol = detect_eol(&text);
+    Ok(Opened { buf: TextBuffer::from_text(&text), enc, eol, entries: None, byte_len: len, source_file })
+}
+
+fn decode_as(bytes: &[u8], requested: Encoding) -> io::Result<(String, Encoding)> {
+    match requested {
+        Encoding::Utf8 { .. } => {
+            let (body, bom) = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) { (&bytes[3..], true) } else { (bytes, false) };
+            let text = String::from_utf8(body.to_vec()).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "UTF-8として読み込めません"))?;
+            Ok((text, Encoding::Utf8 { bom }))
+        }
+        Encoding::ShiftJis => {
+            let (text, _, had_errors) = SHIFT_JIS.decode(bytes);
+            if had_errors { return Err(io::Error::new(io::ErrorKind::InvalidData, "Shift-JISとして読み込めません")); }
+            Ok((text.into_owned(), Encoding::ShiftJis))
+        }
+        Encoding::Utf16Le => {
+            let body = bytes.strip_prefix(&[0xFF, 0xFE]).unwrap_or(bytes);
+            let (text, _, had_errors) = encoding_rs::UTF_16LE.decode(body);
+            if had_errors { return Err(io::Error::new(io::ErrorKind::InvalidData, "UTF-16LEとして読み込めません")); }
+            Ok((text.into_owned(), Encoding::Utf16Le))
+        }
+    }
+}
+
 pub(crate) fn detect_mmap_format(bytes: &[u8]) -> Option<(Encoding, usize, Eol)> {
     if bytes.starts_with(&[0xFF, 0xFE]) {
         return None;
@@ -211,7 +253,7 @@ fn valid_utf8_prefix(bytes: &[u8]) -> bool {
     }
 }
 
-fn detect_eol_bytes(bytes: &[u8]) -> Eol {
+pub(crate) fn detect_eol_bytes(bytes: &[u8]) -> Eol {
     match memchr::memchr(b'\n', bytes) {
         Some(i) if i > 0 && bytes[i - 1] == b'\r' => Eol::Crlf,
         Some(_) => Eol::Lf,
@@ -411,6 +453,14 @@ mod tests {
         let mut out = Vec::new();
         write_stream(&mut out, &buf, Encoding::Utf8 { bom: false }, Eol::Crlf).unwrap();
         assert_eq!(out, "あ\r\nb".as_bytes());
+    }
+
+    #[test]
+    fn explicit_decoding_uses_requested_encoding() {
+        let (sjis, _, _) = SHIFT_JIS.encode("日本語");
+        assert_eq!(decode_as(&sjis, Encoding::ShiftJis).unwrap().0, "日本語");
+        assert!(decode_as(&sjis, Encoding::Utf8 { bom: false }).is_err());
+        assert_eq!(decode_as(b"\xEF\xBB\xBFhello", Encoding::Utf8 { bom: false }).unwrap().1, Encoding::Utf8 { bom: true });
     }
 
     #[test]
