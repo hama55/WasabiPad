@@ -25,7 +25,11 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
-    "icon": ["../assets/petapad.ico"]
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "../assets/petapad.ico"
+    ]
   }
 }

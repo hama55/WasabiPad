@@ -128,8 +128,12 @@ WebView2 Runtimeをインストールする。
 
 ## リリース
 
-`v0.2.0` のようなバージョンタグをpushすると、GitHub ActionsがWindows版を
+バージョンの正本はルート `Cargo.toml` の `[workspace.package].version`。
+変更後は `npm run sync:version` で各ツールの生成値を同期する。
+
+`v<version>` のバージョンタグをpushすると、GitHub ActionsがWindows版を
 ビルドし、GitHub Releaseへインストーラーと単体実行版を自動登録する。
+タグとCargo versionが一致しないreleaseは失敗する。
 
 ```powershell
 git tag v0.2.0
