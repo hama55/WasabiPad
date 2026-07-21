@@ -17,6 +17,7 @@ import {
   formatWindowTitle,
 } from "./format";
 import { basename, dirname, joinWindowsRoot, relativePathFromRoot } from "./path";
+import { createCommandRegistry, globalCommandForEvent, CommandId } from "./commands";
 
 const win = getCurrentWindow();
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -357,21 +358,36 @@ $("titletext").addEventListener("dblclick", async () => {
 });
 win.onResized(() => syncMaxIcon());
 
+const commands = createCommandRegistry({
+  newFile,
+  openFile: () => { void pickAndOpen(false); },
+  openFolder: () => { void pickAndOpen(true); },
+  save: doSave,
+  saveAs,
+  quit: () => { void win.close(); },
+  find: () => editor.openSearch(),
+});
+
+function commandMenuItem(id: CommandId, extra: Partial<MenuItem> = {}): MenuItem {
+  const command = commands[id];
+  return { label: command.label, key: command.shortcut, action: command.run, ...extra };
+}
+
 $("menu-file").addEventListener("click", (e) => {
   const r = (e.target as HTMLElement).getBoundingClientRect();
   showMenu(r.left, r.bottom, [
-    { label: "新規", key: "Ctrl+N", action: newFile },
-    { label: "開く...", key: "Ctrl+O", action: () => pickAndOpen(false) },
-    { label: "フォルダを開く...", action: () => pickAndOpen(true) },
-    { label: "上書き保存", key: "Ctrl+S", action: doSave, sep: true },
-    { label: "名前を付けて保存...", key: "Ctrl+Shift+S", action: saveAs },
-    { label: "終了", action: () => win.close(), sep: true },
+    commandMenuItem("new"),
+    commandMenuItem("open"),
+    commandMenuItem("openFolder"),
+    commandMenuItem("save", { sep: true }),
+    commandMenuItem("saveAs"),
+    commandMenuItem("quit", { sep: true }),
   ]);
 });
 $("menu-view").addEventListener("click", (e) => {
   const r = (e.target as HTMLElement).getBoundingClientRect();
   showMenu(r.left, r.bottom, [
-    { label: "検索と置換", key: "Ctrl+F", action: () => editor.openSearch() },
+    commandMenuItem("find"),
   ]);
 });
 
@@ -406,15 +422,10 @@ splitter.addEventListener("mousedown", (e) => {
 
 // グローバルショートカット (ファイル操作のみ。編集系はエディタが処理)
 window.addEventListener("keydown", (e) => {
-  if (!e.ctrlKey) return;
-  switch (e.key.toLowerCase()) {
-    case "n": e.preventDefault(); newFile(); break;
-    case "o": e.preventDefault(); pickAndOpen(false); break;
-    case "s":
-      e.preventDefault();
-      e.shiftKey ? saveAs() : doSave();
-      break;
-  }
+  const command = globalCommandForEvent(commands, e);
+  if (!command) return;
+  e.preventDefault();
+  void command.run();
 });
 
 // お気に入りバー上へのdropは登録、それ以外は従来どおり開く
