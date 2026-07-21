@@ -242,13 +242,59 @@ fn encode_str<'a>(enc: Encoding, s: &'a str) -> Cow<'a, [u8]> {
 
 static TEMP_SEQ: AtomicUsize = AtomicUsize::new(0);
 
-// 排他ハンドルと mmap を呼び出し側で解放してから差し替えられるよう、常に一時ファイルだけ作る。
-pub fn save_buffer(
+pub struct SaveTransaction {
+    temp: Option<PathBuf>,
+}
+
+pub struct SaveCommitError {
+    error: Option<io::Error>,
+    temp: Option<PathBuf>,
+}
+
+impl SaveTransaction {
+    #[cfg(test)]
+    pub fn path(&self) -> &Path {
+        self.temp.as_deref().unwrap()
+    }
+
+    pub fn commit(mut self, target: &Path) -> Result<(), SaveCommitError> {
+        let temp = self.temp.take().unwrap();
+        match std::fs::rename(&temp, target) {
+            Ok(()) => Ok(()),
+            Err(error) => Err(SaveCommitError { error: Some(error), temp: Some(temp) }),
+        }
+    }
+}
+
+impl Drop for SaveTransaction {
+    fn drop(&mut self) {
+        if let Some(temp) = self.temp.take() {
+            let _ = std::fs::remove_file(temp);
+        }
+    }
+}
+
+impl SaveCommitError {
+    pub fn into_parts(mut self) -> (io::Error, PathBuf) {
+        (self.error.take().unwrap(), self.temp.take().unwrap())
+    }
+}
+
+impl Drop for SaveCommitError {
+    fn drop(&mut self) {
+        if let Some(temp) = self.temp.take() {
+            let _ = std::fs::remove_file(temp);
+        }
+    }
+}
+
+// 排他ハンドルとmmapを呼び出し側で解放してからcommitできるよう、tempだけを先に作る。
+pub fn begin_save(
     path: &Path,
     buf: &TextBuffer,
     enc: Encoding,
     eol: Eol,
-) -> io::Result<PathBuf> {
+) -> io::Result<SaveTransaction> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(format!(".mptmp-{}-{}", std::process::id(), TEMP_SEQ.fetch_add(1, Ordering::Relaxed)));
     let tmp = PathBuf::from(tmp);
@@ -258,7 +304,7 @@ pub fn save_buffer(
         write_stream(&mut w, buf, enc, eol)?;
         w.flush()?;
     }
-    Ok(tmp)
+    Ok(SaveTransaction { temp: Some(tmp) })
 }
 
 fn write_stream<W: Write>(w: &mut W, buf: &TextBuffer, enc: Encoding, eol: Eol) -> io::Result<()> {
@@ -356,6 +402,22 @@ mod tests {
         let mut out = Vec::new();
         write_stream(&mut out, &buf, Encoding::Utf8 { bom: false }, Eol::Crlf).unwrap();
         assert_eq!(out, "あ\r\nb".as_bytes());
+    }
+
+    #[test]
+    fn abandoned_save_transaction_removes_temp_file() {
+        let path = unique_temp_path("abandoned_save");
+        let transaction = begin_save(
+            &path,
+            &TextBuffer::from_text("draft"),
+            Encoding::Utf8 { bom: false },
+            Eol::Lf,
+        )
+        .unwrap();
+        let temp = transaction.path().to_path_buf();
+        assert!(temp.exists());
+        drop(transaction);
+        assert!(!temp.exists());
     }
 
     // mmap-always: 64MB 未満の通常ファイルでも mmap で開く

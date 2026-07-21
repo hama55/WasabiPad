@@ -761,7 +761,7 @@ impl Doc {
         if self.source.is_view_only() {
             return Err(io::Error::new(io::ErrorKind::PermissionDenied, "閲覧専用文書は保存できません"));
         }
-        let tmp = fileio::save_buffer(path, &self.buf, enc, eol)?;
+        let transaction = fileio::begin_save(path, &self.buf, enc, eol)?;
         let same_target = self.source.path() == Some(path);
         let workspace_root = self.source.folder_root().map(Path::to_path_buf);
         let old_recovery = self.source.take_recovery();
@@ -769,7 +769,8 @@ impl Doc {
         if same_target {
             self.source.set_source_file(None);
         }
-        if let Err(rename_error) = std::fs::rename(&tmp, path) {
+        if let Err(failure) = transaction.commit(path) {
+            let (rename_error, tmp) = failure.into_parts();
             // 差し替えに失敗しても、書き出し済みtempから編集中内容を復元する。
             let recovered = fileio::open_buffer(&tmp)?;
             self.buf = recovered.buf;
