@@ -66,7 +66,7 @@ export class FavBar {
         e.preventDefault();
         window.clearTimeout(openTimer);
         button.classList.remove("fav-drop");
-        const source = this.decodePath(e.dataTransfer?.getData("application/x-petapad-favorite") ?? "");
+        const source = this.decodePath(e.dataTransfer?.getData("application/x-wasabipad-favorite") ?? "");
         if (source) await this.moveInto(source, path);
       });
     } else {
@@ -78,7 +78,7 @@ export class FavBar {
     }
 
     button.addEventListener("dragstart", (e) => {
-      e.dataTransfer?.setData("application/x-petapad-favorite", path.join("."));
+      e.dataTransfer?.setData("application/x-wasabipad-favorite", path.join("."));
       if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
     });
     button.addEventListener("contextmenu", (e) => {

@@ -1,4 +1,4 @@
-use petapad_core::Doc;
+use wasabipad_core::Doc;
 use std::sync::Mutex;
 
 pub(crate) struct DocState(pub(crate) Doc);

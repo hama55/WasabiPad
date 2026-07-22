@@ -47,7 +47,7 @@ jobs:
         run: |
           $installer = Get-ChildItem release/*-setup.exe | Select-Object -First 1
           gh release create $env:GITHUB_REF_NAME `
-            release/petapad.exe `
+            release/wasabipad.exe `
             $installer.FullName `
             --title $env:GITHUB_REF_NAME `
             --generate-notes

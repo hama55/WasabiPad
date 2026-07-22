@@ -1186,7 +1186,7 @@ mod tests {
 
     #[test]
     fn workspace_search_is_recursive_and_returns_character_columns() {
-        let root = std::env::temp_dir().join(format!("petapad_search_{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("wasabipad_search_{}", std::process::id()));
         std::fs::create_dir_all(root.join("sub")).unwrap();
         std::fs::write(root.join("top.txt"), "skip\nNeedle").unwrap();
         std::fs::write(root.join("sub").join("deep.txt"), "あ needle").unwrap();
@@ -1283,7 +1283,7 @@ mod tests {
 
     #[test]
     fn save_reacquires_exclusive_lock() {
-        let path = std::env::temp_dir().join(format!("petapad_save_lock_{}.txt", std::process::id()));
+        let path = std::env::temp_dir().join(format!("wasabipad_save_lock_{}.txt", std::process::id()));
         std::fs::write(&path, "abc").unwrap();
         let mut d = Doc::open(&path).unwrap();
         d.edit(p(0, 3), p(0, 3), p(0, 3), "!", false);
@@ -1299,7 +1299,7 @@ mod tests {
     // 安価に取れる。ファイル未選択中も新規メモの下書きを入力できる。
     #[test]
     fn open_folder_lists_root_children_lazily_and_selects_files() {
-        let root = std::env::temp_dir().join(format!("petapad_doctest_{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("wasabipad_doctest_{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("a.txt"), "hello").unwrap();
         std::fs::write(root.join("b.txt"), "world").unwrap();
@@ -1344,7 +1344,7 @@ mod tests {
     // 一切読まない。直下一覧は再帰しないので、深い階層があっても軽い。
     #[test]
     fn subfolder_children_are_listed_only_on_demand() {
-        let root = std::env::temp_dir().join(format!("petapad_doctest_sub_{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("wasabipad_doctest_sub_{}", std::process::id()));
         let sub = root.join("sub1");
         let deep = sub.join("sub1a");
         std::fs::create_dir_all(&deep).unwrap();
@@ -1412,7 +1412,7 @@ mod tests {
     // 中身を一切読まない (空のまま) ことを確認する
     #[test]
     fn standalone_zip_open_is_lazy_until_entry_selected() {
-        let root = std::env::temp_dir().join(format!("petapad_doctest_zip2_{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("wasabipad_doctest_zip2_{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let zpath = root.join("notes.zip");
         std::fs::write(&zpath, build_test_zip(&[("memo.txt", b"secret text")])).unwrap();
@@ -1443,7 +1443,7 @@ mod tests {
     // フォルダの一覧 (ツリー) はそのまま維持される。
     #[test]
     fn folder_browsing_lists_and_opens_nested_zip_entries_without_full_expand() {
-        let root = std::env::temp_dir().join(format!("petapad_doctest_zip3_{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("wasabipad_doctest_zip3_{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("a_note.txt"), "hello").unwrap();
         std::fs::write(

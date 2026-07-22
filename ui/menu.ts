@@ -28,7 +28,7 @@ export function showMenu(x: number, y: number, items: MenuItem[]) {
     if (item.dragData) {
       div.draggable = true;
       div.addEventListener("dragstart", (e) => {
-        e.dataTransfer?.setData("application/x-petapad-favorite", item.dragData!);
+        e.dataTransfer?.setData("application/x-wasabipad-favorite", item.dragData!);
         if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
       });
     }
@@ -92,7 +92,7 @@ export function showMenu(x: number, y: number, items: MenuItem[]) {
         e.preventDefault();
         e.stopPropagation();
         window.clearTimeout(openTimer);
-        const source = e.dataTransfer?.getData("application/x-petapad-favorite");
+        const source = e.dataTransfer?.getData("application/x-wasabipad-favorite");
         if (source) item.onDrop!(source, item.dropData!);
       });
     }

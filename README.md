@@ -1,10 +1,10 @@
-# PetaPad — 激軽メモ帳
+# WasabiPad — 激軽メモ帳
 
 軽快な操作感と、巨大なテキストファイルの省メモリ表示・編集を重視した Windows 用テキストエディタ。
 最優先価値: **起動速度・軽さ・行番号・巨大ファイル対応**。
 
 - UI: Tauri 2 + TypeScript (VSCode 風ダークテーマ、独自の仮想スクロールエディタ)
-- 内部処理: UI 非依存の共有crate `petapad-core` (Rust)
+- 内部処理: UI 非依存の共有crate `wasabipad-core` (Rust)
 - 文書は常に mmap ベースで開く (RAM に全文を載せない)。フロントへは可視スライスのみ渡す
 
 ## 機能
@@ -21,7 +21,7 @@
 - 行番号表示 (常時)
 - IME インライン変換
 - ファイルのドラッグ&ドロップで開く
-- コマンドライン引数でファイル指定可 (`petapad.exe file.txt`)
+- コマンドライン引数でファイル指定可 (`wasabipad.exe file.txt`)
 - お気に入りバー・アドレスバー・フォルダビュー
 
 ### エンコーディング / 改行コード
@@ -61,7 +61,7 @@
 ## 内部構成
 
 ```
-core/                  petapad-core (rlib, UI 非依存)
+core/                  wasabipad-core (rlib, UI 非依存)
   src/doc.rs            高レベル文書API (可視行取得・編集・検索・保存)
   src/buffer.rs          テキストバッファ (Small: 行Vec / Huge: mmap+overlay)
   src/hugebuf.rs          mmap + 疎な行インデックス + overlay 編集
@@ -71,7 +71,7 @@ core/                  petapad-core (rlib, UI 非依存)
   src/xlstext.rs          .xls (CFB+BIFF8) 連結ビュー
   src/bookmarks.rs        お気に入りの永続化
 
-src-tauri/              Tauri バックエンド (petapad-core を呼ぶコマンド層)
+src-tauri/              Tauri バックエンド (wasabipad-core を呼ぶコマンド層)
   src/main.rs            Tauri コマンド定義
 
 ui/                     フロントエンド (TypeScript)
@@ -103,7 +103,7 @@ PowerShellでリポジトリ直下のスクリプトを実行する。
 このスクリプトがNode依存パッケージの導入、フロントエンドのビルド、Rust/Tauriの
 リリースビルドを順番に実行する。成果物は `release/` に生成される。
 
-- `release/petapad.exe`: 単体実行版
+- `release/wasabipad.exe`: 単体実行版
 - `release/*-setup.exe`: Windowsインストーラー
 
 開発起動と単体テスト:
@@ -115,14 +115,14 @@ cargo test --manifest-path core/Cargo.toml
 
 ## インストール
 
-最新版はGitHubの [Releases](https://github.com/hama55/PetaPad/releases) から取得できる。
+最新版はGitHubの [Releases](https://github.com/hama55/WasabiPad/releases) から取得できる。
 
-- `PetaPad_*-setup.exe`: 通常のインストーラー
-- `petapad.exe`: インストール不要の単体実行版
+- `WasabiPad_*-setup.exe`: 通常のインストーラー
+- `wasabipad.exe`: インストール不要の単体実行版
 
 通常は `release/` 内の `*-setup.exe` を実行し、画面の案内に従う。
 
-インストールせず使う場合は、`release/petapad.exe` を好きなフォルダへ置いて
+インストールせず使う場合は、`release/wasabipad.exe` を好きなフォルダへ置いて
 そのまま実行する。WindowsからWebView2 Runtimeを要求された場合は、Microsoftの
 WebView2 Runtimeをインストールする。
 

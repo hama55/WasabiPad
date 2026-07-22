@@ -1,10 +1,10 @@
-// PetaPad Tauri backend — petapad-core を薄くラップするコマンド層。
+// WasabiPad Tauri backend — wasabipad-core を薄くラップするコマンド層。
 // 文書本体は core::Doc が所有し、フロントへは可視スライスだけを渡す (全文は渡さない)。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod state;
 
-use petapad_core::{
+use wasabipad_core::{
     self, BookmarkNode, Doc, DocInfo, EditResult, EncodingId, Eol, FindCursor, FindOutcome,
     FindResult, FolderEntry, PosC, ReplaceChunkResult, WorkspaceSearchResult,
 };
@@ -71,7 +71,7 @@ fn list_folder_entries(rel_dir: String, state: State) -> Result<Vec<FolderEntry>
 fn workspace_search(pat: String, match_case: bool, state: State) -> Result<Vec<WorkspaceSearchResult>, String> {
     let root = with_doc(&state, |doc| doc.workspace_root())
         .ok_or_else(|| "folder is not open".to_string())?;
-    Ok(petapad_core::search_workspace(&root, &pat, match_case))
+    Ok(wasabipad_core::search_workspace(&root, &pat, match_case))
 }
 
 #[tauri::command]
@@ -180,12 +180,12 @@ fn set_eol(eol: Eol, state: State) {
 
 #[tauri::command]
 fn load_bookmarks() -> Vec<BookmarkNode> {
-    petapad_core::load_bookmarks()
+    wasabipad_core::load_bookmarks()
 }
 
 #[tauri::command]
 fn save_bookmarks(nodes: Vec<BookmarkNode>) -> Result<(), String> {
-    petapad_core::save_bookmarks(&nodes).map_err(|e| e.to_string())
+    wasabipad_core::save_bookmarks(&nodes).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

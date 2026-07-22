@@ -4,7 +4,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
 $target = Join-Path $root "target\release"
 $output = Join-Path $root "release"
-$builtExe = Join-Path $target "petapad.exe"
+$builtExe = Join-Path $target "wasabipad.exe"
 
 if (-not (Test-Path -LiteralPath $builtExe -PathType Leaf)) {
     throw "Release executable not found: $builtExe"
@@ -16,7 +16,7 @@ if ($installers.Count -ne 1) {
 }
 
 New-Item -ItemType Directory -Force $output | Out-Null
-$exeOutput = Join-Path $output "petapad.exe"
+$exeOutput = Join-Path $output "wasabipad.exe"
 $installerOutput = Join-Path $output $installers[0].Name
 Copy-Item -LiteralPath $builtExe -Destination $exeOutput -Force
 Copy-Item -LiteralPath $installers[0].FullName -Destination $installerOutput -Force

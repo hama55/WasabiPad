@@ -17,7 +17,7 @@ fn store_path() -> PathBuf {
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
         .unwrap_or_default()
-        .join("petapad_bookmarks.txt")
+        .join("wasabipad_bookmarks.txt")
 }
 
 fn serialize_into(nodes: &[Node], depth: usize, out: &mut String) {

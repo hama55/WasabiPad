@@ -16,4 +16,4 @@ export const formatLineCount = (count: number) => `${count.toLocaleString("ja-JP
 export const formatCursor = (line: number, column: number) => `${line}行 ${column}列`;
 export const formatFontFamily = (family: string) => family.split(",")[0].replaceAll("\"", "").trim();
 export const formatWindowTitle = (session: DocumentSession) =>
-  `${session.dirty ? "● " : ""}${displayName(session)} — PetaPad`;
+  `${session.dirty ? "● " : ""}${displayName(session)} — WasabiPad`;

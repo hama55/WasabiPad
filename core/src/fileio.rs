@@ -414,7 +414,7 @@ mod tests {
 
     fn unique_temp_path(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
-            "petapad_{label}_{}_{}.txt",
+            "wasabipad_{label}_{}_{}.txt",
             std::process::id(),
             TEMP_SEQ.fetch_add(1, Ordering::Relaxed)
         ))
@@ -490,7 +490,7 @@ mod tests {
     // mmap-always: 64MB 未満の通常ファイルでも mmap で開く
     #[test]
     fn small_file_uses_mmap() {
-        let path = std::env::temp_dir().join("petapad_test_mmap_small.txt");
+        let path = std::env::temp_dir().join("wasabipad_test_mmap_small.txt");
         std::fs::write(&path, "line1\nline2\nあいう").unwrap();
         let o = open_buffer(&path).unwrap();
         assert!(o.buf.is_huge(), "小ファイルも mmap 経路で開くはず");
@@ -502,7 +502,7 @@ mod tests {
     // 空ファイルは mmap 不可 → in-RAM へフォールバック
     #[test]
     fn empty_file_falls_back_to_ram() {
-        let path = std::env::temp_dir().join("petapad_test_mmap_empty.txt");
+        let path = std::env::temp_dir().join("wasabipad_test_mmap_empty.txt");
         std::fs::write(&path, "").unwrap();
         let o = open_buffer(&path).unwrap();
         assert!(!o.buf.is_huge());
@@ -512,7 +512,7 @@ mod tests {
 
     #[test]
     fn utf16_ram_file_is_exclusive() {
-        let path = std::env::temp_dir().join("petapad_test_exclusive_utf16.txt");
+        let path = std::env::temp_dir().join("wasabipad_test_exclusive_utf16.txt");
         std::fs::write(&path, [0xFF, 0xFE, b'a', 0]).unwrap();
         let o = open_buffer(&path).unwrap();
         assert!(!o.buf.is_huge());

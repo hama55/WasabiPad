@@ -2081,29 +2081,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
-name = "petapad"
-version = "0.3.0"
-dependencies = [
- "petapad-core",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
-]
-
-[[package]]
-name = "petapad-core"
-version = "0.3.0"
-dependencies = [
- "encoding_rs",
- "memchr",
- "miniz_oxide",
- "serde",
- "windows-sys 0.60.2",
-]
-
-[[package]]
 name = "phf"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3766,6 +3743,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bfa7760aed19e106de2c7c0b581b509f2f25d3dacaf737cb82ac61bc6d760b0e"
 dependencies = [
  "try-lock",
+]
+
+[[package]]
+name = "wasabipad"
+version = "0.3.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "wasabipad-core",
+]
+
+[[package]]
+name = "wasabipad-core"
+version = "0.3.0"
+dependencies = [
+ "encoding_rs",
+ "memchr",
+ "miniz_oxide",
+ "serde",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]

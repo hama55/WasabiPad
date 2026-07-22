@@ -1,6 +1,6 @@
 #requires -Version 7.0
-# PetaPad アイコン生成: 紙1枚 + 緑ペン (TeraPad リスペクト)
-# 出力: assets/petapad.ico (256/48/32/16 PNG エントリ)
+# WasabiPad アイコン生成: 紙1枚 + 緑ペン (TeraPad リスペクト)
+# 出力: assets/wasabipad.ico (256/48/32/16 PNG エントリ)
 Add-Type -AssemblyName System.Drawing
 
 $dir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -11,9 +11,8 @@ function Draw-Icon([int]$size) {
     $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
     $s = $size / 256.0
 
-    # ---- 紙 1枚 (正立) ----
+    # ---- 紙 1枚 (正立、縁取りなしのフラット表現) ----
     $paperFill = [System.Drawing.Color]::FromArgb(255, 250, 243, 208)
-    $paperEdge = [System.Drawing.Color]::FromArgb(255, 60, 56, 42)
     $lineCol   = [System.Drawing.Color]::FromArgb(255, 150, 136, 92)
     $g.TranslateTransform(118 * $s, 138 * $s)
     $g.RotateTransform(0)
@@ -21,12 +20,9 @@ function Draw-Icon([int]$size) {
     $rect = New-Object System.Drawing.RectangleF (-$pw/2), (-$ph/2), $pw, $ph
     $br = New-Object System.Drawing.SolidBrush $paperFill
     $g.FillRectangle($br, $rect)
-    $pen = New-Object System.Drawing.Pen -ArgumentList @($paperEdge, [single]([Math]::Max(1.0, 9 * $s)))
-    $pen.LineJoin = [System.Drawing.Drawing2D.LineJoin]::Round
-    $g.DrawRectangle($pen, $rect.X, $rect.Y, $rect.Width, $rect.Height)
     # 本文の線
-    $pen.Color = $lineCol
-    $pen.Width = [single]([Math]::Max(1.0, 8 * $s))
+    $pen = New-Object System.Drawing.Pen -ArgumentList @($lineCol, [single]([Math]::Max(1.0, 8 * $s)))
+    $pen.LineJoin = [System.Drawing.Drawing2D.LineJoin]::Round
     $pen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
     $pen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
     $x0 = -$pw/2 + 24*$s; $x1 = $pw/2 - 24*$s
@@ -37,13 +33,12 @@ function Draw-Icon([int]$size) {
     }
     $g.ResetTransform()
 
-    # ---- 緑ペン (右上から左下へ、先端が紙の上) ----
+    # ---- 緑ペン (右上から左下へ、先端が紙の上、縁取りなしのフラット表現) ----
     $bodyCol  = [System.Drawing.Color]::FromArgb(255, 46, 164, 79)
     $darkCol  = [System.Drawing.Color]::FromArgb(255, 26, 118, 52)
+    $lightCol = [System.Drawing.Color]::FromArgb(255, 130, 224, 110)
     $woodCol  = [System.Drawing.Color]::FromArgb(255, 235, 195, 90)
     $leadCol  = [System.Drawing.Color]::FromArgb(255, 70, 56, 34)
-    $edgePen  = New-Object System.Drawing.Pen -ArgumentList @([System.Drawing.Color]::FromArgb(255, 30, 60, 38), [single]([Math]::Max(1.0, 6 * $s)))
-    $edgePen.LineJoin = [System.Drawing.Drawing2D.LineJoin]::Round
     # 先端 (70,190) から 45度右上方向
     $g.RotateTransform(-45, [System.Drawing.Drawing2D.MatrixOrder]::Append)
     $g.TranslateTransform(70 * $s, 190 * $s, [System.Drawing.Drawing2D.MatrixOrder]::Append)
@@ -68,19 +63,10 @@ function Draw-Icon([int]$size) {
     $g.FillRectangle((New-Object System.Drawing.SolidBrush $bodyCol), $tip, (-$hw), ($L - $tip), (2*$hw))
     # 影側ストライプ
     $g.FillRectangle((New-Object System.Drawing.SolidBrush $darkCol), $tip, ($hw - 12*$s), ($L - $tip), (12*$s))
+    # ツヤのハイライトストライプ (わさびの瑞々しさ)
+    $g.FillRectangle((New-Object System.Drawing.SolidBrush $lightCol), $tip, (-$hw), ($L - $tip), (8*$s))
     # 尻のキャップ
     $g.FillRectangle((New-Object System.Drawing.SolidBrush $darkCol), ($L - 12*$s), (-$hw), (12*$s), (2*$hw))
-    # 輪郭
-    $outline = @(
-        (New-Object System.Drawing.PointF 0, 0),
-        (New-Object System.Drawing.PointF $tip, (-$hw)),
-        (New-Object System.Drawing.PointF $L, (-$hw)),
-        (New-Object System.Drawing.PointF $L, $hw),
-        (New-Object System.Drawing.PointF $tip, $hw)
-    )
-    $g.DrawPolygon($edgePen, [System.Drawing.PointF[]]$outline)
-    # 木部と軸の境界線
-    $g.DrawLine($edgePen, $tip, (-$hw), $tip, $hw)
     $g.ResetTransform()
 
     $g.Dispose()
@@ -114,6 +100,6 @@ foreach ($sz in $sizes) {
     $offset += $pngs[$sz].Length
 }
 foreach ($sz in $sizes) { $w.Write($pngs[$sz]) }
-[System.IO.File]::WriteAllBytes("$dir\petapad.ico", $out.ToArray())
+[System.IO.File]::WriteAllBytes("$dir\wasabipad.ico", $out.ToArray())
 $w.Dispose()
-"petapad.ico written: $((Get-Item "$dir\petapad.ico").Length) bytes"
+"wasabipad.ico written: $((Get-Item "$dir\wasabipad.ico").Length) bytes"

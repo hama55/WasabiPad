@@ -11,10 +11,10 @@ describe("display formatting", () => {
 
   it("derives the window title from session state", () => {
     const session = initialSession();
-    expect(formatWindowTitle(session)).toBe("無題 — PetaPad");
+    expect(formatWindowTitle(session)).toBe("無題 — WasabiPad");
     session.displayPath = "C:\\work\\memo.txt";
     session.savePath = session.displayPath;
     session.dirty = true;
-    expect(formatWindowTitle(session)).toBe("● memo.txt — PetaPad");
+    expect(formatWindowTitle(session)).toBe("● memo.txt — WasabiPad");
   });
 });

@@ -304,7 +304,7 @@ mod tests {
 
     #[test]
     fn list_dir_returns_relative_names_and_paths() {
-        let root = std::env::temp_dir().join(format!("petapad_dirtest_{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("wasabipad_dirtest_{}", std::process::id()));
         let sub = root.join("sub");
         std::fs::create_dir_all(&sub).unwrap();
         std::fs::write(root.join("a.txt"), "hello").unwrap();
