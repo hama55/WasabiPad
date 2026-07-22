@@ -9,8 +9,10 @@ import {
   charToU16,
   comparePos as cmp,
   findProgressPercent,
+  positionAfterDeletion,
   u16ToChar,
   unescapePattern,
+  wordBounds,
 } from "./editor-math";
 
 const CHUNK = 512; // 行取得のバックエンド往復単位
@@ -917,21 +919,36 @@ export class VirtualEditor {
   private async copy(cut: boolean) {
     if (!this.hasSel()) return;
     const [s, e] = this.selNorm();
-    let text: string;
-    if (s.line === e.line) {
-      text = [...(await this.ensureLine(s.line))].slice(s.col, e.col).join("");
-    } else {
-      const parts: string[] = [];
-      for (let i = s.line; i <= e.line; i++) {
-        const str = await this.ensureLine(i);
-        if (i === s.line) parts.push([...str].slice(s.col).join(""));
-        else if (i === e.line) parts.push([...str].slice(0, e.col).join(""));
-        else parts.push(str);
-      }
-      text = parts.join("\n");
-    }
+    const text = await this.selectedText(s, e);
     await navigator.clipboard.writeText(text);
     if (cut && !this.readOnly) this.deleteSel();
+  }
+
+  private async selectedText(s: Pos, e: Pos): Promise<string> {
+    const parts: string[] = [];
+    for (let i = s.line; i <= e.line; i++) {
+      const str = await this.ensureLine(i);
+      if (i === s.line && i === e.line) parts.push([...str].slice(s.col, e.col).join(""));
+      else if (i === s.line) parts.push([...str].slice(s.col).join(""));
+      else if (i === e.line) parts.push([...str].slice(0, e.col).join(""));
+      else parts.push(str);
+    }
+    return parts.join("\n");
+  }
+
+  private moveSelection(target: Pos) {
+    if (this.readOnly) return;
+    const [s, e] = this.selNorm();
+    if (cmp(target, s) >= 0 && cmp(target, e) <= 0) return;
+    this.run(async () => {
+      const text = await this.selectedText(s, e);
+      const drop = cmp(target, e) > 0 ? positionAfterDeletion(s, e, target) : target;
+      const deleted = await api.edit(s, e, e, "", false);
+      this.applyResult(deleted, s.line);
+      const inserted = await api.edit(drop, drop, drop, text, false);
+      this.applyResult(inserted, drop.line);
+      await this.renderAfterEdit();
+    });
   }
 
   private async paste() {
@@ -1082,6 +1099,39 @@ export class VirtualEditor {
     if (!pos) return;
     e.preventDefault();
     this.focus();
+    if (!this.readOnly && this.hasSel()) {
+      const [s, end] = this.selNorm();
+      if (cmp(pos, s) >= 0 && cmp(pos, end) < 0) {
+        const startX = e.clientX;
+        const startY = e.clientY;
+        let dragging = false;
+        const moveSelection = (ev: MouseEvent) => {
+          if (Math.abs(ev.clientX - startX) > 3 || Math.abs(ev.clientY - startY) > 3) dragging = true;
+        };
+        const upSelection = (ev: MouseEvent) => {
+          window.removeEventListener("mousemove", moveSelection);
+          window.removeEventListener("mouseup", upSelection);
+          if (dragging) {
+            const drop = this.posFromPoint(ev.clientX, ev.clientY);
+            if (drop) this.moveSelection(drop);
+          } else {
+            this.moveTo(pos, false);
+          }
+        };
+        window.addEventListener("mousemove", moveSelection);
+        window.addEventListener("mouseup", upSelection);
+        return;
+      }
+    }
+    if (e.detail === 2) {
+      const text = this.lineText(pos.line) ?? "";
+      const bounds = wordBounds(text, pos.col);
+      if (bounds) {
+        this.moveTo({ line: pos.line, col: bounds.start }, false);
+        this.moveTo({ line: pos.line, col: bounds.end }, true);
+      }
+      return;
+    }
     this.moveTo(pos, e.shiftKey);
     const move = (ev: MouseEvent) => {
       const p = this.posFromPoint(ev.clientX, ev.clientY);
