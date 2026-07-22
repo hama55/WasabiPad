@@ -38,8 +38,7 @@ export class FindBar {
       </div>
       <div class="ve-find-row ve-rep-row">
         <input class="ve-rep-in" placeholder="置換" spellcheck="false" />
-        <button class="ve-rep-next">連続置換</button>
-        <button class="ve-rep-all">すべて置換</button>
+        <div class="ve-rep-actions"><button class="ve-rep-next">連続置換</button><button class="ve-rep-all">すべて置換</button></div>
       </div>`;
     host.appendChild(this.root);
 

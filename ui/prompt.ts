@@ -137,3 +137,29 @@ export function confirmMessage(
     ok.focus();
   });
 }
+
+export type SaveDiscardChoice = "save" | "discard" | "cancel";
+
+export function confirmSaveDiscard(): Promise<SaveDiscardChoice> {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "pf-overlay";
+    overlay.innerHTML = `<div class="pf-box"><div class="pf-title">未保存の変更</div><div class="pf-message">変更が保存されていない</div><div class="pf-btns"><button class="pf-cancel">キャンセル</button><button class="pf-discard">破棄</button><button class="pf-ok">保存して続ける</button></div></div>`;
+    document.body.appendChild(overlay);
+    const finish = (value: SaveDiscardChoice) => {
+      overlay.remove();
+      window.removeEventListener("keydown", onKey, true);
+      resolve(value);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { e.preventDefault(); finish("cancel"); }
+      if (e.key === "Enter") { e.preventDefault(); finish("save"); }
+    };
+    overlay.querySelector(".pf-cancel")!.addEventListener("click", () => finish("cancel"));
+    overlay.querySelector(".pf-discard")!.addEventListener("click", () => finish("discard"));
+    overlay.querySelector(".pf-ok")!.addEventListener("click", () => finish("save"));
+    overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) finish("cancel"); });
+    window.addEventListener("keydown", onKey, true);
+    overlay.querySelector<HTMLButtonElement>(".pf-ok")!.focus();
+  });
+}

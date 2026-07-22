@@ -74,7 +74,7 @@ export class Sidebar {
     this.searchClear.addEventListener("click", () => this.clearWorkspaceSearch());
     this.searchCase.addEventListener("change", () => this.queueWorkspaceSearch());
     this.host.addEventListener("contextmenu", (e) => {
-      if (e.target !== this.host) return; // 個々の行上は行側のリスナーに任せる
+      if (e.target !== this.host && e.target !== this.tree) return; // 個々の行上は行側のリスナーに任せる
       e.preventDefault();
       this.onContextMenu(e.clientX, e.clientY, null);
     });

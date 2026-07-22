@@ -21,6 +21,14 @@ export class FavBar {
         { label: "グループを追加...", action: () => this.addGroup() },
       ]);
     });
+    this.host.addEventListener("dragover", (e) => {
+      if (e.target === this.host && e.dataTransfer?.types.includes("application/x-wasabipad-favorite")) e.preventDefault();
+    });
+    this.host.addEventListener("drop", (e) => {
+      if (e.target !== this.host) return;
+      const source = this.decodePath(e.dataTransfer?.getData("application/x-wasabipad-favorite") ?? "");
+      if (source) { e.preventDefault(); void this.moveTo(source, null); }
+    });
   }
 
   async init() {
@@ -49,8 +57,11 @@ export class FavBar {
       });
       button.addEventListener("dragover", (e) => {
         e.preventDefault();
-        button.classList.add("fav-drop");
-        if (openTimer === undefined) {
+        const position = this.dropPosition(button, e.clientX);
+        button.classList.toggle("fav-drop", position === "inside");
+        button.classList.toggle("fav-drop-before", position === "before");
+        button.classList.toggle("fav-drop-after", position === "after");
+        if (position === "inside" && openTimer === undefined) {
           openTimer = window.setTimeout(() => {
             const rect = button.getBoundingClientRect();
             showMenu(rect.left, rect.bottom, this.groupItems(node.children, path));
@@ -58,22 +69,38 @@ export class FavBar {
         }
       });
       button.addEventListener("dragleave", () => {
-        button.classList.remove("fav-drop");
+        button.classList.remove("fav-drop", "fav-drop-before", "fav-drop-after");
         window.clearTimeout(openTimer);
         openTimer = undefined;
       });
       button.addEventListener("drop", async (e) => {
         e.preventDefault();
         window.clearTimeout(openTimer);
-        button.classList.remove("fav-drop");
+        button.classList.remove("fav-drop", "fav-drop-before", "fav-drop-after");
         const source = this.decodePath(e.dataTransfer?.getData("application/x-wasabipad-favorite") ?? "");
-        if (source) await this.moveInto(source, path);
+        if (!source) return;
+        const position = this.dropPosition(button, e.clientX);
+        if (position === "inside") await this.moveInto(source, path);
+        else await this.moveAdjacent(source, path, position === "after");
       });
     } else {
       button.title = node.path;
       button.addEventListener("click", (e) => this.onOpen(node.path, e.ctrlKey));
       button.addEventListener("auxclick", (e) => {
         if (e.button === 1) this.onOpen(node.path, true);
+      });
+      button.addEventListener("dragover", (e) => {
+        e.preventDefault();
+        const after = this.dropPosition(button, e.clientX) === "after";
+        button.classList.toggle("fav-drop-before", !after);
+        button.classList.toggle("fav-drop-after", after);
+      });
+      button.addEventListener("dragleave", () => button.classList.remove("fav-drop-before", "fav-drop-after"));
+      button.addEventListener("drop", async (e) => {
+        e.preventDefault();
+        button.classList.remove("fav-drop-before", "fav-drop-after");
+        const source = this.decodePath(e.dataTransfer?.getData("application/x-wasabipad-favorite") ?? "");
+        if (source) await this.moveAdjacent(source, path, this.dropPosition(button, e.clientX) === "after");
       });
     }
 
@@ -193,6 +220,38 @@ export class FavBar {
 
   private async moveInto(source: NodePath, target: NodePath) {
     await this.moveTo(source, target);
+  }
+
+  private dropPosition(button: HTMLElement, clientX: number): "before" | "inside" | "after" {
+    const rect = button.getBoundingClientRect();
+    const ratio = (clientX - rect.left) / rect.width;
+    if (button.querySelector(".fav-icon-group") && ratio >= 0.3 && ratio <= 0.7) return "inside";
+    return ratio < 0.5 ? "before" : "after";
+  }
+
+  private async moveAdjacent(source: NodePath, target: NodePath, after: boolean) {
+    if (source.join(".") === target.join(".")) return;
+    if (target.length > source.length && source.every((part, i) => target[i] === part)) return;
+    const sourceList = this.listAt(source.slice(0, -1));
+    const targetNode = this.nodeAt(target);
+    const node = sourceList?.[source.at(-1)!];
+    if (!sourceList || !targetNode || !node) return;
+    sourceList.splice(source.at(-1)!, 1);
+    const targetList = this.findParentList(targetNode, this.nodes);
+    if (!targetList) return;
+    const targetIndex = targetList.indexOf(targetNode);
+    targetList.splice(targetIndex + (after ? 1 : 0), 0, node);
+    await this.persist();
+  }
+
+  private findParentList(target: BmNode, nodes: BmNode[]): BmNode[] | null {
+    if (nodes.includes(target)) return nodes;
+    for (const node of nodes) {
+      if (node.kind !== "group") continue;
+      const found = this.findParentList(target, node.children);
+      if (found) return found;
+    }
+    return null;
   }
 
   private async moveTo(source: NodePath, target: NodePath | null) {

@@ -5,6 +5,15 @@ Set-Location $PSScriptRoot
 npm ci
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+npm run build
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+cargo test --workspace --locked
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+cargo check --workspace --locked
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
 npm run tauri build
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

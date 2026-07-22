@@ -6,7 +6,7 @@ import { VirtualEditor } from "./editor";
 import { Sidebar, ContextTarget } from "./sidebar";
 import { FavBar } from "./favbar";
 import { showMenu, MenuItem } from "./menu";
-import { confirmMessage, promptFields } from "./prompt";
+import { confirmMessage, confirmSaveDiscard, promptFields } from "./prompt";
 import { initialSession, sessionFromDocInfo } from "./session";
 import { showError } from "./dialogs";
 import {
@@ -168,7 +168,7 @@ window.setInterval(async () => {
 const favbar = new FavBar(
   $("favbar"),
   (p, newWindow) => newWindow ? api.launchNew(p) : openFile(p),
-  () => session.displayPath || null,
+  () => addressbar.value.trim() || null,
   setStartupPath
 );
 
@@ -350,7 +350,8 @@ async function saveTo(path: string, folderDraftRoot: string | null = null): Prom
 async function confirmDiscard(): Promise<boolean> {
   if (!session.dirty || session.readOnly) return true;
   if (session.folderRoot && !session.savePath && !session.selectedRelPath) return doSave();
-  return confirmMessage("未保存の変更", "変更が保存されていない。破棄する", "破棄");
+  const choice = await confirmSaveDiscard();
+  return choice === "discard" || (choice === "save" && await doSave());
 }
 
 async function pickAndOpen(directory: boolean) {
@@ -367,14 +368,12 @@ function sidebarContextMenu(x: number, y: number, target: ContextTarget | null) 
   if (!session.folderRoot) return; // アーカイブ閲覧中はファイル操作の対象がない
   const items: MenuItem[] = [];
   if (target) {
+    if (target.isDir) items.push({ label: "新規メモ作成...", action: () => createNoteIn(target.relPath) });
     items.push({ label: "名前を変更...", action: () => renameEntry(target.relPath) });
   }
   const revealPath = target ? relToAbs(target.relPath) : session.folderRoot;
   const revealIsDir = target ? target.isDir : true;
-  items.push(
-    { label: "お気に入りに追加", action: () => favbar.addExternal(revealPath) },
-    { label: "デフォルトに設定", action: () => setStartupPath(revealPath) }
-  );
+  items.push({ label: "お気に入りに追加", action: () => favbar.addExternal(revealPath) });
   items.push({ label: "エクスプローラで開く", action: () => revealInExplorer(revealPath, revealIsDir) });
   showMenu(x, y, items);
 }
@@ -448,6 +447,21 @@ const commands = createCommandRegistry({
 function commandMenuItem(id: CommandId, extra: Partial<MenuItem> = {}): MenuItem {
   const command = commands[id];
   return { label: command.label, key: command.shortcut, action: command.run, ...extra };
+}
+
+async function createNoteIn(relDir: string) {
+  const spec = await promptMemoSpec();
+  if (!spec) return;
+  const name = `${spec.stem}${spec.extension ? `.${spec.extension}` : ""}`;
+  try {
+    const info = await api.createNote(relDir, name);
+    session.selectedRelPath = `${relDir}/${name}`;
+    applyDocInfo(info);
+    await sidebar.refreshFolderEntries();
+    sidebar.selectByRelPath(session.selectedRelPath);
+  } catch (e) {
+    await showError("新規メモを作成できませんでした", e);
+  }
 }
 
 $("menu-file").addEventListener("click", (e) => {

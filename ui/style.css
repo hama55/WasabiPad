@@ -118,6 +118,8 @@ body {
 #favbar button:hover { background: var(--hover); }
 #favbar button { display: inline-flex; align-items: center; gap: 6px; }
 #favbar button.fav-drop { outline: 1px solid var(--accent); background: var(--hover); }
+#favbar button.fav-drop-before { box-shadow: inset 2px 0 var(--accent); }
+#favbar button.fav-drop-after { box-shadow: inset -2px 0 var(--accent); }
 .fav-icon { position: relative; display: inline-block; flex: none; width: 14px; height: 14px; }
 .fav-icon-file { width: 10px; height: 13px; border: 1px solid var(--fg-dim); border-radius: 1px; }
 .fav-icon-file::after { content: ""; position: absolute; right: -1px; top: -1px; border-style: solid; border-width: 0 0 4px 4px; border-color: transparent transparent var(--fg-dim) transparent; }
@@ -257,14 +259,19 @@ body {
   background: var(--bg-side); border: 1px solid var(--border-strong); border-radius: 5px;
   box-shadow: 0 4px 12px #000a; padding: 6px;
 }
-.ve-find-row { display: flex; align-items: center; gap: 4px; }
-.ve-rep-row { margin-top: 4px; padding-left: 27px; display: none; }
-.ve-find.with-rep .ve-rep-row { display: flex; }
+.ve-find-row {
+  display: grid; align-items: center; gap: 4px;
+  grid-template-columns: 23px 194px auto auto auto minmax(90px, 1fr) auto;
+}
+.ve-rep-row { margin-top: 4px; display: none; }
+.ve-find.with-rep .ve-rep-row { display: grid; }
+.ve-rep-in { grid-column: 2; box-sizing: border-box; }
+.ve-rep-actions { grid-column: 3 / -1; display: flex; gap: 4px; }
 .ve-find input[type="text"], .ve-find-in, .ve-rep-in {
   background: var(--bg-editor); color: var(--fg);
   border: 1px solid var(--border-strong); border-radius: 3px;
   padding: 3px 6px; font-size: 13px; font-family: var(--font-ui);
-  width: 180px; outline: none;
+  width: 194px; box-sizing: border-box; outline: none;
 }
 .ve-find-in:focus, .ve-rep-in:focus { border-color: var(--bg-status); }
 .ve-find button {
