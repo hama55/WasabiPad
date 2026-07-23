@@ -144,7 +144,7 @@ export function confirmSaveDiscard(): Promise<SaveDiscardChoice> {
   return new Promise((resolve) => {
     const overlay = document.createElement("div");
     overlay.className = "pf-overlay";
-    overlay.innerHTML = `<div class="pf-box"><div class="pf-title">未保存の変更</div><div class="pf-message">変更が保存されていない</div><div class="pf-btns"><button class="pf-cancel">キャンセル</button><button class="pf-discard">破棄</button><button class="pf-ok">保存して続ける</button></div></div>`;
+    overlay.innerHTML = `<div class="pf-box"><div class="pf-title">未保存のファイルがあります。</div><div class="pf-message">保存して続行するか、変更を破棄してください。</div><div class="pf-btns"><button class="pf-cancel">キャンセル</button><button class="pf-discard">破棄</button><button class="pf-ok">保存して続行</button></div></div>`;
     document.body.appendChild(overlay);
     const finish = (value: SaveDiscardChoice) => {
       overlay.remove();

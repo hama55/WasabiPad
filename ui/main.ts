@@ -58,9 +58,11 @@ const sidebarEl = $("sidebar");
 const splitter = $("splitter");
 const addressbar = $<HTMLInputElement>("addressbar");
 const loading = $("loading");
+const loadingMessage = $("loading-message");
 
-function setLoading(active: boolean) {
+function setLoading(active: boolean, message = "読み込み中…") {
   loading.hidden = !active;
+  loadingMessage.textContent = message;
   editorHost.setAttribute("aria-busy", String(active));
 }
 
@@ -362,46 +364,49 @@ async function saveFolderDraft(): Promise<boolean> {
 }
 
 async function saveTo(path: string, folderDraftRoot: string | null = null): Promise<boolean> {
+  setLoading(true, "書き込み中…");
+  let outcome: api.SaveOutcome;
   try {
-    const outcome = await api.saveFile(path, session.encoding, session.eol);
-    if (outcome.kind === "conflict") {
-      // 本体は上書きされていない。dirty のまま残し、バナーで再読込/無視を選ばせる
-      await showError(
-        "保存先が他のアプリで変更されています",
-        `編集内容を退避保存しました:\n${outcome.saved_to}`
-      );
-      return false;
-    }
-    session.savePath = path;
-    session.displayPath = path;
-    session.sourceEncoding = session.encoding;
-    session.dirty = false;
-    addressbar.value = path;
-    renderEncodingStatus();
-    updateTitle();
-    showSavedNotice();
-    if (folderDraftRoot) {
-      const rel = relativePathWithinRoot(folderDraftRoot, path);
-      if (rel !== null) {
-        session.selectedRelPath = rel;
-        try {
-          sidebar.setEntries(await api.listFolderEntries(""));
-          sidebar.selectByRelPath(rel);
-        } catch {
-          // 保存自体は成功しているため、一覧更新の失敗でdirtyへ戻さない。
-        }
-      }
-    }
-    return true;
+    outcome = await api.saveFile(path, session.encoding, session.eol);
   } catch (e) {
+    setLoading(false);
     await showError("保存できませんでした", e);
     return false;
   }
+  setLoading(false);
+  if (outcome.kind === "conflict") {
+    // 本体は上書きされていない。dirty のまま残し、バナーで再読込/無視を選ばせる
+    await showError(
+      "保存先が他のアプリで変更されています",
+      `編集内容を退避保存しました:\n${outcome.saved_to}`
+    );
+    return false;
+  }
+  session.savePath = path;
+  session.displayPath = path;
+  session.sourceEncoding = session.encoding;
+  session.dirty = false;
+  addressbar.value = path;
+  renderEncodingStatus();
+  updateTitle();
+  showSavedNotice();
+  if (folderDraftRoot) {
+    const rel = relativePathWithinRoot(folderDraftRoot, path);
+    if (rel !== null) {
+      session.selectedRelPath = rel;
+      try {
+        sidebar.setEntries(await api.listFolderEntries(""));
+        sidebar.selectByRelPath(rel);
+      } catch {
+        // 保存自体は成功しているため、一覧更新の失敗でdirtyへ戻さない。
+      }
+    }
+  }
+  return true;
 }
 
 async function confirmDiscard(): Promise<boolean> {
   if (!session.dirty || session.readOnly) return true;
-  if (session.folderRoot && !session.savePath && !session.selectedRelPath) return doSave();
   const choice = await confirmSaveDiscard();
   return choice === "discard" || (choice === "save" && await doSave());
 }
