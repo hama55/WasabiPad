@@ -147,12 +147,13 @@ const sidebar = new Sidebar(
   (relPath) => api.listArchiveEntries(relPath),
   (relDir) => api.listFolderEntries(relDir),
   (pat, matchCase) => api.workspaceSearch(pat, matchCase),
-  async (result) => {
+  async (result, pattern) => {
     if (!(await confirmDiscard())) return;
     session.selectedRelPath = result.rel_path;
     const info = await api.selectEntry(result.rel_path);
     applyDocInfo(info);
-    editor.goTo(result.line, result.col);
+    if (result.is_filename) editor.goTo(result.line, result.col);
+    else editor.selectRange(result.line, result.col, result.col + [...pattern].length);
   }
 );
 let folderRefreshRunning = false;
@@ -424,8 +425,8 @@ function relToAbs(relPath: string): string {
 function sidebarContextMenu(x: number, y: number, target: ContextTarget | null) {
   if (!session.folderRoot) return; // アーカイブ閲覧中はファイル操作の対象がない
   const items: MenuItem[] = [];
+  items.push({ label: "新規メモ作成...", action: () => createNoteIn(target?.isDir ? target.relPath : null) });
   if (target) {
-    if (target.isDir) items.push({ label: "新規メモ作成...", action: () => createNoteIn(target.relPath) });
     items.push({ label: "名前を変更...", action: () => renameEntry(target.relPath) });
   }
   const revealPath = target ? relToAbs(target.relPath) : session.folderRoot;
@@ -506,13 +507,13 @@ function commandMenuItem(id: CommandId, extra: Partial<MenuItem> = {}): MenuItem
   return { label: command.label, key: command.shortcut, action: command.run, ...extra };
 }
 
-async function createNoteIn(relDir: string) {
+async function createNoteIn(relDir: string | null) {
   const spec = await promptMemoSpec();
   if (!spec) return;
   const name = `${spec.stem}${spec.extension ? `.${spec.extension}` : ""}`;
   try {
     const info = await api.createNote(relDir, name);
-    session.selectedRelPath = `${relDir}/${name}`;
+    session.selectedRelPath = relDir ? `${relDir}/${name}` : name;
     applyDocInfo(info);
     await sidebar.refreshFolderEntries();
     sidebar.selectByRelPath(session.selectedRelPath);
@@ -553,6 +554,8 @@ addressbar.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && addressbar.value.trim()) openFile(addressbar.value.trim());
 });
 $("addressbar-fav").addEventListener("click", () => favbar.addCurrent());
+$("addressbar-save").addEventListener("click", () => { void doSave(); });
+$("addressbar-new").addEventListener("click", () => { void newFile(); });
 $("addressbar-open").addEventListener("click", () => pickAndOpen(false));
 $("toggle-sidebar").addEventListener("click", () => {
   if (!sidebarAvailable) return;

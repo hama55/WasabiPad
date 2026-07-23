@@ -215,6 +215,13 @@ export class VirtualEditor {
     this.focus();
   }
 
+  selectRange(line: number, startCol: number, endCol: number) {
+    const targetLine = Math.max(0, Math.min(this.lineCount - 1, line));
+    this.anchor = { line: targetLine, col: Math.max(0, startCol) };
+    this.moveTo({ line: targetLine, col: Math.max(startCol, endCol) }, true);
+    this.focus();
+  }
+
   setWrap(on: boolean) {
     if (this.wrap === on) return;
     const topLine = this.wrap || this.scaleMode ? this.topLineF : this.pxToLine(this.scroll.scrollTop);

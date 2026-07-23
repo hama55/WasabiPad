@@ -40,6 +40,7 @@ pub fn search_workspace(root: &Path, pattern: &str, match_case: bool) -> Vec<Wor
                             line: 0,
                             col: 0,
                             preview: format!("ファイル名: {file_name}"),
+                            is_filename: true,
                         }));
                     }
                 }
@@ -58,6 +59,7 @@ pub fn search_workspace(root: &Path, pattern: &str, match_case: bool) -> Vec<Wor
                         line,
                         col: text[..col].chars().count(),
                         preview: text.trim().chars().take(180).collect(),
+                        is_filename: false,
                     }));
                 }
             });

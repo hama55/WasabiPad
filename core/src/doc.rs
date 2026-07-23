@@ -296,6 +296,7 @@ pub struct WorkspaceSearchResult {
     pub line: usize,
     pub col: usize,
     pub preview: String,
+    pub is_filename: bool,
 }
 
 // チャンク分割検索の再開カーソル。1回の呼び出しで budget 行だけ走査し、
@@ -524,8 +525,10 @@ impl Doc {
         let Some(path) = self.source.path().map(Path::to_path_buf) else {
             return ExternalCheck::Unchanged;
         };
-        if fileio::stamp(&path).ok() == Some(stored) {
-            return ExternalCheck::Unchanged;
+        match fileio::stamp(&path) {
+            Ok(stamp) if stamp == stored => return ExternalCheck::Unchanged,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return ExternalCheck::Unchanged,
+            _ => {}
         }
         if dirty {
             return ExternalCheck::Conflict;
@@ -1550,6 +1553,16 @@ mod tests {
         assert!(matches!(d.poll_external(false), ExternalCheck::Unchanged));
         drop(d);
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn poll_external_ignores_deleted_doc() {
+        let path = std::env::temp_dir().join(format!("wasabipad_poll_deleted_{}.txt", std::process::id()));
+        std::fs::write(&path, "before").unwrap();
+        let mut d = Doc::open(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert!(matches!(d.poll_external(false), ExternalCheck::Unchanged));
+        assert!(matches!(d.poll_external(true), ExternalCheck::Unchanged));
     }
 
     #[test]

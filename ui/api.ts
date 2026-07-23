@@ -33,6 +33,7 @@ export interface WorkspaceSearchResult {
   line: number;
   col: number;
   preview: string;
+  is_filename: boolean;
 }
 
 export interface EditResult {

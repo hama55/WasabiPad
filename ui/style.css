@@ -94,14 +94,14 @@ body {
   outline: none;
 }
 #addressbar:focus { border-color: var(--bg-status); }
-#addressbar-fav, #addressbar-open, #toggle-sidebar, #toggle-favbar {
+#addressbar-fav, #addressbar-open, #addressbar-save, #addressbar-new, #toggle-sidebar, #toggle-favbar {
   flex: none; width: 26px; height: 26px;
   background: var(--bg-editor); color: var(--fg-dim);
   border: 1px solid var(--border); border-radius: 4px;
   font-size: 14px; cursor: default;
 }
 #toggle-sidebar, #toggle-favbar { background: var(--bg-title); }
-#addressbar-fav:hover, #addressbar-open:hover, #toggle-sidebar:hover, #toggle-favbar:hover { background: var(--hover); color: var(--fg); }
+#addressbar-fav:hover, #addressbar-open:hover, #addressbar-save:hover, #addressbar-new:hover, #toggle-sidebar:hover, #toggle-favbar:hover { background: var(--hover); color: var(--fg); }
 
 /* ---- お気に入りバー ---- */
 #favbar {

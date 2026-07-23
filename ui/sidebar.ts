@@ -43,7 +43,7 @@ export class Sidebar {
   private onExpandArchive: (relPath: string) => Promise<string[]>;
   private onExpandFolder: (relDir: string) => Promise<FolderEntry[]>;
   private onWorkspaceSearch: (pat: string, matchCase: boolean) => Promise<WorkspaceSearchResult[]>;
-  private onSearchResult: (result: WorkspaceSearchResult) => void;
+  private onSearchResult: (result: WorkspaceSearchResult, pattern: string) => void;
 
   constructor(
     host: HTMLElement,
@@ -52,7 +52,7 @@ export class Sidebar {
     onExpandArchive: (relPath: string) => Promise<string[]>,
     onExpandFolder: (relDir: string) => Promise<FolderEntry[]>,
     onWorkspaceSearch: (pat: string, matchCase: boolean) => Promise<WorkspaceSearchResult[]>,
-    onSearchResult: (result: WorkspaceSearchResult) => void
+    onSearchResult: (result: WorkspaceSearchResult, pattern: string) => void
   ) {
     this.host = host;
     this.onSelect = onSelect;
@@ -64,7 +64,7 @@ export class Sidebar {
     this.search = document.createElement("div");
     this.search.className = "ws-search";
     this.search.hidden = true;
-    this.search.innerHTML = `<input placeholder="フォルダを検索" spellcheck="false" /><button type="button" title="検索をクリア">×</button><label><input type="checkbox" />Aa</label>`;
+    this.search.innerHTML = `<input placeholder="検索" spellcheck="false" /><button type="button" title="検索をクリア">×</button><label><input type="checkbox" />Aa</label>`;
     this.searchInput = this.search.querySelector("input")!;
     this.searchClear = this.search.querySelector("button")!;
     this.searchCase = this.search.querySelector("label input")!;
@@ -287,7 +287,7 @@ export class Sidebar {
         div.className = "ws-result";
         div.textContent = `${result.rel_path}:${result.line + 1}  ${result.preview}`;
         div.title = div.textContent;
-        div.addEventListener("click", () => this.onSearchResult(result));
+        div.addEventListener("click", () => this.onSearchResult(result, this.searchInput.value));
         frag.appendChild(div);
       }
       this.tree.replaceChildren(frag);
@@ -301,7 +301,7 @@ export class Sidebar {
 
       const arrow = document.createElement("span");
       arrow.className = "fv-arrow";
-      arrow.textContent = r.kind === "dir" || r.kind === "archive" ? (r.expanded ? "⌄" : "›") : "";
+      arrow.textContent = r.kind === "dir" ? (r.expanded ? "📂" : "📁") : r.kind === "archive" ? (r.expanded ? "⌄" : "›") : "";
       div.appendChild(arrow);
       div.appendChild(document.createTextNode(r.label));
 
