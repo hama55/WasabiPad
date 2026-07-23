@@ -165,6 +165,47 @@ window.setInterval(async () => {
     folderRefreshRunning = false;
   }
 }, 3000);
+
+// ---- 外部変更の検知 ----
+// 対象文書かどうか (小ファイル=ハンドル非保持) の判定は backend が持つ。
+// 未編集なら backend が自動再読込し、dirty なら競合バナーで再読込/無視を選ばせる。
+const externalBanner = $("external-banner");
+let externalPollRunning = false;
+window.setInterval(async () => {
+  if (externalPollRunning || !externalBanner.hidden || !session.savePath || !loading.hidden) return;
+  externalPollRunning = true;
+  try {
+    const check = await api.pollExternal(session.dirty);
+    if (check.kind === "reloaded") {
+      const line = currentLine;
+      applyDocInfo(check.info);
+      editor.goTo(line - 1, 0);
+      showNotice("外部の変更を再読込しました");
+    } else if (check.kind === "conflict") {
+      externalBanner.hidden = false;
+    }
+  } catch {
+    // 一時的に確認できなくても、次の周期で再試行する。
+  } finally {
+    externalPollRunning = false;
+  }
+}, 3000);
+$("external-reload").addEventListener("click", async () => {
+  externalBanner.hidden = true;
+  const line = currentLine;
+  try {
+    const info = await api.reloadFromDisk();
+    applyDocInfo(info);
+    editor.goTo(line - 1, 0);
+  } catch (e) {
+    await showError("再読込できませんでした", e);
+  }
+});
+$("external-ignore").addEventListener("click", async () => {
+  externalBanner.hidden = true;
+  await api.ackExternal();
+  editor.focus();
+});
 const favbar = new FavBar(
   $("favbar"),
   (p, newWindow) => newWindow ? api.launchNew(p) : openFile(p),
@@ -191,14 +232,17 @@ function setStartupPath(path: string) {
   localStorage.setItem(STARTUP_PATH_KEY, path);
 }
 
-function showSavedNotice() {
-  $("save-notice").textContent = "保存しました";
+function showNotice(text: string) {
+  $("save-notice").textContent = text;
   window.clearTimeout(saveNoticeTimer);
   saveNoticeTimer = window.setTimeout(() => { $("save-notice").textContent = ""; }, 2000);
 }
 
+const showSavedNotice = () => showNotice("保存しました");
+
 // アーカイブ選択後/フォルダのエントリ切替後で共通の状態反映
 function applyDocInfo(o: api.DocInfo) {
+  $("external-banner").hidden = true; // 文書が切り替わったら競合バナーは無効
   session = sessionFromDocInfo(session, o);
   $<HTMLSelectElement>("st-enc").value = session.encoding;
   renderEncodingStatus();
@@ -319,7 +363,15 @@ async function saveFolderDraft(): Promise<boolean> {
 
 async function saveTo(path: string, folderDraftRoot: string | null = null): Promise<boolean> {
   try {
-    await api.saveFile(path, session.encoding, session.eol);
+    const outcome = await api.saveFile(path, session.encoding, session.eol);
+    if (outcome.kind === "conflict") {
+      // 本体は上書きされていない。dirty のまま残し、バナーで再読込/無視を選ばせる
+      await showError(
+        "保存先が他のアプリで変更されています",
+        `編集内容を退避保存しました:\n${outcome.saved_to}`
+      );
+      return false;
+    }
     session.savePath = path;
     session.displayPath = path;
     session.sourceEncoding = session.encoding;

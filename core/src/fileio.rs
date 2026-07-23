@@ -1,5 +1,7 @@
 // 読込/保存 + エンコーディング判定 (BOM → UTF-8厳密 → Shift-JIS)。
-// プレーンテキストは常に mmap ベース (hugebuf) で開き、保存はストリーム書き。
+// MMAP_THRESHOLD 以上のプレーンテキストのみ mmap ベース (hugebuf) で開き排他を保持する。
+// それ未満は RAM に読み込んでハンドルを即解放し、他アプリからの編集を許す
+// (外部変更は FileStamp の比較で検知する)。保存はストリーム書き。
 use crate::buffer::{Store, TextBuffer};
 use crate::hugebuf::HugeBuf;
 use encoding_rs::SHIFT_JIS;
@@ -86,6 +88,28 @@ impl Eol {
     }
 }
 
+pub const MMAP_THRESHOLD: u64 = 100 * 1024 * 1024;
+
+// 外部変更検知用のスナップショット。ハンドルを保持しない文書は開いた時点で記録し、
+// ポーリングや保存時に現在値と比較する。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct FileStamp {
+    len: u64,
+    mtime: std::time::SystemTime,
+}
+
+pub fn stamp(path: &Path) -> io::Result<FileStamp> {
+    stamp_of_metadata(std::fs::metadata(path)?)
+}
+
+fn stamp_of(file: &File) -> io::Result<FileStamp> {
+    stamp_of_metadata(file.metadata()?)
+}
+
+fn stamp_of_metadata(meta: std::fs::Metadata) -> io::Result<FileStamp> {
+    Ok(FileStamp { len: meta.len(), mtime: meta.modified()? })
+}
+
 pub struct Opened {
     pub buf: TextBuffer,
     pub enc: Encoding,
@@ -93,7 +117,8 @@ pub struct Opened {
     // ZIP/.xls のエントリ一覧 (閲覧専用のフォルダビュー用)。buf は先頭エントリ
     pub entries: Option<Vec<crate::ziptext::Entry>>,
     pub byte_len: u64, // ステータスバー表示用。開いた実体のバイト数
-    pub source_file: File, // 読み取りだけ共有し、他プロセスの変更を拒否
+    pub source_file: Option<File>, // mmap/アーカイブのみ排他保持。小ファイルは None
+    pub stamp: Option<FileStamp>,  // ハンドル非保持 (=外部編集可) の場合のみ Some
 }
 
 fn opened_from_entries(entries: Vec<crate::ziptext::Entry>, source_file: File) -> Opened {
@@ -104,7 +129,8 @@ fn opened_from_entries(entries: Vec<crate::ziptext::Entry>, source_file: File) -
         eol: Eol::Lf,
         entries: Some(entries),
         byte_len,
-        source_file,
+        source_file: Some(source_file),
+        stamp: None,
     }
 }
 
@@ -134,11 +160,23 @@ pub fn is_archive_handle(file: &File) -> bool {
 
 // 実ファイル1つを開く。フォルダの展開は doc.rs (Doc::open) の責務。
 pub fn open_buffer(path: &Path) -> io::Result<Opened> {
+    open_buffer_impl(path, MMAP_THRESHOLD)
+}
+
+// threshold はテスト用に注入可能 (0 で非空ファイルを強制 mmap)。
+fn open_buffer_impl(path: &Path, threshold: u64) -> io::Result<Opened> {
+    // 全共有で開いて小ファイルかどうかを判定。小ファイルはこのハンドルのまま読み切る
+    let probe = File::open(path)?;
+    let len = probe.metadata()?.len();
+    if !is_archive_handle(&probe) && (len == 0 || len < threshold) {
+        return read_released(probe, len, |b| Ok(decode(b)));
+    }
+    drop(probe);
+
+    // 巨大ファイルとアーカイブ: 従来どおり排他ハンドルを保持し、判定も排他下でやり直す
     let source_file = open_exclusive(path)?;
     let len = source_file.metadata()?.len();
-
-    let is_archive = is_archive_handle(&source_file);
-    if is_archive {
+    if is_archive_handle(&source_file) {
         // ZIP (xlsx/docx/zip) と CFB (.xls) はフォルダビューで開く
         let bytes = read_locked(&source_file)?;
         if let Some(v) = crate::archive::parse(&bytes) {
@@ -147,11 +185,11 @@ pub fn open_buffer(path: &Path) -> io::Result<Opened> {
         // シグネチャはあるが解析不能 → 通常テキストとして扱う
         let (text, enc) = decode(&bytes);
         let eol = detect_eol(&text);
-        return Ok(Opened { buf: TextBuffer::from_text(&text), enc, eol, entries: None, byte_len: len, source_file });
+        return Ok(Opened { buf: TextBuffer::from_text(&text), enc, eol, entries: None, byte_len: len, source_file: Some(source_file), stamp: None });
     }
 
-    // どんなファイルでも mmap を試す。UTF-16LE (行分割が byte 単位不可) と
-    // 空ファイルは None/スキップして通常読込へフォールバック。
+    // UTF-16LE (行分割が byte 単位不可) と空ファイルは None/スキップして通常読込へ
+    // フォールバック (排他は維持する)。
     if len > 0 {
         if let Some((h, enc, eol)) = HugeBuf::open(source_file.try_clone()?)? {
             return Ok(Opened {
@@ -160,14 +198,38 @@ pub fn open_buffer(path: &Path) -> io::Result<Opened> {
                 eol,
                 entries: None,
                 byte_len: len,
-                source_file,
+                source_file: Some(source_file),
+                stamp: None,
             });
         }
     }
     let bytes = read_locked(&source_file)?;
     let (text, enc) = decode(&bytes);
     let eol = detect_eol(&text);
-    Ok(Opened { buf: TextBuffer::from_text(&text), enc, eol, entries: None, byte_len: len, source_file })
+    Ok(Opened { buf: TextBuffer::from_text(&text), enc, eol, entries: None, byte_len: len, source_file: Some(source_file), stamp: None })
+}
+
+// 小ファイル経路: stamp を読取前に記録してから RAM へ読み切り、ハンドルを解放する
+// (読取中に外部変更が起きても次のポーリングで検知される)。
+fn read_released(
+    probe: File,
+    len: u64,
+    decode_fn: impl FnOnce(&[u8]) -> io::Result<(String, Encoding)>,
+) -> io::Result<Opened> {
+    let stamp = stamp_of(&probe)?;
+    let bytes = read_locked(&probe)?;
+    drop(probe);
+    let (text, enc) = decode_fn(&bytes)?;
+    let eol = detect_eol(&text);
+    Ok(Opened {
+        buf: TextBuffer::from_text(&text),
+        enc,
+        eol,
+        entries: None,
+        byte_len: len,
+        source_file: None,
+        stamp: Some(stamp),
+    })
 }
 
 fn decode(bytes: &[u8]) -> (String, Encoding) {
@@ -192,23 +254,26 @@ fn decode(bytes: &[u8]) -> (String, Encoding) {
 
 pub fn open_buffer_as(path: &Path, requested: Encoding) -> io::Result<Opened> {
     const MAX_UTF16_BYTES: u64 = 256 * 1024 * 1024;
-    let source_file = open_exclusive(path)?;
-    if is_archive_handle(&source_file) {
+    let probe = File::open(path)?;
+    if is_archive_handle(&probe) {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "アーカイブは文字コードを指定して再読込できません"));
     }
-    let len = source_file.metadata()?.len();
+    let len = probe.metadata()?.len();
     if requested == Encoding::Utf16Le && len > MAX_UTF16_BYTES {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "256MBを超えるUTF-16LEファイルは指定再読込できません"));
     }
-    if len > 0 {
-        if let Some((h, enc, eol)) = HugeBuf::open_as(source_file.try_clone()?, requested)? {
-            return Ok(Opened { buf: TextBuffer::from_huge(h), enc, eol, entries: None, byte_len: len, source_file });
-        }
+    if len == 0 || len < MMAP_THRESHOLD {
+        return read_released(probe, len, |b| decode_as(b, requested));
+    }
+    drop(probe);
+    let source_file = open_exclusive(path)?;
+    if let Some((h, enc, eol)) = HugeBuf::open_as(source_file.try_clone()?, requested)? {
+        return Ok(Opened { buf: TextBuffer::from_huge(h), enc, eol, entries: None, byte_len: len, source_file: Some(source_file), stamp: None });
     }
     let bytes = read_locked(&source_file)?;
     let (text, enc) = decode_as(&bytes, requested)?;
     let eol = detect_eol(&text);
-    Ok(Opened { buf: TextBuffer::from_text(&text), enc, eol, entries: None, byte_len: len, source_file })
+    Ok(Opened { buf: TextBuffer::from_text(&text), enc, eol, entries: None, byte_len: len, source_file: Some(source_file), stamp: None })
 }
 
 fn decode_as(bytes: &[u8], requested: Encoding) -> io::Result<(String, Encoding)> {
@@ -334,6 +399,30 @@ impl Drop for SaveCommitError {
     }
 }
 
+// 保存時に外部変更と衝突した場合の退避先: name.conflict-YYYYMMDD-HHMMSS.ext
+pub(crate) fn conflict_path(path: &Path) -> PathBuf {
+    let now = unsafe {
+        let mut st = std::mem::zeroed();
+        windows_sys::Win32::System::SystemInformation::GetLocalTime(&mut st);
+        st
+    };
+    let ts = format!(
+        "{:04}{:02}{:02}-{:02}{:02}{:02}",
+        now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond
+    );
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "無題".into());
+    let ext = path.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    let dir = path.parent().unwrap_or(Path::new("."));
+    for number in 1.. {
+        let numbered = if number == 1 { String::new() } else { format!("-{number}") };
+        let candidate = dir.join(format!("{stem}.conflict-{ts}{numbered}{ext}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    unreachable!()
+}
+
 // 排他ハンドルとmmapを呼び出し側で解放してからcommitできるよう、tempだけを先に作る。
 pub fn begin_save(
     path: &Path,
@@ -431,6 +520,18 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
+    fn assert_released(path: &Path, opened: &Opened) {
+        assert!(opened.source_file.is_none(), "小ファイルはハンドルを保持しないはず");
+        assert!(opened.stamp.is_some(), "小ファイルは外部変更検知用の stamp を持つはず");
+        assert!(
+            OpenOptions::new().write(true).open(path).is_ok(),
+            "開いている間も他アプリの書き込みを許可するはず"
+        );
+        let renamed = path.with_extension("free-rename");
+        assert!(std::fs::rename(path, &renamed).is_ok(), "名前変更も許可するはず");
+        std::fs::rename(&renamed, path).unwrap();
+    }
+
     #[test]
     fn detect_utf8_sjis() {
         let (_, e) = decode("あいう".as_bytes());
@@ -487,34 +588,50 @@ mod tests {
         assert!(!temp.exists());
     }
 
-    // mmap-always: 64MB 未満の通常ファイルでも mmap で開く
+    // 閾値未満はRAMに読み込み、ハンドルを解放して他アプリの編集を許す
     #[test]
-    fn small_file_uses_mmap() {
-        let path = std::env::temp_dir().join("wasabipad_test_mmap_small.txt");
+    fn small_file_loads_in_ram_and_releases_lock() {
+        let path = std::env::temp_dir().join("wasabipad_test_ram_small.txt");
         std::fs::write(&path, "line1\nline2\nあいう").unwrap();
         let o = open_buffer(&path).unwrap();
-        assert!(o.buf.is_huge(), "小ファイルも mmap 経路で開くはず");
+        assert!(!o.buf.is_huge(), "小ファイルは RAM 経路で開くはず");
         assert_eq!(o.buf.line_count(), 3);
         assert_eq!(o.buf.line(2), "あいう");
+        assert_released(&path, &o);
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    // 閾値以上 (テストでは閾値0で強制) は mmap + 排他保持
+    #[test]
+    fn huge_file_uses_mmap_and_stays_exclusive() {
+        let path = std::env::temp_dir().join("wasabipad_test_mmap_forced.txt");
+        std::fs::write(&path, "line1\nline2\nあいう").unwrap();
+        let o = open_buffer_impl(&path, 0).unwrap();
+        assert!(o.buf.is_huge(), "閾値以上は mmap 経路で開くはず");
+        assert!(o.source_file.is_some());
+        assert!(o.stamp.is_none());
+        assert_eq!(o.buf.line_count(), 3);
         assert_exclusive_until_drop(&path, o);
     }
 
-    // 空ファイルは mmap 不可 → in-RAM へフォールバック
+    // 空ファイルは mmap 不可 → 閾値0でも in-RAM (解放) へフォールバック
     #[test]
     fn empty_file_falls_back_to_ram() {
         let path = std::env::temp_dir().join("wasabipad_test_mmap_empty.txt");
         std::fs::write(&path, "").unwrap();
-        let o = open_buffer(&path).unwrap();
+        let o = open_buffer_impl(&path, 0).unwrap();
         assert!(!o.buf.is_huge());
         assert_eq!(o.buf.line_count(), 1);
-        assert_exclusive_until_drop(&path, o);
+        assert_released(&path, &o);
+        std::fs::remove_file(&path).unwrap();
     }
 
+    // UTF-16LE は mmap 不可。閾値以上なら RAM 読みでも排他を維持する
     #[test]
-    fn utf16_ram_file_is_exclusive() {
+    fn huge_utf16_ram_file_is_exclusive() {
         let path = std::env::temp_dir().join("wasabipad_test_exclusive_utf16.txt");
         std::fs::write(&path, [0xFF, 0xFE, b'a', 0]).unwrap();
-        let o = open_buffer(&path).unwrap();
+        let o = open_buffer_impl(&path, 0).unwrap();
         assert!(!o.buf.is_huge());
         assert_exclusive_until_drop(&path, o);
     }
@@ -529,7 +646,7 @@ mod tests {
         );
         let path = unique_temp_path("buffer_equivalence");
         std::fs::write(&path, &original).unwrap();
-        let opened = open_buffer(&path).unwrap();
+        let opened = open_buffer_impl(&path, 0).unwrap();
         let Opened { mut buf, source_file, .. } = opened;
         let mut ram = TextBuffer::from_text(&original);
 

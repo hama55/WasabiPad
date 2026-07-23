@@ -6,8 +6,8 @@ mod state;
 
 use wasabipad_core::{
     self, BookmarkNode, Doc, DocInfo, EditManyItem, EditManyResult, EditResult, EncodingId,
-    Eol, FindCursor, FindOutcome, FindResult, FolderEntry, PosC, ReplaceChunkResult,
-    WorkspaceSearchResult,
+    Eol, ExternalCheck, FindCursor, FindOutcome, FindResult, FolderEntry, PosC,
+    ReplaceChunkResult, SaveOutcome, WorkspaceSearchResult,
 };
 use state::{with_doc, DocState, State};
 use std::path::PathBuf;
@@ -174,9 +174,26 @@ fn replace_all_cancel(state: State) -> EditResult {
 }
 
 #[tauri::command]
-fn save_file(path: String, enc: EncodingId, eol: Eol, state: State) -> Result<(), String> {
+fn save_file(path: String, enc: EncodingId, eol: Eol, state: State) -> Result<SaveOutcome, String> {
     with_doc(&state, |doc| doc.save(&PathBuf::from(path), enc.into(), eol))
         .map_err(|e| e.to_string())
+}
+
+// 外部変更ポーリング (フロントの定期タイマーから呼ぶ)。dirty はフロントが管理する
+// 未保存フラグ。小/巨大ファイルの区別も含め、判定はすべて core 側が持つ。
+#[tauri::command]
+fn poll_external(dirty: bool, state: State) -> ExternalCheck {
+    with_doc(&state, |doc| doc.poll_external(dirty))
+}
+
+#[tauri::command]
+fn reload_from_disk(state: State) -> Result<DocInfo, String> {
+    with_doc(&state, |doc| doc.reload_from_disk()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn ack_external(state: State) {
+    with_doc(&state, Doc::ack_external);
 }
 
 #[tauri::command]
@@ -265,6 +282,9 @@ fn main() {
             replace_all_chunk,
             replace_all_cancel,
             save_file,
+            poll_external,
+            reload_from_disk,
+            ack_external,
             reload_with_encoding,
             set_encoding,
             set_eol,

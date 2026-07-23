@@ -74,6 +74,17 @@ export interface ReplaceChunkResult {
   line_count: number;
 }
 
+// 外部変更ポーリングの結果。reloaded は未編集文書が自動で読み直された場合
+export type ExternalCheck =
+  | { kind: "unchanged" }
+  | { kind: "reloaded"; info: DocInfo }
+  | { kind: "conflict" };
+
+// 保存の結果。conflict は保存先が外部で変更されていたため退避ファイルへ保存した場合
+export type SaveOutcome =
+  | { kind: "saved" }
+  | { kind: "conflict"; saved_to: string };
+
 export type BmNode =
   | { kind: "file"; name: string; path: string }
   | { kind: "directory"; name: string; path: string }
@@ -152,9 +163,15 @@ export const replaceAllChunk = (pat: string, rep: string, matchCase: boolean, bu
 export const replaceAllCancel = () => invoke<EditResult>("replace_all_cancel");
 
 export const saveFile = (path: string, enc: Encoding, eol: Eol) =>
-  invoke<void>("save_file", { path, enc, eol });
+  invoke<SaveOutcome>("save_file", { path, enc, eol });
 export const reloadWithEncoding = (enc: ReadEncoding) =>
   invoke<DocInfo>("reload_with_encoding", { enc });
+
+// 外部変更ポーリング (小ファイルのみ backend 側が対象を判定する)
+export const pollExternal = (dirty: boolean) =>
+  invoke<ExternalCheck>("poll_external", { dirty });
+export const reloadFromDisk = () => invoke<DocInfo>("reload_from_disk");
+export const ackExternal = () => invoke<void>("ack_external");
 export const setEncoding = (enc: Encoding) => invoke<void>("set_encoding", { enc });
 export const setEol = (eol: Eol) => invoke<void>("set_eol", { eol });
 

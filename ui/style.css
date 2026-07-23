@@ -188,6 +188,18 @@ body {
   background: var(--bg-editor);
 }
 #save-notice { display: flex; align-items: center; color: var(--fg-dim); font-size: 12px; white-space: nowrap; }
+#external-banner {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--bg-top); color: var(--fg);
+  border-bottom: 1px solid var(--border-strong);
+  padding: 5px 10px; font-size: 12px; flex: none;
+}
+#external-banner[hidden] { display: none; }
+#external-banner button {
+  background: var(--accent); color: #ffffff; border: 0; border-radius: 4px;
+  padding: 3px 10px; font-size: 12px; cursor: pointer;
+}
+#external-banner button#external-ignore { background: none; color: var(--fg); border: 1px solid var(--border-strong); }
 .ve-gutter {
   position: absolute; left: 0; top: 0; bottom: 0; width: var(--gutter-w);
   overflow: hidden; background: var(--bg-editor);

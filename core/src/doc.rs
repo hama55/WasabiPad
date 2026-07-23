@@ -5,7 +5,7 @@
 // 列の単位: IPC境界では Unicode スカラー(char)index、内部では UTF-8 バイト col。
 // 変換は to_byte / to_char が担う (グラフェムは非対応 = ネイティブ版と同じ割り切り)。
 use crate::buffer::{Pos, TextBuffer};
-use crate::fileio::{self, Encoding, EncodingId, Eol};
+use crate::fileio::{self, Encoding, EncodingId, Eol, FileStamp};
 use crate::undo::{Edit, UndoEntry, UndoStack};
 use crate::ziptext::Entry;
 use serde::Serialize;
@@ -90,6 +90,7 @@ enum DocumentSource {
     File {
         path: PathBuf,
         source_file: Option<File>,
+        stamp: Option<FileStamp>, // ハンドル非保持 (=外部編集可) の場合の変更検知用
         recovery_temp: Option<RecoveryTemp>,
     },
     Folder { root: PathBuf, selected: FolderSelection },
@@ -105,6 +106,7 @@ enum FolderSelection {
     File {
         path: PathBuf,
         source_file: Option<File>,
+        stamp: Option<FileStamp>,
         recovery_temp: Option<RecoveryTemp>,
     },
     Archive {
@@ -204,12 +206,36 @@ impl DocumentSource {
             _ => {}
         }
     }
+
+    fn holds_handle(&self) -> bool {
+        matches!(
+            self,
+            Self::File { source_file: Some(_), .. }
+                | Self::Folder { selected: FolderSelection::File { source_file: Some(_), .. }, .. }
+        )
+    }
+
+    fn stamp(&self) -> Option<FileStamp> {
+        match self {
+            Self::File { stamp, .. }
+            | Self::Folder { selected: FolderSelection::File { stamp, .. }, .. } => *stamp,
+            _ => None,
+        }
+    }
+
+    fn set_stamp(&mut self, new: Option<FileStamp>) {
+        match self {
+            Self::File { stamp, .. }
+            | Self::Folder { selected: FolderSelection::File { stamp, .. }, .. } => *stamp = new,
+            _ => {}
+        }
+    }
 }
 
 fn into_folder_selection(source: DocumentSource) -> Option<FolderSelection> {
     match source {
-        DocumentSource::File { path, source_file, recovery_temp } => {
-            Some(FolderSelection::File { path, source_file, recovery_temp })
+        DocumentSource::File { path, source_file, stamp, recovery_temp } => {
+            Some(FolderSelection::File { path, source_file, stamp, recovery_temp })
         }
         DocumentSource::Archive { path, source_file, entries } => {
             Some(FolderSelection::Archive { path, source_file, entries })
@@ -287,6 +313,24 @@ pub enum FindOutcome {
     Found { start: PosC, end: PosC },
     More { cursor: FindCursor },
     NotFound,
+}
+
+// 外部変更ポーリングの結果。Reloaded は未編集文書を自動で読み直した場合。
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum ExternalCheck {
+    Unchanged,
+    Reloaded { info: DocInfo },
+    Conflict,
+}
+
+// 保存の結果。Conflict は保存先が外部で変更されていたため本体を上書きせず、
+// 編集内容を退避ファイルへ保存した場合。
+#[derive(Serialize, Debug)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum SaveOutcome {
+    Saved,
+    Conflict { saved_to: String },
 }
 
 #[derive(Serialize)]
@@ -410,13 +454,14 @@ impl Doc {
         let source = if let Some(entries) = o.entries {
             DocumentSource::Archive {
                 path: path.to_path_buf(),
-                source_file: o.source_file,
+                source_file: o.source_file.expect("アーカイブは排他ハンドルを保持する"),
                 entries: Some(entries),
             }
         } else {
             DocumentSource::File {
                 path: path.to_path_buf(),
-                source_file: Some(o.source_file),
+                source_file: o.source_file,
+                stamp: o.stamp,
                 recovery_temp: None,
             }
         };
@@ -434,20 +479,27 @@ impl Doc {
     pub fn reload_with_encoding(&mut self, enc: Encoding) -> io::Result<DocInfo> {
         let path = self.source.path().map(Path::to_path_buf)
             .ok_or_else(|| io::Error::new(io::ErrorKind::PermissionDenied, "この文書は文字コードを指定して再読込できません"))?;
-        let folder_root = self.source.folder_root().map(Path::to_path_buf);
         let o = fileio::open_buffer_as(&path, enc)?;
+        Ok(self.adopt_opened(path, o))
+    }
+
+    // ディスクから読み直した Opened で文書全体を差し替える (undo/検索状態は破棄)。
+    fn adopt_opened(&mut self, path: PathBuf, o: fileio::Opened) -> DocInfo {
+        let folder_root = self.source.folder_root().map(Path::to_path_buf);
         let source = match folder_root {
             Some(root) => DocumentSource::Folder {
                 root,
                 selected: FolderSelection::File {
                     path: path.clone(),
-                    source_file: Some(o.source_file),
+                    source_file: o.source_file,
+                    stamp: o.stamp,
                     recovery_temp: None,
                 },
             },
             None => DocumentSource::File {
                 path: path.clone(),
-                source_file: Some(o.source_file),
+                source_file: o.source_file,
+                stamp: o.stamp,
                 recovery_temp: None,
             },
         };
@@ -462,7 +514,47 @@ impl Doc {
         };
         let info = replacement.info(path.to_string_lossy().into_owned());
         *self = replacement;
-        Ok(info)
+        info
+    }
+
+    // 外部変更ポーリング。ハンドル非保持 (=閾値未満の実ファイル) の文書のみ対象。
+    // dirty (未保存の編集あり) なら自動再読込せず Conflict を返し、UI がバナーで確認する。
+    pub fn poll_external(&mut self, dirty: bool) -> ExternalCheck {
+        let Some(stored) = self.source.stamp() else { return ExternalCheck::Unchanged };
+        let Some(path) = self.source.path().map(Path::to_path_buf) else {
+            return ExternalCheck::Unchanged;
+        };
+        if fileio::stamp(&path).ok() == Some(stored) {
+            return ExternalCheck::Unchanged;
+        }
+        if dirty {
+            return ExternalCheck::Conflict;
+        }
+        match self.reload_from_disk() {
+            Ok(info) => ExternalCheck::Reloaded { info },
+            // 削除・置換中などで読めない場合もバナーで知らせる
+            Err(_) => ExternalCheck::Conflict,
+        }
+    }
+
+    // 編集中の内容を捨てて現在のディスク内容を読み直す (バナーの「再読込」)。
+    pub fn reload_from_disk(&mut self) -> io::Result<DocInfo> {
+        let path = self.source.path().map(Path::to_path_buf)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::PermissionDenied, "この文書は再読込できません"))?;
+        let o = fileio::open_buffer(&path)?;
+        if o.entries.is_some() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "ファイルがアーカイブに置き換えられています"));
+        }
+        Ok(self.adopt_opened(path, o))
+    }
+
+    // バナーの「無視」: 現在のディスク状態を新しい基準として記録し、以後の保存で上書きする。
+    pub fn ack_external(&mut self) {
+        if self.source.stamp().is_none() {
+            return;
+        }
+        let Some(path) = self.source.path().map(Path::to_path_buf) else { return };
+        self.source.set_stamp(fileio::stamp(&path).ok());
     }
 
     pub fn info(&self, path: String) -> DocInfo {
@@ -903,14 +995,28 @@ impl Doc {
     }
 
     // 保存。tempへ全量書出し後、排他とmmapを短時間だけ解放して差し替え、即座に再取得する。
-    pub fn save(&mut self, path: &Path, enc: Encoding, eol: Eol) -> io::Result<()> {
+    // 保存先が外部で変更されていた場合は本体を上書きせず、退避ファイルへ保存して知らせる。
+    pub fn save(&mut self, path: &Path, enc: Encoding, eol: Eol) -> io::Result<SaveOutcome> {
         if self.source.is_view_only() {
             return Err(io::Error::new(io::ErrorKind::PermissionDenied, "閲覧専用文書は保存できません"));
         }
-        let transaction = fileio::begin_save(path, &self.buf, enc, eol)?;
         let same_target = self.source.path() == Some(path);
+        if same_target {
+            if let Some(stored) = self.source.stamp() {
+                if fileio::stamp(path).ok() != Some(stored) {
+                    let conflict = fileio::conflict_path(path);
+                    let transaction = fileio::begin_save(&conflict, &self.buf, enc, eol)?;
+                    transaction.commit(&conflict).map_err(|f| f.into_parts().0)?;
+                    return Ok(SaveOutcome::Conflict {
+                        saved_to: conflict.to_string_lossy().into_owned(),
+                    });
+                }
+            }
+        }
+        let transaction = fileio::begin_save(path, &self.buf, enc, eol)?;
         let workspace_root = self.source.folder_root().map(Path::to_path_buf);
         let old_recovery = self.source.take_recovery();
+        let held_handle = same_target && self.source.holds_handle();
         self.buf = TextBuffer::new();
         if same_target {
             self.source.set_source_file(None);
@@ -920,7 +1026,7 @@ impl Doc {
             // 差し替えに失敗しても、書き出し済みtempから編集中内容を復元する。
             let recovered = fileio::open_buffer(&tmp)?;
             self.buf = recovered.buf;
-            if same_target {
+            if held_handle {
                 self.source.set_source_file(fileio::open_exclusive(path).ok());
             }
             drop(old_recovery);
@@ -934,18 +1040,19 @@ impl Doc {
         self.eol = eol;
         let selected = FolderSelection::File {
             path: path.to_path_buf(),
-            source_file: Some(o.source_file),
+            source_file: o.source_file,
+            stamp: o.stamp,
             recovery_temp: None,
         };
         self.source = if let Some(root) = workspace_root {
             DocumentSource::Folder { root, selected }
-        } else if let FolderSelection::File { path, source_file, recovery_temp } = selected {
-            DocumentSource::File { path, source_file, recovery_temp }
+        } else if let FolderSelection::File { path, source_file, stamp, recovery_temp } = selected {
+            DocumentSource::File { path, source_file, stamp, recovery_temp }
         } else {
             unreachable!()
         };
         self.undo.break_coalescing();
-        Ok(())
+        Ok(SaveOutcome::Saved)
     }
 
     pub fn set_enc(&mut self, enc: Encoding) {
@@ -1393,6 +1500,7 @@ mod tests {
         let file = DocumentSource::File {
             path: PathBuf::from("memo.txt"),
             source_file: None,
+            stamp: None,
             recovery_temp: None,
         };
         assert!(!file.is_view_only());
@@ -1408,17 +1516,75 @@ mod tests {
     }
 
     #[test]
-    fn save_reacquires_exclusive_lock() {
+    fn save_keeps_small_file_editable_by_others() {
         let path = std::env::temp_dir().join(format!("wasabipad_save_lock_{}.txt", std::process::id()));
         std::fs::write(&path, "abc").unwrap();
         let mut d = Doc::open(&path).unwrap();
         d.edit(p(0, 3), p(0, 3), p(0, 3), "!", false);
-        d.save(&path, Encoding::Utf8 { bom: false }, Eol::Lf).unwrap();
+        assert!(matches!(
+            d.save(&path, Encoding::Utf8 { bom: false }, Eol::Lf).unwrap(),
+            SaveOutcome::Saved
+        ));
         assert_eq!(d.lines(0, 1), vec!["abc!"]);
-        assert!(File::open(&path).is_ok(), "保存直後も読み取り共有を維持する");
+        assert!(
+            std::fs::OpenOptions::new().write(true).open(&path).is_ok(),
+            "小ファイルは保存後も他アプリから書き込めるはず"
+        );
         drop(d);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "abc!");
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn poll_external_reloads_clean_doc() {
+        let path = std::env::temp_dir().join(format!("wasabipad_poll_clean_{}.txt", std::process::id()));
+        std::fs::write(&path, "before").unwrap();
+        let mut d = Doc::open(&path).unwrap();
+        assert!(matches!(d.poll_external(false), ExternalCheck::Unchanged));
+        std::fs::write(&path, "after-external").unwrap();
+        match d.poll_external(false) {
+            ExternalCheck::Reloaded { info } => assert_eq!(info.line_count, 1),
+            _ => panic!("未編集文書は自動再読込されるはず"),
+        }
+        assert_eq!(d.lines(0, 1), vec!["after-external"]);
+        assert!(matches!(d.poll_external(false), ExternalCheck::Unchanged));
+        drop(d);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn poll_external_reports_conflict_when_dirty_and_ack_adopts_disk_state() {
+        let path = std::env::temp_dir().join(format!("wasabipad_poll_dirty_{}.txt", std::process::id()));
+        std::fs::write(&path, "base").unwrap();
+        let mut d = Doc::open(&path).unwrap();
+        d.edit(p(0, 4), p(0, 4), p(0, 4), "+mine", false);
+        std::fs::write(&path, "theirs-external").unwrap();
+        assert!(matches!(d.poll_external(true), ExternalCheck::Conflict));
+        assert_eq!(d.lines(0, 1), vec!["base+mine"], "dirty文書は勝手に読み直さない");
+        // 「無視」= 現ディスク状態を基準に採用 → 以後は変更なし扱い
+        d.ack_external();
+        assert!(matches!(d.poll_external(true), ExternalCheck::Unchanged));
+        drop(d);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn conflicting_save_diverts_to_sidecar_file() {
+        let dir = std::env::temp_dir().join(format!("wasabipad_conflict_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("memo.txt");
+        std::fs::write(&path, "base").unwrap();
+        let mut d = Doc::open(&path).unwrap();
+        d.edit(p(0, 4), p(0, 4), p(0, 4), "+mine", false);
+        std::fs::write(&path, "theirs-external").unwrap();
+        let saved_to = match d.save(&path, Encoding::Utf8 { bom: false }, Eol::Lf).unwrap() {
+            SaveOutcome::Conflict { saved_to } => PathBuf::from(saved_to),
+            SaveOutcome::Saved => panic!("外部変更があるときは本体を上書きしないはず"),
+        };
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "theirs-external", "外部の変更が残るはず");
+        assert_eq!(std::fs::read_to_string(&saved_to).unwrap(), "base+mine", "自分の編集は退避されるはず");
+        drop(d);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     // フォルダを開いた直後は何も選択されておらず (メモビューは空)、ルート直下の一覧だけが
@@ -1449,7 +1615,7 @@ mod tests {
 
         // ファイルを選択すると編集可能な実ファイルとして開く
         let info = d.select_entry("a.txt").unwrap();
-        assert!(std::fs::OpenOptions::new().write(true).open(root.join("a.txt")).is_err(), "選択した実ファイルだけを書き込み禁止にする");
+        assert!(std::fs::OpenOptions::new().write(true).open(root.join("a.txt")).is_ok(), "小ファイルは選択中も他アプリから書き込める");
         assert!(!info.view_only, "フォルダの子ファイルは編集可能なはず");
         assert_eq!(d.lines(0, 1), vec!["hello"]);
         assert!(d.path().unwrap().ends_with("a.txt"));
@@ -1461,8 +1627,8 @@ mod tests {
 
         // 別エントリへ切り替えると実ファイルとして開き直る
         let info2 = d.select_entry("b.txt").unwrap();
-        assert!(File::open(root.join("a.txt")).is_ok(), "選択解除したファイルはロックを解放する");
-        assert!(std::fs::OpenOptions::new().write(true).open(root.join("b.txt")).is_err(), "新しく選択したファイルを書き込み禁止にする");
+        assert!(File::open(root.join("a.txt")).is_ok(), "選択解除したファイルも読み取れる");
+        assert!(std::fs::OpenOptions::new().write(true).open(root.join("b.txt")).is_ok(), "新しく選択した小ファイルも書き込み可能なまま");
         assert_eq!(info2.kind, DocKind::Text);
         assert!(!info2.view_only);
         assert!(info2.path.ends_with("b.txt"));

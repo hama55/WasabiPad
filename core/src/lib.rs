@@ -14,8 +14,9 @@ mod ziptext;
 
 pub use bookmarks::{load as load_bookmarks, save as save_bookmarks, Node as BookmarkNode};
 pub use doc::{
-    Doc, DocInfo, EditManyItem, EditManyResult, EditResult, FindCursor, FindOutcome,
-    FindResult, FolderEntry, PosC, ReplaceChunkResult, WorkspaceSearchResult,
+    Doc, DocInfo, EditManyItem, EditManyResult, EditResult, ExternalCheck, FindCursor,
+    FindOutcome, FindResult, FolderEntry, PosC, ReplaceChunkResult, SaveOutcome,
+    WorkspaceSearchResult,
 };
 pub use fileio::{Encoding, EncodingId, Eol};
 pub use workspace_search::search_workspace;
