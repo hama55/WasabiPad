@@ -103,6 +103,22 @@ fn reveal_in_explorer(path: String, is_dir: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn open_in_other_app(path: String) -> Result<(), String> {
+    let system_root = std::env::var_os("SystemRoot")
+        .ok_or_else(|| "Windowsのシステムフォルダを取得できません".to_string())?;
+    let system32 = PathBuf::from(system_root).join("System32");
+    let rundll32 = system32.join("rundll32.exe");
+    let shell32_entry = format!("{},OpenAs_RunDLL", system32.join("shell32.dll").display());
+    // OpenAs_RunDLL はWindows標準の「プログラムから開く」選択画面を表示する。
+    Command::new(rundll32)
+        .arg(shell32_entry)
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn edit(
     start: PosC,
     end: PosC,
@@ -273,6 +289,7 @@ fn main() {
             create_note,
             rename_entry,
             reveal_in_explorer,
+            open_in_other_app,
             edit,
             edit_many,
             undo,

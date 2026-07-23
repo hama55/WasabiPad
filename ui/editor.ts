@@ -28,6 +28,8 @@ export interface EditorPorts {
   onDocChange: (lineCount: number) => void;
   onCursor: (line: number, col: number) => void;
   onFontChange: (fontFamily: string, fontSize: number) => void;
+  hasExternalFile: () => boolean;
+  openExternally: () => void;
 }
 
 // 全ファイル共通の仮想スクロールエディタ。文書は backend(mmap/overlay)が所有し、
@@ -83,6 +85,8 @@ export class VirtualEditor {
   private onDocChange: (lineCount: number) => void;
   private onCursor: (line: number, col: number) => void;
   private onFontChange: (fontFamily: string, fontSize: number) => void;
+  private hasExternalFile: () => boolean;
+  private openExternally: () => void;
 
   constructor(
     host: HTMLElement,
@@ -92,6 +96,8 @@ export class VirtualEditor {
     this.onDocChange = ports.onDocChange;
     this.onCursor = ports.onCursor;
     this.onFontChange = ports.onFontChange;
+    this.hasExternalFile = ports.hasExternalFile;
+    this.openExternally = ports.openExternally;
     this.fontFamily = config.fontFamily;
     this.fontSize = config.fontSize;
     this.lineHeightExtra = config.lineHeightExtra;
@@ -1344,6 +1350,7 @@ export class VirtualEditor {
       items.push({ label: "削除", action: () => { if (this.hasSel()) this.deleteSel(); } });
     }
     items.push({ label: "すべて選択", key: "Ctrl+A", action: () => this.selectAll(), sep: true });
+    if (this.hasExternalFile()) items.push({ label: "他のアプリで開く", action: this.openExternally });
     showMenu(e.clientX, e.clientY, items);
   }
 

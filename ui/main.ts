@@ -95,6 +95,8 @@ const editor = new VirtualEditor(
     fontSize = size;
     updateFontStatus();
   },
+  hasExternalFile: () => session.savePath !== null,
+  openExternally: () => { if (session.savePath) void openInOtherApp(session.savePath); },
   }
 );
 applyFont();
@@ -428,6 +430,7 @@ function sidebarContextMenu(x: number, y: number, target: ContextTarget | null) 
   items.push({ label: "新規メモ作成...", action: () => createNoteIn(target?.isDir ? target.relPath : null) });
   if (target) {
     items.push({ label: "名前を変更...", action: () => renameEntry(target.relPath) });
+    if (!target.isDir) items.push({ label: "他のアプリで開く", action: () => openInOtherApp(relToAbs(target.relPath)) });
   }
   const revealPath = target ? relToAbs(target.relPath) : session.folderRoot;
   const revealIsDir = target ? target.isDir : true;
@@ -469,6 +472,14 @@ async function revealInExplorer(path: string, isDir: boolean) {
     await api.revealInExplorer(path, isDir);
   } catch (e) {
     await showError("開けませんでした", e);
+  }
+}
+
+async function openInOtherApp(path: string) {
+  try {
+    await api.openInOtherApp(path);
+  } catch (e) {
+    await showError("他のアプリで開けませんでした", e);
   }
 }
 

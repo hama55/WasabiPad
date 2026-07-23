@@ -124,6 +124,9 @@ export const renameEntry = (relPath: string, newName: string) =>
 export const revealInExplorer = (path: string, isDir: boolean) =>
   invoke<void>("reveal_in_explorer", { path, isDir });
 
+export const openInOtherApp = (path: string) =>
+  invoke<void>("open_in_other_app", { path });
+
 // 範囲[start,end)を削除して text を挿入する統一プリミティブ
 // Tauri は Rust の snake_case 引数名を camelCase に変換して受け取るため、
 // invoke に渡すキーは camelCase で揃える (caret_before ではなく caretBefore)。
