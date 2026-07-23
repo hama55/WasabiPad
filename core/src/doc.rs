@@ -9,12 +9,49 @@ use crate::fileio::{self, Encoding, EncodingId, Eol};
 use crate::undo::{Edit, UndoEntry, UndoStack};
 use crate::ziptext::Entry;
 use serde::Serialize;
+use std::cmp::Ordering;
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
 
 fn join_relative(root: &Path, relative: &str) -> PathBuf {
     root.join(relative.replace('/', std::path::MAIN_SEPARATOR_STR))
+}
+
+fn natural_name_cmp(a: &str, b: &str) -> Ordering {
+    let a = a.to_lowercase();
+    let b = b.to_lowercase();
+    let mut ai = a.chars().peekable();
+    let mut bi = b.chars().peekable();
+    loop {
+        match (ai.peek(), bi.peek()) {
+            (Some(ac), Some(bc)) if ac.is_ascii_digit() && bc.is_ascii_digit() => {
+                let mut an = String::new();
+                let mut bn = String::new();
+                while ai.peek().is_some_and(|c| c.is_ascii_digit()) {
+                    an.push(ai.next().unwrap());
+                }
+                while bi.peek().is_some_and(|c| c.is_ascii_digit()) {
+                    bn.push(bi.next().unwrap());
+                }
+                let av = an.trim_start_matches('0');
+                let bv = bn.trim_start_matches('0');
+                let av = if av.is_empty() { "0" } else { av };
+                let bv = if bv.is_empty() { "0" } else { bv };
+                let ord = av.len().cmp(&bv.len()).then_with(|| av.cmp(bv)).then_with(|| an.len().cmp(&bn.len()));
+                if ord != Ordering::Equal {
+                    return ord;
+                }
+            }
+            (Some(_), Some(_)) => {
+                let ord = ai.next().cmp(&bi.next());
+                if ord != Ordering::Equal {
+                    return ord;
+                }
+            }
+            _ => return ai.next().cmp(&bi.next()),
+        }
+    }
 }
 
 pub struct Doc {
@@ -208,6 +245,19 @@ pub struct EditResult {
     pub line_count: usize,
 }
 
+#[derive(serde::Deserialize)]
+pub struct EditManyItem {
+    pub start: PosC,
+    pub end: PosC,
+    pub text: String,
+}
+
+#[derive(Serialize)]
+pub struct EditManyResult {
+    pub carets: Vec<PosC>,
+    pub line_count: usize,
+}
+
 #[derive(Serialize)]
 pub struct FindResult {
     pub start: PosC,
@@ -306,7 +356,12 @@ impl Doc {
                 Some(FolderEntry { name: e.file_name().to_string_lossy().into_owned(), is_dir })
             })
             .collect();
-        items.sort_by(|a, b| a.name.cmp(&b.name));
+        items.sort_by(|a, b| {
+            b.is_dir
+                .cmp(&a.is_dir)
+                .then_with(|| natural_name_cmp(&a.name, &b.name))
+                .then_with(|| a.name.cmp(&b.name))
+        });
         items.truncate(MAX_ENTRIES);
         Some(items)
     }
@@ -626,6 +681,58 @@ impl Doc {
         }
         EditResult {
             caret: self.to_char(after),
+            line_count: self.buf.line_count(),
+        }
+    }
+
+    pub fn edit_many(
+        &mut self,
+        items: Vec<EditManyItem>,
+        caret_before: PosC,
+        primary_index: usize,
+    ) -> EditManyResult {
+        if self.source.is_view_only() || items.is_empty() {
+            return EditManyResult {
+                carets: items.iter().map(|item| item.start).collect(),
+                line_count: self.buf.line_count(),
+            };
+        }
+        let cb = self.to_byte(caret_before);
+        let mut indexed: Vec<_> = items.into_iter().enumerate().collect();
+        indexed.sort_by(|(_, a), (_, b)| b.start.line.cmp(&a.start.line).then_with(|| b.start.col.cmp(&a.start.col)));
+        let mut edits = Vec::new();
+        let mut carets: Vec<Option<Pos>> = vec![None; indexed.len()];
+        for (index, item) in indexed {
+            let start = self.to_byte(item.start);
+            let end = self.to_byte(item.end);
+            if start < end {
+                let removed = self.buf.delete(start, end);
+                edits.push(Edit::Delete { start, text: removed });
+            }
+            let after = if item.text.is_empty() {
+                start
+            } else {
+                let after = self.buf.insert(start, &item.text);
+                edits.push(Edit::Insert { pos: start, text: item.text });
+                after
+            };
+            for caret in carets.iter_mut().flatten() {
+                if caret.line > end.line {
+                    caret.line = after.line + (caret.line - end.line);
+                } else if caret.line == end.line && *caret >= end {
+                    caret.line = after.line;
+                    caret.col = after.col + (caret.col - end.col);
+                }
+            }
+            carets[index] = Some(after);
+        }
+        let carets: Vec<Pos> = carets.into_iter().map(|caret| caret.unwrap_or(cb)).collect();
+        if !edits.is_empty() {
+            let caret_after = carets.get(primary_index).copied().unwrap_or(cb);
+            self.undo.push(UndoEntry { edits, caret_before: cb, caret_after }, false);
+        }
+        EditManyResult {
+            carets: carets.into_iter().map(|caret| self.to_char(caret)).collect(),
             line_count: self.buf.line_count(),
         }
     }
@@ -1137,6 +1244,25 @@ mod tests {
     }
 
     #[test]
+    fn edit_many_is_one_undo_entry() {
+        let mut d = doc("ab\ncd");
+        let items = vec![
+            EditManyItem { start: p(0, 1), end: p(0, 1), text: "X".into() },
+            EditManyItem { start: p(1, 1), end: p(1, 1), text: "X".into() },
+        ];
+        let r = d.edit_many(items, p(0, 1), 0);
+        assert_eq!(d.lines(0, 2), vec!["aXb", "cXd"]);
+        assert_eq!(r.carets.iter().map(|p| (p.line, p.col)).collect::<Vec<_>>(), vec![(0, 2), (1, 2)]);
+
+        d.undo().unwrap();
+        assert_eq!(d.lines(0, 2), vec!["ab", "cd"]);
+        assert!(d.undo().is_none(), "複数キャレット入力は1回のUndoで戻る");
+
+        d.redo().unwrap();
+        assert_eq!(d.lines(0, 2), vec!["aXb", "cXd"]);
+    }
+
+    #[test]
     fn col_is_char_index_not_byte() {
         // 全角 "あいう" の char col 2 に挿入 → byte col 6 に変換される
         let mut d = doc("あいう");
@@ -1301,8 +1427,12 @@ mod tests {
     fn open_folder_lists_root_children_lazily_and_selects_files() {
         let root = std::env::temp_dir().join(format!("wasabipad_doctest_{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir(root.join("z-folder")).unwrap();
+        std::fs::write(root.join("VSCodeチャット保存.txt"), "chat").unwrap();
         std::fs::write(root.join("a.txt"), "hello").unwrap();
         std::fs::write(root.join("b.txt"), "world").unwrap();
+        std::fs::write(root.join("file10.txt"), "ten").unwrap();
+        std::fs::write(root.join("file2.txt"), "two").unwrap();
 
         let mut d = Doc::open(&root).unwrap();
         assert!(File::open(root.join("a.txt")).is_ok(), "フォルダ一覧だけでは子ファイルをロックしない");
@@ -1311,8 +1441,11 @@ mod tests {
 
         let root_children = d.list_folder_entries("").unwrap();
         let names: Vec<&str> = root_children.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(names, vec!["a.txt", "b.txt"]);
-        assert!(root_children.iter().all(|e| !e.is_dir));
+        assert_eq!(
+            names,
+            vec!["z-folder", "a.txt", "b.txt", "file2.txt", "file10.txt", "VSCodeチャット保存.txt"]
+        );
+        assert!(root_children[0].is_dir);
 
         // ファイルを選択すると編集可能な実ファイルとして開く
         let info = d.select_entry("a.txt").unwrap();
@@ -1360,7 +1493,7 @@ mod tests {
 
         let sub1_children = d.list_folder_entries("sub1").unwrap();
         let sub1_names: Vec<&str> = sub1_children.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(sub1_names, vec!["inner.txt", "sub1a"]);
+        assert_eq!(sub1_names, vec!["sub1a", "inner.txt"]);
 
         let deep_children = d.list_folder_entries("sub1/sub1a").unwrap();
         let deep_names: Vec<&str> = deep_children.iter().map(|e| e.name.as_str()).collect();

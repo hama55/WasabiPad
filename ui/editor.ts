@@ -38,6 +38,7 @@ export class VirtualEditor {
   private inner: HTMLElement;
   private linesLayer: HTMLElement; // 行/選択ハイライトの描画専用コンテナ
   private caretEl: HTMLElement;
+  private secondaryCaretEls: HTMLElement[] = [];
   private input: HTMLTextAreaElement;
   private findBar: FindBar;
 
@@ -70,6 +71,8 @@ export class VirtualEditor {
 
   private caret: Pos = { line: 0, col: 0 };
   private anchor: Pos = { line: 0, col: 0 };
+  private secondaryCarets: Pos[] = [];
+  private multiCaretX: number | null = null;
   private goalX: number | null = null;
   private composing = false;
   private chain: Promise<unknown> = Promise.resolve();
@@ -146,8 +149,11 @@ export class VirtualEditor {
       this.caretEl.classList.remove("on");
     });
     this.input.addEventListener("compositionend", () => this.onCompositionEnd());
-    this.input.addEventListener("blur", () => this.caretEl.classList.remove("on"));
-    this.input.addEventListener("focus", () => this.caretEl.classList.add("on"));
+    this.input.addEventListener("blur", () => {
+      this.caretEl.classList.remove("on");
+      this.secondaryCaretEls.forEach((caret) => caret.classList.remove("on"));
+    });
+    this.input.addEventListener("focus", () => this.render());
     window.addEventListener("mouseup", () => {
       if (!this.scrollbarDragging) return;
       this.topLineF = this.pxToLine(this.scroll.scrollTop);
@@ -177,6 +183,10 @@ export class VirtualEditor {
     this.maxWidth = 0;
     this.caret = { line: 0, col: 0 };
     this.anchor = { line: 0, col: 0 };
+    this.secondaryCarets = [];
+    this.multiCaretX = null;
+    this.secondaryCaretEls.forEach((caret) => caret.remove());
+    this.secondaryCaretEls = [];
     this.goalX = null;
     this.scroll.scrollLeft = 0;
     this.topLineF = 0;
@@ -528,6 +538,7 @@ export class VirtualEditor {
       this.caretEl.classList.remove("on");
       this.input.style.top = `${this.viewTop}px`;
       this.input.style.left = `${this.scroll.scrollLeft + this.paddingLeft}px`;
+      this.placeSecondaryCarets();
       return;
     }
     this.caretEl.classList.toggle("on", document.activeElement === this.input);
@@ -536,6 +547,7 @@ export class VirtualEditor {
     const y = point?.y ?? this.rowTop(this.caret.line);
     this.caretEl.style.top = `${y}px`;
     this.caretEl.style.left = `${x}px`;
+    this.placeSecondaryCarets();
     // IME 変換窓を追従させるため textarea も同座標へ
     this.input.style.top = `${y}px`;
     if (this.composing && this.wrap) {
@@ -608,12 +620,57 @@ export class VirtualEditor {
     this.onCursor(this.caret.line + 1, this.caret.col + 1);
   }
 
-  private moveTo(pos: Pos, extend: boolean, keepGoal = false) {
+  private moveTo(pos: Pos, extend: boolean, keepGoal = false, keepSecondary = false) {
+    if (!keepSecondary) {
+      this.secondaryCarets = [];
+      this.multiCaretX = null;
+    }
     this.caret = pos;
     if (!extend) this.anchor = pos;
     if (!keepGoal) this.goalX = null;
     this.ensureVisible();
     this.render();
+    this.notifyCursor();
+  }
+
+  private allCarets(): Pos[] {
+    return [this.caret, ...this.secondaryCarets];
+  }
+
+  private syncCaretBlink() {
+    const carets = [this.caretEl, ...this.secondaryCaretEls.slice(0, this.secondaryCarets.length)];
+    carets.forEach((caret) => caret.classList.remove("on"));
+    void this.caretEl.offsetWidth;
+    if (document.activeElement === this.input) carets.forEach((caret) => caret.classList.add("on"));
+  }
+
+  private async addCaretVert(delta: -1 | 1) {
+    if (this.hasSel()) return;
+    const from = this.caret;
+    const line = Math.max(0, Math.min(this.lineCount - 1, from.line + delta));
+    if (line === from.line) return;
+    const fromText = await this.ensureLine(from.line);
+    const fromLine = this.lineElem(from.line);
+    if (this.multiCaretX === null && fromLine) {
+      this.multiCaretX = this.colToX(fromLine, fromText, from.col);
+    }
+    const x = this.multiCaretX;
+    await this.ensureLine(line);
+    this.render();
+    const targetText = this.lineText(line) ?? "";
+    const targetLine = this.lineElem(line);
+    const target = {
+      line,
+      col: x !== null && targetLine ? this.xToCol(targetLine, targetText, x) : Math.min(from.col, charLen(targetText)),
+    };
+    if (this.allCarets().some((p) => cmp(p, target) === 0)) return;
+    this.secondaryCarets.push(from);
+    this.caret = target;
+    this.anchor = target;
+    this.goalX = null;
+    this.ensureVisible();
+    this.render();
+    this.syncCaretBlink();
     this.notifyCursor();
   }
 
@@ -849,6 +906,21 @@ export class VirtualEditor {
 
   private insertText(text: string) {
     if (this.readOnly) return;
+    if (this.secondaryCarets.length) {
+      this.run(async () => {
+        this.multiCaretX = null;
+        const carets = this.allCarets();
+        const edits = carets.map((pos) => ({ start: pos, end: pos, text }));
+        const fromLine = Math.min(...carets.map((pos) => pos.line));
+        const r = await api.editMany(edits, this.caret, 0);
+        this.applyResult({ caret: r.carets[0], line_count: r.line_count }, fromLine);
+        this.caret = r.carets[0];
+        this.anchor = this.caret;
+        this.secondaryCarets = r.carets.slice(1);
+        await this.renderAfterEdit();
+      });
+      return;
+    }
     this.run(async () => {
       const [s, e] = this.selNorm();
       const coalesce = !this.hasSel() && text.length === 1 && text !== "\n";
@@ -910,6 +982,8 @@ export class VirtualEditor {
       const r = redo ? await api.redo() : await api.undo();
       if (!r) return;
       this.applyResult(r, 0);
+      this.secondaryCarets = [];
+      this.multiCaretX = null;
       this.ensureVisible();
       this.render();
       this.notifyCursor();
@@ -922,6 +996,26 @@ export class VirtualEditor {
     const text = await this.selectedText(s, e);
     await navigator.clipboard.writeText(text);
     if (cut && !this.readOnly) this.deleteSel();
+  }
+
+  private placeSecondaryCarets() {
+    while (this.secondaryCaretEls.length < this.secondaryCarets.length) {
+      const caret = el("div", "ve-caret on");
+      this.inner.insertBefore(caret, this.input);
+      this.secondaryCaretEls.push(caret);
+    }
+    for (let i = 0; i < this.secondaryCaretEls.length; i++) {
+      const caret = this.secondaryCaretEls[i];
+      const pos = this.secondaryCarets[i];
+      if (!pos) { caret.classList.remove("on"); continue; }
+      const text = this.lineText(pos.line) ?? "";
+      const line = this.lineElem(pos.line);
+      if (!line) { caret.classList.remove("on"); continue; }
+      const point = this.wrap ? this.wrapPoint(line, text, pos.col) : null;
+      caret.style.top = `${point?.y ?? this.rowTop(pos.line)}px`;
+      caret.style.left = `${point?.x ?? this.colToX(line, text, pos.col)}px`;
+      caret.classList.toggle("on", document.activeElement === this.input);
+    }
   }
 
   private async selectedText(s: Pos, e: Pos): Promise<string> {
@@ -977,6 +1071,10 @@ export class VirtualEditor {
       }
       return;
     }
+    if (e.altKey && !e.shiftKey) {
+      if (e.key === "ArrowUp") { e.preventDefault(); this.addCaretVert(-1); return; }
+      if (e.key === "ArrowDown") { e.preventDefault(); this.addCaretVert(1); return; }
+    }
     switch (e.key) {
       case "ArrowLeft": e.preventDefault(); this.horiz(-1, ext); break;
       case "ArrowRight": e.preventDefault(); this.horiz(1, ext); break;
@@ -1023,7 +1121,7 @@ export class VirtualEditor {
     this.input.style.removeProperty("height");
     this.input.style.removeProperty("text-indent");
     this.input.style.removeProperty("--ime-indent");
-    if (document.activeElement === this.input) this.caretEl.classList.add("on");
+    this.syncCaretBlink();
     this.flushInput();
   }
 
@@ -1099,6 +1197,43 @@ export class VirtualEditor {
     if (!pos) return;
     e.preventDefault();
     this.focus();
+    if (e.altKey) {
+      const base = this.allCarets();
+      const startLine = pos.line;
+      const update = (ev: MouseEvent) => {
+        const end = this.posFromPoint(ev.clientX, ev.clientY);
+        if (!end) return;
+        const lo = Math.min(startLine, end.line);
+        const hi = Math.max(startLine, end.line);
+        const added: Pos[] = [];
+        for (let line = lo; line <= hi; line++) {
+          const text = this.lineText(line);
+          if (text !== undefined) added.push(this.posFromLineAndX(line, ev.clientX, text));
+        }
+        const primary = added.find((item) => item.line === end.line) ?? pos;
+        const unique = [...base, ...added].filter(
+          (item, index, items) => items.findIndex((candidate) => cmp(candidate, item) === 0) === index
+        );
+        this.caret = primary;
+        this.anchor = primary;
+        this.secondaryCarets = unique.filter((item) => cmp(item, primary) !== 0);
+        this.multiCaretX = null;
+        this.goalX = null;
+        this.render();
+        this.syncCaretBlink();
+        this.notifyCursor();
+      };
+      update(e);
+      const move = (ev: MouseEvent) => update(ev);
+      const up = () => {
+        window.removeEventListener("mousemove", move);
+        window.removeEventListener("mouseup", up);
+        this.syncCaretBlink();
+      };
+      window.addEventListener("mousemove", move);
+      window.addEventListener("mouseup", up);
+      return;
+    }
     if (!this.readOnly && this.hasSel()) {
       const [s, end] = this.selNorm();
       if (cmp(pos, s) >= 0 && cmp(pos, end) < 0) {

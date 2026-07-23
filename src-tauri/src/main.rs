@@ -5,8 +5,9 @@
 mod state;
 
 use wasabipad_core::{
-    self, BookmarkNode, Doc, DocInfo, EditResult, EncodingId, Eol, FindCursor, FindOutcome,
-    FindResult, FolderEntry, PosC, ReplaceChunkResult, WorkspaceSearchResult,
+    self, BookmarkNode, Doc, DocInfo, EditManyItem, EditManyResult, EditResult, EncodingId,
+    Eol, FindCursor, FindOutcome, FindResult, FolderEntry, PosC, ReplaceChunkResult,
+    WorkspaceSearchResult,
 };
 use state::{with_doc, DocState, State};
 use std::path::PathBuf;
@@ -111,6 +112,16 @@ fn edit(
     state: State,
 ) -> EditResult {
     with_doc(&state, |doc| doc.edit(start, end, caret_before, &text, coalesce))
+}
+
+#[tauri::command]
+fn edit_many(
+    edits: Vec<EditManyItem>,
+    caret_before: PosC,
+    primary_index: usize,
+    state: State,
+) -> EditManyResult {
+    with_doc(&state, |doc| doc.edit_many(edits, caret_before, primary_index))
 }
 
 #[tauri::command]
@@ -246,6 +257,7 @@ fn main() {
             rename_entry,
             reveal_in_explorer,
             edit,
+            edit_many,
             undo,
             redo,
             find,

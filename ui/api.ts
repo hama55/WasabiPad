@@ -40,6 +40,17 @@ export interface EditResult {
   line_count: number;
 }
 
+export interface EditManyItem {
+  start: Pos;
+  end: Pos;
+  text: string;
+}
+
+export interface EditManyResult {
+  carets: Pos[];
+  line_count: number;
+}
+
 export interface FindResult {
   start: Pos;
   end: Pos;
@@ -111,6 +122,9 @@ export const edit = (
   text: string,
   coalesce: boolean
 ) => invoke<EditResult>("edit", { start, end, caretBefore, text, coalesce });
+
+export const editMany = (edits: EditManyItem[], caretBefore: Pos, primaryIndex: number) =>
+  invoke<EditManyResult>("edit_many", { edits, caretBefore, primaryIndex });
 
 export const undo = () => invoke<EditResult | null>("undo");
 export const redo = () => invoke<EditResult | null>("redo");
