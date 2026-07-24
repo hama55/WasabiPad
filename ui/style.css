@@ -96,6 +96,7 @@ body {
 #addressbar-shell:focus-within { border-color: var(--bg-status); }
 #addressbar { width: 100%; height: 100%; box-sizing: border-box; border: 0; outline: 0; padding: 0 8px; background: transparent; color: inherit; font: inherit; }
 #addressbar-breadcrumb { display: flex; align-items: center; gap: 2px; width: 100%; height: 100%; box-sizing: border-box; padding: 0 8px; overflow: hidden; white-space: nowrap; }
+#addressbar-breadcrumb[hidden] { display: none; }
 #addressbar-breadcrumb:empty::after { content: "パスを入力して Enter で開く"; color: var(--fg-dim); }
 .addressbar-crumb { flex: none; max-width: 220px; overflow: hidden; text-overflow: ellipsis; border: 0; border-radius: 3px; padding: 2px 4px; background: none; color: inherit; font: inherit; cursor: default; }
 .addressbar-crumb:hover { background: var(--hover); }
@@ -347,6 +348,7 @@ body {
 #statusbar select option { background: var(--bg-side); color: var(--fg); }
 #st-mode:empty { display: none; }
 #st-mode { background: #c586c0; color: #1e1e1e; padding: 0 6px; border-radius: 3px; }
+#st-size.is-huge { background: #8a9a3c; padding: 0 4px; border-radius: 3px; }
 #st-theme { padding: 0 4px; }
 
 /* ---- ドロップダウンメニュー ---- */

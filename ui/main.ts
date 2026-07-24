@@ -53,6 +53,7 @@ let sidebarAvailable = false;
 let sidebarVisible = true;
 let saveNoticeTimer: number | undefined;
 const STARTUP_PATH_KEY = "startupPath";
+const HUGE_FILE_THRESHOLD = 100 * 1024 * 1024;
 
 const editorHost = $("editorhost");
 const sidebarEl = $("sidebar");
@@ -323,7 +324,9 @@ function applyDocInfo(o: api.DocInfo) {
   renderEncodingStatus();
   $<HTMLSelectElement>("st-eol").value = session.eol;
   renderAddressbar(o.path);
-  $("st-size").textContent = formatByteSize(o.byte_len);
+  const size = $("st-size");
+  size.textContent = formatByteSize(o.byte_len);
+  size.classList.toggle("is-huge", o.byte_len >= HUGE_FILE_THRESHOLD);
   $("st-lines").textContent = formatLineCount(o.line_count);
   editor.open(o.line_count, session.readOnly);
   editor.focus();
@@ -372,7 +375,9 @@ async function newFile() {
   $<HTMLSelectElement>("st-eol").value = session.eol;
   renderEncodingStatus();
   renderAddressbar("");
-  $("st-size").textContent = "";
+  const size = $("st-size");
+  size.textContent = "";
+  size.classList.remove("is-huge");
   $("st-lines").textContent = "1 行";
   setSidebar(false);
   sidebar.setWorkspaceSearch(false);
