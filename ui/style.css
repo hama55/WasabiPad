@@ -86,22 +86,28 @@ body {
 /* ---- アドレスバー ---- */
 #navbars[hidden] { display: none; }
 #topbar { display: flex; align-items: center; gap: 6px; background: var(--bg-top); padding: 5px 8px; flex: none; }
-#addressbar {
+#addressbar-shell {
   flex: 1; height: 26px; min-width: 0;
   background: var(--bg-editor); color: var(--fg);
   border: 1px solid var(--border); border-radius: 4px;
-  padding: 0 8px; font-size: 13px; font-family: var(--font-ui);
+  font-size: 13px; font-family: var(--font-ui);
   outline: none;
 }
-#addressbar:focus { border-color: var(--bg-status); }
-#addressbar-fav, #addressbar-open, #addressbar-save, #addressbar-new, #toggle-sidebar, #toggle-favbar {
+#addressbar-shell:focus-within { border-color: var(--bg-status); }
+#addressbar { width: 100%; height: 100%; box-sizing: border-box; border: 0; outline: 0; padding: 0 8px; background: transparent; color: inherit; font: inherit; }
+#addressbar-breadcrumb { display: flex; align-items: center; gap: 2px; width: 100%; height: 100%; box-sizing: border-box; padding: 0 8px; overflow: hidden; white-space: nowrap; }
+#addressbar-breadcrumb:empty::after { content: "パスを入力して Enter で開く"; color: var(--fg-dim); }
+.addressbar-crumb { flex: none; max-width: 220px; overflow: hidden; text-overflow: ellipsis; border: 0; border-radius: 3px; padding: 2px 4px; background: none; color: inherit; font: inherit; cursor: default; }
+.addressbar-crumb:hover { background: var(--hover); }
+.addressbar-sep { flex: none; color: var(--fg-dim); }
+#addressbar-fav, #addressbar-open, #addressbar-save, #addressbar-new, #addressbar-new-window, #toggle-sidebar, #toggle-favbar {
   flex: none; width: 26px; height: 26px;
   background: var(--bg-editor); color: var(--fg-dim);
   border: 1px solid var(--border); border-radius: 4px;
   font-size: 14px; cursor: default;
 }
 #toggle-sidebar, #toggle-favbar { background: var(--bg-title); }
-#addressbar-fav:hover, #addressbar-open:hover, #addressbar-save:hover, #addressbar-new:hover, #toggle-sidebar:hover, #toggle-favbar:hover { background: var(--hover); color: var(--fg); }
+#addressbar-fav:hover, #addressbar-open:hover, #addressbar-save:hover, #addressbar-new:hover, #addressbar-new-window:hover, #toggle-sidebar:hover, #toggle-favbar:hover { background: var(--hover); color: var(--fg); }
 
 /* ---- お気に入りバー ---- */
 #favbar {
@@ -221,7 +227,7 @@ body {
   position: absolute; left: 0; height: var(--line-h);
   line-height: var(--line-h); font-size: var(--ve-font);
   font-family: var(--ve-font-family); white-space: pre;
-  color: var(--editor-fg); padding-left: var(--ve-pad-left); tab-size: 8;
+  color: var(--editor-fg); padding-left: var(--ve-pad-left); tab-size: var(--ve-tab-size, 8);
   user-select: none;
 }
 .ve-scroll.wrap { overflow-x: hidden; }
@@ -361,6 +367,8 @@ body {
 #dropdown .dd-item.dd-drop { outline: 1px solid var(--accent); background: var(--hover); color: var(--fg); }
 #dropdown .dd-key { color: var(--fg-dim); }
 #dropdown .dd-item:hover .dd-key { color: #ffffffaa; }
+#dropdown .dd-trailing { margin: -3px -7px -3px auto; width: 22px; border: 0; border-radius: 3px; background: none; color: var(--fg-dim); font: inherit; font-size: 16px; line-height: 20px; }
+#dropdown .dd-trailing:hover { background: color-mix(in srgb, currentColor 16%, transparent); color: inherit; }
 #dropdown .dd-sep { height: 1px; background: var(--border-strong); margin: 4px 6px; }
 
 /* スクロールバー */

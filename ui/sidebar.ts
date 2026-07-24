@@ -33,9 +33,10 @@ export class Sidebar {
   private searchInput: HTMLInputElement;
   private searchCase: HTMLInputElement;
   private searchClear: HTMLButtonElement;
-  private results: WorkspaceSearchResult[] | null = null;
+  private results: WorkspaceSearchResult[] | "searching" | null = null;
   private searchGen = 0;
   private searchTimer: number | undefined;
+  private searchRunning = false;
   private rows: Row[] = [];
   private sel: string | null = null; // 選択中の relPath
   private onSelect: (relPath: string, newWindow: boolean) => void;
@@ -100,6 +101,8 @@ export class Sidebar {
       this.render();
       return;
     }
+    this.results = "searching";
+    this.render();
     this.searchTimer = window.setTimeout(() => this.searchWorkspace(gen, pat, this.searchCase.checked), 150);
   }
 
@@ -113,12 +116,18 @@ export class Sidebar {
   }
 
   private async searchWorkspace(gen: number, pat: string, matchCase: boolean) {
-    this.results = [];
-    this.render();
-    const results = await this.onWorkspaceSearch(pat, matchCase);
-    if (gen !== this.searchGen) return;
-    this.results = results;
-    this.render();
+    if (this.searchRunning) return;
+    this.searchRunning = true;
+    try {
+      const results = await this.onWorkspaceSearch(pat, matchCase);
+      if (gen === this.searchGen) {
+        this.results = results;
+        this.render();
+      }
+    } finally {
+      this.searchRunning = false;
+      if (gen !== this.searchGen && this.searchInput.value) this.queueWorkspaceSearch();
+    }
   }
 
   // "sub/a.txt" 形式の名前一覧からディレクトリ見出し+葉の行を組み立てる。
@@ -275,6 +284,14 @@ export class Sidebar {
 
   private render() {
     const frag = document.createDocumentFragment();
+    if (this.results === "searching") {
+      const searching = document.createElement("div");
+      searching.className = "ws-empty";
+      searching.textContent = "検索中…";
+      frag.appendChild(searching);
+      this.tree.replaceChildren(frag);
+      return;
+    }
     if (this.results) {
       if (this.results.length === 0) {
         const empty = document.createElement("div");
@@ -285,7 +302,7 @@ export class Sidebar {
       for (const result of this.results) {
         const div = document.createElement("div");
         div.className = "ws-result";
-        div.textContent = `${result.rel_path}:${result.line + 1}  ${result.preview}`;
+        div.textContent = `${result.rel_path}:${result.line + 1}`;
         div.title = div.textContent;
         div.addEventListener("click", () => this.onSearchResult(result, this.searchInput.value));
         frag.appendChild(div);
@@ -301,7 +318,7 @@ export class Sidebar {
 
       const arrow = document.createElement("span");
       arrow.className = "fv-arrow";
-      arrow.textContent = r.kind === "dir" ? (r.expanded ? "📂" : "📁") : r.kind === "archive" ? (r.expanded ? "⌄" : "›") : "";
+      arrow.textContent = r.kind === "dir" ? (r.expanded ? "🗂️" : "📁") : r.kind === "archive" ? (r.expanded ? "⌄" : "›") : r.kind === "file" ? "📄" : "";
       div.appendChild(arrow);
       div.appendChild(document.createTextNode(r.label));
 

@@ -3,6 +3,7 @@ export interface MenuItem {
   label: string;
   iconClass?: string;
   key?: string; // ショートカット表示
+  trailing?: { label: string; title: string; action: () => void };
   action: (event?: MouseEvent) => void;
   sub?: MenuItem[];
   sep?: boolean; // trueならこの項目の前に区切り線
@@ -46,6 +47,19 @@ export function showMenu(x: number, y: number, items: MenuItem[]) {
       k.className = "dd-key";
       k.textContent = item.key;
       div.appendChild(k);
+    }
+    if (item.trailing) {
+      const trailing = document.createElement("button");
+      trailing.className = "dd-trailing";
+      trailing.textContent = item.trailing.label;
+      trailing.title = item.trailing.title;
+      trailing.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        hideMenu();
+        item.trailing!.action();
+      });
+      div.appendChild(trailing);
     }
     div.addEventListener("click", (e) => {
       e.stopPropagation();

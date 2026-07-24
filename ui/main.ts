@@ -47,6 +47,7 @@ let session = initialSession();
 let wrap = false;
 let fontFamily = DEFAULT_EDITOR_CONFIG.fontFamily;
 let fontSize = DEFAULT_EDITOR_CONFIG.fontSize;
+let indentSize = Number(localStorage.getItem("indentSize")) || 8;
 let currentLine = 1;
 let sidebarAvailable = false;
 let sidebarVisible = true;
@@ -57,6 +58,7 @@ const editorHost = $("editorhost");
 const sidebarEl = $("sidebar");
 const splitter = $("splitter");
 const addressbar = $<HTMLInputElement>("addressbar");
+const addressbarBreadcrumb = $("addressbar-breadcrumb");
 const loading = $("loading");
 const loadingMessage = $("loading-message");
 
@@ -64,6 +66,54 @@ function setLoading(active: boolean, message = "読み込み中…") {
   loading.hidden = !active;
   loadingMessage.textContent = message;
   editorHost.setAttribute("aria-busy", String(active));
+}
+
+function pathSegments(path: string): { label: string; path: string }[] {
+  const normalized = path.replaceAll("/", "\\");
+  const drive = normalized.match(/^[A-Za-z]:\\/);
+  if (drive) {
+    const root = drive[0];
+    let current = root;
+    return [{ label: root.slice(0, -1), path: root }, ...normalized.slice(root.length).split("\\").filter(Boolean).map((label) => {
+      current += label;
+      const segment = { label, path: current };
+      current += "\\";
+      return segment;
+    })];
+  }
+  return [{ label: path, path }];
+}
+
+function renderAddressbar(path: string) {
+  addressbar.value = path;
+  addressbarBreadcrumb.replaceChildren(...pathSegments(path).flatMap((segment, index) => {
+    const items: Node[] = [];
+    if (index) {
+      const separator = document.createElement("span");
+      separator.className = "addressbar-sep";
+      separator.textContent = ">";
+      items.push(separator);
+    }
+    const button = document.createElement("button");
+    button.className = "addressbar-crumb";
+    button.textContent = segment.label;
+    button.title = segment.path;
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void openFile(segment.path);
+    });
+    items.push(button);
+    return items;
+  }));
+  addressbar.hidden = true;
+  addressbarBreadcrumb.hidden = false;
+}
+
+function editAddressbar() {
+  addressbarBreadcrumb.hidden = true;
+  addressbar.hidden = false;
+  addressbar.focus();
+  addressbar.select();
 }
 
 function updateFontStatus() {
@@ -101,7 +151,18 @@ const editor = new VirtualEditor(
 );
 applyFont();
 $("st-font").addEventListener("click", async () => {
-  const result = await promptFields("フォント", [{ label: "フォント名", value: fontFamily }]);
+  const fontOptions = [
+    "Consolas, \"MS Gothic\", monospace",
+    "Cascadia Mono, \"MS Gothic\", monospace",
+    "\"MS Gothic\", monospace",
+    "\"Yu Gothic UI\", sans-serif",
+    "Meiryo, sans-serif",
+    "\"BIZ UDPGothic\", sans-serif",
+  ].map((value) => ({ label: value.replace(/,.*$/, "").replaceAll('"', ""), value }));
+  if (!fontOptions.some((option) => option.value === fontFamily)) {
+    fontOptions.unshift({ label: formatFontFamily(fontFamily), value: fontFamily });
+  }
+  const result = await promptFields("フォント", [{ label: "フォント", value: fontFamily, options: fontOptions }]);
   const family = result?.[0].trim();
   if (!family) return;
   fontFamily = family;
@@ -118,6 +179,15 @@ $("st-wrap").addEventListener("click", () => {
   wrap = !wrap;
   $("st-wrap").textContent = `折り返し: ${wrap ? "オン" : "オフ"}`;
   editor.setWrap(wrap);
+});
+const indentSelect = $<HTMLSelectElement>("st-indent");
+indentSelect.value = String([2, 4, 8].includes(indentSize) ? indentSize : 8);
+indentSize = Number(indentSelect.value);
+editor.setTabSize(indentSize);
+indentSelect.addEventListener("change", () => {
+  indentSize = Number(indentSelect.value);
+  localStorage.setItem("indentSize", String(indentSize));
+  editor.setTabSize(indentSize);
 });
 $("st-pos").addEventListener("click", async () => {
   const result = await promptFields("指定行へ移動", [
@@ -252,7 +322,7 @@ function applyDocInfo(o: api.DocInfo) {
   $<HTMLSelectElement>("st-enc").value = session.encoding;
   renderEncodingStatus();
   $<HTMLSelectElement>("st-eol").value = session.eol;
-  addressbar.value = o.path;
+  renderAddressbar(o.path);
   $("st-size").textContent = formatByteSize(o.byte_len);
   $("st-lines").textContent = formatLineCount(o.line_count);
   editor.open(o.line_count, session.readOnly);
@@ -301,7 +371,7 @@ async function newFile() {
   $<HTMLSelectElement>("st-enc").value = session.encoding;
   $<HTMLSelectElement>("st-eol").value = session.eol;
   renderEncodingStatus();
-  addressbar.value = "";
+  renderAddressbar("");
   $("st-size").textContent = "";
   $("st-lines").textContent = "1 行";
   setSidebar(false);
@@ -389,7 +459,7 @@ async function saveTo(path: string, folderDraftRoot: string | null = null): Prom
   session.displayPath = path;
   session.sourceEncoding = session.encoding;
   session.dirty = false;
-  addressbar.value = path;
+  renderAddressbar(path);
   renderEncodingStatus();
   updateTitle();
   showSavedNotice();
@@ -427,6 +497,16 @@ function relToAbs(relPath: string): string {
 function sidebarContextMenu(x: number, y: number, target: ContextTarget | null) {
   if (!session.folderRoot) return; // アーカイブ閲覧中はファイル操作の対象がない
   const items: MenuItem[] = [];
+  if (target) {
+    items.push({
+      label: "アドレスバーに設定",
+      action: () => {
+        const path = relToAbs(target.relPath);
+        renderAddressbar(path);
+        void openFile(path);
+      },
+    });
+  }
   items.push({ label: "新規メモ作成...", action: () => createNoteIn(target?.isDir ? target.relPath : null) });
   if (target) {
     items.push({ label: "名前を変更...", action: () => renameEntry(target.relPath) });
@@ -451,7 +531,7 @@ async function renameEntry(relPath: string) {
     const info = await api.renameEntry(relPath, newName);
     sidebar.setEntries(info.folder_entries ?? []);
     if (info.path && session.folderRoot) {
-      addressbar.value = info.path;
+      renderAddressbar(info.path);
       session.displayPath = info.path;
       session.savePath = session.readOnly ? null : info.path;
       updateTitle();
@@ -562,11 +642,18 @@ $<HTMLSelectElement>("st-eol").addEventListener("change", (e) => {
 });
 
 addressbar.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && addressbar.value.trim()) openFile(addressbar.value.trim());
+  if (e.key === "Enter" && addressbar.value.trim()) {
+    void openFile(addressbar.value.trim());
+  } else if (e.key === "Escape") {
+    renderAddressbar(addressbar.value);
+  }
 });
+addressbar.addEventListener("blur", () => renderAddressbar(addressbar.value));
+addressbarBreadcrumb.addEventListener("click", () => editAddressbar());
 $("addressbar-fav").addEventListener("click", () => favbar.addCurrent());
 $("addressbar-save").addEventListener("click", () => { void doSave(); });
 $("addressbar-new").addEventListener("click", () => { void newFile(); });
+$("addressbar-new-window").addEventListener("click", () => { void api.launchNew(); });
 $("addressbar-open").addEventListener("click", () => pickAndOpen(false));
 $("toggle-sidebar").addEventListener("click", () => {
   if (!sidebarAvailable) return;

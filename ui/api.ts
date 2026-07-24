@@ -185,4 +185,4 @@ export const pathIsDirectory = (path: string) => invoke<boolean>("path_is_direct
 export const nextMemoPath = (directory: string, stem: string, extension: string) =>
   invoke<string>("next_memo_path", { directory, stem, extension });
 export const initialPath = () => invoke<string | null>("initial_path");
-export const launchNew = (path: string) => invoke<void>("launch_new", { path });
+export const launchNew = (path?: string) => invoke<void>("launch_new", { path });

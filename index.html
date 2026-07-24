@@ -26,8 +26,12 @@
     <div id="topbar">
       <button id="addressbar-save" title="保存">💾</button>
       <button id="addressbar-new" title="新規メモ">📝</button>
+      <button id="addressbar-new-window" title="新規 WasabiPad">⊞</button>
       <button id="addressbar-open" title="ファイルを選択...">📁</button>
-      <input id="addressbar" spellcheck="false" autocomplete="off" placeholder="パスを入力して Enter で開く" />
+      <div id="addressbar-shell">
+        <div id="addressbar-breadcrumb" title="余白をクリックしてパスを編集"></div>
+        <input id="addressbar" hidden spellcheck="false" autocomplete="off" placeholder="パスを入力して Enter で開く" />
+      </div>
       <button id="addressbar-fav" title="お気に入りに追加">☆</button>
     </div>
     <div id="favbar"></div>
@@ -56,6 +60,12 @@
     <span class="st-spacer"></span>
     <button id="st-font" title="フォントを変更"></button>
     <button id="st-font-size" title="フォントサイズを変更"></button>
+    <span class="st-sep" aria-hidden="true"></span>
+    <select id="st-indent" title="タブの表示幅">
+      <option value="2">インデント: 2</option>
+      <option value="4">インデント: 4</option>
+      <option value="8">インデント: 8</option>
+    </select>
     <span class="st-sep" aria-hidden="true"></span>
     <button id="st-wrap" title="折り返し切替">折り返し: オフ</button>
     <span class="st-sep" aria-hidden="true"></span>

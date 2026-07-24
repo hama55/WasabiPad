@@ -267,9 +267,13 @@ fn initial_path() -> Option<String> {
 }
 
 #[tauri::command]
-fn launch_new(path: String) -> Result<(), String> {
+fn launch_new(path: Option<String>) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    Command::new(exe).arg(path).spawn().map(|_| ()).map_err(|e| e.to_string())
+    let mut command = Command::new(exe);
+    if let Some(path) = path.filter(|path| !path.is_empty()) {
+        command.arg(path);
+    }
+    command.spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
 fn main() {

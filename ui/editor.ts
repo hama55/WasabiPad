@@ -23,6 +23,7 @@ const OVERSCAN = 8;
 // コンテナの高さをこの値に丸め、スクロール位置と行番号を比例マッピングする
 // (ve-scale モード)。
 const MAX_SAFE_HEIGHT = 5_000_000;
+const REGISTERED_STRINGS_KEY = "registeredStrings";
 
 export interface EditorPorts {
   onDocChange: (lineCount: number) => void;
@@ -257,6 +258,12 @@ export class VirtualEditor {
     this.setTopLine(wasAtBottom ? this.maxTopLine() : topLine);
     this.render();
     this.onFontChange(this.fontFamily, this.fontSize);
+  }
+
+  setTabSize(size: number) {
+    this.scroll.parentElement!.style.setProperty("--ve-tab-size", String(Math.max(1, Math.min(16, size))));
+    this.maxWidth = 0;
+    this.render();
   }
 
   // ---- 座標マッピング (scaleMode: 巨大文書では行位置とスクロール位置を比例配分) ----
@@ -1348,10 +1355,50 @@ export class VirtualEditor {
     if (!this.readOnly) {
       items.push({ label: "貼り付け", key: "Ctrl+V", action: () => this.paste() });
       items.push({ label: "削除", action: () => { if (this.hasSel()) this.deleteSel(); } });
+      if (this.hasSel()) items.push({ label: "選択範囲を登録文字列に追加", action: () => { void this.addRegisteredString(); } });
+      const registered = this.registeredStrings();
+      if (registered.length) {
+        items.push({
+          label: "登録文字列",
+          action: () => {},
+          sub: registered.map((text) => ({
+            label: this.registeredStringLabel(text),
+            action: () => this.insertText(text),
+            trailing: { label: "×", title: "登録文字列を削除", action: () => this.removeRegisteredString(text) },
+          })),
+        });
+      }
     }
     items.push({ label: "すべて選択", key: "Ctrl+A", action: () => this.selectAll(), sep: true });
     if (this.hasExternalFile()) items.push({ label: "他のアプリで開く", action: this.openExternally });
     showMenu(e.clientX, e.clientY, items);
+  }
+
+  private registeredStrings(): string[] {
+    try {
+      const value: unknown = JSON.parse(localStorage.getItem(REGISTERED_STRINGS_KEY) ?? "[]");
+      return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.length > 0) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private registeredStringLabel(text: string): string {
+    return text.replaceAll("\n", "↵").slice(0, 48) || "(空文字列)";
+  }
+
+  private async addRegisteredString() {
+    const [start, end] = this.selNorm();
+    const text = await this.selectedText(start, end);
+    if (!text) return;
+    const strings = this.registeredStrings();
+    if (!strings.includes(text)) {
+      localStorage.setItem(REGISTERED_STRINGS_KEY, JSON.stringify([...strings, text]));
+    }
+  }
+
+  private removeRegisteredString(text: string) {
+    localStorage.setItem(REGISTERED_STRINGS_KEY, JSON.stringify(this.registeredStrings().filter((item) => item !== text)));
   }
 
   // ---- ガター(行番号) ----
