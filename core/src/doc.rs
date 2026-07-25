@@ -7,52 +7,14 @@
 use crate::buffer::{Pos, TextBuffer};
 use crate::fileio::{self, Encoding, EncodingId, Eol, FileStamp};
 use crate::undo::{Edit, UndoEntry, UndoStack};
+pub use crate::folder::FolderEntry;
+use crate::folder::join_relative;
+use crate::search::{find_backward, find_chunk, ChunkStep};
 use crate::ziptext::Entry;
 use serde::Serialize;
-use std::cmp::Ordering;
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
-
-fn join_relative(root: &Path, relative: &str) -> PathBuf {
-    root.join(relative.replace('/', std::path::MAIN_SEPARATOR_STR))
-}
-
-fn natural_name_cmp(a: &str, b: &str) -> Ordering {
-    let a = a.to_lowercase();
-    let b = b.to_lowercase();
-    let mut ai = a.chars().peekable();
-    let mut bi = b.chars().peekable();
-    loop {
-        match (ai.peek(), bi.peek()) {
-            (Some(ac), Some(bc)) if ac.is_ascii_digit() && bc.is_ascii_digit() => {
-                let mut an = String::new();
-                let mut bn = String::new();
-                while ai.peek().is_some_and(|c| c.is_ascii_digit()) {
-                    an.push(ai.next().unwrap());
-                }
-                while bi.peek().is_some_and(|c| c.is_ascii_digit()) {
-                    bn.push(bi.next().unwrap());
-                }
-                let av = an.trim_start_matches('0');
-                let bv = bn.trim_start_matches('0');
-                let av = if av.is_empty() { "0" } else { av };
-                let bv = if bv.is_empty() { "0" } else { bv };
-                let ord = av.len().cmp(&bv.len()).then_with(|| av.cmp(bv)).then_with(|| an.len().cmp(&bn.len()));
-                if ord != Ordering::Equal {
-                    return ord;
-                }
-            }
-            (Some(_), Some(_)) => {
-                let ord = ai.next().cmp(&bi.next());
-                if ord != Ordering::Equal {
-                    return ord;
-                }
-            }
-            _ => return ai.next().cmp(&bi.next()),
-        }
-    }
-}
 
 pub struct Doc {
     buf: TextBuffer,
@@ -72,12 +34,6 @@ impl Drop for RecoveryTemp {
     }
 }
 
-#[derive(Serialize)]
-pub struct FolderEntry {
-    pub name: String,
-    pub is_dir: bool,
-}
-
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "lowercase")]
 pub enum DocKind {
@@ -85,15 +41,17 @@ pub enum DocKind {
     Archive,
 }
 
-enum DocumentSource {
-    Untitled { recovery_temp: Option<RecoveryTemp> },
+// 開いている実体。フォルダ閲覧中かどうか (root) とは直交する軸として持つ。
+// 以前は Folder 変種が File/Archive の中身を丸ごと再掲していたため、
+// 全アクセサが同じ形を2回ずつ match する必要があった。
+enum Target {
+    None { recovery_temp: Option<RecoveryTemp> },
     File {
         path: PathBuf,
         source_file: Option<File>,
         stamp: Option<FileStamp>, // ハンドル非保持 (=外部編集可) の場合の変更検知用
         recovery_temp: Option<RecoveryTemp>,
     },
-    Folder { root: PathBuf, selected: FolderSelection },
     Archive {
         path: PathBuf,
         source_file: File,
@@ -101,59 +59,50 @@ enum DocumentSource {
     },
 }
 
-enum FolderSelection {
-    None { recovery_temp: Option<RecoveryTemp> },
-    File {
-        path: PathBuf,
-        source_file: Option<File>,
-        stamp: Option<FileStamp>,
-        recovery_temp: Option<RecoveryTemp>,
-    },
-    Archive {
-        path: PathBuf,
-        source_file: File,
-        entries: Option<Vec<Entry>>,
-    },
+// root=Some ならフォルダ閲覧中。target はその中で選択中の実体 (未選択なら None)。
+struct DocumentSource {
+    root: Option<PathBuf>,
+    target: Target,
 }
 
 impl DocumentSource {
+    fn untitled() -> Self {
+        Self { root: None, target: Target::None { recovery_temp: None } }
+    }
+
+    fn file(path: PathBuf, source_file: Option<File>, stamp: Option<FileStamp>) -> Self {
+        Self {
+            root: None,
+            target: Target::File { path, source_file, stamp, recovery_temp: None },
+        }
+    }
+
+    // 編集して保存できるパス (アーカイブ内のエントリは保存先を持たないので None)
     fn path(&self) -> Option<&Path> {
-        match self {
-            Self::File { path, .. } => Some(path),
-            Self::Folder { selected: FolderSelection::File { path, .. }, .. } => Some(path),
+        match &self.target {
+            Target::File { path, .. } => Some(path),
             _ => None,
         }
     }
 
     fn folder_root(&self) -> Option<&Path> {
-        match self {
-            Self::Folder { root, .. } => Some(root),
-            _ => None,
-        }
+        self.root.as_deref()
     }
 
     fn entries(&self) -> Option<&[Entry]> {
-        match self {
-            Self::Archive { entries: Some(entries), .. }
-            | Self::Folder { selected: FolderSelection::Archive { entries: Some(entries), .. }, .. } => {
-                Some(entries)
-            }
+        match &self.target {
+            Target::Archive { entries: Some(entries), .. } => Some(entries),
             _ => None,
         }
     }
 
     fn is_view_only(&self) -> bool {
-        !matches!(
-            self,
-            Self::Untitled { .. }
-                | Self::File { .. }
-                | Self::Folder { selected: FolderSelection::None { .. }, .. }
-                | Self::Folder { selected: FolderSelection::File { .. }, .. }
-        )
+        matches!(self.target, Target::Archive { .. })
     }
 
+    // フォルダ閲覧中は kind を Text のままにする (ツリーは folder_entries が組み立てるため)。
     fn kind(&self) -> DocKind {
-        if matches!(self, Self::Archive { .. }) {
+        if self.root.is_none() && matches!(self.target, Target::Archive { .. }) {
             DocKind::Archive
         } else {
             DocKind::Text
@@ -161,86 +110,50 @@ impl DocumentSource {
     }
 
     fn display_path(&self) -> Option<&Path> {
-        match self {
-            Self::File { path, .. } | Self::Archive { path, .. } => Some(path),
-            Self::Folder { selected: FolderSelection::File { path, .. }, .. }
-            | Self::Folder { selected: FolderSelection::Archive { path, .. }, .. } => Some(path),
-            _ => None,
+        match &self.target {
+            Target::File { path, .. } | Target::Archive { path, .. } => Some(path),
+            Target::None { .. } => None,
+        }
+    }
+
+    fn recovery_slot(&mut self) -> Option<&mut Option<RecoveryTemp>> {
+        match &mut self.target {
+            Target::None { recovery_temp } | Target::File { recovery_temp, .. } => Some(recovery_temp),
+            Target::Archive { .. } => None,
         }
     }
 
     fn take_recovery(&mut self) -> Option<RecoveryTemp> {
-        match self {
-            Self::Untitled { recovery_temp }
-            | Self::File { recovery_temp, .. }
-            | Self::Folder {
-                selected: FolderSelection::File { recovery_temp, .. }, ..
-            }
-            | Self::Folder {
-                selected: FolderSelection::None { recovery_temp }, ..
-            } => recovery_temp.take(),
-            _ => None,
-        }
+        self.recovery_slot().and_then(Option::take)
     }
 
     fn set_recovery(&mut self, recovery: RecoveryTemp) {
-        match self {
-            Self::Untitled { recovery_temp }
-            | Self::File { recovery_temp, .. }
-            | Self::Folder {
-                selected: FolderSelection::File { recovery_temp, .. }, ..
-            }
-            | Self::Folder {
-                selected: FolderSelection::None { recovery_temp }, ..
-            } => *recovery_temp = Some(recovery),
-            _ => {}
+        if let Some(slot) = self.recovery_slot() {
+            *slot = Some(recovery);
         }
     }
 
     fn set_source_file(&mut self, source: Option<File>) {
-        match self {
-            Self::File { source_file, .. }
-            | Self::Folder { selected: FolderSelection::File { source_file, .. }, .. } => {
-                *source_file = source
-            }
-            _ => {}
+        if let Target::File { source_file, .. } = &mut self.target {
+            *source_file = source;
         }
     }
 
     fn holds_handle(&self) -> bool {
-        matches!(
-            self,
-            Self::File { source_file: Some(_), .. }
-                | Self::Folder { selected: FolderSelection::File { source_file: Some(_), .. }, .. }
-        )
+        matches!(self.target, Target::File { source_file: Some(_), .. })
     }
 
     fn stamp(&self) -> Option<FileStamp> {
-        match self {
-            Self::File { stamp, .. }
-            | Self::Folder { selected: FolderSelection::File { stamp, .. }, .. } => *stamp,
+        match &self.target {
+            Target::File { stamp, .. } => *stamp,
             _ => None,
         }
     }
 
     fn set_stamp(&mut self, new: Option<FileStamp>) {
-        match self {
-            Self::File { stamp, .. }
-            | Self::Folder { selected: FolderSelection::File { stamp, .. }, .. } => *stamp = new,
-            _ => {}
+        if let Target::File { stamp, .. } = &mut self.target {
+            *stamp = new;
         }
-    }
-}
-
-fn into_folder_selection(source: DocumentSource) -> Option<FolderSelection> {
-    match source {
-        DocumentSource::File { path, source_file, stamp, recovery_temp } => {
-            Some(FolderSelection::File { path, source_file, stamp, recovery_temp })
-        }
-        DocumentSource::Archive { path, source_file, entries } => {
-            Some(FolderSelection::Archive { path, source_file, entries })
-        }
-        _ => None,
     }
 }
 
@@ -362,7 +275,7 @@ impl Doc {
             undo: UndoStack::new(),
             enc: Encoding::Utf8 { bom: false },
             eol: Eol::Crlf,
-            source: DocumentSource::Untitled { recovery_temp: None },
+            source: DocumentSource::untitled(),
             replace_progress: None,
             byte_len: 0,
         }
@@ -375,10 +288,7 @@ impl Doc {
     pub fn open(path: &Path) -> io::Result<Doc> {
         if path.is_dir() {
             let mut doc = Doc::empty();
-            doc.source = DocumentSource::Folder {
-                root: path.to_path_buf(),
-                selected: FolderSelection::None { recovery_temp: None },
-            };
+            doc.source = DocumentSource { root: Some(path.to_path_buf()), ..DocumentSource::untitled() };
             return Ok(doc);
         }
         Doc::open_file(path)
@@ -386,34 +296,9 @@ impl Doc {
 
     // 指定ディレクトリ (rel_dir が空文字ならルート) の直下だけを列挙する。
     // サブフォルダの中身は再帰しない (ツリーの展開ボタンで都度呼ばれる想定)。
-    fn list_folder_children(root: &Path, rel_dir: &str) -> Option<Vec<FolderEntry>> {
-        const MAX_ENTRIES: usize = 2000;
-        let dir = if rel_dir.is_empty() {
-            root.to_path_buf()
-        } else {
-            join_relative(root, rel_dir)
-        };
-        let rd = std::fs::read_dir(&dir).ok()?;
-        let mut items: Vec<FolderEntry> = rd
-            .flatten()
-            .filter_map(|e| {
-                let is_dir = e.file_type().ok()?.is_dir();
-                Some(FolderEntry { name: e.file_name().to_string_lossy().into_owned(), is_dir })
-            })
-            .collect();
-        items.sort_by(|a, b| {
-            b.is_dir
-                .cmp(&a.is_dir)
-                .then_with(|| natural_name_cmp(&a.name, &b.name))
-                .then_with(|| a.name.cmp(&b.name))
-        });
-        items.truncate(MAX_ENTRIES);
-        Some(items)
-    }
-
     // ツリーの展開ボタン用の公開API。
     pub fn list_folder_entries(&self, rel_dir: &str) -> Option<Vec<FolderEntry>> {
-        Self::list_folder_children(self.source.folder_root()?, rel_dir)
+        crate::folder::list_children(self.source.folder_root()?, rel_dir)
     }
 
     pub fn workspace_root(&self) -> Option<PathBuf> {
@@ -440,10 +325,9 @@ impl Doc {
                 undo: UndoStack::new(),
                 enc: Encoding::Utf8 { bom: false },
                 eol: Eol::Lf,
-                source: DocumentSource::Archive {
-                    path: path.to_path_buf(),
-                    source_file,
-                    entries: None,
+                source: DocumentSource {
+                    root: None,
+                    target: Target::Archive { path: path.to_path_buf(), source_file, entries: None },
                 },
                 replace_progress: None,
                 byte_len,
@@ -453,18 +337,16 @@ impl Doc {
 
         let o = fileio::open_buffer(path)?;
         let source = if let Some(entries) = o.entries {
-            DocumentSource::Archive {
-                path: path.to_path_buf(),
-                source_file: o.source_file.expect("アーカイブは排他ハンドルを保持する"),
-                entries: Some(entries),
+            DocumentSource {
+                root: None,
+                target: Target::Archive {
+                    path: path.to_path_buf(),
+                    source_file: o.source_file.expect("アーカイブは排他ハンドルを保持する"),
+                    entries: Some(entries),
+                },
             }
         } else {
-            DocumentSource::File {
-                path: path.to_path_buf(),
-                source_file: o.source_file,
-                stamp: o.stamp,
-                recovery_temp: None,
-            }
+            DocumentSource::file(path.to_path_buf(), o.source_file, o.stamp)
         };
         Ok(Doc {
             buf: o.buf,
@@ -486,23 +368,9 @@ impl Doc {
 
     // ディスクから読み直した Opened で文書全体を差し替える (undo/検索状態は破棄)。
     fn adopt_opened(&mut self, path: PathBuf, o: fileio::Opened) -> DocInfo {
-        let folder_root = self.source.folder_root().map(Path::to_path_buf);
-        let source = match folder_root {
-            Some(root) => DocumentSource::Folder {
-                root,
-                selected: FolderSelection::File {
-                    path: path.clone(),
-                    source_file: o.source_file,
-                    stamp: o.stamp,
-                    recovery_temp: None,
-                },
-            },
-            None => DocumentSource::File {
-                path: path.clone(),
-                source_file: o.source_file,
-                stamp: o.stamp,
-                recovery_temp: None,
-            },
+        let source = DocumentSource {
+            root: self.source.folder_root().map(Path::to_path_buf),
+            ..DocumentSource::file(path.clone(), o.source_file, o.stamp)
         };
         let replacement = Doc {
             buf: o.buf,
@@ -575,7 +443,7 @@ impl Doc {
             folder_entries: self
                 .source
                 .folder_root()
-                .and_then(|root| Self::list_folder_children(root, "")),
+                .and_then(|root| crate::folder::list_children(root, "")),
             folder_root: self.source.folder_root().map(|p| p.to_string_lossy().into_owned()),
             view_only: self.source.is_view_only(),
             byte_len: self.byte_len,
@@ -615,9 +483,9 @@ impl Doc {
                 self.byte_len = text.len() as u64;
                 self.buf = TextBuffer::from_text(&text);
                 self.undo.clear();
-                self.source = DocumentSource::Folder {
-                    root,
-                    selected: FolderSelection::Archive {
+                self.source = DocumentSource {
+                    root: Some(root),
+                    target: Target::Archive {
                         path: archive_real.clone(),
                         source_file,
                         entries: None,
@@ -631,14 +499,13 @@ impl Doc {
             }
             let mut d = Doc::open_file(&path).ok()?;
             let path_str = path.to_string_lossy().into_owned();
-            let selected = into_folder_selection(d.source)?;
-            d.source = DocumentSource::Folder { root, selected };
+            d.source.root = Some(root);
             let info = d.info(path_str);
             *self = d;
             return Some(info);
         }
-        let (archive_path, text) = match &self.source {
-            DocumentSource::Archive { path, source_file, entries } => {
+        let (archive_path, text) = match &self.source.target {
+            Target::Archive { path, source_file, entries } => {
                 let text = if let Some(entries) = entries {
                     entries.iter().find(|entry| entry.name == rel_path)?.text.clone()
                 } else {
@@ -660,13 +527,7 @@ impl Doc {
     // それ以外はフォルダ内の実ファイル (zip/xlsx/xls) の相対パス。
     pub fn list_archive_entries(&self, rel_path: &str) -> Option<Vec<String>> {
         let bytes = if rel_path.is_empty() {
-            let source_file = match &self.source {
-                DocumentSource::Archive { source_file, .. }
-                | DocumentSource::Folder {
-                    selected: FolderSelection::Archive { source_file, .. }, ..
-                } => source_file,
-                _ => return None,
-            };
+            let Target::Archive { source_file, .. } = &self.source.target else { return None };
             fileio::read_locked(source_file).ok()?
         } else {
             let path = join_relative(self.source.folder_root()?, rel_path);
@@ -694,9 +555,7 @@ impl Doc {
         }
         std::fs::write(&path, b"")?;
         let mut d = Doc::open_file(&path)?;
-        let selected = into_folder_selection(d.source)
-            .ok_or_else(|| io::Error::other("作成した文書を開けません"))?;
-        d.source = DocumentSource::Folder { root, selected };
+        d.source.root = Some(root);
         let path_str = path.to_string_lossy().into_owned();
         let info = d.info(path_str);
         *self = d;
@@ -718,10 +577,10 @@ impl Doc {
             .ok_or_else(|| io::Error::other("不正なパスです"))?;
         let new_abs = parent.join(new_name);
         std::fs::rename(&old_abs, &new_abs)?;
-        if let DocumentSource::Folder { selected, .. } = &mut self.source {
-            let current = match selected {
-                FolderSelection::File { path, .. } | FolderSelection::Archive { path, .. } => path,
-                FolderSelection::None { .. } => return Ok(self.info(String::new())),
+        if self.source.folder_root().is_some() {
+            let current = match &mut self.source.target {
+                Target::File { path, .. } | Target::Archive { path, .. } => path,
+                Target::None { .. } => return Ok(self.info(String::new())),
             };
             if let Ok(rest) = current.strip_prefix(&old_abs) {
                 *current = if rest.as_os_str().is_empty() {
@@ -745,12 +604,10 @@ impl Doc {
         caret_before: PosC,
         text: &str,
         coalesce: bool,
-    ) -> EditResult {
+    ) -> Option<EditResult> {
+        // 閲覧専用文書は「編集できた」と嘘をつかず None を返す (呼び出し側でエラーにする)
         if self.source.is_view_only() {
-            return EditResult {
-                caret: caret_before,
-                line_count: self.buf.line_count(),
-            };
+            return None;
         }
         let s = self.to_byte(start);
         let e = self.to_byte(end);
@@ -776,10 +633,10 @@ impl Doc {
                 coalesce && s == e,
             );
         }
-        EditResult {
+        Some(EditResult {
             caret: self.to_char(after),
             line_count: self.buf.line_count(),
-        }
+        })
     }
 
     pub fn edit_many(
@@ -787,12 +644,15 @@ impl Doc {
         items: Vec<EditManyItem>,
         caret_before: PosC,
         primary_index: usize,
-    ) -> EditManyResult {
-        if self.source.is_view_only() || items.is_empty() {
-            return EditManyResult {
-                carets: items.iter().map(|item| item.start).collect(),
+    ) -> Option<EditManyResult> {
+        if self.source.is_view_only() {
+            return None;
+        }
+        if items.is_empty() {
+            return Some(EditManyResult {
+                carets: Vec::new(),
                 line_count: self.buf.line_count(),
-            };
+            });
         }
         let cb = self.to_byte(caret_before);
         let mut indexed: Vec<_> = items.into_iter().enumerate().collect();
@@ -828,10 +688,10 @@ impl Doc {
             let caret_after = carets.get(primary_index).copied().unwrap_or(cb);
             self.undo.push(UndoEntry { edits, caret_before: cb, caret_after }, false);
         }
-        EditManyResult {
+        Some(EditManyResult {
             carets: carets.into_iter().map(|caret| self.to_char(caret)).collect(),
             line_count: self.buf.line_count(),
-        }
+        })
     }
 
     pub fn undo(&mut self) -> Option<EditResult> {
@@ -1043,18 +903,9 @@ impl Doc {
         drop(old_recovery);
         self.enc = enc;
         self.eol = eol;
-        let selected = FolderSelection::File {
-            path: path.to_path_buf(),
-            source_file: o.source_file,
-            stamp: o.stamp,
-            recovery_temp: None,
-        };
-        self.source = if let Some(root) = workspace_root {
-            DocumentSource::Folder { root, selected }
-        } else if let FolderSelection::File { path, source_file, stamp, recovery_temp } = selected {
-            DocumentSource::File { path, source_file, stamp, recovery_temp }
-        } else {
-            unreachable!()
+        self.source = DocumentSource {
+            root: workspace_root,
+            ..DocumentSource::file(path.to_path_buf(), o.source_file, o.stamp)
         };
         self.undo.break_coalescing();
         Ok(SaveOutcome::Saved)
@@ -1096,227 +947,6 @@ impl Doc {
 
 // ---- 検索 ----
 // 単一行に収まるパターンの1行内マッチ判定
-fn line_match(buf: &TextBuffer, pat: &str, line: usize, col_from: usize, match_case: bool) -> Option<(Pos, Pos)> {
-    find_in_line(&buf.line(line), pat, col_from, match_case)
-        .map(|i| (Pos { line, col: i }, Pos { line, col: i + pat.len() }))
-}
-
-fn bytes_eq(a: &[u8], b: &[u8], case: bool) -> bool {
-    a.len() == b.len()
-        && if case {
-            a == b
-        } else {
-            a.iter().zip(b).all(|(x, y)| x.eq_ignore_ascii_case(y))
-        }
-}
-
-// 改行を含むパターンについて、行 l を開始行とする一致があるかどうか (位置フィルタなし)。
-// segs[0] は行 l の末尾に一致する必要がある(\n の直前で終わるため)。
-fn multiline_match_at(buf: &TextBuffer, segs: &[&str], l: usize, match_case: bool) -> Option<(Pos, Pos)> {
-    let n = buf.line_count();
-    let m = segs.len();
-    if l + m > n {
-        return None;
-    }
-    let first = buf.line(l);
-    let s0 = segs[0];
-    if first.len() < s0.len() {
-        return None;
-    }
-    let col0 = first.len() - s0.len();
-    if !first.is_char_boundary(col0) || !bytes_eq(&first.as_bytes()[col0..], s0.as_bytes(), match_case) {
-        return None;
-    }
-    for (k, segment) in segs.iter().enumerate().take(m - 1).skip(1) {
-        if !bytes_eq(buf.line(l + k).as_bytes(), segment.as_bytes(), match_case) {
-            return None;
-        }
-    }
-    let last = buf.line(l + m - 1);
-    let sl = segs[m - 1];
-    if last.len() < sl.len() || !bytes_eq(&last.as_bytes()[..sl.len()], sl.as_bytes(), match_case) {
-        return None;
-    }
-    Some((Pos { line: l, col: col0 }, Pos { line: l + m - 1, col: sl.len() }))
-}
-
-// ---- 後方検索 (前へ / Shift+Enter): 対話的な利用頻度が低いため従来通り単発フルスキャン ----
-fn find_backward(
-    buf: &TextBuffer,
-    pat: &str,
-    start: Pos,
-    match_case: bool,
-    wrap_around: bool,
-) -> Option<(Pos, Pos)> {
-    if pat.contains('\n') {
-        let segs: Vec<&str> = pat.split('\n').collect();
-        return multiline_backward(buf, &segs, start, match_case, wrap_around);
-    }
-    let n = buf.line_count();
-    let scan = |line: usize, limit: usize| -> Option<usize> {
-        let text = buf.line(line);
-        let mut last = None;
-        let mut from = 0;
-        while let Some(i) = find_in_line(&text, pat, from, match_case) {
-            if i + pat.len() > limit {
-                break;
-            }
-            last = Some(i);
-            from = i + 1;
-            while from < text.len() && !text.is_char_boundary(from) {
-                from += 1;
-            }
-        }
-        last
-    };
-    for line in (0..=start.line).rev() {
-        let limit = if line == start.line { start.col } else { buf.line_len(line) };
-        if let Some(i) = scan(line, limit) {
-            return Some((Pos { line, col: i }, Pos { line, col: i + pat.len() }));
-        }
-    }
-    if wrap_around {
-        for line in (start.line..n).rev() {
-            let limit = buf.line_len(line);
-            if let Some(i) = scan(line, limit) {
-                return Some((Pos { line, col: i }, Pos { line, col: i + pat.len() }));
-            }
-        }
-    }
-    None
-}
-
-fn multiline_backward(
-    buf: &TextBuffer,
-    segs: &[&str],
-    start: Pos,
-    match_case: bool,
-    wrap_around: bool,
-) -> Option<(Pos, Pos)> {
-    let n = buf.line_count();
-    for l in (0..=start.line).rev() {
-        if let Some(r) = multiline_match_at(buf, segs, l, match_case) {
-            if r.1.line < start.line || (r.1.line == start.line && r.1.col <= start.col) {
-                return Some(r);
-            }
-        }
-    }
-    if wrap_around {
-        for l in (0..n).rev() {
-            if let Some(r) = multiline_match_at(buf, segs, l, match_case) {
-                return Some(r);
-            }
-        }
-    }
-    None
-}
-
-// ---- 前方検索のチャンク分割エンジン (次へ / 全置換で共用) ----
-// 1回で最大 budget 行だけ走査し、続きがあれば Continue(次回に渡すカーソル) を返す。
-enum ChunkStep {
-    Found(Pos, Pos),
-    More(FindCursor),
-    NotFound,
-}
-
-fn find_chunk(
-    buf: &TextBuffer,
-    pat: &str,
-    start: Pos,
-    match_case: bool,
-    cur: FindCursor,
-    budget: usize,
-    wrap_around: bool,
-) -> ChunkStep {
-    let n = buf.line_count();
-    if n == 0 {
-        return ChunkStep::NotFound;
-    }
-    let multiline = pat.contains('\n');
-    let segs: Vec<&str> = if multiline { pat.split('\n').collect() } else { Vec::new() };
-
-    let hi = if !cur.wrapped { n } else { (start.line + 1).min(n) };
-    if cur.line >= hi {
-        return if !cur.wrapped && wrap_around {
-            find_chunk(buf, pat, start, match_case, FindCursor { wrapped: true, line: 0 }, budget, wrap_around)
-        } else {
-            ChunkStep::NotFound
-        };
-    }
-    let end_line = cur.line.saturating_add(budget.max(1)).min(hi);
-
-    for line in cur.line..end_line {
-        let hit = if multiline {
-            multiline_match_at(buf, &segs, line, match_case)
-        } else {
-            let col_from = if !cur.wrapped && line == start.line { start.col } else { 0 };
-            line_match(buf, pat, line, col_from, match_case)
-        };
-        let Some((s, e)) = hit else { continue };
-        // 前方フェーズでは、カーソル位置より前で終わる一致(まだ primary で除外していないもの)は対象外
-        if !cur.wrapped && multiline && !(s.line > start.line || s.col >= start.col) {
-            continue;
-        }
-        return ChunkStep::Found(s, e);
-    }
-
-    if end_line < hi {
-        return ChunkStep::More(FindCursor { wrapped: cur.wrapped, line: end_line });
-    }
-    if !cur.wrapped && wrap_around {
-        find_chunk(buf, pat, start, match_case, FindCursor { wrapped: true, line: 0 }, budget, wrap_around)
-    } else {
-        ChunkStep::NotFound
-    }
-}
-
-pub(crate) fn find_in_line(line: &str, pat: &str, from: usize, match_case: bool) -> Option<usize> {
-    if from > line.len() {
-        return None;
-    }
-    if match_case {
-        return line[from..].find(pat).map(|i| from + i);
-    }
-    find_ascii_case_insensitive(line, pat, from)
-}
-
-// ASCII 大小文字を無視する検索は、末尾不一致時に次の候補へ大きく進める。
-// 既存仕様どおり、非 ASCII 文字は大小文字変換しない。
-fn find_ascii_case_insensitive(line: &str, pat: &str, from: usize) -> Option<usize> {
-    let haystack = line.as_bytes();
-    let needle = pat.as_bytes();
-    if from > haystack.len()
-        || needle.is_empty()
-        || haystack.len().saturating_sub(from) < needle.len()
-    {
-        return None;
-    }
-
-    let mut shift = [needle.len(); 256];
-    for (i, &byte) in needle[..needle.len() - 1].iter().enumerate() {
-        shift[byte.to_ascii_lowercase() as usize] = needle.len() - 1 - i;
-    }
-
-    let mut pos = from;
-    while pos <= haystack.len() - needle.len() {
-        let mut j = needle.len();
-        while j > 0
-            && haystack[pos + j - 1].eq_ignore_ascii_case(&needle[j - 1])
-        {
-            j -= 1;
-        }
-        if j == 0 {
-            if line.is_char_boundary(pos) {
-                return Some(pos);
-            }
-            pos += 1;
-        } else {
-            pos += shift[haystack[pos + needle.len() - 1].to_ascii_lowercase() as usize];
-        }
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1328,7 +958,7 @@ mod tests {
             undo: UndoStack::new(),
             enc: Encoding::Utf8 { bom: false },
             eol: Eol::Lf,
-            source: DocumentSource::Untitled { recovery_temp: None },
+            source: DocumentSource::untitled(),
             replace_progress: None,
             byte_len: 0,
         }
@@ -1340,7 +970,7 @@ mod tests {
     #[test]
     fn insert_ascii() {
         let mut d = doc("abc");
-        let r = d.edit(p(0, 1), p(0, 1), p(0, 1), "XY", false);
+        let r = d.edit(p(0, 1), p(0, 1), p(0, 1), "XY", false).unwrap();
         assert_eq!(d.lines(0, 1), vec!["aXYbc"]);
         assert_eq!((r.caret.line, r.caret.col), (0, 3));
         assert_eq!(r.line_count, 1);
@@ -1349,7 +979,7 @@ mod tests {
     #[test]
     fn insert_newline_splits_lines() {
         let mut d = doc("abc");
-        let r = d.edit(p(0, 2), p(0, 2), p(0, 2), "\n", false);
+        let r = d.edit(p(0, 2), p(0, 2), p(0, 2), "\n", false).unwrap();
         assert_eq!(d.line_count(), 2);
         assert_eq!(d.lines(0, 2), vec!["ab", "c"]);
         assert_eq!((r.caret.line, r.caret.col), (1, 0));
@@ -1362,7 +992,7 @@ mod tests {
             EditManyItem { start: p(0, 1), end: p(0, 1), text: "X".into() },
             EditManyItem { start: p(1, 1), end: p(1, 1), text: "X".into() },
         ];
-        let r = d.edit_many(items, p(0, 1), 0);
+        let r = d.edit_many(items, p(0, 1), 0).unwrap();
         assert_eq!(d.lines(0, 2), vec!["aXb", "cXd"]);
         assert_eq!(r.carets.iter().map(|p| (p.line, p.col)).collect::<Vec<_>>(), vec![(0, 2), (1, 2)]);
 
@@ -1378,14 +1008,14 @@ mod tests {
     fn col_is_char_index_not_byte() {
         // 全角 "あいう" の char col 2 に挿入 → byte col 6 に変換される
         let mut d = doc("あいう");
-        d.edit(p(0, 2), p(0, 2), p(0, 2), "X", false);
+        d.edit(p(0, 2), p(0, 2), p(0, 2), "X", false).unwrap();
         assert_eq!(d.lines(0, 1), vec!["あいXう"]);
     }
 
     #[test]
     fn delete_range_then_undo_redo() {
         let mut d = doc("hello\nworld");
-        let r = d.edit(p(0, 2), p(1, 3), p(1, 3), "", false);
+        let r = d.edit(p(0, 2), p(1, 3), p(1, 3), "", false).unwrap();
         assert_eq!(d.lines(0, 10), vec!["held"]);
         assert_eq!(d.line_count(), 1);
         assert_eq!((r.caret.line, r.caret.col), (0, 2));
@@ -1442,9 +1072,9 @@ mod tests {
     #[test]
     fn consecutive_typing_coalesces_to_single_undo() {
         let mut d = doc("");
-        d.edit(p(0, 0), p(0, 0), p(0, 0), "a", true);
-        d.edit(p(0, 1), p(0, 1), p(0, 1), "b", true);
-        d.edit(p(0, 2), p(0, 2), p(0, 2), "c", true);
+        d.edit(p(0, 0), p(0, 0), p(0, 0), "a", true).unwrap();
+        d.edit(p(0, 1), p(0, 1), p(0, 1), "b", true).unwrap();
+        d.edit(p(0, 2), p(0, 2), p(0, 2), "c", true).unwrap();
         assert_eq!(d.lines(0, 1), vec!["abc"]);
         d.undo().unwrap();
         assert_eq!(d.lines(0, 1), vec![""]);
@@ -1488,36 +1118,31 @@ mod tests {
     #[test]
     fn empty_folder_selection_accepts_draft_edit() {
         let mut d = doc("abc");
-        d.source = DocumentSource::Folder {
-            root: PathBuf::new(),
-            selected: FolderSelection::None { recovery_temp: None },
-        };
-        d.edit(p(0, 0), p(0, 0), p(0, 0), "X", false);
+        d.source = DocumentSource { root: Some(PathBuf::new()), ..DocumentSource::untitled() };
+        d.edit(p(0, 0), p(0, 0), p(0, 0), "X", false).unwrap();
         assert_eq!(d.lines(0, 1), vec!["Xabc"]);
     }
 
     #[test]
     fn document_source_derives_kind_and_editability() {
-        let untitled = DocumentSource::Untitled { recovery_temp: None };
+        let untitled = DocumentSource::untitled();
         assert!(!untitled.is_view_only());
         assert_eq!(untitled.kind(), DocKind::Text);
+        assert_eq!(untitled.folder_root(), None);
 
-        let file = DocumentSource::File {
-            path: PathBuf::from("memo.txt"),
-            source_file: None,
-            stamp: None,
-            recovery_temp: None,
-        };
+        let file = DocumentSource::file(PathBuf::from("memo.txt"), None, None);
         assert!(!file.is_view_only());
         assert_eq!(file.path(), Some(Path::new("memo.txt")));
 
-        let folder = DocumentSource::Folder {
-            root: PathBuf::from("workspace"),
-            selected: FolderSelection::None { recovery_temp: None },
+        // root と target は直交する: フォルダを開いていても選択前は編集可能な下書き
+        let folder = DocumentSource {
+            root: Some(PathBuf::from("workspace")),
+            ..DocumentSource::untitled()
         };
         assert!(!folder.is_view_only());
         assert_eq!(folder.kind(), DocKind::Text);
         assert_eq!(folder.folder_root(), Some(Path::new("workspace")));
+        assert_eq!(folder.path(), None, "未選択のフォルダは保存先を持たない");
     }
 
     #[test]
@@ -1525,7 +1150,7 @@ mod tests {
         let path = std::env::temp_dir().join(format!("wasabipad_save_lock_{}.txt", std::process::id()));
         std::fs::write(&path, "abc").unwrap();
         let mut d = Doc::open(&path).unwrap();
-        d.edit(p(0, 3), p(0, 3), p(0, 3), "!", false);
+        d.edit(p(0, 3), p(0, 3), p(0, 3), "!", false).unwrap();
         assert!(matches!(
             d.save(&path, Encoding::Utf8 { bom: false }, Eol::Lf).unwrap(),
             SaveOutcome::Saved
@@ -1572,7 +1197,7 @@ mod tests {
         let path = std::env::temp_dir().join(format!("wasabipad_poll_dirty_{}.txt", std::process::id()));
         std::fs::write(&path, "base").unwrap();
         let mut d = Doc::open(&path).unwrap();
-        d.edit(p(0, 4), p(0, 4), p(0, 4), "+mine", false);
+        d.edit(p(0, 4), p(0, 4), p(0, 4), "+mine", false).unwrap();
         std::fs::write(&path, "theirs-external").unwrap();
         assert!(matches!(d.poll_external(true), ExternalCheck::Conflict));
         assert_eq!(d.lines(0, 1), vec!["base+mine"], "dirty文書は勝手に読み直さない");
@@ -1590,7 +1215,7 @@ mod tests {
         let path = dir.join("memo.txt");
         std::fs::write(&path, "base").unwrap();
         let mut d = Doc::open(&path).unwrap();
-        d.edit(p(0, 4), p(0, 4), p(0, 4), "+mine", false);
+        d.edit(p(0, 4), p(0, 4), p(0, 4), "+mine", false).unwrap();
         std::fs::write(&path, "theirs-external").unwrap();
         let saved_to = match d.save(&path, Encoding::Utf8 { bom: false }, Eol::Lf).unwrap() {
             SaveOutcome::Conflict { saved_to } => PathBuf::from(saved_to),
@@ -1636,7 +1261,7 @@ mod tests {
         assert!(d.path().unwrap().ends_with("a.txt"));
 
         // 編集して保存できる (実ファイルとして扱われている)
-        let r = d.edit(p(0, 5), p(0, 5), p(0, 5), "!", false);
+        let r = d.edit(p(0, 5), p(0, 5), p(0, 5), "!", false).unwrap();
         assert_eq!(r.line_count, 1);
         assert_eq!(d.lines(0, 1), vec!["hello!"]);
 
@@ -1748,6 +1373,17 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
         assert_eq!(d.lines(0, 1), vec!["secret text"]);
         assert!(!save_target.exists());
+
+        // 閲覧専用文書は編集を黙って握り潰さず、編集不可であることを返す
+        assert!(d.edit(p(0, 0), p(0, 0), p(0, 0), "X", false).is_none());
+        assert!(d
+            .edit_many(
+                vec![EditManyItem { start: p(0, 0), end: p(0, 0), text: "X".into() }],
+                p(0, 0),
+                0
+            )
+            .is_none());
+        assert_eq!(d.lines(0, 1), vec!["secret text"]);
 
         drop(d);
         std::fs::remove_dir_all(&root).unwrap();

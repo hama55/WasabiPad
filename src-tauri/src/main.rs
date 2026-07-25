@@ -152,8 +152,9 @@ fn edit(
     text: String,
     coalesce: bool,
     state: State,
-) -> EditResult {
+) -> Result<EditResult, String> {
     with_doc(&state, |doc| doc.edit(start, end, caret_before, &text, coalesce))
+        .ok_or_else(|| "閲覧専用の文書は編集できません".to_string())
 }
 
 #[tauri::command]
@@ -162,8 +163,9 @@ fn edit_many(
     caret_before: PosC,
     primary_index: usize,
     state: State,
-) -> EditManyResult {
+) -> Result<EditManyResult, String> {
     with_doc(&state, |doc| doc.edit_many(edits, caret_before, primary_index))
+        .ok_or_else(|| "閲覧専用の文書は編集できません".to_string())
 }
 
 #[tauri::command]
@@ -270,20 +272,9 @@ fn reload_with_encoding(enc: EncodingId, state: State) -> Result<DocInfo, String
 
 #[tauri::command]
 fn next_memo_path(directory: String, stem: String, extension: String) -> Result<String, String> {
-    let stem = stem.trim();
-    let dir = PathBuf::from(directory);
-    let ext = extension.trim_start_matches('.');
-    let candidate_name = if ext.is_empty() { stem.to_string() } else { format!("{stem}.{ext}") };
-    wasabipad_core::validate_windows_file_name(&candidate_name).map_err(|e| e.to_string())?;
-    for number in 1.. {
-        let numbered = if number == 1 { stem.to_string() } else { format!("{stem}{number}") };
-        let name = if ext.is_empty() { numbered } else { format!("{numbered}.{ext}") };
-        let candidate = dir.join(name);
-        if !candidate.exists() {
-            return Ok(candidate.to_string_lossy().into_owned());
-        }
-    }
-    unreachable!()
+    wasabipad_core::next_available_path(&PathBuf::from(directory), &stem, &extension)
+        .map(|path| path.to_string_lossy().into_owned())
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

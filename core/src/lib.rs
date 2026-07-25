@@ -7,7 +7,9 @@ mod buffer;
 mod doc;
 mod fileio;
 mod filename;
+mod folder;
 mod hugebuf;
+mod search;
 mod undo;
 mod workspace_search;
 mod xlstext;
@@ -20,5 +22,5 @@ pub use doc::{
     WorkspaceSearchResult,
 };
 pub use fileio::{Encoding, EncodingId, Eol};
-pub use filename::validate_windows_file_name;
+pub use filename::{next_available_path, validate_windows_file_name};
 pub use workspace_search::search_workspace;

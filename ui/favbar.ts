@@ -4,15 +4,39 @@ import { promptFields } from "./prompt";
 
 type NodePath = number[];
 
+// お気に入りの保存先。既定は backend のブックマークファイル。
+export interface BookmarkStore {
+  load: () => Promise<BmNode[]>;
+  save: (nodes: BmNode[]) => Promise<void>;
+  isDirectory: (path: string) => Promise<boolean>;
+}
+
+export const bookmarkStore: BookmarkStore = {
+  load: loadBookmarks,
+  save: saveBookmarks,
+  isDirectory: pathIsDirectory,
+};
+
+export interface FavBarPorts {
+  onOpen: (path: string, newWindow: boolean) => void;
+  currentFile: () => string | null;
+  onSetDefault: (path: string) => void;
+}
+
 export class FavBar {
   private nodes: BmNode[] = [];
+  private onOpen: (path: string, newWindow: boolean) => void;
+  private currentFile: () => string | null;
+  private onSetDefault: (path: string) => void;
 
   constructor(
     private host: HTMLElement,
-    private onOpen: (path: string, newWindow: boolean) => void,
-    private currentFile: () => string | null,
-    private onSetDefault: (path: string) => void
+    ports: FavBarPorts,
+    private store: BookmarkStore = bookmarkStore
   ) {
+    this.onOpen = ports.onOpen;
+    this.currentFile = ports.currentFile;
+    this.onSetDefault = ports.onSetDefault;
     this.host.addEventListener("contextmenu", (e) => {
       if (e.target !== this.host) return;
       e.preventDefault();
@@ -32,7 +56,7 @@ export class FavBar {
   }
 
   async init() {
-    this.nodes = await loadBookmarks();
+    this.nodes = await this.store.load();
     this.render();
   }
 
@@ -285,7 +309,7 @@ export class FavBar {
     if (!list) return;
     for (const path of paths) {
       const name = path.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? path;
-      list.push({ kind: await pathIsDirectory(path) ? "directory" : "file", name, path });
+      list.push({ kind: await this.store.isDirectory(path) ? "directory" : "file", name, path });
     }
     await this.persist();
   }
@@ -317,7 +341,7 @@ export class FavBar {
       { label: "パス", value: node.path },
     ]);
     if (!result?.[0].trim() || !result[1].trim()) return;
-    Object.assign(node, { name: result[0].trim(), path: result[1].trim(), kind: await pathIsDirectory(result[1].trim()) ? "directory" : "file" });
+    Object.assign(node, { name: result[0].trim(), path: result[1].trim(), kind: await this.store.isDirectory(result[1].trim()) ? "directory" : "file" });
     await this.persist();
   }
 
@@ -327,7 +351,7 @@ export class FavBar {
   }
 
   private async persist() {
-    await saveBookmarks(this.nodes);
+    await this.store.save(this.nodes);
     this.render();
   }
 }

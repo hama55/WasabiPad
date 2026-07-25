@@ -1,4 +1,5 @@
-use crate::doc::{find_in_line, WorkspaceSearchResult};
+use crate::doc::WorkspaceSearchResult;
+use crate::search::find_in_line;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};

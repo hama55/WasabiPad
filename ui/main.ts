@@ -219,9 +219,8 @@ $("st-lines").addEventListener("click", async () => {
   const ok = await confirmMessage("最後の行へ移動", "最後の行に移動する", "移動");
   if (ok) editor.goTo(session.lineCount - 1, 0);
 });
-const sidebar = new Sidebar(
-  sidebarEl,
-  async (relPath, newWindow) => {
+const sidebar = new Sidebar(sidebarEl, {
+  onSelect: async (relPath, newWindow) => {
     if (newWindow) {
       if (session.folderRoot) await api.launchNew(relToAbs(relPath));
       return;
@@ -234,19 +233,19 @@ const sidebar = new Sidebar(
     const info = await api.selectEntry(relPath);
     applyDocInfo(info);
   },
-  (x, y, target) => sidebarContextMenu(x, y, target),
-  (relPath) => api.listArchiveEntries(relPath),
-  (relDir) => api.listFolderEntries(relDir),
-  (pat, matchCase) => api.workspaceSearch(pat, matchCase),
-  async (result, pattern) => {
+  onContextMenu: (x, y, target) => sidebarContextMenu(x, y, target),
+  onExpandArchive: (relPath) => api.listArchiveEntries(relPath),
+  onExpandFolder: (relDir) => api.listFolderEntries(relDir),
+  onWorkspaceSearch: (pat, matchCase) => api.workspaceSearch(pat, matchCase),
+  onSearchResult: async (result, pattern) => {
     if (!(await confirmDiscard())) return;
     session.selectedRelPath = result.rel_path;
     const info = await api.selectEntry(result.rel_path);
     applyDocInfo(info);
     if (result.is_filename) editor.goTo(result.line, result.col);
     else editor.selectRange(result.line, result.col, result.col + [...pattern].length);
-  }
-);
+  },
+});
 let folderRefreshRunning = false;
 window.setInterval(async () => {
   if (!session.folderRoot || folderRefreshRunning) return;
@@ -300,12 +299,11 @@ $("external-ignore").addEventListener("click", async () => {
   await api.ackExternal();
   editor.focus();
 });
-const favbar = new FavBar(
-  $("favbar"),
-  (p, newWindow) => newWindow ? api.launchNew(p) : openFile(p),
-  () => addressbar.value.trim() || null,
-  setStartupPath
-);
+const favbar = new FavBar($("favbar"), {
+  onOpen: (p, newWindow) => { void (newWindow ? api.launchNew(p) : openFile(p)); },
+  currentFile: () => addressbar.value.trim() || null,
+  onSetDefault: setStartupPath,
+});
 
 function updateTitle() {
   const t = formatWindowTitle(session);

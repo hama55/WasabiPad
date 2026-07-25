@@ -21,6 +21,16 @@ export interface ContextTarget {
   isDir: boolean;
 }
 
+// サイドバーが外界へ出す依頼。IPC も文書状態もここより先は知らない。
+export interface SidebarPorts {
+  onSelect: (relPath: string, newWindow: boolean) => void;
+  onContextMenu: (x: number, y: number, target: ContextTarget | null) => void;
+  onExpandArchive: (relPath: string) => Promise<string[]>;
+  onExpandFolder: (relDir: string) => Promise<FolderEntry[]>;
+  onWorkspaceSearch: (pat: string, matchCase: boolean) => Promise<WorkspaceSearchResult[]>;
+  onSearchResult: (result: WorkspaceSearchResult, pattern: string) => void;
+}
+
 // core の Doc::is_lazy_archive_ext と一致させる (check:ipc が両者の一致を検証する)
 const ARCHIVE_EXT = /\.(zip|xlsx|xls)$/i;
 function isArchiveName(name: string): boolean {
@@ -47,22 +57,14 @@ export class Sidebar {
   private onWorkspaceSearch: (pat: string, matchCase: boolean) => Promise<WorkspaceSearchResult[]>;
   private onSearchResult: (result: WorkspaceSearchResult, pattern: string) => void;
 
-  constructor(
-    host: HTMLElement,
-    onSelect: (relPath: string, newWindow: boolean) => void,
-    onContextMenu: (x: number, y: number, target: ContextTarget | null) => void,
-    onExpandArchive: (relPath: string) => Promise<string[]>,
-    onExpandFolder: (relDir: string) => Promise<FolderEntry[]>,
-    onWorkspaceSearch: (pat: string, matchCase: boolean) => Promise<WorkspaceSearchResult[]>,
-    onSearchResult: (result: WorkspaceSearchResult, pattern: string) => void
-  ) {
+  constructor(host: HTMLElement, ports: SidebarPorts) {
     this.host = host;
-    this.onSelect = onSelect;
-    this.onContextMenu = onContextMenu;
-    this.onExpandArchive = onExpandArchive;
-    this.onExpandFolder = onExpandFolder;
-    this.onWorkspaceSearch = onWorkspaceSearch;
-    this.onSearchResult = onSearchResult;
+    this.onSelect = ports.onSelect;
+    this.onContextMenu = ports.onContextMenu;
+    this.onExpandArchive = ports.onExpandArchive;
+    this.onExpandFolder = ports.onExpandFolder;
+    this.onWorkspaceSearch = ports.onWorkspaceSearch;
+    this.onSearchResult = ports.onSearchResult;
     this.search = document.createElement("div");
     this.search.className = "ws-search";
     this.search.hidden = true;

@@ -187,6 +187,34 @@ export const nextMemoPath = (directory: string, stem: string, extension: string)
 export const initialPath = () => invoke<string | null>("initial_path");
 export const launchNew = (path?: string) => invoke<void>("launch_new", { path });
 
+// エディタが必要とする文書操作だけを切り出した口。エディタはこの型にだけ依存し、
+// 既定の実装 (下の documentClient) が Tauri の invoke を呼ぶ。
+export interface DocumentClient {
+  lines: typeof lines;
+  lineCharLen: typeof lineCharLen;
+  edit: typeof edit;
+  editMany: typeof editMany;
+  undo: typeof undo;
+  redo: typeof redo;
+  find: typeof find;
+  findStep: typeof findStep;
+  replaceAllChunk: typeof replaceAllChunk;
+  replaceAllCancel: typeof replaceAllCancel;
+}
+
+export const documentClient: DocumentClient = {
+  lines,
+  lineCharLen,
+  edit,
+  editMany,
+  undo,
+  redo,
+  find,
+  findStep,
+  replaceAllChunk,
+  replaceAllCancel,
+};
+
 export type ViewerFormat = "csv" | "tsv" | "markdown";
 export interface ViewerPayload {
   format: ViewerFormat;
