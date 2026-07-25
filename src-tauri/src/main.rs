@@ -19,9 +19,20 @@ use std::sync::{
 };
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
+// 受理する形式はこの enum が単一の定義。表示名はフロント (ui/format.ts) だけが持つ。
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+enum ViewerFormat {
+    #[serde(rename = "csv")]
+    Csv,
+    #[serde(rename = "tsv")]
+    Tsv,
+    #[serde(rename = "markdown")]
+    Markdown,
+}
+
 #[derive(Clone, serde::Serialize)]
 struct ViewerPayload {
-    format: String,
+    format: ViewerFormat,
     text: String,
 }
 
@@ -293,17 +304,13 @@ fn launch_new(path: Option<String>) -> Result<(), String> {
 // Windowsでは同期command中のWebView生成がイベントループを塞ぐためasyncで実行する。
 #[tauri::command]
 async fn open_viewer(
-    format: String,
+    format: ViewerFormat,
     text: String,
     app: AppHandle,
     state: tauri::State<'_, ViewerStore>,
 ) -> Result<String, String> {
-    let title = match format.as_str() {
-        "csv" => "CSVビュー",
-        "tsv" => "TSVビュー",
-        "markdown" => "Markdownビュー",
-        _ => return Err("未対応のビュー形式です".into()),
-    };
+    // 形式名入りのタイトルは payload 受信後にフロントが設定する。ここは生成時の暫定表示。
+    let title = app.package_info().name.clone();
     let label = format!("viewer-{}", VIEWER_ID.fetch_add(1, Ordering::Relaxed));
     state
         .0

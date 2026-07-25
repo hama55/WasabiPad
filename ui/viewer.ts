@@ -4,12 +4,17 @@ import Chart from "chart.js/auto";
 import MarkdownIt from "markdown-it";
 import Papa from "papaparse";
 import { takeViewerPayload, type ViewerFormat, type ViewerPayload } from "./api";
+import { DEFAULT_EDITOR_CONFIG } from "./editor-config";
+import { VIEWER_FORMAT_LABELS, formatTitleBar } from "./format";
 import { chartColumnLabel, numericColumnIndexes, parseChartNumber } from "./chart-data";
 
 const MAX_TABLE_ROWS = 10_000;
 const MAX_TABLE_COLUMNS = 200;
 const VIEWER_THEME_KEY = "viewerTheme";
 const CHART_COLORS = ["#4fc3f7", "#ffb74d", "#81c784", "#e57373", "#ba68c8", "#fff176", "#4dd0e1", "#f06292"];
+
+// 等幅フォントの定義はエディタ既定値ただ一つ。CSSは値を持たない。
+document.documentElement.style.setProperty("--font-mono", DEFAULT_EDITOR_CONFIG.fontFamily);
 
 const win = getCurrentWindow();
 const content = document.getElementById("viewer-content")!;
@@ -106,13 +111,9 @@ function renderMarkdown(text: string) {
   summary.textContent = `${text.length.toLocaleString()}文字`;
 }
 
-function formatTitle(format: ViewerFormat) {
-  return format === "csv" ? "CSVビュー" : format === "tsv" ? "TSVビュー" : "Markdownビュー";
-}
-
 function renderPayload(payload: ViewerPayload) {
   currentFormat = payload.format;
-  title.textContent = `${formatTitle(payload.format)} - WasabiPad`;
+  title.textContent = formatTitleBar(VIEWER_FORMAT_LABELS[payload.format]);
   void win.setTitle(title.textContent);
   if (payload.format === "markdown") renderMarkdown(payload.text);
   else renderTable(payload.text, payload.format);
@@ -303,7 +304,7 @@ async function start() {
   try {
     renderPayload(await takeViewerPayload(win.label));
   } catch (error) {
-    title.textContent = "表示できませんでした - WasabiPad";
+    title.textContent = formatTitleBar("表示できませんでした");
     const message = document.createElement("p");
     message.className = "viewer-error";
     message.textContent = String(error);

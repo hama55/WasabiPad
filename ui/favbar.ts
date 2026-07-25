@@ -1,5 +1,5 @@
 import { BmNode, loadBookmarks, pathIsDirectory, saveBookmarks } from "./api";
-import { hideMenu, showMenu, MenuItem } from "./menu";
+import { FAVORITE_MIME, hideMenu, showMenu, MenuItem } from "./menu";
 import { promptFields } from "./prompt";
 
 type NodePath = number[];
@@ -22,11 +22,11 @@ export class FavBar {
       ]);
     });
     this.host.addEventListener("dragover", (e) => {
-      if (e.target === this.host && e.dataTransfer?.types.includes("application/x-wasabipad-favorite")) e.preventDefault();
+      if (e.target === this.host && e.dataTransfer?.types.includes(FAVORITE_MIME)) e.preventDefault();
     });
     this.host.addEventListener("drop", (e) => {
       if (e.target !== this.host) return;
-      const source = this.decodePath(e.dataTransfer?.getData("application/x-wasabipad-favorite") ?? "");
+      const source = this.decodePath(e.dataTransfer?.getData(FAVORITE_MIME) ?? "");
       if (source) { e.preventDefault(); void this.moveTo(source, null); }
     });
   }
@@ -77,7 +77,7 @@ export class FavBar {
         e.preventDefault();
         window.clearTimeout(openTimer);
         button.classList.remove("fav-drop", "fav-drop-before", "fav-drop-after");
-        const source = this.decodePath(e.dataTransfer?.getData("application/x-wasabipad-favorite") ?? "");
+        const source = this.decodePath(e.dataTransfer?.getData(FAVORITE_MIME) ?? "");
         if (!source) return;
         const position = this.dropPosition(button, e.clientX);
         if (position === "inside") await this.moveInto(source, path);
@@ -99,13 +99,13 @@ export class FavBar {
       button.addEventListener("drop", async (e) => {
         e.preventDefault();
         button.classList.remove("fav-drop-before", "fav-drop-after");
-        const source = this.decodePath(e.dataTransfer?.getData("application/x-wasabipad-favorite") ?? "");
+        const source = this.decodePath(e.dataTransfer?.getData(FAVORITE_MIME) ?? "");
         if (source) await this.moveAdjacent(source, path, this.dropPosition(button, e.clientX) === "after");
       });
     }
 
     button.addEventListener("dragstart", (e) => {
-      e.dataTransfer?.setData("application/x-wasabipad-favorite", path.join("."));
+      e.dataTransfer?.setData(FAVORITE_MIME, path.join("."));
       if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
     });
     button.addEventListener("contextmenu", (e) => {

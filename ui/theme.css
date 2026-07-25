@@ -1,0 +1,33 @@
+/* メモ本体 (style.css) とビュー (viewer.css) で共有するパレット。
+   片方だけで使う変数は各ファイル側に置き、ここには両方で使うものだけを置く。 */
+:root {
+  --font-ui: "Yu Gothic UI", "Segoe UI", sans-serif;
+}
+
+/* VSCode Dark+ 系パレット (既定) */
+:root, :root[data-theme="dark"] {
+  --bg-editor: #1e1e1e;
+  --bg-side: #252526;
+  --bg-title: #3c3c3c;
+  --bg-status: #007acc;
+  --fg: #cccccc;
+  --fg-dim: #858585;
+  --accent: #0e639c;
+  --hover: #ffffff1a;
+  --border: #00000066;
+  --border-strong: #454545;
+}
+
+/* VSCode Light+ 系パレット */
+:root[data-theme="light"] {
+  --bg-editor: #ffffff;
+  --bg-side: #f3f3f3;
+  --bg-title: #dddddd;
+  --bg-status: #007acc;
+  --fg: #3b3b3b;
+  --fg-dim: #6e6e6e;
+  --accent: #0e639c;
+  --hover: #00000014;
+  --border: #00000033;
+  --border-strong: #c9c9c9;
+}

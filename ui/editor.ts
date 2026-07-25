@@ -3,6 +3,7 @@ import type { Pos } from "./api";
 import { FindBar } from "./findbar";
 import { DEFAULT_EDITOR_CONFIG, EditorConfig } from "./editor-config";
 import { showMenu, type MenuItem } from "./menu";
+import { VIEWER_FORMAT_LABELS } from "./format";
 import { transformTrackedRange, type TrackedRange } from "./viewer-range";
 import {
   charClass,
@@ -1428,10 +1429,13 @@ export class VirtualEditor {
       }
     }
     items.push({ label: "すべて選択", key: "Ctrl+A", action: () => this.selectAll(), sep: true });
+    const viewerFormats = Object.entries(VIEWER_FORMAT_LABELS) as [api.ViewerFormat, string][];
     items.push(
-      { label: "CSVビュー", action: () => { void this.openTextViewer("csv"); }, sep: true },
-      { label: "TSVビュー", action: () => { void this.openTextViewer("tsv"); } },
-      { label: "Markdownビュー", action: () => { void this.openTextViewer("markdown"); } },
+      ...viewerFormats.map(([format, label], index) => ({
+        label,
+        action: () => { void this.openTextViewer(format); },
+        sep: index === 0,
+      })),
     );
     if (this.hasExternalFile()) items.push({ label: "他のアプリで開く", action: this.openExternally });
     showMenu(e.clientX, e.clientY, items);

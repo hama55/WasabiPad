@@ -7,6 +7,9 @@ const backend = read("src-tauri/src/main.rs");
 const coreDoc = read("core/src/doc.rs");
 const fileio = read("core/src/fileio.rs");
 const frontend = read("ui/api.ts");
+const mainTs = read("ui/main.ts");
+const sidebarTs = read("ui/sidebar.ts");
+const indexHtml = read("index.html");
 
 function fail(message) {
   throw new Error(`IPC contract mismatch: ${message}`);
@@ -69,4 +72,38 @@ const docKinds = names(/^\s*(\w+),\s*$/gm, blockAfter(coreDoc, "pub enum DocKind
 const docInfoKind = frontend.match(/kind:\s*([^;]+);/)?.[1] ?? "";
 assertSameSet("document kind wire values", docKinds, names(/"([^"]+)"/g, docInfoKind));
 
-console.log(`IPC contract OK: ${commands.length} commands and wire enums match.`);
+const viewerFormats = names(/#\[serde\(rename = "([^"]+)"\)\]/g, blockAfter(backend, "enum ViewerFormat"));
+assertSameSet("viewer format wire values", viewerFormats, tsUnion("ViewerFormat"));
+
+// <select> の option は Encoding/Eol の第2の定義になりやすいため、型と一致することを検証する
+function optionValues(id) {
+  const start = indexHtml.indexOf(`id="${id}"`);
+  if (start < 0) fail(`cannot find <select id="${id}">`);
+  const end = indexHtml.indexOf("</select>", start);
+  if (end < 0) fail(`unterminated <select id="${id}">`);
+  return names(/value="([^"]+)"/g, indexHtml.slice(start, end));
+}
+assertSameSet("read encoding options", tsUnion("ReadEncoding"), optionValues("st-source-enc"));
+assertSameSet("save encoding options", tsUnion("Encoding"), optionValues("st-enc"));
+assertSameSet("EOL options", tsUnion("Eol"), optionValues("st-eol"));
+
+// 乗算だけで書かれた閾値定数を数値化する (100 * 1024 * 1024 のような形式のみ)
+function product(label, expression) {
+  if (expression === undefined) fail(`cannot find ${label}`);
+  const factors = expression.replace(/_/g, "").split("*").map((part) => Number(part.trim()));
+  if (factors.some(Number.isNaN)) fail(`cannot evaluate ${label}: ${expression}`);
+  return factors.reduce((total, factor) => total * factor, 1);
+}
+const mmapThreshold = product("MMAP_THRESHOLD", fileio.match(/MMAP_THRESHOLD: u64 = ([^;]+);/)?.[1]);
+const hugeThreshold = product("HUGE_FILE_THRESHOLD", mainTs.match(/HUGE_FILE_THRESHOLD = ([^;]+);/)?.[1]);
+if (mmapThreshold !== hugeThreshold) {
+  fail(`huge file threshold; core=${mmapThreshold}, ui=${hugeThreshold}`);
+}
+
+// サイドバーの展開ボタン表示と core の遅延アーカイブ判定は同じ拡張子集合でなければならない
+const lazyArchiveFn = coreDoc.slice(coreDoc.indexOf("fn is_lazy_archive_ext"));
+const coreArchiveExts = names(/Some\("([^"]+)"\)/g, lazyArchiveFn.slice(0, lazyArchiveFn.indexOf("\n    }")));
+const uiArchiveExts = (sidebarTs.match(/ARCHIVE_EXT = \/\\\.\(([^)]+)\)/)?.[1] ?? "").split("|").filter(Boolean);
+assertSameSet("lazy archive extensions", coreArchiveExts, uiArchiveExts);
+
+console.log(`IPC contract OK: ${commands.length} commands, wire enums, and shared constants match.`);

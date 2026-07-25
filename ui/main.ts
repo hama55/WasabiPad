@@ -54,7 +54,15 @@ let sidebarAvailable = false;
 let sidebarVisible = true;
 let saveNoticeTimer: number | undefined;
 const STARTUP_PATH_KEY = "startupPath";
+// core の fileio::MMAP_THRESHOLD と一致させる (check:ipc が両者の一致を検証する)
 const HUGE_FILE_THRESHOLD = 100 * 1024 * 1024;
+
+// 保存ダイアログのフィルタと新規メモの拡張子候補で共有する
+const SAVE_EXTENSIONS = [
+  { name: "テキスト", extension: "txt" },
+  { name: "Markdown", extension: "md" },
+  { name: "ログ", extension: "log" },
+] as const;
 
 const editorHost = $("editorhost");
 const sidebarEl = $("sidebar");
@@ -406,9 +414,7 @@ async function saveAs(): Promise<boolean> {
   }
   const p = await saveDialog({
     filters: [
-      { name: "テキスト", extensions: ["txt"] },
-      { name: "Markdown", extensions: ["md"] },
-      { name: "ログ", extensions: ["log"] },
+      ...SAVE_EXTENSIONS.map(({ name, extension }) => ({ name, extensions: [extension] })),
       { name: "すべて", extensions: ["*"] },
     ],
     defaultPath,
@@ -434,10 +440,8 @@ async function promptMemoSpec(): Promise<{ stem: string; extension: string } | n
         return windowsFileNameError(`${value.trim()}${extension ? `.${extension}` : ""}`);
       },
     },
-    { label: "拡張子", value: "txt", options: [
-      { label: ".txt", value: "txt" },
-      { label: ".md", value: "md" },
-      { label: ".log", value: "log" },
+    { label: "拡張子", value: SAVE_EXTENSIONS[0].extension, options: [
+      ...SAVE_EXTENSIONS.map(({ extension }) => ({ label: `.${extension}`, value: extension })),
       { label: "拡張子なし", value: "" },
     ] },
   ]);

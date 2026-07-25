@@ -1,40 +1,16 @@
-:root {
-  --font-ui: "Yu Gothic UI", "Segoe UI", sans-serif;
-  --font-mono: Consolas, "MS Gothic", monospace;
-}
+@import "./theme.css";
 
-/* VSCode Dark+ 系パレット (既定) */
+/* 共通パレットは theme.css。ここはメモ本体だけで使う変数。 */
 :root, :root[data-theme="dark"] {
-  --bg-editor: #1e1e1e;
-  --bg-side: #252526;
-  --bg-title: #3c3c3c;
   --bg-top: #2d2d2d;
-  --bg-status: #007acc;
-  --fg: #cccccc;
-  --fg-dim: #858585;
-  --accent: #0e639c;
-  --hover: #ffffff1a;
   --sel-row: #094771;
-  --border: #00000066;
-  --border-strong: #454545;
   --editor-fg: #d4d4d4;
   --caret: #aeafad;
 }
 
-/* VSCode Light+ 系パレット */
 :root[data-theme="light"] {
-  --bg-editor: #ffffff;
-  --bg-side: #f3f3f3;
-  --bg-title: #dddddd;
   --bg-top: #ececec;
-  --bg-status: #007acc;
-  --fg: #3b3b3b;
-  --fg-dim: #6e6e6e;
-  --accent: #0e639c;
-  --hover: #00000014;
   --sel-row: #add6ff;
-  --border: #00000033;
-  --border-strong: #c9c9c9;
   --editor-fg: #1e1e1e;
   --caret: #333333;
 }

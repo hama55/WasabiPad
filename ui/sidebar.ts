@@ -21,6 +21,7 @@ export interface ContextTarget {
   isDir: boolean;
 }
 
+// core の Doc::is_lazy_archive_ext と一致させる (check:ipc が両者の一致を検証する)
 const ARCHIVE_EXT = /\.(zip|xlsx|xls)$/i;
 function isArchiveName(name: string): boolean {
   return ARCHIVE_EXT.test(name);

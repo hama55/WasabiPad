@@ -13,6 +13,9 @@ export interface MenuItem {
   onContextMenu?: (x: number, y: number) => void;
 }
 
+// お気に入り並べ替えの drag&drop 識別子 (menu.ts と favbar.ts で共有)
+export const FAVORITE_MIME = "application/x-wasabipad-favorite";
+
 const dd = () => document.getElementById("dropdown")!;
 
 export function showMenu(x: number, y: number, items: MenuItem[]) {
@@ -29,7 +32,7 @@ export function showMenu(x: number, y: number, items: MenuItem[]) {
     if (item.dragData) {
       div.draggable = true;
       div.addEventListener("dragstart", (e) => {
-        e.dataTransfer?.setData("application/x-wasabipad-favorite", item.dragData!);
+        e.dataTransfer?.setData(FAVORITE_MIME, item.dragData!);
         if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
       });
     }
@@ -106,7 +109,7 @@ export function showMenu(x: number, y: number, items: MenuItem[]) {
         e.preventDefault();
         e.stopPropagation();
         window.clearTimeout(openTimer);
-        const source = e.dataTransfer?.getData("application/x-wasabipad-favorite");
+        const source = e.dataTransfer?.getData(FAVORITE_MIME);
         if (source) item.onDrop!(source, item.dropData!);
       });
     }
