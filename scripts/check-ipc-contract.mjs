@@ -45,7 +45,7 @@ function tsUnion(typeName) {
   return names(/"([^"]+)"/g, match[1]);
 }
 
-const commands = names(/#\[tauri::command\]\s*\r?\nfn\s+(\w+)/g, backend);
+const commands = names(/#\[tauri::command\]\s*\r?\n(?:async\s+)?fn\s+(\w+)/g, backend);
 const handlerBlock = backend.match(/tauri::generate_handler!\[([\s\S]*?)\]\)/)?.[1];
 if (!handlerBlock) fail("cannot find tauri command handler registration");
 const handler = handlerBlock

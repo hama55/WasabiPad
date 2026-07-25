@@ -6,6 +6,7 @@ mod bookmarks;
 mod buffer;
 mod doc;
 mod fileio;
+mod filename;
 mod hugebuf;
 mod undo;
 mod workspace_search;
@@ -19,4 +20,5 @@ pub use doc::{
     WorkspaceSearchResult,
 };
 pub use fileio::{Encoding, EncodingId, Eol};
+pub use filename::validate_windows_file_name;
 pub use workspace_search::search_workspace;

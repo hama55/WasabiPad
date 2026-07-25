@@ -19,6 +19,7 @@ import {
 import { basename, joinWindowsRoot, rebaseWindowsPath, relativePathFromRoot, relativePathWithinRoot } from "./path";
 import { createCommandRegistry, globalCommandForEvent, CommandId } from "./commands";
 import { DEFAULT_EDITOR_CONFIG } from "./editor-config";
+import { windowsFileNameError } from "./filename";
 
 const win = getCurrentWindow();
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -148,6 +149,15 @@ const editor = new VirtualEditor(
   },
   hasExternalFile: () => session.savePath !== null,
   openExternally: () => { if (session.savePath) void openInOtherApp(session.savePath); },
+  openViewer: async (format, text) => {
+    try {
+      return await api.openViewer(format, text);
+    } catch (error) {
+      await showError("ビューを開けませんでした", error);
+      return null;
+    }
+  },
+  updateViewer: api.updateViewer,
   }
 );
 applyFont();
@@ -415,7 +425,15 @@ async function doSave(): Promise<boolean> {
 
 async function promptMemoSpec(): Promise<{ stem: string; extension: string } | null> {
   const result = await promptFields("新規メモ作成", [
-    { label: "ファイル名", value: "memo" },
+    {
+      label: "ファイル名",
+      value: "memo",
+      validate: (value, values) => {
+        if (!value.trim()) return "名前を入力してください";
+        const extension = values[1];
+        return windowsFileNameError(`${value.trim()}${extension ? `.${extension}` : ""}`);
+      },
+    },
     { label: "拡張子", value: "txt", options: [
       { label: ".txt", value: "txt" },
       { label: ".md", value: "md" },
@@ -526,7 +544,11 @@ function sidebarContextMenu(x: number, y: number, target: ContextTarget | null) 
 
 async function renameEntry(relPath: string) {
   const cur = basename(relPath);
-  const result = await promptFields("名前を変更", [{ label: "新しい名前", value: cur }]);
+  const result = await promptFields("名前を変更", [{
+    label: "新しい名前",
+    value: cur,
+    validate: (value) => windowsFileNameError(value.trim()),
+  }]);
   const newName = result?.[0].trim();
   if (!newName || newName === cur) return;
   const oldAbsolute = relToAbs(relPath);

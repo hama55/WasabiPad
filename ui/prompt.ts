@@ -2,7 +2,12 @@
 // 簡易モーダルを自前実装する (お気に入りの名前/パス編集などに使用)。
 export function promptFields(
   title: string,
-  fields: { label: string; value: string; options?: { label: string; value: string }[] }[]
+  fields: {
+    label: string;
+    value: string;
+    options?: { label: string; value: string }[];
+    validate?: (value: string, values: string[]) => string | null;
+  }[]
 ): Promise<string[] | null> {
   return new Promise((resolve) => {
     const overlay = document.createElement("div");
@@ -15,6 +20,7 @@ export function promptFields(
     h.textContent = title;
     box.appendChild(h);
 
+    const errors: HTMLElement[] = [];
     const inputs = fields.map((f) => {
       const row = document.createElement("div");
       row.className = "pf-row";
@@ -34,6 +40,11 @@ export function promptFields(
       input.value = f.value;
       row.appendChild(label);
       row.appendChild(input);
+      const error = document.createElement("span");
+      error.className = "pf-error";
+      error.setAttribute("aria-live", "polite");
+      row.appendChild(error);
+      errors.push(error);
       box.appendChild(row);
       return input;
     });
@@ -66,15 +77,34 @@ export function promptFields(
         submit();
       }
     };
-    const submit = () => finish(inputs.map((i) => i.value));
+    const validate = () => {
+      const values = inputs.map((input) => input.value);
+      let valid = true;
+      fields.forEach((field, index) => {
+        const message = field.validate?.(values[index], values) ?? null;
+        errors[index].textContent = message ?? "";
+        inputs[index].setAttribute("aria-invalid", String(Boolean(message)));
+        valid &&= !message;
+      });
+      okBtn.disabled = !valid;
+      return valid;
+    };
+    const submit = () => {
+      if (validate()) finish(inputs.map((i) => i.value));
+    };
 
     overlay.addEventListener("mousedown", (e) => {
       if (e.target === overlay) finish(null);
     });
     cancelBtn.addEventListener("click", () => finish(null));
     okBtn.addEventListener("click", submit);
+    inputs.forEach((input) => {
+      input.addEventListener("input", validate);
+      input.addEventListener("change", validate);
+    });
     window.addEventListener("keydown", onKey, true);
 
+    validate();
     inputs[0]?.focus();
     if (inputs[0] instanceof HTMLInputElement) inputs[0].select();
   });

@@ -678,6 +678,7 @@ impl Doc {
     // フォルダ内に空の新規ファイルを作り、その場で開く (サイドバーの「新規メモ作成」)。
     // rel_dir はフォルダルートからの相対パス(サブフォルダ見出しを右クリックした場合)。
     pub fn create_note(&mut self, rel_dir: Option<&str>, name: &str) -> io::Result<DocInfo> {
+        crate::validate_windows_file_name(name)?;
         let root = self
             .source
             .folder_root()
@@ -705,6 +706,7 @@ impl Doc {
     // サイドバー上のファイル/フォルダ見出しをリネームする。開いている文書自身または
     // その配下がリネーム対象なら、パス表記だけを追従させる (バッファは開き直さない)。
     pub fn rename_entry(&mut self, rel_path: &str, new_name: &str) -> io::Result<DocInfo> {
+        crate::validate_windows_file_name(new_name)?;
         let root = self
             .source
             .folder_root()

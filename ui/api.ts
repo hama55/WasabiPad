@@ -186,3 +186,15 @@ export const nextMemoPath = (directory: string, stem: string, extension: string)
   invoke<string>("next_memo_path", { directory, stem, extension });
 export const initialPath = () => invoke<string | null>("initial_path");
 export const launchNew = (path?: string) => invoke<void>("launch_new", { path });
+
+export type ViewerFormat = "csv" | "tsv" | "markdown";
+export interface ViewerPayload {
+  format: ViewerFormat;
+  text: string;
+}
+export const openViewer = (format: ViewerFormat, text: string) =>
+  invoke<string>("open_viewer", { format, text });
+export const takeViewerPayload = (label: string) =>
+  invoke<ViewerPayload>("take_viewer_payload", { label });
+export const updateViewer = (label: string, text: string) =>
+  invoke<void>("update_viewer", { label, text });

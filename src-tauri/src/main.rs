@@ -10,9 +10,24 @@ use wasabipad_core::{
     ReplaceChunkResult, SaveOutcome, WorkspaceSearchResult,
 };
 use state::{with_doc, DocState, State};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::Mutex;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Mutex,
+};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+
+#[derive(Clone, serde::Serialize)]
+struct ViewerPayload {
+    format: String,
+    text: String,
+}
+
+struct ViewerStore(Mutex<HashMap<String, ViewerPayload>>);
+
+static VIEWER_ID: AtomicU64 = AtomicU64::new(1);
 
 #[tauri::command]
 fn open_path(path: String, state: State) -> Result<DocInfo, String> {
@@ -245,11 +260,10 @@ fn reload_with_encoding(enc: EncodingId, state: State) -> Result<DocInfo, String
 #[tauri::command]
 fn next_memo_path(directory: String, stem: String, extension: String) -> Result<String, String> {
     let stem = stem.trim();
-    if stem.is_empty() || stem == "." || stem == ".." || stem.contains(['/', '\\']) {
-        return Err("ファイル名が正しくありません".into());
-    }
     let dir = PathBuf::from(directory);
     let ext = extension.trim_start_matches('.');
+    let candidate_name = if ext.is_empty() { stem.to_string() } else { format!("{stem}.{ext}") };
+    wasabipad_core::validate_windows_file_name(&candidate_name).map_err(|e| e.to_string())?;
     for number in 1.. {
         let numbered = if number == 1 { stem.to_string() } else { format!("{stem}{number}") };
         let name = if ext.is_empty() { numbered } else { format!("{numbered}.{ext}") };
@@ -276,10 +290,96 @@ fn launch_new(path: Option<String>) -> Result<(), String> {
     command.spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
+// Windowsでは同期command中のWebView生成がイベントループを塞ぐためasyncで実行する。
+#[tauri::command]
+async fn open_viewer(
+    format: String,
+    text: String,
+    app: AppHandle,
+    state: tauri::State<'_, ViewerStore>,
+) -> Result<String, String> {
+    let title = match format.as_str() {
+        "csv" => "CSVビュー",
+        "tsv" => "TSVビュー",
+        "markdown" => "Markdownビュー",
+        _ => return Err("未対応のビュー形式です".into()),
+    };
+    let label = format!("viewer-{}", VIEWER_ID.fetch_add(1, Ordering::Relaxed));
+    state
+        .0
+        .lock()
+        .map_err(|_| "ビューの準備に失敗しました".to_string())?
+        .insert(label.clone(), ViewerPayload { format, text });
+
+    let window = match WebviewWindowBuilder::new(&app, &label, WebviewUrl::App("viewer.html".into()))
+        .title(title)
+        .decorations(false)
+        .inner_size(960.0, 700.0)
+        .build()
+    {
+        Ok(window) => window,
+        Err(error) => {
+            if let Ok(mut payloads) = state.0.lock() {
+                payloads.remove(&label);
+            }
+            return Err(error.to_string());
+        }
+    };
+    let cleanup_app = app.clone();
+    let cleanup_label = label.clone();
+    window.on_window_event(move |event| {
+        if matches!(event, tauri::WindowEvent::Destroyed) {
+            if let Ok(mut payloads) = cleanup_app.state::<ViewerStore>().0.lock() {
+                payloads.remove(&cleanup_label);
+            }
+        }
+    });
+    Ok(label)
+}
+
+#[tauri::command]
+fn take_viewer_payload(
+    label: String,
+    state: tauri::State<'_, ViewerStore>,
+) -> Result<ViewerPayload, String> {
+    state
+        .0
+        .lock()
+        .map_err(|_| "ビューの読込みに失敗しました".to_string())?
+        .get(&label)
+        .cloned()
+        .ok_or_else(|| "表示内容が見つかりません".to_string())
+}
+
+#[tauri::command]
+fn update_viewer(
+    label: String,
+    text: String,
+    app: AppHandle,
+    state: tauri::State<'_, ViewerStore>,
+) -> Result<(), String> {
+    let payload = {
+        let mut payloads = state
+            .0
+            .lock()
+            .map_err(|_| "ビューの更新に失敗しました".to_string())?;
+        let payload = payloads
+            .get_mut(&label)
+            .ok_or_else(|| "ビューが閉じられています".to_string())?;
+        payload.text = text;
+        payload.clone()
+    };
+    app.get_webview_window(&label)
+        .ok_or_else(|| "ビューが閉じられています".to_string())?
+        .emit("viewer-update", payload)
+        .map_err(|e| e.to_string())
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(Mutex::new(DocState(Doc::empty())))
+        .manage(ViewerStore(Mutex::new(HashMap::new())))
         .invoke_handler(tauri::generate_handler![
             open_path,
             new_doc,
@@ -315,6 +415,9 @@ fn main() {
             next_memo_path,
             initial_path,
             launch_new,
+            open_viewer,
+            take_viewer_payload,
+            update_viewer,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

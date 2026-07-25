@@ -3,6 +3,7 @@ import type { Pos } from "./api";
 import { FindBar } from "./findbar";
 import { DEFAULT_EDITOR_CONFIG, EditorConfig } from "./editor-config";
 import { showMenu, type MenuItem } from "./menu";
+import { transformTrackedRange, type TrackedRange } from "./viewer-range";
 import {
   charClass,
   charLen,
@@ -31,6 +32,8 @@ export interface EditorPorts {
   onFontChange: (fontFamily: string, fontSize: number) => void;
   hasExternalFile: () => boolean;
   openExternally: () => void;
+  openViewer: (format: api.ViewerFormat, text: string) => Promise<string | null>;
+  updateViewer: (label: string, text: string) => Promise<void>;
 }
 
 // 全ファイル共通の仮想スクロールエディタ。文書は backend(mmap/overlay)が所有し、
@@ -88,6 +91,10 @@ export class VirtualEditor {
   private onFontChange: (fontFamily: string, fontSize: number) => void;
   private hasExternalFile: () => boolean;
   private openExternally: () => void;
+  private openViewer: (format: api.ViewerFormat, text: string) => Promise<string | null>;
+  private updateViewer: (label: string, text: string) => Promise<void>;
+  private liveViewers = new Map<string, { range: TrackedRange | null }>();
+  private viewerUpdateTimer: number | undefined;
 
   constructor(
     host: HTMLElement,
@@ -99,6 +106,8 @@ export class VirtualEditor {
     this.onFontChange = ports.onFontChange;
     this.hasExternalFile = ports.hasExternalFile;
     this.openExternally = ports.openExternally;
+    this.openViewer = ports.openViewer;
+    this.updateViewer = ports.updateViewer;
     this.fontFamily = config.fontFamily;
     this.fontSize = config.fontSize;
     this.lineHeightExtra = config.lineHeightExtra;
@@ -182,6 +191,8 @@ export class VirtualEditor {
 
   // ---- 文書ロード ----
   open(lineCount: number, readOnly: boolean) {
+    this.liveViewers.clear();
+    window.clearTimeout(this.viewerUpdateTimer);
     this.lineCount = Math.max(1, lineCount);
     this.wrapIntraLinePx = 0;
     this.readOnly = readOnly;
@@ -887,7 +898,7 @@ export class VirtualEditor {
     return p;
   }
 
-  private applyResult(r: api.EditResult, fromLine: number) {
+  private applyResult(r: api.EditResult, fromLine: number, edits: api.EditManyItem[] = []) {
     const oldTopLine = this.wrap || this.scaleMode ? this.topLineF : this.pxToLine(this.scroll.scrollTop);
     const oldIntraLinePx = this.wrapIntraLinePx;
     const wasAtBottom = oldTopLine >= this.maxTopLine();
@@ -902,10 +913,16 @@ export class VirtualEditor {
     for (const c of [...this.cache.keys()]) {
       if (c * CHUNK + CHUNK > fromLine) this.cache.delete(c);
     }
+    if (edits.length) {
+      for (const viewer of this.liveViewers.values()) {
+        if (viewer.range) viewer.range = transformTrackedRange(viewer.range, edits);
+      }
+    }
     this.caret = r.caret;
     this.anchor = r.caret;
     this.goalX = null;
     this.onDocChange(this.lineCount);
+    this.scheduleViewerUpdates();
   }
 
   private async renderAfterEdit() {
@@ -933,7 +950,7 @@ export class VirtualEditor {
         const edits = carets.map((pos) => ({ start: pos, end: pos, text }));
         const fromLine = Math.min(...carets.map((pos) => pos.line));
         const r = await api.editMany(edits, this.caret, 0);
-        this.applyResult({ caret: r.carets[0], line_count: r.line_count }, fromLine);
+        this.applyResult({ caret: r.carets[0], line_count: r.line_count }, fromLine, edits);
         this.caret = r.carets[0];
         this.anchor = this.caret;
         this.secondaryCarets = r.carets.slice(1);
@@ -945,7 +962,7 @@ export class VirtualEditor {
       const [s, e] = this.selNorm();
       const coalesce = !this.hasSel() && text.length === 1 && text !== "\n";
       const r = await api.edit(s, e, this.caret, text, coalesce);
-      this.applyResult(r, s.line);
+      this.applyResult(r, s.line, [{ start: s, end: e, text }]);
       await this.renderAfterEdit();
     });
   }
@@ -954,7 +971,7 @@ export class VirtualEditor {
     this.run(async () => {
       const [s, e] = this.selNorm();
       const r = await api.edit(s, e, this.caret, "", false);
-      this.applyResult(r, s.line);
+      this.applyResult(r, s.line, [{ start: s, end: e, text: "" }]);
       await this.renderAfterEdit();
     });
   }
@@ -972,7 +989,7 @@ export class VirtualEditor {
       else if (c.line > 0) s = { line: c.line - 1, col: await this.lineLen(c.line - 1) };
       else return;
       const r = await api.edit(s, c, c, "", false);
-      this.applyResult(r, s.line);
+      this.applyResult(r, s.line, [{ start: s, end: c, text: "" }]);
       await this.renderAfterEdit();
     });
   }
@@ -991,7 +1008,7 @@ export class VirtualEditor {
       else if (c.line + 1 < this.lineCount) e = { line: c.line + 1, col: 0 };
       else return;
       const r = await api.edit(c, e, c, "", false);
-      this.applyResult(r, c.line);
+      this.applyResult(r, c.line, [{ start: c, end: e, text: "" }]);
       await this.renderAfterEdit();
     });
   }
@@ -1050,6 +1067,47 @@ export class VirtualEditor {
     return parts.join("\n");
   }
 
+  private async openTextViewer(format: api.ViewerFormat) {
+    let start: Pos;
+    let end: Pos;
+    if (this.hasSel()) {
+      [start, end] = this.selNorm();
+    } else {
+      const last = this.lineCount - 1;
+      start = { line: 0, col: 0 };
+      end = { line: last, col: await this.lineLen(last) };
+    }
+    const range = this.hasSel() ? { start: { ...start }, end: { ...end } } : null;
+    const label = await this.openViewer(format, await this.selectedText(start, end));
+    if (label) this.liveViewers.set(label, { range });
+  }
+
+  private scheduleViewerUpdates() {
+    if (!this.liveViewers.size) return;
+    window.clearTimeout(this.viewerUpdateTimer);
+    this.viewerUpdateTimer = window.setTimeout(() => { void this.refreshLiveViewers(); }, 120);
+  }
+
+  private async refreshLiveViewers() {
+    for (const [label, viewer] of [...this.liveViewers]) {
+      try {
+        let start: Pos;
+        let end: Pos;
+        if (viewer.range) {
+          start = viewer.range.start;
+          end = viewer.range.end;
+        } else {
+          const last = this.lineCount - 1;
+          start = { line: 0, col: 0 };
+          end = { line: last, col: await this.lineLen(last) };
+        }
+        await this.updateViewer(label, await this.selectedText(start, end));
+      } catch {
+        this.liveViewers.delete(label);
+      }
+    }
+  }
+
   private moveSelection(target: Pos) {
     if (this.readOnly) return;
     const [s, e] = this.selNorm();
@@ -1058,9 +1116,9 @@ export class VirtualEditor {
       const text = await this.selectedText(s, e);
       const drop = cmp(target, e) > 0 ? positionAfterDeletion(s, e, target) : target;
       const deleted = await api.edit(s, e, e, "", false);
-      this.applyResult(deleted, s.line);
+      this.applyResult(deleted, s.line, [{ start: s, end: e, text: "" }]);
       const inserted = await api.edit(drop, drop, drop, text, false);
-      this.applyResult(inserted, drop.line);
+      this.applyResult(inserted, drop.line, [{ start: drop, end: drop, text }]);
       await this.renderAfterEdit();
     });
   }
@@ -1370,6 +1428,11 @@ export class VirtualEditor {
       }
     }
     items.push({ label: "すべて選択", key: "Ctrl+A", action: () => this.selectAll(), sep: true });
+    items.push(
+      { label: "CSVビュー", action: () => { void this.openTextViewer("csv"); }, sep: true },
+      { label: "TSVビュー", action: () => { void this.openTextViewer("tsv"); } },
+      { label: "Markdownビュー", action: () => { void this.openTextViewer("markdown"); } },
+    );
     if (this.hasExternalFile()) items.push({ label: "他のアプリで開く", action: this.openExternally });
     showMenu(e.clientX, e.clientY, items);
   }
@@ -1495,7 +1558,7 @@ export class VirtualEditor {
       const r = unescapePattern(rep);
       const res = await api.edit(m.start, m.end, this.caret, r, false);
       this.lastFindMatch = null;
-      this.applyResult(res, m.start.line);
+      this.applyResult(res, m.start.line, [{ start: m.start, end: m.end, text: r }]);
       this.ensureVisible();
       this.render();
       this.notifyCursor();

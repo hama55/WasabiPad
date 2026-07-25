@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WasabiPad ビュー</title>
+  <link rel="stylesheet" href="/ui/viewer.css" />
+</head>
+<body>
+  <div id="titlebar">
+    <div id="viewer-title-spacer"></div>
+    <div id="viewer-title" data-tauri-drag-region>読込み中…</div>
+    <div id="wincontrols">
+      <button id="win-min" title="最小化">&#xE921;</button>
+      <button id="win-max" title="最大化">&#xE922;</button>
+      <button id="win-close" title="閉じる">&#xE8BB;</button>
+    </div>
+  </div>
+  <main>
+    <div id="viewer-content"></div>
+    <section id="chart-panel" hidden>
+      <div id="chart-toolbar">
+        <strong id="chart-title"></strong>
+        <button id="chart-close">表に戻る</button>
+      </div>
+      <div id="chart-canvas-wrap"><canvas id="chart-canvas"></canvas></div>
+    </section>
+  </main>
+  <div id="statusbar">
+    <span id="viewer-summary"></span>
+    <span class="st-spacer"></span>
+    <button id="viewer-theme" title="ビューの配色モード切替"></button>
+  </div>
+  <div id="viewer-context-menu" hidden></div>
+  <script type="module" src="/ui/viewer.ts"></script>
+</body>
+</html>
