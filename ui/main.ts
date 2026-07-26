@@ -7,7 +7,7 @@ import { Sidebar, ContextTarget } from "./sidebar";
 import { FavBar } from "./favbar";
 import { showMenu, MenuItem } from "./menu";
 import { confirmMessage, confirmSaveDiscard, promptFields } from "./prompt";
-import { initialSession, sessionFromDocInfo } from "./session";
+import { initialSession, readEncodingOf, sessionFromDocInfo } from "./session";
 import { promptSaveFormat } from "./save-format";
 import { showError } from "./dialogs";
 import {
@@ -424,7 +424,7 @@ async function saveAs(): Promise<boolean> {
 
 // 別名保存だけが保存形式の決定点。以降の上書き保存はここで決めた形式を使い回す。
 async function saveAsTo(path: string, folderDraftRoot: string | null = null): Promise<boolean> {
-  const format = await promptSaveFormat(session.encoding, session.eol);
+  const format = await promptSaveFormat(session);
   if (!format) return false;
   session.encoding = format.encoding;
   session.eol = format.eol;
@@ -694,7 +694,7 @@ $("toggle-sidebar").addEventListener("click", () => {
 $<HTMLSelectElement>("st-source-enc").addEventListener("change", async (e) => {
   const select = e.target as HTMLSelectElement;
   const requested = select.value as api.ReadEncoding;
-  const current = session.sourceEncoding === "utf8bom" ? "utf8" : session.sourceEncoding;
+  const current = readEncodingOf(session.sourceEncoding);
   if (requested === current) return;
   if (session.dirty) {
     const confirmed = await confirmMessage(
@@ -724,7 +724,7 @@ document.addEventListener("contextmenu", (e) => e.preventDefault());
 // ステータスバーが示すのは読込時の形式だけ。保存形式は別名保存ダイアログが持つ。
 function renderFormatStatus() {
   const source = $<HTMLSelectElement>("st-source-enc");
-  source.value = session.sourceEncoding === "utf8bom" ? "utf8" : session.sourceEncoding;
+  source.value = readEncodingOf(session.sourceEncoding);
   source.disabled = session.readOnly || !session.savePath;
   source.title = session.sourceEncoding === "utf8bom" ? "読込文字コード: UTF-8 (BOMあり)" : "読込文字コード";
   $("st-eol").textContent = session.sourceEol.toUpperCase();

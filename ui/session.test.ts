@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DocInfo } from "./api";
-import { displayName, initialSession, sessionFromDocInfo } from "./session";
+import { displayName, initialSession, readEncodingOf, sessionFromDocInfo } from "./session";
 
 const info = (overrides: Partial<DocInfo> = {}): DocInfo => ({
   kind: "text",
@@ -43,5 +43,10 @@ describe("DocumentSession", () => {
     expect(archive.savePath).toBeNull();
     expect(archive.readOnly).toBe(true);
     expect(displayName(archive)).toBe("memo.txt");
+  });
+
+  it("folds BOM into the plain read encoding", () => {
+    expect(readEncodingOf("utf8bom")).toBe("utf8");
+    expect(readEncodingOf("sjis")).toBe("sjis");
   });
 });
