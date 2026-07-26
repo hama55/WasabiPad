@@ -64,10 +64,9 @@ main { position: relative; flex: 1; min-height: 0; }
   min-width: 44px; text-align: right; color: var(--fg-dim);
   background: var(--bg-side);
 }
-.viewer-grid tr:nth-child(even) .viewer-line-number { background: var(--row-alt); }
-.viewer-grid tr:nth-child(even) td { background: var(--row-alt); }
+.viewer-grid tr:nth-child(even) > :where(td, .viewer-line-number) { background: var(--row-alt); }
 .viewer-grid tr.viewer-source-selected > *,
-.viewer-grid .viewer-source-selected {
+.viewer-grid tr > .viewer-source-selected {
   background: var(--source-selected-bg);
   color: var(--source-selected-fg);
 }

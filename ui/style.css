@@ -152,6 +152,11 @@ body {
 }
 .ws-result:hover { background: var(--hover); }
 .ws-empty { color: var(--fg-dim); }
+.ws-empty-detail {
+  margin-top: 4px;
+  white-space: normal;
+  line-height: 1.5;
+}
 #splitter { width: 4px; cursor: ew-resize; flex: none; background: transparent; }
 #splitter:hover { background: var(--bg-status); }
 .fv-row {

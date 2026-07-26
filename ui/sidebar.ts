@@ -299,7 +299,12 @@ export class Sidebar {
       if (this.results.length === 0) {
         const empty = document.createElement("div");
         empty.className = "ws-empty";
-        empty.textContent = "見つかりません";
+        const title = document.createElement("div");
+        title.textContent = "見つかりません";
+        const excluded = document.createElement("div");
+        excluded.className = "ws-empty-detail";
+        excluded.textContent = "検索対象外: 16 MB超、読み取り不能、.git / node_modules / target 配下、20,000件以降。バイナリはファイル名のみ検索";
+        empty.append(title, excluded);
         frag.appendChild(empty);
       }
       for (const result of this.results) {
