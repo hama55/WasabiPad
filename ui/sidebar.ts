@@ -1,4 +1,12 @@
-import type { FolderEntry, WorkspaceSearchResult } from "./api";
+import type { FolderEntry, WorkspaceSearchOptions, WorkspaceSearchResult } from "./api";
+import {
+  clampSearchOptions,
+  DEFAULT_SEARCH_OPTIONS,
+  EXCLUDE_DIR_CANDIDATES,
+  loadSearchOptions,
+  saveSearchOptions,
+  searchScopeSummary,
+} from "./workspace-search-options";
 
 // フォルダ/ZIP/Excelのエントリ名 ("sub/a.txt" 形式) からツリーを構築して表示。
 // 実データは backend が保持し、選択時に relPath を親へ通知するだけ。
@@ -27,7 +35,7 @@ export interface SidebarPorts {
   onContextMenu: (x: number, y: number, target: ContextTarget | null) => void;
   onExpandArchive: (relPath: string) => Promise<string[]>;
   onExpandFolder: (relDir: string) => Promise<FolderEntry[]>;
-  onWorkspaceSearch: (pat: string, matchCase: boolean) => Promise<WorkspaceSearchResult[]>;
+  onWorkspaceSearch: (pat: string, options: WorkspaceSearchOptions) => Promise<WorkspaceSearchResult[]>;
   onSearchResult: (result: WorkspaceSearchResult, pattern: string) => void;
 }
 
@@ -42,8 +50,10 @@ export class Sidebar {
   private tree: HTMLElement;
   private search: HTMLElement;
   private searchInput: HTMLInputElement;
-  private searchCase: HTMLInputElement;
+  private searchSettingsButton: HTMLButtonElement;
+  private searchSettings: HTMLElement;
   private searchClear: HTMLButtonElement;
+  private options: WorkspaceSearchOptions = loadSearchOptions();
   private results: WorkspaceSearchResult[] | "searching" | null = null;
   private searchGen = 0;
   private searchTimer: number | undefined;
@@ -54,7 +64,7 @@ export class Sidebar {
   private onContextMenu: (x: number, y: number, target: ContextTarget | null) => void;
   private onExpandArchive: (relPath: string) => Promise<string[]>;
   private onExpandFolder: (relDir: string) => Promise<FolderEntry[]>;
-  private onWorkspaceSearch: (pat: string, matchCase: boolean) => Promise<WorkspaceSearchResult[]>;
+  private onWorkspaceSearch: (pat: string, options: WorkspaceSearchOptions) => Promise<WorkspaceSearchResult[]>;
   private onSearchResult: (result: WorkspaceSearchResult, pattern: string) => void;
 
   constructor(host: HTMLElement, ports: SidebarPorts) {
@@ -68,20 +78,145 @@ export class Sidebar {
     this.search = document.createElement("div");
     this.search.className = "ws-search";
     this.search.hidden = true;
-    this.search.innerHTML = `<input placeholder="検索" spellcheck="false" /><button type="button" title="検索をクリア">×</button><label><input type="checkbox" />Aa</label>`;
-    this.searchInput = this.search.querySelector("input")!;
-    this.searchClear = this.search.querySelector("button")!;
-    this.searchCase = this.search.querySelector("label input")!;
+    const row = document.createElement("div");
+    row.className = "ws-search-row";
+    row.innerHTML = `<input placeholder="検索" spellcheck="false" /><button type="button" class="ws-search-clear" title="検索をクリア">×</button><button type="button" class="ws-search-settings" title="検索条件を設定">⚙</button>`;
+    this.searchInput = row.querySelector("input")!;
+    this.searchClear = row.querySelector(".ws-search-clear")!;
+    this.searchSettingsButton = row.querySelector(".ws-search-settings")!;
+    this.searchSettings = this.buildSearchSettings();
+    this.search.append(row, this.searchSettings);
     this.tree = document.createElement("div");
     this.host.append(this.search, this.tree);
     this.searchInput.addEventListener("input", () => this.queueWorkspaceSearch());
     this.searchClear.addEventListener("click", () => this.clearWorkspaceSearch());
-    this.searchCase.addEventListener("change", () => this.queueWorkspaceSearch());
+    this.searchSettingsButton.addEventListener("click", () => {
+      this.searchSettings.hidden = !this.searchSettings.hidden;
+      this.searchSettingsButton.classList.toggle("on", !this.searchSettings.hidden);
+    });
     this.host.addEventListener("contextmenu", (e) => {
       if (e.target !== this.host && e.target !== this.tree) return; // 個々の行上は行側のリスナーに任せる
       e.preventDefault();
       this.onContextMenu(e.clientX, e.clientY, null);
     });
+  }
+
+  // ---- 検索条件の設定パネル ----
+  private buildSearchSettings(): HTMLElement {
+    const panel = document.createElement("div");
+    panel.className = "ws-search-settings-panel";
+    panel.hidden = true;
+    panel.append(
+      this.settingsSection("検索する対象", [
+        this.toggleField("大文字小文字を区別", "match_case"),
+        this.toggleField("ファイル名", "search_file_names"),
+        this.toggleField("本文", "search_contents"),
+      ]),
+      this.settingsSection("除外するフォルダ", [this.excludeDirsField()]),
+      this.settingsSection("打ち切り条件", [
+        this.numberField("最大ファイルサイズ (MB)", 1, () => this.options.max_file_bytes / (1024 * 1024),
+          (value) => { this.options.max_file_bytes = value * 1024 * 1024; }),
+        this.numberField("最大ファイル数", 1, () => this.options.max_files,
+          (value) => { this.options.max_files = value; }),
+        this.numberField("最大結果数", 1, () => this.options.max_results,
+          (value) => { this.options.max_results = value; }),
+        this.numberField("並列数 (0 = 自動)", 0, () => this.options.workers,
+          (value) => { this.options.workers = value; }),
+      ]),
+    );
+    const reset = document.createElement("button");
+    reset.type = "button";
+    reset.className = "ws-search-reset";
+    reset.textContent = "既定に戻す";
+    reset.addEventListener("click", () => {
+      this.options = { ...DEFAULT_SEARCH_OPTIONS };
+      this.commitOptions();
+      panel.replaceWith(this.searchSettings = this.buildSearchSettings());
+      this.searchSettings.hidden = false;
+    });
+    panel.appendChild(reset);
+    return panel;
+  }
+
+  private settingsSection(title: string, fields: HTMLElement[]): HTMLElement {
+    const section = document.createElement("div");
+    section.className = "ws-search-section";
+    const heading = document.createElement("div");
+    heading.className = "ws-search-section-title";
+    heading.textContent = title;
+    section.append(heading, ...fields);
+    return section;
+  }
+
+  private toggleField(label: string, key: "match_case" | "search_file_names" | "search_contents"): HTMLElement {
+    const field = document.createElement("label");
+    field.className = "ws-search-toggle";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = this.options[key];
+    input.addEventListener("change", () => {
+      this.options[key] = input.checked;
+      this.commitOptions();
+    });
+    field.append(input, document.createTextNode(label));
+    return field;
+  }
+
+  private numberField(label: string, min: number, get: () => number, set: (value: number) => void): HTMLElement {
+    const field = document.createElement("label");
+    field.className = "ws-search-number";
+    const input = document.createElement("input");
+    input.type = "number";
+    input.min = String(min);
+    input.value = String(get());
+    input.addEventListener("change", () => {
+      set(Math.max(min, Math.round(Number(input.value) || 0)));
+      this.commitOptions();
+      input.value = String(get());
+    });
+    field.append(document.createTextNode(label), input);
+    return field;
+  }
+
+  // 候補は既定リストと現在の設定の和集合。任意の名前は下の入力欄から足せる
+  private excludeDirsField(): HTMLElement {
+    const wrap = document.createElement("div");
+    const names = [...new Set([...EXCLUDE_DIR_CANDIDATES, ...this.options.exclude_dirs])];
+    for (const name of names) {
+      const field = document.createElement("label");
+      field.className = "ws-search-toggle";
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.checked = this.options.exclude_dirs.includes(name);
+      input.addEventListener("change", () => {
+        this.options.exclude_dirs = input.checked
+          ? [...this.options.exclude_dirs, name]
+          : this.options.exclude_dirs.filter((dir) => dir !== name);
+        this.commitOptions();
+      });
+      field.append(input, document.createTextNode(name));
+      wrap.appendChild(field);
+    }
+    const add = document.createElement("input");
+    add.className = "ws-search-add-dir";
+    add.placeholder = "フォルダ名を追加";
+    add.spellcheck = false;
+    add.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" || !add.value.trim()) return;
+      this.options.exclude_dirs = [...this.options.exclude_dirs, add.value.trim()];
+      add.value = "";
+      this.commitOptions();
+      wrap.replaceWith(this.excludeDirsField());
+    });
+    wrap.appendChild(add);
+    return wrap;
+  }
+
+  private commitOptions() {
+    this.options = clampSearchOptions(this.options);
+    saveSearchOptions(this.options);
+    if (this.searchInput.value) this.queueWorkspaceSearch();
+    else this.render();
   }
 
   setWorkspaceSearch(on: boolean) {
@@ -106,7 +241,7 @@ export class Sidebar {
     }
     this.results = "searching";
     this.render();
-    this.searchTimer = window.setTimeout(() => this.searchWorkspace(gen, pat, this.searchCase.checked), 150);
+    this.searchTimer = window.setTimeout(() => this.searchWorkspace(gen, pat, this.options), 150);
   }
 
   private clearWorkspaceSearch() {
@@ -118,11 +253,11 @@ export class Sidebar {
     this.searchInput.focus();
   }
 
-  private async searchWorkspace(gen: number, pat: string, matchCase: boolean) {
+  private async searchWorkspace(gen: number, pat: string, options: WorkspaceSearchOptions) {
     if (this.searchRunning) return;
     this.searchRunning = true;
     try {
-      const results = await this.onWorkspaceSearch(pat, matchCase);
+      const results = await this.onWorkspaceSearch(pat, options);
       if (gen === this.searchGen) {
         this.results = results;
         this.render();
@@ -303,7 +438,7 @@ export class Sidebar {
         title.textContent = "見つかりません";
         const excluded = document.createElement("div");
         excluded.className = "ws-empty-detail";
-        excluded.textContent = "検索対象外: 16 MB超、読み取り不能、.git / node_modules / target 配下、20,000件以降。バイナリはファイル名のみ検索";
+        excluded.textContent = searchScopeSummary(this.options);
         empty.append(title, excluded);
         frag.appendChild(empty);
       }

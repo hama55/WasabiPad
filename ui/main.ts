@@ -236,7 +236,7 @@ const sidebar = new Sidebar(sidebarEl, {
   onContextMenu: (x, y, target) => sidebarContextMenu(x, y, target),
   onExpandArchive: (relPath) => api.listArchiveEntries(relPath),
   onExpandFolder: (relDir) => api.listFolderEntries(relDir),
-  onWorkspaceSearch: (pat, matchCase) => api.workspaceSearch(pat, matchCase),
+  onWorkspaceSearch: (pat, options) => api.workspaceSearch(pat, options),
   onSearchResult: async (result, pattern) => {
     if (!(await confirmDiscard())) return;
     session.selectedRelPath = result.rel_path;
@@ -271,7 +271,7 @@ window.setInterval(async () => {
     const check = await api.pollExternal(session.dirty);
     if (check.kind === "reloaded") {
       const line = currentLine;
-      applyDocInfo(check.info);
+      applyDocInfo(check.info, true);
       editor.goTo(line - 1, 0);
       showNotice("外部の変更を再読込しました");
     } else if (check.kind === "conflict") {
@@ -288,7 +288,7 @@ $("external-reload").addEventListener("click", async () => {
   const line = currentLine;
   try {
     const info = await api.reloadFromDisk();
-    applyDocInfo(info);
+    applyDocInfo(info, true);
     editor.goTo(line - 1, 0);
   } catch (e) {
     await showError("再読込できませんでした", e);
@@ -332,8 +332,9 @@ function showNotice(text: string) {
 
 const showSavedNotice = () => showNotice("保存しました");
 
-// アーカイブ選択後/フォルダのエントリ切替後で共通の状態反映
-function applyDocInfo(o: api.DocInfo) {
+// アーカイブ選択後/フォルダのエントリ切替後で共通の状態反映。
+// keepViewers は「同じファイルの読み直し」= 開いているCSV/Markdownビューを維持する場合。
+function applyDocInfo(o: api.DocInfo, keepViewers = false) {
   $("external-banner").hidden = true; // 文書が切り替わったら競合バナーは無効
   session = sessionFromDocInfo(session, o);
   $<HTMLSelectElement>("st-enc").value = session.encoding;
@@ -344,7 +345,7 @@ function applyDocInfo(o: api.DocInfo) {
   size.textContent = formatByteSize(o.byte_len);
   size.classList.toggle("is-huge", o.byte_len >= HUGE_FILE_THRESHOLD);
   $("st-lines").textContent = formatLineCount(o.line_count);
-  editor.open(o.line_count, session.readOnly);
+  editor.open(o.line_count, session.readOnly, keepViewers);
   editor.focus();
   updateTitle();
 }

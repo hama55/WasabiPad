@@ -23,4 +23,4 @@ pub use doc::{
 };
 pub use fileio::{Encoding, EncodingId, Eol};
 pub use filename::{next_available_path, validate_windows_file_name};
-pub use workspace_search::search_workspace;
+pub use workspace_search::{search_workspace, SearchOptions};

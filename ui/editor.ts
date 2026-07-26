@@ -212,8 +212,10 @@ export class VirtualEditor {
   }
 
   // ---- 文書ロード ----
-  open(lineCount: number, readOnly: boolean) {
-    this.liveViewers.clear();
+  // keepViewers: 同じファイルを読み直しただけの場合。開いているビューを閉じずに新内容へ差し替える
+  open(lineCount: number, readOnly: boolean, keepViewers = false) {
+    if (keepViewers) this.liveViewers.scheduleRefresh();
+    else this.liveViewers.clear();
     this.lineCount = Math.max(1, lineCount);
     this.wrapIntraLinePx = 0;
     this.readOnly = readOnly;

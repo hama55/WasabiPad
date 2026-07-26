@@ -7,7 +7,7 @@ mod state;
 use wasabipad_core::{
     self, BookmarkNode, Doc, DocInfo, EditManyItem, EditManyResult, EditResult, EncodingId,
     Eol, ExternalCheck, FindCursor, FindOutcome, FindResult, FolderEntry, PosC,
-    ReplaceChunkResult, SaveOutcome, WorkspaceSearchResult,
+    ReplaceChunkResult, SaveOutcome, SearchOptions, WorkspaceSearchResult,
 };
 use state::{with_doc, DocState, State};
 use std::collections::HashMap;
@@ -102,13 +102,13 @@ fn list_folder_entries(rel_dir: String, state: State) -> Result<Vec<FolderEntry>
 #[tauri::command]
 async fn workspace_search(
     pat: String,
-    match_case: bool,
+    options: SearchOptions,
     state: State<'_>,
 ) -> Result<Vec<WorkspaceSearchResult>, String> {
     let root = with_doc(&state, |doc| doc.workspace_root())
         .ok_or_else(|| "folder is not open".to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
-        wasabipad_core::search_workspace(&root, &pat, match_case)
+        wasabipad_core::search_workspace(&root, &pat, &options)
     })
     .await
     .map_err(|error| error.to_string())

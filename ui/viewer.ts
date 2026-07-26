@@ -6,7 +6,16 @@ import Papa from "papaparse";
 import { takeViewerPayload, type ViewerFormat, type ViewerPayload, type ViewerSelection } from "./api";
 import { DEFAULT_EDITOR_CONFIG } from "./editor-config";
 import { VIEWER_FORMAT_LABELS, formatTitleBar } from "./format";
-import { chartColumnLabel, numericColumnIndexes, parseChartNumber } from "./chart-data";
+import {
+  chartColumnLabel,
+  chartPointRadius,
+  CHART_TYPES,
+  DEFAULT_CHART_TYPE,
+  isChartTypeId,
+  numericColumnIndexes,
+  parseChartNumber,
+  type ChartTypeId,
+} from "./chart-data";
 import { csvColumnAt, decodeDelimiter, isSingleCsvCellSelection } from "./csv-viewer";
 
 const MAX_TABLE_ROWS = 10_000;
@@ -33,8 +42,8 @@ let currentFormat: ViewerFormat = "csv";
 let currentRows: string[][] = [];
 let currentText = "";
 let currentSelection: ViewerSelection | null = null;
-let chart: Chart<"line", (number | null)[], string> | null = null;
-let chartColumns: { x: number; y: number[]; reverseX: boolean } | null = null;
+let chart: Chart<"line" | "bar", (number | null)[], string> | null = null;
+let chartColumns: { x: number; y: number[]; reverseX: boolean; type: ChartTypeId } | null = null;
 
 function applyTheme(theme = localStorage.getItem(VIEWER_THEME_KEY)) {
   const value = theme === "light" ? "light" : "dark";
@@ -206,6 +215,18 @@ function openChartDialog() {
   const heading = document.createElement("h2");
   heading.textContent = "グラフ作成";
 
+  const typeLabel = document.createElement("label");
+  typeLabel.textContent = "グラフの種類";
+  const typeSelect = document.createElement("select");
+  Object.entries(CHART_TYPES).forEach(([id, spec]) => {
+    const option = document.createElement("option");
+    option.value = id;
+    option.textContent = spec.label;
+    typeSelect.appendChild(option);
+  });
+  typeSelect.value = chartColumns?.type ?? DEFAULT_CHART_TYPE;
+  typeLabel.appendChild(typeSelect);
+
   const xLabel = document.createElement("label");
   xLabel.textContent = "X軸";
   const xSelect = document.createElement("select");
@@ -263,7 +284,7 @@ function openChartDialog() {
   create.className = "primary";
   create.textContent = "作成";
   buttons.append(cancel, create);
-  dialog.append(heading, xLabel, reverseLabel, yTitle, yGrid, error, buttons);
+  dialog.append(heading, typeLabel, xLabel, reverseLabel, yTitle, yGrid, error, buttons);
   overlay.appendChild(dialog);
   document.body.appendChild(overlay);
 
@@ -278,7 +299,8 @@ function openChartDialog() {
       error.textContent = "Y軸を1列以上選択してください";
       return;
     }
-    chartColumns = { x: Number(xSelect.value), y, reverseX: reverseInput.checked };
+    const type = isChartTypeId(typeSelect.value) ? typeSelect.value : DEFAULT_CHART_TYPE;
+    chartColumns = { x: Number(xSelect.value), y, reverseX: reverseInput.checked, type };
     finish();
     renderChart();
   });
@@ -298,22 +320,30 @@ function renderChart() {
     hidden.set(column, !chart!.isDatasetVisible(chart!.data.datasets.indexOf(dataset)));
   });
 
-  const datasets = chartColumns.y.map((column, index) => ({
-    label: chartColumnLabel(headers, column),
-    data: rows.map((row) => parseChartNumber(row[column] ?? "")),
-    borderColor: CHART_COLORS[index % CHART_COLORS.length],
-    backgroundColor: CHART_COLORS[index % CHART_COLORS.length],
-    pointRadius: rows.length > 300 ? 0 : 2,
-    borderWidth: 2,
-    spanGaps: false,
-    columnIndex: column,
-    hidden: hidden.get(column) ?? false,
-  }));
+  const spec = CHART_TYPES[chartColumns.type];
+  const datasets = chartColumns.y.map((column, index) => {
+    const color = CHART_COLORS[index % CHART_COLORS.length];
+    return {
+      label: chartColumnLabel(headers, column),
+      data: rows.map((row) => parseChartNumber(row[column] ?? "")),
+      borderColor: color,
+      // 面グラフは重ねて見るため半透明にする (それ以外は棒/点の塗りとして不透明のまま)
+      backgroundColor: spec.fill ? `${color}55` : color,
+      pointRadius: chartPointRadius(spec, rows.length),
+      borderWidth: 2,
+      spanGaps: false,
+      showLine: spec.showLine,
+      stepped: spec.stepped ?? false,
+      fill: spec.fill ?? false,
+      columnIndex: column,
+      hidden: hidden.get(column) ?? false,
+    };
+  });
   const labels = rows.map((row) => row[chartColumns!.x] ?? "");
 
   chart?.destroy();
   chart = new Chart(chartCanvas, {
-    type: "line",
+    type: spec.base,
     data: { labels, datasets },
     options: {
       responsive: true,
@@ -324,12 +354,12 @@ function renderChart() {
         legend: { labels: { color: foreground } },
       },
       scales: {
-        x: { ticks: { color: foreground }, grid: { color: grid } },
-        y: { ticks: { color: foreground }, grid: { color: grid } },
+        x: { stacked: spec.stacked ?? false, ticks: { color: foreground }, grid: { color: grid } },
+        y: { stacked: spec.stacked ?? false, ticks: { color: foreground }, grid: { color: grid } },
       },
     },
   });
-  chartTitle.textContent = `${chartColumnLabel(headers, chartColumns.x)} × ${chartColumns.y.map((column) => chartColumnLabel(headers, column)).join(", ")}`;
+  chartTitle.textContent = `${spec.label}: ${chartColumnLabel(headers, chartColumns.x)} × ${chartColumns.y.map((column) => chartColumnLabel(headers, column)).join(", ")}`;
   content.hidden = true;
   chartPanel.hidden = false;
 }

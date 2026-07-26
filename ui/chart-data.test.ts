@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { chartColumnLabel, numericColumnIndexes, parseChartNumber } from "./chart-data";
+import {
+  chartColumnLabel,
+  chartPointRadius,
+  CHART_TYPES,
+  isChartTypeId,
+  numericColumnIndexes,
+  parseChartNumber,
+} from "./chart-data";
 
 describe("CSV chart data", () => {
   it("parses grouped and signed numbers", () => {
@@ -18,5 +25,18 @@ describe("CSV chart data", () => {
 
   it("supplies a label for an empty header", () => {
     expect(chartColumnLabel(["日付", ""], 1)).toBe("列 2");
+  });
+});
+
+describe("chart types", () => {
+  it("rejects unknown type ids", () => {
+    expect(isChartTypeId("bar-stacked")).toBe(true);
+    expect(isChartTypeId("pie")).toBe(false);
+  });
+
+  it("thins points on dense line charts but keeps them when only points are drawn", () => {
+    expect(chartPointRadius(CHART_TYPES["line-point"], 100)).toBe(2);
+    expect(chartPointRadius(CHART_TYPES["line-point"], 1000)).toBe(0);
+    expect(chartPointRadius(CHART_TYPES.scatter, 1000)).toBe(3);
   });
 });

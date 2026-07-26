@@ -110,8 +110,20 @@ export const listArchiveEntries = (relPath: string) =>
 export const listFolderEntries = (relDir: string) =>
   invoke<FolderEntry[]>("list_folder_entries", { relDir });
 
-export const workspaceSearch = (pat: string, matchCase: boolean) =>
-  invoke<WorkspaceSearchResult[]>("workspace_search", { pat, matchCase });
+// フォルダ検索の打ち切り条件。既定値は ui/workspace-search-options.ts が持つ
+export interface WorkspaceSearchOptions {
+  match_case: boolean;
+  max_file_bytes: number;
+  max_files: number;
+  max_results: number;
+  exclude_dirs: string[];
+  search_file_names: boolean;
+  search_contents: boolean;
+  workers: number; // 0 = 自動
+}
+
+export const workspaceSearch = (pat: string, options: WorkspaceSearchOptions) =>
+  invoke<WorkspaceSearchResult[]>("workspace_search", { pat, options });
 
 // フォルダ内に空の新規ファイルを作り、その場で開く (dir はフォルダルートからの相対パス)
 export const createNote = (dir: string | null, name: string) =>
