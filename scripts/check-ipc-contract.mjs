@@ -7,7 +7,7 @@ const backend = read("src-tauri/src/main.rs");
 const coreDoc = read("core/src/doc.rs");
 const fileio = read("core/src/fileio.rs");
 const frontend = read("ui/api.ts");
-const mainTs = read("ui/main.ts");
+const statusbarTs = read("ui/statusbar.ts");
 const sidebarTs = read("ui/sidebar.ts");
 const folder = read("core/src/folder.rs");
 const workspaceSearch = read("core/src/workspace_search.rs");
@@ -99,7 +99,7 @@ function product(label, expression) {
   return factors.reduce((total, factor) => total * factor, 1);
 }
 const mmapThreshold = product("MMAP_THRESHOLD", fileio.match(/MMAP_THRESHOLD: u64 = ([^;]+);/)?.[1]);
-const hugeThreshold = product("HUGE_FILE_THRESHOLD", mainTs.match(/HUGE_FILE_THRESHOLD = ([^;]+);/)?.[1]);
+const hugeThreshold = product("HUGE_FILE_THRESHOLD", statusbarTs.match(/HUGE_FILE_THRESHOLD = ([^;]+);/)?.[1]);
 if (mmapThreshold !== hugeThreshold) {
   fail(`huge file threshold; core=${mmapThreshold}, ui=${hugeThreshold}`);
 }

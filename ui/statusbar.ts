@@ -1,0 +1,178 @@
+import type { ReadEncoding } from "./api";
+import type { DocumentSession } from "./session";
+import { readEncodingOf } from "./session";
+import { formatByteSize, formatCursor, formatFontFamily, formatLineCount } from "./format";
+import { confirmMessage, promptFields } from "./prompt";
+
+// core の fileio::MMAP_THRESHOLD と一致させる (check:ipc が両者の一致を検証する)
+export const HUGE_FILE_THRESHOLD = 100 * 1024 * 1024;
+
+const THEMES = ["dark", "light"] as const;
+type Theme = (typeof THEMES)[number];
+const THEME_LABELS: Record<Theme, string> = { dark: "ダーク", light: "ライト" };
+
+const FONT_FAMILIES = [
+  "Consolas, \"MS Gothic\", monospace",
+  "Cascadia Mono, \"MS Gothic\", monospace",
+  "\"MS Gothic\", monospace",
+  "\"Yu Gothic UI\", sans-serif",
+  "Meiryo, sans-serif",
+  "\"BIZ UDPGothic\", sans-serif",
+];
+
+export interface StatusBarPorts {
+  onGoTo: (line: number) => void;
+  onFont: (family: string, size: number) => void;
+  onWrap: (on: boolean) => void;
+  onIndent: (size: number) => void;
+  // 再読込を受け入れたら true。false なら選択を元へ戻す (成否の判断は呼び出し側に残す)
+  onReadEncoding: (encoding: ReadEncoding) => Promise<boolean>;
+}
+
+// ステータスバー全体 (#statusbar) を1つの部品として閉じる。表示中の文書がどう
+// 見えているかだけを持ち、文書そのものの状態は持たない。
+export class StatusBar {
+  private currentLine = 1;
+  private lineCount = 1;
+  private wrap = false;
+  private fontFamily = "";
+  private fontSize = 0;
+  // change 後の select からは元の値が読めないため、直近に表示した値を控えておく
+  private shownReadEncoding: ReadEncoding = "utf8";
+
+  constructor(private host: HTMLElement, private ports: StatusBarPorts) {
+    this.pick("st-theme").addEventListener("click", () => {
+      const current = (document.documentElement.getAttribute("data-theme") as Theme) ?? "dark";
+      this.applyTheme(THEMES[(THEMES.indexOf(current) + 1) % THEMES.length]);
+    });
+    this.pick("st-font").addEventListener("click", () => void this.promptFont());
+    this.pick("st-font-size").addEventListener("click", () => void this.promptFontSize());
+    this.pick("st-wrap").addEventListener("click", () => {
+      this.wrap = !this.wrap;
+      this.pick("st-wrap").textContent = `折り返し: ${this.wrap ? "オン" : "オフ"}`;
+      this.ports.onWrap(this.wrap);
+    });
+    this.indentSelect.addEventListener("change", () => {
+      this.ports.onIndent(Number(this.indentSelect.value));
+    });
+    this.pick("st-pos").addEventListener("click", () => void this.promptGoTo());
+    this.pick("st-lines").addEventListener("click", () => void this.promptGoToLast());
+    this.sourceEncodingSelect.addEventListener("change", () => void this.requestReadEncoding());
+  }
+
+  private pick<T extends HTMLElement>(id: string): T {
+    return this.host.querySelector<T>(`#${id}`)!;
+  }
+
+  private get indentSelect() {
+    return this.pick<HTMLSelectElement>("st-indent");
+  }
+
+  private get sourceEncodingSelect() {
+    return this.pick<HTMLSelectElement>("st-source-enc");
+  }
+
+  // 保存済みの配色を復元する。未保存/未知の値はダーク扱い。
+  restoreTheme(saved: string | null) {
+    this.applyTheme((THEMES as readonly string[]).includes(saved ?? "") ? (saved as Theme) : "dark");
+  }
+
+  private applyTheme(theme: Theme) {
+    document.documentElement.setAttribute("data-theme", theme);
+    this.pick("st-theme").textContent = THEME_LABELS[theme];
+    localStorage.setItem("theme", theme);
+  }
+
+  // 選択肢に無いインデント幅は既定の8へ丸め、丸めた結果を返す
+  setIndent(size: number): number {
+    this.indentSelect.value = String([2, 4, 8].includes(size) ? size : 8);
+    return Number(this.indentSelect.value);
+  }
+
+  setFont(family: string, size: number) {
+    this.fontFamily = family;
+    this.fontSize = size;
+    this.pick("st-font").textContent = formatFontFamily(family);
+    this.pick("st-font-size").textContent = `${size}px`;
+  }
+
+  setCursor(line: number, col: number) {
+    this.currentLine = line;
+    this.pick("st-pos").textContent = formatCursor(line, col);
+  }
+
+  setLineCount(count: number) {
+    this.lineCount = count;
+    this.pick("st-lines").textContent = formatLineCount(count);
+  }
+
+  // 無題文書はバイト数を持たないため null で空表示にする
+  setByteSize(bytes: number | null) {
+    const size = this.pick("st-size");
+    size.textContent = bytes === null ? "" : formatByteSize(bytes);
+    size.classList.toggle("is-huge", bytes !== null && bytes >= HUGE_FILE_THRESHOLD);
+  }
+
+  setMode(label: string) {
+    this.pick("st-mode").textContent = label;
+  }
+
+  get mode(): string {
+    return this.pick("st-mode").textContent ?? "";
+  }
+
+  // ステータスバーが示すのは読込時の形式だけ。保存形式は別名保存ダイアログが持つ。
+  setFormat(session: DocumentSession) {
+    const source = this.sourceEncodingSelect;
+    this.shownReadEncoding = readEncodingOf(session.sourceEncoding);
+    source.value = this.shownReadEncoding;
+    source.disabled = session.readOnly || !session.savePath;
+    source.title = session.sourceEncoding === "utf8bom" ? "読込文字コード: UTF-8 (BOMあり)" : "読込文字コード";
+    this.pick("st-eol").textContent = session.sourceEol.toUpperCase();
+  }
+
+  private async requestReadEncoding() {
+    const select = this.sourceEncodingSelect;
+    const requested = select.value as ReadEncoding;
+    if (requested === this.shownReadEncoding) return;
+    if (!(await this.ports.onReadEncoding(requested))) select.value = this.shownReadEncoding;
+  }
+
+  private async promptFont() {
+    const options = FONT_FAMILIES.map((value) => ({
+      label: value.replace(/,.*$/, "").replaceAll('"', ""),
+      value,
+    }));
+    if (!options.some((option) => option.value === this.fontFamily)) {
+      options.unshift({ label: formatFontFamily(this.fontFamily), value: this.fontFamily });
+    }
+    const result = await promptFields("フォント", [
+      { label: "フォント", value: this.fontFamily, options },
+    ]);
+    const family = result?.[0].trim();
+    if (family) this.ports.onFont(family, this.fontSize);
+  }
+
+  private async promptFontSize() {
+    const result = await promptFields("フォントサイズ", [
+      { label: "サイズ (8〜72px)", value: String(this.fontSize) },
+    ]);
+    const size = Number(result?.[0]);
+    if (!Number.isInteger(size) || size < 8 || size > 72) return;
+    this.ports.onFont(this.fontFamily, size);
+  }
+
+  private async promptGoTo() {
+    const result = await promptFields("指定行へ移動", [
+      { label: `行番号 (1〜${this.lineCount.toLocaleString("ja-JP")})`, value: String(this.currentLine) },
+    ]);
+    const line = Number(result?.[0]);
+    if (Number.isInteger(line) && line >= 1 && line <= this.lineCount) this.ports.onGoTo(line - 1);
+  }
+
+  private async promptGoToLast() {
+    if (await confirmMessage("最後の行へ移動", "最後の行に移動する", "移動")) {
+      this.ports.onGoTo(this.lineCount - 1);
+    }
+  }
+}
