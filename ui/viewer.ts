@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import Chart from "chart.js/auto";
 import MarkdownIt from "markdown-it";
 import Papa from "papaparse";
-import { takeViewerPayload, type ViewerFormat, type ViewerPayload } from "./api";
+import { takeViewerPayload, type ViewerFormat, type ViewerPayload, type ViewerSelection } from "./api";
 import { DEFAULT_EDITOR_CONFIG } from "./editor-config";
 import { VIEWER_FORMAT_LABELS, formatTitleBar } from "./format";
 import { chartColumnLabel, numericColumnIndexes, parseChartNumber } from "./chart-data";
@@ -25,9 +25,13 @@ const contextMenu = document.getElementById("viewer-context-menu")!;
 const chartPanel = document.getElementById("chart-panel")!;
 const chartTitle = document.getElementById("chart-title")!;
 const chartCanvas = document.getElementById("chart-canvas") as HTMLCanvasElement;
+const delimiterControl = document.getElementById("viewer-delimiter")!;
+const delimiterInput = document.getElementById("viewer-delimiter-input") as HTMLInputElement;
 
 let currentFormat: ViewerFormat = "csv";
 let currentRows: string[][] = [];
+let currentText = "";
+let currentSelection: ViewerSelection | null = null;
 let chart: Chart<"line", (number | null)[], string> | null = null;
 let chartColumns: { x: number; y: number[]; reverseX: boolean } | null = null;
 
@@ -61,9 +65,9 @@ function bindWindowControls() {
   void syncMaxIcon();
 }
 
-function renderTable(text: string, format: "csv" | "tsv") {
+function renderTable(text: string) {
   const parsed = Papa.parse<string[]>(text, {
-    delimiter: format === "csv" ? "," : "\t",
+    delimiter: delimiterInput.value,
     skipEmptyLines: false,
   });
   currentRows = parsed.data;
@@ -74,17 +78,17 @@ function renderTable(text: string, format: "csv" | "tsv") {
 
   currentRows.slice(0, MAX_TABLE_ROWS).forEach((row, rowIndex) => {
     const tr = document.createElement("tr");
-    if (format === "csv") {
-      const lineNumber = document.createElement(rowIndex === 0 ? "th" : "td");
-      lineNumber.className = "viewer-line-number";
-      lineNumber.textContent = String(rowIndex + 1);
-      tr.appendChild(lineNumber);
-    }
-    row.slice(0, MAX_TABLE_COLUMNS).forEach((value) => {
+    const lineNumber = document.createElement(rowIndex === 0 ? "th" : "td");
+    lineNumber.className = "viewer-line-number";
+    lineNumber.textContent = String(rowIndex + 1);
+    tr.appendChild(lineNumber);
+    row.slice(0, MAX_TABLE_COLUMNS).forEach((value, columnIndex) => {
       const cell = document.createElement(rowIndex === 0 ? "th" : "td");
       cell.textContent = value;
+      cell.classList.toggle("viewer-source-selected", csvCellSelected(text, rowIndex, columnIndex));
       tr.appendChild(cell);
     });
+    tr.classList.toggle("viewer-source-selected", csvRowSelected(rowIndex));
     fragment.appendChild(tr);
   });
   body.appendChild(fragment);
@@ -106,7 +110,19 @@ function renderMarkdown(text: string) {
   closeChart();
   const article = document.createElement("article");
   const markdown = new MarkdownIt({ html: false, linkify: true, typographer: false });
-  article.innerHTML = markdown.render(text);
+  const tokens = markdown.parse(text, {});
+  tokens.forEach((token) => {
+    if (token.nesting === 1 && token.map) {
+      token.attrSet("data-source-start", String(token.map[0]));
+      token.attrSet("data-source-end", String(token.map[1]));
+    }
+  });
+  article.innerHTML = markdown.renderer.render(tokens, markdown.options, {});
+  article.querySelectorAll<HTMLElement>("[data-source-start]").forEach((element) => {
+    const start = Number(element.dataset.sourceStart);
+    const end = Number(element.dataset.sourceEnd);
+    element.classList.toggle("viewer-source-selected", markdownBlockSelected(start, end));
+  });
   article.querySelectorAll("a").forEach((link) => {
     link.target = "_blank";
     link.rel = "noreferrer";
@@ -119,10 +135,52 @@ function renderMarkdown(text: string) {
 
 function renderPayload(payload: ViewerPayload) {
   currentFormat = payload.format;
+  currentText = payload.text;
+  currentSelection = payload.selection;
   title.textContent = formatTitleBar(VIEWER_FORMAT_LABELS[payload.format]);
   void win.setTitle(title.textContent);
+  delimiterControl.hidden = payload.format !== "csv";
   if (payload.format === "markdown") renderMarkdown(payload.text);
-  else renderTable(payload.text, payload.format);
+  else renderTable(payload.text);
+}
+
+function csvRowSelected(rowIndex: number) {
+  if (!currentSelection) return false;
+  const { start, end } = currentSelection;
+  if (start.line === end.line && start.col === end.col) return rowIndex === start.line;
+  return rowIndex >= start.line && (rowIndex < end.line || (rowIndex === end.line && end.col > 0));
+}
+
+function csvCellSelected(text: string, rowIndex: number, columnIndex: number) {
+  if (!currentSelection || !csvRowSelected(rowIndex)) return false;
+  const { start, end } = currentSelection;
+  if (start.line !== end.line || start.line !== rowIndex) return true;
+  return columnIndex === csvColumnAt(text.split("\n")[rowIndex] ?? "", start.col);
+}
+
+function csvColumnAt(line: string, column: number) {
+  const delimiter = delimiterInput.value;
+  let cell = 0;
+  let quoted = false;
+  for (let index = 0; index < line.length && index < column; index++) {
+    if (line[index] === '"') {
+      if (quoted && line[index + 1] === '"') index++;
+      else quoted = !quoted;
+    } else if (!quoted && line.startsWith(delimiter, index)) {
+      cell++;
+      index += delimiter.length - 1;
+    }
+  }
+  return cell;
+}
+
+function markdownBlockSelected(start: number, end: number) {
+  if (!currentSelection) return false;
+  const { start: selectionStart, end: selectionEnd } = currentSelection;
+  const lastSelectedLine = selectionStart.line === selectionEnd.line && selectionStart.col === selectionEnd.col
+    ? selectionEnd.line
+    : selectionEnd.line - Number(selectionEnd.col === 0);
+  return start <= lastSelectedLine && end > selectionStart.line;
 }
 
 function showContextMenu(x: number, y: number) {
@@ -294,6 +352,10 @@ async function start() {
   bindWindowControls();
   themeButton.addEventListener("click", () => {
     applyTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light");
+  });
+  delimiterInput.addEventListener("input", () => {
+    if (!delimiterInput.value || currentFormat !== "csv") return;
+    renderTable(currentText);
   });
   document.getElementById("chart-close")!.addEventListener("click", closeChart);
   content.addEventListener("contextmenu", (event) => {

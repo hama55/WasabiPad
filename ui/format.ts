@@ -8,7 +8,6 @@ export const APP_NAME = "WasabiPad";
 // ビュー形式の表示名。エディタの右クリックメニューとビュー側タイトルで共有する。
 export const VIEWER_FORMAT_LABELS: Record<ViewerFormat, string> = {
   csv: "CSVビュー",
-  tsv: "TSVビュー",
   markdown: "Markdownビュー",
 };
 

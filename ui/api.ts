@@ -215,14 +215,19 @@ export const documentClient: DocumentClient = {
   replaceAllCancel,
 };
 
-export type ViewerFormat = "csv" | "tsv" | "markdown";
+export type ViewerFormat = "csv" | "markdown";
+export interface ViewerSelection {
+  start: Pos;
+  end: Pos;
+}
 export interface ViewerPayload {
   format: ViewerFormat;
   text: string;
+  selection: ViewerSelection | null;
 }
-export const openViewer = (format: ViewerFormat, text: string) =>
-  invoke<string>("open_viewer", { format, text });
+export const openViewer = (format: ViewerFormat, text: string, selection: ViewerSelection | null) =>
+  invoke<string>("open_viewer", { format, text, selection });
 export const takeViewerPayload = (label: string) =>
   invoke<ViewerPayload>("take_viewer_payload", { label });
-export const updateViewer = (label: string, text: string) =>
-  invoke<void>("update_viewer", { label, text });
+export const updateViewer = (label: string, text: string, selection: ViewerSelection | null) =>
+  invoke<void>("update_viewer", { label, text, selection });

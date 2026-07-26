@@ -157,9 +157,9 @@ const editor = new VirtualEditor(
   },
   hasExternalFile: () => session.savePath !== null,
   openExternally: () => { if (session.savePath) void openInOtherApp(session.savePath); },
-  openViewer: async (format, text) => {
+  openViewer: async (format, text, selection) => {
     try {
-      return await api.openViewer(format, text);
+      return await api.openViewer(format, text, selection);
     } catch (error) {
       await showError("ビューを開けませんでした", error);
       return null;

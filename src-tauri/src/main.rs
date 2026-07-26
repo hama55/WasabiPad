@@ -24,8 +24,6 @@ use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 enum ViewerFormat {
     #[serde(rename = "csv")]
     Csv,
-    #[serde(rename = "tsv")]
-    Tsv,
     #[serde(rename = "markdown")]
     Markdown,
 }
@@ -34,6 +32,13 @@ enum ViewerFormat {
 struct ViewerPayload {
     format: ViewerFormat,
     text: String,
+    selection: Option<ViewerSelection>,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct ViewerSelection {
+    start: PosC,
+    end: PosC,
 }
 
 struct ViewerStore(Mutex<HashMap<String, ViewerPayload>>);
@@ -297,6 +302,7 @@ fn launch_new(path: Option<String>) -> Result<(), String> {
 async fn open_viewer(
     format: ViewerFormat,
     text: String,
+    selection: Option<ViewerSelection>,
     app: AppHandle,
     state: tauri::State<'_, ViewerStore>,
 ) -> Result<String, String> {
@@ -307,7 +313,7 @@ async fn open_viewer(
         .0
         .lock()
         .map_err(|_| "ビューの準備に失敗しました".to_string())?
-        .insert(label.clone(), ViewerPayload { format, text });
+        .insert(label.clone(), ViewerPayload { format, text, selection });
 
     let window = match WebviewWindowBuilder::new(&app, &label, WebviewUrl::App("viewer.html".into()))
         .title(title)
@@ -353,6 +359,7 @@ fn take_viewer_payload(
 fn update_viewer(
     label: String,
     text: String,
+    selection: Option<ViewerSelection>,
     app: AppHandle,
     state: tauri::State<'_, ViewerStore>,
 ) -> Result<(), String> {
@@ -365,6 +372,7 @@ fn update_viewer(
             .get_mut(&label)
             .ok_or_else(|| "ビューが閉じられています".to_string())?;
         payload.text = text;
+        payload.selection = selection;
         payload.clone()
     };
     app.get_webview_window(&label)

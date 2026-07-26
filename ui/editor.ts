@@ -34,8 +34,8 @@ export interface EditorPorts {
   onFontChange: (fontFamily: string, fontSize: number) => void;
   hasExternalFile: () => boolean;
   openExternally: () => void;
-  openViewer: (format: api.ViewerFormat, text: string) => Promise<string | null>;
-  updateViewer: (label: string, text: string) => Promise<void>;
+  openViewer: (format: api.ViewerFormat, text: string, selection: api.ViewerSelection | null) => Promise<string | null>;
+  updateViewer: (label: string, text: string, selection: api.ViewerSelection | null) => Promise<void>;
 }
 
 // 全ファイル共通の仮想スクロールエディタ。文書は backend(mmap/overlay)が所有し、
@@ -595,6 +595,8 @@ export class VirtualEditor {
 
   // ---- カーソル移動 ----
   private notifyCursor() {
+    const [start, end] = this.sel.norm();
+    this.liveViewers.setSelection({ start, end });
     this.onCursor(this.sel.caret.line + 1, this.sel.caret.col + 1);
   }
 
@@ -977,9 +979,11 @@ export class VirtualEditor {
 
 
   private async openTextViewer(format: api.ViewerFormat) {
-    if (!this.sel.hasSel()) return this.liveViewers.open(format, null);
-    const [start, end] = this.sel.norm();
-    return this.liveViewers.open(format, { start: { ...start }, end: { ...end } });
+    const [selectionStart, selectionEnd] = this.sel.norm();
+    const selection = { start: selectionStart, end: selectionEnd };
+    if (!this.sel.hasSel()) return this.liveViewers.open(format, null, selection);
+    const { start, end } = selection;
+    return this.liveViewers.open(format, { start: { ...start }, end: { ...end } }, selection);
   }
 
   private moveSelection(target: Pos) {

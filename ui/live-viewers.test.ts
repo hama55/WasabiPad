@@ -1,0 +1,33 @@
+// @vitest-environment jsdom
+import { describe, expect, it, vi } from "vitest";
+import { LiveViewers } from "./live-viewers";
+
+describe("LiveViewers", () => {
+  it("sends the editor selection relative to a selected viewer range", async () => {
+    vi.useFakeTimers();
+    const openViewer = vi.fn(async () => "viewer-1");
+    const updateViewer = vi.fn(async () => {});
+    const viewers = new LiveViewers({
+      openViewer,
+      updateViewer,
+      wholeRange: async () => ({ start: { line: 0, col: 0 }, end: { line: 9, col: 0 } }),
+      textInRange: async () => "first\nsecond",
+    });
+
+    await viewers.open(
+      "csv",
+      { start: { line: 2, col: 3 }, end: { line: 3, col: 6 } },
+      { start: { line: 2, col: 5 }, end: { line: 2, col: 5 } },
+    );
+    expect(openViewer).toHaveBeenCalledWith("csv", "first\nsecond", {
+      start: { line: 0, col: 2 }, end: { line: 0, col: 2 },
+    });
+
+    viewers.setSelection({ start: { line: 3, col: 1 }, end: { line: 3, col: 1 } });
+    await vi.advanceTimersByTimeAsync(120);
+    expect(updateViewer).toHaveBeenCalledWith("viewer-1", "first\nsecond", {
+      start: { line: 1, col: 1 }, end: { line: 1, col: 1 },
+    });
+    vi.useRealTimers();
+  });
+});
