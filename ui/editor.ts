@@ -43,6 +43,8 @@ export interface EditorPorts {
 export class VirtualEditor {
   private gutter: HTMLElement;
   private scroll: HTMLElement;
+  private hScroll: HTMLElement;
+  private hScrollSpacer: HTMLElement;
   private inner: HTMLElement;
   private linesLayer: HTMLElement; // 行/選択ハイライトの描画専用コンテナ
   private caretEl: HTMLElement;
@@ -131,6 +133,8 @@ export class VirtualEditor {
 
     this.gutter = el("div", "ve-gutter");
     this.scroll = el("div", "ve-scroll");
+    this.hScroll = el("div", "ve-hscroll");
+    this.hScrollSpacer = el("div", "ve-hscroll-spacer");
     this.inner = el("div", "ve-inner");
     this.linesLayer = el("div", "ve-lines");
     this.caretEl = el("div", "ve-caret");
@@ -147,8 +151,10 @@ export class VirtualEditor {
     this.inner.appendChild(this.caretEl);
     this.inner.appendChild(this.input);
     this.scroll.appendChild(this.inner);
+    this.hScroll.appendChild(this.hScrollSpacer);
     host.appendChild(this.gutter);
     host.appendChild(this.scroll);
+    host.appendChild(this.hScroll);
 
     this.findBar = new FindBar(
       host,
@@ -158,7 +164,13 @@ export class VirtualEditor {
       () => { this.findGen++; this.lastFindMatch = null; this.focus(); }
     );
 
-    this.scroll.addEventListener("scroll", () => this.onScroll());
+    this.scroll.addEventListener("scroll", () => {
+      this.hScroll.scrollLeft = this.scroll.scrollLeft;
+      this.onScroll();
+    });
+    this.hScroll.addEventListener("scroll", () => {
+      this.scroll.scrollLeft = this.hScroll.scrollLeft;
+    });
     this.scroll.addEventListener("wheel", (e) => this.onWheel(e), { passive: false });
     this.scroll.addEventListener("mousedown", (e) => this.onMouseDown(e));
     this.scroll.addEventListener("contextmenu", (e) => this.onContextMenu(e));
@@ -212,6 +224,7 @@ export class VirtualEditor {
     this.secondaryCaretEls.forEach((caret) => caret.remove());
     this.secondaryCaretEls = [];
     this.scroll.scrollLeft = 0;
+    this.hScroll.scrollLeft = 0;
     this.topLineF = 0;
     this.updateMetrics();
     this.setTopLine(0);
@@ -238,10 +251,15 @@ export class VirtualEditor {
     this.focus();
   }
 
-  selectRange(line: number, startCol: number, endCol: number) {
+  async selectRange(line: number, startCol: number, endCol: number) {
     const targetLine = Math.max(0, Math.min(this.lineCount - 1, line));
+    await this.lineCache.line(targetLine);
     this.sel.anchor = { line: targetLine, col: Math.max(0, startCol) };
     this.moveTo({ line: targetLine, col: Math.max(startCol, endCol) }, true);
+    // 文書切替直後は初回moveTo時に対象行DOMがまだ無い。実本文の描画後に
+    // 再配置し、フォルダ検索結果も縦横とも表示領域内へ入れる。
+    this.ensureVisible();
+    this.render();
     this.focus();
   }
 
@@ -252,7 +270,10 @@ export class VirtualEditor {
     this.wrap = on;
     this.wrapIntraLinePx = 0;
     this.scroll.classList.toggle("wrap", on);
+    this.scroll.parentElement!.classList.toggle("hscroll-hidden", on);
+    this.hScroll.hidden = on;
     this.scroll.scrollLeft = 0;
+    this.hScroll.scrollLeft = 0;
     this.maxWidth = 0;
     this.updateMetrics();
     this.setTopLine(wasAtBottom ? this.maxTopLine() : topLine);
@@ -400,6 +421,8 @@ export class VirtualEditor {
     const wholeLineSelectEnd =
       this.sel.anchor.col === 0 && this.sel.caret.col === 0 && this.sel.caret.line > this.sel.anchor.line;
     const curLine = wholeLineSelectEnd ? this.sel.caret.line - 1 : this.sel.caret.line;
+    const caretLines = new Set([curLine, ...this.sel.secondary.map((caret) => caret.line)]);
+    const selectedLines = this.selectedLineRange();
     const frag = document.createDocumentFragment();
     for (let i = first; i < last; i++) {
       const text = this.lineCache.peek(i);
@@ -423,7 +446,8 @@ export class VirtualEditor {
         separator.textContent = group;
         g.appendChild(separator);
       }
-      if (i === curLine) g.classList.add("cur");
+      g.classList.toggle("selected-line", selectedLines !== null && i >= selectedLines.first && i <= selectedLines.last);
+      g.classList.toggle("caret-line", caretLines.has(i));
       gfrag.appendChild(g);
     }
     this.gutter.replaceChildren(gfrag);
@@ -472,6 +496,7 @@ export class VirtualEditor {
   private updateWidth() {
     if (this.wrap) {
       this.inner.style.width = "100%";
+      this.hScrollSpacer.style.width = "100%";
       return;
     }
     let w = 0;
@@ -480,6 +505,8 @@ export class VirtualEditor {
     }
     this.maxWidth = Math.max(this.maxWidth, w + 40);
     this.inner.style.width = `${this.maxWidth}px`;
+    const viewportDifference = this.hScroll.clientWidth - this.scroll.clientWidth;
+    this.hScrollSpacer.style.width = `${Math.max(0, this.maxWidth + viewportDifference)}px`;
   }
 
   private updateGutterWidth() {
@@ -599,6 +626,13 @@ export class VirtualEditor {
     }
   }
 
+  private selectedLineRange(): { first: number; last: number } | null {
+    if (!this.sel.hasSel()) return null;
+    const [start, end] = this.sel.norm();
+    const last = end.line - Number(end.col === 0);
+    return last < start.line ? null : { first: start.line, last };
+  }
+
   // ---- カーソル移動 ----
   private notifyCursor() {
     const [start, end] = this.sel.norm();
@@ -699,9 +733,14 @@ export class VirtualEditor {
       const x = this.colToX(lineEl, s, this.sel.caret.col);
       const sl = this.scroll.scrollLeft;
       const w = this.scroll.clientWidth;
-      if (x < sl + this.paddingLeft) this.scroll.scrollLeft = Math.max(0, x - this.paddingLeft);
-      else if (x > sl + w - 20) this.scroll.scrollLeft = x - w + 20;
+      if (x < sl + this.paddingLeft) this.setHorizontalScroll(Math.max(0, x - this.paddingLeft));
+      else if (x > sl + w - 20) this.setHorizontalScroll(x - w + 20);
     }
+  }
+
+  private setHorizontalScroll(left: number) {
+    this.scroll.scrollLeft = left;
+    this.hScroll.scrollLeft = this.scroll.scrollLeft;
   }
 
 

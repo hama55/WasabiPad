@@ -47,4 +47,21 @@ describe("LineCache", () => {
     expect(await cache.textInRange({ line: 0, col: 2 }, { line: 2, col: 2 })).toBe("cd\nefgh\nij");
     expect(await cache.textInRange({ line: 1, col: 1 }, { line: 1, col: 3 })).toBe("fg");
   });
+
+  it("文書切替前の遅い取得結果を新しいキャッシュへ混入させない", async () => {
+    const doc = fakeDocument();
+    let resolveOld!: (lines: string[]) => void;
+    const oldLines = new Promise<string[]>((resolve) => { resolveOld = resolve; });
+    let call = 0;
+    doc.client.lines = async () => call++ === 0 ? oldLines : ["new"];
+    const cache = new LineCache(doc.client);
+
+    const oldFetch = cache.fetch(0);
+    cache.clear();
+    await cache.fetch(0);
+    resolveOld(["old"]);
+    await oldFetch;
+
+    expect(cache.peek(0)).toBe("new");
+  });
 });

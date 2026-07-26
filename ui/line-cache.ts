@@ -8,7 +8,8 @@ const CACHE_MAX = 64;
 
 export class LineCache {
   private chunks = new Map<number, string[]>();
-  private pending = new Set<number>();
+  private pending = new Map<number, number>();
+  private generation = 0;
 
   constructor(private doc: DocumentClient) {}
 
@@ -17,6 +18,7 @@ export class LineCache {
   }
 
   clear() {
+    this.generation++;
     this.chunks.clear();
     this.pending.clear();
   }
@@ -33,16 +35,19 @@ export class LineCache {
 
   async fetch(chunk: number): Promise<void> {
     if (this.chunks.has(chunk) || this.pending.has(chunk)) return;
-    this.pending.add(chunk);
+    const generation = this.generation;
+    this.pending.set(chunk, generation);
     try {
-      this.chunks.set(chunk, await this.doc.lines(chunk * CHUNK, CHUNK));
+      const lines = await this.doc.lines(chunk * CHUNK, CHUNK);
+      if (generation !== this.generation) return;
+      this.chunks.set(chunk, lines);
       while (this.chunks.size > CACHE_MAX) {
         const oldest = this.chunks.keys().next().value!;
         if (oldest === chunk) break;
         this.chunks.delete(oldest);
       }
     } finally {
-      this.pending.delete(chunk);
+      if (this.pending.get(chunk) === generation) this.pending.delete(chunk);
     }
   }
 

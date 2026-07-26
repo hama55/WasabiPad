@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fakeDocument, installDomStubs, settle } from "./test-doubles";
 import { VirtualEditor, type EditorPorts } from "./editor";
 
@@ -85,5 +85,55 @@ describe("VirtualEditor", () => {
     scroll.dispatchEvent(new Event("scroll"));
     input.dispatchEvent(new CompositionEvent("compositionstart"));
     expect(input.style.top).toBe("200px");
+  });
+
+  it("横スクロールバーを本文から分離して双方向に同期する", async () => {
+    const { editor, host } = mount("wide line");
+    editor.open(1, false);
+    await settle();
+    const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
+    const hScroll = host.querySelector<HTMLElement>(".ve-hscroll")!;
+
+    hScroll.scrollLeft = 80;
+    hScroll.dispatchEvent(new Event("scroll"));
+    expect(scroll.scrollLeft).toBe(80);
+
+    scroll.scrollLeft = 25;
+    scroll.dispatchEvent(new Event("scroll"));
+    expect(hScroll.scrollLeft).toBe(25);
+
+    editor.setWrap(true);
+    expect(hScroll.hidden).toBe(true);
+    expect(host.classList.contains("hscroll-hidden")).toBe(true);
+  });
+
+  it("文書切替直後の範囲選択を読み込み後に横方向へ表示する", async () => {
+    const rect = vi.spyOn(Range.prototype, "getBoundingClientRect").mockImplementation(function (this: Range) {
+      return {
+        x: 0, y: 0, top: 0, left: 0, right: this.endOffset * 10, bottom: 20,
+        width: this.endOffset * 10, height: 20, toJSON: () => ({}),
+      } as DOMRect;
+    });
+    const { editor, host } = mount("x".repeat(50));
+    const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
+    const hScroll = host.querySelector<HTMLElement>(".ve-hscroll")!;
+    Object.defineProperty(scroll, "clientWidth", { configurable: true, value: 100 });
+
+    editor.open(1, false);
+    await editor.selectRange(0, 20, 30);
+
+    expect(scroll.scrollLeft).toBeGreaterThan(0);
+    expect(hScroll.scrollLeft).toBe(scroll.scrollLeft);
+    rect.mockRestore();
+  });
+
+  it("キャレット行と選択行を行番号の背景だけで強調する", async () => {
+    const { editor, host } = mount("first\nsecond");
+    editor.open(2, false);
+    await editor.selectRange(0, 0, 5);
+
+    expect(host.querySelector(".ve-gnum.selected-line.caret-line")).not.toBeNull();
+    expect(host.querySelector(".ve-line.selected-line, .ve-line.caret-line")).toBeNull();
+    expect(host.querySelector(".ve-line-highlight")).toBeNull();
   });
 });

@@ -243,7 +243,7 @@ const sidebar = new Sidebar(sidebarEl, {
     const info = await api.selectEntry(result.rel_path);
     applyDocInfo(info);
     if (result.is_filename) editor.goTo(result.line, result.col);
-    else editor.selectRange(result.line, result.col, result.col + [...pattern].length);
+    else await editor.selectRange(result.line, result.col, result.col + [...pattern].length);
   },
 });
 let folderRefreshRunning = false;

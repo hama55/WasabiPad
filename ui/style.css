@@ -189,22 +189,36 @@ body {
 }
 #external-banner button#external-ignore { background: none; color: var(--fg); border: 1px solid var(--border-strong); }
 .ve-gutter {
-  position: absolute; left: 0; top: 0; bottom: 0; width: var(--gutter-w);
+  position: absolute; left: 0; top: 0; bottom: 12px; width: var(--gutter-w);
   overflow: hidden; background: var(--bg-editor);
   z-index: 2; border-right: 1px solid var(--border-strong);
 }
 .ve-gnum {
-  position: absolute; right: 12px; height: var(--line-h);
+  position: absolute; left: 0; right: 0; height: var(--line-h); padding-right: 12px;
   line-height: var(--line-h); font-size: var(--ve-font);
   font-family: var(--ve-font-family); color: var(--fg-dim);
-  text-align: right; user-select: none;
+  text-align: right; user-select: none; box-sizing: border-box;
 }
 .ve-gnum-separator { margin-left: 2px; }
-.ve-gnum.cur { color: var(--fg); }
+.ve-gnum.selected-line {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.ve-gnum.caret-line {
+  background: color-mix(in srgb, var(--accent) 34%, transparent);
+}
 .ve-scroll {
-  position: absolute; left: var(--gutter-w); right: 0; top: 0; bottom: 0;
+  position: absolute; left: var(--gutter-w); right: 0; top: 0; bottom: 12px;
   overflow: auto; overflow-anchor: none; outline: none;
 }
+.ve-scroll::-webkit-scrollbar:horizontal { height: 0; }
+.ve-hscroll {
+  position: absolute; left: var(--gutter-w); right: 0; bottom: 0; height: 12px;
+  overflow-x: auto; overflow-y: hidden; background: var(--bg-editor);
+}
+.ve-hscroll-spacer { height: 1px; }
+.ve.hscroll-hidden .ve-gutter,
+.ve.hscroll-hidden .ve-scroll { bottom: 0; }
+.ve-hscroll[hidden] { display: none; }
 .ve-inner { position: relative; min-height: 100%; overflow: clip; }
 .ve-line {
   position: absolute; left: 0; height: var(--line-h);
