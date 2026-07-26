@@ -6,6 +6,7 @@ import { showMenu, type MenuItem } from "./menu";
 import { VIEWER_FORMAT_LABELS } from "./format";
 import { LineCache } from "./line-cache";
 import { LiveViewers } from "./live-viewers";
+import { lineNumberGroups } from "./line-number";
 import { Selection } from "./selection";
 import { ViewportMetrics } from "./viewport-metrics";
 import {
@@ -412,7 +413,13 @@ export class VirtualEditor {
     for (let i = first; i < last; i++) {
       const g = el("div", "ve-gnum");
       g.style.top = `${this.rowTop(i) - top}px`;
-      g.textContent = this.formatLineNumber(i + 1);
+      const groups = lineNumberGroups(i + 1);
+      g.append(document.createTextNode(groups[0]));
+      for (const group of groups.slice(1)) {
+        const separator = el("span", "ve-gnum-separator");
+        separator.textContent = group;
+        g.appendChild(separator);
+      }
       if (i === curLine) g.classList.add("cur");
       gfrag.appendChild(g);
     }
@@ -479,13 +486,10 @@ export class VirtualEditor {
     const context = canvas.getContext("2d");
     if (!context) return;
     context.font = style.font;
-    const numberWidth = context.measureText(this.formatLineNumber(this.lineCount)).width;
+    const groups = lineNumberGroups(this.lineCount);
+    const numberWidth = context.measureText(groups.join("")).width + (groups.length - 1) * 2;
     const w = Math.max(this.gutterWidth, Math.ceil(numberWidth + 24));
     this.scroll.parentElement!.style.setProperty("--gutter-w", `${w}px`);
-  }
-
-  private formatLineNumber(line: number) {
-    return String(line).replace(/\B(?=(\d{3})+(?!\d))/g, "\u200a");
   }
 
   // 指定行内の col(char) の x ピクセル (行左端padding基準)

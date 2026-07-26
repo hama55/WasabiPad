@@ -55,6 +55,12 @@ main { position: relative; flex: 1; min-height: 0; }
   position: sticky; top: 0; z-index: 1;
   background: var(--bg-side); color: var(--fg);
 }
+.viewer-grid .viewer-line-number {
+  position: sticky; left: 0; z-index: 2;
+  min-width: 44px; text-align: right; color: var(--fg-dim);
+  background: var(--bg-side);
+}
+.viewer-grid tr:nth-child(even) .viewer-line-number { background: var(--row-alt); }
 .viewer-grid tr:nth-child(even) td { background: var(--row-alt); }
 
 article { max-width: 900px; margin: 0 auto; padding: 24px 36px 64px; line-height: 1.65; }

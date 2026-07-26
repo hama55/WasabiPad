@@ -74,6 +74,12 @@ function renderTable(text: string, format: "csv" | "tsv") {
 
   currentRows.slice(0, MAX_TABLE_ROWS).forEach((row, rowIndex) => {
     const tr = document.createElement("tr");
+    if (format === "csv") {
+      const lineNumber = document.createElement(rowIndex === 0 ? "th" : "td");
+      lineNumber.className = "viewer-line-number";
+      lineNumber.textContent = String(rowIndex + 1);
+      tr.appendChild(lineNumber);
+    }
     row.slice(0, MAX_TABLE_COLUMNS).forEach((value) => {
       const cell = document.createElement(rowIndex === 0 ? "th" : "td");
       cell.textContent = value;

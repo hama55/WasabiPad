@@ -194,6 +194,7 @@ body {
   font-family: var(--ve-font-family); color: var(--fg-dim);
   text-align: right; user-select: none;
 }
+.ve-gnum-separator { margin-left: 2px; }
 .ve-gnum.cur { color: var(--fg); }
 .ve-scroll {
   position: absolute; left: var(--gutter-w); right: 0; top: 0; bottom: 0;
