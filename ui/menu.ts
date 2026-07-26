@@ -7,14 +7,9 @@ export interface MenuItem {
   action: (event?: MouseEvent) => void;
   sub?: MenuItem[];
   sep?: boolean; // trueならこの項目の前に区切り線
-  dragData?: string;
-  dropData?: string;
-  onDrop?: (source: string, target: string) => void;
+  favPath?: string; // お気に入りツリー上の位置。並べ替えD&Dの掴み手/落とし先になる
   onContextMenu?: (x: number, y: number) => void;
 }
-
-// お気に入り並べ替えの drag&drop 識別子 (menu.ts と favbar.ts で共有)
-export const FAVORITE_MIME = "application/x-wasabipad-favorite";
 
 const dd = () => document.getElementById("dropdown")!;
 
@@ -29,12 +24,9 @@ export function showMenu(x: number, y: number, items: MenuItem[]) {
     }
     const div = document.createElement("div");
     div.className = "dd-item";
-    if (item.dragData) {
-      div.draggable = true;
-      div.addEventListener("dragstart", (e) => {
-        e.dataTransfer?.setData(FAVORITE_MIME, item.dragData!);
-        if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
-      });
+    if (item.favPath) {
+      div.dataset.favPath = item.favPath;
+      div.dataset.favDrag = item.favPath;
     }
     const label = document.createElement("span");
     label.className = "dd-label";
@@ -86,31 +78,6 @@ export function showMenu(x: number, y: number, items: MenuItem[]) {
         e.preventDefault();
         e.stopPropagation();
         item.onContextMenu!(e.clientX, e.clientY);
-      });
-    }
-    if (item.dropData && item.onDrop) {
-      let openTimer: number | undefined;
-      div.addEventListener("dragover", (e) => {
-        e.preventDefault();
-        div.classList.add("dd-drop");
-        if (item.sub && openTimer === undefined) {
-          openTimer = window.setTimeout(() => {
-            const r = div.getBoundingClientRect();
-            showMenu(r.right, r.top, item.sub!);
-          }, 650);
-        }
-      });
-      div.addEventListener("dragleave", () => {
-        div.classList.remove("dd-drop");
-        window.clearTimeout(openTimer);
-        openTimer = undefined;
-      });
-      div.addEventListener("drop", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        window.clearTimeout(openTimer);
-        const source = e.dataTransfer?.getData(FAVORITE_MIME);
-        if (source) item.onDrop!(source, item.dropData!);
       });
     }
     el.appendChild(div);

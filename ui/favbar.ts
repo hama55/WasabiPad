@@ -1,8 +1,15 @@
 import { BmNode, loadBookmarks, pathIsDirectory, saveBookmarks } from "./api";
-import { FAVORITE_MIME, hideMenu, showMenu, MenuItem } from "./menu";
+import { hideMenu, showMenu, MenuItem } from "./menu";
 import { promptFields } from "./prompt";
 
 type NodePath = number[];
+type DropKind = "before" | "inside" | "after";
+// お気に入りバーの空白部分に落とした場合はトップレベル末尾へ
+type DropSpot = { kind: "root" } | { kind: DropKind; path: NodePath; el: HTMLElement };
+
+const DRAG_THRESHOLD = 5;
+const GROUP_OPEN_DELAY = 650;
+const DROP_CLASSES = ["fav-drop", "fav-drop-before", "fav-drop-after"];
 
 // お気に入りの保存先。既定は backend のブックマークファイル。
 export interface BookmarkStore {
@@ -25,6 +32,16 @@ export interface FavBarPorts {
 
 export class FavBar {
   private nodes: BmNode[] = [];
+  private pending: { source: NodePath; x: number; y: number } | null = null;
+  private drag: {
+    source: NodePath;
+    ghost: HTMLElement;
+    spot: DropSpot | null;
+    openTimer?: number;
+    openedFor: string | null;
+  } | null = null;
+  private justDragged = false;
+  private menuRoot = document.getElementById("dropdown");
   private onOpen: (path: string, newWindow: boolean) => void;
   private currentFile: () => string | null;
   private onSetDefault: (path: string) => void;
@@ -45,14 +62,10 @@ export class FavBar {
         { label: "グループを追加...", action: () => this.addGroup() },
       ]);
     });
-    this.host.addEventListener("dragover", (e) => {
-      if (e.target === this.host && e.dataTransfer?.types.includes(FAVORITE_MIME)) e.preventDefault();
-    });
-    this.host.addEventListener("drop", (e) => {
-      if (e.target !== this.host) return;
-      const source = this.decodePath(e.dataTransfer?.getData(FAVORITE_MIME) ?? "");
-      if (source) { e.preventDefault(); void this.moveTo(source, null); }
-    });
+    // WebView2 のネイティブ drag-drop が HTML5 DnD を奪うため pointer で自作する
+    this.host.addEventListener("pointerdown", this.onPointerDown);
+    this.menuRoot?.addEventListener("pointerdown", this.onPointerDown);
+    window.addEventListener("click", this.swallowClickAfterDrag, true);
   }
 
   async init() {
@@ -68,44 +81,15 @@ export class FavBar {
 
   private button(node: BmNode, path: NodePath): HTMLButtonElement {
     const button = document.createElement("button");
-    button.draggable = true;
     button.dataset.favPath = path.join(".");
+    button.dataset.favDrag = path.join(".");
     button.append(this.icon(node.kind), document.createTextNode(node.name));
 
     if (node.kind === "group") {
-      let openTimer: number | undefined;
       button.append(document.createTextNode(" ▾"));
       button.addEventListener("click", (e) => {
         const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
         showMenu(rect.left, rect.bottom, this.groupItems(node.children, path));
-      });
-      button.addEventListener("dragover", (e) => {
-        e.preventDefault();
-        const position = this.dropPosition(button, e.clientX);
-        button.classList.toggle("fav-drop", position === "inside");
-        button.classList.toggle("fav-drop-before", position === "before");
-        button.classList.toggle("fav-drop-after", position === "after");
-        if (position === "inside" && openTimer === undefined) {
-          openTimer = window.setTimeout(() => {
-            const rect = button.getBoundingClientRect();
-            showMenu(rect.left, rect.bottom, this.groupItems(node.children, path));
-          }, 650);
-        }
-      });
-      button.addEventListener("dragleave", () => {
-        button.classList.remove("fav-drop", "fav-drop-before", "fav-drop-after");
-        window.clearTimeout(openTimer);
-        openTimer = undefined;
-      });
-      button.addEventListener("drop", async (e) => {
-        e.preventDefault();
-        window.clearTimeout(openTimer);
-        button.classList.remove("fav-drop", "fav-drop-before", "fav-drop-after");
-        const source = this.decodePath(e.dataTransfer?.getData(FAVORITE_MIME) ?? "");
-        if (!source) return;
-        const position = this.dropPosition(button, e.clientX);
-        if (position === "inside") await this.moveInto(source, path);
-        else await this.moveAdjacent(source, path, position === "after");
       });
     } else {
       button.title = node.path;
@@ -113,25 +97,8 @@ export class FavBar {
       button.addEventListener("auxclick", (e) => {
         if (e.button === 1) this.onOpen(node.path, true);
       });
-      button.addEventListener("dragover", (e) => {
-        e.preventDefault();
-        const after = this.dropPosition(button, e.clientX) === "after";
-        button.classList.toggle("fav-drop-before", !after);
-        button.classList.toggle("fav-drop-after", after);
-      });
-      button.addEventListener("dragleave", () => button.classList.remove("fav-drop-before", "fav-drop-after"));
-      button.addEventListener("drop", async (e) => {
-        e.preventDefault();
-        button.classList.remove("fav-drop-before", "fav-drop-after");
-        const source = this.decodePath(e.dataTransfer?.getData(FAVORITE_MIME) ?? "");
-        if (source) await this.moveAdjacent(source, path, this.dropPosition(button, e.clientX) === "after");
-      });
     }
 
-    button.addEventListener("dragstart", (e) => {
-      e.dataTransfer?.setData(FAVORITE_MIME, path.join("."));
-      if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
-    });
     button.addEventListener("contextmenu", (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -150,7 +117,7 @@ export class FavBar {
     return children.map((child, index) => {
       const path = [...parent, index];
       const common = {
-        dragData: path.join("."),
+        favPath: path.join("."),
         iconClass: `fav-icon fav-icon-${child.kind}`,
       };
       const onContextMenu = (x: number, y: number) => showMenu(x, y, this.contextItems(child, path));
@@ -161,15 +128,6 @@ export class FavBar {
             label: child.name,
             action: () => {},
             sub: this.groupItems(child.children, path),
-            dropData: path.join("."),
-            onDrop: (source: string, target: string) => {
-              const from = this.decodePath(source);
-              const to = this.decodePath(target);
-              if (from && to) {
-                hideMenu();
-                void this.moveInto(from, to);
-              }
-            },
           }
         : {
             ...common,
@@ -242,15 +200,127 @@ export class FavBar {
     return raw.split(".").map(Number);
   }
 
-  private async moveInto(source: NodePath, target: NodePath) {
-    await this.moveTo(source, target);
+  private onPointerDown = (e: PointerEvent) => {
+    this.justDragged = false;
+    if (e.button !== 0) return;
+    const origin = (e.target as HTMLElement | null)?.closest<HTMLElement>("[data-fav-drag]");
+    const source = origin ? this.decodePath(origin.dataset.favDrag ?? "") : null;
+    if (!source) return;
+    this.pending = { source, x: e.clientX, y: e.clientY };
+    // ウィンドウ外で指を離しても pointerup を受け取れるようにする
+    origin!.setPointerCapture?.(e.pointerId);
+    window.addEventListener("pointermove", this.onPointerMove);
+    window.addEventListener("pointerup", this.onPointerUp);
+    window.addEventListener("keydown", this.onDragKey);
+  };
+
+  private onPointerMove = (e: PointerEvent) => {
+    const pending = this.pending;
+    if (pending && Math.hypot(e.clientX - pending.x, e.clientY - pending.y) >= DRAG_THRESHOLD) {
+      this.pending = null;
+      this.drag = { source: pending.source, ghost: this.spawnGhost(pending.source), spot: null, openedFor: null };
+    }
+    if (this.drag) this.track(this.drag, e.clientX, e.clientY);
+  };
+
+  private onPointerUp = () => {
+    const drag = this.drag;
+    this.endDrag();
+    if (!drag) return;
+    this.justDragged = true;
+    hideMenu();
+    void this.applyDrop(drag.source, drag.spot);
+  };
+
+  private onDragKey = (e: KeyboardEvent) => {
+    if (e.key === "Escape") this.endDrag();
+  };
+
+  // ドラッグ直後のclickはD&Dの副産物 → 「開く」に化けさせない
+  private swallowClickAfterDrag = (e: MouseEvent) => {
+    const target = e.target as Node | null;
+    const mine = !!target && (this.host.contains(target) || !!this.menuRoot?.contains(target));
+    if (!this.justDragged || !mine) return;
+    this.justDragged = false;
+    e.stopPropagation();
+    e.preventDefault();
+  };
+
+  private track(drag: NonNullable<FavBar["drag"]>, x: number, y: number) {
+    drag.ghost.style.transform = `translate(${x + 12}px, ${y + 12}px)`;
+    drag.spot = this.resolveSpot(x, y);
+    this.paint(drag.spot);
+    this.scheduleGroupOpen(drag);
   }
 
-  private dropPosition(button: HTMLElement, clientX: number): "before" | "inside" | "after" {
-    const rect = button.getBoundingClientRect();
-    const ratio = (clientX - rect.left) / rect.width;
-    if (button.querySelector(".fav-icon-group") && ratio >= 0.3 && ratio <= 0.7) return "inside";
+  private resolveSpot(x: number, y: number): DropSpot | null {
+    const el = document.elementFromPoint(x, y) as HTMLElement | null;
+    const holder = el?.closest<HTMLElement>("[data-fav-path]") ?? null;
+    if (!holder) return el?.closest("#favbar") ? { kind: "root" } : null;
+    const path = this.decodePath(holder.dataset.favPath ?? "");
+    if (!path) return null;
+    return { kind: this.dropKind(holder, x, y, this.nodeAt(path)?.kind === "group"), path, el: holder };
+  }
+
+  // メニューは縦並び・バーは横並びなので挿入判定に使う軸を切り替える
+  private dropKind(el: HTMLElement, x: number, y: number, isGroup: boolean): DropKind {
+    const rect = el.getBoundingClientRect();
+    const ratio = el.closest("#dropdown") ? (y - rect.top) / rect.height : (x - rect.left) / rect.width;
+    if (isGroup && ratio >= 0.3 && ratio <= 0.7) return "inside";
     return ratio < 0.5 ? "before" : "after";
+  }
+
+  private paint(spot: DropSpot | null) {
+    for (const el of document.querySelectorAll(`.${DROP_CLASSES.join(", .")}`)) el.classList.remove(...DROP_CLASSES);
+    this.host.classList.toggle("fav-drop-root", spot?.kind === "root");
+    if (!spot || spot.kind === "root") return;
+    spot.el.classList.add(spot.kind === "inside" ? "fav-drop" : `fav-drop-${spot.kind}`);
+  }
+
+  // グループ上に留まったら中身を開き、入れ子への投入と並べ替えを可能にする
+  private scheduleGroupOpen(drag: NonNullable<FavBar["drag"]>) {
+    const spot = drag.spot;
+    const key = spot?.kind === "inside" ? spot.path.join(".") : null;
+    if (key === drag.openedFor) return;
+    window.clearTimeout(drag.openTimer);
+    drag.openedFor = key;
+    if (!key || spot?.kind !== "inside") return;
+    const children = this.childrenAt(spot.path);
+    if (!children) return;
+    drag.openTimer = window.setTimeout(() => {
+      const rect = spot.el.getBoundingClientRect();
+      const nested = !!spot.el.closest("#dropdown");
+      const x = nested ? rect.right : rect.left;
+      const y = nested ? rect.top : rect.bottom;
+      showMenu(x, y, this.groupItems(children, spot.path));
+    }, GROUP_OPEN_DELAY);
+  }
+
+  private spawnGhost(source: NodePath): HTMLElement {
+    const ghost = document.createElement("div");
+    ghost.className = "fav-ghost";
+    ghost.textContent = this.nodeAt(source)?.name ?? "";
+    document.body.appendChild(ghost);
+    return ghost;
+  }
+
+  private endDrag() {
+    window.removeEventListener("pointermove", this.onPointerMove);
+    window.removeEventListener("pointerup", this.onPointerUp);
+    window.removeEventListener("keydown", this.onDragKey);
+    this.pending = null;
+    if (!this.drag) return;
+    window.clearTimeout(this.drag.openTimer);
+    this.drag.ghost.remove();
+    this.drag = null;
+    this.paint(null);
+  }
+
+  private async applyDrop(source: NodePath, spot: DropSpot | null) {
+    if (!spot) return;
+    if (spot.kind === "root") await this.moveTo(source, null);
+    else if (spot.kind === "inside") await this.moveTo(source, spot.path);
+    else await this.moveAdjacent(source, spot.path, spot.kind === "after");
   }
 
   private async moveAdjacent(source: NodePath, target: NodePath, after: boolean) {

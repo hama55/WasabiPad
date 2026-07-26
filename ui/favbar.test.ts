@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { BmNode } from "./api";
 import { FavBar, type BookmarkStore } from "./favbar";
 
@@ -20,6 +20,18 @@ function mount(initial: BmNode[] = []) {
   return { favbar, saved, opened };
 }
 
+// jsdom は elementFromPoint / レイアウトを持たないので、落とし先とその矩形を差し替える
+function dragOnto(from: HTMLElement, to: HTMLElement, ratio: number) {
+  const rect = { left: 0, top: 0, width: 100, height: 20, right: 100, bottom: 20 };
+  to.getBoundingClientRect = () => ({ ...rect, x: 0, y: 0, toJSON: () => "" });
+  document.elementFromPoint = () => to;
+  const at = (type: string, x: number) =>
+    new MouseEvent(type, { bubbles: true, button: 0, clientX: x, clientY: rect.height * ratio });
+  from.dispatchEvent(at("pointerdown", 0));
+  window.dispatchEvent(at("pointermove", rect.width * ratio));
+  window.dispatchEvent(at("pointerup", rect.width * ratio));
+}
+
 describe("FavBar", () => {
   it("保存も読込みも注入されたストアだけを使う", async () => {
     const { favbar, saved } = mount([{ kind: "file", name: "memo.txt", path: "C:/memo.txt" }]);
@@ -37,6 +49,42 @@ describe("FavBar", () => {
     await favbar.init();
     await favbar.addCurrent();
     expect(saved[0]).toEqual([{ kind: "file", name: "memo.txt", path: "C:/work/memo.txt" }]);
+  });
+
+  it("ドラッグで並べ替えできる", async () => {
+    const { favbar, saved } = mount([
+      { kind: "file", name: "a", path: "C:/a.txt" },
+      { kind: "file", name: "b", path: "C:/b.txt" },
+    ]);
+    await favbar.init();
+    const [a, b] = document.querySelectorAll<HTMLButtonElement>("#favbar button");
+    dragOnto(a, b, 0.9);
+    await vi.waitFor(() => expect(saved).toHaveLength(1));
+    expect(saved[0].map((node) => node.name)).toEqual(["b", "a"]);
+  });
+
+  it("ドラッグ直後のクリックは開かない", async () => {
+    const { favbar, saved, opened } = mount([{ kind: "file", name: "a", path: "C:/a.txt" }]);
+    await favbar.init();
+    const a = document.querySelector<HTMLButtonElement>("#favbar button")!;
+    dragOnto(a, a, 0.4);
+    a.click();
+    expect(saved).toEqual([]);
+    expect(opened).toEqual([]);
+  });
+
+  it("グループの中央へ落とすと子になる", async () => {
+    const { favbar, saved } = mount([
+      { kind: "group", name: "g", children: [] },
+      { kind: "file", name: "a", path: "C:/a.txt" },
+    ]);
+    await favbar.init();
+    const [group, file] = document.querySelectorAll<HTMLButtonElement>("#favbar button");
+    dragOnto(file, group, 0.5);
+    await vi.waitFor(() => expect(saved).toHaveLength(1));
+    expect(saved[0]).toEqual([
+      { kind: "group", name: "g", children: [{ kind: "file", name: "a", path: "C:/a.txt" }] },
+    ]);
   });
 
   it("クリックは onOpen を呼ぶ", async () => {
