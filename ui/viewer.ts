@@ -7,6 +7,7 @@ import { takeViewerPayload, type ViewerFormat, type ViewerPayload, type ViewerSe
 import { DEFAULT_EDITOR_CONFIG } from "./editor-config";
 import { VIEWER_FORMAT_LABELS, formatTitleBar } from "./format";
 import { chartColumnLabel, numericColumnIndexes, parseChartNumber } from "./chart-data";
+import { csvColumnAt, decodeDelimiter, isSingleCsvCellSelection } from "./csv-viewer";
 
 const MAX_TABLE_ROWS = 10_000;
 const MAX_TABLE_COLUMNS = 200;
@@ -66,8 +67,9 @@ function bindWindowControls() {
 }
 
 function renderTable(text: string) {
+  const sourceLines = text.split(/\r?\n/);
   const parsed = Papa.parse<string[]>(text, {
-    delimiter: delimiterInput.value,
+    delimiter: decodeDelimiter(delimiterInput.value),
     skipEmptyLines: false,
   });
   currentRows = parsed.data;
@@ -85,10 +87,10 @@ function renderTable(text: string) {
     row.slice(0, MAX_TABLE_COLUMNS).forEach((value, columnIndex) => {
       const cell = document.createElement(rowIndex === 0 ? "th" : "td");
       cell.textContent = value;
-      cell.classList.toggle("viewer-source-selected", csvCellSelected(text, rowIndex, columnIndex));
+      cell.classList.toggle("viewer-source-selected", csvCellSelected(sourceLines[rowIndex] ?? "", rowIndex, columnIndex));
       tr.appendChild(cell);
     });
-    tr.classList.toggle("viewer-source-selected", csvRowSelected(rowIndex));
+    tr.classList.toggle("viewer-source-selected", csvRowSelected(sourceLines[rowIndex] ?? "", rowIndex));
     fragment.appendChild(tr);
   });
   body.appendChild(fragment);
@@ -144,34 +146,27 @@ function renderPayload(payload: ViewerPayload) {
   else renderTable(payload.text);
 }
 
-function csvRowSelected(rowIndex: number) {
+function csvRowSelected(line: string, rowIndex: number) {
+  if (!csvSourceLineSelected(rowIndex) || !currentSelection) return false;
+  const { start } = currentSelection;
+  if (rowIndex === start.line && isSingleCsvCellSelection(line, currentSelection, delimiterInput.value)) {
+    return false;
+  }
+  return true;
+}
+
+function csvCellSelected(line: string, rowIndex: number, columnIndex: number) {
+  if (!currentSelection || !csvSourceLineSelected(rowIndex)) return false;
+  const { start, end } = currentSelection;
+  if (start.line !== end.line || start.line !== rowIndex) return true;
+  return columnIndex === csvColumnAt(line, start.col, delimiterInput.value);
+}
+
+function csvSourceLineSelected(rowIndex: number) {
   if (!currentSelection) return false;
   const { start, end } = currentSelection;
   if (start.line === end.line && start.col === end.col) return rowIndex === start.line;
   return rowIndex >= start.line && (rowIndex < end.line || (rowIndex === end.line && end.col > 0));
-}
-
-function csvCellSelected(text: string, rowIndex: number, columnIndex: number) {
-  if (!currentSelection || !csvRowSelected(rowIndex)) return false;
-  const { start, end } = currentSelection;
-  if (start.line !== end.line || start.line !== rowIndex) return true;
-  return columnIndex === csvColumnAt(text.split("\n")[rowIndex] ?? "", start.col);
-}
-
-function csvColumnAt(line: string, column: number) {
-  const delimiter = delimiterInput.value;
-  let cell = 0;
-  let quoted = false;
-  for (let index = 0; index < line.length && index < column; index++) {
-    if (line[index] === '"') {
-      if (quoted && line[index + 1] === '"') index++;
-      else quoted = !quoted;
-    } else if (!quoted && line.startsWith(delimiter, index)) {
-      cell++;
-      index += delimiter.length - 1;
-    }
-  }
-  return cell;
 }
 
 function markdownBlockSelected(start: number, end: number) {

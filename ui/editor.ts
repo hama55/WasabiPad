@@ -166,6 +166,8 @@ export class VirtualEditor {
     this.input.addEventListener("keydown", (e) => this.onKeyDown(e));
     this.input.addEventListener("input", (e) => this.onInput(e as InputEvent));
     this.input.addEventListener("compositionstart", () => {
+      // スクロール直後でも、IMEが座標を照会する前に現在の表示位置へ同期する。
+      this.render();
       this.composing = true;
       this.input.classList.add("ime"); // 変換中は textarea を可視化
       this.placeCaret();
@@ -365,6 +367,7 @@ export class VirtualEditor {
     } else if (!this.wrap && (!this.metrics.scaleMode || this.scrollbarDragging)) {
       this.topLineF = this.pxToLine(this.scroll.scrollTop);
     }
+    if (document.activeElement === this.input) this.placeCaret();
     this.schedule();
   }
 
@@ -510,11 +513,14 @@ export class VirtualEditor {
   private placeCaret() {
     const s = this.lineCache.peek(this.sel.caret.line) ?? "";
     const lineEl = this.lineElem(this.sel.caret.line);
-    if (!lineEl) {
+    const y = lineEl ? this.rowTop(this.sel.caret.line) : this.scroll.scrollTop;
+    const outsideViewport = y < this.scroll.scrollTop
+      || y + this.metrics.lineHeight > this.scroll.scrollTop + this.scroll.clientHeight;
+    if (!lineEl || outsideViewport) {
       // 画面外の論理行座標へ focused textarea を置くと、巨大文書ではCSS座標上限を
       // 超えてスクロール範囲自体が変わる。入力フォーカスだけ表示領域内で維持する。
       this.caretEl.classList.remove("on");
-      this.input.style.top = `${this.viewTop}px`;
+      this.input.style.top = `${this.scroll.scrollTop}px`;
       this.input.style.left = `${this.scroll.scrollLeft + this.paddingLeft}px`;
       this.placeSecondaryCarets();
       return;
@@ -522,12 +528,12 @@ export class VirtualEditor {
     this.caretEl.classList.toggle("on", document.activeElement === this.input);
     const point = lineEl && this.wrap ? this.wrapPoint(lineEl, s, this.sel.caret.col) : null;
     const x = point?.x ?? (lineEl ? this.colToX(lineEl, s, this.sel.caret.col) : this.paddingLeft);
-    const y = point?.y ?? this.rowTop(this.sel.caret.line);
-    this.caretEl.style.top = `${y}px`;
+    const caretY = point?.y ?? y;
+    this.caretEl.style.top = `${caretY}px`;
     this.caretEl.style.left = `${x}px`;
     this.placeSecondaryCarets();
     // IME 変換窓を追従させるため textarea も同座標へ
-    this.input.style.top = `${y}px`;
+    this.input.style.top = `${caretY}px`;
     if (this.composing && this.wrap) {
       this.input.style.left = `${this.paddingLeft}px`;
       const indent = Math.max(0, x - this.paddingLeft);

@@ -26,7 +26,7 @@ function mount(initial: string) {
     input.dispatchEvent(new InputEvent("input"));
   };
   const press = (key: string) => input.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
-  return { editor, doc, events, host, type, press };
+  return { editor, doc, events, host, input, type, press };
 }
 
 describe("VirtualEditor", () => {
@@ -72,5 +72,18 @@ describe("VirtualEditor", () => {
     editor.goTo(1, 2);
     await settle();
     expect(events.cursor).toEqual([2, 3]);
+  });
+
+  it("スクロール直後のIME入力位置を表示領域内へ維持する", async () => {
+    const { editor, host, input } = mount(Array.from({ length: 40 }, (_, i) => `line ${i}`).join("\n"));
+    editor.open(40, false);
+    await settle();
+    const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
+    Object.defineProperty(scroll, "clientHeight", { configurable: true, value: 100 });
+    input.focus();
+    scroll.scrollTop = 200;
+    scroll.dispatchEvent(new Event("scroll"));
+    input.dispatchEvent(new CompositionEvent("compositionstart"));
+    expect(input.style.top).toBe("200px");
   });
 });

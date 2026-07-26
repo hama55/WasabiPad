@@ -100,10 +100,18 @@ fn list_folder_entries(rel_dir: String, state: State) -> Result<Vec<FolderEntry>
 }
 
 #[tauri::command]
-fn workspace_search(pat: String, match_case: bool, state: State) -> Result<Vec<WorkspaceSearchResult>, String> {
+async fn workspace_search(
+    pat: String,
+    match_case: bool,
+    state: State<'_>,
+) -> Result<Vec<WorkspaceSearchResult>, String> {
     let root = with_doc(&state, |doc| doc.workspace_root())
         .ok_or_else(|| "folder is not open".to_string())?;
-    Ok(wasabipad_core::search_workspace(&root, &pat, match_case))
+    tauri::async_runtime::spawn_blocking(move || {
+        wasabipad_core::search_workspace(&root, &pat, match_case)
+    })
+    .await
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
