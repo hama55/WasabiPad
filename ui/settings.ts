@@ -1,4 +1,4 @@
-// 設定の永続化 (%APPDATA%\WasabiPad\settings.json)。
+// 設定の永続化 (保存先は core/src/settings.rs が決める)。
 // UI から同期的に読めるよう、起動時に一度だけ読み込んでメモリへ載せる。
 // 配色モードだけは localStorage に残す (ウィンドウ間の即時同期を storage イベントに任せるため)。
 import type { WorkspaceSearchOptions } from "./api";

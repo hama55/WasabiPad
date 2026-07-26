@@ -1,5 +1,5 @@
-// お気に入りの永続化。旧bmbar.rsと同一のタブインデント形式
-// (l\t名前\tパス / g\t名前、子は深さ+1) を維持し既存データを引き継ぐ
+// お気に入りの永続化。タブインデント形式 (f/d\t名前\tパス / g\t名前、子は深さ+1)。
+// 旧bmbar.rsが書いた種別不明の "l" レコードは読み込みだけ受け付け、既存データを引き継ぐ
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::path::PathBuf;

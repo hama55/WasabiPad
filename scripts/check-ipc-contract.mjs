@@ -9,6 +9,11 @@ const fileio = read("core/src/fileio.rs");
 const frontend = read("ui/api.ts");
 const mainTs = read("ui/main.ts");
 const sidebarTs = read("ui/sidebar.ts");
+const folder = read("core/src/folder.rs");
+const workspaceSearch = read("core/src/workspace_search.rs");
+const coreFilename = read("core/src/filename.rs");
+const uiFilename = read("ui/filename.ts");
+const capabilities = JSON.parse(read("src-tauri/capabilities/default.json"));
 const indexHtml = read("index.html");
 
 function fail(message) {
@@ -106,4 +111,68 @@ const coreArchiveExts = names(/Some\("([^"]+)"\)/g, lazyArchiveFn.slice(0, lazyA
 const uiArchiveExts = (sidebarTs.match(/ARCHIVE_EXT = \/\\\.\(([^)]+)\)/)?.[1] ?? "").split("|").filter(Boolean);
 assertSameSet("lazy archive extensions", coreArchiveExts, uiArchiveExts);
 
-console.log(`IPC contract OK: ${commands.length} commands, wire enums, and shared constants match.`);
+// serde は Rust のフィールド名をそのまま線に載せるため、項目名の増減は TS 側と一致する必要がある
+// (型注釈だけでは検出できず、undefined が実行時に初めて現れるため)
+function rustFields(source, structName) {
+  return names(/^\s*pub (\w+):/gm, blockAfter(source, `pub struct ${structName}`));
+}
+function tsFields(interfaceName) {
+  return names(/^\s*(\w+)\??:/gm, blockAfter(frontend, `export interface ${interfaceName}`));
+}
+const wireStructs = [
+  [coreDoc, "PosC", "Pos"],
+  [coreDoc, "DocInfo", "DocInfo"],
+  [coreDoc, "EditResult", "EditResult"],
+  [coreDoc, "EditManyItem", "EditManyItem"],
+  [coreDoc, "EditManyResult", "EditManyResult"],
+  [coreDoc, "FindResult", "FindResult"],
+  [coreDoc, "FindCursor", "FindCursor"],
+  [coreDoc, "ReplaceChunkResult", "ReplaceChunkResult"],
+  [coreDoc, "WorkspaceSearchResult", "WorkspaceSearchResult"],
+  [folder, "FolderEntry", "FolderEntry"],
+  [workspaceSearch, "SearchOptions", "WorkspaceSearchOptions"],
+];
+for (const [source, structName, interfaceName] of wireStructs) {
+  assertSameSet(`${structName} wire fields`, rustFields(source, structName), tsFields(interfaceName));
+}
+// backend 側の struct は pub を付けないため別扱い
+for (const structName of ["ViewerPayload", "ViewerSelection"]) {
+  const fields = names(/^\s*(\w+):/gm, blockAfter(backend, `struct ${structName}`));
+  assertSameSet(`${structName} wire fields`, fields, tsFields(structName));
+}
+
+// ビューのウィンドウは動的生成のため、ラベル接頭辞が capability の許可パターンと外れると
+// 権限を失ったまま静かに開いてしまう
+const viewerLabelPrefix = backend.match(/format!\("([\w-]+)-\{\}"/)?.[1];
+if (!viewerLabelPrefix) fail("cannot find viewer window label prefix");
+if (!capabilities.windows.includes(`${viewerLabelPrefix}-*`)) {
+  fail(`viewer window capability; label prefix=${viewerLabelPrefix}-, windows=[${capabilities.windows.join(", ")}]`);
+}
+
+// ファイル名規則は入力画面 (ui) と保存処理 (core) の二重検証。規則そのものは一致していなければならない
+function expandReserved(alternatives) {
+  return alternatives.flatMap((name) =>
+    name.includes("[1-9]")
+      ? Array.from({ length: 9 }, (_, index) => name.replace("[1-9]", String(index + 1)))
+      : [name]
+  ).map((name) => name.toUpperCase());
+}
+const reservedStart = coreFilename.indexOf("let reserved = matches!");
+if (reservedStart < 0) fail("cannot find reserved device name list");
+const coreReserved = names(
+  /"([A-Z0-9]+)"/g,
+  coreFilename.slice(reservedStart, coreFilename.indexOf(");", reservedStart))
+);
+const uiReserved = expandReserved(
+  (uiFilename.match(/WINDOWS_RESERVED_NAME = \/\^\(([^)]+)\)/)?.[1] ?? "").split("|").filter(Boolean)
+);
+assertSameSet("Windows reserved device names", coreReserved, uiReserved);
+
+const coreInvalidChars = coreFilename.match(/r#"(.*?)"#\.contains/)?.[1];
+const uiInvalidChars = uiFilename.match(/\[\\u0000-\\u001f([^\]]*)\]/)?.[1]?.replace(/\\\\/g, "\\");
+if (coreInvalidChars === undefined || uiInvalidChars === undefined) {
+  fail("cannot find Windows invalid character set");
+}
+assertSameSet("Windows invalid characters", [...coreInvalidChars], [...uiInvalidChars]);
+
+console.log(`IPC contract OK: ${commands.length} commands, wire enums, structs, and shared constants match.`);
