@@ -15,6 +15,7 @@ const coreFilename = read("core/src/filename.rs");
 const uiFilename = read("ui/filename.ts");
 const capabilities = JSON.parse(read("src-tauri/capabilities/default.json"));
 const indexHtml = read("index.html");
+const saveFormat = read("ui/save-format.ts");
 
 function fail(message) {
   throw new Error(`IPC contract mismatch: ${message}`);
@@ -89,8 +90,17 @@ function optionValues(id) {
   return names(/value="([^"]+)"/g, indexHtml.slice(start, end));
 }
 assertSameSet("read encoding options", tsUnion("ReadEncoding"), optionValues("st-source-enc"));
-assertSameSet("save encoding options", tsUnion("Encoding"), optionValues("st-enc"));
-assertSameSet("EOL options", tsUnion("Eol"), optionValues("st-eol"));
+
+// 保存形式の option は別名保存ダイアログ側にあるため、同様に型と一致することを検証する
+function saveFormatValues(constName) {
+  const start = saveFormat.indexOf(`${constName} = [`);
+  if (start < 0) fail(`cannot find ${constName}`);
+  const end = saveFormat.indexOf("];", start);
+  if (end < 0) fail(`unterminated ${constName}`);
+  return names(/value: "([^"]+)"/g, saveFormat.slice(start, end));
+}
+assertSameSet("save encoding options", tsUnion("Encoding"), saveFormatValues("SAVE_ENCODING_OPTIONS"));
+assertSameSet("save EOL options", tsUnion("Eol"), saveFormatValues("SAVE_EOL_OPTIONS"));
 
 // 乗算だけで書かれた閾値定数を数値化する (100 * 1024 * 1024 のような形式のみ)
 function product(label, expression) {

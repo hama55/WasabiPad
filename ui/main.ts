@@ -8,6 +8,7 @@ import { FavBar } from "./favbar";
 import { showMenu, MenuItem } from "./menu";
 import { confirmMessage, confirmSaveDiscard, promptFields } from "./prompt";
 import { initialSession, sessionFromDocInfo } from "./session";
+import { promptSaveFormat } from "./save-format";
 import { showError } from "./dialogs";
 import {
   formatByteSize,
@@ -340,9 +341,7 @@ const showSavedNotice = () => showNotice("保存しました");
 function applyDocInfo(o: api.DocInfo, keepViewers = false) {
   $("external-banner").hidden = true; // 文書が切り替わったら競合バナーは無効
   session = sessionFromDocInfo(session, o);
-  $<HTMLSelectElement>("st-enc").value = session.encoding;
-  renderEncodingStatus();
-  $<HTMLSelectElement>("st-eol").value = session.eol;
+  renderFormatStatus();
   renderAddressbar(o.path);
   const size = $("st-size");
   size.textContent = formatByteSize(o.byte_len);
@@ -391,9 +390,7 @@ async function newFile() {
   if (!(await confirmDiscard())) return;
   await api.newDoc();
   session = initialSession();
-  $<HTMLSelectElement>("st-enc").value = session.encoding;
-  $<HTMLSelectElement>("st-eol").value = session.eol;
-  renderEncodingStatus();
+  renderFormatStatus();
   renderAddressbar("");
   const size = $("st-size");
   size.textContent = "";
@@ -422,7 +419,16 @@ async function saveAs(): Promise<boolean> {
     defaultPath,
   });
   if (!p) return false;
-  return saveTo(p);
+  return saveAsTo(p);
+}
+
+// 別名保存だけが保存形式の決定点。以降の上書き保存はここで決めた形式を使い回す。
+async function saveAsTo(path: string, folderDraftRoot: string | null = null): Promise<boolean> {
+  const format = await promptSaveFormat(session.encoding, session.eol);
+  if (!format) return false;
+  session.encoding = format.encoding;
+  session.eol = format.eol;
+  return saveTo(path, folderDraftRoot);
 }
 
 async function doSave(): Promise<boolean> {
@@ -458,7 +464,7 @@ async function saveFolderDraft(): Promise<boolean> {
   if (!spec) return false;
   try {
     const path = await api.nextMemoPath(root, spec.stem, spec.extension);
-    return saveTo(path, root);
+    return saveAsTo(path, root);
   } catch (e) {
     await showError("ファイル名を決められませんでした", e);
     return false;
@@ -487,9 +493,10 @@ async function saveTo(path: string, folderDraftRoot: string | null = null): Prom
   session.savePath = path;
   session.displayPath = path;
   session.sourceEncoding = session.encoding;
+  session.sourceEol = session.eol;
   session.dirty = false;
   renderAddressbar(path);
-  renderEncodingStatus();
+  renderFormatStatus();
   updateTitle();
   showSavedNotice();
   if (folderDraftRoot) {
@@ -539,7 +546,7 @@ function sidebarContextMenu(x: number, y: number, target: ContextTarget | null) 
   items.push({ label: "新規メモ作成...", action: () => createNoteIn(target?.isDir ? target.relPath : null) });
   if (target) {
     items.push({ label: "名前を変更...", action: () => renameEntry(target.relPath) });
-    if (!target.isDir) items.push({ label: "他のアプリで開く", action: () => openInOtherApp(relToAbs(target.relPath)) });
+    if (!target.isDir) items.push({ label: "アプリで開く", action: () => openInOtherApp(relToAbs(target.relPath)) });
   }
   const revealPath = target ? relToAbs(target.relPath) : session.folderRoot;
   const revealIsDir = target ? target.isDir : true;
@@ -665,15 +672,6 @@ $("menu-view").addEventListener("click", (e) => {
   ]);
 });
 
-$<HTMLSelectElement>("st-enc").addEventListener("change", (e) => {
-  session.encoding = (e.target as HTMLSelectElement).value as api.Encoding;
-  if (!session.readOnly) { session.dirty = true; updateTitle(); }
-});
-$<HTMLSelectElement>("st-eol").addEventListener("change", (e) => {
-  session.eol = (e.target as HTMLSelectElement).value as api.Eol;
-  if (!session.readOnly) { session.dirty = true; updateTitle(); }
-});
-
 addressbar.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && addressbar.value.trim()) {
     void openFile(addressbar.value.trim());
@@ -723,11 +721,13 @@ $("toggle-favbar").addEventListener("click", () => {
 
 document.addEventListener("contextmenu", (e) => e.preventDefault());
 
-function renderEncodingStatus() {
+// ステータスバーが示すのは読込時の形式だけ。保存形式は別名保存ダイアログが持つ。
+function renderFormatStatus() {
   const source = $<HTMLSelectElement>("st-source-enc");
   source.value = session.sourceEncoding === "utf8bom" ? "utf8" : session.sourceEncoding;
   source.disabled = session.readOnly || !session.savePath;
   source.title = session.sourceEncoding === "utf8bom" ? "読込文字コード: UTF-8 (BOMあり)" : "読込文字コード";
+  $("st-eol").textContent = session.sourceEol.toUpperCase();
 }
 
 // サイドバー幅のドラッグ変更

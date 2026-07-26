@@ -10,6 +10,7 @@ export interface DocumentSession {
   encoding: Encoding;
   sourceEncoding: Encoding;
   eol: Eol;
+  sourceEol: Eol;
   lineCount: number;
   selectedRelPath: string;
 }
@@ -24,6 +25,7 @@ export function initialSession(): DocumentSession {
     encoding: "utf8",
     sourceEncoding: "utf8",
     eol: "crlf",
+    sourceEol: "crlf",
     lineCount: 1,
     selectedRelPath: "",
   };
@@ -43,6 +45,7 @@ export function sessionFromDocInfo(
     encoding: info.enc,
     sourceEncoding: info.enc,
     eol: info.eol,
+    sourceEol: info.eol,
     lineCount: info.line_count,
     selectedRelPath: previous.selectedRelPath,
   };
