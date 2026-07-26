@@ -8,7 +8,8 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 wasabipad-core = { path = "../core" }
-tauri = { version = "2", features = [] }
+# protocol-asset: Markdown ビューが画像を file から読むための asset プロトコル
+tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

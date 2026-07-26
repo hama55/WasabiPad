@@ -191,6 +191,10 @@ export const ackExternal = () => invoke<void>("ack_external");
 export const setEncoding = (enc: Encoding) => invoke<void>("set_encoding", { enc });
 export const setEol = (eol: Eol) => invoke<void>("set_eol", { eol });
 
+// 設定は不透明な JSON 文字列として往復させる (構造を知るのは ui/settings.ts だけ)
+export const loadSettings = () => invoke<string>("load_settings");
+export const saveSettings = (json: string) => invoke<void>("save_settings", { json });
+
 export const loadBookmarks = () => invoke<BmNode[]>("load_bookmarks");
 export const saveBookmarks = (nodes: BmNode[]) => invoke<void>("save_bookmarks", { nodes });
 export const pathIsDirectory = (path: string) => invoke<boolean>("path_is_directory", { path });
@@ -236,9 +240,14 @@ export interface ViewerPayload {
   format: ViewerFormat;
   text: string;
   selection: ViewerSelection | null;
+  source_path: string | null; // 相対パス画像の解決に使う元ファイル (未保存なら null)
 }
-export const openViewer = (format: ViewerFormat, text: string, selection: ViewerSelection | null) =>
-  invoke<string>("open_viewer", { format, text, selection });
+export const openViewer = (
+  format: ViewerFormat,
+  text: string,
+  selection: ViewerSelection | null,
+  sourcePath: string | null
+) => invoke<string>("open_viewer", { format, text, selection, sourcePath });
 export const takeViewerPayload = (label: string) =>
   invoke<ViewerPayload>("take_viewer_payload", { label });
 export const updateViewer = (label: string, text: string, selection: ViewerSelection | null) =>

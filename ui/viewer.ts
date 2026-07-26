@@ -1,4 +1,5 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import Chart from "chart.js/auto";
 import MarkdownIt from "markdown-it";
@@ -17,6 +18,7 @@ import {
   type ChartTypeId,
 } from "./chart-data";
 import { csvColumnAt, decodeDelimiter, isSingleCsvCellSelection } from "./csv-viewer";
+import { resolveAssetPath } from "./viewer-assets";
 
 const MAX_TABLE_ROWS = 10_000;
 const MAX_TABLE_COLUMNS = 200;
@@ -42,6 +44,7 @@ let currentFormat: ViewerFormat = "csv";
 let currentRows: string[][] = [];
 let currentText = "";
 let currentSelection: ViewerSelection | null = null;
+let currentSourcePath: string | null = null;
 let chart: Chart<"line" | "bar", (number | null)[], string> | null = null;
 let chartColumns: { x: number; y: number[]; reverseX: boolean; type: ChartTypeId } | null = null;
 
@@ -116,11 +119,32 @@ function renderTable(text: string) {
   if (chartColumns) renderChart();
 }
 
+// 生HTMLは <img> だけ通す。他のタグは今まで通り文字列として見せる。
+const IMG_ONLY = /^<img\b[^>]*>$/i;
+const IMG_ATTRIBUTES = ["src", "alt", "title", "width", "height"];
+
+function renderRawHtml(raw: string, escape: (text: string) => string): string {
+  if (!IMG_ONLY.test(raw.trim())) return escape(raw);
+  // template の中身は不活性なので、この時点で画像取得もハンドラ実行も起きない
+  const template = document.createElement("template");
+  template.innerHTML = raw.trim();
+  const img = template.content.firstElementChild;
+  if (!(img instanceof HTMLImageElement)) return escape(raw);
+  for (const name of img.getAttributeNames()) {
+    if (!IMG_ATTRIBUTES.includes(name.toLowerCase())) img.removeAttribute(name);
+  }
+  return img.outerHTML;
+}
+
 function renderMarkdown(text: string) {
   currentRows = [];
   closeChart();
   const article = document.createElement("article");
-  const markdown = new MarkdownIt({ html: false, linkify: true, typographer: false });
+  const markdown = new MarkdownIt({ html: true, linkify: true, typographer: false });
+  const rawHtml = (tokens: { content: string }[], index: number) =>
+    renderRawHtml(tokens[index].content, markdown.utils.escapeHtml);
+  markdown.renderer.rules.html_block = rawHtml;
+  markdown.renderer.rules.html_inline = rawHtml;
   const tokens = markdown.parse(text, {});
   tokens.forEach((token) => {
     if (token.nesting === 1 && token.map) {
@@ -133,6 +157,10 @@ function renderMarkdown(text: string) {
     const start = Number(element.dataset.sourceStart);
     const end = Number(element.dataset.sourceEnd);
     element.classList.toggle("viewer-source-selected", markdownBlockSelected(start, end));
+  });
+  article.querySelectorAll("img").forEach((image) => {
+    const resolved = resolveAssetPath(currentSourcePath, image.getAttribute("src") ?? "");
+    if (resolved) image.src = convertFileSrc(resolved);
   });
   article.querySelectorAll("a").forEach((link) => {
     link.target = "_blank";
@@ -148,6 +176,7 @@ function renderPayload(payload: ViewerPayload) {
   currentFormat = payload.format;
   currentText = payload.text;
   currentSelection = payload.selection;
+  currentSourcePath = payload.source_path;
   title.textContent = formatTitleBar(VIEWER_FORMAT_LABELS[payload.format]);
   void win.setTitle(title.textContent);
   delimiterControl.hidden = payload.format !== "csv";

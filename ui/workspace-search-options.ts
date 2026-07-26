@@ -1,7 +1,7 @@
 import type { WorkspaceSearchOptions } from "./api";
+import { getSetting, setSetting } from "./settings";
 
 // フォルダ検索の設定はここが単一の定義。backend は既定値を持たず、常にこの値を受け取る。
-const STORAGE_KEY = "workspaceSearchOptions";
 
 // 除外候補として設定パネルに並べるフォルダ名 (チェックを外せば検索対象になる)
 export const EXCLUDE_DIR_CANDIDATES = [".git", "node_modules", "target", "dist", ".venv"];
@@ -41,17 +41,13 @@ export function clampSearchOptions(options: WorkspaceSearchOptions): WorkspaceSe
 }
 
 export function loadSearchOptions(): WorkspaceSearchOptions {
-  try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (!stored) return { ...DEFAULT_SEARCH_OPTIONS };
-    return clampSearchOptions({ ...DEFAULT_SEARCH_OPTIONS, ...JSON.parse(stored) });
-  } catch {
-    return { ...DEFAULT_SEARCH_OPTIONS };
-  }
+  const stored = getSetting("workspaceSearchOptions");
+  if (!stored) return { ...DEFAULT_SEARCH_OPTIONS };
+  return clampSearchOptions({ ...DEFAULT_SEARCH_OPTIONS, ...stored });
 }
 
 export function saveSearchOptions(options: WorkspaceSearchOptions) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(options));
+  setSetting("workspaceSearchOptions", options);
 }
 
 // 「見つかりません」の説明。現在の設定をそのまま読み上げ、除外理由を推測させない。

@@ -1,13 +1,20 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("./api", () => ({
+  loadSettings: async () => "{}",
+  saveSettings: async () => {},
+}));
+
 import { Sidebar, type SidebarPorts } from "./sidebar";
 import type { WorkspaceSearchOptions } from "./api";
+import { initSettings } from "./settings";
 
 describe("Sidebar workspace search", () => {
-  afterEach(() => {
+  afterEach(async () => {
     vi.useRealTimers();
     document.body.replaceChildren();
-    localStorage.clear();
+    await initSettings(); // 検索オプションの保存値を持ち越さない
   });
 
   function mount(onWorkspaceSearch: SidebarPorts["onWorkspaceSearch"] = async () => []) {

@@ -33,6 +33,8 @@ struct ViewerPayload {
     format: ViewerFormat,
     text: String,
     selection: Option<ViewerSelection>,
+    // Markdown 内の相対パス画像は元ファイルの位置からしか解決できない (未保存なら None)
+    source_path: Option<String>,
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -273,6 +275,17 @@ fn save_bookmarks(nodes: Vec<BookmarkNode>) -> Result<(), String> {
     wasabipad_core::save_bookmarks(&nodes).map_err(|e| e.to_string())
 }
 
+// 設定は不透明な JSON 文字列として往復させる (構造を知るのは ui/settings.ts だけ)。
+#[tauri::command]
+fn load_settings() -> String {
+    wasabipad_core::load_settings()
+}
+
+#[tauri::command]
+fn save_settings(json: String) -> Result<(), String> {
+    wasabipad_core::save_settings(&json).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn path_is_directory(path: String) -> bool {
     PathBuf::from(path).is_dir()
@@ -311,6 +324,7 @@ async fn open_viewer(
     format: ViewerFormat,
     text: String,
     selection: Option<ViewerSelection>,
+    source_path: Option<String>,
     app: AppHandle,
     state: tauri::State<'_, ViewerStore>,
 ) -> Result<String, String> {
@@ -321,7 +335,7 @@ async fn open_viewer(
         .0
         .lock()
         .map_err(|_| "ビューの準備に失敗しました".to_string())?
-        .insert(label.clone(), ViewerPayload { format, text, selection });
+        .insert(label.clone(), ViewerPayload { format, text, selection, source_path });
 
     let window = match WebviewWindowBuilder::new(&app, &label, WebviewUrl::App("viewer.html".into()))
         .title(title)
@@ -425,6 +439,8 @@ fn main() {
             set_eol,
             load_bookmarks,
             save_bookmarks,
+            load_settings,
+            save_settings,
             path_is_directory,
             next_memo_path,
             initial_path,

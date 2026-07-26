@@ -12,12 +12,19 @@ pub enum Node {
     Group { name: String, children: Vec<Node> },
 }
 
-fn store_path() -> PathBuf {
+const STORE_FILE: &str = "wasabipad_bookmarks.txt";
+
+fn store_path() -> io::Result<PathBuf> {
+    crate::settings::config_path(STORE_FILE)
+}
+
+// 保存先を exe 隣からユーザ領域へ移す前の版が書いた場所。読み込みだけ面倒を見る
+fn legacy_store_path() -> PathBuf {
     std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
         .unwrap_or_default()
-        .join("wasabipad_bookmarks.txt")
+        .join(STORE_FILE)
 }
 
 fn serialize_into(nodes: &[Node], depth: usize, out: &mut String) {
@@ -84,7 +91,9 @@ fn parse(text: &str) -> Vec<Node> {
 }
 
 pub fn load() -> Vec<Node> {
-    std::fs::read_to_string(store_path())
+    store_path()
+        .and_then(std::fs::read_to_string)
+        .or_else(|_| std::fs::read_to_string(legacy_store_path()))
         .map(|t| parse(&t))
         .unwrap_or_default()
 }
@@ -92,7 +101,7 @@ pub fn load() -> Vec<Node> {
 pub fn save(nodes: &[Node]) -> io::Result<()> {
     let mut out = String::new();
     serialize_into(nodes, 0, &mut out);
-    std::fs::write(store_path(), out)
+    crate::settings::write_config(store_path()?, &out)
 }
 
 #[cfg(test)]

@@ -20,9 +20,13 @@ import { basename, joinWindowsRoot, rebaseWindowsPath, relativePathFromRoot, rel
 import { createCommandRegistry, globalCommandForEvent, CommandId } from "./commands";
 import { DEFAULT_EDITOR_CONFIG } from "./editor-config";
 import { windowsFileNameError } from "./filename";
+import { getSetting, initSettings, setSetting } from "./settings";
 
 const win = getCurrentWindow();
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
+
+// 以降のモジュール初期化は設定値を同期的に読むため、ここで一度だけ待つ
+await initSettings();
 
 // ---- 配色モード ----
 const THEMES = ["dark", "light"] as const;
@@ -48,12 +52,11 @@ let session = initialSession();
 let wrap = false;
 let fontFamily = DEFAULT_EDITOR_CONFIG.fontFamily;
 let fontSize = DEFAULT_EDITOR_CONFIG.fontSize;
-let indentSize = Number(localStorage.getItem("indentSize")) || 8;
+let indentSize = getSetting("indentSize");
 let currentLine = 1;
 let sidebarAvailable = false;
 let sidebarVisible = true;
 let saveNoticeTimer: number | undefined;
-const STARTUP_PATH_KEY = "startupPath";
 // core の fileio::MMAP_THRESHOLD と一致させる (check:ipc が両者の一致を検証する)
 const HUGE_FILE_THRESHOLD = 100 * 1024 * 1024;
 
@@ -159,7 +162,7 @@ const editor = new VirtualEditor(
   openExternally: () => { if (session.savePath) void openInOtherApp(session.savePath); },
   openViewer: async (format, text, selection) => {
     try {
-      return await api.openViewer(format, text, selection);
+      return await api.openViewer(format, text, selection, session.savePath);
     } catch (error) {
       await showError("ビューを開けませんでした", error);
       return null;
@@ -205,7 +208,7 @@ indentSize = Number(indentSelect.value);
 editor.setTabSize(indentSize);
 indentSelect.addEventListener("change", () => {
   indentSize = Number(indentSelect.value);
-  localStorage.setItem("indentSize", String(indentSize));
+  setSetting("indentSize", indentSize);
   editor.setTabSize(indentSize);
 });
 $("st-pos").addEventListener("click", async () => {
@@ -321,7 +324,7 @@ function setSidebar(on: boolean, label = "") {
 }
 
 function setStartupPath(path: string) {
-  localStorage.setItem(STARTUP_PATH_KEY, path);
+  setSetting("startupPath", path);
 }
 
 function showNotice(text: string) {
@@ -569,7 +572,7 @@ async function renameEntry(relPath: string) {
       session.selectedRelPath = rel;
       sidebar.selectByRelPath(rel);
     }
-    const startupPath = localStorage.getItem(STARTUP_PATH_KEY);
+    const startupPath = getSetting("startupPath");
     const rebased = startupPath && rebaseWindowsPath(startupPath, oldAbsolute, newAbsolute);
     if (rebased) setStartupPath(rebased);
   } catch (e) {
@@ -658,7 +661,7 @@ $("menu-view").addEventListener("click", (e) => {
   const r = (e.target as HTMLElement).getBoundingClientRect();
   showMenu(r.left, r.bottom, [
     commandMenuItem("find"),
-    { label: "起動時のデフォルトを解除", action: () => localStorage.removeItem(STARTUP_PATH_KEY), sep: true },
+    { label: "起動時のデフォルトを解除", action: () => setSetting("startupPath", null), sep: true },
   ]);
 });
 
@@ -774,11 +777,11 @@ win.onCloseRequested(async (e) => {
   await syncMaxIcon();
   await favbar.init();
   const cliPath = await api.initialPath();
-  const startupPath = localStorage.getItem(STARTUP_PATH_KEY);
+  const startupPath = getSetting("startupPath");
   const p = cliPath || startupPath;
   const opened = p ? await openFile(p) : false;
   if (!opened) {
-    if (!cliPath && startupPath) localStorage.removeItem(STARTUP_PATH_KEY);
+    if (!cliPath && startupPath) setSetting("startupPath", null);
     editor.open(1, false);
     editor.focus();
   }

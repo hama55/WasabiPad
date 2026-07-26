@@ -1,14 +1,21 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("./api", () => ({
+  loadSettings: async () => "{}",
+  saveSettings: async () => {},
+}));
+
 import {
   addRegisteredString,
   loadRegisteredStrings,
   registeredStringLabel,
   removeRegisteredString,
 } from "./registered-strings";
+import { initSettings } from "./settings";
 
 describe("registered strings", () => {
-  beforeEach(() => localStorage.clear());
+  beforeEach(() => initSettings());
 
   it("重複と空文字列は登録しない", () => {
     addRegisteredString("foo");
@@ -22,13 +29,6 @@ describe("registered strings", () => {
     addRegisteredString("b");
     removeRegisteredString("a");
     expect(loadRegisteredStrings()).toEqual(["b"]);
-  });
-
-  it("壊れた保存値は空として扱う", () => {
-    localStorage.setItem("registeredStrings", "{ not json");
-    expect(loadRegisteredStrings()).toEqual([]);
-    localStorage.setItem("registeredStrings", JSON.stringify(["ok", 42, ""]));
-    expect(loadRegisteredStrings()).toEqual(["ok"]);
   });
 
   it("ラベルは改行を畳んで48文字で切る", () => {

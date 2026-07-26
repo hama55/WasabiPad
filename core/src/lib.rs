@@ -10,6 +10,7 @@ mod filename;
 mod folder;
 mod hugebuf;
 mod search;
+mod settings;
 mod undo;
 mod workspace_search;
 mod xlstext;
@@ -23,4 +24,5 @@ pub use doc::{
 };
 pub use fileio::{Encoding, EncodingId, Eol};
 pub use filename::{next_available_path, validate_windows_file_name};
+pub use settings::{load as load_settings, save as save_settings};
 pub use workspace_search::{search_workspace, SearchOptions};
