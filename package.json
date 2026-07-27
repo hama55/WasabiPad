@@ -1,7 +1,7 @@
 {
   "name": "wasabipad-ui",
   "private": true,
-  "version": "1.1.0",
+  "version": "1.1.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -14,10 +14,16 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-dialog": "^2"
+    "@tauri-apps/plugin-dialog": "^2",
+    "chart.js": "^4.5.1",
+    "markdown-it": "^14.3.0",
+    "papaparse": "^5.5.4"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
+    "@types/markdown-it": "^14.1.2",
+    "@types/papaparse": "^5.5.2",
+    "jsdom": "^29.1.1",
     "typescript": "^5",
     "vite": "^6",
     "vitest": "^4.1.10"

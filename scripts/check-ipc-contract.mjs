@@ -7,6 +7,15 @@ const backend = read("src-tauri/src/main.rs");
 const coreDoc = read("core/src/doc.rs");
 const fileio = read("core/src/fileio.rs");
 const frontend = read("ui/api.ts");
+const statusbarTs = read("ui/statusbar.ts");
+const sidebarTs = read("ui/sidebar.ts");
+const searchPanelTs = read("ui/workspace-search-panel.ts");
+const folder = read("core/src/folder.rs");
+const workspaceSearch = read("core/src/workspace_search.rs");
+const coreFilename = read("core/src/filename.rs");
+const uiFilename = read("ui/filename.ts");
+const capabilities = JSON.parse(read("src-tauri/capabilities/default.json"));
+const indexHtml = read("index.html");
 
 function fail(message) {
   throw new Error(`IPC contract mismatch: ${message}`);
@@ -45,7 +54,7 @@ function tsUnion(typeName) {
   return names(/"([^"]+)"/g, match[1]);
 }
 
-const commands = names(/#\[tauri::command\]\s*\r?\nfn\s+(\w+)/g, backend);
+const commands = names(/#\[tauri::command\]\s*\r?\n(?:async\s+)?fn\s+(\w+)/g, backend);
 const handlerBlock = backend.match(/tauri::generate_handler!\[([\s\S]*?)\]\)/)?.[1];
 if (!handlerBlock) fail("cannot find tauri command handler registration");
 const handler = handlerBlock
@@ -69,4 +78,126 @@ const docKinds = names(/^\s*(\w+),\s*$/gm, blockAfter(coreDoc, "pub enum DocKind
 const docInfoKind = frontend.match(/kind:\s*([^;]+);/)?.[1] ?? "";
 assertSameSet("document kind wire values", docKinds, names(/"([^"]+)"/g, docInfoKind));
 
-console.log(`IPC contract OK: ${commands.length} commands and wire enums match.`);
+const viewerFormats = names(/#\[serde\(rename = "([^"]+)"\)\]/g, blockAfter(backend, "enum ViewerFormat"));
+assertSameSet("viewer format wire values", viewerFormats, tsUnion("ViewerFormat"));
+
+// <select> の option は Encoding/Eol の第2の定義になりやすいため、型と一致することを検証する
+function optionValues(id) {
+  const start = indexHtml.indexOf(`id="${id}"`);
+  if (start < 0) fail(`cannot find <select id="${id}">`);
+  const end = indexHtml.indexOf("</select>", start);
+  if (end < 0) fail(`unterminated <select id="${id}">`);
+  return names(/value="([^"]+)"/g, indexHtml.slice(start, end));
+}
+assertSameSet("read encoding options", tsUnion("ReadEncoding"), optionValues("st-source-enc"));
+// 保存側の選択肢は ui/save-format.ts が Record<Encoding|Eol, string> で持つため tsc が検証する
+
+// 乗算だけで書かれた閾値定数を数値化する (100 * 1024 * 1024 のような形式のみ)
+function product(label, expression) {
+  if (expression === undefined) fail(`cannot find ${label}`);
+  const factors = expression.replace(/_/g, "").split("*").map((part) => Number(part.trim()));
+  if (factors.some(Number.isNaN)) fail(`cannot evaluate ${label}: ${expression}`);
+  return factors.reduce((total, factor) => total * factor, 1);
+}
+const mmapThreshold = product("MMAP_THRESHOLD", fileio.match(/MMAP_THRESHOLD: u64 = ([^;]+);/)?.[1]);
+const hugeThreshold = product("HUGE_FILE_THRESHOLD", statusbarTs.match(/HUGE_FILE_THRESHOLD = ([^;]+);/)?.[1]);
+if (mmapThreshold !== hugeThreshold) {
+  fail(`huge file threshold; core=${mmapThreshold}, ui=${hugeThreshold}`);
+}
+
+// 検索の途中経過は「送る側 (core) と描く側 (ui)」で刻みと上限が噛み合う必要がある。
+// 送出が細かすぎれば IPC だけが増え、上限が描画上限を超えれば出せない分を送ることになる。
+const progressInterval = Number(
+  workspaceSearch.match(/PROGRESS_INTERVAL[^;]*from_millis\((\d+)\)/)?.[1]
+);
+const partialRenderMs = Number(searchPanelTs.match(/PARTIAL_RENDER_MS = (\d+);/)?.[1]);
+if (!progressInterval || progressInterval !== partialRenderMs) {
+  fail(`search progress interval; core=${progressInterval}, ui=${partialRenderMs}`);
+}
+const progressMax = Number(workspaceSearch.match(/PROGRESS_MAX: usize = ([\d_]+);/)?.[1]?.replace(/_/g, ""));
+const maxRenderedRows = Number(searchPanelTs.match(/MAX_RENDERED_ROWS = ([\d_]+);/)?.[1]?.replace(/_/g, ""));
+if (!progressMax || !maxRenderedRows || progressMax > maxRenderedRows) {
+  fail(`search progress cap exceeds rendered rows; core=${progressMax}, ui=${maxRenderedRows}`);
+}
+
+// ファイル名をファジーで当てるかどうかの判定は core が持ち、ui は説明文のために写しを持つ。
+// 見る項目がずれると、実際の当て方と画面の説明が食い違う (利用者は説明を信じる)。
+const optionKeys = (source, marker) => names(/options\.(\w+)/g, blockAfter(source, marker));
+assertSameSet(
+  "fuzzy file name rule inputs",
+  optionKeys(workspaceSearch, "fn strict_name_match"),
+  optionKeys(read("ui/workspace-search-options.ts"), "export function fuzzyFileNames")
+);
+
+// サイドバーの展開ボタン表示と core の遅延アーカイブ判定は同じ拡張子集合でなければならない
+const lazyArchiveFn = coreDoc.slice(coreDoc.indexOf("fn is_lazy_archive_ext"));
+const coreArchiveExts = names(/Some\("([^"]+)"\)/g, lazyArchiveFn.slice(0, lazyArchiveFn.indexOf("\n    }")));
+const uiArchiveExts = (sidebarTs.match(/ARCHIVE_EXT = \/\\\.\(([^)]+)\)/)?.[1] ?? "").split("|").filter(Boolean);
+assertSameSet("lazy archive extensions", coreArchiveExts, uiArchiveExts);
+
+// serde は Rust のフィールド名をそのまま線に載せるため、項目名の増減は TS 側と一致する必要がある
+// (型注釈だけでは検出できず、undefined が実行時に初めて現れるため)
+function rustFields(source, structName) {
+  return names(/^\s*pub (\w+):/gm, blockAfter(source, `pub struct ${structName}`));
+}
+function tsFields(interfaceName) {
+  return names(/^\s*(\w+)\??:/gm, blockAfter(frontend, `export interface ${interfaceName}`));
+}
+const wireStructs = [
+  [coreDoc, "PosC", "Pos"],
+  [coreDoc, "DocInfo", "DocInfo"],
+  [coreDoc, "EditResult", "EditResult"],
+  [coreDoc, "EditManyItem", "EditManyItem"],
+  [coreDoc, "EditManyResult", "EditManyResult"],
+  [coreDoc, "FindResult", "FindResult"],
+  [coreDoc, "FindCursor", "FindCursor"],
+  [coreDoc, "ReplaceChunkResult", "ReplaceChunkResult"],
+  [coreDoc, "WorkspaceSearchResult", "WorkspaceSearchResult"],
+  [folder, "FolderEntry", "FolderEntry"],
+  [workspaceSearch, "SearchOptions", "WorkspaceSearchOptions"],
+  [workspaceSearch, "WorkspaceSearchOutcome", "WorkspaceSearchOutcome"],
+];
+for (const [source, structName, interfaceName] of wireStructs) {
+  assertSameSet(`${structName} wire fields`, rustFields(source, structName), tsFields(interfaceName));
+}
+// backend 側の struct は pub を付けないため別扱い
+for (const structName of ["ViewerPayload", "ViewerSelection"]) {
+  const fields = names(/^\s*(\w+):/gm, blockAfter(backend, `struct ${structName}`));
+  assertSameSet(`${structName} wire fields`, fields, tsFields(structName));
+}
+
+// ビューのウィンドウは動的生成のため、ラベル接頭辞が capability の許可パターンと外れると
+// 権限を失ったまま静かに開いてしまう
+const viewerLabelPrefix = backend.match(/format!\("([\w-]+)-\{\}"/)?.[1];
+if (!viewerLabelPrefix) fail("cannot find viewer window label prefix");
+if (!capabilities.windows.includes(`${viewerLabelPrefix}-*`)) {
+  fail(`viewer window capability; label prefix=${viewerLabelPrefix}-, windows=[${capabilities.windows.join(", ")}]`);
+}
+
+// ファイル名規則は入力画面 (ui) と保存処理 (core) の二重検証。規則そのものは一致していなければならない
+function expandReserved(alternatives) {
+  return alternatives.flatMap((name) =>
+    name.includes("[1-9]")
+      ? Array.from({ length: 9 }, (_, index) => name.replace("[1-9]", String(index + 1)))
+      : [name]
+  ).map((name) => name.toUpperCase());
+}
+const reservedStart = coreFilename.indexOf("let reserved = matches!");
+if (reservedStart < 0) fail("cannot find reserved device name list");
+const coreReserved = names(
+  /"([A-Z0-9]+)"/g,
+  coreFilename.slice(reservedStart, coreFilename.indexOf(");", reservedStart))
+);
+const uiReserved = expandReserved(
+  (uiFilename.match(/WINDOWS_RESERVED_NAME = \/\^\(([^)]+)\)/)?.[1] ?? "").split("|").filter(Boolean)
+);
+assertSameSet("Windows reserved device names", coreReserved, uiReserved);
+
+const coreInvalidChars = coreFilename.match(/r#"(.*?)"#\.contains/)?.[1];
+const uiInvalidChars = uiFilename.match(/\[\\u0000-\\u001f([^\]]*)\]/)?.[1]?.replace(/\\\\/g, "\\");
+if (coreInvalidChars === undefined || uiInvalidChars === undefined) {
+  fail("cannot find Windows invalid character set");
+}
+assertSameSet("Windows invalid characters", [...coreInvalidChars], [...uiInvalidChars]);
+
+console.log(`IPC contract OK: ${commands.length} commands, wire enums, structs, and shared constants match.`);

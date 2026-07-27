@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 // char 単位の位置 (backend と共有)。col は Unicode スカラー index。
 export interface Pos {
@@ -28,12 +29,20 @@ export interface FolderEntry {
   is_dir: boolean;
 }
 
+// is_filename で意味が変わる項目があるので、読む側は必ず先に見ること:
+//   本文一致   line/col = 本文中の位置、preview = その行、highlights = preview 上の範囲
+//   ファイル名 line/col = 常に 0 (本文の位置ではない)、preview = "ファイル名: <パス>"
 export interface WorkspaceSearchResult {
   rel_path: string;
   line: number;
   col: number;
   preview: string;
+  // preview 上の一致範囲 [開始char, 長さ]。正規表現とファジーはフロントで
+  // 位置を再計算できないため、当てた backend が持って渡す。
+  highlights: [number, number][];
   is_filename: boolean;
+  // ファジー一致の当てはまりの良さ (本文一致は 0)。並べ替えの鍵として使う
+  score: number;
 }
 
 export interface EditResult {
@@ -110,8 +119,49 @@ export const listArchiveEntries = (relPath: string) =>
 export const listFolderEntries = (relDir: string) =>
   invoke<FolderEntry[]>("list_folder_entries", { relDir });
 
-export const workspaceSearch = (pat: string, matchCase: boolean) =>
-  invoke<WorkspaceSearchResult[]>("workspace_search", { pat, matchCase });
+// フォルダ検索の打ち切り条件。既定値は ui/workspace-search-options.ts が持つ。
+// 各上限の 0 は「無制限」。
+export interface WorkspaceSearchOptions {
+  match_case: boolean;
+  use_regex: boolean;
+  whole_word: boolean;
+  max_file_bytes: number;
+  max_files: number;
+  max_results: number;
+  exclude_dirs: string[];
+  exclude_globs: string[];
+  exclude_binary: boolean;
+  respect_gitignore: boolean;
+  search_file_names: boolean;
+  search_contents: boolean;
+  workers: number; // 0 = 自動
+}
+
+// hit_* は上限で打ち切ったかどうか。件数だけでは「省略された」ことが分からない。
+// pattern_error は正規表現/除外パターンが壊れている場合の理由。
+export interface WorkspaceSearchOutcome {
+  results: WorkspaceSearchResult[];
+  scanned_files: number;
+  hit_file_limit: boolean;
+  hit_result_limit: boolean;
+  pattern_error: string | null;
+}
+
+// searchId は打ち切った検索の取りこぼしを次の検索から締め出すための世代番号
+export const workspaceSearch = (pat: string, options: WorkspaceSearchOptions, searchId: number) =>
+  invoke<WorkspaceSearchOutcome>("workspace_search", { pat, options, searchId });
+
+export interface WorkspaceSearchBatch {
+  search_id: number;
+  results: WorkspaceSearchResult[];
+}
+
+// 検索中の途中経過。確定を待たずに出せるものを出す (走査順で、確定後の並びとは別)
+export const onWorkspaceSearchBatch = (handler: (batch: WorkspaceSearchBatch) => void) =>
+  listen<WorkspaceSearchBatch>("workspace-search-batch", (event) => handler(event.payload));
+
+// 進行中の検索を打ち切る (無制限指定で走り出した検索から抜ける手段)
+export const workspaceSearchCancel = () => invoke<void>("workspace_search_cancel");
 
 // フォルダ内に空の新規ファイルを作り、その場で開く (dir はフォルダルートからの相対パス)
 export const createNote = (dir: string | null, name: string) =>
@@ -179,10 +229,67 @@ export const ackExternal = () => invoke<void>("ack_external");
 export const setEncoding = (enc: Encoding) => invoke<void>("set_encoding", { enc });
 export const setEol = (eol: Eol) => invoke<void>("set_eol", { eol });
 
+// 設定は不透明な JSON 文字列として往復させる (構造を知るのは ui/settings.ts だけ)
+export const loadSettings = () => invoke<string>("load_settings");
+export const saveSettings = (json: string) => invoke<void>("save_settings", { json });
+
 export const loadBookmarks = () => invoke<BmNode[]>("load_bookmarks");
 export const saveBookmarks = (nodes: BmNode[]) => invoke<void>("save_bookmarks", { nodes });
 export const pathIsDirectory = (path: string) => invoke<boolean>("path_is_directory", { path });
 export const nextMemoPath = (directory: string, stem: string, extension: string) =>
   invoke<string>("next_memo_path", { directory, stem, extension });
 export const initialPath = () => invoke<string | null>("initial_path");
-export const launchNew = (path?: string) => invoke<void>("launch_new", { path });
+// 起動時に飛ぶ位置 (検索結果を別ウィンドウで開いたとき backend が引数へ載せる)
+export const initialGoto = () => invoke<Pos | null>("initial_goto");
+export const launchNew = (path?: string, goto?: Pos) =>
+  invoke<void>("launch_new", { path, line: goto?.line ?? null, col: goto?.col ?? null });
+
+// エディタが必要とする文書操作だけを切り出した口。エディタはこの型にだけ依存し、
+// 既定の実装 (下の documentClient) が Tauri の invoke を呼ぶ。
+export interface DocumentClient {
+  lines: typeof lines;
+  lineCharLen: typeof lineCharLen;
+  edit: typeof edit;
+  editMany: typeof editMany;
+  undo: typeof undo;
+  redo: typeof redo;
+  find: typeof find;
+  findStep: typeof findStep;
+  replaceAllChunk: typeof replaceAllChunk;
+  replaceAllCancel: typeof replaceAllCancel;
+}
+
+export const documentClient: DocumentClient = {
+  lines,
+  lineCharLen,
+  edit,
+  editMany,
+  undo,
+  redo,
+  find,
+  findStep,
+  replaceAllChunk,
+  replaceAllCancel,
+};
+
+export type ViewerFormat = "csv" | "markdown";
+export interface ViewerSelection {
+  start: Pos;
+  end: Pos;
+}
+export interface ViewerPayload {
+  format: ViewerFormat;
+  text: string;
+  selection: ViewerSelection | null;
+  source_path: string | null; // 相対パス画像の解決に使う元ファイル (未保存なら null)
+}
+export const openViewer = (
+  format: ViewerFormat,
+  text: string,
+  selection: ViewerSelection | null,
+  sourcePath: string | null
+) => invoke<string>("open_viewer", { format, text, selection, sourcePath });
+export const takeViewerPayload = (label: string) =>
+  invoke<ViewerPayload>("take_viewer_payload", { label });
+export const updateViewer = (label: string, text: string, selection: ViewerSelection | null) =>
+  invoke<void>("update_viewer", { label, text, selection });

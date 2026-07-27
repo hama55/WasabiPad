@@ -1,7 +1,9 @@
-import type { FolderEntry, WorkspaceSearchResult } from "./api";
+import type { FolderEntry, Pos, WorkspaceSearchOptions, WorkspaceSearchResult } from "./api";
+import { WorkspaceSearchPanel, type WorkspaceSearchPorts } from "./workspace-search-panel";
 
 // フォルダ/ZIP/Excelのエントリ名 ("sub/a.txt" 形式) からツリーを構築して表示。
 // 実データは backend が保持し、選択時に relPath を親へ通知するだけ。
+// 検索の窓と結果は WorkspaceSearchPanel が持ち、ここは置き場を貸すだけ。
 //
 // zip/xlsx/xls は "archive" 種別の葉として表示し、中身は展開ボタンを押すまで取得しない。
 // 展開後に挿入される内部エントリ行は "archiveEntry" (相対パスは "アーカイブのrelPath::エントリ名")。
@@ -16,11 +18,32 @@ interface Row {
   childrenLoaded: boolean; // dir/archive の子一覧を取得済みか
 }
 
+// 行頭の記号 [閉じているとき, 開いているとき]。種別を足したらここも足りなくなる
+// (Record なので、足し忘れは型が落とす)。
+const ROW_GLYPHS: Record<RowKind, [string, string]> = {
+  dir: ["📁", "🗂️"],
+  archive: ["›", "⌄"],
+  file: ["📄", "📄"],
+  archiveEntry: ["", ""],
+};
+
 export interface ContextTarget {
   relPath: string;
   isDir: boolean;
+  goto?: Pos; // 検索結果から開く場合の飛び先
 }
 
+// サイドバーが外界へ出す依頼。IPC も文書状態もここより先は知らない。
+// 検索の依頼 (onSearch / onCancel / onOpen / onOptionsChange) は
+// WorkspaceSearchPanel のもので、ここはそのまま素通しする。
+export interface SidebarPorts extends Omit<WorkspaceSearchPorts, "onViewChange" | "onContextMenu"> {
+  onSelect: (relPath: string, newWindow: boolean) => void;
+  onContextMenu: (x: number, y: number, target: ContextTarget | null) => void;
+  onExpandArchive: (relPath: string) => Promise<string[]>;
+  onExpandFolder: (relDir: string) => Promise<FolderEntry[]>;
+}
+
+// core の Doc::is_lazy_archive_ext と一致させる (check:ipc が両者の一致を検証する)
 const ARCHIVE_EXT = /\.(zip|xlsx|xls)$/i;
 function isArchiveName(name: string): boolean {
   return ARCHIVE_EXT.test(name);
@@ -29,51 +52,30 @@ function isArchiveName(name: string): boolean {
 export class Sidebar {
   private host: HTMLElement;
   private tree: HTMLElement;
-  private search: HTMLElement;
-  private searchInput: HTMLInputElement;
-  private searchCase: HTMLInputElement;
-  private searchClear: HTMLButtonElement;
-  private results: WorkspaceSearchResult[] | "searching" | null = null;
-  private searchGen = 0;
-  private searchTimer: number | undefined;
-  private searchRunning = false;
+  private panel: WorkspaceSearchPanel;
   private rows: Row[] = [];
   private sel: string | null = null; // 選択中の relPath
   private onSelect: (relPath: string, newWindow: boolean) => void;
   private onContextMenu: (x: number, y: number, target: ContextTarget | null) => void;
   private onExpandArchive: (relPath: string) => Promise<string[]>;
   private onExpandFolder: (relDir: string) => Promise<FolderEntry[]>;
-  private onWorkspaceSearch: (pat: string, matchCase: boolean) => Promise<WorkspaceSearchResult[]>;
-  private onSearchResult: (result: WorkspaceSearchResult, pattern: string) => void;
 
-  constructor(
-    host: HTMLElement,
-    onSelect: (relPath: string, newWindow: boolean) => void,
-    onContextMenu: (x: number, y: number, target: ContextTarget | null) => void,
-    onExpandArchive: (relPath: string) => Promise<string[]>,
-    onExpandFolder: (relDir: string) => Promise<FolderEntry[]>,
-    onWorkspaceSearch: (pat: string, matchCase: boolean) => Promise<WorkspaceSearchResult[]>,
-    onSearchResult: (result: WorkspaceSearchResult, pattern: string) => void
-  ) {
+  constructor(host: HTMLElement, ports: SidebarPorts, searchOptions: WorkspaceSearchOptions) {
     this.host = host;
-    this.onSelect = onSelect;
-    this.onContextMenu = onContextMenu;
-    this.onExpandArchive = onExpandArchive;
-    this.onExpandFolder = onExpandFolder;
-    this.onWorkspaceSearch = onWorkspaceSearch;
-    this.onSearchResult = onSearchResult;
-    this.search = document.createElement("div");
-    this.search.className = "ws-search";
-    this.search.hidden = true;
-    this.search.innerHTML = `<input placeholder="検索" spellcheck="false" /><button type="button" title="検索をクリア">×</button><label><input type="checkbox" />Aa</label>`;
-    this.searchInput = this.search.querySelector("input")!;
-    this.searchClear = this.search.querySelector("button")!;
-    this.searchCase = this.search.querySelector("label input")!;
+    this.onSelect = ports.onSelect;
+    this.onContextMenu = ports.onContextMenu;
+    this.onExpandArchive = ports.onExpandArchive;
+    this.onExpandFolder = ports.onExpandFolder;
+    this.panel = new WorkspaceSearchPanel(searchOptions, {
+      onSearch: ports.onSearch,
+      onCancel: ports.onCancel,
+      onOpen: ports.onOpen,
+      onOptionsChange: ports.onOptionsChange,
+      onContextMenu: (x, y, target) => this.onContextMenu(x, y, target),
+      onViewChange: () => this.render(),
+    });
     this.tree = document.createElement("div");
-    this.host.append(this.search, this.tree);
-    this.searchInput.addEventListener("input", () => this.queueWorkspaceSearch());
-    this.searchClear.addEventListener("click", () => this.clearWorkspaceSearch());
-    this.searchCase.addEventListener("change", () => this.queueWorkspaceSearch());
+    this.host.append(this.panel.bar, this.tree);
     this.host.addEventListener("contextmenu", (e) => {
       if (e.target !== this.host && e.target !== this.tree) return; // 個々の行上は行側のリスナーに任せる
       e.preventDefault();
@@ -82,52 +84,11 @@ export class Sidebar {
   }
 
   setWorkspaceSearch(on: boolean) {
-    this.search.hidden = !on;
-    if (!on) {
-      this.searchGen++;
-      window.clearTimeout(this.searchTimer);
-      this.searchInput.value = "";
-      this.results = null;
-      this.render();
-    }
+    this.panel.setVisible(on);
   }
 
-  private queueWorkspaceSearch() {
-    const pat = this.searchInput.value;
-    const gen = ++this.searchGen;
-    window.clearTimeout(this.searchTimer);
-    if (!pat) {
-      this.results = null;
-      this.render();
-      return;
-    }
-    this.results = "searching";
-    this.render();
-    this.searchTimer = window.setTimeout(() => this.searchWorkspace(gen, pat, this.searchCase.checked), 150);
-  }
-
-  private clearWorkspaceSearch() {
-    this.searchGen++;
-    window.clearTimeout(this.searchTimer);
-    this.searchInput.value = "";
-    this.results = null;
-    this.render();
-    this.searchInput.focus();
-  }
-
-  private async searchWorkspace(gen: number, pat: string, matchCase: boolean) {
-    if (this.searchRunning) return;
-    this.searchRunning = true;
-    try {
-      const results = await this.onWorkspaceSearch(pat, matchCase);
-      if (gen === this.searchGen) {
-        this.results = results;
-        this.render();
-      }
-    } finally {
-      this.searchRunning = false;
-      if (gen !== this.searchGen && this.searchInput.value) this.queueWorkspaceSearch();
-    }
+  acceptSearchBatch(searchId: number, results: WorkspaceSearchResult[]) {
+    this.panel.acceptBatch(searchId, results);
   }
 
   // "sub/a.txt" 形式の名前一覧からディレクトリ見出し+葉の行を組み立てる。
@@ -282,34 +243,14 @@ export class Sidebar {
     return out;
   }
 
+  // ツリーの置き場は1つ。検索中と検索後は結果を出し、それ以外はフォルダを出す
   private render() {
+    this.tree.replaceChildren(this.panel.showing ? this.panel.renderTree() : this.folderTree());
+  }
+
+  // ---- フォルダ/アーカイブのツリー ----
+  private folderTree(): DocumentFragment {
     const frag = document.createDocumentFragment();
-    if (this.results === "searching") {
-      const searching = document.createElement("div");
-      searching.className = "ws-empty";
-      searching.textContent = "検索中…";
-      frag.appendChild(searching);
-      this.tree.replaceChildren(frag);
-      return;
-    }
-    if (this.results) {
-      if (this.results.length === 0) {
-        const empty = document.createElement("div");
-        empty.className = "ws-empty";
-        empty.textContent = "見つかりません";
-        frag.appendChild(empty);
-      }
-      for (const result of this.results) {
-        const div = document.createElement("div");
-        div.className = "ws-result";
-        div.textContent = `${result.rel_path}:${result.line + 1}`;
-        div.title = div.textContent;
-        div.addEventListener("click", () => this.onSearchResult(result, this.searchInput.value));
-        frag.appendChild(div);
-      }
-      this.tree.replaceChildren(frag);
-      return;
-    }
     for (const i of this.visible()) {
       const r = this.rows[i];
       const div = document.createElement("div");
@@ -318,7 +259,7 @@ export class Sidebar {
 
       const arrow = document.createElement("span");
       arrow.className = "fv-arrow";
-      arrow.textContent = r.kind === "dir" ? (r.expanded ? "🗂️" : "📁") : r.kind === "archive" ? (r.expanded ? "⌄" : "›") : r.kind === "file" ? "📄" : "";
+      arrow.textContent = ROW_GLYPHS[r.kind][r.expanded ? 1 : 0];
       div.appendChild(arrow);
       div.appendChild(document.createTextNode(r.label));
 
@@ -328,9 +269,9 @@ export class Sidebar {
           return;
         }
         if (r.kind === "dir") {
-          this.expandFolderRow(r);
+          void this.expandFolderRow(r);
         } else if (r.kind === "archive") {
-          this.expandArchiveRow(r);
+          void this.expandArchiveRow(r);
         } else {
           this.sel = r.relPath;
           this.render();
@@ -352,6 +293,6 @@ export class Sidebar {
       }
       frag.appendChild(div);
     }
-    this.tree.replaceChildren(frag);
+    return frag;
   }
 }

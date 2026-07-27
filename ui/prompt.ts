@@ -1,20 +1,27 @@
-// Tauri の webview では window.prompt が使えないため、複数フィールド入力用の
-// 簡易モーダルを自前実装する (お気に入りの名前/パス編集などに使用)。
+// 入力・確認のモーダル。重ね方は ui/modal.ts が持ち、ここは中身と返す値だけを決める。
+import { openModal } from "./modal";
+
 export function promptFields(
   title: string,
-  fields: { label: string; value: string; options?: { label: string; value: string }[] }[]
+  fields: {
+    label: string;
+    value: string;
+    options?: { label: string; value: string }[];
+    validate?: (value: string, values: string[]) => string | null;
+  }[]
 ): Promise<string[] | null> {
   return new Promise((resolve) => {
-    const overlay = document.createElement("div");
-    overlay.className = "pf-overlay";
-    const box = document.createElement("div");
-    box.className = "pf-box";
+    const { box, close } = openModal({
+      onCancel: () => finish(null),
+      onAccept: () => submit(),
+    });
 
     const h = document.createElement("div");
     h.className = "pf-title";
     h.textContent = title;
     box.appendChild(h);
 
+    const errors: HTMLElement[] = [];
     const inputs = fields.map((f) => {
       const row = document.createElement("div");
       row.className = "pf-row";
@@ -34,6 +41,11 @@ export function promptFields(
       input.value = f.value;
       row.appendChild(label);
       row.appendChild(input);
+      const error = document.createElement("span");
+      error.className = "pf-error";
+      error.setAttribute("aria-live", "polite");
+      row.appendChild(error);
+      errors.push(error);
       box.appendChild(row);
       return input;
     });
@@ -49,32 +61,34 @@ export function promptFields(
     btns.appendChild(okBtn);
     box.appendChild(btns);
 
-    overlay.appendChild(box);
-    document.body.appendChild(overlay);
-
     const finish = (result: string[] | null) => {
-      overlay.remove();
-      window.removeEventListener("keydown", onKey, true);
+      close();
       resolve(result);
     };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        finish(null);
-      } else if (e.key === "Enter") {
-        e.preventDefault();
-        submit();
-      }
+    const validate = () => {
+      const values = inputs.map((input) => input.value);
+      let valid = true;
+      fields.forEach((field, index) => {
+        const message = field.validate?.(values[index], values) ?? null;
+        errors[index].textContent = message ?? "";
+        inputs[index].setAttribute("aria-invalid", String(Boolean(message)));
+        valid &&= !message;
+      });
+      okBtn.disabled = !valid;
+      return valid;
     };
-    const submit = () => finish(inputs.map((i) => i.value));
+    const submit = () => {
+      if (validate()) finish(inputs.map((i) => i.value));
+    };
 
-    overlay.addEventListener("mousedown", (e) => {
-      if (e.target === overlay) finish(null);
-    });
     cancelBtn.addEventListener("click", () => finish(null));
     okBtn.addEventListener("click", submit);
-    window.addEventListener("keydown", onKey, true);
+    inputs.forEach((input) => {
+      input.addEventListener("input", validate);
+      input.addEventListener("change", validate);
+    });
 
+    validate();
     inputs[0]?.focus();
     if (inputs[0] instanceof HTMLInputElement) inputs[0].select();
   });
@@ -82,24 +96,18 @@ export function promptFields(
 
 export function showMessage(title: string, message: string, okLabel = "OK"): Promise<void> {
   return new Promise((resolve) => {
-    const overlay = document.createElement("div");
-    overlay.className = "pf-overlay";
-    overlay.innerHTML = `<div class="pf-box"><div class="pf-title"></div><div class="pf-message"></div><div class="pf-btns"><button class="pf-ok"></button></div></div>`;
-    overlay.querySelector<HTMLElement>(".pf-title")!.textContent = title;
-    overlay.querySelector<HTMLElement>(".pf-message")!.textContent = message;
-    const ok = overlay.querySelector<HTMLButtonElement>(".pf-ok")!;
+    // 伝えるだけの画面なので、Escape も Enter も背景クリックも「読んだ」で同じ
+    const { box, close } = openModal({ onCancel: () => finish(), onAccept: () => finish() });
+    box.innerHTML = `<div class="pf-title"></div><div class="pf-message"></div><div class="pf-btns"><button class="pf-ok"></button></div>`;
+    box.querySelector<HTMLElement>(".pf-title")!.textContent = title;
+    box.querySelector<HTMLElement>(".pf-message")!.textContent = message;
+    const ok = box.querySelector<HTMLButtonElement>(".pf-ok")!;
     ok.textContent = okLabel;
-    document.body.appendChild(overlay);
     const finish = () => {
-      overlay.remove();
-      window.removeEventListener("keydown", onKey, true);
+      close();
       resolve();
     };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" || e.key === "Enter") { e.preventDefault(); finish(); }
-    };
     ok.addEventListener("click", finish);
-    window.addEventListener("keydown", onKey, true);
     ok.focus();
   });
 }
@@ -111,29 +119,23 @@ export function confirmMessage(
   cancelLabel = "キャンセル"
 ): Promise<boolean> {
   return new Promise((resolve) => {
-    const overlay = document.createElement("div");
-    overlay.className = "pf-overlay";
-    overlay.innerHTML = `<div class="pf-box"><div class="pf-title"></div><div class="pf-message"></div><div class="pf-btns"><button class="pf-cancel"></button><button class="pf-ok"></button></div></div>`;
-    overlay.querySelector<HTMLElement>(".pf-title")!.textContent = title;
-    overlay.querySelector<HTMLElement>(".pf-message")!.textContent = message;
-    const cancel = overlay.querySelector<HTMLButtonElement>(".pf-cancel")!;
-    const ok = overlay.querySelector<HTMLButtonElement>(".pf-ok")!;
+    const { box, close } = openModal({
+      onCancel: () => finish(false),
+      onAccept: () => finish(true),
+    });
+    box.innerHTML = `<div class="pf-title"></div><div class="pf-message"></div><div class="pf-btns"><button class="pf-cancel"></button><button class="pf-ok"></button></div>`;
+    box.querySelector<HTMLElement>(".pf-title")!.textContent = title;
+    box.querySelector<HTMLElement>(".pf-message")!.textContent = message;
+    const cancel = box.querySelector<HTMLButtonElement>(".pf-cancel")!;
+    const ok = box.querySelector<HTMLButtonElement>(".pf-ok")!;
     cancel.textContent = cancelLabel;
     ok.textContent = okLabel;
-    document.body.appendChild(overlay);
     const finish = (value: boolean) => {
-      overlay.remove();
-      window.removeEventListener("keydown", onKey, true);
+      close();
       resolve(value);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { e.preventDefault(); finish(false); }
-      if (e.key === "Enter") { e.preventDefault(); finish(true); }
     };
     cancel.addEventListener("click", () => finish(false));
     ok.addEventListener("click", () => finish(true));
-    overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) finish(false); });
-    window.addEventListener("keydown", onKey, true);
     ok.focus();
   });
 }
@@ -142,24 +144,19 @@ export type SaveDiscardChoice = "save" | "discard" | "cancel";
 
 export function confirmSaveDiscard(): Promise<SaveDiscardChoice> {
   return new Promise((resolve) => {
-    const overlay = document.createElement("div");
-    overlay.className = "pf-overlay";
-    overlay.innerHTML = `<div class="pf-box"><div class="pf-title">未保存のファイルがあります。</div><div class="pf-message">保存して続行するか、変更を破棄してください。</div><div class="pf-btns"><button class="pf-cancel">キャンセル</button><button class="pf-discard">破棄</button><button class="pf-ok">保存して続行</button></div></div>`;
-    document.body.appendChild(overlay);
+    // 破棄だけは押し間違いが取り返しつかないので、Enter/Escape の逃げ道には割り当てない
+    const { box, close } = openModal({
+      onCancel: () => finish("cancel"),
+      onAccept: () => finish("save"),
+    });
+    box.innerHTML = `<div class="pf-title">未保存のファイルがあります。</div><div class="pf-message">保存して続行するか、変更を破棄してください。</div><div class="pf-btns"><button class="pf-cancel">キャンセル</button><button class="pf-discard">破棄</button><button class="pf-ok">保存して続行</button></div>`;
     const finish = (value: SaveDiscardChoice) => {
-      overlay.remove();
-      window.removeEventListener("keydown", onKey, true);
+      close();
       resolve(value);
     };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { e.preventDefault(); finish("cancel"); }
-      if (e.key === "Enter") { e.preventDefault(); finish("save"); }
-    };
-    overlay.querySelector(".pf-cancel")!.addEventListener("click", () => finish("cancel"));
-    overlay.querySelector(".pf-discard")!.addEventListener("click", () => finish("discard"));
-    overlay.querySelector(".pf-ok")!.addEventListener("click", () => finish("save"));
-    overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) finish("cancel"); });
-    window.addEventListener("keydown", onKey, true);
-    overlay.querySelector<HTMLButtonElement>(".pf-ok")!.focus();
+    box.querySelector(".pf-cancel")!.addEventListener("click", () => finish("cancel"));
+    box.querySelector(".pf-discard")!.addEventListener("click", () => finish("discard"));
+    box.querySelector(".pf-ok")!.addEventListener("click", () => finish("save"));
+    box.querySelector<HTMLButtonElement>(".pf-ok")!.focus();
   });
 }

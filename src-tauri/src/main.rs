@@ -7,12 +7,49 @@ mod state;
 use wasabipad_core::{
     self, BookmarkNode, Doc, DocInfo, EditManyItem, EditManyResult, EditResult, EncodingId,
     Eol, ExternalCheck, FindCursor, FindOutcome, FindResult, FolderEntry, PosC,
-    ReplaceChunkResult, SaveOutcome, WorkspaceSearchResult,
+    ReplaceChunkResult, SaveOutcome, SearchOptions, WorkspaceSearchOutcome,
 };
 use state::{with_doc, DocState, State};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::Mutex;
+use std::sync::{
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    Arc, Mutex,
+};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+
+// 受理する形式はこの enum が単一の定義。表示名はフロント (ui/format.ts) だけが持つ。
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+enum ViewerFormat {
+    #[serde(rename = "csv")]
+    Csv,
+    #[serde(rename = "markdown")]
+    Markdown,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct ViewerPayload {
+    format: ViewerFormat,
+    text: String,
+    selection: Option<ViewerSelection>,
+    // Markdown 内の相対パス画像は元ファイルの位置からしか解決できない (未保存なら None)
+    source_path: Option<String>,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct ViewerSelection {
+    start: PosC,
+    end: PosC,
+}
+
+struct ViewerStore(Mutex<HashMap<String, ViewerPayload>>);
+
+// 進行中のフォルダ検索を止めるための共有フラグ。走査量は無制限を既定にしたため、
+// 打ち切る手段がないと巨大フォルダで利用者がアプリを閉じるしかなくなる。
+struct SearchCancel(Mutex<Arc<AtomicBool>>);
+
+static VIEWER_ID: AtomicU64 = AtomicU64::new(1);
 
 #[tauri::command]
 fn open_path(path: String, state: State) -> Result<DocInfo, String> {
@@ -68,11 +105,48 @@ fn list_folder_entries(rel_dir: String, state: State) -> Result<Vec<FolderEntry>
         .ok_or_else(|| "no entries".into())
 }
 
+// 直前の検索へ中止を通知し、今回の検索用のフラグを差し替える
+fn take_over_search(cancel: &tauri::State<'_, SearchCancel>) -> Result<Arc<AtomicBool>, String> {
+    let flag = Arc::new(AtomicBool::new(false));
+    let mut slot = cancel.0.lock().map_err(|_| "検索を開始できません".to_string())?;
+    slot.store(true, Ordering::Relaxed);
+    *slot = flag.clone();
+    Ok(flag)
+}
+
+// 検索中の途中経過。search_id はフロントが発行した世代番号で、
+// 打ち切った検索の取りこぼしが次の検索へ混ざらないようにするためだけに載せる。
+#[derive(Clone, serde::Serialize)]
+struct WorkspaceSearchBatch {
+    search_id: u32,
+    results: Vec<wasabipad_core::WorkspaceSearchResult>,
+}
+
 #[tauri::command]
-fn workspace_search(pat: String, match_case: bool, state: State) -> Result<Vec<WorkspaceSearchResult>, String> {
+async fn workspace_search(
+    pat: String,
+    options: SearchOptions,
+    search_id: u32,
+    app: AppHandle,
+    state: State<'_>,
+    cancel: tauri::State<'_, SearchCancel>,
+) -> Result<WorkspaceSearchOutcome, String> {
     let root = with_doc(&state, |doc| doc.workspace_root())
         .ok_or_else(|| "folder is not open".to_string())?;
-    Ok(wasabipad_core::search_workspace(&root, &pat, match_case))
+    let flag = take_over_search(&cancel)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let emit = |results| {
+            let _ = app.emit("workspace-search-batch", WorkspaceSearchBatch { search_id, results });
+        };
+        wasabipad_core::search_workspace(&root, &pat, &options, &flag, &emit)
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn workspace_search_cancel(cancel: tauri::State<'_, SearchCancel>) -> Result<(), String> {
+    take_over_search(&cancel).map(|_| ())
 }
 
 #[tauri::command]
@@ -126,8 +200,9 @@ fn edit(
     text: String,
     coalesce: bool,
     state: State,
-) -> EditResult {
+) -> Result<EditResult, String> {
     with_doc(&state, |doc| doc.edit(start, end, caret_before, &text, coalesce))
+        .ok_or_else(|| "閲覧専用の文書は編集できません".to_string())
 }
 
 #[tauri::command]
@@ -136,8 +211,9 @@ fn edit_many(
     caret_before: PosC,
     primary_index: usize,
     state: State,
-) -> EditManyResult {
+) -> Result<EditManyResult, String> {
     with_doc(&state, |doc| doc.edit_many(edits, caret_before, primary_index))
+        .ok_or_else(|| "閲覧専用の文書は編集できません".to_string())
 }
 
 #[tauri::command]
@@ -232,6 +308,17 @@ fn save_bookmarks(nodes: Vec<BookmarkNode>) -> Result<(), String> {
     wasabipad_core::save_bookmarks(&nodes).map_err(|e| e.to_string())
 }
 
+// 設定は不透明な JSON 文字列として往復させる (構造を知るのは ui/settings.ts だけ)。
+#[tauri::command]
+fn load_settings() -> String {
+    wasabipad_core::load_settings()
+}
+
+#[tauri::command]
+fn save_settings(json: String) -> Result<(), String> {
+    wasabipad_core::save_settings(&json).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn path_is_directory(path: String) -> bool {
     PathBuf::from(path).is_dir()
@@ -244,21 +331,9 @@ fn reload_with_encoding(enc: EncodingId, state: State) -> Result<DocInfo, String
 
 #[tauri::command]
 fn next_memo_path(directory: String, stem: String, extension: String) -> Result<String, String> {
-    let stem = stem.trim();
-    if stem.is_empty() || stem == "." || stem == ".." || stem.contains(['/', '\\']) {
-        return Err("ファイル名が正しくありません".into());
-    }
-    let dir = PathBuf::from(directory);
-    let ext = extension.trim_start_matches('.');
-    for number in 1.. {
-        let numbered = if number == 1 { stem.to_string() } else { format!("{stem}{number}") };
-        let name = if ext.is_empty() { numbered } else { format!("{numbered}.{ext}") };
-        let candidate = dir.join(name);
-        if !candidate.exists() {
-            return Ok(candidate.to_string_lossy().into_owned());
-        }
-    }
-    unreachable!()
+    wasabipad_core::next_available_path(&PathBuf::from(directory), &stem, &extension)
+        .map(|path| path.to_string_lossy().into_owned())
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -266,20 +341,118 @@ fn initial_path() -> Option<String> {
     std::env::args().nth(1)
 }
 
+// 起動引数の "+行:桁" (0起点)。検索結果を別ウィンドウで開いたときの飛び先。
 #[tauri::command]
-fn launch_new(path: Option<String>) -> Result<(), String> {
+fn initial_goto() -> Option<PosC> {
+    let arg = std::env::args().nth(2)?;
+    let (line, col) = arg.strip_prefix('+')?.split_once(':')?;
+    Some(PosC { line: line.parse().ok()?, col: col.parse().ok()? })
+}
+
+#[tauri::command]
+fn launch_new(path: Option<String>, line: Option<usize>, col: Option<usize>) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let mut command = Command::new(exe);
     if let Some(path) = path.filter(|path| !path.is_empty()) {
         command.arg(path);
+        if let Some(line) = line {
+            command.arg(format!("+{line}:{}", col.unwrap_or(0)));
+        }
     }
     command.spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
+// Windowsでは同期command中のWebView生成がイベントループを塞ぐためasyncで実行する。
+#[tauri::command]
+async fn open_viewer(
+    format: ViewerFormat,
+    text: String,
+    selection: Option<ViewerSelection>,
+    source_path: Option<String>,
+    app: AppHandle,
+    state: tauri::State<'_, ViewerStore>,
+) -> Result<String, String> {
+    // 形式名入りのタイトルは payload 受信後にフロントが設定する。ここは生成時の暫定表示。
+    let title = app.package_info().name.clone();
+    let label = format!("viewer-{}", VIEWER_ID.fetch_add(1, Ordering::Relaxed));
+    state
+        .0
+        .lock()
+        .map_err(|_| "ビューの準備に失敗しました".to_string())?
+        .insert(label.clone(), ViewerPayload { format, text, selection, source_path });
+
+    let window = match WebviewWindowBuilder::new(&app, &label, WebviewUrl::App("viewer.html".into()))
+        .title(title)
+        .decorations(false)
+        .inner_size(960.0, 700.0)
+        .build()
+    {
+        Ok(window) => window,
+        Err(error) => {
+            if let Ok(mut payloads) = state.0.lock() {
+                payloads.remove(&label);
+            }
+            return Err(error.to_string());
+        }
+    };
+    let cleanup_app = app.clone();
+    let cleanup_label = label.clone();
+    window.on_window_event(move |event| {
+        if matches!(event, tauri::WindowEvent::Destroyed) {
+            if let Ok(mut payloads) = cleanup_app.state::<ViewerStore>().0.lock() {
+                payloads.remove(&cleanup_label);
+            }
+        }
+    });
+    Ok(label)
+}
+
+#[tauri::command]
+fn take_viewer_payload(
+    label: String,
+    state: tauri::State<'_, ViewerStore>,
+) -> Result<ViewerPayload, String> {
+    state
+        .0
+        .lock()
+        .map_err(|_| "ビューの読込みに失敗しました".to_string())?
+        .get(&label)
+        .cloned()
+        .ok_or_else(|| "表示内容が見つかりません".to_string())
+}
+
+#[tauri::command]
+fn update_viewer(
+    label: String,
+    text: String,
+    selection: Option<ViewerSelection>,
+    app: AppHandle,
+    state: tauri::State<'_, ViewerStore>,
+) -> Result<(), String> {
+    let payload = {
+        let mut payloads = state
+            .0
+            .lock()
+            .map_err(|_| "ビューの更新に失敗しました".to_string())?;
+        let payload = payloads
+            .get_mut(&label)
+            .ok_or_else(|| "ビューが閉じられています".to_string())?;
+        payload.text = text;
+        payload.selection = selection;
+        payload.clone()
+    };
+    app.get_webview_window(&label)
+        .ok_or_else(|| "ビューが閉じられています".to_string())?
+        .emit("viewer-update", payload)
+        .map_err(|e| e.to_string())
 }
 
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(Mutex::new(DocState(Doc::empty())))
+        .manage(ViewerStore(Mutex::new(HashMap::new())))
+        .manage(SearchCancel(Mutex::new(Arc::new(AtomicBool::new(false)))))
         .invoke_handler(tauri::generate_handler![
             open_path,
             new_doc,
@@ -290,6 +463,7 @@ fn main() {
             list_archive_entries,
             list_folder_entries,
             workspace_search,
+            workspace_search_cancel,
             create_note,
             rename_entry,
             reveal_in_explorer,
@@ -311,10 +485,16 @@ fn main() {
             set_eol,
             load_bookmarks,
             save_bookmarks,
+            load_settings,
+            save_settings,
             path_is_directory,
             next_memo_path,
             initial_path,
+            initial_goto,
             launch_new,
+            open_viewer,
+            take_viewer_payload,
+            update_viewer,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

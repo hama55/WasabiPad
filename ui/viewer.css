@@ -1,0 +1,192 @@
+@import "./theme.css";
+
+/* --font-mono は viewer.ts が DEFAULT_EDITOR_CONFIG.fontFamily から設定する */
+/* 共通パレットは theme.css。ここはビューだけで使う変数。 */
+:root, :root[data-theme="dark"] {
+  color-scheme: dark;
+  --row-alt: #242424;
+  --source-selected-bg: #ffffff;
+  --source-selected-fg: #3b3b3b;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --row-alt: #f8f8f8;
+  --source-selected-bg: #1e1e1e;
+  --source-selected-fg: #cccccc;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; overflow: hidden; }
+body {
+  display: flex; flex-direction: column;
+  background: var(--bg-editor); color: var(--fg);
+  font: 13px var(--font-ui);
+}
+
+#titlebar {
+  display: flex; align-items: stretch; height: 32px;
+  background: var(--bg-title); flex: none; user-select: none;
+}
+#viewer-title-spacer { width: 138px; flex: none; }
+#viewer-title {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  min-width: 0; overflow: hidden; white-space: nowrap;
+  color: var(--fg); font-size: 12px;
+}
+#wincontrols { display: flex; }
+#wincontrols button {
+  width: 46px; border: 0; background: none; color: var(--fg);
+  font: 10px "Segoe MDL2 Assets"; cursor: default;
+}
+#wincontrols button:hover { background: var(--hover); }
+#win-close:hover { background: #e81123; color: #fff; }
+
+main { position: relative; flex: 1; min-height: 0; }
+#viewer-content { width: 100%; height: 100%; overflow: auto; user-select: text; }
+#viewer-content[hidden], #chart-panel[hidden] { display: none; }
+
+.viewer-grid {
+  border-collapse: separate; border-spacing: 0;
+  min-width: 100%; font: 13px var(--font-mono);
+}
+.viewer-grid th, .viewer-grid td {
+  max-width: 520px; padding: 5px 9px; overflow: hidden; text-overflow: ellipsis;
+  white-space: pre; text-align: left; border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.viewer-grid th {
+  position: sticky; top: 0; z-index: 1;
+  background: var(--bg-side); color: var(--fg);
+}
+.viewer-grid .viewer-line-number {
+  position: sticky; left: 0; z-index: 2;
+  min-width: 44px; text-align: right; color: var(--fg-dim);
+  background: var(--bg-side);
+}
+.viewer-grid tr:nth-child(even) > :where(td, .viewer-line-number) { background: var(--row-alt); }
+.viewer-grid tr.viewer-source-selected > *,
+.viewer-grid tr > .viewer-source-selected {
+  background: var(--source-selected-bg);
+  color: var(--source-selected-fg);
+}
+
+.viewer-source-selected {
+  background: var(--source-selected-bg);
+  color: var(--source-selected-fg);
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+article { max-width: 900px; margin: 0 auto; padding: 24px 36px 64px; line-height: 1.65; }
+article h1, article h2 { border-bottom: 1px solid var(--border-strong); padding-bottom: .25em; }
+article ul, article ol { padding-inline-start: 2em; }
+article pre, article code { font-family: var(--font-mono); background: var(--bg-side); }
+article code { padding: .12em .3em; border-radius: 3px; }
+article pre { padding: 12px; overflow: auto; border: 1px solid var(--border-strong); border-radius: 4px; }
+article pre code { padding: 0; }
+article blockquote { margin-left: 0; padding-left: 14px; color: var(--fg-dim); border-left: 4px solid var(--border-strong); }
+article img { max-width: 100%; }
+article a { color: var(--bg-status); }
+article table {
+  min-width: 0; width: auto; display: block; overflow: auto;
+  border-collapse: collapse;
+}
+article th, article td {
+  padding: 6px 10px;
+  border: 1px solid var(--border-strong);
+  text-align: left;
+}
+article th { background: var(--bg-side); }
+article tbody tr:nth-child(even) { background: var(--row-alt); }
+
+#statusbar {
+  display: flex; align-items: center; gap: 12px;
+  height: 22px; padding: 0 10px; flex: none;
+  background: var(--bg-status); color: #fff; font-size: 12px;
+  user-select: none; overflow: hidden; white-space: nowrap;
+}
+#viewer-summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+#viewer-summary.warning { color: #ffe08a; }
+.st-spacer { flex: 1; }
+#viewer-delimiter { display: flex; align-items: center; gap: 4px; flex: none; }
+#viewer-delimiter[hidden] { display: none; }
+#viewer-delimiter-input {
+  width: 42px; border: 0; border-bottom: 1px solid #ffffff88;
+  background: transparent; color: inherit; font: inherit; text-align: center;
+}
+#statusbar button {
+  border: 0; background: none; color: #fff;
+  font: 12px var(--font-ui); padding: 0 4px; cursor: default;
+}
+#statusbar button:hover { background: var(--hover); }
+
+#viewer-context-menu {
+  position: fixed; z-index: 1000; min-width: 180px; padding: 4px;
+  background: var(--bg-side); border: 1px solid var(--border-strong);
+  border-radius: 5px; box-shadow: 0 4px 12px #000a;
+}
+#viewer-context-menu[hidden] { display: none; }
+#viewer-context-menu button {
+  width: 100%; border: 0; border-radius: 4px; padding: 5px 10px;
+  background: none; color: var(--fg); text-align: left; font: 13px var(--font-ui);
+}
+#viewer-context-menu button:hover { background: var(--accent); color: #fff; }
+
+.viewer-dialog-overlay {
+  position: fixed; inset: 0; z-index: 2000;
+  display: flex; align-items: center; justify-content: center;
+  background: #0008;
+}
+.viewer-dialog {
+  width: min(620px, calc(100vw - 40px)); max-height: calc(100vh - 60px);
+  overflow: auto; padding: 16px;
+  background: var(--bg-side); color: var(--fg);
+  border: 1px solid var(--border-strong); border-radius: 6px;
+  box-shadow: 0 8px 24px #000a;
+}
+.viewer-dialog h2 { margin-bottom: 14px; font-size: 14px; font-weight: 600; }
+.viewer-dialog > label { display: grid; gap: 5px; margin-bottom: 14px; color: var(--fg-dim); font-size: 12px; }
+.viewer-dialog > label.chart-reverse-option {
+  display: flex; flex-direction: row; align-items: center; gap: 6px;
+  color: var(--fg);
+}
+.viewer-dialog select {
+  padding: 6px 8px; background: var(--bg-editor); color: var(--fg);
+  border: 1px solid var(--border-strong); border-radius: 4px; font: 13px var(--font-ui);
+}
+.viewer-dialog-label { margin-bottom: 6px; color: var(--fg-dim); font-size: 12px; }
+.chart-column-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 4px 12px; max-height: 260px; overflow: auto;
+  padding: 8px; background: var(--bg-editor); border: 1px solid var(--border-strong);
+}
+.chart-column-grid label {
+  display: flex; align-items: center; gap: 6px;
+  min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.viewer-dialog-error { min-height: 20px; padding-top: 4px; color: #f48771; font-size: 12px; }
+.viewer-dialog-buttons { display: flex; justify-content: flex-end; gap: 6px; margin-top: 10px; }
+.viewer-dialog-buttons button, #chart-toolbar button {
+  padding: 5px 12px; border: 1px solid var(--border-strong); border-radius: 4px;
+  background: var(--bg-editor); color: var(--fg); font: 13px var(--font-ui);
+}
+.viewer-dialog-buttons button:hover, #chart-toolbar button:hover { background: var(--hover); }
+.viewer-dialog-buttons .primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+#chart-panel {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  background: var(--bg-editor);
+}
+#chart-toolbar {
+  display: flex; align-items: center; gap: 12px; min-height: 38px;
+  padding: 6px 10px; background: var(--bg-side); border-bottom: 1px solid var(--border-strong);
+}
+#chart-toolbar strong { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+#chart-canvas-wrap { position: relative; flex: 1; min-height: 0; padding: 14px; }
+.viewer-error { padding: 24px; color: #f48771; white-space: pre-wrap; }
+
+::-webkit-scrollbar { width: 12px; height: 12px; }
+::-webkit-scrollbar-thumb { background: #79797966; }
+::-webkit-scrollbar-thumb:hover { background: #79797999; }
+::-webkit-scrollbar-corner { background: transparent; }

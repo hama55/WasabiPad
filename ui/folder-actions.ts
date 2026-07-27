@@ -1,0 +1,118 @@
+import * as api from "./api";
+import type { ContextTarget, Sidebar } from "./sidebar";
+import type { DocumentController } from "./document-controller";
+import { fileNameOf } from "./document-controller";
+import { showMenu, MenuItem } from "./menu";
+import { promptFields } from "./prompt";
+import { showError } from "./dialogs";
+import { basename, joinWindowsRoot, rebaseWindowsPath, relativePathFromRoot } from "./path";
+import { windowsFileNameError } from "./filename";
+import { getSetting } from "./settings";
+
+export interface FolderActionsPorts {
+  sidebar: Pick<Sidebar, "setEntries" | "selectByRelPath" | "refreshFolderEntries">;
+  onOpenInNewWindow: (relPath: string, goto?: api.Pos) => void;
+  onAddFavorite: (path: string) => void;
+  onSetStartupPath: (path: string) => void;
+  onOpenPath: (path: string) => void;
+}
+
+// フォルダビュー上のファイル操作 (右クリックメニューとその実行)。
+export class FolderActions {
+  constructor(private doc: DocumentController, private ports: FolderActionsPorts) {}
+
+  private get root(): string | null {
+    return this.doc.current.folderRoot;
+  }
+
+  private toAbsolute(relPath: string): string {
+    return joinWindowsRoot(this.root!, relPath);
+  }
+
+  showContextMenu(x: number, y: number, target: ContextTarget | null) {
+    const root = this.root;
+    if (!root) return; // アーカイブ閲覧中はファイル操作の対象がない
+    const items: MenuItem[] = [];
+    if (target) {
+      items.push({
+        label: "新しい WasabiPad で開く",
+        action: () => this.ports.onOpenInNewWindow(target.relPath, target.goto),
+      });
+      items.push({ label: "アドレスバーに設定", action: () => this.ports.onOpenPath(this.toAbsolute(target.relPath)) });
+    }
+    items.push({ label: "新規メモ作成...", action: () => void this.createNote(target?.isDir ? target.relPath : null) });
+    if (target) {
+      items.push({ label: "名前を変更...", action: () => void this.rename(target.relPath) });
+      if (!target.isDir) {
+        items.push({ label: "アプリで開く", action: () => void openInOtherApp(this.toAbsolute(target.relPath)) });
+      }
+    }
+    const revealPath = target ? this.toAbsolute(target.relPath) : root;
+    const revealIsDir = target ? target.isDir : true;
+    items.push({ label: "お気に入りに追加", action: () => this.ports.onAddFavorite(revealPath) });
+    items.push({ label: "エクスプローラで開く", action: () => void revealInExplorer(revealPath, revealIsDir) });
+    showMenu(x, y, items);
+  }
+
+  async createNote(relDir: string | null) {
+    const spec = await this.doc.promptMemoSpec();
+    if (!spec) return;
+    const name = fileNameOf(spec);
+    try {
+      const info = await api.createNote(relDir, name);
+      const relPath = relDir ? `${relDir}/${name}` : name;
+      this.doc.setSelectedRelPath(relPath);
+      this.doc.applyDocInfo(info);
+      await this.ports.sidebar.refreshFolderEntries();
+      this.ports.sidebar.selectByRelPath(relPath);
+    } catch (e) {
+      await showError("新規メモを作成できませんでした", e);
+    }
+  }
+
+  private async rename(relPath: string) {
+    const current = basename(relPath);
+    const result = await promptFields("名前を変更", [{
+      label: "新しい名前",
+      value: current,
+      validate: (value) => windowsFileNameError(value.trim()),
+    }]);
+    const newName = result?.[0].trim();
+    if (!newName || newName === current) return;
+    const oldAbsolute = this.toAbsolute(relPath);
+    const separator = relPath.lastIndexOf("/");
+    const newAbsolute = this.toAbsolute(separator < 0 ? newName : `${relPath.slice(0, separator + 1)}${newName}`);
+    try {
+      const info = await api.renameEntry(relPath, newName);
+      this.ports.sidebar.setEntries(info.folder_entries ?? []);
+      const root = this.root;
+      if (info.path && root) {
+        const rel = relativePathFromRoot(root, info.path);
+        this.doc.applyRenamed(info, rel);
+        this.ports.sidebar.selectByRelPath(rel);
+      }
+      // 起動時に開く既定パスが改名対象の下にあると、次回起動で開けなくなる
+      const startupPath = getSetting("startupPath");
+      const rebased = startupPath && rebaseWindowsPath(startupPath, oldAbsolute, newAbsolute);
+      if (rebased) this.ports.onSetStartupPath(rebased);
+    } catch (e) {
+      await showError("名前を変更できませんでした", e);
+    }
+  }
+}
+
+export async function revealInExplorer(path: string, isDir: boolean) {
+  try {
+    await api.revealInExplorer(path, isDir);
+  } catch (e) {
+    await showError("開けませんでした", e);
+  }
+}
+
+export async function openInOtherApp(path: string) {
+  try {
+    await api.openInOtherApp(path);
+  } catch (e) {
+    await showError("他のアプリで開けませんでした", e);
+  }
+}
