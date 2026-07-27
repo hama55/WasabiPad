@@ -1,4 +1,5 @@
 import type { WorkspaceSearchOptions } from "./api";
+import { openModal } from "./modal";
 import {
   clampSearchOptions,
   DEFAULT_SEARCH_OPTIONS,
@@ -31,10 +32,8 @@ export function openSearchSettings(
     ports.onChange(options);
   };
 
-  const overlay = document.createElement("div");
-  overlay.className = "pf-overlay";
-  const box = document.createElement("div");
-  box.className = "pf-box ss-box";
+  // Enter は渡さない (除外リストの入力欄が自前で使う)
+  const { box, close: teardown } = openModal({ onCancel: () => finish() }, "ss-box");
 
   const title = document.createElement("div");
   title.className = "pf-title";
@@ -103,21 +102,10 @@ export function openSearchSettings(
   buttons.append(reset, close);
 
   box.append(title, columns, buttons);
-  overlay.append(box);
-  document.body.append(overlay);
 
-  const teardown = () => {
-    overlay.remove();
-    window.removeEventListener("keydown", onKey, true);
-  };
   const finish = () => {
     teardown();
     ports.onClose();
-  };
-  const onKey = (e: KeyboardEvent) => {
-    if (e.key !== "Escape") return;
-    e.preventDefault();
-    finish();
   };
   // 既定に戻したら入力欄を作り直す (閉じた扱いにはしないので onClose は呼ばない)
   reset.addEventListener("click", () => {
@@ -127,10 +115,6 @@ export function openSearchSettings(
     openSearchSettings(options, ports);
   });
   close.addEventListener("click", finish);
-  overlay.addEventListener("mousedown", (e) => {
-    if (e.target === overlay) finish();
-  });
-  window.addEventListener("keydown", onKey, true);
   close.focus();
 }
 
