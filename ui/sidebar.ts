@@ -101,8 +101,7 @@ export class Sidebar {
   private collapseTouched = false; // 畳み方を手で変えたか (自動の畳み込みより手を優先する)
   private searchGen = 0;
   private searchTimer: number | undefined;
-  private searchRunning = false;
-  private aborted = false; // 中止ボタンで止めた直後に自動で再開しないための印
+  private running: Promise<WorkspaceSearchOutcome> | null = null; // 走行中の検索
   private rows: Row[] = [];
   private sel: string | null = null; // 選択中の relPath
   private onSelect: (relPath: string, newWindow: boolean) => void;
@@ -228,12 +227,12 @@ export class Sidebar {
   private queueWorkspaceSearch(delay = 150) {
     const pat = this.searchInput.value;
     const gen = ++this.searchGen;
-    this.aborted = false;
     window.clearTimeout(this.searchTimer);
-    // 世代が変わった時点で、走っている検索の結果は捨てると決まっている。
-    // 止めずに放っておくと最後まで走り切るまで次が始まらず (searchRunning)、
-    // その間の途中経過も世代違いで捨てられるので、画面が空のまま待たされる。
-    if (this.searchRunning) this.onCancelSearch();
+    // 条件が1つでも変われば最初から引き直す (前回の結果は再利用しない)。
+    // 世代が変わった時点で走行中の結果は捨てると決まっているので、その場で止める。
+    // 放っておくと走り切るまで次が始まらず、その間の途中経過も世代違いで捨てられて
+    // 画面が空のまま待たされる。
+    if (this.running) this.onCancelSearch();
     if (!pat) {
       this.setOutcome(null, "");
       return;
@@ -244,8 +243,7 @@ export class Sidebar {
 
   // 走査量は無制限が既定なので、待たされたら止められる必要がある
   private stopWorkspaceSearch() {
-    this.aborted = true;
-    this.searchGen++;
+    this.searchGen++; // 世代を進めれば、走行中の結果も待機中の要求も捨てられる
     window.clearTimeout(this.searchTimer);
     if (this.outcome) this.onCancelSearch(); // 走っていないなら止めるものがない
     this.setOutcome(null, "");
@@ -309,15 +307,19 @@ export class Sidebar {
     return this.collapsed.has(relPath) !== this.collapseByDefault;
   }
 
+  // 検索は同時に1本だけ。走っているものが畳まれるのを待ってから始める。
+  // 要求を捨てて「終わったら再キュー」に頼ると、中止が間に合わなかったぶんだけ
+  // 引き直しが遅れる (条件を変えたのに古い結果を見せられる時間ができる)。
   private async searchWorkspace(gen: number, pat: string, options: WorkspaceSearchOptions) {
-    if (this.searchRunning) return;
-    this.searchRunning = true;
+    while (this.running) await this.running.catch(() => {});
+    if (gen !== this.searchGen) return; // 待っている間にまた条件が変わった
+    const run = this.onWorkspaceSearch(pat, options, gen);
+    this.running = run;
     try {
-      const outcome = await this.onWorkspaceSearch(pat, options, gen);
+      const outcome = await run;
       if (gen === this.searchGen) this.setOutcome(outcome, pat);
     } finally {
-      this.searchRunning = false;
-      if (!this.aborted && gen !== this.searchGen && this.searchInput.value) this.queueWorkspaceSearch();
+      if (this.running === run) this.running = null;
     }
   }
 

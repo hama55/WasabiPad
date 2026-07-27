@@ -165,6 +165,34 @@ describe("Sidebar workspace search", () => {
     expect(cancels).toBe(2);
   });
 
+  it("条件が変わったら、走行中のものを畳んでから新しい条件で引き直す", async () => {
+    vi.useFakeTimers();
+    const calls: WorkspaceSearchOptions[] = [];
+    let stopFirst: () => void = () => {};
+    const host = mount(
+      (_pat, options) => {
+        calls.push(options);
+        if (calls.length > 1) return Promise.resolve(outcome([hit("a.txt", 0, "needle")]));
+        // 1本目は中止されるまで終わらない (backend の走査に相当)
+        return new Promise<WorkspaceSearchOutcome>((resolve) => {
+          stopFirst = () => resolve(outcome([]));
+        });
+      },
+      () => {},
+      () => stopFirst()
+    );
+    await search(host, "needle");
+    expect(calls).toHaveLength(1);
+    expect(calls[0].match_case).toBe(false);
+
+    host.querySelector<HTMLButtonElement>(".ws-search-row .ws-toggle")!.click(); // Aa
+    await vi.advanceTimersByTimeAsync(150);
+
+    expect(calls).toHaveLength(2);
+    expect(calls[1].match_case, "新しい条件で最初から引き直す").toBe(true);
+    expect(text(host, ".ws-summary")).toContain("1 件の結果");
+  });
+
   it("検索の設定を何も変えずに閉じても、走査中の結果を捨てない", async () => {
     vi.useFakeTimers();
     let searchId = 0;
