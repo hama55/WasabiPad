@@ -88,7 +88,17 @@ article pre code { padding: 0; }
 article blockquote { margin-left: 0; padding-left: 14px; color: var(--fg-dim); border-left: 4px solid var(--border-strong); }
 article img { max-width: 100%; }
 article a { color: var(--bg-status); }
-article table { min-width: 0; width: auto; display: block; overflow: auto; }
+article table {
+  min-width: 0; width: auto; display: block; overflow: auto;
+  border-collapse: collapse;
+}
+article th, article td {
+  padding: 6px 10px;
+  border: 1px solid var(--border-strong);
+  text-align: left;
+}
+article th { background: var(--bg-side); }
+article tbody tr:nth-child(even) { background: var(--row-alt); }
 
 #statusbar {
   display: flex; align-items: center; gap: 12px;
