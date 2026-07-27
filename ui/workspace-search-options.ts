@@ -88,10 +88,13 @@ export function searchScopeSummary(options: WorkspaceSearchOptions): string {
   const target = options.search_contents
     ? options.search_file_names ? "ファイル名と本文" : "本文のみ"
     : "ファイル名のみ";
+  // ファイル名の当て方は本文と同じとは限らない。当て方が違う条件のときだけ断る
+  const fuzzyNames = options.search_file_names && !options.use_regex && !options.whole_word;
   const how = [
     options.match_case ? "大文字小文字を区別" : null,
     options.use_regex ? "正規表現" : null,
     options.whole_word ? "単語単位" : null,
+    fuzzyNames ? "ファイル名はファジー一致" : null,
   ].filter(Boolean);
   const skipped = ["読み取れないファイル"];
   if (options.exclude_binary) skipped.push("バイナリファイル");

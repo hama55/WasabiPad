@@ -90,7 +90,8 @@ pub fn search_workspace(
     if pattern.is_empty() || (!options.search_file_names && !options.search_contents) {
         return WorkspaceSearchOutcome::default();
     }
-    let matcher = match content_matcher(pattern, options) {
+    let strict_names = strict_name_match(options);
+    let matcher = match build_matcher(pattern, options, strict_names) {
         Ok(matcher) => matcher,
         Err(message) => {
             return WorkspaceSearchOutcome { pattern_error: Some(message), ..Default::default() }
@@ -114,7 +115,10 @@ pub fn search_workspace(
     let (hit_file_limit, hit_result_limit) = (&shared_file_limit, &shared_result_limit);
 
     walk.build_parallel().run(|| {
-        let mut engine = Engine::new(matcher.as_ref());
+        let mut engine = Engine::new(
+            if options.search_contents { matcher.as_ref() } else { None },
+            if strict_names { matcher.as_ref() } else { None },
+        );
         Box::new(move |entry| {
             if cancel.load(Ordering::Relaxed) {
                 return WalkState::Quit;
@@ -214,10 +218,21 @@ fn relative_path(root: &Path, path: &Path) -> String {
         .replace('\\', "/")
 }
 
-// 本文検索を使わないなら matcher は要らない (正規表現の誤りも問わない)。
+// 正規表現や単語単位を指定したなら、それは「厳密に当てたい」という意思表示。
+// ファイル名もファジーをやめ、本文と同じ当て方に揃える。
+// (ファジーは「順序さえ合えば当たる」ので、厳密指定とは両立しない)
+fn strict_name_match(options: &SearchOptions) -> bool {
+    options.search_file_names && (options.use_regex || options.whole_word)
+}
+
+// 本文にもファイル名にも matcher を使わないなら要らない (正規表現の誤りも問わない)。
 // 当て方そのものは search.rs が単一の定義を持つ (ファイル内検索と揃えるため)。
-fn content_matcher(pattern: &str, options: &SearchOptions) -> Result<Option<RegexMatcher>, String> {
-    if !options.search_contents {
+fn build_matcher(
+    pattern: &str,
+    options: &SearchOptions,
+    strict_names: bool,
+) -> Result<Option<RegexMatcher>, String> {
+    if !options.search_contents && !strict_names {
         return Ok(None);
     }
     crate::search::build_matcher(pattern, options.match_case, options.use_regex, options.whole_word)
@@ -260,16 +275,19 @@ fn build_walk(root: &Path, options: &SearchOptions) -> Result<WalkBuilder, Strin
 }
 
 // 走査スレッドごとの状態。Searcher は行バッファを使い回すので毎回作らない。
+// content と name は同じ matcher を指すこともある (どちらに使うかだけが違う)。
 struct Engine<'a> {
-    matcher: Option<&'a RegexMatcher>,
+    content: Option<&'a RegexMatcher>,
+    name: Option<&'a RegexMatcher>, // None = ファイル名はファジーで当てる
     utf8: Searcher,
     sjis: Option<Searcher>,
 }
 
 impl<'a> Engine<'a> {
-    fn new(matcher: Option<&'a RegexMatcher>) -> Self {
+    fn new(content: Option<&'a RegexMatcher>, name: Option<&'a RegexMatcher>) -> Self {
         Engine {
-            matcher,
+            content,
+            name,
             utf8: searcher(None),
             sjis: grep_searcher::Encoding::new("sjis").ok().map(|enc| searcher(Some(enc))),
         }
@@ -293,23 +311,9 @@ impl<'a> Engine<'a> {
         }
         let mut hits = Vec::new();
         if options.search_file_names {
-            if let Some(found) = match_path(pattern, relative) {
-                let prefix = NAME_PREFIX.chars().count();
-                hits.push(WorkspaceSearchResult {
-                    rel_path: relative.to_owned(),
-                    line: 0,
-                    col: 0,
-                    preview: format!("{NAME_PREFIX}{relative}"),
-                    highlights: to_ranges(&found.positions)
-                        .into_iter()
-                        .map(|[at, len]| [at + prefix, len])
-                        .collect(),
-                    is_filename: true,
-                    score: found.score,
-                });
-            }
+            hits.extend(name_hit(self.name, pattern, relative, options.match_case));
         }
-        let (Some(matcher), Some(file)) = (self.matcher, file.as_ref()) else {
+        let (Some(matcher), Some(file)) = (self.content, file.as_ref()) else {
             return FileHits { hits, limited: false };
         };
         let searcher = match (probe.sjis, self.sjis.as_mut()) {
@@ -322,6 +326,49 @@ impl<'a> Engine<'a> {
         let limited = collector.limited;
         FileHits { hits, limited }
     }
+}
+
+// ファイル名の一致。matcher があれば厳密に、無ければファジーで当てる。
+// 行は 1つのファイルにつき 1つで、複数当たった分は強調範囲として並べる。
+fn name_hit(
+    matcher: Option<&RegexMatcher>,
+    pattern: &str,
+    relative: &str,
+    match_case: bool,
+) -> Option<WorkspaceSearchResult> {
+    let prefix = NAME_PREFIX.chars().count();
+    let (highlights, score) = match matcher {
+        Some(matcher) => {
+            let mut spans = Vec::new();
+            let _ = matcher.find_iter(relative.as_bytes(), |at| {
+                let start = relative[..at.start()].chars().count();
+                spans.push([prefix + start, relative[at.start()..at.end()].chars().count()]);
+                true
+            });
+            // 厳密に当てたときは当てはまりの良さに差が無い (並びはパス順に任せる)
+            (spans, 0)
+        }
+        None => {
+            let found = match_path(pattern, relative, match_case)?;
+            let spans = to_ranges(&found.positions)
+                .into_iter()
+                .map(|[at, len]| [at + prefix, len])
+                .collect();
+            (spans, found.score)
+        }
+    };
+    if highlights.is_empty() {
+        return None;
+    }
+    Some(WorkspaceSearchResult {
+        rel_path: relative.to_owned(),
+        line: 0,
+        col: 0,
+        preview: format!("{NAME_PREFIX}{relative}"),
+        highlights,
+        is_filename: true,
+        score,
+    })
 }
 
 // limited は「このファイルの一致を上限で切った」印。
@@ -569,6 +616,34 @@ mod tests {
         for hit in &streamed {
             assert!(places.contains(&(hit.rel_path.clone(), hit.line, hit.col)));
         }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    // 正規表現/単語単位は「厳密に当てたい」という指定なので、ファイル名も
+    // ファジーをやめる。指定が無いときだけファジーで当てる。
+    #[test]
+    fn strict_options_switch_file_names_off_fuzzy() {
+        let root = workspace("strict");
+        let mut opts = options();
+        opts.search_contents = false;
+        opts.search_file_names = true;
+        let names = |found: &super::WorkspaceSearchOutcome| -> Vec<String> {
+            found.results.iter().map(|r| r.rel_path.clone()).collect()
+        };
+
+        assert_eq!(names(&run(&root, "ndl", &opts)), vec!["needle.txt"], "既定はファジー");
+
+        opts.whole_word = true;
+        assert!(run(&root, "ndl", &opts).results.is_empty(), "単語単位なら飛び飛びは当たらない");
+        assert!(run(&root, "eedle", &opts).results.is_empty(), "単語の一部にも当たらない");
+        assert_eq!(names(&run(&root, "needle", &opts)), vec!["needle.txt"]);
+
+        opts.whole_word = false;
+        opts.use_regex = true;
+        assert_eq!(names(&run(&root, "need.e\\.txt", &opts)), vec!["needle.txt"]);
+        assert!(run(&root, "ndl", &opts).results.is_empty(), "正規表現としては当たらない");
+        // 壊れた正規表現は、本文を検索しなくても理由を返す
+        assert!(run(&root, "need(", &opts).pattern_error.is_some());
         std::fs::remove_dir_all(root).unwrap();
     }
 

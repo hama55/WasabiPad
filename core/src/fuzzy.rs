@@ -27,6 +27,14 @@ pub struct FuzzyMatch {
     pub positions: Vec<usize>, // 対象文字列の char index (昇順)
 }
 
+fn same(a: char, b: char, match_case: bool) -> bool {
+    if match_case {
+        a == b
+    } else {
+        fold(a) == fold(b)
+    }
+}
+
 fn fold(c: char) -> char {
     c.to_lowercase().next().unwrap_or(c)
 }
@@ -54,20 +62,22 @@ fn bonuses(word: &[char]) -> Vec<i32> {
 }
 
 // 順序を保って全文字が現れるか。ここで落ちる候補が大半なので DP の前に済ませる
-fn is_subsequence(pattern: &[char], word: &[char]) -> bool {
+fn is_subsequence(pattern: &[char], word: &[char], match_case: bool) -> bool {
     let mut chars = word.iter();
-    pattern.iter().all(|&p| chars.any(|&w| fold(w) == fold(p)))
+    pattern.iter().all(|&p| chars.any(|&w| same(w, p, match_case)))
 }
 
 /// pattern が word に順序を保って含まれるなら、最良の配置とそのスコアを返す。
-pub fn fuzzy_match(pattern: &str, word: &str) -> Option<FuzzyMatch> {
+/// 大小文字の扱いは DP の中で決める。配置を1つ選んでから後段で大小を検めると、
+/// "abAB" から "AB" を探したときにスコアの高い "ab" 側が選ばれて落ちてしまう。
+pub fn fuzzy_match(pattern: &str, word: &str, match_case: bool) -> Option<FuzzyMatch> {
     let pat: Vec<char> = pattern.chars().filter(|c| !c.is_whitespace()).collect();
     let target: Vec<char> = word.chars().collect();
     if pat.is_empty()
         || pat.len() > target.len()
         || pat.len() > MAX_PATTERN_CHARS
         || target.len() > MAX_WORD_CHARS
-        || !is_subsequence(&pat, &target)
+        || !is_subsequence(&pat, &target, match_case)
     {
         return None;
     }
@@ -83,7 +93,7 @@ pub fn fuzzy_match(pattern: &str, word: &str) -> Option<FuzzyMatch> {
         let mut carried = SCORE_MIN;
         for j in 0..cols {
             let at = i * cols + j;
-            if fold(pat[i]) == fold(target[j]) {
+            if same(pat[i], target[j], match_case) {
                 let score = if i == 0 {
                     (j as i32) * SCORE_GAP_LEADING + bonus[j]
                 } else if j == 0 {
@@ -133,9 +143,10 @@ fn backtrack(ends: &[i32], best: &[i32], rows: usize, cols: usize) -> Vec<usize>
 
 /// 相対パスに対する一致。ファイル名だけで当たるならそちらを優先し、
 /// 位置は常に rel_path 上の char index で返す。
-pub fn match_path(pattern: &str, rel_path: &str) -> Option<FuzzyMatch> {
+pub fn match_path(pattern: &str, rel_path: &str, match_case: bool) -> Option<FuzzyMatch> {
     let name_start = rel_path.chars().count() - rel_path.rsplit('/').next().unwrap_or("").chars().count();
-    if let Some(found) = fuzzy_match(pattern, &rel_path.chars().skip(name_start).collect::<String>()) {
+    let name: String = rel_path.chars().skip(name_start).collect();
+    if let Some(found) = fuzzy_match(pattern, &name, match_case) {
         return Some(FuzzyMatch {
             score: found.score.saturating_add(SCORE_IN_FILE_NAME),
             positions: found.positions.iter().map(|at| at + name_start).collect(),
@@ -146,7 +157,7 @@ pub fn match_path(pattern: &str, rel_path: &str) -> Option<FuzzyMatch> {
     // 飛ばした分の減点が加点を上回ったもの = 当たったより飛ばしたほうが多い
     // 一致なので、偶然として捨てる。フォルダを跨ぐ意図的な指定 ("ui/sidebar",
     // "srcmain") は隙間が小さく、実測でも正の側に十分な差で残る。
-    fuzzy_match(pattern, rel_path).filter(|found| found.score >= 0)
+    fuzzy_match(pattern, rel_path, match_case).filter(|found| found.score >= 0)
 }
 
 /// 隣接する位置をまとめて [開始, 長さ] の並びにする (強調表示用)。
@@ -166,7 +177,7 @@ mod tests {
     use super::{fuzzy_match, match_path, to_ranges};
 
     fn positions(pattern: &str, word: &str) -> Vec<usize> {
-        fuzzy_match(pattern, word).expect("一致するはず").positions
+        fuzzy_match(pattern, word, false).expect("一致するはず").positions
     }
 
     #[test]
@@ -183,24 +194,24 @@ mod tests {
 
     #[test]
     fn order_must_be_kept_and_missing_chars_fail() {
-        assert!(fuzzy_match("cba", "abc").is_none());
-        assert!(fuzzy_match("abcd", "abc").is_none());
-        assert!(fuzzy_match("", "abc").is_none());
+        assert!(fuzzy_match("cba", "abc", false).is_none());
+        assert!(fuzzy_match("abcd", "abc", false).is_none());
+        assert!(fuzzy_match("", "abc", false).is_none());
     }
 
     #[test]
     fn contiguous_and_leading_matches_score_higher() {
-        let exact = fuzzy_match("main", "main.ts").unwrap().score;
-        let scattered = fuzzy_match("main", "my-application-inner.ts").unwrap().score;
-        let late = fuzzy_match("main", "src/deep/main.ts").unwrap().score;
+        let exact = fuzzy_match("main", "main.ts", false).unwrap().score;
+        let scattered = fuzzy_match("main", "my-application-inner.ts", false).unwrap().score;
+        let late = fuzzy_match("main", "src/deep/main.ts", false).unwrap().score;
         assert!(exact > scattered, "連続かつ先頭の一致が強い");
         assert!(exact > late, "先頭に近いほうが強い");
     }
 
     #[test]
     fn file_name_matches_beat_path_matches() {
-        let in_name = match_path("side", "ui/sidebar.ts").unwrap();
-        let in_path = match_path("uisi", "ui/sidebar.ts").unwrap();
+        let in_name = match_path("side", "ui/sidebar.ts", false).unwrap();
+        let in_path = match_path("uisi", "ui/sidebar.ts", false).unwrap();
         assert!(in_name.score > in_path.score);
         assert_eq!(in_name.positions, vec![3, 4, 5, 6], "位置は rel_path 基準");
     }
@@ -210,15 +221,24 @@ mod tests {
     #[test]
     fn scattered_path_matches_are_dropped_but_deliberate_ones_survive() {
         let noise = "Library/PackageCache/com.unity.xr.openxr@ef0033a586bf/Runtime/MockRuntime.meta";
-        assert!(match_path("@rtk", noise).is_none(), "@,r,t,k が順に出るだけの偶然");
-        assert!(match_path("main", noise).is_none());
-        assert!(match_path("mockruntime", noise).is_some(), "ファイル名そのものは当たる");
-        assert!(match_path("xropenxr", noise).is_some(), "フォルダ名を跨ぐ指定は残る");
+        assert!(match_path("@rtk", noise, false).is_none(), "@,r,t,k が順に出るだけの偶然");
+        assert!(match_path("main", noise, false).is_none());
+        assert!(match_path("mockruntime", noise, false).is_some(), "ファイル名そのものは当たる");
+        assert!(match_path("xropenxr", noise, false).is_some(), "フォルダ名を跨ぐ指定は残る");
 
-        assert!(match_path("ui/sidebar", "ui/sidebar.ts").is_some());
-        assert!(match_path("srcmain", "src-tauri/src/main.rs").is_some());
+        assert!(match_path("ui/sidebar", "ui/sidebar.ts", false).is_some());
+        assert!(match_path("srcmain", "src-tauri/src/main.rs", false).is_some());
         // ファイル名の中で散らばる分は落とさない (ファジー一致の本来の使い道)
-        assert!(match_path("wsopt", "ui/workspace-search-options.ts").is_some());
+        assert!(match_path("wsopt", "ui/workspace-search-options.ts", false).is_some());
+    }
+
+    // 大小を検めるのは DP の中。配置を選んでから後段で検めると、
+    // スコアの高い "ab" が選ばれて "AB" を取りこぼす
+    #[test]
+    fn case_sensitivity_is_decided_inside_the_placement_search() {
+        assert_eq!(fuzzy_match("AB", "abAB", false).unwrap().positions, vec![0, 1]);
+        assert_eq!(fuzzy_match("AB", "abAB", true).unwrap().positions, vec![2, 3]);
+        assert!(fuzzy_match("AB", "abab", true).is_none());
     }
 
     #[test]

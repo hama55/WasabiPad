@@ -68,14 +68,15 @@ const PARTIAL_RENDER_MS = 100;
 type ToggleKey = "match_case" | "whole_word" | "use_regex" | "search_file_names" | "search_contents";
 
 // 「どう当てるか」は入力欄の中へ (VSCode の Aa / ab / .* と同じ位置)。
+// ab と .* はファイル名の当て方も変える (どちらかを入れるとファジーをやめる)。
 const MATCH_TOGGLES: [string, string, ToggleKey][] = [
   ["Aa", "大文字小文字を区別", "match_case"],
-  ["ab", "単語単位で一致", "whole_word"],
-  [".*", "正規表現として扱う", "use_regex"],
+  ["ab", "単語単位で一致 (ファイル名もファジーをやめる)", "whole_word"],
+  [".*", "正規表現として扱う (ファイル名もファジーをやめる)", "use_regex"],
 ];
 // 「どこを探すか」はヘッダへ。入力欄に5つ並べると打つ場所が無くなる
 const SCOPE_TOGGLES: [string, string, ToggleKey][] = [
-  ["名", "ファイル名を検索 (ファジー一致)", "search_file_names"],
+  ["名", "ファイル名を検索 (既定はファジー一致)", "search_file_names"],
   ["文", "本文を検索", "search_contents"],
 ];
 
