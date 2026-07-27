@@ -145,6 +145,34 @@ describe("Sidebar workspace search", () => {
     expect(warnings).toEqual(["最大ファイル数で列挙を打ち切った", "最大結果数で検索を打ち切った"]);
   });
 
+  it("検索中でも折りたたみを操作でき、途中経過の到着で戻されない", async () => {
+    vi.useFakeTimers();
+    let searchId = 0;
+    let finish: (found: WorkspaceSearchOutcome) => void = () => {};
+    const host = mount((_pat, _options, id) => {
+      searchId = id;
+      return new Promise<WorkspaceSearchOutcome>((resolve) => { finish = resolve; });
+    });
+    await search(host, "needle");
+    mounted.acceptSearchBatch(searchId, [hit("a.txt", 0, "needle"), hit("b.txt", 0, "needle")]);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(host.querySelectorAll(".ws-match")).toHaveLength(2);
+
+    host.querySelector<HTMLButtonElement>(".ws-fold")!.click();
+    expect(host.querySelectorAll(".ws-match")).toHaveLength(0);
+    expect(host.querySelectorAll(".ws-group")).toHaveLength(2);
+
+    // 続きが届いても畳んだままにする (押した直後に開き直されない)
+    mounted.acceptSearchBatch(searchId, [hit("c.txt", 0, "needle")]);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(host.querySelectorAll(".ws-match")).toHaveLength(0);
+
+    // 確定しても手で決めた状態を保つ
+    finish(outcome([hit("a.txt", 0, "needle"), hit("b.txt", 0, "needle")]));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(host.querySelectorAll(".ws-match")).toHaveLength(0);
+  });
+
   it("検索中でも届いた分から並べ、確定したら backend の並びで置き換える", async () => {
     vi.useFakeTimers();
     let searchId = 0;

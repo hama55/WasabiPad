@@ -93,7 +93,11 @@ export class Sidebar {
   private partial: WorkspaceSearchResult[] = []; // 検索中に届いた分 (並べ替えは描画時)
   private partialTimer: number | undefined;
   private shownPattern = ""; // outcome が属するパターン (入力途中の値とは別)
-  private collapsed = new Set<string>();
+  // 畳み方は「既定 + 例外」で持つ。全パスを集合に入れる持ち方だと、
+  // 検索中に後から届いたファイルが既定から外れて開いたまま出てしまう。
+  private collapseByDefault = false;
+  private collapsed = new Set<string>(); // 既定と逆にするファイル
+  private collapseTouched = false; // 畳み方を手で変えたか (自動の畳み込みより手を優先する)
   private searchGen = 0;
   private searchTimer: number | undefined;
   private searchRunning = false;
@@ -249,8 +253,7 @@ export class Sidebar {
   acceptSearchBatch(searchId: number, results: WorkspaceSearchResult[]) {
     if (searchId !== this.searchGen || this.outcome !== "searching") return;
     this.partial.push(...results);
-    // 件数が多いときはファイル一覧を先に見せる。少ないうちは手で畳んだ状態を壊さない
-    if (this.partial.length > AUTO_COLLAPSE_MATCHES) this.autoCollapse(this.partial);
+    this.autoCollapse(this.partial);
     // 描画は間引く。届くたびに数千行を組み直すと走査より描画が重くなる
     if (this.partialTimer !== undefined) return;
     this.partialTimer = window.setTimeout(() => {
@@ -259,10 +262,12 @@ export class Sidebar {
     }, PARTIAL_RENDER_MS);
   }
 
+  // 件数が多いときはファイル一覧を先に見せる (中身は必要な分だけ開く)。
+  // ただし利用者が畳み方を触ったあとは、途中経過が届くたびに上書きしない
   private autoCollapse(results: WorkspaceSearchResult[]) {
-    this.collapsed = results.length > AUTO_COLLAPSE_MATCHES
-      ? new Set(results.map((result) => result.rel_path))
-      : new Set();
+    if (this.collapseTouched) return;
+    this.collapseByDefault = results.length > AUTO_COLLAPSE_MATCHES;
+    this.collapsed.clear();
   }
 
   private setOutcome(outcome: WorkspaceSearchOutcome | "searching" | null, pattern: string) {
@@ -272,19 +277,27 @@ export class Sidebar {
     window.clearTimeout(this.partialTimer);
     this.partialTimer = undefined;
     this.partial = [];
-    if (outcome && outcome !== "searching") {
-      // 件数が多いときはファイル一覧を先に見せる (中身は必要な分だけ開く)
-      this.autoCollapse(outcome.results);
-    }
+    if (outcome === "searching") this.collapseTouched = false; // 新しい検索の始まり
+    if (outcome && outcome !== "searching") this.autoCollapse(outcome.results);
     this.render();
   }
 
   private toggleAllGroups() {
-    if (!this.outcome || this.outcome === "searching") return;
-    this.collapsed = this.collapsed.size
-      ? new Set()
-      : new Set(this.outcome.results.map((result) => result.rel_path));
+    if (!this.shownResults().length) return;
+    this.collapseTouched = true;
+    this.collapseByDefault = !this.collapseByDefault;
+    this.collapsed.clear();
     this.render();
+  }
+
+  // いま画面に出ている結果。検索中は届いた分、確定後は確定結果
+  private shownResults(): WorkspaceSearchResult[] {
+    if (this.outcome === "searching") return this.partial;
+    return this.outcome?.results ?? [];
+  }
+
+  private isCollapsed(relPath: string): boolean {
+    return this.collapsed.has(relPath) !== this.collapseByDefault;
   }
 
   private async searchWorkspace(gen: number, pat: string, options: WorkspaceSearchOptions) {
@@ -506,7 +519,7 @@ export class Sidebar {
 
   private appendGroups(frag: DocumentFragment, groups: ResultGroup[]) {
     const wanted = groups.reduce(
-      (rows, group) => rows + 1 + (this.collapsed.has(group.relPath) ? 0 : group.matches.length),
+      (rows, group) => rows + 1 + (this.isCollapsed(group.relPath) ? 0 : group.matches.length),
       0
     );
     let rendered = 0;
@@ -514,7 +527,7 @@ export class Sidebar {
       if (rendered >= MAX_RENDERED_ROWS) break;
       frag.appendChild(this.groupRow(group));
       rendered++;
-      if (this.collapsed.has(group.relPath)) continue;
+      if (this.isCollapsed(group.relPath)) continue;
       for (const match of group.matches) {
         if (rendered >= MAX_RENDERED_ROWS) break;
         frag.appendChild(this.matchRow(match));
@@ -546,7 +559,7 @@ export class Sidebar {
   private groupRow(group: ResultGroup): HTMLElement {
     const div = document.createElement("div");
     div.className = "ws-group";
-    const collapsed = this.collapsed.has(group.relPath);
+    const collapsed = this.isCollapsed(group.relPath);
     const twisty = document.createElement("span");
     twisty.className = "ws-twisty";
     twisty.textContent = collapsed ? "›" : "⌄";
@@ -562,7 +575,9 @@ export class Sidebar {
     div.append(twisty, name, dir, count);
     div.title = group.relPath;
     div.addEventListener("click", () => {
-      if (collapsed) this.collapsed.delete(group.relPath);
+      this.collapseTouched = true;
+      // 集合が持つのは「既定と逆にするファイル」。既定へ戻すなら取り除く
+      if (this.collapsed.has(group.relPath)) this.collapsed.delete(group.relPath);
       else this.collapsed.add(group.relPath);
       this.render();
     });
