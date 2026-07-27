@@ -141,7 +141,12 @@ pub fn match_path(pattern: &str, rel_path: &str) -> Option<FuzzyMatch> {
             positions: found.positions.iter().map(|at| at + name_start).collect(),
         });
     }
-    fuzzy_match(pattern, rel_path)
+    // 長いパスは、順序さえ合えば文字が散らばっていてもいつかは当たってしまう
+    // ("@rtk" が ".../openxr@ef0033a586bf/Runtime/MockRuntime.meta" に当たる)。
+    // 飛ばした分の減点が加点を上回ったもの = 当たったより飛ばしたほうが多い
+    // 一致なので、偶然として捨てる。フォルダを跨ぐ意図的な指定 ("ui/sidebar",
+    // "srcmain") は隙間が小さく、実測でも正の側に十分な差で残る。
+    fuzzy_match(pattern, rel_path).filter(|found| found.score >= 0)
 }
 
 /// 隣接する位置をまとめて [開始, 長さ] の並びにする (強調表示用)。
@@ -198,6 +203,22 @@ mod tests {
         let in_path = match_path("uisi", "ui/sidebar.ts").unwrap();
         assert!(in_name.score > in_path.score);
         assert_eq!(in_name.positions, vec![3, 4, 5, 6], "位置は rel_path 基準");
+    }
+
+    // 長いパスほど「順序さえ合えば当たる」ので、偶然の散らばりを落とす必要がある。
+    // 落とす境目は連続性ではない (連続を求めると wsopt が当たらなくなる)。
+    #[test]
+    fn scattered_path_matches_are_dropped_but_deliberate_ones_survive() {
+        let noise = "Library/PackageCache/com.unity.xr.openxr@ef0033a586bf/Runtime/MockRuntime.meta";
+        assert!(match_path("@rtk", noise).is_none(), "@,r,t,k が順に出るだけの偶然");
+        assert!(match_path("main", noise).is_none());
+        assert!(match_path("mockruntime", noise).is_some(), "ファイル名そのものは当たる");
+        assert!(match_path("xropenxr", noise).is_some(), "フォルダ名を跨ぐ指定は残る");
+
+        assert!(match_path("ui/sidebar", "ui/sidebar.ts").is_some());
+        assert!(match_path("srcmain", "src-tauri/src/main.rs").is_some());
+        // ファイル名の中で散らばる分は落とさない (ファジー一致の本来の使い道)
+        assert!(match_path("wsopt", "ui/workspace-search-options.ts").is_some());
     }
 
     #[test]
