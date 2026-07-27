@@ -140,50 +140,114 @@ body {
   overflow: auto; flex: none;
   padding: 4px 0;
 }
-.ws-search { padding: 4px; }
+/* ---- フォルダ検索バー ---- */
+/* 結果が長くなるため、入力欄と件数は上端へ貼り付けたままにする */
+.ws-search {
+  position: sticky; top: -4px; z-index: 1;
+  padding: 4px; background: var(--bg-side);
+}
+.ws-search[hidden] { display: none; }
+.ws-header { display: flex; align-items: center; gap: 2px; margin-bottom: 4px; }
+.ws-title { flex: 1; min-width: 0; color: var(--fg-dim); font-size: 12px; }
 .ws-search-row { display: flex; align-items: center; gap: 4px; }
-.ws-search input[type="text"], .ws-search-row > input, .ws-search-add-dir {
+.ws-search-row > input {
   min-width: 0; flex: 1; background: var(--bg-editor); color: var(--fg);
   border: 1px solid var(--border-strong); padding: 3px 5px; font: 12px var(--font-ui);
 }
-.ws-search label {
-  display: inline-flex; align-items: center; gap: 2px;
-  color: var(--fg-dim); font-size: 12px; white-space: nowrap;
-}
-.ws-search label input { margin: 0; }
+.ws-toggles { display: flex; gap: 1px; flex: none; }
 .ws-search button {
-  border: 0; background: none; color: var(--fg-dim); padding: 0 3px; font-size: 16px;
+  border: 0; background: none; color: var(--fg-dim); padding: 0 3px; font-size: 14px;
+  line-height: 20px; cursor: default;
 }
-.ws-search button:hover, .ws-search button.on { background: var(--hover); color: var(--fg); }
+.ws-search .ws-toggle { font-size: 12px; min-width: 20px; }
+.ws-search button:hover { background: var(--hover); color: var(--fg); }
+.ws-search button.on { background: var(--accent); color: #fff; }
+.ws-search button[hidden] { display: none; }
 
-.ws-search-settings-panel {
-  margin-top: 4px; padding: 6px; background: var(--bg-editor);
-  border: 1px solid var(--border-strong); font-size: 12px;
+.ws-summary {
+  margin-top: 5px; font-size: 12px; color: var(--fg-dim); line-height: 1.5;
 }
-.ws-search-settings-panel[hidden] { display: none; }
-.ws-search-section + .ws-search-section { margin-top: 8px; }
-.ws-search-section-title { margin-bottom: 3px; color: var(--fg-dim); }
-.ws-search-toggle { display: flex; align-items: center; gap: 4px; padding: 1px 0; }
-.ws-search-number { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 1px 0; }
-.ws-search-number input[type="number"] {
-  width: 76px; background: var(--bg-side); color: var(--fg);
-  border: 1px solid var(--border-strong); padding: 2px 4px; font: 12px var(--font-ui);
+.ws-summary[hidden] { display: none; }
+.ws-warning { color: #e2a03f; }
+
+/* ---- 検索結果のツリー ---- */
+.ws-group, .ws-match {
+  display: flex; align-items: center; gap: 5px;
+  height: 22px; font-size: 12px; padding: 0 6px;
+  white-space: nowrap; overflow: hidden; cursor: default;
 }
-.ws-search-add-dir { width: 100%; margin-top: 3px; }
-.ws-search .ws-search-reset {
-  margin-top: 8px; padding: 2px 6px; font-size: 12px;
-  border: 1px solid var(--border-strong); color: var(--fg);
+.ws-group:hover, .ws-match:hover { background: var(--hover); }
+.ws-twisty { width: 12px; flex: none; color: var(--fg-dim); text-align: center; }
+.ws-file { flex: none; color: var(--fg); }
+.ws-dir { flex: 1; min-width: 0; color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; }
+.ws-count {
+  flex: none; min-width: 16px; padding: 0 4px; border-radius: 8px;
+  background: var(--border-strong); color: var(--fg); text-align: center; font-size: 11px;
 }
-.ws-result, .ws-empty {
-  padding: 4px 6px; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+.ws-match { padding-left: 23px; }
+.ws-line { flex: none; min-width: 26px; text-align: right; color: var(--fg-dim); font-size: 11px; }
+.ws-preview {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  font-family: Consolas, "MS Gothic", monospace;
 }
-.ws-result:hover { background: var(--hover); }
-.ws-empty { color: var(--fg-dim); }
+.ws-preview mark {
+  background: color-mix(in srgb, var(--bg-status) 45%, transparent); color: inherit;
+}
+.ws-empty {
+  padding: 4px 6px; font-size: 12px; color: var(--fg-dim);
+}
 .ws-empty-detail {
   margin-top: 4px;
   white-space: normal;
   line-height: 1.5;
 }
+
+/* ---- 検索の設定ダイアログ (サイドバー幅に収まらないためモーダルで出す) ---- */
+/* .pf-box の固定幅より後に効かせるため、複合セレクタで上書きする */
+.pf-box.ss-box { width: min(760px, 92vw); max-height: 88vh; overflow: auto; }
+.ss-columns { display: flex; gap: 20px; align-items: flex-start; }
+.ss-columns > div { flex: 1; min-width: 0; }
+.ss-section + .ss-section { margin-top: 14px; }
+.ss-section-title {
+  font-size: 12px; color: var(--fg-dim); border-bottom: 1px solid var(--border-strong);
+  padding-bottom: 3px; margin-bottom: 6px;
+}
+.ss-hint { margin: 0 0 6px; font-size: 11px; color: var(--fg-dim); line-height: 1.5; }
+.ss-toggle { display: flex; align-items: flex-start; gap: 6px; padding: 3px 0; font-size: 13px; }
+.ss-toggle input { margin: 3px 0 0; flex: none; }
+.ss-toggle small, .ss-number small { display: block; font-size: 11px; color: var(--fg-dim); }
+.ss-number {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 3px 0; font-size: 13px;
+}
+.ss-number input {
+  width: 110px; flex: none; background: var(--bg-editor); color: var(--fg);
+  border: 1px solid var(--border-strong); border-radius: 4px; padding: 3px 6px;
+  font: 13px var(--font-ui);
+}
+.ss-dir-list {
+  max-height: 260px; overflow: auto;
+  border: 1px solid var(--border-strong); border-radius: 4px; background: var(--bg-editor);
+}
+.ss-dir-row { display: flex; align-items: center; gap: 6px; padding: 2px 4px 2px 8px; font-size: 13px; }
+.ss-dir-row:hover { background: var(--hover); }
+.ss-dir-row span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ss-dir-row button {
+  flex: none; border: 0; background: none; color: var(--fg-dim); font-size: 14px; cursor: default;
+}
+.ss-dir-row button:hover { color: var(--fg); background: var(--hover); }
+.ss-dir-empty { padding: 6px 8px; font-size: 12px; color: var(--fg-dim); }
+.ss-dir-add { display: flex; gap: 6px; margin-top: 6px; }
+.ss-dir-add input {
+  flex: 1; min-width: 0; background: var(--bg-editor); color: var(--fg);
+  border: 1px solid var(--border-strong); border-radius: 4px; padding: 4px 6px;
+  font: 13px var(--font-ui);
+}
+.ss-dir-add button {
+  flex: none; background: var(--bg-editor); border: 1px solid var(--border-strong);
+  border-radius: 4px; color: var(--fg); padding: 4px 10px; font-size: 13px; cursor: default;
+}
+.ss-dir-add button:hover { background: var(--hover); }
 #splitter { width: 4px; cursor: ew-resize; flex: none; background: transparent; }
 #splitter:hover { background: var(--bg-status); }
 .fv-row {

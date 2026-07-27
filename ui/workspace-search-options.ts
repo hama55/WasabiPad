@@ -3,25 +3,42 @@ import { getSetting, setSetting } from "./settings";
 
 // フォルダ検索の設定はここが単一の定義。backend は既定値を持たず、常にこの値を受け取る。
 
-// 除外候補として設定パネルに並べるフォルダ名 (チェックを外せば検索対象になる)
-export const EXCLUDE_DIR_CANDIDATES = [".git", "node_modules", "target", "dist", ".venv"];
+// 中を検索してもまず得るものがないフォルダ。設定ダイアログから自由に足し引きできる。
+export const DEFAULT_EXCLUDE_DIRS = [
+  ".git",
+  ".svn",
+  "node_modules",
+  "target",
+  "dist",
+  "build",
+  "__pycache__",
+  ".venv",
+  "venv",
+  ".idea",
+  ".vscode",
+  "$RECYCLE.BIN",
+  "System Volume Information",
+];
 
+// 打ち切り条件はすべて 0 = 無制限。「あるはずのものが出ない」検索にしないため、
+// 省略が起きるのは利用者が明示的に上限を入れたときだけにする。
 export const DEFAULT_SEARCH_OPTIONS: WorkspaceSearchOptions = {
   match_case: false,
-  max_file_bytes: 16 * 1024 * 1024,
-  max_files: 20_000,
-  max_results: 200,
-  exclude_dirs: [".git", "node_modules", "target"],
+  max_file_bytes: 0,
+  max_files: 0,
+  max_results: 0,
+  exclude_dirs: [...DEFAULT_EXCLUDE_DIRS],
+  exclude_binary: true,
   search_file_names: true,
   search_contents: true,
   workers: 0,
 };
 
-// 不正値で backend を長時間走らせないための上限。設定パネルの入力も同じ範囲で丸める
+// 入力欄の値を丸める範囲。下限 0 は「無制限」の意味を保つため
 const LIMITS = {
-  max_file_bytes: { min: 1024, max: 1024 * 1024 * 1024 },
-  max_files: { min: 1, max: 1_000_000 },
-  max_results: { min: 1, max: 10_000 },
+  max_file_bytes: { min: 0, max: 1024 * 1024 * 1024 },
+  max_files: { min: 0, max: 10_000_000 },
+  max_results: { min: 0, max: 1_000_000 },
   workers: { min: 0, max: 64 },
 } as const;
 
@@ -34,6 +51,7 @@ export function clampSearchOptions(options: WorkspaceSearchOptions): WorkspaceSe
     max_files: clamp("max_files"),
     max_results: clamp("max_results"),
     exclude_dirs: [...new Set(options.exclude_dirs.map((dir) => dir.trim()).filter(Boolean))],
+    exclude_binary: !!options.exclude_binary,
     search_file_names: !!options.search_file_names,
     search_contents: !!options.search_contents,
     workers: clamp("workers"),
@@ -51,16 +69,17 @@ export function saveSearchOptions(options: WorkspaceSearchOptions) {
 }
 
 // 「見つかりません」の説明。現在の設定をそのまま読み上げ、除外理由を推測させない。
+// 無制限の項目は挙げない (対象外でないものを対象外として読ませないため)。
 export function searchScopeSummary(options: WorkspaceSearchOptions): string {
-  const parts = [
-    `${(options.max_file_bytes / (1024 * 1024)).toFixed(0)} MB超`,
-    "読み取り不能",
-    ...(options.exclude_dirs.length ? [`${options.exclude_dirs.join(" / ")} 配下`] : []),
-    `${options.max_files.toLocaleString()}件以降`,
-  ];
   const target = options.search_contents
     ? options.search_file_names ? "ファイル名と本文" : "本文のみ"
     : "ファイル名のみ";
-  const binary = options.search_contents ? "。バイナリはファイル名のみ検索" : "";
-  return `検索対象: ${target}／検索対象外: ${parts.join("、")}${binary}`;
+  const skipped = ["読み取れないファイル"];
+  if (options.exclude_binary) skipped.push("バイナリファイル");
+  if (options.max_file_bytes) {
+    skipped.push(`${(options.max_file_bytes / (1024 * 1024)).toFixed(0)} MB超のファイル`);
+  }
+  if (options.max_files) skipped.push(`${options.max_files.toLocaleString()}件目以降のファイル`);
+  if (options.exclude_dirs.length) skipped.push(`${options.exclude_dirs.join(" / ")} 配下`);
+  return `検索対象: ${target}／検索対象外: ${skipped.join("、")}`;
 }

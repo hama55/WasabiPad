@@ -1,8 +1,14 @@
-import type { FolderEntry, WorkspaceSearchOptions, WorkspaceSearchResult } from "./api";
+import type {
+  FolderEntry,
+  Pos,
+  WorkspaceSearchOptions,
+  WorkspaceSearchOutcome,
+  WorkspaceSearchResult,
+} from "./api";
+import { groupResults, highlightedPreview, type ResultGroup } from "./search-results";
+import { openSearchSettings } from "./search-settings-dialog";
 import {
   clampSearchOptions,
-  DEFAULT_SEARCH_OPTIONS,
-  EXCLUDE_DIR_CANDIDATES,
   loadSearchOptions,
   saveSearchOptions,
   searchScopeSummary,
@@ -27,6 +33,7 @@ interface Row {
 export interface ContextTarget {
   relPath: string;
   isDir: boolean;
+  goto?: Pos; // 検索結果から開く場合の飛び先
 }
 
 // サイドバーが外界へ出す依頼。IPC も文書状態もここより先は知らない。
@@ -35,8 +42,9 @@ export interface SidebarPorts {
   onContextMenu: (x: number, y: number, target: ContextTarget | null) => void;
   onExpandArchive: (relPath: string) => Promise<string[]>;
   onExpandFolder: (relDir: string) => Promise<FolderEntry[]>;
-  onWorkspaceSearch: (pat: string, options: WorkspaceSearchOptions) => Promise<WorkspaceSearchResult[]>;
-  onSearchResult: (result: WorkspaceSearchResult, pattern: string) => void;
+  onWorkspaceSearch: (pat: string, options: WorkspaceSearchOptions) => Promise<WorkspaceSearchOutcome>;
+  onCancelSearch: () => void;
+  onSearchResult: (result: WorkspaceSearchResult, pattern: string, newWindow: boolean) => void;
 }
 
 // core の Doc::is_lazy_archive_ext と一致させる (check:ipc が両者の一致を検証する)
@@ -45,27 +53,36 @@ function isArchiveName(name: string): boolean {
   return ARCHIVE_EXT.test(name);
 }
 
+// DOM の行数だけは有限にしないと画面が固まる。超えた分は隠さず「ここまで」と告げる
+const MAX_RENDERED_ROWS = 3000;
+// これを超える結果は畳んで出す (件数が多いときにファイル一覧を先に見せるため)
+const AUTO_COLLAPSE_MATCHES = 500;
+
 export class Sidebar {
   private host: HTMLElement;
   private tree: HTMLElement;
   private search: HTMLElement;
   private searchInput: HTMLInputElement;
-  private searchSettingsButton: HTMLButtonElement;
-  private searchSettings: HTMLElement;
-  private searchClear: HTMLButtonElement;
+  private searchStop: HTMLButtonElement;
+  private searchSummary: HTMLElement;
+  private targetButtons: HTMLButtonElement[] = [];
   private options: WorkspaceSearchOptions = loadSearchOptions();
-  private results: WorkspaceSearchResult[] | "searching" | null = null;
+  private outcome: WorkspaceSearchOutcome | "searching" | null = null;
+  private shownPattern = ""; // outcome が属するパターン (入力途中の値とは別)
+  private collapsed = new Set<string>();
   private searchGen = 0;
   private searchTimer: number | undefined;
   private searchRunning = false;
+  private aborted = false; // 中止ボタンで止めた直後に自動で再開しないための印
   private rows: Row[] = [];
   private sel: string | null = null; // 選択中の relPath
   private onSelect: (relPath: string, newWindow: boolean) => void;
   private onContextMenu: (x: number, y: number, target: ContextTarget | null) => void;
   private onExpandArchive: (relPath: string) => Promise<string[]>;
   private onExpandFolder: (relDir: string) => Promise<FolderEntry[]>;
-  private onWorkspaceSearch: (pat: string, options: WorkspaceSearchOptions) => Promise<WorkspaceSearchResult[]>;
-  private onSearchResult: (result: WorkspaceSearchResult, pattern: string) => void;
+  private onWorkspaceSearch: (pat: string, options: WorkspaceSearchOptions) => Promise<WorkspaceSearchOutcome>;
+  private onCancelSearch: () => void;
+  private onSearchResult: (result: WorkspaceSearchResult, pattern: string, newWindow: boolean) => void;
 
   constructor(host: HTMLElement, ports: SidebarPorts) {
     this.host = host;
@@ -74,26 +91,22 @@ export class Sidebar {
     this.onExpandArchive = ports.onExpandArchive;
     this.onExpandFolder = ports.onExpandFolder;
     this.onWorkspaceSearch = ports.onWorkspaceSearch;
+    this.onCancelSearch = ports.onCancelSearch;
     this.onSearchResult = ports.onSearchResult;
     this.search = document.createElement("div");
     this.search.className = "ws-search";
     this.search.hidden = true;
-    const row = document.createElement("div");
-    row.className = "ws-search-row";
-    row.innerHTML = `<input placeholder="検索" spellcheck="false" /><button type="button" class="ws-search-clear" title="検索をクリア">×</button><button type="button" class="ws-search-settings" title="検索条件を設定">⚙</button>`;
+    const header = this.buildHeader();
+    const row = this.buildInputRow();
     this.searchInput = row.querySelector("input")!;
-    this.searchClear = row.querySelector(".ws-search-clear")!;
-    this.searchSettingsButton = row.querySelector(".ws-search-settings")!;
-    this.searchSettings = this.buildSearchSettings();
-    this.search.append(row, this.searchSettings);
+    this.searchSummary = document.createElement("div");
+    this.searchSummary.className = "ws-summary";
+    this.searchSummary.hidden = true;
+    this.searchStop = header.querySelector(".ws-stop")!;
+    this.search.append(header, row, this.searchSummary);
     this.tree = document.createElement("div");
     this.host.append(this.search, this.tree);
     this.searchInput.addEventListener("input", () => this.queueWorkspaceSearch());
-    this.searchClear.addEventListener("click", () => this.clearWorkspaceSearch());
-    this.searchSettingsButton.addEventListener("click", () => {
-      this.searchSettings.hidden = !this.searchSettings.hidden;
-      this.searchSettingsButton.classList.toggle("on", !this.searchSettings.hidden);
-    });
     this.host.addEventListener("contextmenu", (e) => {
       if (e.target !== this.host && e.target !== this.tree) return; // 個々の行上は行側のリスナーに任せる
       e.preventDefault();
@@ -101,170 +114,148 @@ export class Sidebar {
     });
   }
 
-  // ---- 検索条件の設定パネル ----
-  private buildSearchSettings(): HTMLElement {
-    const panel = document.createElement("div");
-    panel.className = "ws-search-settings-panel";
-    panel.hidden = true;
-    panel.append(
-      this.settingsSection("検索する対象", [
-        this.toggleField("大文字小文字を区別", "match_case"),
-        this.toggleField("ファイル名", "search_file_names"),
-        this.toggleField("本文", "search_contents"),
-      ]),
-      this.settingsSection("除外するフォルダ", [this.excludeDirsField()]),
-      this.settingsSection("打ち切り条件", [
-        this.numberField("最大ファイルサイズ (MB)", 1, () => this.options.max_file_bytes / (1024 * 1024),
-          (value) => { this.options.max_file_bytes = value * 1024 * 1024; }),
-        this.numberField("最大ファイル数", 1, () => this.options.max_files,
-          (value) => { this.options.max_files = value; }),
-        this.numberField("最大結果数", 1, () => this.options.max_results,
-          (value) => { this.options.max_results = value; }),
-        this.numberField("並列数 (0 = 自動)", 0, () => this.options.workers,
-          (value) => { this.options.workers = value; }),
-      ]),
-    );
-    const reset = document.createElement("button");
-    reset.type = "button";
-    reset.className = "ws-search-reset";
-    reset.textContent = "既定に戻す";
-    reset.addEventListener("click", () => {
-      this.options = { ...DEFAULT_SEARCH_OPTIONS };
-      this.commitOptions();
-      panel.replaceWith(this.searchSettings = this.buildSearchSettings());
-      this.searchSettings.hidden = false;
-    });
-    panel.appendChild(reset);
-    return panel;
+  // ---- 検索バー ----
+  private buildHeader(): HTMLElement {
+    const header = document.createElement("div");
+    header.className = "ws-header";
+    const title = document.createElement("span");
+    title.className = "ws-title";
+    title.textContent = "検索";
+    const stop = iconButton("ws-stop", "⏹", "検索を中止");
+    stop.hidden = true;
+    stop.addEventListener("click", () => this.stopWorkspaceSearch());
+    const refresh = iconButton("ws-refresh", "🔄", "同じ条件で検索し直す");
+    refresh.addEventListener("click", () => this.queueWorkspaceSearch(0));
+    const clear = iconButton("ws-clear", "✕", "検索をクリア");
+    clear.addEventListener("click", () => this.clearWorkspaceSearch());
+    const fold = iconButton("ws-fold", "⊟", "すべて折りたたむ / 展開");
+    fold.addEventListener("click", () => this.toggleAllGroups());
+    const settings = iconButton("ws-settings", "⚙", "検索の設定");
+    settings.addEventListener("click", () => this.openSettings());
+    header.append(title, stop, refresh, clear, fold, settings);
+    return header;
   }
 
-  private settingsSection(title: string, fields: HTMLElement[]): HTMLElement {
-    const section = document.createElement("div");
-    section.className = "ws-search-section";
-    const heading = document.createElement("div");
-    heading.className = "ws-search-section-title";
-    heading.textContent = title;
-    section.append(heading, ...fields);
-    return section;
-  }
-
-  private toggleField(label: string, key: "match_case" | "search_file_names" | "search_contents"): HTMLElement {
-    const field = document.createElement("label");
-    field.className = "ws-search-toggle";
+  private buildInputRow(): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "ws-search-row";
     const input = document.createElement("input");
-    input.type = "checkbox";
-    input.checked = this.options[key];
-    input.addEventListener("change", () => {
-      this.options[key] = input.checked;
-      this.commitOptions();
-    });
-    field.append(input, document.createTextNode(label));
-    return field;
+    input.placeholder = "検索";
+    input.spellcheck = false;
+    const toggles = document.createElement("span");
+    toggles.className = "ws-toggles";
+    this.targetButtons = [
+      this.targetToggle("Aa", "大文字小文字を区別", "match_case"),
+      this.targetToggle("名", "ファイル名を検索", "search_file_names"),
+      this.targetToggle("文", "本文を検索", "search_contents"),
+    ];
+    toggles.append(...this.targetButtons);
+    row.append(input, toggles);
+    return row;
   }
 
-  private numberField(label: string, min: number, get: () => number, set: (value: number) => void): HTMLElement {
-    const field = document.createElement("label");
-    field.className = "ws-search-number";
-    const input = document.createElement("input");
-    input.type = "number";
-    input.min = String(min);
-    input.value = String(get());
-    input.addEventListener("change", () => {
-      set(Math.max(min, Math.round(Number(input.value) || 0)));
+  private targetToggle(
+    label: string,
+    title: string,
+    key: "match_case" | "search_file_names" | "search_contents"
+  ): HTMLButtonElement {
+    const button = iconButton("ws-toggle", label, title);
+    button.classList.toggle("on", this.options[key]);
+    button.addEventListener("click", () => {
+      const next = { ...this.options };
+      next[key] = !next[key];
+      this.options = clampSearchOptions(next);
+      button.classList.toggle("on", this.options[key]);
       this.commitOptions();
-      input.value = String(get());
     });
-    field.append(document.createTextNode(label), input);
-    return field;
+    return button;
   }
 
-  // 候補は既定リストと現在の設定の和集合。任意の名前は下の入力欄から足せる
-  private excludeDirsField(): HTMLElement {
-    const wrap = document.createElement("div");
-    const names = [...new Set([...EXCLUDE_DIR_CANDIDATES, ...this.options.exclude_dirs])];
-    for (const name of names) {
-      const field = document.createElement("label");
-      field.className = "ws-search-toggle";
-      const input = document.createElement("input");
-      input.type = "checkbox";
-      input.checked = this.options.exclude_dirs.includes(name);
-      input.addEventListener("change", () => {
-        this.options.exclude_dirs = input.checked
-          ? [...this.options.exclude_dirs, name]
-          : this.options.exclude_dirs.filter((dir) => dir !== name);
-        this.commitOptions();
-      });
-      field.append(input, document.createTextNode(name));
-      wrap.appendChild(field);
-    }
-    const add = document.createElement("input");
-    add.className = "ws-search-add-dir";
-    add.placeholder = "フォルダ名を追加";
-    add.spellcheck = false;
-    add.addEventListener("keydown", (e) => {
-      if (e.key !== "Enter" || !add.value.trim()) return;
-      this.options.exclude_dirs = [...this.options.exclude_dirs, add.value.trim()];
-      add.value = "";
-      this.commitOptions();
-      wrap.replaceWith(this.excludeDirsField());
+  private openSettings() {
+    openSearchSettings(this.options, {
+      onChange: (options) => {
+        this.options = options;
+        saveSearchOptions(options);
+        this.syncTargetToggles();
+      },
+      onClose: () => this.commitOptions(),
     });
-    wrap.appendChild(add);
-    return wrap;
+  }
+
+  private syncTargetToggles() {
+    const keys = ["match_case", "search_file_names", "search_contents"] as const;
+    keys.forEach((key, index) => this.targetButtons[index]?.classList.toggle("on", this.options[key]));
   }
 
   private commitOptions() {
-    this.options = clampSearchOptions(this.options);
     saveSearchOptions(this.options);
-    if (this.searchInput.value) this.queueWorkspaceSearch();
+    if (this.searchInput.value) this.queueWorkspaceSearch(0);
     else this.render();
   }
 
   setWorkspaceSearch(on: boolean) {
     this.search.hidden = !on;
-    if (!on) {
-      this.searchGen++;
-      window.clearTimeout(this.searchTimer);
-      this.searchInput.value = "";
-      this.results = null;
-      this.render();
-    }
+    if (!on) this.clearWorkspaceSearch(false);
   }
 
-  private queueWorkspaceSearch() {
+  private queueWorkspaceSearch(delay = 150) {
     const pat = this.searchInput.value;
     const gen = ++this.searchGen;
+    this.aborted = false;
     window.clearTimeout(this.searchTimer);
     if (!pat) {
-      this.results = null;
-      this.render();
+      this.setOutcome(null, "");
       return;
     }
-    this.results = "searching";
-    this.render();
-    this.searchTimer = window.setTimeout(() => this.searchWorkspace(gen, pat, this.options), 150);
+    this.setOutcome("searching", pat);
+    this.searchTimer = window.setTimeout(() => void this.searchWorkspace(gen, pat, this.options), delay);
   }
 
-  private clearWorkspaceSearch() {
+  // 走査量は無制限が既定なので、待たされたら止められる必要がある
+  private stopWorkspaceSearch() {
+    this.aborted = true;
     this.searchGen++;
     window.clearTimeout(this.searchTimer);
+    if (this.outcome) this.onCancelSearch(); // 走っていないなら止めるものがない
+    this.setOutcome(null, "");
+  }
+
+  private clearWorkspaceSearch(focus = true) {
+    this.stopWorkspaceSearch();
     this.searchInput.value = "";
-    this.results = null;
+    if (focus) this.searchInput.focus();
+  }
+
+  private setOutcome(outcome: WorkspaceSearchOutcome | "searching" | null, pattern: string) {
+    this.outcome = outcome;
+    this.shownPattern = pattern;
+    this.searchStop.hidden = outcome !== "searching";
+    if (outcome && outcome !== "searching") {
+      // 件数が多いときはファイル一覧を先に見せる (中身は必要な分だけ開く)
+      this.collapsed = outcome.results.length > AUTO_COLLAPSE_MATCHES
+        ? new Set(outcome.results.map((result) => result.rel_path))
+        : new Set();
+    }
     this.render();
-    this.searchInput.focus();
+  }
+
+  private toggleAllGroups() {
+    if (!this.outcome || this.outcome === "searching") return;
+    this.collapsed = this.collapsed.size
+      ? new Set()
+      : new Set(this.outcome.results.map((result) => result.rel_path));
+    this.render();
   }
 
   private async searchWorkspace(gen: number, pat: string, options: WorkspaceSearchOptions) {
     if (this.searchRunning) return;
     this.searchRunning = true;
     try {
-      const results = await this.onWorkspaceSearch(pat, options);
-      if (gen === this.searchGen) {
-        this.results = results;
-        this.render();
-      }
+      const outcome = await this.onWorkspaceSearch(pat, options);
+      if (gen === this.searchGen) this.setOutcome(outcome, pat);
     } finally {
       this.searchRunning = false;
-      if (gen !== this.searchGen && this.searchInput.value) this.queueWorkspaceSearch();
+      if (!this.aborted && gen !== this.searchGen && this.searchInput.value) this.queueWorkspaceSearch();
     }
   }
 
@@ -421,38 +412,132 @@ export class Sidebar {
   }
 
   private render() {
+    if (this.outcome === "searching") {
+      this.searchSummary.hidden = true;
+      this.tree.replaceChildren(searchingRow());
+      return;
+    }
+    if (this.outcome) {
+      this.tree.replaceChildren(this.resultTree());
+      return;
+    }
+    this.searchSummary.hidden = true;
+    this.tree.replaceChildren(this.folderTree());
+  }
+
+  // ---- 検索結果のツリー (ファイル見出し + その下に一致行) ----
+  private resultTree(): DocumentFragment {
+    const outcome = this.outcome as WorkspaceSearchOutcome;
+    const groups = groupResults(outcome.results);
+    this.renderSummary(outcome, groups.length);
+
     const frag = document.createDocumentFragment();
-    if (this.results === "searching") {
-      const searching = document.createElement("div");
-      searching.className = "ws-empty";
-      searching.textContent = "検索中…";
-      frag.appendChild(searching);
-      this.tree.replaceChildren(frag);
-      return;
+    if (!groups.length) {
+      frag.appendChild(emptyNotice(searchScopeSummary(this.options)));
+      return frag;
     }
-    if (this.results) {
-      if (this.results.length === 0) {
-        const empty = document.createElement("div");
-        empty.className = "ws-empty";
-        const title = document.createElement("div");
-        title.textContent = "見つかりません";
-        const excluded = document.createElement("div");
-        excluded.className = "ws-empty-detail";
-        excluded.textContent = searchScopeSummary(this.options);
-        empty.append(title, excluded);
-        frag.appendChild(empty);
+    const wanted = groups.reduce(
+      (rows, group) => rows + 1 + (this.collapsed.has(group.relPath) ? 0 : group.matches.length),
+      0
+    );
+    let rendered = 0;
+    for (const group of groups) {
+      if (rendered >= MAX_RENDERED_ROWS) break;
+      frag.appendChild(this.groupRow(group));
+      rendered++;
+      if (this.collapsed.has(group.relPath)) continue;
+      for (const match of group.matches) {
+        if (rendered >= MAX_RENDERED_ROWS) break;
+        frag.appendChild(this.matchRow(match));
+        rendered++;
       }
-      for (const result of this.results) {
-        const div = document.createElement("div");
-        div.className = "ws-result";
-        div.textContent = `${result.rel_path}:${result.line + 1}`;
-        div.title = div.textContent;
-        div.addEventListener("click", () => this.onSearchResult(result, this.searchInput.value));
-        frag.appendChild(div);
-      }
-      this.tree.replaceChildren(frag);
-      return;
     }
+    if (wanted > MAX_RENDERED_ROWS) {
+      frag.appendChild(warning(
+        `画面に出せるのはここまで (${rendered.toLocaleString()} 行)。折りたたむか条件を絞れば残りも見られる`
+      ));
+    }
+    return frag;
+  }
+
+  private renderSummary(outcome: WorkspaceSearchOutcome, fileCount: number) {
+    const summary = this.searchSummary;
+    summary.hidden = false;
+    summary.replaceChildren();
+    const count = document.createElement("div");
+    count.textContent = outcome.results.length
+      ? `${fileCount.toLocaleString()} 個のファイルに ${outcome.results.length.toLocaleString()} 件の結果`
+      : `${outcome.scanned_files.toLocaleString()} 個のファイルを調べて 0 件`;
+    summary.appendChild(count);
+    // 上限で切ったなら必ず言う。黙って減らすのがいちばん困る
+    if (outcome.hit_file_limit) summary.appendChild(warning("最大ファイル数で列挙を打ち切った"));
+    if (outcome.hit_result_limit) summary.appendChild(warning("最大結果数で検索を打ち切った"));
+  }
+
+  private groupRow(group: ResultGroup): HTMLElement {
+    const div = document.createElement("div");
+    div.className = "ws-group";
+    const collapsed = this.collapsed.has(group.relPath);
+    const twisty = document.createElement("span");
+    twisty.className = "ws-twisty";
+    twisty.textContent = collapsed ? "›" : "⌄";
+    const name = document.createElement("span");
+    name.className = "ws-file";
+    name.textContent = group.fileName;
+    const dir = document.createElement("span");
+    dir.className = "ws-dir";
+    dir.textContent = group.dirPath;
+    const count = document.createElement("span");
+    count.className = "ws-count";
+    count.textContent = String(group.matches.length);
+    div.append(twisty, name, dir, count);
+    div.title = group.relPath;
+    div.addEventListener("click", () => {
+      if (collapsed) this.collapsed.delete(group.relPath);
+      else this.collapsed.add(group.relPath);
+      this.render();
+    });
+    this.bindOpen(div, group.matches[0]);
+    return div;
+  }
+
+  private matchRow(match: WorkspaceSearchResult): HTMLElement {
+    const div = document.createElement("div");
+    div.className = "ws-match";
+    const mark = document.createElement("span");
+    mark.className = "ws-line";
+    mark.textContent = match.is_filename ? "名" : String(match.line + 1);
+    const preview = document.createElement("span");
+    preview.className = "ws-preview";
+    preview.appendChild(highlightedPreview(match.preview, this.shownPattern, this.options.match_case));
+    div.append(mark, preview);
+    div.title = match.preview;
+    div.addEventListener("click", () => this.onSearchResult(match, this.shownPattern, false));
+    this.bindOpen(div, match);
+    return div;
+  }
+
+  // ホイールクリックと右クリックは、どちらの行でも「別 WasabiPad で開く」入口になる
+  private bindOpen(row: HTMLElement, match: WorkspaceSearchResult) {
+    row.addEventListener("auxclick", (e) => {
+      if (e.button !== 1) return;
+      e.preventDefault();
+      this.onSearchResult(match, this.shownPattern, true);
+    });
+    row.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.onContextMenu(e.clientX, e.clientY, {
+        relPath: match.rel_path,
+        isDir: false,
+        goto: { line: match.line, col: match.col },
+      });
+    });
+  }
+
+  // ---- フォルダ/アーカイブのツリー ----
+  private folderTree(): DocumentFragment {
+    const frag = document.createDocumentFragment();
     for (const i of this.visible()) {
       const r = this.rows[i];
       const div = document.createElement("div");
@@ -471,9 +556,9 @@ export class Sidebar {
           return;
         }
         if (r.kind === "dir") {
-          this.expandFolderRow(r);
+          void this.expandFolderRow(r);
         } else if (r.kind === "archive") {
-          this.expandArchiveRow(r);
+          void this.expandArchiveRow(r);
         } else {
           this.sel = r.relPath;
           this.render();
@@ -495,6 +580,41 @@ export class Sidebar {
       }
       frag.appendChild(div);
     }
-    this.tree.replaceChildren(frag);
+    return frag;
   }
+}
+
+function iconButton(className: string, label: string, title: string): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = className;
+  button.textContent = label;
+  button.title = title;
+  return button;
+}
+
+function searchingRow(): HTMLElement {
+  const div = document.createElement("div");
+  div.className = "ws-empty";
+  div.textContent = "検索中…";
+  return div;
+}
+
+function warning(text: string): HTMLElement {
+  const div = document.createElement("div");
+  div.className = "ws-warning";
+  div.textContent = text;
+  return div;
+}
+
+function emptyNotice(detail: string): HTMLElement {
+  const empty = document.createElement("div");
+  empty.className = "ws-empty";
+  const title = document.createElement("div");
+  title.textContent = "見つかりません";
+  const excluded = document.createElement("div");
+  excluded.className = "ws-empty-detail";
+  excluded.textContent = detail;
+  empty.append(title, excluded);
+  return empty;
 }

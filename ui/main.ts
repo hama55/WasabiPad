@@ -106,7 +106,7 @@ editor.setTabSize(statusbar.setIndent(getSetting("indentSize")));
 const sidebar = new Sidebar(sidebarEl, {
   onSelect: async (relPath, newWindow) => {
     if (newWindow) {
-      if (doc.current.folderRoot) await api.launchNew(joinWindowsRoot(doc.current.folderRoot, relPath));
+      await openInNewWindow(relPath);
       return;
     }
     if (!(await doc.confirmDiscard())) {
@@ -119,13 +119,24 @@ const sidebar = new Sidebar(sidebarEl, {
   onExpandArchive: (relPath) => api.listArchiveEntries(relPath),
   onExpandFolder: (relDir) => api.listFolderEntries(relDir),
   onWorkspaceSearch: (pat, options) => api.workspaceSearch(pat, options),
-  onSearchResult: async (result, pattern) => {
+  onCancelSearch: () => { void api.workspaceSearchCancel(); },
+  onSearchResult: async (result, pattern, newWindow) => {
+    if (newWindow) {
+      await openInNewWindow(result.rel_path, { line: result.line, col: result.col });
+      return;
+    }
     if (!(await doc.confirmDiscard())) return;
     await doc.selectEntry(result.rel_path);
     if (result.is_filename) editor.goTo(result.line, result.col);
     else await editor.selectRange(result.line, result.col, result.col + [...pattern].length);
   },
 });
+
+// フォルダビュー由来の relPath は、別プロセスへ渡すため絶対パスへ戻す
+async function openInNewWindow(relPath: string, goto?: api.Pos) {
+  const root = doc.current.folderRoot;
+  if (root) await api.launchNew(joinWindowsRoot(root, relPath), goto);
+}
 
 const windowChrome = new WindowChrome($("titlebar"), win, {
   onCloseRequest: () => doc.confirmDiscard(),
@@ -174,6 +185,7 @@ const favbar = new FavBar($("favbar"), {
 
 const folderActions = new FolderActions(doc, {
   sidebar,
+  onOpenInNewWindow: (relPath, goto) => { void openInNewWindow(relPath, goto); },
   onAddFavorite: (path) => favbar.addExternal(path),
   onSetStartupPath: (path) => setSetting("startupPath", path),
   onOpenPath: (path) => {
@@ -297,7 +309,11 @@ const cliPath = await api.initialPath();
 const startupPath = getSetting("startupPath");
 const bootPath = cliPath || startupPath;
 const opened = bootPath ? await doc.openPath(bootPath) : false;
-if (!opened) {
+if (opened) {
+  // 検索結果を別ウィンドウで開いた場合、飛び先が起動引数に載っている
+  const goto = await api.initialGoto();
+  if (goto) editor.goTo(goto.line, goto.col);
+} else {
   if (!cliPath && startupPath) setSetting("startupPath", null);
   editor.open(1, false);
   editor.focus();

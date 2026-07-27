@@ -130,6 +130,7 @@ const wireStructs = [
   [coreDoc, "WorkspaceSearchResult", "WorkspaceSearchResult"],
   [folder, "FolderEntry", "FolderEntry"],
   [workspaceSearch, "SearchOptions", "WorkspaceSearchOptions"],
+  [workspaceSearch, "WorkspaceSearchOutcome", "WorkspaceSearchOutcome"],
 ];
 for (const [source, structName, interfaceName] of wireStructs) {
   assertSameSet(`${structName} wire fields`, rustFields(source, structName), tsFields(interfaceName));

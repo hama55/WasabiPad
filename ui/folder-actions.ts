@@ -11,6 +11,7 @@ import { getSetting } from "./settings";
 
 export interface FolderActionsPorts {
   sidebar: Pick<Sidebar, "setEntries" | "selectByRelPath" | "refreshFolderEntries">;
+  onOpenInNewWindow: (relPath: string, goto?: api.Pos) => void;
   onAddFavorite: (path: string) => void;
   onSetStartupPath: (path: string) => void;
   onOpenPath: (path: string) => void;
@@ -33,6 +34,12 @@ export class FolderActions {
     if (!root) return; // アーカイブ閲覧中はファイル操作の対象がない
     const items: MenuItem[] = [];
     if (target) {
+      if (!target.isDir) {
+        items.push({
+          label: "新しい WasabiPad で開く",
+          action: () => this.ports.onOpenInNewWindow(target.relPath, target.goto),
+        });
+      }
       items.push({ label: "アドレスバーに設定", action: () => this.ports.onOpenPath(this.toAbsolute(target.relPath)) });
     }
     items.push({ label: "新規メモ作成...", action: () => void this.createNote(target?.isDir ? target.relPath : null) });

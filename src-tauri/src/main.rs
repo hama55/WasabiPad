@@ -7,15 +7,15 @@ mod state;
 use wasabipad_core::{
     self, BookmarkNode, Doc, DocInfo, EditManyItem, EditManyResult, EditResult, EncodingId,
     Eol, ExternalCheck, FindCursor, FindOutcome, FindResult, FolderEntry, PosC,
-    ReplaceChunkResult, SaveOutcome, SearchOptions, WorkspaceSearchResult,
+    ReplaceChunkResult, SaveOutcome, SearchOptions, WorkspaceSearchOutcome,
 };
 use state::{with_doc, DocState, State};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    Mutex,
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    Arc, Mutex,
 };
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
@@ -44,6 +44,10 @@ struct ViewerSelection {
 }
 
 struct ViewerStore(Mutex<HashMap<String, ViewerPayload>>);
+
+// 進行中のフォルダ検索を止めるための共有フラグ。走査量は無制限を既定にしたため、
+// 打ち切る手段がないと巨大フォルダで利用者がアプリを閉じるしかなくなる。
+struct SearchCancel(Mutex<Arc<AtomicBool>>);
 
 static VIEWER_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -101,19 +105,35 @@ fn list_folder_entries(rel_dir: String, state: State) -> Result<Vec<FolderEntry>
         .ok_or_else(|| "no entries".into())
 }
 
+// 直前の検索へ中止を通知し、今回の検索用のフラグを差し替える
+fn take_over_search(cancel: &tauri::State<'_, SearchCancel>) -> Result<Arc<AtomicBool>, String> {
+    let flag = Arc::new(AtomicBool::new(false));
+    let mut slot = cancel.0.lock().map_err(|_| "検索を開始できません".to_string())?;
+    slot.store(true, Ordering::Relaxed);
+    *slot = flag.clone();
+    Ok(flag)
+}
+
 #[tauri::command]
 async fn workspace_search(
     pat: String,
     options: SearchOptions,
     state: State<'_>,
-) -> Result<Vec<WorkspaceSearchResult>, String> {
+    cancel: tauri::State<'_, SearchCancel>,
+) -> Result<WorkspaceSearchOutcome, String> {
     let root = with_doc(&state, |doc| doc.workspace_root())
         .ok_or_else(|| "folder is not open".to_string())?;
+    let flag = take_over_search(&cancel)?;
     tauri::async_runtime::spawn_blocking(move || {
-        wasabipad_core::search_workspace(&root, &pat, &options)
+        wasabipad_core::search_workspace(&root, &pat, &options, &flag)
     })
     .await
     .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn workspace_search_cancel(cancel: tauri::State<'_, SearchCancel>) -> Result<(), String> {
+    take_over_search(&cancel).map(|_| ())
 }
 
 #[tauri::command]
@@ -308,12 +328,23 @@ fn initial_path() -> Option<String> {
     std::env::args().nth(1)
 }
 
+// 起動引数の "+行:桁" (0起点)。検索結果を別ウィンドウで開いたときの飛び先。
 #[tauri::command]
-fn launch_new(path: Option<String>) -> Result<(), String> {
+fn initial_goto() -> Option<PosC> {
+    let arg = std::env::args().nth(2)?;
+    let (line, col) = arg.strip_prefix('+')?.split_once(':')?;
+    Some(PosC { line: line.parse().ok()?, col: col.parse().ok()? })
+}
+
+#[tauri::command]
+fn launch_new(path: Option<String>, line: Option<usize>, col: Option<usize>) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let mut command = Command::new(exe);
     if let Some(path) = path.filter(|path| !path.is_empty()) {
         command.arg(path);
+        if let Some(line) = line {
+            command.arg(format!("+{line}:{}", col.unwrap_or(0)));
+        }
     }
     command.spawn().map(|_| ()).map_err(|e| e.to_string())
 }
@@ -408,6 +439,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(Mutex::new(DocState(Doc::empty())))
         .manage(ViewerStore(Mutex::new(HashMap::new())))
+        .manage(SearchCancel(Mutex::new(Arc::new(AtomicBool::new(false)))))
         .invoke_handler(tauri::generate_handler![
             open_path,
             new_doc,
@@ -418,6 +450,7 @@ fn main() {
             list_archive_entries,
             list_folder_entries,
             workspace_search,
+            workspace_search_cancel,
             create_note,
             rename_entry,
             reveal_in_explorer,
@@ -444,6 +477,7 @@ fn main() {
             path_is_directory,
             next_memo_path,
             initial_path,
+            initial_goto,
             launch_new,
             open_viewer,
             take_viewer_payload,

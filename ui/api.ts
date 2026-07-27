@@ -110,20 +110,33 @@ export const listArchiveEntries = (relPath: string) =>
 export const listFolderEntries = (relDir: string) =>
   invoke<FolderEntry[]>("list_folder_entries", { relDir });
 
-// フォルダ検索の打ち切り条件。既定値は ui/workspace-search-options.ts が持つ
+// フォルダ検索の打ち切り条件。既定値は ui/workspace-search-options.ts が持つ。
+// 各上限の 0 は「無制限」。
 export interface WorkspaceSearchOptions {
   match_case: boolean;
   max_file_bytes: number;
   max_files: number;
   max_results: number;
   exclude_dirs: string[];
+  exclude_binary: boolean;
   search_file_names: boolean;
   search_contents: boolean;
   workers: number; // 0 = 自動
 }
 
+// hit_* は上限で打ち切ったかどうか。件数だけでは「省略された」ことが分からない
+export interface WorkspaceSearchOutcome {
+  results: WorkspaceSearchResult[];
+  scanned_files: number;
+  hit_file_limit: boolean;
+  hit_result_limit: boolean;
+}
+
 export const workspaceSearch = (pat: string, options: WorkspaceSearchOptions) =>
-  invoke<WorkspaceSearchResult[]>("workspace_search", { pat, options });
+  invoke<WorkspaceSearchOutcome>("workspace_search", { pat, options });
+
+// 進行中の検索を打ち切る (無制限指定で走り出した検索から抜ける手段)
+export const workspaceSearchCancel = () => invoke<void>("workspace_search_cancel");
 
 // フォルダ内に空の新規ファイルを作り、その場で開く (dir はフォルダルートからの相対パス)
 export const createNote = (dir: string | null, name: string) =>
@@ -201,7 +214,10 @@ export const pathIsDirectory = (path: string) => invoke<boolean>("path_is_direct
 export const nextMemoPath = (directory: string, stem: string, extension: string) =>
   invoke<string>("next_memo_path", { directory, stem, extension });
 export const initialPath = () => invoke<string | null>("initial_path");
-export const launchNew = (path?: string) => invoke<void>("launch_new", { path });
+// 起動時に飛ぶ位置 (検索結果を別ウィンドウで開いたとき backend が引数へ載せる)
+export const initialGoto = () => invoke<Pos | null>("initial_goto");
+export const launchNew = (path?: string, goto?: Pos) =>
+  invoke<void>("launch_new", { path, line: goto?.line ?? null, col: goto?.col ?? null });
 
 // エディタが必要とする文書操作だけを切り出した口。エディタはこの型にだけ依存し、
 // 既定の実装 (下の documentClient) が Tauri の invoke を呼ぶ。
