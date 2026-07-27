@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 // char 単位の位置 (backend と共有)。col は Unicode スカラー index。
 export interface Pos {
@@ -37,6 +38,8 @@ export interface WorkspaceSearchResult {
   // 位置を再計算できないため、当てた backend が持って渡す。
   highlights: [number, number][];
   is_filename: boolean;
+  // ファジー一致の当てはまりの良さ (本文一致は 0)。並べ替えの鍵として使う
+  score: number;
 }
 
 export interface EditResult {
@@ -141,8 +144,18 @@ export interface WorkspaceSearchOutcome {
   pattern_error: string | null;
 }
 
-export const workspaceSearch = (pat: string, options: WorkspaceSearchOptions) =>
-  invoke<WorkspaceSearchOutcome>("workspace_search", { pat, options });
+// searchId は打ち切った検索の取りこぼしを次の検索から締め出すための世代番号
+export const workspaceSearch = (pat: string, options: WorkspaceSearchOptions, searchId: number) =>
+  invoke<WorkspaceSearchOutcome>("workspace_search", { pat, options, searchId });
+
+export interface WorkspaceSearchBatch {
+  search_id: number;
+  results: WorkspaceSearchResult[];
+}
+
+// 検索中の途中経過。確定を待たずに出せるものを出す (走査順で、確定後の並びとは別)
+export const onWorkspaceSearchBatch = (handler: (batch: WorkspaceSearchBatch) => void) =>
+  listen<WorkspaceSearchBatch>("workspace-search-batch", (event) => handler(event.payload));
 
 // 進行中の検索を打ち切る (無制限指定で走り出した検索から抜ける手段)
 export const workspaceSearchCancel = () => invoke<void>("workspace_search_cancel");

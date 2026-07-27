@@ -6,10 +6,12 @@
 use crate::doc::WorkspaceSearchResult;
 use crate::fuzzy::{match_path, to_ranges};
 use grep_matcher::Matcher;
-use grep_regex::{RegexMatcher, RegexMatcherBuilder};
+use grep_regex::RegexMatcher;
 use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkMatch};
 use ignore::overrides::OverrideBuilder;
 use ignore::{WalkBuilder, WalkState};
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -51,13 +53,14 @@ const PREVIEW_LEAD_CHARS: usize = 40;
 const PREVIEW_CHARS: usize = 180;
 // バイナリ判定と文字コード判定に読む先頭バイト数
 const PROBE_BYTES: usize = 8 * 1024;
+// 途中経過を送り出す間隔。1件ごとに送らないのは、1回の送出が
+// JSON 化 + webview へのメッセージ 1往復になるため。UI 側は 100ms ごとにしか
+// 描き直さないので、それより細かく送っても表示は 1mm も早くならない。
+const PROGRESS_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+// 途中経過を送るのはここまで。画面に出せる行数を超えて送っても表示は増えず、
+// 複製と IPC の費用だけが増える (確定結果は打ち切らずに全件返す)。
+const PROGRESS_MAX: usize = 5_000;
 const NAME_PREFIX: &str = "ファイル名: ";
-
-// 並び順のグループ。同じファイル内ではファイル名一致を先に置く
-const KIND_NAME: u8 = 0;
-const KIND_CONTENT: u8 = 1;
-
-type ScoredHit = (u8, i32, WorkspaceSearchResult);
 
 // 0 は無制限。以降の比較をすべて飽和値で書けるようにする
 fn limit(value: usize) -> usize {
@@ -74,16 +77,20 @@ fn clamp_workers(requested: usize) -> usize {
     }
 }
 
+// on_batch は見つかった端から呼ばれる (順序は走査順で、最終結果の並びとは別)。
+// 全部そろうまで黙っていると、大きなフォルダでは待っているのか止まっているのか
+// 利用者に区別がつかないため、確定を待たずに出せるものを出す。
 pub fn search_workspace(
     root: &Path,
     pattern: &str,
     options: &SearchOptions,
     cancel: &AtomicBool,
+    on_batch: &(dyn Fn(Vec<WorkspaceSearchResult>) + Sync),
 ) -> WorkspaceSearchOutcome {
     if pattern.is_empty() || (!options.search_file_names && !options.search_contents) {
         return WorkspaceSearchOutcome::default();
     }
-    let matcher = match build_matcher(pattern, options) {
+    let matcher = match content_matcher(pattern, options) {
         Ok(matcher) => matcher,
         Err(message) => {
             return WorkspaceSearchOutcome { pattern_error: Some(message), ..Default::default() }
@@ -98,7 +105,7 @@ pub fn search_workspace(
 
     let max_files = limit(options.max_files);
     let max_results = limit(options.max_results);
-    let shared_results: Mutex<Vec<ScoredHit>> = Mutex::new(Vec::new());
+    let shared_results = Mutex::new(Collected::default());
     let shared_scanned = AtomicUsize::new(0);
     let shared_file_limit = AtomicBool::new(false);
     let shared_result_limit = AtomicBool::new(false);
@@ -129,21 +136,26 @@ pub fn search_workspace(
                 return WalkState::Continue;
             }
             let mut output = results.lock().unwrap();
-            if output.len() >= max_results {
+            if output.hits.len() >= max_results {
                 hit_result_limit.store(true, Ordering::Relaxed);
                 return WalkState::Quit;
             }
-            output.extend(found.hits);
+            output.hits.extend(found.hits);
+            let batch = output.take_batch();
+            drop(output); // 送信中も他スレッドを止めない
+            if let Some(batch) = batch {
+                on_batch(batch);
+            }
             WalkState::Continue
         })
     });
 
-    let mut output = shared_results.into_inner().unwrap();
+    let mut output = shared_results.into_inner().unwrap().hits;
     sort_hits(&mut output, options);
     let truncated = shared_result_limit.load(Ordering::Relaxed) || output.len() > max_results;
     output.truncate(max_results);
     WorkspaceSearchOutcome {
-        results: output.into_iter().map(|(_, _, result)| result).collect(),
+        results: output,
         scanned_files: shared_scanned.load(Ordering::Relaxed).min(max_files),
         hit_file_limit: shared_file_limit.load(Ordering::Relaxed),
         hit_result_limit: truncated,
@@ -151,15 +163,47 @@ pub fn search_workspace(
     }
 }
 
+// 走査中の共有バッファ。sent は途中経過として送り出し済みの件数
+#[derive(Default)]
+struct Collected {
+    hits: Vec<WorkspaceSearchResult>,
+    sent: usize,
+    last_sent_at: Option<std::time::Instant>, // None = まだ一度も送っていない
+}
+
+impl Collected {
+    // 1件目は待たずに送る (最初の1件が出るまでの時間が体感を決める)。
+    // 以降は時間で区切る。件数で区切ると、一致がまばらなフォルダでは
+    // 2件目以降が最後まで出てこない (数がたまらないので送出が起きない)。
+    fn take_batch(&mut self) -> Option<Vec<WorkspaceSearchResult>> {
+        let budget = PROGRESS_MAX.saturating_sub(self.sent);
+        if budget == 0 || self.hits.len() == self.sent {
+            return None;
+        }
+        let now = std::time::Instant::now();
+        if self.last_sent_at.is_some_and(|last| now.duration_since(last) < PROGRESS_INTERVAL) {
+            return None;
+        }
+        self.last_sent_at = Some(now);
+        let from = self.sent;
+        self.sent = self.hits.len().min(from + budget);
+        Some(self.hits[from..self.sent].to_vec())
+    }
+}
+
 // ファイル名だけを探しているときは、パス順よりスコア順のほうが役に立つ
 // (VSCode の Quick Open と同じ狙い)。本文も混ざるならツリーの並びを優先する。
-fn sort_hits(hits: &mut [ScoredHit], options: &SearchOptions) {
+// 同じ規則を ui/search-results.ts の sortResults が持つ (途中経過を確定結果と
+// 同じ順で見せるため)。片方だけ変えると、確定した瞬間に並びが飛ぶ。
+fn sort_hits(hits: &mut [WorkspaceSearchResult], options: &SearchOptions) {
     if options.search_file_names && !options.search_contents {
-        hits.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.2.rel_path.cmp(&b.2.rel_path)));
+        hits.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.rel_path.cmp(&b.rel_path)));
         return;
     }
+    // 同じファイル内ではファイル名一致を先に置く
     hits.sort_by(|a, b| {
-        (&a.2.rel_path, a.0, a.2.line, a.2.col).cmp(&(&b.2.rel_path, b.0, b.2.line, b.2.col))
+        (&a.rel_path, !a.is_filename, a.line, a.col)
+            .cmp(&(&b.rel_path, !b.is_filename, b.line, b.col))
     });
 }
 
@@ -170,19 +214,14 @@ fn relative_path(root: &Path, path: &Path) -> String {
         .replace('\\', "/")
 }
 
-// 本文検索を使わないなら matcher は要らない (正規表現の誤りも問わない)
-fn build_matcher(pattern: &str, options: &SearchOptions) -> Result<Option<RegexMatcher>, String> {
+// 本文検索を使わないなら matcher は要らない (正規表現の誤りも問わない)。
+// 当て方そのものは search.rs が単一の定義を持つ (ファイル内検索と揃えるため)。
+fn content_matcher(pattern: &str, options: &SearchOptions) -> Result<Option<RegexMatcher>, String> {
     if !options.search_contents {
         return Ok(None);
     }
-    RegexMatcherBuilder::new()
-        .case_insensitive(!options.match_case)
-        .word(options.whole_word)
-        .fixed_strings(!options.use_regex)
-        .line_terminator(Some(b'\n'))
-        .build(pattern)
+    crate::search::build_matcher(pattern, options.match_case, options.use_regex, options.whole_word)
         .map(Some)
-        .map_err(|error| format!("検索パターンが不正: {error}"))
 }
 
 fn build_walk(root: &Path, options: &SearchOptions) -> Result<WalkBuilder, String> {
@@ -244,7 +283,11 @@ impl<'a> Engine<'a> {
         options: &SearchOptions,
         max_results: usize,
     ) -> FileHits {
-        let probe = probe_head(path);
+        // 開けないファイルでも名前一致だけは返す (権限や排他はこちらでは直せない)。
+        // 本文検索と同じ File を使い回すのは、Windows では open のコストが
+        // 走査時間の無視できない割合を占めるため。
+        let mut file = File::open(path).ok();
+        let probe = file.as_mut().map_or(Probe::TEXT, probe_head);
         if options.exclude_binary && probe.binary {
             return FileHits::default();
         }
@@ -252,7 +295,7 @@ impl<'a> Engine<'a> {
         if options.search_file_names {
             if let Some(found) = match_path(pattern, relative) {
                 let prefix = NAME_PREFIX.chars().count();
-                hits.push((KIND_NAME, found.score, WorkspaceSearchResult {
+                hits.push(WorkspaceSearchResult {
                     rel_path: relative.to_owned(),
                     line: 0,
                     col: 0,
@@ -262,17 +305,20 @@ impl<'a> Engine<'a> {
                         .map(|[at, len]| [at + prefix, len])
                         .collect(),
                     is_filename: true,
-                }));
+                    score: found.score,
+                });
             }
         }
-        let Some(matcher) = self.matcher else { return FileHits { hits, limited: false } };
+        let (Some(matcher), Some(file)) = (self.matcher, file.as_ref()) else {
+            return FileHits { hits, limited: false };
+        };
         let searcher = match (probe.sjis, self.sjis.as_mut()) {
             (true, Some(sjis)) => sjis,
             _ => &mut self.utf8,
         };
         let mut collector = Collector { matcher, relative, hits: &mut hits, max_results, limited: false };
-        // 読めないファイルは黙って飛ばす (権限や排他はこちらでは直せない)
-        let _ = searcher.search_path(matcher, path, &mut collector);
+        // 途中で読めなくなったファイルは黙って飛ばす (ここまでの一致は残す)
+        let _ = searcher.search_file(matcher, file, &mut collector);
         let limited = collector.limited;
         FileHits { hits, limited }
     }
@@ -282,10 +328,12 @@ impl<'a> Engine<'a> {
 // 切ったことを持ち帰らないと、件数だけ減って理由が消える。
 #[derive(Default)]
 struct FileHits {
-    hits: Vec<ScoredHit>,
+    hits: Vec<WorkspaceSearchResult>,
     limited: bool,
 }
 
+// mmap は使わない (grep-searcher の既定のまま)。ripgrep が再帰検索で使わないのと
+// 同じ理由で、Windows では 4MB 級のファイルでも実測でバッファ読みのほうが速かった。
 fn searcher(encoding: Option<grep_searcher::Encoding>) -> Searcher {
     SearcherBuilder::new()
         // NUL が出た時点で本文検索を止める (ripgrep の再帰検索と同じ既定)
@@ -298,7 +346,7 @@ fn searcher(encoding: Option<grep_searcher::Encoding>) -> Searcher {
 struct Collector<'a> {
     matcher: &'a RegexMatcher,
     relative: &'a str,
-    hits: &'a mut Vec<ScoredHit>,
+    hits: &'a mut Vec<WorkspaceSearchResult>,
     max_results: usize,
     limited: bool,
 }
@@ -317,14 +365,15 @@ impl Sink for Collector<'_> {
             let (preview, preview_col) = preview_around(text, at.start());
             let matched_chars = text[at.start()..at.end()].chars().count();
             let shown = matched_chars.min(preview.chars().count().saturating_sub(preview_col));
-            hits.push((KIND_CONTENT, 0, WorkspaceSearchResult {
+            hits.push(WorkspaceSearchResult {
                 rel_path: relative.to_owned(),
                 line,
                 col: text[..at.start()].chars().count(),
                 preview,
                 highlights: if shown > 0 { vec![[preview_col, shown]] } else { Vec::new() },
                 is_filename: false,
-            }));
+                score: 0,
+            });
             hits.len() < max_results
         });
         self.limited |= self.hits.len() >= max_results;
@@ -350,14 +399,18 @@ struct Probe {
     sjis: bool,
 }
 
+impl Probe {
+    // 中身を覗けなかったときの扱い。名前一致の機会だけは残す
+    const TEXT: Probe = Probe { binary: false, sjis: false };
+}
+
 // 先頭だけを覗いて、バイナリかどうかと Shift-JIS 扱いが要るかを決める。
 // grep-searcher は BOM 付き (UTF-8 / UTF-16) を自前で解くので、そこは触らない。
-fn probe_head(path: &Path) -> Probe {
-    use std::io::Read;
+// 読み終えたら位置を戻す (同じ File をそのまま本文検索へ渡すため)。
+fn probe_head(file: &mut File) -> Probe {
     let mut head = [0u8; PROBE_BYTES];
-    let read = std::fs::File::open(path)
-        .and_then(|mut file| file.read(&mut head))
-        .unwrap_or(0);
+    let read = file.read(&mut head).unwrap_or(0);
+    let _ = file.seek(SeekFrom::Start(0)); // 通常ファイルの seek は失敗しない
     let head = &head[..read];
     if head.starts_with(&[0xFF, 0xFE]) || head.starts_with(&[0xFE, 0xFF]) {
         return Probe { binary: false, sjis: false };
@@ -404,6 +457,14 @@ mod tests {
         root
     }
 
+    fn run(
+        root: &std::path::Path,
+        pattern: &str,
+        options: &SearchOptions,
+    ) -> super::WorkspaceSearchOutcome {
+        search_workspace(root, pattern, options, &AtomicBool::new(false), &|_| {})
+    }
+
     fn places(found: &super::WorkspaceSearchOutcome) -> Vec<(String, usize, usize)> {
         found.results.iter().map(|r| (r.rel_path.clone(), r.line, r.col)).collect()
     }
@@ -411,7 +472,7 @@ mod tests {
     #[test]
     fn collects_every_match_on_a_line_and_skips_excluded_dirs() {
         let root = workspace("all");
-        let found = search_workspace(&root, "needle", &options(), &AtomicBool::new(false));
+        let found = run(&root, "needle", &options());
         assert_eq!(places(&found), vec![
             ("needle.txt".into(), 0, 4),
             ("needle.txt".into(), 2, 0),
@@ -430,10 +491,10 @@ mod tests {
         let mut opts = options();
         opts.search_contents = false;
         opts.search_file_names = true;
-        assert!(search_workspace(&root, "blob", &opts, &AtomicBool::new(false)).results.is_empty());
+        assert!(run(&root, "blob", &opts).results.is_empty());
 
         opts.exclude_binary = false;
-        let found = search_workspace(&root, "blob", &opts, &AtomicBool::new(false));
+        let found = run(&root, "blob", &opts);
         assert_eq!(found.results.len(), 1, "名前一致だけは残る");
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -443,13 +504,13 @@ mod tests {
         let root = workspace("limit");
         let mut opts = options();
         opts.max_results = 2;
-        let found = search_workspace(&root, "needle", &opts, &AtomicBool::new(false));
+        let found = run(&root, "needle", &opts);
         assert_eq!(found.results.len(), 2);
         assert!(found.hit_result_limit);
 
         opts.max_results = 0;
         opts.max_files = 1;
-        let found = search_workspace(&root, "needle", &opts, &AtomicBool::new(false));
+        let found = run(&root, "needle", &opts);
         assert!(found.hit_file_limit);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -459,16 +520,16 @@ mod tests {
         let root = workspace("regex");
         let mut opts = options();
         opts.use_regex = true;
-        let found = search_workspace(&root, "need(le)+", &opts, &AtomicBool::new(false));
+        let found = run(&root, "need(le)+", &opts);
         assert_eq!(found.results.len(), 3);
 
         // 正規表現が壊れていても落とさず、理由を返す
-        let broken = search_workspace(&root, "need(", &opts, &AtomicBool::new(false));
+        let broken = run(&root, "need(", &opts);
         assert!(broken.pattern_error.is_some() && broken.results.is_empty());
 
         opts.use_regex = false;
         opts.whole_word = true;
-        let found = search_workspace(&root, "needl", &opts, &AtomicBool::new(false));
+        let found = run(&root, "needl", &opts);
         assert!(found.results.is_empty(), "単語の一部には当たらない");
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -477,13 +538,37 @@ mod tests {
     fn glob_excludes_and_shift_jis_contents_are_handled() {
         let root = workspace("glob");
         std::fs::write(root.join("sjis.txt"), encoding_rs::SHIFT_JIS.encode("日本語のかんじ").0).unwrap();
-        let found = search_workspace(&root, "かんじ", &options(), &AtomicBool::new(false));
+        let found = run(&root, "かんじ", &options());
         assert_eq!(found.results.len(), 1, "Shift-JIS の本文も当たる");
 
         let mut opts = options();
         opts.exclude_globs = vec!["*.txt".into()];
-        let found = search_workspace(&root, "needle", &opts, &AtomicBool::new(false));
+        let found = run(&root, "needle", &opts);
         assert!(found.results.is_empty(), "glob 除外が効く");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    // 途中経過を出さないと、大きなフォルダでは待ちと停止の区別がつかない。
+    // 1ファイルに全一致を入れると、時間に関わらず送出の切れ目が決まる
+    // (最初の1件で PROGRESS_MAX まで出し、そこで送出が止まる)。
+    #[test]
+    fn hits_are_streamed_up_to_the_cap() {
+        let cap = super::PROGRESS_MAX;
+        let root = std::env::temp_dir().join(format!("wasabipad_ws_{}_stream", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("many.txt"), "needle\n".repeat(cap * 2)).unwrap();
+        let streamed = std::sync::Mutex::new(Vec::new());
+        let found = search_workspace(&root, "needle", &options(), &AtomicBool::new(false), &|hits| {
+            streamed.lock().unwrap().extend(hits);
+        });
+        let streamed = streamed.into_inner().unwrap();
+        assert_eq!(found.results.len(), cap * 2, "確定結果は打ち切らない");
+        assert_eq!(streamed.len(), cap, "1件目は待たずに送り、上限で送出を止める");
+        let places = places(&found);
+        for hit in &streamed {
+            assert!(places.contains(&(hit.rel_path.clone(), hit.line, hit.col)));
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -494,7 +579,7 @@ mod tests {
         let mut opts = options();
         opts.search_contents = false;
         opts.search_file_names = true;
-        let found = search_workspace(&root, "ndl", &opts, &AtomicBool::new(false));
+        let found = run(&root, "ndl", &opts);
         let paths: Vec<&str> = found.results.iter().map(|r| r.rel_path.as_str()).collect();
         assert_eq!(paths, vec!["needle.txt", "sub/needless-extra.txt"], "スコア順");
         assert!(!found.results[0].highlights.is_empty());

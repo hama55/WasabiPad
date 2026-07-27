@@ -15,7 +15,15 @@ const hit = (
   line: number,
   preview: string,
   highlights: [number, number][] = []
-): WorkspaceSearchResult => ({ rel_path, line, col: 0, preview, highlights, is_filename: false });
+): WorkspaceSearchResult => ({
+  rel_path,
+  line,
+  col: 0,
+  preview,
+  highlights,
+  is_filename: false,
+  score: 0,
+});
 
 const outcome = (
   results: WorkspaceSearchResult[],
@@ -30,6 +38,8 @@ const outcome = (
 });
 
 describe("Sidebar workspace search", () => {
+  let mounted: Sidebar; // 途中経過を流し込むために直近の実体を握っておく
+
   afterEach(async () => {
     vi.useRealTimers();
     document.body.replaceChildren();
@@ -42,7 +52,7 @@ describe("Sidebar workspace search", () => {
   ) {
     const host = document.createElement("div");
     document.body.appendChild(host);
-    const sidebar = new Sidebar(host, {
+    const sidebar = (mounted = new Sidebar(host, {
       onSelect: () => {},
       onContextMenu: () => {},
       onExpandArchive: async () => [],
@@ -50,7 +60,7 @@ describe("Sidebar workspace search", () => {
       onWorkspaceSearch,
       onCancelSearch: () => {},
       onSearchResult,
-    });
+    }));
     sidebar.setWorkspaceSearch(true);
     return host;
   }
@@ -133,6 +143,37 @@ describe("Sidebar workspace search", () => {
 
     const warnings = [...host.querySelectorAll(".ws-warning")].map((el) => el.textContent);
     expect(warnings).toEqual(["最大ファイル数で列挙を打ち切った", "最大結果数で検索を打ち切った"]);
+  });
+
+  it("検索中でも届いた分から並べ、確定したら backend の並びで置き換える", async () => {
+    vi.useFakeTimers();
+    let searchId = 0;
+    let finish: (found: WorkspaceSearchOutcome) => void = () => {};
+    const host = mount((_pat, _options, id) => {
+      searchId = id;
+      return new Promise<WorkspaceSearchOutcome>((resolve) => { finish = resolve; });
+    });
+    await search(host, "needle");
+
+    // 届いた順ではなく、確定結果と同じ並びで見せる (終わった瞬間に並びが飛ばないように)
+    mounted.acceptSearchBatch(searchId, [hit("z.txt", 0, "needle")]);
+    mounted.acceptSearchBatch(searchId, [hit("a.txt", 0, "needle")]);
+    await vi.advanceTimersByTimeAsync(100);
+    expect([...host.querySelectorAll(".ws-file")].map((el) => el.textContent)).toEqual([
+      "a.txt",
+      "z.txt",
+    ]);
+    expect(text(host, ".ws-summary")).toContain("検索中");
+
+    // 打ち切った検索の取りこぼしが混ざってはいけない
+    mounted.acceptSearchBatch(searchId - 1, [hit("m.txt", 0, "needle")]);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(host.querySelectorAll(".ws-file")).toHaveLength(2);
+
+    finish(outcome([hit("b.txt", 0, "needle")]));
+    await vi.advanceTimersByTimeAsync(0);
+    expect([...host.querySelectorAll(".ws-file")].map((el) => el.textContent)).toEqual(["b.txt"]);
+    expect(text(host, ".ws-summary")).not.toContain("検索中");
   });
 
   it("設定ダイアログでの除外フォルダの変更が検索条件と説明に反映される", async () => {

@@ -118,7 +118,7 @@ const sidebar = new Sidebar(sidebarEl, {
   onContextMenu: (x, y, target) => folderActions.showContextMenu(x, y, target),
   onExpandArchive: (relPath) => api.listArchiveEntries(relPath),
   onExpandFolder: (relDir) => api.listFolderEntries(relDir),
-  onWorkspaceSearch: (pat, options) => api.workspaceSearch(pat, options),
+  onWorkspaceSearch: (pat, options, searchId) => api.workspaceSearch(pat, options, searchId),
   onCancelSearch: () => { void api.workspaceSearchCancel(); },
   onSearchResult: async (result, pattern, newWindow) => {
     if (newWindow) {
@@ -131,6 +131,9 @@ const sidebar = new Sidebar(sidebarEl, {
     else await editor.selectRange(result.line, result.col, result.col + [...pattern].length);
   },
 });
+
+// 検索の途中経過。確定を待たずに届いた分から並べる
+void api.onWorkspaceSearchBatch((batch) => sidebar.acceptSearchBatch(batch.search_id, batch.results));
 
 // フォルダビュー由来の relPath は、別プロセスへ渡すため絶対パスへ戻す
 async function openInNewWindow(relPath: string, goto?: api.Pos) {

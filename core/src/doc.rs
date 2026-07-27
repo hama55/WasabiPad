@@ -203,7 +203,8 @@ pub struct FindResult {
     pub end: PosC,
 }
 
-#[derive(Serialize)]
+// Clone は途中経過の送出用 (確定した結果を残したまま、送る分だけ複製する)
+#[derive(Serialize, Clone)]
 pub struct WorkspaceSearchResult {
     pub rel_path: String,
     pub line: usize,
@@ -213,6 +214,9 @@ pub struct WorkspaceSearchResult {
     // フロントが検索し直せないため、当てた側が位置を持って渡す。
     pub highlights: Vec<[usize; 2]>,
     pub is_filename: bool,
+    // ファジー一致の当てはまりの良さ (本文一致は 0)。並べ替えに要るので線に載せる。
+    // 途中経過を確定結果と同じ順で出すには、フロント側も同じ鍵で並べる必要がある。
+    pub score: i32,
 }
 
 // チャンク分割検索の再開カーソル。1回の呼び出しで budget 行だけ走査し、
@@ -1080,7 +1084,8 @@ mod tests {
             search_contents: true,
             workers: 0,
         };
-        let results = search_workspace(&root, "NEEDLE", &options, &AtomicBool::new(false)).results;
+        let results =
+            search_workspace(&root, "NEEDLE", &options, &AtomicBool::new(false), &|_| {}).results;
         assert_eq!(results.len(), 3);
         assert_eq!((results[0].rel_path.as_str(), results[0].preview.as_str()), ("needle-file.txt", "ファイル名: needle-file.txt"));
         assert_eq!((results[1].rel_path.as_str(), results[1].line, results[1].col), ("sub/deep.txt", 0, 2));
@@ -1462,6 +1467,17 @@ mod tests {
                 FindOutcome::NotFound => panic!("見つかるはずの一致が見つからなかった"),
             }
         }
+    }
+
+    // ファイル内検索とフォルダ検索は search::build_matcher を共有する。
+    // 大小文字無視が ASCII に閉じていると、同じ語を探したのにフォルダ検索では
+    // 出てファイル内検索では出ない、という説明できない差になる。
+    #[test]
+    fn case_insensitive_find_folds_beyond_ascii() {
+        let d = doc("ＮＥＥＤＬＥ を探す");
+        let found = d.find("ｎｅｅｄｌｅ", p(0, 0), true, false).expect("全角も畳んで当てる");
+        assert_eq!((found.start.col, found.end.col), (0, 6));
+        assert!(d.find("ｎｅｅｄｌｅ", p(0, 0), true, true).is_none(), "区別する指定なら当てない");
     }
 
     // 複数行パターンの開始行がちょうどチャンクの最終行になるようにし、

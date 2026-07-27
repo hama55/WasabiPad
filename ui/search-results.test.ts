@@ -1,16 +1,22 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
 
-import { groupResults, highlightedPreview } from "./search-results";
+import { groupResults, highlightedPreview, sortResults } from "./search-results";
 import type { WorkspaceSearchResult } from "./api";
 
-const hit = (rel_path: string, line: number, is_filename = false): WorkspaceSearchResult => ({
+const hit = (
+  rel_path: string,
+  line: number,
+  is_filename = false,
+  score = 0
+): WorkspaceSearchResult => ({
   rel_path,
   line,
   col: 0,
   preview: rel_path,
   highlights: [],
   is_filename,
+  score,
 });
 
 const render = (preview: string, highlights: [number, number][]) => {
@@ -36,6 +42,30 @@ describe("groupResults", () => {
   it("パスが飛び飛びなら別の見出しにする (backend の並び順を信用しない)", () => {
     const groups = groupResults([hit("a.txt", 0), hit("b.txt", 0), hit("a.txt", 5)]);
     expect(groups.map((group) => group.relPath)).toEqual(["a.txt", "b.txt", "a.txt"]);
+  });
+});
+
+describe("sortResults", () => {
+  // 走査順で届く途中経過を、確定結果 (core の sort_hits) と同じ順に直せること
+  it("パス順・同じファイル内はファイル名一致を先に、以降は行順", () => {
+    const sorted = sortResults(
+      [hit("b.txt", 0), hit("a/z.txt", 5), hit("a/z.txt", 1), hit("a/z.txt", 0, true)],
+      false
+    );
+    expect(sorted.map((result) => [result.rel_path, result.line, result.is_filename])).toEqual([
+      ["a/z.txt", 0, true],
+      ["a/z.txt", 1, false],
+      ["a/z.txt", 5, false],
+      ["b.txt", 0, false],
+    ]);
+  });
+
+  it("ファイル名だけを探しているときはスコア順 (同点はパス順)", () => {
+    const sorted = sortResults(
+      [hit("b.txt", 0, true, 10), hit("z.txt", 0, true, 90), hit("a.txt", 0, true, 10)],
+      true
+    );
+    expect(sorted.map((result) => result.rel_path)).toEqual(["z.txt", "a.txt", "b.txt"]);
   });
 });
 

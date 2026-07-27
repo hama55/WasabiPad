@@ -114,10 +114,20 @@ fn take_over_search(cancel: &tauri::State<'_, SearchCancel>) -> Result<Arc<Atomi
     Ok(flag)
 }
 
+// 検索中の途中経過。search_id はフロントが発行した世代番号で、
+// 打ち切った検索の取りこぼしが次の検索へ混ざらないようにするためだけに載せる。
+#[derive(Clone, serde::Serialize)]
+struct WorkspaceSearchBatch {
+    search_id: u32,
+    results: Vec<wasabipad_core::WorkspaceSearchResult>,
+}
+
 #[tauri::command]
 async fn workspace_search(
     pat: String,
     options: SearchOptions,
+    search_id: u32,
+    app: AppHandle,
     state: State<'_>,
     cancel: tauri::State<'_, SearchCancel>,
 ) -> Result<WorkspaceSearchOutcome, String> {
@@ -125,7 +135,10 @@ async fn workspace_search(
         .ok_or_else(|| "folder is not open".to_string())?;
     let flag = take_over_search(&cancel)?;
     tauri::async_runtime::spawn_blocking(move || {
-        wasabipad_core::search_workspace(&root, &pat, &options, &flag)
+        let emit = |results| {
+            let _ = app.emit("workspace-search-batch", WorkspaceSearchBatch { search_id, results });
+        };
+        wasabipad_core::search_workspace(&root, &pat, &options, &flag, &emit)
     })
     .await
     .map_err(|error| error.to_string())

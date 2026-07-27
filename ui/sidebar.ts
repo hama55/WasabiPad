@@ -5,7 +5,7 @@ import type {
   WorkspaceSearchOutcome,
   WorkspaceSearchResult,
 } from "./api";
-import { groupResults, highlightedPreview, type ResultGroup } from "./search-results";
+import { groupResults, highlightedPreview, sortResults, type ResultGroup } from "./search-results";
 import { openSearchSettings } from "./search-settings-dialog";
 import {
   clampSearchOptions,
@@ -42,7 +42,11 @@ export interface SidebarPorts {
   onContextMenu: (x: number, y: number, target: ContextTarget | null) => void;
   onExpandArchive: (relPath: string) => Promise<string[]>;
   onExpandFolder: (relDir: string) => Promise<FolderEntry[]>;
-  onWorkspaceSearch: (pat: string, options: WorkspaceSearchOptions) => Promise<WorkspaceSearchOutcome>;
+  onWorkspaceSearch: (
+    pat: string,
+    options: WorkspaceSearchOptions,
+    searchId: number
+  ) => Promise<WorkspaceSearchOutcome>;
   onCancelSearch: () => void;
   onSearchResult: (result: WorkspaceSearchResult, pattern: string, newWindow: boolean) => void;
 }
@@ -57,6 +61,9 @@ function isArchiveName(name: string): boolean {
 const MAX_RENDERED_ROWS = 3000;
 // これを超える結果は畳んで出す (件数が多いときにファイル一覧を先に見せるため)
 const AUTO_COLLAPSE_MATCHES = 500;
+// 検索中の再描画の間引き。backend の送出間隔 (PROGRESS_INTERVAL) と同じ刻みで、
+// これより細かく描いても届く中身が増えないため意味がない
+const PARTIAL_RENDER_MS = 100;
 
 type ToggleKey = "match_case" | "whole_word" | "use_regex" | "search_file_names" | "search_contents";
 
@@ -82,6 +89,8 @@ export class Sidebar {
   private toggleButtons = new Map<ToggleKey, HTMLButtonElement>();
   private options: WorkspaceSearchOptions = loadSearchOptions();
   private outcome: WorkspaceSearchOutcome | "searching" | null = null;
+  private partial: WorkspaceSearchResult[] = []; // 検索中に届いた分 (並べ替えは描画時)
+  private partialTimer: number | undefined;
   private shownPattern = ""; // outcome が属するパターン (入力途中の値とは別)
   private collapsed = new Set<string>();
   private searchGen = 0;
@@ -94,7 +103,7 @@ export class Sidebar {
   private onContextMenu: (x: number, y: number, target: ContextTarget | null) => void;
   private onExpandArchive: (relPath: string) => Promise<string[]>;
   private onExpandFolder: (relDir: string) => Promise<FolderEntry[]>;
-  private onWorkspaceSearch: (pat: string, options: WorkspaceSearchOptions) => Promise<WorkspaceSearchOutcome>;
+  private onWorkspaceSearch: SidebarPorts["onWorkspaceSearch"];
   private onCancelSearch: () => void;
   private onSearchResult: (result: WorkspaceSearchResult, pattern: string, newWindow: boolean) => void;
 
@@ -234,15 +243,37 @@ export class Sidebar {
     if (focus) this.searchInput.focus();
   }
 
+  // 検索中に backend から届いた途中経過。世代が変わっていれば捨てる
+  // (打ち切った検索の取りこぼしが次の検索の結果に混ざらないようにする)。
+  acceptSearchBatch(searchId: number, results: WorkspaceSearchResult[]) {
+    if (searchId !== this.searchGen || this.outcome !== "searching") return;
+    this.partial.push(...results);
+    // 件数が多いときはファイル一覧を先に見せる。少ないうちは手で畳んだ状態を壊さない
+    if (this.partial.length > AUTO_COLLAPSE_MATCHES) this.autoCollapse(this.partial);
+    // 描画は間引く。届くたびに数千行を組み直すと走査より描画が重くなる
+    if (this.partialTimer !== undefined) return;
+    this.partialTimer = window.setTimeout(() => {
+      this.partialTimer = undefined;
+      if (this.outcome === "searching") this.render();
+    }, PARTIAL_RENDER_MS);
+  }
+
+  private autoCollapse(results: WorkspaceSearchResult[]) {
+    this.collapsed = results.length > AUTO_COLLAPSE_MATCHES
+      ? new Set(results.map((result) => result.rel_path))
+      : new Set();
+  }
+
   private setOutcome(outcome: WorkspaceSearchOutcome | "searching" | null, pattern: string) {
     this.outcome = outcome;
     this.shownPattern = pattern;
     this.searchStop.hidden = outcome !== "searching";
+    window.clearTimeout(this.partialTimer);
+    this.partialTimer = undefined;
+    this.partial = [];
     if (outcome && outcome !== "searching") {
       // 件数が多いときはファイル一覧を先に見せる (中身は必要な分だけ開く)
-      this.collapsed = outcome.results.length > AUTO_COLLAPSE_MATCHES
-        ? new Set(outcome.results.map((result) => result.rel_path))
-        : new Set();
+      this.autoCollapse(outcome.results);
     }
     this.render();
   }
@@ -259,7 +290,7 @@ export class Sidebar {
     if (this.searchRunning) return;
     this.searchRunning = true;
     try {
-      const outcome = await this.onWorkspaceSearch(pat, options);
+      const outcome = await this.onWorkspaceSearch(pat, options, gen);
       if (gen === this.searchGen) this.setOutcome(outcome, pat);
     } finally {
       this.searchRunning = false;
@@ -421,8 +452,7 @@ export class Sidebar {
 
   private render() {
     if (this.outcome === "searching") {
-      this.searchSummary.hidden = true;
-      this.tree.replaceChildren(searchingRow());
+      this.tree.replaceChildren(this.searchingTree());
       return;
     }
     if (this.outcome) {
@@ -431,6 +461,26 @@ export class Sidebar {
     }
     this.searchSummary.hidden = true;
     this.tree.replaceChildren(this.folderTree());
+  }
+
+  // ---- 検索中の途中経過 (確定結果と同じ並びで、届いた分だけを見せる) ----
+  private searchingTree(): DocumentFragment {
+    const frag = document.createDocumentFragment();
+    if (!this.partial.length) {
+      this.searchSummary.hidden = true;
+      frag.appendChild(searchingRow());
+      return frag;
+    }
+    // 確定結果と同じ規則で並べ直す。走査順のまま出すと、検索が終わった瞬間に並びが飛ぶ
+    const byScore = this.options.search_file_names && !this.options.search_contents;
+    const groups = groupResults(sortResults(this.partial, byScore));
+    this.searchSummary.hidden = false;
+    this.searchSummary.replaceChildren(
+      countRow(`${groups.length.toLocaleString()} 個のファイルに ${this.partial.length.toLocaleString()} 件 (検索中)`)
+    );
+    this.appendGroups(frag, groups);
+    frag.appendChild(searchingRow());
+    return frag;
   }
 
   // ---- 検索結果のツリー (ファイル見出し + その下に一致行) ----
@@ -449,6 +499,11 @@ export class Sidebar {
       frag.appendChild(emptyNotice(searchScopeSummary(this.options)));
       return frag;
     }
+    this.appendGroups(frag, groups);
+    return frag;
+  }
+
+  private appendGroups(frag: DocumentFragment, groups: ResultGroup[]) {
     const wanted = groups.reduce(
       (rows, group) => rows + 1 + (this.collapsed.has(group.relPath) ? 0 : group.matches.length),
       0
@@ -470,7 +525,6 @@ export class Sidebar {
         `画面に出せるのはここまで (${rendered.toLocaleString()} 行)。折りたたむか条件を絞れば残りも見られる`
       ));
     }
-    return frag;
   }
 
   private renderSummary(outcome: WorkspaceSearchOutcome, fileCount: number) {
@@ -478,11 +532,11 @@ export class Sidebar {
     summary.hidden = false;
     summary.replaceChildren();
     if (outcome.pattern_error) return; // 件数を出す段階に達していない
-    const count = document.createElement("div");
-    count.textContent = outcome.results.length
-      ? `${fileCount.toLocaleString()} 個のファイルに ${outcome.results.length.toLocaleString()} 件の結果`
-      : `${outcome.scanned_files.toLocaleString()} 個のファイルを調べて 0 件`;
-    summary.appendChild(count);
+    summary.appendChild(countRow(
+      outcome.results.length
+        ? `${fileCount.toLocaleString()} 個のファイルに ${outcome.results.length.toLocaleString()} 件の結果`
+        : `${outcome.scanned_files.toLocaleString()} 個のファイルを調べて 0 件`
+    ));
     // 上限で切ったなら必ず言う。黙って減らすのがいちばん困る
     if (outcome.hit_file_limit) summary.appendChild(warning("最大ファイル数で列挙を打ち切った"));
     if (outcome.hit_result_limit) summary.appendChild(warning("最大結果数で検索を打ち切った"));
@@ -611,6 +665,12 @@ function searchingRow(): HTMLElement {
   const div = document.createElement("div");
   div.className = "ws-empty";
   div.textContent = "検索中…";
+  return div;
+}
+
+function countRow(text: string): HTMLElement {
+  const div = document.createElement("div");
+  div.textContent = text;
   return div;
 }
 
