@@ -29,6 +29,9 @@ export interface FolderEntry {
   is_dir: boolean;
 }
 
+// is_filename で意味が変わる項目があるので、読む側は必ず先に見ること:
+//   本文一致   line/col = 本文中の位置、preview = その行、highlights = preview 上の範囲
+//   ファイル名 line/col = 常に 0 (本文の位置ではない)、preview = "ファイル名: <パス>"
 export interface WorkspaceSearchResult {
   rel_path: string;
   line: number;

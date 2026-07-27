@@ -3,6 +3,7 @@
 // 配色モードだけは localStorage に残す (ウィンドウ間の即時同期を storage イベントに任せるため)。
 import type { WorkspaceSearchOptions } from "./api";
 import { loadSettings as loadSettingsJson, saveSettings as saveSettingsJson } from "./api";
+import { clampSearchOptions, DEFAULT_SEARCH_OPTIONS } from "./workspace-search-options";
 
 export interface Settings {
   indentSize: number;
@@ -60,4 +61,15 @@ export function setSetting<K extends keyof Settings>(key: K, value: Settings[K])
   void saveSettingsJson(JSON.stringify(cache, null, 2)).catch((error: unknown) => {
     console.error("設定を保存できませんでした", error);
   });
+}
+
+// 検索条件は手で編集されうるファイルに載るので、既定値で埋めてから丸める
+export function loadSearchOptions(): WorkspaceSearchOptions {
+  const stored = getSetting("workspaceSearchOptions");
+  if (!stored) return { ...DEFAULT_SEARCH_OPTIONS };
+  return clampSearchOptions({ ...DEFAULT_SEARCH_OPTIONS, ...stored });
+}
+
+export function saveSearchOptions(options: WorkspaceSearchOptions): void {
+  setSetting("workspaceSearchOptions", options);
 }

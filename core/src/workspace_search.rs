@@ -119,10 +119,7 @@ pub fn search_workspace(
     let (hit_file_limit, hit_result_limit) = (&shared_file_limit, &shared_result_limit);
 
     walk.build_parallel().run(|| {
-        let mut engine = Engine::new(
-            if options.search_contents { matcher.as_ref() } else { None },
-            if strict_names { matcher.as_ref() } else { None },
-        );
+        let mut engine = Engine::new(matcher.as_ref(), options, strict_names);
         Box::new(move |entry| {
             if cancel.load(Ordering::Relaxed) {
                 return WalkState::Quit;
@@ -136,7 +133,7 @@ pub fn search_workspace(
                 return WalkState::Quit;
             }
             let relative = relative_path(root, entry.path());
-            let found = engine.search_file(entry.path(), &relative, pattern, options, max_results);
+            let found = engine.search_file(entry.path(), &relative, pattern, max_results);
             if found.limited {
                 hit_result_limit.store(true, Ordering::Relaxed);
             }
@@ -263,18 +260,26 @@ fn build_walk(root: &Path, options: &SearchOptions) -> Result<WalkBuilder, Strin
 
 // 走査スレッドごとの状態。Searcher は行バッファを使い回すので毎回作らない。
 // content と name は同じ matcher を指すこともある (どちらに使うかだけが違う)。
+// 「何をするか」は走り出す前にここで決め切る。ファイルごとに options を読み直すと、
+// 同じ判断が走査回数だけ散らばる。
 struct Engine<'a> {
     content: Option<&'a RegexMatcher>,
     name: Option<&'a RegexMatcher>, // None = ファイル名はファジーで当てる
+    match_names: bool,
+    match_case: bool,
+    exclude_binary: bool,
     utf8: Searcher,
     sjis: Option<Searcher>,
 }
 
 impl<'a> Engine<'a> {
-    fn new(content: Option<&'a RegexMatcher>, name: Option<&'a RegexMatcher>) -> Self {
+    fn new(matcher: Option<&'a RegexMatcher>, options: &SearchOptions, strict_names: bool) -> Self {
         Engine {
-            content,
-            name,
+            content: if options.search_contents { matcher } else { None },
+            name: if strict_names { matcher } else { None },
+            match_names: options.search_file_names,
+            match_case: options.match_case,
+            exclude_binary: options.exclude_binary,
             utf8: searcher(None),
             sjis: grep_searcher::Encoding::new("sjis").ok().map(|enc| searcher(Some(enc))),
         }
@@ -285,7 +290,6 @@ impl<'a> Engine<'a> {
         path: &Path,
         relative: &str,
         pattern: &str,
-        options: &SearchOptions,
         max_results: usize,
     ) -> FileHits {
         // 開けないファイルでも名前一致だけは返す (権限や排他はこちらでは直せない)。
@@ -293,12 +297,12 @@ impl<'a> Engine<'a> {
         // 走査時間の無視できない割合を占めるため。
         let mut file = File::open(path).ok();
         let probe = file.as_mut().map_or(Probe::TEXT, probe_head);
-        if options.exclude_binary && probe.binary {
+        if self.exclude_binary && probe.binary {
             return FileHits::default();
         }
         let mut hits = Vec::new();
-        if options.search_file_names {
-            hits.extend(name_hit(self.name, pattern, relative, options.match_case));
+        if self.match_names {
+            hits.extend(name_hit(self.name, pattern, relative, self.match_case));
         }
         let (Some(matcher), Some(file)) = (self.content, file.as_ref()) else {
             return FileHits { hits, limited: false };

@@ -19,7 +19,13 @@ import { confirmMessage } from "./prompt";
 import { joinWindowsRoot } from "./path";
 import { createCommandRegistry, globalCommandForEvent, CommandId } from "./commands";
 import { DEFAULT_EDITOR_CONFIG } from "./editor-config";
-import { getSetting, initSettings, setSetting } from "./settings";
+import {
+  getSetting,
+  initSettings,
+  loadSearchOptions,
+  saveSearchOptions,
+  setSetting,
+} from "./settings";
 
 const win = getCurrentWindow();
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -118,11 +124,14 @@ const sidebar = new Sidebar(sidebarEl, {
   onContextMenu: (x, y, target) => folderActions.showContextMenu(x, y, target),
   onExpandArchive: (relPath) => api.listArchiveEntries(relPath),
   onExpandFolder: (relDir) => api.listFolderEntries(relDir),
-  onWorkspaceSearch: (pat, options, searchId) => api.workspaceSearch(pat, options, searchId),
-  onCancelSearch: () => { void api.workspaceSearchCancel(); },
-  onSearchResult: async (result, newWindow) => {
+  onSearch: (pat, options, searchId) => api.workspaceSearch(pat, options, searchId),
+  onCancel: () => { void api.workspaceSearchCancel(); },
+  onOptionsChange: saveSearchOptions,
+  onOpen: async (result, newWindow) => {
     if (newWindow) {
-      await openInNewWindow(result.rel_path, { line: result.line, col: result.col });
+      // ファイル名一致の line/col は本文の位置ではない (どちらも 0) ので飛ばさない
+      const goto = result.is_filename ? undefined : { line: result.line, col: result.col };
+      await openInNewWindow(result.rel_path, goto);
       return;
     }
     if (!(await doc.confirmDiscard())) return;
@@ -133,7 +142,7 @@ const sidebar = new Sidebar(sidebarEl, {
     if (result.is_filename) editor.goTo(result.line, result.col);
     else await editor.selectRange(result.line, result.col, result.col + length);
   },
-});
+}, loadSearchOptions());
 
 // 検索の途中経過。確定を待たずに届いた分から並べる
 void api.onWorkspaceSearchBatch((batch) => sidebar.acceptSearchBatch(batch.search_id, batch.results));

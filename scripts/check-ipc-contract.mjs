@@ -9,6 +9,7 @@ const fileio = read("core/src/fileio.rs");
 const frontend = read("ui/api.ts");
 const statusbarTs = read("ui/statusbar.ts");
 const sidebarTs = read("ui/sidebar.ts");
+const searchPanelTs = read("ui/workspace-search-panel.ts");
 const folder = read("core/src/folder.rs");
 const workspaceSearch = read("core/src/workspace_search.rs");
 const coreFilename = read("core/src/filename.rs");
@@ -109,12 +110,12 @@ if (mmapThreshold !== hugeThreshold) {
 const progressInterval = Number(
   workspaceSearch.match(/PROGRESS_INTERVAL[^;]*from_millis\((\d+)\)/)?.[1]
 );
-const partialRenderMs = Number(sidebarTs.match(/PARTIAL_RENDER_MS = (\d+);/)?.[1]);
+const partialRenderMs = Number(searchPanelTs.match(/PARTIAL_RENDER_MS = (\d+);/)?.[1]);
 if (!progressInterval || progressInterval !== partialRenderMs) {
   fail(`search progress interval; core=${progressInterval}, ui=${partialRenderMs}`);
 }
 const progressMax = Number(workspaceSearch.match(/PROGRESS_MAX: usize = ([\d_]+);/)?.[1]?.replace(/_/g, ""));
-const maxRenderedRows = Number(sidebarTs.match(/MAX_RENDERED_ROWS = ([\d_]+);/)?.[1]?.replace(/_/g, ""));
+const maxRenderedRows = Number(searchPanelTs.match(/MAX_RENDERED_ROWS = ([\d_]+);/)?.[1]?.replace(/_/g, ""));
 if (!progressMax || !maxRenderedRows || progressMax > maxRenderedRows) {
   fail(`search progress cap exceeds rendered rows; core=${progressMax}, ui=${maxRenderedRows}`);
 }

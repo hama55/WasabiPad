@@ -85,11 +85,11 @@ export function openSearchSettings(
       toggle("exclude_binary"),
       toggle("respect_gitignore"),
       hint("glob で除外する (*.log や **/tmp/** のように書ける)。"),
-      list("exclude_globs", "パターンを追加 (例: *.log)").element,
+      list("exclude_globs", "パターンを追加 (例: *.log)"),
     ]),
     section("除外するフォルダ", [
       hint("この名前のフォルダは中身ごと検索しない (大文字小文字は区別しない)。"),
-      list("exclude_dirs", "フォルダ名を追加").element,
+      list("exclude_dirs", "フォルダ名を追加"),
     ])
   );
 
@@ -106,9 +106,12 @@ export function openSearchSettings(
   overlay.append(box);
   document.body.append(overlay);
 
-  const finish = () => {
+  const teardown = () => {
     overlay.remove();
     window.removeEventListener("keydown", onKey, true);
+  };
+  const finish = () => {
+    teardown();
     ports.onClose();
   };
   const onKey = (e: KeyboardEvent) => {
@@ -116,11 +119,11 @@ export function openSearchSettings(
     e.preventDefault();
     finish();
   };
+  // 既定に戻したら入力欄を作り直す (閉じた扱いにはしないので onClose は呼ばない)
   reset.addEventListener("click", () => {
     options = { ...DEFAULT_SEARCH_OPTIONS };
     commit();
-    overlay.remove();
-    window.removeEventListener("keydown", onKey, true);
+    teardown();
     openSearchSettings(options, ports);
   });
   close.addEventListener("click", finish);
@@ -197,7 +200,7 @@ function stringListField(
   get: () => string[],
   set: (list: string[]) => void,
   placeholder: string
-): { element: HTMLElement } {
+): HTMLElement {
   const element = document.createElement("div");
   element.className = "ss-dirs";
   const list = document.createElement("div");
@@ -254,5 +257,5 @@ function stringListField(
 
   redraw();
   element.append(list, adder);
-  return { element };
+  return element;
 }

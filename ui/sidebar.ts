@@ -1,24 +1,9 @@
-import type {
-  FolderEntry,
-  Pos,
-  WorkspaceSearchOptions,
-  WorkspaceSearchOutcome,
-  WorkspaceSearchResult,
-} from "./api";
-import { groupResults, highlightedPreview, sortResults, type ResultGroup } from "./search-results";
-import { openSearchSettings } from "./search-settings-dialog";
-import {
-  clampSearchOptions,
-  loadSearchOptions,
-  sameSearchOptions,
-  saveSearchOptions,
-  searchScopeSummary,
-  optionTitle,
-  type BoolOptionKey,
-} from "./workspace-search-options";
+import type { FolderEntry, Pos, WorkspaceSearchOptions, WorkspaceSearchResult } from "./api";
+import { WorkspaceSearchPanel, type WorkspaceSearchPorts } from "./workspace-search-panel";
 
 // フォルダ/ZIP/Excelのエントリ名 ("sub/a.txt" 形式) からツリーを構築して表示。
 // 実データは backend が保持し、選択時に relPath を親へ通知するだけ。
+// 検索の窓と結果は WorkspaceSearchPanel が持ち、ここは置き場を貸すだけ。
 //
 // zip/xlsx/xls は "archive" 種別の葉として表示し、中身は展開ボタンを押すまで取得しない。
 // 展開後に挿入される内部エントリ行は "archiveEntry" (相対パスは "アーカイブのrelPath::エントリ名")。
@@ -33,6 +18,15 @@ interface Row {
   childrenLoaded: boolean; // dir/archive の子一覧を取得済みか
 }
 
+// 行頭の記号 [閉じているとき, 開いているとき]。種別を足したらここも足りなくなる
+// (Record なので、足し忘れは型が落とす)。
+const ROW_GLYPHS: Record<RowKind, [string, string]> = {
+  dir: ["📁", "🗂️"],
+  archive: ["›", "⌄"],
+  file: ["📄", "📄"],
+  archiveEntry: ["", ""],
+};
+
 export interface ContextTarget {
   relPath: string;
   isDir: boolean;
@@ -40,20 +34,13 @@ export interface ContextTarget {
 }
 
 // サイドバーが外界へ出す依頼。IPC も文書状態もここより先は知らない。
-export interface SidebarPorts {
+// 検索の依頼 (onSearch / onCancel / onOpen / onOptionsChange) は
+// WorkspaceSearchPanel のもので、ここはそのまま素通しする。
+export interface SidebarPorts extends Omit<WorkspaceSearchPorts, "onViewChange" | "onContextMenu"> {
   onSelect: (relPath: string, newWindow: boolean) => void;
   onContextMenu: (x: number, y: number, target: ContextTarget | null) => void;
   onExpandArchive: (relPath: string) => Promise<string[]>;
   onExpandFolder: (relDir: string) => Promise<FolderEntry[]>;
-  onWorkspaceSearch: (
-    pat: string,
-    options: WorkspaceSearchOptions,
-    searchId: number
-  ) => Promise<WorkspaceSearchOutcome>;
-  onCancelSearch: () => void;
-  // 一致の範囲は result.highlights が持つ。パターンを渡さないのは、
-  // 正規表現や大小の畳み込みで「当たった長さ」がパターンの長さと一致しないため。
-  onSearchResult: (result: WorkspaceSearchResult, newWindow: boolean) => void;
 }
 
 // core の Doc::is_lazy_archive_ext と一致させる (check:ipc が両者の一致を検証する)
@@ -62,82 +49,33 @@ function isArchiveName(name: string): boolean {
   return ARCHIVE_EXT.test(name);
 }
 
-// DOM の行数だけは有限にしないと画面が固まる。超えた分は隠さず「ここまで」と告げる
-const MAX_RENDERED_ROWS = 3000;
-// これを超える結果は畳んで出す (件数が多いときにファイル一覧を先に見せるため)
-const AUTO_COLLAPSE_MATCHES = 500;
-// 検索中の再描画の間引き。backend の送出間隔 (PROGRESS_INTERVAL) と同じ刻みで、
-// これより細かく描いても届く中身が増えないため意味がない
-const PARTIAL_RENDER_MS = 100;
-
-type ToggleKey = BoolOptionKey;
-
-// 「どう当てるか」は入力欄の中へ (VSCode の Aa / ab / .* と同じ位置)。
-// 説明文は OPTION_TEXTS が持ち、ここが持つのは記号だけ。
-const MATCH_TOGGLES: [string, ToggleKey][] = [
-  ["Aa", "match_case"],
-  ["ab", "whole_word"],
-  [".*", "use_regex"],
-];
-// 「どこを探すか」はヘッダへ。入力欄に5つ並べると打つ場所が無くなる
-const SCOPE_TOGGLES: [string, ToggleKey][] = [
-  ["名", "search_file_names"],
-  ["文", "search_contents"],
-];
-
 export class Sidebar {
   private host: HTMLElement;
   private tree: HTMLElement;
-  private search: HTMLElement;
-  private searchInput: HTMLInputElement;
-  private searchStop: HTMLButtonElement;
-  private searchSummary: HTMLElement;
-  private toggleButtons = new Map<ToggleKey, HTMLButtonElement>();
-  private options: WorkspaceSearchOptions = loadSearchOptions();
-  private outcome: WorkspaceSearchOutcome | "searching" | null = null;
-  private partial: WorkspaceSearchResult[] = []; // 検索中に届いた分 (並べ替えは描画時)
-  private partialTimer: number | undefined;
-  // 畳み方は「既定 + 例外」で持つ。全パスを集合に入れる持ち方だと、
-  // 検索中に後から届いたファイルが既定から外れて開いたまま出てしまう。
-  private collapseByDefault = false;
-  private collapsed = new Set<string>(); // 既定と逆にするファイル
-  private collapseTouched = false; // 畳み方を手で変えたか (自動の畳み込みより手を優先する)
-  private searchGen = 0;
-  private searchTimer: number | undefined;
-  private running: Promise<WorkspaceSearchOutcome> | null = null; // 走行中の検索
+  private panel: WorkspaceSearchPanel;
   private rows: Row[] = [];
   private sel: string | null = null; // 選択中の relPath
   private onSelect: (relPath: string, newWindow: boolean) => void;
   private onContextMenu: (x: number, y: number, target: ContextTarget | null) => void;
   private onExpandArchive: (relPath: string) => Promise<string[]>;
   private onExpandFolder: (relDir: string) => Promise<FolderEntry[]>;
-  private onWorkspaceSearch: SidebarPorts["onWorkspaceSearch"];
-  private onCancelSearch: () => void;
-  private onSearchResult: SidebarPorts["onSearchResult"];
 
-  constructor(host: HTMLElement, ports: SidebarPorts) {
+  constructor(host: HTMLElement, ports: SidebarPorts, searchOptions: WorkspaceSearchOptions) {
     this.host = host;
     this.onSelect = ports.onSelect;
     this.onContextMenu = ports.onContextMenu;
     this.onExpandArchive = ports.onExpandArchive;
     this.onExpandFolder = ports.onExpandFolder;
-    this.onWorkspaceSearch = ports.onWorkspaceSearch;
-    this.onCancelSearch = ports.onCancelSearch;
-    this.onSearchResult = ports.onSearchResult;
-    this.search = document.createElement("div");
-    this.search.className = "ws-search";
-    this.search.hidden = true;
-    const header = this.buildHeader();
-    const row = this.buildInputRow();
-    this.searchInput = row.querySelector("input")!;
-    this.searchSummary = document.createElement("div");
-    this.searchSummary.className = "ws-summary";
-    this.searchSummary.hidden = true;
-    this.searchStop = header.querySelector(".ws-stop")!;
-    this.search.append(header, row, this.searchSummary);
+    this.panel = new WorkspaceSearchPanel(searchOptions, {
+      onSearch: ports.onSearch,
+      onCancel: ports.onCancel,
+      onOpen: ports.onOpen,
+      onOptionsChange: ports.onOptionsChange,
+      onContextMenu: (x, y, target) => this.onContextMenu(x, y, target),
+      onViewChange: () => this.render(),
+    });
     this.tree = document.createElement("div");
-    this.host.append(this.search, this.tree);
-    this.searchInput.addEventListener("input", () => this.queueWorkspaceSearch());
+    this.host.append(this.panel.bar, this.tree);
     this.host.addEventListener("contextmenu", (e) => {
       if (e.target !== this.host && e.target !== this.tree) return; // 個々の行上は行側のリスナーに任せる
       e.preventDefault();
@@ -145,184 +83,12 @@ export class Sidebar {
     });
   }
 
-  // ---- 検索バー ----
-  private buildHeader(): HTMLElement {
-    const header = document.createElement("div");
-    header.className = "ws-header";
-    const title = document.createElement("span");
-    title.className = "ws-title";
-    title.textContent = "検索";
-    const scope = document.createElement("span");
-    scope.className = "ws-toggles";
-    scope.append(...SCOPE_TOGGLES.map(([icon, key]) => this.targetToggle(icon, key)));
-    const stop = iconButton("ws-stop", "⏹", "検索を中止");
-    stop.hidden = true;
-    stop.addEventListener("click", () => this.stopWorkspaceSearch());
-    const refresh = iconButton("ws-refresh", "🔄", "同じ条件で検索し直す");
-    refresh.addEventListener("click", () => this.queueWorkspaceSearch(0));
-    const clear = iconButton("ws-clear", "✕", "検索をクリア");
-    clear.addEventListener("click", () => this.clearWorkspaceSearch());
-    const fold = iconButton("ws-fold", "⊟", "すべて折りたたむ / 展開");
-    fold.addEventListener("click", () => this.toggleAllGroups());
-    const settings = iconButton("ws-settings", "⚙", "検索の設定");
-    settings.addEventListener("click", () => this.openSettings());
-    header.append(title, scope, stop, refresh, clear, fold, settings);
-    return header;
-  }
-
-  private buildInputRow(): HTMLElement {
-    const row = document.createElement("div");
-    row.className = "ws-search-row";
-    const input = document.createElement("input");
-    input.placeholder = "検索";
-    input.spellcheck = false;
-    const toggles = document.createElement("span");
-    toggles.className = "ws-toggles";
-    toggles.append(...MATCH_TOGGLES.map(([icon, key]) => this.targetToggle(icon, key)));
-    row.append(input, toggles);
-    return row;
-  }
-
-  private targetToggle(icon: string, key: ToggleKey): HTMLButtonElement {
-    const button = iconButton("ws-toggle", icon, optionTitle(key));
-    button.classList.toggle("on", this.options[key]);
-    button.addEventListener("click", () => {
-      const next = { ...this.options };
-      next[key] = !next[key];
-      this.options = clampSearchOptions(next);
-      this.syncTargetToggles();
-      this.commitOptions();
-    });
-    this.toggleButtons.set(key, button);
-    return button;
-  }
-
-  private openSettings() {
-    const opened = this.options;
-    openSearchSettings(this.options, {
-      onChange: (options) => {
-        this.options = options;
-        saveSearchOptions(options);
-        this.syncTargetToggles();
-      },
-      // 何も変えずに閉じたなら検索し直さない。走査中なら結果がそこで捨てられる
-      onClose: () => {
-        if (!sameSearchOptions(opened, this.options)) this.commitOptions();
-      },
-    });
-  }
-
-  private syncTargetToggles() {
-    for (const [key, button] of this.toggleButtons) button.classList.toggle("on", this.options[key]);
-  }
-
-  private commitOptions() {
-    saveSearchOptions(this.options);
-    if (this.searchInput.value) this.queueWorkspaceSearch(0);
-    else this.render();
-  }
-
   setWorkspaceSearch(on: boolean) {
-    this.search.hidden = !on;
-    if (!on) this.clearWorkspaceSearch(false);
+    this.panel.setVisible(on);
   }
 
-  private queueWorkspaceSearch(delay = 150) {
-    const pat = this.searchInput.value;
-    const gen = ++this.searchGen;
-    window.clearTimeout(this.searchTimer);
-    // 条件が1つでも変われば最初から引き直す (前回の結果は再利用しない)。
-    // 世代が変わった時点で走行中の結果は捨てると決まっているので、その場で止める。
-    // 放っておくと走り切るまで次が始まらず、その間の途中経過も世代違いで捨てられて
-    // 画面が空のまま待たされる。
-    if (this.running) this.onCancelSearch();
-    if (!pat) {
-      this.setOutcome(null);
-      return;
-    }
-    this.setOutcome("searching");
-    this.searchTimer = window.setTimeout(() => void this.searchWorkspace(gen, pat, this.options), delay);
-  }
-
-  // 走査量は無制限が既定なので、待たされたら止められる必要がある
-  private stopWorkspaceSearch() {
-    this.searchGen++; // 世代を進めれば、走行中の結果も待機中の要求も捨てられる
-    window.clearTimeout(this.searchTimer);
-    if (this.running) this.onCancelSearch(); // 走っていないなら止めるものがない
-    this.setOutcome(null);
-  }
-
-  private clearWorkspaceSearch(focus = true) {
-    this.stopWorkspaceSearch();
-    this.searchInput.value = "";
-    if (focus) this.searchInput.focus();
-  }
-
-  // 検索中に backend から届いた途中経過。世代が変わっていれば捨てる
-  // (打ち切った検索の取りこぼしが次の検索の結果に混ざらないようにする)。
   acceptSearchBatch(searchId: number, results: WorkspaceSearchResult[]) {
-    if (searchId !== this.searchGen || this.outcome !== "searching") return;
-    this.partial.push(...results);
-    this.autoCollapse(this.partial);
-    // 描画は間引く。届くたびに数千行を組み直すと走査より描画が重くなる
-    if (this.partialTimer !== undefined) return;
-    this.partialTimer = window.setTimeout(() => {
-      this.partialTimer = undefined;
-      if (this.outcome === "searching") this.render();
-    }, PARTIAL_RENDER_MS);
-  }
-
-  // 件数が多いときはファイル一覧を先に見せる (中身は必要な分だけ開く)。
-  // ただし利用者が畳み方を触ったあとは、途中経過が届くたびに上書きしない
-  private autoCollapse(results: WorkspaceSearchResult[]) {
-    if (this.collapseTouched) return;
-    this.collapseByDefault = results.length > AUTO_COLLAPSE_MATCHES;
-    this.collapsed.clear();
-  }
-
-  private setOutcome(outcome: WorkspaceSearchOutcome | "searching" | null) {
-    this.outcome = outcome;
-    this.searchStop.hidden = outcome !== "searching";
-    window.clearTimeout(this.partialTimer);
-    this.partialTimer = undefined;
-    this.partial = [];
-    if (outcome === "searching") this.collapseTouched = false; // 新しい検索の始まり
-    if (outcome && outcome !== "searching") this.autoCollapse(outcome.results);
-    this.render();
-  }
-
-  private toggleAllGroups() {
-    if (!this.shownResults().length) return;
-    this.collapseTouched = true;
-    this.collapseByDefault = !this.collapseByDefault;
-    this.collapsed.clear();
-    this.render();
-  }
-
-  // いま画面に出ている結果。検索中は届いた分、確定後は確定結果
-  private shownResults(): WorkspaceSearchResult[] {
-    if (this.outcome === "searching") return this.partial;
-    return this.outcome?.results ?? [];
-  }
-
-  private isCollapsed(relPath: string): boolean {
-    return this.collapsed.has(relPath) !== this.collapseByDefault;
-  }
-
-  // 検索は同時に1本だけ。走っているものが畳まれるのを待ってから始める。
-  // 要求を捨てて「終わったら再キュー」に頼ると、中止が間に合わなかったぶんだけ
-  // 引き直しが遅れる (条件を変えたのに古い結果を見せられる時間ができる)。
-  private async searchWorkspace(gen: number, pat: string, options: WorkspaceSearchOptions) {
-    while (this.running) await this.running.catch(() => {});
-    if (gen !== this.searchGen) return; // 待っている間にまた条件が変わった
-    const run = this.onWorkspaceSearch(pat, options, gen);
-    this.running = run;
-    try {
-      const outcome = await run;
-      if (gen === this.searchGen) this.setOutcome(outcome);
-    } finally {
-      if (this.running === run) this.running = null;
-    }
+    this.panel.acceptBatch(searchId, results);
   }
 
   // "sub/a.txt" 形式の名前一覧からディレクトリ見出し+葉の行を組み立てる。
@@ -477,158 +243,9 @@ export class Sidebar {
     return out;
   }
 
+  // ツリーの置き場は1つ。検索中と検索後は結果を出し、それ以外はフォルダを出す
   private render() {
-    if (this.outcome === "searching") {
-      this.tree.replaceChildren(this.searchingTree());
-      return;
-    }
-    if (this.outcome) {
-      this.tree.replaceChildren(this.resultTree());
-      return;
-    }
-    this.searchSummary.hidden = true;
-    this.tree.replaceChildren(this.folderTree());
-  }
-
-  // ---- 検索中の途中経過 (確定結果と同じ並びで、届いた分だけを見せる) ----
-  private searchingTree(): DocumentFragment {
-    const frag = document.createDocumentFragment();
-    if (!this.partial.length) {
-      this.searchSummary.hidden = true;
-      frag.appendChild(searchingRow());
-      return frag;
-    }
-    const groups = groupResults(sortResults(this.partial, this.options));
-    this.searchSummary.hidden = false;
-    this.searchSummary.replaceChildren(
-      countRow(`${groups.length.toLocaleString()} 個のファイルに ${this.partial.length.toLocaleString()} 件 (検索中)`)
-    );
-    this.appendGroups(frag, groups);
-    frag.appendChild(searchingRow());
-    return frag;
-  }
-
-  // ---- 検索結果のツリー (ファイル見出し + その下に一致行) ----
-  private resultTree(): DocumentFragment {
-    const outcome = this.outcome as WorkspaceSearchOutcome;
-    // 確定結果も途中経過と同じ関数に通す。backend の返す順は走査順で、並びは表示の都合
-    const groups = groupResults(sortResults(outcome.results, this.options));
-    this.renderSummary(outcome, groups.length);
-
-    const frag = document.createDocumentFragment();
-    if (outcome.pattern_error) {
-      // 正規表現を打っている途中は必ず壊れる。エラーとして黙らせず、理由だけ出す
-      frag.appendChild(warning(outcome.pattern_error));
-      return frag;
-    }
-    if (!groups.length) {
-      frag.appendChild(emptyNotice(searchScopeSummary(this.options)));
-      return frag;
-    }
-    this.appendGroups(frag, groups);
-    return frag;
-  }
-
-  private appendGroups(frag: DocumentFragment, groups: ResultGroup[]) {
-    const wanted = groups.reduce(
-      (rows, group) => rows + 1 + (this.isCollapsed(group.relPath) ? 0 : group.matches.length),
-      0
-    );
-    let rendered = 0;
-    for (const group of groups) {
-      if (rendered >= MAX_RENDERED_ROWS) break;
-      frag.appendChild(this.groupRow(group));
-      rendered++;
-      if (this.isCollapsed(group.relPath)) continue;
-      for (const match of group.matches) {
-        if (rendered >= MAX_RENDERED_ROWS) break;
-        frag.appendChild(this.matchRow(match));
-        rendered++;
-      }
-    }
-    if (wanted > MAX_RENDERED_ROWS) {
-      frag.appendChild(warning(
-        `画面に出せるのはここまで (${rendered.toLocaleString()} 行)。折りたたむか条件を絞れば残りも見られる`
-      ));
-    }
-  }
-
-  private renderSummary(outcome: WorkspaceSearchOutcome, fileCount: number) {
-    const summary = this.searchSummary;
-    summary.hidden = false;
-    summary.replaceChildren();
-    if (outcome.pattern_error) return; // 件数を出す段階に達していない
-    summary.appendChild(countRow(
-      outcome.results.length
-        ? `${fileCount.toLocaleString()} 個のファイルに ${outcome.results.length.toLocaleString()} 件の結果`
-        : `${outcome.scanned_files.toLocaleString()} 個のファイルを調べて 0 件`
-    ));
-    // 上限で切ったなら必ず言う。黙って減らすのがいちばん困る
-    if (outcome.hit_file_limit) summary.appendChild(warning("最大ファイル数で列挙を打ち切った"));
-    if (outcome.hit_result_limit) summary.appendChild(warning("最大結果数で検索を打ち切った"));
-  }
-
-  private groupRow(group: ResultGroup): HTMLElement {
-    const div = document.createElement("div");
-    div.className = "ws-group";
-    const collapsed = this.isCollapsed(group.relPath);
-    const twisty = document.createElement("span");
-    twisty.className = "ws-twisty";
-    twisty.textContent = collapsed ? "›" : "⌄";
-    const name = document.createElement("span");
-    name.className = "ws-file";
-    name.textContent = group.fileName;
-    const dir = document.createElement("span");
-    dir.className = "ws-dir";
-    dir.textContent = group.dirPath;
-    const count = document.createElement("span");
-    count.className = "ws-count";
-    count.textContent = String(group.matches.length);
-    div.append(twisty, name, dir, count);
-    div.title = group.relPath;
-    div.addEventListener("click", () => {
-      this.collapseTouched = true;
-      // 集合が持つのは「既定と逆にするファイル」。既定へ戻すなら取り除く
-      if (this.collapsed.has(group.relPath)) this.collapsed.delete(group.relPath);
-      else this.collapsed.add(group.relPath);
-      this.render();
-    });
-    this.bindOpen(div, group.matches[0]);
-    return div;
-  }
-
-  private matchRow(match: WorkspaceSearchResult): HTMLElement {
-    const div = document.createElement("div");
-    div.className = "ws-match";
-    const mark = document.createElement("span");
-    mark.className = "ws-line";
-    mark.textContent = match.is_filename ? "名" : String(match.line + 1);
-    const preview = document.createElement("span");
-    preview.className = "ws-preview";
-    preview.appendChild(highlightedPreview(match.preview, match.highlights));
-    div.append(mark, preview);
-    div.title = match.preview;
-    div.addEventListener("click", () => this.onSearchResult(match, false));
-    this.bindOpen(div, match);
-    return div;
-  }
-
-  // ホイールクリックと右クリックは、どちらの行でも「別 WasabiPad で開く」入口になる
-  private bindOpen(row: HTMLElement, match: WorkspaceSearchResult) {
-    row.addEventListener("auxclick", (e) => {
-      if (e.button !== 1) return;
-      e.preventDefault();
-      this.onSearchResult(match, true);
-    });
-    row.addEventListener("contextmenu", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      this.onContextMenu(e.clientX, e.clientY, {
-        relPath: match.rel_path,
-        isDir: false,
-        goto: { line: match.line, col: match.col },
-      });
-    });
+    this.tree.replaceChildren(this.panel.showing ? this.panel.renderTree() : this.folderTree());
   }
 
   // ---- フォルダ/アーカイブのツリー ----
@@ -642,7 +259,7 @@ export class Sidebar {
 
       const arrow = document.createElement("span");
       arrow.className = "fv-arrow";
-      arrow.textContent = r.kind === "dir" ? (r.expanded ? "🗂️" : "📁") : r.kind === "archive" ? (r.expanded ? "⌄" : "›") : r.kind === "file" ? "📄" : "";
+      arrow.textContent = ROW_GLYPHS[r.kind][r.expanded ? 1 : 0];
       div.appendChild(arrow);
       div.appendChild(document.createTextNode(r.label));
 
@@ -678,45 +295,4 @@ export class Sidebar {
     }
     return frag;
   }
-}
-
-function iconButton(className: string, label: string, title: string): HTMLButtonElement {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = className;
-  button.textContent = label;
-  button.title = title;
-  return button;
-}
-
-function searchingRow(): HTMLElement {
-  const div = document.createElement("div");
-  div.className = "ws-empty";
-  div.textContent = "検索中…";
-  return div;
-}
-
-function countRow(text: string): HTMLElement {
-  const div = document.createElement("div");
-  div.textContent = text;
-  return div;
-}
-
-function warning(text: string): HTMLElement {
-  const div = document.createElement("div");
-  div.className = "ws-warning";
-  div.textContent = text;
-  return div;
-}
-
-function emptyNotice(detail: string): HTMLElement {
-  const empty = document.createElement("div");
-  empty.className = "ws-empty";
-  const title = document.createElement("div");
-  title.textContent = "見つかりません";
-  const excluded = document.createElement("div");
-  excluded.className = "ws-empty-detail";
-  excluded.textContent = detail;
-  empty.append(title, excluded);
-  return empty;
 }

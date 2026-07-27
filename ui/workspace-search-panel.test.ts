@@ -1,14 +1,11 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("./api", () => ({
-  loadSettings: async () => "{}",
-  saveSettings: async () => {},
-}));
-
-import { Sidebar, type SidebarPorts } from "./sidebar";
+// 検索窓は IPC も設定の保存先も知らない (条件は渡されたものを使う) ため、
+// ./api のモックは要らない。要るようになったら依存が逆流している。
+import { WorkspaceSearchPanel, type WorkspaceSearchPorts } from "./workspace-search-panel";
 import type { WorkspaceSearchOptions, WorkspaceSearchOutcome, WorkspaceSearchResult } from "./api";
-import { initSettings } from "./settings";
+import { DEFAULT_SEARCH_OPTIONS } from "./workspace-search-options";
 
 const hit = (
   rel_path: string,
@@ -37,32 +34,34 @@ const outcome = (
   ...extra,
 });
 
-describe("Sidebar workspace search", () => {
-  let mounted: Sidebar; // 途中経過を流し込むために直近の実体を握っておく
+describe("WorkspaceSearchPanel", () => {
+  let mounted: WorkspaceSearchPanel; // 途中経過を流し込むために直近の実体を握っておく
 
-  afterEach(async () => {
+  afterEach(() => {
     vi.useRealTimers();
     document.body.replaceChildren();
-    await initSettings(); // 検索オプションの保存値を持ち越さない
   });
 
   function mount(
-    onWorkspaceSearch: SidebarPorts["onWorkspaceSearch"] = async () => outcome([]),
-    onSearchResult: SidebarPorts["onSearchResult"] = () => {},
-    onCancelSearch: SidebarPorts["onCancelSearch"] = () => {}
+    onSearch: WorkspaceSearchPorts["onSearch"] = async () => outcome([]),
+    onOpen: WorkspaceSearchPorts["onOpen"] = () => {},
+    onCancel: WorkspaceSearchPorts["onCancel"] = () => {}
   ) {
     const host = document.createElement("div");
     document.body.appendChild(host);
-    const sidebar = (mounted = new Sidebar(host, {
-      onSelect: () => {},
+    const tree = document.createElement("div"); // 結果の置き場は呼び出し側が用意する
+    const panel = (mounted = new WorkspaceSearchPanel({ ...DEFAULT_SEARCH_OPTIONS }, {
+      onSearch,
+      onCancel,
+      onOpen,
       onContextMenu: () => {},
-      onExpandArchive: async () => [],
-      onExpandFolder: async () => [],
-      onWorkspaceSearch,
-      onCancelSearch,
-      onSearchResult,
+      onOptionsChange: () => {},
+      onViewChange: () => {
+        tree.replaceChildren(...(panel.showing ? [panel.renderTree()] : []));
+      },
     }));
-    sidebar.setWorkspaceSearch(true);
+    host.append(panel.bar, tree);
+    panel.setVisible(true);
     return host;
   }
 
@@ -204,7 +203,7 @@ describe("Sidebar workspace search", () => {
       return new Promise<WorkspaceSearchOutcome>(() => {}); // 走査中のまま止めておく
     });
     await search(host, "needle");
-    mounted.acceptSearchBatch(searchId, [hit("a.txt", 0, "needle")]);
+    mounted.acceptBatch(searchId, [hit("a.txt", 0, "needle")]);
     await vi.advanceTimersByTimeAsync(100);
     expect(host.querySelectorAll(".ws-group")).toHaveLength(1);
 
@@ -225,7 +224,7 @@ describe("Sidebar workspace search", () => {
       return new Promise<WorkspaceSearchOutcome>((resolve) => { finish = resolve; });
     });
     await search(host, "needle");
-    mounted.acceptSearchBatch(searchId, [hit("a.txt", 0, "needle"), hit("b.txt", 0, "needle")]);
+    mounted.acceptBatch(searchId, [hit("a.txt", 0, "needle"), hit("b.txt", 0, "needle")]);
     await vi.advanceTimersByTimeAsync(100);
     expect(host.querySelectorAll(".ws-match")).toHaveLength(2);
 
@@ -234,7 +233,7 @@ describe("Sidebar workspace search", () => {
     expect(host.querySelectorAll(".ws-group")).toHaveLength(2);
 
     // 続きが届いても畳んだままにする (押した直後に開き直されない)
-    mounted.acceptSearchBatch(searchId, [hit("c.txt", 0, "needle")]);
+    mounted.acceptBatch(searchId, [hit("c.txt", 0, "needle")]);
     await vi.advanceTimersByTimeAsync(100);
     expect(host.querySelectorAll(".ws-match")).toHaveLength(0);
 
@@ -255,8 +254,8 @@ describe("Sidebar workspace search", () => {
     await search(host, "needle");
 
     // 届いた順ではなく、確定結果と同じ並びで見せる (終わった瞬間に並びが飛ばないように)
-    mounted.acceptSearchBatch(searchId, [hit("z.txt", 0, "needle")]);
-    mounted.acceptSearchBatch(searchId, [hit("a.txt", 0, "needle")]);
+    mounted.acceptBatch(searchId, [hit("z.txt", 0, "needle")]);
+    mounted.acceptBatch(searchId, [hit("a.txt", 0, "needle")]);
     await vi.advanceTimersByTimeAsync(100);
     expect([...host.querySelectorAll(".ws-file")].map((el) => el.textContent)).toEqual([
       "a.txt",
@@ -265,7 +264,7 @@ describe("Sidebar workspace search", () => {
     expect(text(host, ".ws-summary")).toContain("検索中");
 
     // 打ち切った検索の取りこぼしが混ざってはいけない
-    mounted.acceptSearchBatch(searchId - 1, [hit("m.txt", 0, "needle")]);
+    mounted.acceptBatch(searchId - 1, [hit("m.txt", 0, "needle")]);
     await vi.advanceTimersByTimeAsync(100);
     expect(host.querySelectorAll(".ws-file")).toHaveLength(2);
 

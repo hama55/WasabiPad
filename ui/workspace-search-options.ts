@@ -1,7 +1,7 @@
 import type { WorkspaceSearchOptions } from "./api";
-import { getSetting, setSetting } from "./settings";
 
 // フォルダ検索の設定はここが単一の定義。backend は既定値を持たず、常にこの値を受け取る。
+// 保存と読み出しは持たない (どこに置くかを知るのは ui/settings.ts)。
 
 // 中を検索してもまず得るものがないフォルダ。設定ダイアログから自由に足し引きできる。
 export const DEFAULT_EXCLUDE_DIRS = [
@@ -88,16 +88,6 @@ export function clampSearchOptions(options: WorkspaceSearchOptions): WorkspaceSe
 export function sameSearchOptions(a: WorkspaceSearchOptions, b: WorkspaceSearchOptions): boolean {
   const keys = Object.keys(DEFAULT_SEARCH_OPTIONS) as (keyof WorkspaceSearchOptions)[];
   return keys.every((key) => JSON.stringify(a[key]) === JSON.stringify(b[key]));
-}
-
-export function loadSearchOptions(): WorkspaceSearchOptions {
-  const stored = getSetting("workspaceSearchOptions");
-  if (!stored) return { ...DEFAULT_SEARCH_OPTIONS };
-  return clampSearchOptions({ ...DEFAULT_SEARCH_OPTIONS, ...stored });
-}
-
-export function saveSearchOptions(options: WorkspaceSearchOptions) {
-  setSetting("workspaceSearchOptions", options);
 }
 
 // 各フラグの意味はここが単一の定義。入力欄のトグル (ツールチップ) と設定ダイアログ
