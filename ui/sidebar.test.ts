@@ -48,7 +48,8 @@ describe("Sidebar workspace search", () => {
 
   function mount(
     onWorkspaceSearch: SidebarPorts["onWorkspaceSearch"] = async () => outcome([]),
-    onSearchResult: SidebarPorts["onSearchResult"] = () => {}
+    onSearchResult: SidebarPorts["onSearchResult"] = () => {},
+    onCancelSearch: SidebarPorts["onCancelSearch"] = () => {}
   ) {
     const host = document.createElement("div");
     document.body.appendChild(host);
@@ -58,7 +59,7 @@ describe("Sidebar workspace search", () => {
       onExpandArchive: async () => [],
       onExpandFolder: async () => [],
       onWorkspaceSearch,
-      onCancelSearch: () => {},
+      onCancelSearch,
       onSearchResult,
     }));
     sidebar.setWorkspaceSearch(true);
@@ -143,6 +144,25 @@ describe("Sidebar workspace search", () => {
 
     const warnings = [...host.querySelectorAll(".ws-warning")].map((el) => el.textContent);
     expect(warnings).toEqual(["最大ファイル数で列挙を打ち切った", "最大結果数で検索を打ち切った"]);
+  });
+
+  it("条件を変えたら走行中の検索を止める", async () => {
+    vi.useFakeTimers();
+    let cancels = 0;
+    const host = mount(
+      () => new Promise<WorkspaceSearchOutcome>(() => {}), // 走査中のまま止めておく
+      () => {},
+      () => { cancels += 1; }
+    );
+    await search(host, "needle");
+    expect(cancels).toBe(0);
+
+    // 1文字足す / トグルを触る、どちらも走行中の検索を捨てると決めた瞬間
+    await search(host, "needles");
+    expect(cancels).toBe(1);
+    host.querySelector<HTMLButtonElement>(".ws-toggle")!.click();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(cancels).toBe(2);
   });
 
   it("検索の設定を何も変えずに閉じても、走査中の結果を捨てない", async () => {

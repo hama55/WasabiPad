@@ -230,6 +230,10 @@ export class Sidebar {
     const gen = ++this.searchGen;
     this.aborted = false;
     window.clearTimeout(this.searchTimer);
+    // 世代が変わった時点で、走っている検索の結果は捨てると決まっている。
+    // 止めずに放っておくと最後まで走り切るまで次が始まらず (searchRunning)、
+    // その間の途中経過も世代違いで捨てられるので、画面が空のまま待たされる。
+    if (this.searchRunning) this.onCancelSearch();
     if (!pat) {
       this.setOutcome(null, "");
       return;
