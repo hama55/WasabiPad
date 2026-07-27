@@ -145,6 +145,28 @@ describe("Sidebar workspace search", () => {
     expect(warnings).toEqual(["最大ファイル数で列挙を打ち切った", "最大結果数で検索を打ち切った"]);
   });
 
+  it("検索の設定を何も変えずに閉じても、走査中の結果を捨てない", async () => {
+    vi.useFakeTimers();
+    let searchId = 0;
+    let calls = 0;
+    const host = mount((_pat, _options, id) => {
+      searchId = id;
+      calls += 1;
+      return new Promise<WorkspaceSearchOutcome>(() => {}); // 走査中のまま止めておく
+    });
+    await search(host, "needle");
+    mounted.acceptSearchBatch(searchId, [hit("a.txt", 0, "needle")]);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(host.querySelectorAll(".ws-group")).toHaveLength(1);
+
+    host.querySelector<HTMLButtonElement>(".ws-settings")!.click();
+    document.querySelector<HTMLButtonElement>(".ss-box .pf-ok")!.click();
+    await vi.advanceTimersByTimeAsync(150);
+
+    expect(host.querySelectorAll(".ws-group")).toHaveLength(1);
+    expect(calls, "条件が同じなら検索し直さない").toBe(1);
+  });
+
   it("検索中でも折りたたみを操作でき、途中経過の到着で戻されない", async () => {
     vi.useFakeTimers();
     let searchId = 0;

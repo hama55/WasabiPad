@@ -72,6 +72,13 @@ export function clampSearchOptions(options: WorkspaceSearchOptions): WorkspaceSe
   };
 }
 
+// 条件が実際に変わったかどうか。変わっていないのに検索し直すと、
+// 走査中だった結果がそこで捨てられる。
+export function sameSearchOptions(a: WorkspaceSearchOptions, b: WorkspaceSearchOptions): boolean {
+  const keys = Object.keys(DEFAULT_SEARCH_OPTIONS) as (keyof WorkspaceSearchOptions)[];
+  return keys.every((key) => JSON.stringify(a[key]) === JSON.stringify(b[key]));
+}
+
 export function loadSearchOptions(): WorkspaceSearchOptions {
   const stored = getSetting("workspaceSearchOptions");
   if (!stored) return { ...DEFAULT_SEARCH_OPTIONS };

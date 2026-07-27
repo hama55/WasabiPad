@@ -10,6 +10,7 @@ import { openSearchSettings } from "./search-settings-dialog";
 import {
   clampSearchOptions,
   loadSearchOptions,
+  sameSearchOptions,
   saveSearchOptions,
   searchScopeSummary,
 } from "./workspace-search-options";
@@ -195,13 +196,17 @@ export class Sidebar {
   }
 
   private openSettings() {
+    const opened = this.options;
     openSearchSettings(this.options, {
       onChange: (options) => {
         this.options = options;
         saveSearchOptions(options);
         this.syncTargetToggles();
       },
-      onClose: () => this.commitOptions(),
+      // 何も変えずに閉じたなら検索し直さない。走査中なら結果がそこで捨てられる
+      onClose: () => {
+        if (!sameSearchOptions(opened, this.options)) this.commitOptions();
+      },
     });
   }
 
