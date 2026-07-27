@@ -58,6 +58,20 @@ const MAX_RENDERED_ROWS = 3000;
 // これを超える結果は畳んで出す (件数が多いときにファイル一覧を先に見せるため)
 const AUTO_COLLAPSE_MATCHES = 500;
 
+type ToggleKey = "match_case" | "whole_word" | "use_regex" | "search_file_names" | "search_contents";
+
+// 「どう当てるか」は入力欄の中へ (VSCode の Aa / ab / .* と同じ位置)。
+const MATCH_TOGGLES: [string, string, ToggleKey][] = [
+  ["Aa", "大文字小文字を区別", "match_case"],
+  ["ab", "単語単位で一致", "whole_word"],
+  [".*", "正規表現として扱う", "use_regex"],
+];
+// 「どこを探すか」はヘッダへ。入力欄に5つ並べると打つ場所が無くなる
+const SCOPE_TOGGLES: [string, string, ToggleKey][] = [
+  ["名", "ファイル名を検索 (ファジー一致)", "search_file_names"],
+  ["文", "本文を検索", "search_contents"],
+];
+
 export class Sidebar {
   private host: HTMLElement;
   private tree: HTMLElement;
@@ -65,7 +79,7 @@ export class Sidebar {
   private searchInput: HTMLInputElement;
   private searchStop: HTMLButtonElement;
   private searchSummary: HTMLElement;
-  private targetButtons: HTMLButtonElement[] = [];
+  private toggleButtons = new Map<ToggleKey, HTMLButtonElement>();
   private options: WorkspaceSearchOptions = loadSearchOptions();
   private outcome: WorkspaceSearchOutcome | "searching" | null = null;
   private shownPattern = ""; // outcome が属するパターン (入力途中の値とは別)
@@ -121,6 +135,9 @@ export class Sidebar {
     const title = document.createElement("span");
     title.className = "ws-title";
     title.textContent = "検索";
+    const scope = document.createElement("span");
+    scope.className = "ws-toggles";
+    scope.append(...SCOPE_TOGGLES.map(([label, hint, key]) => this.targetToggle(label, hint, key)));
     const stop = iconButton("ws-stop", "⏹", "検索を中止");
     stop.hidden = true;
     stop.addEventListener("click", () => this.stopWorkspaceSearch());
@@ -132,7 +149,7 @@ export class Sidebar {
     fold.addEventListener("click", () => this.toggleAllGroups());
     const settings = iconButton("ws-settings", "⚙", "検索の設定");
     settings.addEventListener("click", () => this.openSettings());
-    header.append(title, stop, refresh, clear, fold, settings);
+    header.append(title, scope, stop, refresh, clear, fold, settings);
     return header;
   }
 
@@ -144,30 +161,22 @@ export class Sidebar {
     input.spellcheck = false;
     const toggles = document.createElement("span");
     toggles.className = "ws-toggles";
-    this.targetButtons = [
-      this.targetToggle("Aa", "大文字小文字を区別", "match_case"),
-      this.targetToggle("名", "ファイル名を検索", "search_file_names"),
-      this.targetToggle("文", "本文を検索", "search_contents"),
-    ];
-    toggles.append(...this.targetButtons);
+    toggles.append(...MATCH_TOGGLES.map(([label, hint, key]) => this.targetToggle(label, hint, key)));
     row.append(input, toggles);
     return row;
   }
 
-  private targetToggle(
-    label: string,
-    title: string,
-    key: "match_case" | "search_file_names" | "search_contents"
-  ): HTMLButtonElement {
+  private targetToggle(label: string, title: string, key: ToggleKey): HTMLButtonElement {
     const button = iconButton("ws-toggle", label, title);
     button.classList.toggle("on", this.options[key]);
     button.addEventListener("click", () => {
       const next = { ...this.options };
       next[key] = !next[key];
       this.options = clampSearchOptions(next);
-      button.classList.toggle("on", this.options[key]);
+      this.syncTargetToggles();
       this.commitOptions();
     });
+    this.toggleButtons.set(key, button);
     return button;
   }
 
@@ -183,8 +192,7 @@ export class Sidebar {
   }
 
   private syncTargetToggles() {
-    const keys = ["match_case", "search_file_names", "search_contents"] as const;
-    keys.forEach((key, index) => this.targetButtons[index]?.classList.toggle("on", this.options[key]));
+    for (const [key, button] of this.toggleButtons) button.classList.toggle("on", this.options[key]);
   }
 
   private commitOptions() {
@@ -432,6 +440,11 @@ export class Sidebar {
     this.renderSummary(outcome, groups.length);
 
     const frag = document.createDocumentFragment();
+    if (outcome.pattern_error) {
+      // 正規表現を打っている途中は必ず壊れる。エラーとして黙らせず、理由だけ出す
+      frag.appendChild(warning(outcome.pattern_error));
+      return frag;
+    }
     if (!groups.length) {
       frag.appendChild(emptyNotice(searchScopeSummary(this.options)));
       return frag;
@@ -464,6 +477,7 @@ export class Sidebar {
     const summary = this.searchSummary;
     summary.hidden = false;
     summary.replaceChildren();
+    if (outcome.pattern_error) return; // 件数を出す段階に達していない
     const count = document.createElement("div");
     count.textContent = outcome.results.length
       ? `${fileCount.toLocaleString()} 個のファイルに ${outcome.results.length.toLocaleString()} 件の結果`
@@ -509,7 +523,7 @@ export class Sidebar {
     mark.textContent = match.is_filename ? "名" : String(match.line + 1);
     const preview = document.createElement("span");
     preview.className = "ws-preview";
-    preview.appendChild(highlightedPreview(match.preview, this.shownPattern, this.options.match_case));
+    preview.appendChild(highlightedPreview(match.preview, match.highlights));
     div.append(mark, preview);
     div.title = match.preview;
     div.addEventListener("click", () => this.onSearchResult(match, this.shownPattern, false));

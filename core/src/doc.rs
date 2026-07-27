@@ -209,6 +209,9 @@ pub struct WorkspaceSearchResult {
     pub line: usize,
     pub col: usize,
     pub preview: String,
+    // preview 上の一致範囲 [開始char, 長さ]。正規表現でもファジーでも
+    // フロントが検索し直せないため、当てた側が位置を持って渡す。
+    pub highlights: Vec<[usize; 2]>,
     pub is_filename: bool,
 }
 
@@ -1064,11 +1067,15 @@ mod tests {
         // 既定値は UI 側が持つので、テストは条件を明示して組み立てる
         let options = crate::SearchOptions {
             match_case: false,
+            use_regex: false,
+            whole_word: false,
             max_file_bytes: 16 * 1024 * 1024,
             max_files: 20_000,
             max_results: 200,
             exclude_dirs: vec![".git".into(), "node_modules".into(), "target".into()],
+            exclude_globs: Vec::new(),
             exclude_binary: true,
+            respect_gitignore: false,
             search_file_names: true,
             search_contents: true,
             workers: 0,

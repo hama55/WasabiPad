@@ -8,6 +8,7 @@ mod doc;
 mod fileio;
 mod filename;
 mod folder;
+mod fuzzy;
 mod hugebuf;
 mod search;
 mod settings;

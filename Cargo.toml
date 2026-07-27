@@ -11,3 +11,22 @@ opt-level = "z"
 lto = true
 codegen-units = 1
 strip = true
+
+# 検索エンジンだけは速度優先で積む。アプリ全体の "z" のままだと
+# ripgrep の SIMD リテラル検索が本来の速度を出せない。
+[profile.release.package.regex]
+opt-level = 3
+[profile.release.package.regex-automata]
+opt-level = 3
+[profile.release.package.aho-corasick]
+opt-level = 3
+[profile.release.package.memchr]
+opt-level = 3
+[profile.release.package.bstr]
+opt-level = 3
+[profile.release.package.grep-searcher]
+opt-level = 3
+[profile.release.package.grep-regex]
+opt-level = 3
+[profile.release.package.globset]
+opt-level = 3

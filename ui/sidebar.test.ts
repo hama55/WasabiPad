@@ -10,8 +10,12 @@ import { Sidebar, type SidebarPorts } from "./sidebar";
 import type { WorkspaceSearchOptions, WorkspaceSearchOutcome, WorkspaceSearchResult } from "./api";
 import { initSettings } from "./settings";
 
-const hit = (rel_path: string, line: number, preview: string): WorkspaceSearchResult =>
-  ({ rel_path, line, col: 0, preview, is_filename: false });
+const hit = (
+  rel_path: string,
+  line: number,
+  preview: string,
+  highlights: [number, number][] = []
+): WorkspaceSearchResult => ({ rel_path, line, col: 0, preview, highlights, is_filename: false });
 
 const outcome = (
   results: WorkspaceSearchResult[],
@@ -21,6 +25,7 @@ const outcome = (
   scanned_files: results.length,
   hit_file_limit: false,
   hit_result_limit: false,
+  pattern_error: null,
   ...extra,
 });
 
@@ -67,6 +72,7 @@ describe("Sidebar workspace search", () => {
     expect(text(host, ".ws-empty")).toContain("見つかりません");
     expect(text(host, ".ws-empty-detail")).toContain("バイナリファイル");
     expect(text(host, ".ws-empty-detail")).toContain(".git / .svn / node_modules");
+    expect(text(host, ".ws-empty-detail")).toContain("*.min.js");
     // 既定は無制限なので、サイズや件数を対象外として読み上げてはいけない
     expect(text(host, ".ws-empty-detail")).not.toContain("MB超");
     expect(text(host, ".ws-empty-detail")).not.toContain("件目以降");
@@ -75,9 +81,9 @@ describe("Sidebar workspace search", () => {
   it("結果をファイル単位のツリーにまとめ、一致箇所を強調する", async () => {
     vi.useFakeTimers();
     const host = mount(async () => outcome([
-      hit("core/src/a.rs", 0, "let x = needle;"),
-      hit("core/src/a.rs", 4, "needle again"),
-      hit("b.txt", 9, "a needle here"),
+      hit("core/src/a.rs", 0, "let x = needle;", [[8, 6]]),
+      hit("core/src/a.rs", 4, "needle again", [[0, 6]]),
+      hit("b.txt", 9, "a needle here", [[2, 6]]),
     ]));
     await search(host, "needle");
 
@@ -150,7 +156,7 @@ describe("Sidebar workspace search", () => {
     expect(text(host, ".ws-empty-detail")).not.toContain(".git");
   });
 
-  it("Aa ボタンで大文字小文字の区別を切り替える", async () => {
+  it("入力欄のトグルが検索条件へそのまま渡る", async () => {
     vi.useFakeTimers();
     const calls: WorkspaceSearchOptions[] = [];
     const host = mount(async (_pat, options) => {
@@ -158,10 +164,27 @@ describe("Sidebar workspace search", () => {
       return outcome([]);
     });
     await search(host, "missing");
-    expect(calls.at(-1)?.match_case).toBe(false);
+    expect(calls.at(-1)).toMatchObject({ match_case: false, whole_word: false, use_regex: false });
 
-    host.querySelector<HTMLButtonElement>(".ws-toggle")!.click();
+    const toggles = [...host.querySelectorAll<HTMLButtonElement>(".ws-toggle")];
+    // 「どこを探すか」はヘッダ、「どう当てるか」は入力欄の中
+    expect(toggles.map((button) => button.textContent)).toEqual(["名", "文", "Aa", "ab", ".*"]);
+    const byLabel = (label: string) => toggles.find((button) => button.textContent === label)!;
+    byLabel("Aa").click();
+    byLabel(".*").click();
     await vi.advanceTimersByTimeAsync(150);
-    expect(calls.at(-1)?.match_case).toBe(true);
+    expect(calls.at(-1)).toMatchObject({ match_case: true, use_regex: true, whole_word: false });
+    expect(byLabel("Aa").classList.contains("on")).toBe(true);
+    expect(byLabel("ab").classList.contains("on")).toBe(false);
+  });
+
+  it("正規表現が壊れている間は件数ではなく理由を出す", async () => {
+    vi.useFakeTimers();
+    const host = mount(async () => outcome([], { pattern_error: "検索パターンが不正: unclosed group" }));
+    await search(host, "need(");
+
+    expect(text(host, ".ws-warning")).toContain("unclosed group");
+    expect(host.querySelector(".ws-empty")).toBeNull();
+    expect(text(host, ".ws-summary")).toBe("");
   });
 });

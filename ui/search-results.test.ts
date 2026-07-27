@@ -1,6 +1,7 @@
+// @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
 
-import { groupResults, highlightRanges } from "./search-results";
+import { groupResults, highlightedPreview } from "./search-results";
 import type { WorkspaceSearchResult } from "./api";
 
 const hit = (rel_path: string, line: number, is_filename = false): WorkspaceSearchResult => ({
@@ -8,8 +9,15 @@ const hit = (rel_path: string, line: number, is_filename = false): WorkspaceSear
   line,
   col: 0,
   preview: rel_path,
+  highlights: [],
   is_filename,
 });
+
+const render = (preview: string, highlights: [number, number][]) => {
+  const host = document.createElement("div");
+  host.appendChild(highlightedPreview(preview, highlights));
+  return host;
+};
 
 describe("groupResults", () => {
   it("同じファイルの一致を1つの見出しへまとめる", () => {
@@ -31,17 +39,32 @@ describe("groupResults", () => {
   });
 });
 
-describe("highlightRanges", () => {
-  it("行内のすべての一致を返す", () => {
-    expect(highlightRanges("needle and needle", "needle", true)).toEqual([[0, 6], [11, 17]]);
+describe("highlightedPreview", () => {
+  it("backend が返した範囲だけを mark で囲む", () => {
+    const host = render("needle and needle", [[0, 6], [11, 6]]);
+    expect([...host.querySelectorAll("mark")].map((el) => el.textContent)).toEqual(["needle", "needle"]);
+    expect(host.textContent).toBe("needle and needle");
   });
 
-  it("大小文字を区別しない場合は backend と同じ ASCII 規則で畳む", () => {
-    expect(highlightRanges("NeEdLe", "needle", false)).toEqual([[0, 6]]);
-    expect(highlightRanges("NeEdLe", "needle", true)).toEqual([]);
+  it("飛び飛びの一致 (ファジー) もそのまま強調できる", () => {
+    const host = render("sidebar.ts", [[0, 1], [4, 1], [7, 1]]);
+    expect([...host.querySelectorAll("mark")].map((el) => el.textContent)).toEqual(["s", "b", "."]);
   });
 
-  it("空パターンでは無限ループしない", () => {
-    expect(highlightRanges("abc", "", false)).toEqual([]);
+  it("サロゲートペアを跨いでも位置がずれない", () => {
+    // 𠮷 は UTF-16 では2要素。素の slice(3,6) だと "家のか" になってしまう
+    const host = render("𠮷野家のかんじ", [[3, 3]]);
+    expect(host.querySelector("mark")?.textContent).toBe("のかん");
+    expect(host.textContent).toBe("𠮷野家のかんじ");
+  });
+
+  it("範囲が空でも preview はそのまま出す", () => {
+    expect(render("plain text", []).textContent).toBe("plain text");
+  });
+
+  it("範囲外を指す壊れた指定は無視する", () => {
+    const host = render("abc", [[99, 3]]);
+    expect(host.querySelectorAll("mark")).toHaveLength(0);
+    expect(host.textContent).toBe("abc");
   });
 });

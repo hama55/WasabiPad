@@ -33,6 +33,9 @@ export interface WorkspaceSearchResult {
   line: number;
   col: number;
   preview: string;
+  // preview 上の一致範囲 [開始char, 長さ]。正規表現とファジーはフロントで
+  // 位置を再計算できないため、当てた backend が持って渡す。
+  highlights: [number, number][];
   is_filename: boolean;
 }
 
@@ -114,22 +117,28 @@ export const listFolderEntries = (relDir: string) =>
 // 各上限の 0 は「無制限」。
 export interface WorkspaceSearchOptions {
   match_case: boolean;
+  use_regex: boolean;
+  whole_word: boolean;
   max_file_bytes: number;
   max_files: number;
   max_results: number;
   exclude_dirs: string[];
+  exclude_globs: string[];
   exclude_binary: boolean;
+  respect_gitignore: boolean;
   search_file_names: boolean;
   search_contents: boolean;
   workers: number; // 0 = 自動
 }
 
-// hit_* は上限で打ち切ったかどうか。件数だけでは「省略された」ことが分からない
+// hit_* は上限で打ち切ったかどうか。件数だけでは「省略された」ことが分からない。
+// pattern_error は正規表現/除外パターンが壊れている場合の理由。
 export interface WorkspaceSearchOutcome {
   results: WorkspaceSearchResult[];
   scanned_files: number;
   hit_file_limit: boolean;
   hit_result_limit: boolean;
+  pattern_error: string | null;
 }
 
 export const workspaceSearch = (pat: string, options: WorkspaceSearchOptions) =>

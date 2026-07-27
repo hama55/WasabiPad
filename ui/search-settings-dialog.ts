@@ -9,8 +9,16 @@ export interface SearchSettingsPorts {
   onClose: () => void;
 }
 
-type ToggleKey = "match_case" | "search_file_names" | "search_contents" | "exclude_binary";
+type ToggleKey =
+  | "match_case"
+  | "use_regex"
+  | "whole_word"
+  | "search_file_names"
+  | "search_contents"
+  | "exclude_binary"
+  | "respect_gitignore";
 type CountKey = "max_files" | "max_results" | "workers";
+type ListKey = "exclude_dirs" | "exclude_globs";
 
 export function openSearchSettings(
   current: WorkspaceSearchOptions,
@@ -49,14 +57,21 @@ export function openSearchSettings(
       commit();
     });
 
+  const list = (key: ListKey, placeholder: string) =>
+    stringListField(() => options[key], (next) => {
+      options[key] = next;
+      commit();
+    }, placeholder);
+
   left.append(
     section("検索する対象", [
-      toggle("大文字小文字を区別する", "match_case"),
-      toggle("ファイル名", "search_file_names"),
-      toggle("本文", "search_contents"),
+      toggle("ファイル名", "search_file_names", "ファジー一致。wsopt → workspace-search-options.ts"),
+      toggle("本文", "search_contents", "ripgrep のエンジンで走査する"),
     ]),
-    section("除外するファイル", [
-      toggle("バイナリファイル", "exclude_binary", ".pyc / .exe / 画像など (先頭にNULを含むもの)"),
+    section("一致のしかた", [
+      toggle("大文字小文字を区別する", "match_case"),
+      toggle("単語単位で一致", "whole_word", "前後が単語の区切りのときだけ当てる"),
+      toggle("正規表現として扱う", "use_regex", "Rust regex 構文。壊れている間は理由を結果欄に出す"),
     ]),
     section("打ち切り条件", [
       hint("0 は無制限。上限を入れた場合だけ、途中で打ち切ったことを結果に表示する。"),
@@ -71,17 +86,18 @@ export function openSearchSettings(
     ])
   );
 
-  const dirs = excludeDirsField(
-    () => options.exclude_dirs,
-    (list) => {
-      options.exclude_dirs = list;
-      commit();
-    }
+  right.append(
+    section("除外するファイル", [
+      toggle("バイナリファイル", "exclude_binary", ".pyc / .exe / 画像など (先頭にNULを含むもの)"),
+      toggle(".gitignore を尊重する", "respect_gitignore", ".ignore と親フォルダの設定もたどる"),
+      hint("glob で除外する (*.log や **/tmp/** のように書ける)。"),
+      list("exclude_globs", "パターンを追加 (例: *.log)").element,
+    ]),
+    section("除外するフォルダ", [
+      hint("この名前のフォルダは中身ごと検索しない (大文字小文字は区別しない)。"),
+      list("exclude_dirs", "フォルダ名を追加").element,
+    ])
   );
-  right.append(section("除外するフォルダ", [
-    hint("この名前のフォルダは中身ごと検索しない (大文字小文字は区別しない)。"),
-    dirs.element,
-  ]));
 
   const buttons = document.createElement("div");
   buttons.className = "pf-btns";
@@ -188,10 +204,11 @@ function numberField(
   return field;
 }
 
-// 除外フォルダは自由編集のリスト。1行1フォルダ名で、× で外し、下の欄で足す。
-function excludeDirsField(
+// 除外指定は自由編集のリスト。1行1件で、× で外し、下の欄で足す。
+function stringListField(
   get: () => string[],
-  set: (list: string[]) => void
+  set: (list: string[]) => void,
+  placeholder: string
 ): { element: HTMLElement } {
   const element = document.createElement("div");
   element.className = "ss-dirs";
@@ -219,7 +236,7 @@ function excludeDirsField(
     if (!get().length) {
       const empty = document.createElement("div");
       empty.className = "ss-dir-empty";
-      empty.textContent = "除外なし (すべてのフォルダを検索する)";
+      empty.textContent = "除外なし";
       list.append(empty);
     }
   };
@@ -227,7 +244,7 @@ function excludeDirsField(
   const adder = document.createElement("div");
   adder.className = "ss-dir-add";
   const input = document.createElement("input");
-  input.placeholder = "フォルダ名を追加";
+  input.placeholder = placeholder;
   input.spellcheck = false;
   const add = document.createElement("button");
   add.type = "button";

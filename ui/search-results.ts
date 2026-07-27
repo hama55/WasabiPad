@@ -30,41 +30,23 @@ export function groupResults(results: WorkspaceSearchResult[]): ResultGroup[] {
   return groups;
 }
 
-// backend の大小文字無視は ASCII バイト単位なので、強調表示も同じ規則で畳む
-const foldAscii = (text: string) => text.replace(/[A-Z]/g, (c) => c.toLowerCase());
-
-// preview 内の一致位置。preview は行の一部を切り出したもので result.col とは
-// 座標系が違うため、位置は preview を検索し直して求める。
-export function highlightRanges(
-  preview: string,
-  pattern: string,
-  matchCase: boolean
-): [number, number][] {
-  if (!pattern) return [];
-  const haystack = matchCase ? preview : foldAscii(preview);
-  const needle = matchCase ? pattern : foldAscii(pattern);
-  const ranges: [number, number][] = [];
-  for (let i = haystack.indexOf(needle); i >= 0; i = haystack.indexOf(needle, i + needle.length)) {
-    ranges.push([i, i + needle.length]);
-  }
-  return ranges;
-}
-
-// 一致部分を <mark> で囲んだ断片を作る
+// backend が返す範囲は char 単位。サロゲートペアがあると JS の
+// 文字列 index とずれるため、一度コードポイント配列に開いてから切る。
 export function highlightedPreview(
   preview: string,
-  pattern: string,
-  matchCase: boolean
+  highlights: [number, number][]
 ): DocumentFragment {
   const frag = document.createDocumentFragment();
+  const chars = [...preview];
   let at = 0;
-  for (const [start, end] of highlightRanges(preview, pattern, matchCase)) {
-    frag.append(preview.slice(at, start));
+  for (const [start, length] of highlights) {
+    if (start < at || start >= chars.length) continue; // 壊れた範囲は無視して素で出す
+    frag.append(chars.slice(at, start).join(""));
     const mark = document.createElement("mark");
-    mark.textContent = preview.slice(start, end);
+    mark.textContent = chars.slice(start, start + length).join("");
     frag.append(mark);
-    at = end;
+    at = start + length;
   }
-  frag.append(preview.slice(at));
+  frag.append(chars.slice(at).join(""));
   return frag;
 }
