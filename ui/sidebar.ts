@@ -13,6 +13,8 @@ import {
   sameSearchOptions,
   saveSearchOptions,
   searchScopeSummary,
+  optionTitle,
+  type BoolOptionKey,
 } from "./workspace-search-options";
 
 // フォルダ/ZIP/Excelのエントリ名 ("sub/a.txt" 形式) からツリーを構築して表示。
@@ -49,7 +51,9 @@ export interface SidebarPorts {
     searchId: number
   ) => Promise<WorkspaceSearchOutcome>;
   onCancelSearch: () => void;
-  onSearchResult: (result: WorkspaceSearchResult, pattern: string, newWindow: boolean) => void;
+  // 一致の範囲は result.highlights が持つ。パターンを渡さないのは、
+  // 正規表現や大小の畳み込みで「当たった長さ」がパターンの長さと一致しないため。
+  onSearchResult: (result: WorkspaceSearchResult, newWindow: boolean) => void;
 }
 
 // core の Doc::is_lazy_archive_ext と一致させる (check:ipc が両者の一致を検証する)
@@ -66,19 +70,19 @@ const AUTO_COLLAPSE_MATCHES = 500;
 // これより細かく描いても届く中身が増えないため意味がない
 const PARTIAL_RENDER_MS = 100;
 
-type ToggleKey = "match_case" | "whole_word" | "use_regex" | "search_file_names" | "search_contents";
+type ToggleKey = BoolOptionKey;
 
 // 「どう当てるか」は入力欄の中へ (VSCode の Aa / ab / .* と同じ位置)。
-// ab と .* はファイル名の当て方も変える (どちらかを入れるとファジーをやめる)。
-const MATCH_TOGGLES: [string, string, ToggleKey][] = [
-  ["Aa", "大文字小文字を区別", "match_case"],
-  ["ab", "単語単位で一致 (ファイル名もファジーをやめる)", "whole_word"],
-  [".*", "正規表現として扱う (ファイル名もファジーをやめる)", "use_regex"],
+// 説明文は OPTION_TEXTS が持ち、ここが持つのは記号だけ。
+const MATCH_TOGGLES: [string, ToggleKey][] = [
+  ["Aa", "match_case"],
+  ["ab", "whole_word"],
+  [".*", "use_regex"],
 ];
 // 「どこを探すか」はヘッダへ。入力欄に5つ並べると打つ場所が無くなる
-const SCOPE_TOGGLES: [string, string, ToggleKey][] = [
-  ["名", "ファイル名を検索 (既定はファジー一致)", "search_file_names"],
-  ["文", "本文を検索", "search_contents"],
+const SCOPE_TOGGLES: [string, ToggleKey][] = [
+  ["名", "search_file_names"],
+  ["文", "search_contents"],
 ];
 
 export class Sidebar {
@@ -93,7 +97,6 @@ export class Sidebar {
   private outcome: WorkspaceSearchOutcome | "searching" | null = null;
   private partial: WorkspaceSearchResult[] = []; // 検索中に届いた分 (並べ替えは描画時)
   private partialTimer: number | undefined;
-  private shownPattern = ""; // outcome が属するパターン (入力途中の値とは別)
   // 畳み方は「既定 + 例外」で持つ。全パスを集合に入れる持ち方だと、
   // 検索中に後から届いたファイルが既定から外れて開いたまま出てしまう。
   private collapseByDefault = false;
@@ -110,7 +113,7 @@ export class Sidebar {
   private onExpandFolder: (relDir: string) => Promise<FolderEntry[]>;
   private onWorkspaceSearch: SidebarPorts["onWorkspaceSearch"];
   private onCancelSearch: () => void;
-  private onSearchResult: (result: WorkspaceSearchResult, pattern: string, newWindow: boolean) => void;
+  private onSearchResult: SidebarPorts["onSearchResult"];
 
   constructor(host: HTMLElement, ports: SidebarPorts) {
     this.host = host;
@@ -151,7 +154,7 @@ export class Sidebar {
     title.textContent = "検索";
     const scope = document.createElement("span");
     scope.className = "ws-toggles";
-    scope.append(...SCOPE_TOGGLES.map(([label, hint, key]) => this.targetToggle(label, hint, key)));
+    scope.append(...SCOPE_TOGGLES.map(([icon, key]) => this.targetToggle(icon, key)));
     const stop = iconButton("ws-stop", "⏹", "検索を中止");
     stop.hidden = true;
     stop.addEventListener("click", () => this.stopWorkspaceSearch());
@@ -175,13 +178,13 @@ export class Sidebar {
     input.spellcheck = false;
     const toggles = document.createElement("span");
     toggles.className = "ws-toggles";
-    toggles.append(...MATCH_TOGGLES.map(([label, hint, key]) => this.targetToggle(label, hint, key)));
+    toggles.append(...MATCH_TOGGLES.map(([icon, key]) => this.targetToggle(icon, key)));
     row.append(input, toggles);
     return row;
   }
 
-  private targetToggle(label: string, title: string, key: ToggleKey): HTMLButtonElement {
-    const button = iconButton("ws-toggle", label, title);
+  private targetToggle(icon: string, key: ToggleKey): HTMLButtonElement {
+    const button = iconButton("ws-toggle", icon, optionTitle(key));
     button.classList.toggle("on", this.options[key]);
     button.addEventListener("click", () => {
       const next = { ...this.options };
@@ -234,10 +237,10 @@ export class Sidebar {
     // 画面が空のまま待たされる。
     if (this.running) this.onCancelSearch();
     if (!pat) {
-      this.setOutcome(null, "");
+      this.setOutcome(null);
       return;
     }
-    this.setOutcome("searching", pat);
+    this.setOutcome("searching");
     this.searchTimer = window.setTimeout(() => void this.searchWorkspace(gen, pat, this.options), delay);
   }
 
@@ -245,8 +248,8 @@ export class Sidebar {
   private stopWorkspaceSearch() {
     this.searchGen++; // 世代を進めれば、走行中の結果も待機中の要求も捨てられる
     window.clearTimeout(this.searchTimer);
-    if (this.outcome) this.onCancelSearch(); // 走っていないなら止めるものがない
-    this.setOutcome(null, "");
+    if (this.running) this.onCancelSearch(); // 走っていないなら止めるものがない
+    this.setOutcome(null);
   }
 
   private clearWorkspaceSearch(focus = true) {
@@ -277,9 +280,8 @@ export class Sidebar {
     this.collapsed.clear();
   }
 
-  private setOutcome(outcome: WorkspaceSearchOutcome | "searching" | null, pattern: string) {
+  private setOutcome(outcome: WorkspaceSearchOutcome | "searching" | null) {
     this.outcome = outcome;
-    this.shownPattern = pattern;
     this.searchStop.hidden = outcome !== "searching";
     window.clearTimeout(this.partialTimer);
     this.partialTimer = undefined;
@@ -317,7 +319,7 @@ export class Sidebar {
     this.running = run;
     try {
       const outcome = await run;
-      if (gen === this.searchGen) this.setOutcome(outcome, pat);
+      if (gen === this.searchGen) this.setOutcome(outcome);
     } finally {
       if (this.running === run) this.running = null;
     }
@@ -496,9 +498,7 @@ export class Sidebar {
       frag.appendChild(searchingRow());
       return frag;
     }
-    // 確定結果と同じ規則で並べ直す。走査順のまま出すと、検索が終わった瞬間に並びが飛ぶ
-    const byScore = this.options.search_file_names && !this.options.search_contents;
-    const groups = groupResults(sortResults(this.partial, byScore));
+    const groups = groupResults(sortResults(this.partial, this.options));
     this.searchSummary.hidden = false;
     this.searchSummary.replaceChildren(
       countRow(`${groups.length.toLocaleString()} 個のファイルに ${this.partial.length.toLocaleString()} 件 (検索中)`)
@@ -511,7 +511,8 @@ export class Sidebar {
   // ---- 検索結果のツリー (ファイル見出し + その下に一致行) ----
   private resultTree(): DocumentFragment {
     const outcome = this.outcome as WorkspaceSearchOutcome;
-    const groups = groupResults(outcome.results);
+    // 確定結果も途中経過と同じ関数に通す。backend の返す順は走査順で、並びは表示の都合
+    const groups = groupResults(sortResults(outcome.results, this.options));
     this.renderSummary(outcome, groups.length);
 
     const frag = document.createDocumentFragment();
@@ -607,7 +608,7 @@ export class Sidebar {
     preview.appendChild(highlightedPreview(match.preview, match.highlights));
     div.append(mark, preview);
     div.title = match.preview;
-    div.addEventListener("click", () => this.onSearchResult(match, this.shownPattern, false));
+    div.addEventListener("click", () => this.onSearchResult(match, false));
     this.bindOpen(div, match);
     return div;
   }
@@ -617,7 +618,7 @@ export class Sidebar {
     row.addEventListener("auxclick", (e) => {
       if (e.button !== 1) return;
       e.preventDefault();
-      this.onSearchResult(match, this.shownPattern, true);
+      this.onSearchResult(match, true);
     });
     row.addEventListener("contextmenu", (e) => {
       e.preventDefault();

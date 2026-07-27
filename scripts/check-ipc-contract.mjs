@@ -104,6 +104,30 @@ if (mmapThreshold !== hugeThreshold) {
   fail(`huge file threshold; core=${mmapThreshold}, ui=${hugeThreshold}`);
 }
 
+// 検索の途中経過は「送る側 (core) と描く側 (ui)」で刻みと上限が噛み合う必要がある。
+// 送出が細かすぎれば IPC だけが増え、上限が描画上限を超えれば出せない分を送ることになる。
+const progressInterval = Number(
+  workspaceSearch.match(/PROGRESS_INTERVAL[^;]*from_millis\((\d+)\)/)?.[1]
+);
+const partialRenderMs = Number(sidebarTs.match(/PARTIAL_RENDER_MS = (\d+);/)?.[1]);
+if (!progressInterval || progressInterval !== partialRenderMs) {
+  fail(`search progress interval; core=${progressInterval}, ui=${partialRenderMs}`);
+}
+const progressMax = Number(workspaceSearch.match(/PROGRESS_MAX: usize = ([\d_]+);/)?.[1]?.replace(/_/g, ""));
+const maxRenderedRows = Number(sidebarTs.match(/MAX_RENDERED_ROWS = ([\d_]+);/)?.[1]?.replace(/_/g, ""));
+if (!progressMax || !maxRenderedRows || progressMax > maxRenderedRows) {
+  fail(`search progress cap exceeds rendered rows; core=${progressMax}, ui=${maxRenderedRows}`);
+}
+
+// ファイル名をファジーで当てるかどうかの判定は core が持ち、ui は説明文のために写しを持つ。
+// 見る項目がずれると、実際の当て方と画面の説明が食い違う (利用者は説明を信じる)。
+const optionKeys = (source, marker) => names(/options\.(\w+)/g, blockAfter(source, marker));
+assertSameSet(
+  "fuzzy file name rule inputs",
+  optionKeys(workspaceSearch, "fn strict_name_match"),
+  optionKeys(read("ui/workspace-search-options.ts"), "export function fuzzyFileNames")
+);
+
 // サイドバーの展開ボタン表示と core の遅延アーカイブ判定は同じ拡張子集合でなければならない
 const lazyArchiveFn = coreDoc.slice(coreDoc.indexOf("fn is_lazy_archive_ext"));
 const coreArchiveExts = names(/Some\("([^"]+)"\)/g, lazyArchiveFn.slice(0, lazyArchiveFn.indexOf("\n    }")));

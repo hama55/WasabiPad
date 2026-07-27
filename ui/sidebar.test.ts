@@ -99,9 +99,10 @@ describe("Sidebar workspace search", () => {
     await search(host, "needle");
 
     const groups = [...host.querySelectorAll(".ws-group")];
-    expect(groups.map((group) => group.querySelector(".ws-file")?.textContent)).toEqual(["a.rs", "b.txt"]);
-    expect(groups[0].querySelector(".ws-dir")?.textContent).toBe("core/src");
-    expect(groups[0].querySelector(".ws-count")?.textContent).toBe("2");
+    // 見出しはパス順 ("b.txt" < "core/src/a.rs")。backend の返す順には依らない
+    expect(groups.map((group) => group.querySelector(".ws-file")?.textContent)).toEqual(["b.txt", "a.rs"]);
+    expect(groups[1].querySelector(".ws-dir")?.textContent).toBe("core/src");
+    expect(groups[1].querySelector(".ws-count")?.textContent).toBe("2");
     expect(host.querySelectorAll(".ws-match")).toHaveLength(3);
     expect(text(host, ".ws-summary")).toContain("2 個のファイルに 3 件の結果");
     expect(host.querySelector(".ws-match mark")?.textContent).toBe("needle");
@@ -124,7 +125,7 @@ describe("Sidebar workspace search", () => {
     const opened: boolean[] = [];
     const host = mount(
       async () => outcome([hit("a.txt", 3, "needle")]),
-      (_result, _pattern, newWindow) => opened.push(newWindow)
+      (_result, newWindow) => opened.push(newWindow)
     );
     await search(host, "needle");
 
@@ -243,7 +244,7 @@ describe("Sidebar workspace search", () => {
     expect(host.querySelectorAll(".ws-match")).toHaveLength(0);
   });
 
-  it("検索中でも届いた分から並べ、確定したら backend の並びで置き換える", async () => {
+  it("途中経過も確定結果も、届いた順ではなく同じ規則で並べる", async () => {
     vi.useFakeTimers();
     let searchId = 0;
     let finish: (found: WorkspaceSearchOutcome) => void = () => {};
@@ -268,9 +269,13 @@ describe("Sidebar workspace search", () => {
     await vi.advanceTimersByTimeAsync(100);
     expect(host.querySelectorAll(".ws-file")).toHaveLength(2);
 
-    finish(outcome([hit("b.txt", 0, "needle")]));
+    // 確定結果は走査順で届く。並べるのは表示側の仕事なので、ここでも並べ直す
+    finish(outcome([hit("z.txt", 0, "needle"), hit("b.txt", 0, "needle")]));
     await vi.advanceTimersByTimeAsync(0);
-    expect([...host.querySelectorAll(".ws-file")].map((el) => el.textContent)).toEqual(["b.txt"]);
+    expect([...host.querySelectorAll(".ws-file")].map((el) => el.textContent)).toEqual([
+      "b.txt",
+      "z.txt",
+    ]);
     expect(text(host, ".ws-summary")).not.toContain("検索中");
   });
 

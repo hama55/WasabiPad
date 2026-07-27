@@ -46,11 +46,11 @@ describe("groupResults", () => {
 });
 
 describe("sortResults", () => {
-  // 走査順で届く途中経過を、確定結果 (core の sort_hits) と同じ順に直せること
+  // 走査順で届く結果 (途中経過も確定結果も) を、見せる順に直せること
   it("パス順・同じファイル内はファイル名一致を先に、以降は行順", () => {
     const sorted = sortResults(
       [hit("b.txt", 0), hit("a/z.txt", 5), hit("a/z.txt", 1), hit("a/z.txt", 0, true)],
-      false
+      { search_file_names: true, search_contents: true }
     );
     expect(sorted.map((result) => [result.rel_path, result.line, result.is_filename])).toEqual([
       ["a/z.txt", 0, true],
@@ -63,7 +63,7 @@ describe("sortResults", () => {
   it("ファイル名だけを探しているときはスコア順 (同点はパス順)", () => {
     const sorted = sortResults(
       [hit("b.txt", 0, true, 10), hit("z.txt", 0, true, 90), hit("a.txt", 0, true, 10)],
-      true
+      { search_file_names: true, search_contents: false }
     );
     expect(sorted.map((result) => result.rel_path)).toEqual(["z.txt", "a.txt", "b.txt"]);
   });

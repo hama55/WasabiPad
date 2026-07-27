@@ -120,15 +120,18 @@ const sidebar = new Sidebar(sidebarEl, {
   onExpandFolder: (relDir) => api.listFolderEntries(relDir),
   onWorkspaceSearch: (pat, options, searchId) => api.workspaceSearch(pat, options, searchId),
   onCancelSearch: () => { void api.workspaceSearchCancel(); },
-  onSearchResult: async (result, pattern, newWindow) => {
+  onSearchResult: async (result, newWindow) => {
     if (newWindow) {
       await openInNewWindow(result.rel_path, { line: result.line, col: result.col });
       return;
     }
     if (!(await doc.confirmDiscard())) return;
     await doc.selectEntry(result.rel_path);
+    // 当たった長さは backend が返す範囲から取る。正規表現や大小の畳み込みでは
+    // 入力したパターンの長さと一致しない。
+    const [, length] = result.highlights[0] ?? [0, 0];
     if (result.is_filename) editor.goTo(result.line, result.col);
-    else await editor.selectRange(result.line, result.col, result.col + [...pattern].length);
+    else await editor.selectRange(result.line, result.col, result.col + length);
   },
 });
 

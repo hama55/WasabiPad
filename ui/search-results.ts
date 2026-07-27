@@ -1,4 +1,4 @@
-import type { WorkspaceSearchResult } from "./api";
+import type { WorkspaceSearchOptions, WorkspaceSearchResult } from "./api";
 
 // 検索結果をファイル単位のツリーへ組み直す。表示の都合しか知らない純関数として
 // 切り出し、DOM を作る Sidebar から独立してテストできるようにする。
@@ -10,16 +10,17 @@ export interface ResultGroup {
   matches: WorkspaceSearchResult[];
 }
 
-// 途中経過は走査順で届くため、確定結果と同じ順に並べ直してから見せる。
-// そうしないと検索が終わった瞬間に並びが飛び、目で追っていた行を見失う。
-// 規則は core/src/workspace_search.rs の sort_hits と一対で、両方直す必要がある。
+// 結果の並びはここだけが決める (途中経過も確定結果も同じ関数を通す)。
+// 途中経過は走査順で届くので UI 側の並べ替えは避けられない。backend でも並べると
+// 同じ規則が2実装になり、片方だけ直したときに検索が終わった瞬間に並びが飛ぶ。
 export function sortResults(
   results: WorkspaceSearchResult[],
-  byScore: boolean
+  options: Pick<WorkspaceSearchOptions, "search_file_names" | "search_contents">
 ): WorkspaceSearchResult[] {
   const sorted = [...results];
-  if (byScore) {
-    // ファイル名だけを探しているときは、当てはまりの良い順
+  // ファイル名だけを探しているときは、パス順よりスコア順のほうが役に立つ
+  // (VSCode の Quick Open と同じ狙い)。本文も混ざるならツリーの並びを優先する。
+  if (options.search_file_names && !options.search_contents) {
     sorted.sort((a, b) => b.score - a.score || compare(a.rel_path, b.rel_path));
     return sorted;
   }
@@ -31,7 +32,7 @@ export function sortResults(
   return sorted;
 }
 
-// localeCompare は言語設定で並びが変わる。backend の素の大小比較に合わせる
+// localeCompare は言語設定で並びが変わる。環境によらず同じ並びにするため素の大小比較
 const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
 // パス順に並んでいるため、隣り合う同じパスをまとめるだけでよい

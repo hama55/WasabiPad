@@ -41,6 +41,9 @@ pub struct SearchOptions {
 // 「あるはずのものが出ない」検索になり、利用者が原因を追えなくなる。
 #[derive(Default, serde::Serialize)]
 pub struct WorkspaceSearchOutcome {
+    // 並びは走査順 (同じファイルの一致は連続する)。見せる順を決めるのは
+    // ui/search-results.ts の sortResults 一箇所。途中経過は走査順で届く以上
+    // UI 側の並べ替えは避けられず、ここでも並べると同じ規則が2実装になる。
     pub results: Vec<WorkspaceSearchResult>,
     pub scanned_files: usize,
     pub hit_file_limit: bool,
@@ -59,7 +62,8 @@ const PROBE_BYTES: usize = 8 * 1024;
 const PROGRESS_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 // 途中経過を送るのはここまで。画面に出せる行数を超えて送っても表示は増えず、
 // 複製と IPC の費用だけが増える (確定結果は打ち切らずに全件返す)。
-const PROGRESS_MAX: usize = 5_000;
+// 上限は ui/sidebar.ts の MAX_RENDERED_ROWS を超えてはならない (check:ipc が検証する)。
+const PROGRESS_MAX: usize = 3_000;
 const NAME_PREFIX: &str = "ファイル名: ";
 
 // 0 は無制限。以降の比較をすべて飽和値で書けるようにする
@@ -155,7 +159,6 @@ pub fn search_workspace(
     });
 
     let mut output = shared_results.into_inner().unwrap().hits;
-    sort_hits(&mut output, options);
     let truncated = shared_result_limit.load(Ordering::Relaxed) || output.len() > max_results;
     output.truncate(max_results);
     WorkspaceSearchOutcome {
@@ -193,22 +196,6 @@ impl Collected {
         self.sent = self.hits.len().min(from + budget);
         Some(self.hits[from..self.sent].to_vec())
     }
-}
-
-// ファイル名だけを探しているときは、パス順よりスコア順のほうが役に立つ
-// (VSCode の Quick Open と同じ狙い)。本文も混ざるならツリーの並びを優先する。
-// 同じ規則を ui/search-results.ts の sortResults が持つ (途中経過を確定結果と
-// 同じ順で見せるため)。片方だけ変えると、確定した瞬間に並びが飛ぶ。
-fn sort_hits(hits: &mut [WorkspaceSearchResult], options: &SearchOptions) {
-    if options.search_file_names && !options.search_contents {
-        hits.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.rel_path.cmp(&b.rel_path)));
-        return;
-    }
-    // 同じファイル内ではファイル名一致を先に置く
-    hits.sort_by(|a, b| {
-        (&a.rel_path, !a.is_filename, a.line, a.col)
-            .cmp(&(&b.rel_path, !b.is_filename, b.line, b.col))
-    });
 }
 
 fn relative_path(root: &Path, path: &Path) -> String {
@@ -647,17 +634,49 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    // 並べ替えは表示側 (ui/search-results.ts) が持つので、ここで見るのは
+    // 「当たったか」と「並べ替えの鍵になるスコアの差が付いているか」まで。
     #[test]
-    fn file_names_are_matched_fuzzily_and_ranked_by_score() {
+    fn file_names_are_matched_fuzzily_and_scored() {
         let root = workspace("fuzzy");
         std::fs::write(root.join("sub/needless-extra.txt"), "").unwrap();
         let mut opts = options();
         opts.search_contents = false;
         opts.search_file_names = true;
         let found = run(&root, "ndl", &opts);
-        let paths: Vec<&str> = found.results.iter().map(|r| r.rel_path.as_str()).collect();
-        assert_eq!(paths, vec!["needle.txt", "sub/needless-extra.txt"], "スコア順");
-        assert!(!found.results[0].highlights.is_empty());
+        let by_path: std::collections::HashMap<&str, &super::WorkspaceSearchResult> =
+            found.results.iter().map(|r| (r.rel_path.as_str(), r)).collect();
+        let short = by_path["needle.txt"];
+        let long = by_path["sub/needless-extra.txt"];
+        assert_eq!(found.results.len(), 2);
+        assert!(short.score > long.score, "当てはまりの良いほうが高い");
+        assert!(!short.highlights.is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    // 位置は char 単位で返す。バイト位置のまま返すと、多バイト文字のある行で
+    // 飛び先がずれる (UI は char index として扱う)。
+    #[test]
+    fn columns_are_character_indexes_and_names_hit_too() {
+        let root = std::env::temp_dir().join(format!("wasabipad_ws_{}_chars", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("top.txt"), "skip\nNeedle").unwrap();
+        std::fs::write(root.join("sub/deep.txt"), "あ needle").unwrap();
+        std::fs::write(root.join("needle-file.txt"), "other").unwrap();
+
+        let mut opts = options();
+        opts.search_file_names = true;
+        let found = run(&root, "NEEDLE", &opts);
+        let mut places = places(&found);
+        places.sort();
+        assert_eq!(places, vec![
+            ("needle-file.txt".into(), 0, 0), // 名前だけの一致
+            ("sub/deep.txt".into(), 0, 2),    // "あ " は 2 文字
+            ("top.txt".into(), 1, 0),
+        ]);
+        let name_hit = found.results.iter().find(|r| r.is_filename).unwrap();
+        assert_eq!(name_hit.preview, "ファイル名: needle-file.txt");
         std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -1,5 +1,13 @@
 import type { WorkspaceSearchOptions } from "./api";
-import { clampSearchOptions, DEFAULT_SEARCH_OPTIONS } from "./workspace-search-options";
+import {
+  clampSearchOptions,
+  DEFAULT_SEARCH_OPTIONS,
+  MB,
+  OPTION_TEXTS,
+  type BoolOptionKey,
+  type ListOptionKey,
+  type NumberOptionKey,
+} from "./workspace-search-options";
 
 // 検索条件はフォルダビューの幅に収まらないため、ウィンドウ中央のモーダルで編集する。
 // 変更は即座に保存し、閉じたときにだけ検索し直す (1項目触るたびに全走査させない)。
@@ -9,16 +17,9 @@ export interface SearchSettingsPorts {
   onClose: () => void;
 }
 
-type ToggleKey =
-  | "match_case"
-  | "use_regex"
-  | "whole_word"
-  | "search_file_names"
-  | "search_contents"
-  | "exclude_binary"
-  | "respect_gitignore";
-type CountKey = "max_files" | "max_results" | "workers";
-type ListKey = "exclude_dirs" | "exclude_globs";
+type ToggleKey = BoolOptionKey;
+type CountKey = NumberOptionKey;
+type ListKey = ListOptionKey;
 
 export function openSearchSettings(
   current: WorkspaceSearchOptions,
@@ -45,14 +46,14 @@ export function openSearchSettings(
   const right = document.createElement("div");
   columns.append(left, right);
 
-  const toggle = (label: string, key: ToggleKey, hint = "") =>
-    toggleField(label, hint, options[key], (on) => {
+  const toggle = (key: ToggleKey) =>
+    toggleField(OPTION_TEXTS[key], options[key], (on) => {
       options[key] = on;
       commit();
     });
 
   const count = (label: string, key: CountKey) =>
-    numberField(label, "", () => options[key], (value) => {
+    numberField(label, () => options[key], (value) => {
       options[key] = value;
       commit();
     });
@@ -64,20 +65,13 @@ export function openSearchSettings(
     }, placeholder);
 
   left.append(
-    section("検索する対象", [
-      toggle("ファイル名", "search_file_names", "ファジー一致。wsopt → workspace-search-options.ts"),
-      toggle("本文", "search_contents", "ripgrep のエンジンで走査する"),
-    ]),
-    section("一致のしかた", [
-      toggle("大文字小文字を区別する", "match_case"),
-      toggle("単語単位で一致", "whole_word", "前後が単語の区切りのときだけ当てる"),
-      toggle("正規表現として扱う", "use_regex", "Rust regex 構文。壊れている間は理由を結果欄に出す"),
-    ]),
+    section("検索する対象", [toggle("search_file_names"), toggle("search_contents")]),
+    section("一致のしかた", [toggle("match_case"), toggle("whole_word"), toggle("use_regex")]),
     section("打ち切り条件", [
       hint("0 は無制限。上限を入れた場合だけ、途中で打ち切ったことを結果に表示する。"),
-      numberField("最大ファイルサイズ (MB)", "", () => options.max_file_bytes / (1024 * 1024),
+      numberField("最大ファイルサイズ (MB)", () => options.max_file_bytes / MB,
         (value) => {
-          options.max_file_bytes = value * 1024 * 1024;
+          options.max_file_bytes = value * MB;
           commit();
         }),
       count("最大ファイル数", "max_files"),
@@ -88,8 +82,8 @@ export function openSearchSettings(
 
   right.append(
     section("除外するファイル", [
-      toggle("バイナリファイル", "exclude_binary", ".pyc / .exe / 画像など (先頭にNULを含むもの)"),
-      toggle(".gitignore を尊重する", "respect_gitignore", ".ignore と親フォルダの設定もたどる"),
+      toggle("exclude_binary"),
+      toggle("respect_gitignore"),
       hint("glob で除外する (*.log や **/tmp/** のように書ける)。"),
       list("exclude_globs", "パターンを追加 (例: *.log)").element,
     ]),
@@ -155,8 +149,7 @@ function hint(text: string): HTMLElement {
 }
 
 function toggleField(
-  label: string,
-  note: string,
+  texts: { label: string; hint: string },
   checked: boolean,
   onChange: (on: boolean) => void
 ): HTMLElement {
@@ -166,25 +159,12 @@ function toggleField(
   input.type = "checkbox";
   input.checked = checked;
   input.addEventListener("change", () => onChange(input.checked));
-  const text = document.createElement("span");
-  text.textContent = label;
-  if (note) {
-    const small = document.createElement("small");
-    small.textContent = note;
-    text.append(small);
-  }
-  field.append(input, text);
+  field.append(input, labelText(texts.label, texts.hint));
   return field;
 }
 
-function numberField(
-  label: string,
-  note: string,
-  get: () => number,
-  set: (value: number) => void
-): HTMLElement {
-  const field = document.createElement("label");
-  field.className = "ss-number";
+// ラベル + 補足。補足は同じ行の小さい文字として続ける
+function labelText(label: string, note: string): HTMLElement {
   const text = document.createElement("span");
   text.textContent = label;
   if (note) {
@@ -192,15 +172,23 @@ function numberField(
     small.textContent = note;
     text.append(small);
   }
+  return text;
+}
+
+function numberField(label: string, get: () => number, set: (value: number) => void): HTMLElement {
+  const field = document.createElement("label");
+  field.className = "ss-number";
   const input = document.createElement("input");
   input.type = "number";
   input.min = "0";
   input.value = String(get());
+  // 丸めと範囲は clampSearchOptions が単独で決める。ここは素の値を渡し、
+  // 丸められた結果を読み直して出す (同じ規則を2箇所に置かない)
   input.addEventListener("change", () => {
-    set(Math.max(0, Math.round(Number(input.value) || 0)));
+    set(Number(input.value) || 0);
     input.value = String(get());
   });
-  field.append(text, input);
+  field.append(labelText(label, ""), input);
   return field;
 }
 

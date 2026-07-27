@@ -957,8 +957,6 @@ impl Doc {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspace_search::search_workspace;
-    use std::sync::atomic::AtomicBool;
 
     fn doc(t: &str) -> Doc {
         Doc {
@@ -1058,40 +1056,6 @@ mod tests {
         let d = doc("あいう NEEDLE");
         let r = d.find("needle", p(0, 0), true, false).unwrap();
         assert_eq!((r.start.line, r.start.col), (0, 4));
-    }
-
-    #[test]
-    fn workspace_search_is_recursive_and_returns_character_columns() {
-        let root = std::env::temp_dir().join(format!("wasabipad_search_{}", std::process::id()));
-        std::fs::create_dir_all(root.join("sub")).unwrap();
-        std::fs::write(root.join("top.txt"), "skip\nNeedle").unwrap();
-        std::fs::write(root.join("sub").join("deep.txt"), "あ needle").unwrap();
-        std::fs::write(root.join("needle-file.txt"), "other").unwrap();
-
-        // 既定値は UI 側が持つので、テストは条件を明示して組み立てる
-        let options = crate::SearchOptions {
-            match_case: false,
-            use_regex: false,
-            whole_word: false,
-            max_file_bytes: 16 * 1024 * 1024,
-            max_files: 20_000,
-            max_results: 200,
-            exclude_dirs: vec![".git".into(), "node_modules".into(), "target".into()],
-            exclude_globs: Vec::new(),
-            exclude_binary: true,
-            respect_gitignore: false,
-            search_file_names: true,
-            search_contents: true,
-            workers: 0,
-        };
-        let results =
-            search_workspace(&root, "NEEDLE", &options, &AtomicBool::new(false), &|_| {}).results;
-        assert_eq!(results.len(), 3);
-        assert_eq!((results[0].rel_path.as_str(), results[0].preview.as_str()), ("needle-file.txt", "ファイル名: needle-file.txt"));
-        assert_eq!((results[1].rel_path.as_str(), results[1].line, results[1].col), ("sub/deep.txt", 0, 2));
-        assert_eq!((results[2].rel_path.as_str(), results[2].line, results[2].col), ("top.txt", 1, 0));
-
-        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
