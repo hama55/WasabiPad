@@ -239,14 +239,22 @@ export class DocumentController {
     }
   }
 
-  async confirmDiscard(): Promise<boolean> {
-    if (!this.session.dirty || this.session.readOnly) return true;
+  async confirmDiscard(onProceed?: () => void | Promise<void>): Promise<boolean> {
+    if (!this.session.dirty || this.session.readOnly) {
+      await onProceed?.();
+      return true;
+    }
     const choice = await confirmSaveDiscard();
     if (choice === "discard") {
       this.session.dirty = false;
+      await onProceed?.();
       return true;
     }
-    return choice === "save" && await this.save();
+    if (choice !== "save") return false;
+    const saved = await this.save();
+    if (!saved && this.session.dirty) return false;
+    await onProceed?.();
+    return true;
   }
 
   goTo(pos: api.Pos) {

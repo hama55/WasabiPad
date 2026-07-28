@@ -40,6 +40,8 @@ const splitter = $("splitter");
 const loading = $("loading");
 const loadingMessage = $("loading-message");
 
+let sidebarAvailable = false;
+let sidebarCollapsed = false;
 let currentLine = 1;
 let tabs: TabManager;
 
@@ -50,9 +52,20 @@ function setLoading(active: boolean, message = "読み込み中…") {
 }
 
 function setSidebar(on: boolean, label = "") {
-  sidebarEl.hidden = !on;
-  splitter.hidden = !on;
+  sidebarAvailable = on;
+  updateSidebarVisibility();
   statusbar.setMode(label);
+}
+
+function updateSidebarVisibility() {
+  const shown = sidebarAvailable && !sidebarCollapsed;
+  sidebarEl.hidden = !shown;
+  splitter.hidden = !shown;
+  const toggle = $<HTMLButtonElement>("sidebar-toggle");
+  toggle.hidden = !sidebarAvailable;
+  toggle.textContent = shown ? "<<" : ">>";
+  toggle.title = shown ? "フォルダビューを閉じる" : "フォルダビューを開く";
+  toggle.style.left = shown ? `${Math.max(4, sidebarEl.getBoundingClientRect().width - 32)}px` : "4px";
 }
 
 // ---- 部品 ----
@@ -76,7 +89,6 @@ const addressbar = new AddressBar($("topbar"), {
   onSave: () => void doc.save(),
   onSaveAs: () => void doc.saveAs(),
   onNew: () => void tabs.newBlank(),
-  onNewWindow: () => void tabs.newBlank(),
   onFind: () => editor.openSearch(),
   onPick: () => void pickAndOpen(false),
   onFavorite: () => favbar.addCurrent(),
@@ -247,6 +259,10 @@ const commands = createCommandRegistry({
 $("toggle-bars").addEventListener("click", () => {
   $("navbars").hidden = !$("navbars").hidden;
 });
+$("sidebar-toggle").addEventListener("click", () => {
+  sidebarCollapsed = !sidebarCollapsed;
+  updateSidebarVisibility();
+});
 
 document.addEventListener("contextmenu", (e) => e.preventDefault());
 
@@ -255,6 +271,7 @@ splitter.addEventListener("mousedown", (e) => {
   e.preventDefault();
   const move = (ev: MouseEvent) => {
     sidebarEl.style.width = `${Math.max(120, ev.clientX)}px`;
+    updateSidebarVisibility();
   };
   const up = () => {
     window.removeEventListener("mousemove", move);

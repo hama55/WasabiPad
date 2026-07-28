@@ -94,14 +94,22 @@ export class TabManager {
   async activate(id: string): Promise<boolean> {
     if (id === this.activeId) return true;
     this.transitionTarget = id;
+    const proceeded = await this.doc.confirmDiscard(() => this.switchTo(id));
+    if (!proceeded) {
+      this.transitionTarget = null;
+      this.render();
+      this.persist();
+    }
+    return this.activeId === id;
+  }
+
+  private async switchTo(id: string) {
     try {
-      if (!(await this.canLeaveActive())) return false;
       this.syncActive(this.doc.current);
       this.activeId = id;
       await this.loadActive();
-      return true;
     } finally {
-      this.transitionTarget = null;
+      if (this.transitionTarget === id) this.transitionTarget = null;
       this.render();
       this.persist();
     }
@@ -139,13 +147,13 @@ export class TabManager {
 
   private async addAndActivate(tab: StoredTab) {
     this.transitionTarget = tab.id;
-    try {
-      if (!(await this.canLeaveActive())) return;
+    const proceeded = await this.doc.confirmDiscard(async () => {
       this.syncActive(this.doc.current);
       this.tabs.push(tab);
       this.activeId = tab.id;
       await this.loadActive();
-    } finally {
+    });
+    if (!proceeded) {
       this.transitionTarget = null;
       this.render();
       this.persist();
@@ -170,13 +178,6 @@ export class TabManager {
     }
   }
 
-  private async canLeaveActive(): Promise<boolean> {
-    const confirmed = await this.doc.confirmDiscard();
-    // 保存処理側の後処理で false が返っても、dirty が落ちていれば書込みは完了している。
-    // キャンセルと保存失敗は dirty のままなので、ここで安全に区別できる。
-    return confirmed || !this.doc.current.dirty || this.doc.current.readOnly;
-  }
-
   private active() {
     return this.tabs.find((tab) => tab.id === this.activeId);
   }
@@ -192,7 +193,7 @@ export class TabManager {
   }
 
   private render() {
-    this.host.replaceChildren(...this.tabs.map((tab) => {
+    const buttons = this.tabs.map((tab) => {
       const button = document.createElement("button");
       button.className = "doc-tab";
       button.classList.toggle("active", tab.id === this.activeId);
@@ -212,7 +213,14 @@ export class TabManager {
         showMenu(event.clientX, event.clientY, this.contextItems(tab));
       });
       return button;
-    }));
+    });
+    const add = document.createElement("button");
+    add.className = "doc-tab-add";
+    add.title = "新規タブ";
+    add.setAttribute("aria-label", "新規タブ");
+    add.textContent = "+";
+    add.addEventListener("click", () => { void this.newBlank(); });
+    this.host.replaceChildren(...buttons, add);
   }
 
   private contextItems(tab: StoredTab): MenuItem[] {

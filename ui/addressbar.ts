@@ -6,7 +6,6 @@ export interface AddressBarPorts {
   onSave: () => void;
   onSaveAs: () => void;
   onNew: () => void;
-  onNewWindow: () => void;
   onFind: () => void;
   onPick: () => void;
   onFavorite: () => void;
@@ -49,7 +48,6 @@ export class AddressBar {
     this.pick("addressbar-save").addEventListener("click", ports.onSave);
     this.pick("addressbar-save-as").addEventListener("click", ports.onSaveAs);
     this.pick("addressbar-new").addEventListener("click", ports.onNew);
-    this.pick("addressbar-new-window").addEventListener("click", ports.onNewWindow);
     this.pick("addressbar-find").addEventListener("click", ports.onFind);
     this.pick("addressbar-open").addEventListener("click", ports.onPick);
   }
