@@ -37,11 +37,14 @@ jobs:
         shell: pwsh
         run: node scripts/check-release-version.mjs $env:GITHUB_REF_NAME
 
-      - name: Verify source
-        run: |
-          npm run build
-          cargo test --workspace --locked
-          cargo check --workspace --locked
+      - name: Verify UI
+        run: npm run build
+
+      - name: Test Rust
+        run: cargo test --workspace --locked
+
+      - name: Check Rust
+        run: cargo check --workspace --locked
 
       - name: Build
         run: npm run tauri build

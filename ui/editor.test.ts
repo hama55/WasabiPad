@@ -278,9 +278,6 @@ describe("VirtualEditor", () => {
 
   it("1論理行が多数行へ折り返されてもホイールで行内を移動する", async () => {
     const { editor, host } = mount("x".repeat(1000));
-    editor.open(1, false);
-    editor.setWrap(true);
-    await settle();
     const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
     Object.defineProperty(scroll, "clientHeight", { configurable: true, value: 100 });
     const lineRect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
@@ -290,12 +287,15 @@ describe("VirtualEditor", () => {
         width: 100, height, toJSON: () => ({}),
       } as DOMRect;
     });
-
-    scroll.dispatchEvent(new WheelEvent("wheel", { deltaY: 80 }));
+    editor.open(1, false);
+    editor.setWrap(true);
     await settle();
 
-    const line = host.querySelector<HTMLElement>(".ve-line")!;
-    expect(Number.parseFloat(line.style.top) - scroll.scrollTop).toBe(-80);
+    scroll.dispatchEvent(new WheelEvent("wheel", { deltaY: 80 }));
+    await vi.waitFor(() => {
+      const line = host.querySelector<HTMLElement>(".ve-line")!;
+      expect(Number.parseFloat(line.style.top) - scroll.scrollTop).toBe(-80);
+    });
     lineRect.mockRestore();
   });
 
