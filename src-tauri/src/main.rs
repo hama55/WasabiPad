@@ -20,7 +20,8 @@ use std::sync::{
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 // 受理する形式はこの enum が単一の定義。表示名はフロント (ui/format.ts) だけが持つ。
-#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export)]
 enum ViewerFormat {
     #[serde(rename = "csv")]
     Csv,
@@ -28,7 +29,8 @@ enum ViewerFormat {
     Markdown,
 }
 
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
 struct ViewerPayload {
     format: ViewerFormat,
     text: String,
@@ -37,7 +39,8 @@ struct ViewerPayload {
     source_path: Option<String>,
 }
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export)]
 struct ViewerSelection {
     start: PosC,
     end: PosC,
@@ -51,7 +54,8 @@ struct SearchCancel(Mutex<Arc<AtomicBool>>);
 
 static VIEWER_ID: AtomicU64 = AtomicU64::new(1);
 
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
 struct OpenRequest {
     path: String,
     goto: Option<PosC>,
@@ -122,7 +126,8 @@ fn take_over_search(cancel: &tauri::State<'_, SearchCancel>) -> Result<Arc<Atomi
 
 // 検索中の途中経過。search_id はフロントが発行した世代番号で、
 // 打ち切った検索の取りこぼしが次の検索へ混ざらないようにするためだけに載せる。
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
 struct WorkspaceSearchBatch {
     search_id: u32,
     results: Vec<wasabipad_core::WorkspaceSearchResult>,

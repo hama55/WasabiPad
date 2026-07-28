@@ -19,7 +19,8 @@ use std::sync::Mutex;
 // 検索の打ち切り条件はすべて利用者が決める。ここに既定値は持たない
 // (既定値は UI 側の設定ダイアログが単一の定義を持つ)。
 // 各上限の 0 は「無制限」。利用者が明示的に上限を入れない限り勝手に省略しない。
-#[derive(Clone, serde::Deserialize)]
+#[derive(Clone, serde::Deserialize, ts_rs::TS)]
+#[ts(export, rename = "WorkspaceSearchOptions")]
 pub struct SearchOptions {
     pub match_case: bool,
     pub use_regex: bool,
@@ -39,7 +40,8 @@ pub struct SearchOptions {
 
 // 打ち切りや条件エラーを結果と一緒に返す。件数だけ見せて理由を隠すと
 // 「あるはずのものが出ない」検索になり、利用者が原因を追えなくなる。
-#[derive(Default, serde::Serialize)]
+#[derive(Default, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct WorkspaceSearchOutcome {
     // 並びは走査順 (同じファイルの一致は連続する)。見せる順を決めるのは
     // ui/search-results.ts の sortResults 一箇所。途中経過は走査順で届く以上
@@ -49,6 +51,19 @@ pub struct WorkspaceSearchOutcome {
     pub hit_file_limit: bool,
     pub hit_result_limit: bool,
     pub pattern_error: Option<String>,
+    // ファイル名の当て方は検索エンジンだけが決める。UI は説明にこの値を使い、
+    // 同じ条件式を再実装しない。
+    pub file_name_match_mode: FileNameMatchMode,
+}
+
+#[derive(Clone, Copy, Default, serde::Serialize, ts_rs::TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(export)]
+pub enum FileNameMatchMode {
+    #[default]
+    Disabled,
+    Fuzzy,
+    Strict,
 }
 
 // 一致が行頭から遠いと preview から外れてしまうため、手前に残す文字数
@@ -91,20 +106,32 @@ pub fn search_workspace(
     cancel: &AtomicBool,
     on_batch: &(dyn Fn(Vec<WorkspaceSearchResult>) + Sync),
 ) -> WorkspaceSearchOutcome {
+    let file_name_match_mode = file_name_match_mode(options);
     if pattern.is_empty() || (!options.search_file_names && !options.search_contents) {
-        return WorkspaceSearchOutcome::default();
+        return WorkspaceSearchOutcome {
+            file_name_match_mode,
+            ..Default::default()
+        };
     }
-    let strict_names = strict_name_match(options);
+    let strict_names = matches!(file_name_match_mode, FileNameMatchMode::Strict);
     let matcher = match build_matcher(pattern, options, strict_names) {
         Ok(matcher) => matcher,
         Err(message) => {
-            return WorkspaceSearchOutcome { pattern_error: Some(message), ..Default::default() }
+            return WorkspaceSearchOutcome {
+                pattern_error: Some(message),
+                file_name_match_mode,
+                ..Default::default()
+            }
         }
     };
     let walk = match build_walk(root, options) {
         Ok(walk) => walk,
         Err(message) => {
-            return WorkspaceSearchOutcome { pattern_error: Some(message), ..Default::default() }
+            return WorkspaceSearchOutcome {
+                pattern_error: Some(message),
+                file_name_match_mode,
+                ..Default::default()
+            }
         }
     };
 
@@ -164,6 +191,7 @@ pub fn search_workspace(
         hit_file_limit: shared_file_limit.load(Ordering::Relaxed),
         hit_result_limit: truncated,
         pattern_error: None,
+        file_name_match_mode,
     }
 }
 
@@ -205,8 +233,14 @@ fn relative_path(root: &Path, path: &Path) -> String {
 // 正規表現や単語単位を指定したなら、それは「厳密に当てたい」という意思表示。
 // ファイル名もファジーをやめ、本文と同じ当て方に揃える。
 // (ファジーは「順序さえ合えば当たる」ので、厳密指定とは両立しない)
-fn strict_name_match(options: &SearchOptions) -> bool {
-    options.search_file_names && (options.use_regex || options.whole_word)
+fn file_name_match_mode(options: &SearchOptions) -> FileNameMatchMode {
+    if !options.search_file_names {
+        FileNameMatchMode::Disabled
+    } else if options.use_regex || options.whole_word {
+        FileNameMatchMode::Strict
+    } else {
+        FileNameMatchMode::Fuzzy
+    }
 }
 
 // 本文にもファイル名にも matcher を使わないなら要らない (正規表現の誤りも問わない)。
@@ -622,10 +656,20 @@ mod tests {
             found.results.iter().map(|r| r.rel_path.clone()).collect()
         };
 
-        assert_eq!(names(&run(&root, "ndl", &opts)), vec!["needle.txt"], "既定はファジー");
+        let found = run(&root, "ndl", &opts);
+        assert_eq!(names(&found), vec!["needle.txt"], "既定はファジー");
+        assert!(matches!(
+            found.file_name_match_mode,
+            super::FileNameMatchMode::Fuzzy
+        ));
 
         opts.whole_word = true;
-        assert!(run(&root, "ndl", &opts).results.is_empty(), "単語単位なら飛び飛びは当たらない");
+        let found = run(&root, "ndl", &opts);
+        assert!(found.results.is_empty(), "単語単位なら飛び飛びは当たらない");
+        assert!(matches!(
+            found.file_name_match_mode,
+            super::FileNameMatchMode::Strict
+        ));
         assert!(run(&root, "eedle", &opts).results.is_empty(), "単語の一部にも当たらない");
         assert_eq!(names(&run(&root, "needle", &opts)), vec!["needle.txt"]);
 

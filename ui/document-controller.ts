@@ -10,7 +10,6 @@ import { confirmSaveDiscard, promptFields } from "./prompt";
 import { showError } from "./dialogs";
 import { formatWindowTitle } from "./format";
 import { basename, relativePathWithinRoot } from "./path";
-import { windowsFileNameError } from "./filename";
 
 // 保存ダイアログのフィルタと新規メモの拡張子候補で共有する
 export const SAVE_EXTENSIONS = [
@@ -72,7 +71,7 @@ export class DocumentController {
     this.view.hideExternalBanner();
     this.session = sessionFromDocInfo(this.session, info);
     this.view.statusbar.setFormat(this.session);
-    this.view.statusbar.setByteSize(info.byte_len);
+    this.view.statusbar.setByteSize(info.byte_len, info.is_huge);
     this.view.statusbar.setLineCount(info.line_count);
     this.view.addressbar.render(info.path);
     this.view.editor.open(info.line_count, this.session.readOnly, keepViewers);
@@ -273,9 +272,9 @@ export class DocumentController {
       {
         label: "ファイル名",
         value: "memo",
-        validate: (value, values) => {
+        validate: (value) => {
           if (!value.trim()) return "名前を入力してください";
-          return windowsFileNameError(fileNameOf({ stem: value.trim(), extension: values[1] }));
+          return null;
         },
       },
       { label: "拡張子", value: SAVE_EXTENSIONS[0].extension, options: [

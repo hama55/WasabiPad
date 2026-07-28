@@ -6,10 +6,19 @@ use std::path::{Path, PathBuf};
 // ツリー1回の展開で返す上限。巨大ディレクトリでも列挙時間を一定に抑える。
 const MAX_ENTRIES: usize = 2000;
 
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct FolderEntry {
     pub name: String,
     pub is_dir: bool,
+    pub is_archive: bool,
+}
+
+pub fn is_lazy_archive_path(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|extension| extension.to_str()).map(str::to_ascii_lowercase).as_deref(),
+        Some("zip") | Some("xlsx") | Some("xls")
+    )
 }
 
 pub fn join_relative(root: &Path, relative: &str) -> PathBuf {
@@ -25,7 +34,11 @@ pub fn list_children(root: &Path, rel_dir: &str) -> Option<Vec<FolderEntry>> {
         .flatten()
         .filter_map(|e| {
             let is_dir = e.file_type().ok()?.is_dir();
-            Some(FolderEntry { name: e.file_name().to_string_lossy().into_owned(), is_dir })
+            Some(FolderEntry {
+                name: e.file_name().to_string_lossy().into_owned(),
+                is_archive: !is_dir && is_lazy_archive_path(&e.path()),
+                is_dir,
+            })
         })
         .collect();
     items.sort_by(|a, b| {

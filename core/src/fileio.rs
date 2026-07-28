@@ -32,7 +32,8 @@ impl Encoding {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export, rename = "Encoding")]
 pub enum EncodingId {
     #[serde(rename = "utf8")]
     Utf8,
@@ -66,8 +67,9 @@ impl From<EncodingId> for Encoding {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "lowercase")]
+#[ts(export)]
 pub enum Eol {
     Crlf,
     Lf,

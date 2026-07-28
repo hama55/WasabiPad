@@ -1,4 +1,4 @@
-import type { WorkspaceSearchOptions } from "./api";
+import type { FileNameMatchMode, WorkspaceSearchOptions } from "./api";
 
 // フォルダ検索の設定はここが単一の定義。backend は既定値を持たず、常にこの値を受け取る。
 // 保存と読み出しは持たない (どこに置くかを知るのは ui/settings.ts)。
@@ -115,27 +115,21 @@ export function optionTitle(key: BoolOptionKey): string {
   return hint ? `${label} — ${hint}` : label;
 }
 
-// ファイル名をファジーで当てるかどうか。正規表現/単語単位は「厳密に当てたい」という
-// 指定なので、ファイル名も本文と同じ当て方に揃う。
-// 判定そのものは core/src/workspace_search.rs の strict_name_match が持ち、ここは
-// 画面の説明用の写し (check:ipc が両者の見る項目の一致を検証する)。
-export function fuzzyFileNames(options: WorkspaceSearchOptions): boolean {
-  return options.search_file_names && !options.use_regex && !options.whole_word;
-}
-
 // 「見つかりません」の説明。現在の設定をそのまま読み上げ、除外理由を推測させない。
 // 無制限の項目は挙げない (対象外でないものを対象外として読ませないため)。
-export function searchScopeSummary(options: WorkspaceSearchOptions): string {
+export function searchScopeSummary(
+  options: WorkspaceSearchOptions,
+  fileNameMatchMode: FileNameMatchMode
+): string {
   const target = options.search_contents
     ? options.search_file_names ? "ファイル名と本文" : "本文のみ"
     : "ファイル名のみ";
   // ファイル名の当て方は本文と同じとは限らない。当て方が違う条件のときだけ断る
-  const fuzzyNames = fuzzyFileNames(options);
   const how = [
     options.match_case ? "大文字小文字を区別" : null,
     options.use_regex ? "正規表現" : null,
     options.whole_word ? "単語単位" : null,
-    fuzzyNames ? "ファイル名はファジー一致" : null,
+    fileNameMatchMode === "fuzzy" ? "ファイル名はファジー一致" : null,
   ].filter(Boolean);
   const skipped = ["読み取れないファイル"];
   if (options.exclude_binary) skipped.push("バイナリファイル");

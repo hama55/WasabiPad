@@ -313,7 +313,7 @@ export class WorkspaceSearchPanel {
       return frag;
     }
     if (!groups.length) {
-      frag.appendChild(emptyNotice(searchScopeSummary(this.options)));
+      frag.appendChild(emptyNotice(searchScopeSummary(this.options, outcome.file_name_match_mode)));
       return frag;
     }
     this.appendGroups(frag, groups);

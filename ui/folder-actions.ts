@@ -6,7 +6,6 @@ import { showMenu, MenuItem } from "./menu";
 import { promptFields } from "./prompt";
 import { showError } from "./dialogs";
 import { basename, joinWindowsRoot, rebaseWindowsPath, relativePathFromRoot } from "./path";
-import { windowsFileNameError } from "./filename";
 import { getSetting } from "./settings";
 
 export interface FolderActionsPorts {
@@ -75,7 +74,7 @@ export class FolderActions {
     const result = await promptFields("名前を変更", [{
       label: "新しい名前",
       value: current,
-      validate: (value) => windowsFileNameError(value.trim()),
+      validate: (value) => value.trim() ? null : "名前を入力してください",
     }]);
     const newName = result?.[0].trim();
     if (!newName || newName === current) return;

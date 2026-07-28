@@ -34,8 +34,9 @@ impl Drop for RecoveryTemp {
     }
 }
 
-#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug, ts_rs::TS)]
 #[serde(rename_all = "lowercase")]
+#[ts(export)]
 pub enum DocKind {
     Text,
     Archive,
@@ -157,7 +158,8 @@ impl DocumentSource {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct DocInfo {
     pub kind: DocKind,
     pub line_count: usize,
@@ -169,42 +171,49 @@ pub struct DocInfo {
     pub folder_root: Option<String>, // フォルダ閲覧中のルート絶対パス
     pub view_only: bool,
     pub byte_len: u64,
+    pub is_huge: bool,
 }
 
 // char 単位の位置 (フロントと共有)
-#[derive(Serialize, serde::Deserialize, Clone, Copy)]
+#[derive(Serialize, serde::Deserialize, Clone, Copy, ts_rs::TS)]
+#[ts(export, rename = "Pos")]
 pub struct PosC {
     pub line: usize,
     pub col: usize,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct EditResult {
     pub caret: PosC,
     pub line_count: usize,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct EditManyItem {
     pub start: PosC,
     pub end: PosC,
     pub text: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct EditManyResult {
     pub carets: Vec<PosC>,
     pub line_count: usize,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct FindResult {
     pub start: PosC,
     pub end: PosC,
 }
 
 // Clone は途中経過の送出用 (確定した結果を残したまま、送る分だけ複製する)
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, ts_rs::TS)]
+#[ts(export)]
 pub struct WorkspaceSearchResult {
     pub rel_path: String,
     pub line: usize,
@@ -222,14 +231,16 @@ pub struct WorkspaceSearchResult {
 // チャンク分割検索の再開カーソル。1回の呼び出しで budget 行だけ走査し、
 // 続きがあればこれを次回呼び出しにそのまま渡す (巨大ファイルで全件不一致になっても
 // Mutex を長時間握り続けないようにするため)。
-#[derive(Serialize, serde::Deserialize, Clone, Copy)]
+#[derive(Serialize, serde::Deserialize, Clone, Copy, ts_rs::TS)]
+#[ts(export)]
 pub struct FindCursor {
     pub wrapped: bool,
     pub line: usize,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
 #[serde(tag = "kind")]
+#[ts(export)]
 pub enum FindOutcome {
     Found { start: PosC, end: PosC },
     More { cursor: FindCursor },
@@ -237,8 +248,9 @@ pub enum FindOutcome {
 }
 
 // 外部変更ポーリングの結果。Reloaded は未編集文書を自動で読み直した場合。
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
 #[serde(tag = "kind", rename_all = "lowercase")]
+#[ts(export)]
 pub enum ExternalCheck {
     Unchanged,
     Reloaded { info: DocInfo },
@@ -247,14 +259,16 @@ pub enum ExternalCheck {
 
 // 保存の結果。Conflict は保存先が外部で変更されていたため本体を上書きせず、
 // 編集内容を退避ファイルへ保存した場合。
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, ts_rs::TS)]
 #[serde(tag = "kind", rename_all = "lowercase")]
+#[ts(export)]
 pub enum SaveOutcome {
     Saved,
     Conflict { saved_to: String },
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct ReplaceChunkResult {
     pub done: bool,
     pub count: usize, // この置換セッションでの累計置換数
@@ -315,15 +329,8 @@ impl Doc {
     // zip/xlsx/xls は拡張子で判定し、中身は読まないまま「未展開」状態で開く。
     // ツリーの展開ボタン (list_archive_entries) が押されて初めてエントリ名を、
     // エントリ選択 (select_entry) で初めてその1エントリの本文を読む。
-    fn is_lazy_archive_ext(path: &Path) -> bool {
-        matches!(
-            path.extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()).as_deref(),
-            Some("zip") | Some("xlsx") | Some("xls")
-        )
-    }
-
     fn open_file(path: &Path) -> io::Result<Doc> {
-        if Self::is_lazy_archive_ext(path) {
+        if crate::folder::is_lazy_archive_path(path) {
             let source_file = fileio::open_exclusive(path)?;
             if fileio::is_archive_handle(&source_file) {
                 let byte_len = source_file.metadata()?.len();
@@ -454,6 +461,7 @@ impl Doc {
             folder_root: self.source.folder_root().map(|p| p.to_string_lossy().into_owned()),
             view_only: self.source.is_view_only(),
             byte_len: self.byte_len,
+            is_huge: self.buf.is_huge(),
         }
     }
 

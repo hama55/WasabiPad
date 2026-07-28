@@ -43,12 +43,6 @@ export interface SidebarPorts extends Omit<WorkspaceSearchPorts, "onViewChange" 
   onExpandFolder: (relDir: string) => Promise<FolderEntry[]>;
 }
 
-// core の Doc::is_lazy_archive_ext と一致させる (check:ipc が両者の一致を検証する)
-const ARCHIVE_EXT = /\.(zip|xlsx|xls)$/i;
-function isArchiveName(name: string): boolean {
-  return ARCHIVE_EXT.test(name);
-}
-
 export class Sidebar {
   private host: HTMLElement;
   private tree: HTMLElement;
@@ -177,7 +171,7 @@ export class Sidebar {
       label: entry.name,
       relPath: parent ? `${parent}/${entry.name}` : entry.name,
       depth,
-      kind: entry.is_dir ? "dir" : isArchiveName(entry.name) ? "archive" : "file",
+      kind: entry.is_dir ? "dir" : entry.is_archive ? "archive" : "file",
       expanded: false,
       childrenLoaded: false,
     }));

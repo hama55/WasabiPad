@@ -31,6 +31,7 @@ const outcome = (
   hit_file_limit: false,
   hit_result_limit: false,
   pattern_error: null,
+  file_name_match_mode: "fuzzy",
   ...extra,
 });
 

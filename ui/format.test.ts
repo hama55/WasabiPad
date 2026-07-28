@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatByteSize, formatWindowTitle } from "./format";
+import { APP_NAME, formatByteSize, formatWindowTitle } from "./format";
 import { initialSession } from "./session";
 
 describe("display formatting", () => {
@@ -11,10 +11,10 @@ describe("display formatting", () => {
 
   it("derives the window title from session state", () => {
     const session = initialSession();
-    expect(formatWindowTitle(session)).toBe("無題 — WasabiPad");
+    expect(formatWindowTitle(session)).toBe(`無題 — ${APP_NAME}`);
     session.displayPath = "C:\\work\\memo.txt";
     session.savePath = session.displayPath;
     session.dirty = true;
-    expect(formatWindowTitle(session)).toBe("● memo.txt — WasabiPad");
+    expect(formatWindowTitle(session)).toBe(`● memo.txt — ${APP_NAME}`);
   });
 });

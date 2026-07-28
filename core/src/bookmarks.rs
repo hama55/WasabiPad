@@ -4,8 +4,9 @@ use serde::{Deserialize, Serialize};
 use std::io;
 use std::path::PathBuf;
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, ts_rs::TS)]
 #[serde(tag = "kind", rename_all = "lowercase")]
+#[ts(export, rename = "BmNode")]
 pub enum Node {
     File { name: String, path: String },
     Directory { name: String, path: String },

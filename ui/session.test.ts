@@ -13,6 +13,7 @@ const info = (overrides: Partial<DocInfo> = {}): DocInfo => ({
   folder_root: "C:\\work",
   view_only: false,
   byte_len: 10,
+  is_huge: false,
   ...overrides,
 });
 
