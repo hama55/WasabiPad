@@ -12,7 +12,7 @@ const tag = `v${version}`;
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 
 function run(command, args) {
-  execFileSync(command, args, { cwd: root, stdio: "inherit" });
+  execFileSync(command, args, { cwd: root, stdio: "inherit", shell: process.platform === "win32" });
 }
 
 function output(command, args) {
