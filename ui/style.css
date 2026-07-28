@@ -333,6 +333,7 @@ body {
 .ve.hscroll-hidden .ve-gutter,
 .ve.hscroll-hidden .ve-scroll { bottom: 0; }
 .ve-hscroll[hidden] { display: none; }
+/* 折返し行の実高をnative scrollHeightへ混ぜると、thumb dragと再描画がfeedbackする。 */
 .ve-inner { position: relative; min-height: 100%; overflow: clip; }
 .ve-line {
   position: absolute; left: 0; height: var(--line-h);

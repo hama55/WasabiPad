@@ -234,6 +234,81 @@ describe("VirtualEditor", () => {
     expect(Number.parseFloat(input.style.width)).toBeLessThanOrEqual(88);
   });
 
+  it("折り返し中のIME背景は変換中文字列の範囲だけを覆う", async () => {
+    const { editor, host, input } = mount("0123456789");
+    editor.open(1, false);
+    editor.setWrap(true);
+    await editor.selectRange(0, 3, 3);
+    const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
+    Object.defineProperty(scroll, "clientWidth", { configurable: true, value: 300 });
+
+    input.dispatchEvent(new CompositionEvent("compositionstart"));
+    input.value = "AB";
+    input.dispatchEvent(new InputEvent("input", { isComposing: true }));
+
+    expect(Number.parseFloat(input.style.width)).toBeLessThan(100);
+    expect(input.classList.contains("ime")).toBe(true);
+    expect(host.querySelector(".ve-line")?.textContent).toBe("0123456789");
+  });
+
+  it("1論理行が多数行へ折り返されてもホイールで行内を移動する", async () => {
+    const { editor, host } = mount("x".repeat(1000));
+    editor.open(1, false);
+    editor.setWrap(true);
+    await settle();
+    const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
+    const line = host.querySelector<HTMLElement>(".ve-line")!;
+    Object.defineProperty(scroll, "clientHeight", { configurable: true, value: 100 });
+    line.getBoundingClientRect = () => ({
+      x: 0, y: 0, left: 0, top: 0, right: 100, bottom: 2000,
+      width: 100, height: 2000, toJSON: () => ({}),
+    } as DOMRect);
+
+    scroll.dispatchEvent(new WheelEvent("wheel", { deltaY: 80 }));
+    await settle();
+
+    expect(Number.parseFloat(line.style.top) - scroll.scrollTop).toBe(-80);
+  });
+
+  it("長い折り返し1行でも縦スクロールバーを表示し、つまみ位置へ移動する", async () => {
+    const { editor, host } = mount("x".repeat(1000));
+    editor.open(1, false);
+    editor.setWrap(true);
+    await settle();
+    const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
+    const inner = host.querySelector<HTMLElement>(".ve-inner")!;
+    const line = host.querySelector<HTMLElement>(".ve-line")!;
+    Object.defineProperties(scroll, {
+      clientHeight: { configurable: true, value: 100 },
+      clientWidth: { configurable: true, value: 100 },
+      scrollHeight: {
+        configurable: true,
+        get: () => Number.parseFloat(inner.style.height) || 0,
+      },
+    });
+    scroll.getBoundingClientRect = () => ({
+      x: 0, y: 0, left: 0, top: 0, right: 112, bottom: 100,
+      width: 112, height: 100, toJSON: () => ({}),
+    } as DOMRect);
+    line.getBoundingClientRect = () => ({
+      x: 0, y: 0, left: 0, top: 0, right: 100, bottom: 2000,
+      width: 100, height: 2000, toJSON: () => ({}),
+    } as DOMRect);
+
+    scroll.dispatchEvent(new Event("scroll"));
+    await settle();
+    expect(Number.parseFloat(inner.style.height)).toBe(2000);
+
+    scroll.dispatchEvent(new MouseEvent("mousedown", { clientX: 105, clientY: 20 }));
+    scroll.scrollTop = 950;
+    scroll.dispatchEvent(new Event("scroll"));
+    await settle();
+    window.dispatchEvent(new MouseEvent("mouseup"));
+
+    expect(Number.parseFloat(line.style.top) - scroll.scrollTop).toBe(-950);
+    expect(Number.parseFloat(inner.style.height)).toBe(2000);
+  });
+
   it("compositionendが来ないblurでもIME状態と入力を回収する", async () => {
     const { editor, doc, input } = mount("ab");
     editor.open(1, false);

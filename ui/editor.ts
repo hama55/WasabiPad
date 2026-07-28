@@ -8,7 +8,7 @@ import { LineCache } from "./line-cache";
 import { LiveViewers } from "./live-viewers";
 import { lineNumberGroups } from "./line-number";
 import { Selection } from "./selection";
-import { ViewportMetrics } from "./viewport-metrics";
+import { MAX_SAFE_HEIGHT, ViewportMetrics } from "./viewport-metrics";
 import {
   addRegisteredString,
   loadRegisteredStrings,
@@ -25,6 +25,7 @@ import {
   positionAfterDeletion,
   u16ToChar,
   unescapePattern,
+  WrapHeightMap,
   wordBounds,
 } from "./editor-math";
 
@@ -69,6 +70,8 @@ export class VirtualEditor {
   private readonly gutterWidth: number;
   private wrap = false;
   private wrapIntraLinePx = 0;
+  private wrapHeights = new WrapHeightMap(1, 1);
+  private wrapMeasureWidth = -1;
   private localRowTops = new Map<number, number>();
   private viewTop = 0; // 直近 render() 時点の scroll.scrollTop
   private viewTopLine = 0; // 直近 render() 時点で viewTop に対応する行番号
@@ -203,7 +206,13 @@ export class VirtualEditor {
     this.input.addEventListener("focus", () => this.render());
     window.addEventListener("mouseup", () => {
       if (!this.scrollbarDragging) return;
-      this.topLineF = this.pxToLine(this.scroll.scrollTop);
+      if (this.wrap) {
+        const anchor = this.wrapAnchorFromPx(this.scroll.scrollTop);
+        this.topLineF = anchor.line;
+        this.wrapIntraLinePx = anchor.intraLinePx;
+      } else {
+        this.topLineF = this.pxToLine(this.scroll.scrollTop);
+      }
       this.scrollbarDragging = false;
       this.schedule();
     });
@@ -219,6 +228,9 @@ export class VirtualEditor {
       const topLine = this.wrap || this.metrics.scaleMode ? this.topLineF : this.pxToLine(this.scroll.scrollTop);
       const intraLinePx = this.wrapIntraLinePx;
       const wasAtBottom = topLine >= this.maxTopLine();
+      if (this.wrap && this.wrapMeasureWidth !== this.scroll.getBoundingClientRect().width) {
+        this.resetWrapHeights();
+      }
       this.updateMetrics();
       const nextTopLine = wasAtBottom ? this.maxTopLine() : topLine;
       if (this.wrap) this.setWrapAnchor(nextTopLine, nextTopLine === topLine ? intraLinePx : 0);
@@ -235,6 +247,7 @@ export class VirtualEditor {
     else this.liveViewers.clear();
     this.lineCount = Math.max(1, lineCount);
     this.wrapIntraLinePx = 0;
+    this.resetWrapHeights();
     this.readOnly = readOnly;
     this.lineCache.clear();
     
@@ -302,6 +315,7 @@ export class VirtualEditor {
     const wasAtBottom = topLine >= this.maxTopLine();
     this.wrap = on;
     this.wrapIntraLinePx = 0;
+    this.resetWrapHeights();
     this.scroll.classList.toggle("wrap", on);
     this.scroll.parentElement!.classList.toggle("hscroll-hidden", on);
     this.host.classList.toggle("wrap", on);
@@ -324,6 +338,7 @@ export class VirtualEditor {
     this.scroll.parentElement!.style.setProperty("--ve-font", `${this.fontSize}px`);
     this.scroll.parentElement!.style.setProperty("--line-h", `${this.metrics.lineHeight}px`);
     if (this.wrap) this.wrapIntraLinePx = 0;
+    this.resetWrapHeights();
     this.maxWidth = 0;
     this.updateMetrics();
     this.setTopLine(wasAtBottom ? this.maxTopLine() : topLine);
@@ -334,16 +349,24 @@ export class VirtualEditor {
   setTabSize(size: number) {
     this.scroll.parentElement!.style.setProperty("--ve-tab-size", String(Math.max(1, Math.min(16, size))));
     this.maxWidth = 0;
+    this.resetWrapHeights();
+    this.updateMetrics();
     this.render();
   }
 
   // 行数/行高の変更を metrics へ反映し、スクロール範囲をDOMへ書き戻す。
-  // (スクロールバーは常に論理行数の近似を示す。折り返し高さは可視域だけで
-  //  測定し、文書先頭からの累積値にはしない)
   private updateMetrics() {
     this.metrics.lineCount = this.lineCount;
     this.metrics.wrap = this.wrap;
-    this.inner.style.height = `${Math.max(this.metrics.scrollHeight, 1)}px`;
+    const height = this.wrap
+      ? Math.min(this.wrapHeights.totalHeight(), MAX_SAFE_HEIGHT)
+      : this.metrics.scrollHeight;
+    this.inner.style.height = `${Math.max(height, 1)}px`;
+  }
+
+  private resetWrapHeights() {
+    this.wrapHeights.reset(this.lineCount, this.metrics.lineHeight);
+    this.wrapMeasureWidth = this.scroll?.getBoundingClientRect().width ?? -1;
   }
 
   private maxTopLine(): number {
@@ -366,13 +389,35 @@ export class VirtualEditor {
   private setTopLine(line: number) {
     this.topLineF = Math.max(0, Math.min(this.maxTopLine(), line));
     if (this.wrap) this.wrapIntraLinePx = 0;
-    this.scroll.scrollTop = this.lineToPx(this.topLineF);
+    this.scroll.scrollTop = this.wrap
+      ? this.wrapAnchorToPx(this.topLineF, 0)
+      : this.lineToPx(this.topLineF);
   }
 
   private setWrapAnchor(line: number, intraLinePx: number) {
     this.topLineF = Math.max(0, Math.min(this.maxTopLine(), Math.floor(line)));
-    this.wrapIntraLinePx = Math.max(0, intraLinePx);
-    this.scroll.scrollTop = this.lineToPx(this.topLineF);
+    this.wrapIntraLinePx = Math.max(
+      0,
+      Math.min(
+        intraLinePx,
+        Math.max(this.wrapHeights.heightAt(this.topLineF), this.wrappedLineHeight(this.topLineF)),
+      ),
+    );
+    this.scroll.scrollTop = this.wrapAnchorToPx(this.topLineF, this.wrapIntraLinePx);
+  }
+
+  private wrapAnchorToPx(line: number, intraLinePx: number): number {
+    const virtualMax = Math.max(0, this.wrapHeights.totalHeight() - this.scroll.clientHeight);
+    const nativeMax = Math.max(0, this.scroll.scrollHeight - this.scroll.clientHeight);
+    if (!virtualMax || !nativeMax) return 0;
+    return Math.min(1, this.wrapHeights.offsetOf(line, intraLinePx) / virtualMax) * nativeMax;
+  }
+
+  private wrapAnchorFromPx(px: number): { line: number; intraLinePx: number } {
+    const virtualMax = Math.max(0, this.wrapHeights.totalHeight() - this.scroll.clientHeight);
+    const nativeMax = Math.max(0, this.scroll.scrollHeight - this.scroll.clientHeight);
+    const offset = nativeMax ? Math.min(1, Math.max(0, px / nativeMax)) * virtualMax : 0;
+    return this.wrapHeights.anchorAt(offset);
   }
 
   private wrappedLineHeight(line: number): number {
@@ -417,8 +462,9 @@ export class VirtualEditor {
 
   private onScroll() {
     if (this.wrap && this.scrollbarDragging) {
-      this.topLineF = this.pxToLine(this.scroll.scrollTop);
-      this.wrapIntraLinePx = 0;
+      const anchor = this.wrapAnchorFromPx(this.scroll.scrollTop);
+      this.topLineF = anchor.line;
+      this.wrapIntraLinePx = anchor.intraLinePx;
     } else if (!this.wrap && (!this.metrics.scaleMode || this.scrollbarDragging)) {
       this.topLineF = this.pxToLine(this.scroll.scrollTop);
     }
@@ -546,21 +592,35 @@ export class VirtualEditor {
 
     // topLineだけをviewportへ固定し、前後は今回生成したDOMの実測高だけで並べる。
     // 可視外の折り返し数や文書先頭からの累積値は保持しない。
+    let heightsChanged = false;
     let y = viewTop - this.wrapIntraLinePx;
     for (let i = topLine; i < last; i++) {
       const line = this.lineElem(i);
       if (!line) continue;
       this.localRowTops.set(i, y);
       line.style.top = `${y}px`;
-      y += Math.max(this.metrics.lineHeight, line.getBoundingClientRect().height);
+      const height = Math.max(this.metrics.lineHeight, line.getBoundingClientRect().height);
+      if (!this.scrollbarDragging) {
+        heightsChanged = this.wrapHeights.set(i, height) || heightsChanged;
+      }
+      y += height;
     }
     y = viewTop - this.wrapIntraLinePx;
     for (let i = topLine - 1; i >= first; i--) {
       const line = this.lineElem(i);
       if (!line) continue;
-      y -= Math.max(this.metrics.lineHeight, line.getBoundingClientRect().height);
+      const height = Math.max(this.metrics.lineHeight, line.getBoundingClientRect().height);
+      if (!this.scrollbarDragging) {
+        heightsChanged = this.wrapHeights.set(i, height) || heightsChanged;
+      }
+      y -= height;
       this.localRowTops.set(i, y);
       line.style.top = `${y}px`;
+    }
+    if (heightsChanged) {
+      this.updateMetrics();
+      this.scroll.scrollTop = this.wrapAnchorToPx(this.topLineF, this.wrapIntraLinePx);
+      this.schedule();
     }
   }
 
@@ -1001,6 +1061,7 @@ export class VirtualEditor {
     const wasAtBottom = oldTopLine >= this.maxTopLine();
     const oldLineCount = this.lineCount;
     this.lineCount = Math.max(1, r.line_count);
+    this.resetWrapHeights();
     this.updateMetrics();
     // 行数変更前後の座標系を混在させない。末尾表示中は新しい末尾へ追従し、
     // それ以外は同じ先頭行を維持する。
@@ -1274,7 +1335,10 @@ export class VirtualEditor {
     const viewportRight = this.scroll.offsetLeft + this.scroll.clientWidth;
     const available = Math.max(4, viewportRight - left - 4);
     if (this.wrap) {
-      this.input.style.width = `${available}px`;
+      const indent = Number.parseFloat(this.input.style.textIndent) || 0;
+      // 入力欄の不透明背景は変換中文字列の範囲だけに置き、右側の既存文を隠さない。
+      const contentWidth = Math.max(4, this.measureInputText() + 2);
+      this.input.style.width = `${Math.min(available, indent + contentWidth)}px`;
       this.input.style.height = "1px";
       const height = Math.max(this.metrics.lineHeight, this.input.scrollHeight);
       this.input.style.height = `${Math.min(Math.max(this.metrics.lineHeight, this.scroll.clientHeight), height)}px`;
@@ -1282,6 +1346,13 @@ export class VirtualEditor {
     }
     this.input.style.width = "4px";
     this.input.style.width = `${Math.min(available, Math.max(4, this.input.scrollWidth + 2))}px`;
+  }
+
+  private measureInputText(): number {
+    const context = document.createElement("canvas").getContext("2d");
+    if (!context) return charLen(this.input.value) * this.fontSize;
+    context.font = `${this.fontSize}px ${this.fontFamily}`;
+    return Math.max(...this.input.value.split("\n").map((line) => context.measureText(line).width), 0);
   }
 
   // ---- ホイール ----
