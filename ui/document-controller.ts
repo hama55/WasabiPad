@@ -1,8 +1,4 @@
 import * as api from "./api";
-import type { AddressBar } from "./addressbar";
-import type { StatusBar } from "./statusbar";
-import type { Sidebar } from "./sidebar";
-import type { VirtualEditor } from "./editor";
 import type { DocumentSession } from "./session";
 import { initialSession, sessionFromDocInfo } from "./session";
 import { promptSaveFormat } from "./save-format";
@@ -10,7 +6,6 @@ import { confirmSaveDiscard, promptFields } from "./prompt";
 import { showError } from "./dialogs";
 import { formatWindowTitle } from "./format";
 import { basename, relativePathWithinRoot } from "./path";
-import { windowsFileNameError } from "./filename";
 
 // 保存ダイアログのフィルタと新規メモの拡張子候補で共有する
 export const SAVE_EXTENSIONS = [
@@ -24,13 +19,37 @@ export interface MemoSpec {
   extension: string;
 }
 
+export interface DocumentEditorPort {
+  open: (lineCount: number, readOnly: boolean, keepViewers?: boolean) => void;
+  focus: () => void;
+  goTo: (line: number, col: number) => void;
+}
+
+export interface DocumentStatusPort {
+  setFormat: (session: DocumentSession) => void;
+  setByteSize: (bytes: number | null, isHuge?: boolean) => void;
+  setLineCount: (count: number) => void;
+}
+
+export interface DocumentAddressPort {
+  render: (path: string) => void;
+}
+
+export interface DocumentSidebarPort {
+  setWorkspaceSearch: (folderRoot: string | null) => void;
+  setArchiveEntries: (entries: string[]) => void;
+  setArchiveRoot: (displayName: string) => void;
+  setEntries: (entries: api.FolderEntry[]) => void;
+  selectByRelPath: (relPath: string) => void;
+}
+
 // 文書の入れ替えに伴って更新される表示先。実装 (VirtualEditor など) のうち
 // ここで実際に使う操作だけを要求する。
 export interface DocumentView {
-  editor: Pick<VirtualEditor, "open" | "focus" | "goTo">;
-  statusbar: Pick<StatusBar, "setFormat" | "setByteSize" | "setLineCount">;
-  addressbar: Pick<AddressBar, "render">;
-  sidebar: Pick<Sidebar, "setWorkspaceSearch" | "setArchiveEntries" | "setArchiveRoot" | "setEntries" | "selectByRelPath">;
+  editor: DocumentEditorPort;
+  statusbar: DocumentStatusPort;
+  addressbar: DocumentAddressPort;
+  sidebar: DocumentSidebarPort;
   setSidebar: (on: boolean, label?: string) => void;
   setLoading: (active: boolean, message?: string) => void;
   setTitle: (title: string) => void;
@@ -72,7 +91,7 @@ export class DocumentController {
     this.view.hideExternalBanner();
     this.session = sessionFromDocInfo(this.session, info);
     this.view.statusbar.setFormat(this.session);
-    this.view.statusbar.setByteSize(info.byte_len);
+    this.view.statusbar.setByteSize(info.byte_len, info.is_huge);
     this.view.statusbar.setLineCount(info.line_count);
     this.view.addressbar.render(info.path);
     this.view.editor.open(info.line_count, this.session.readOnly, keepViewers);
@@ -101,7 +120,7 @@ export class DocumentController {
   private showTree(info: api.DocInfo) {
     if (info.kind === "archive") {
       this.view.setSidebar(true, "閲覧モード");
-      this.view.sidebar.setWorkspaceSearch(false);
+      this.view.sidebar.setWorkspaceSearch(null);
       if (info.entries) {
         this.view.sidebar.setArchiveEntries(info.entries);
       } else {
@@ -110,10 +129,10 @@ export class DocumentController {
       }
     } else if (info.folder_entries) {
       this.view.setSidebar(true, "");
-      this.view.sidebar.setWorkspaceSearch(true);
+      this.view.sidebar.setWorkspaceSearch(info.folder_root);
       this.view.sidebar.setEntries(info.folder_entries);
     } else {
-      this.view.sidebar.setWorkspaceSearch(false);
+      this.view.sidebar.setWorkspaceSearch(null);
       this.view.setSidebar(false);
     }
   }
@@ -132,7 +151,7 @@ export class DocumentController {
     this.view.statusbar.setLineCount(1);
     this.view.addressbar.render("");
     this.view.setSidebar(false);
-    this.view.sidebar.setWorkspaceSearch(false);
+    this.view.sidebar.setWorkspaceSearch(null);
     this.view.editor.open(1, false);
     this.view.editor.focus();
     this.updateTitle();
@@ -273,9 +292,9 @@ export class DocumentController {
       {
         label: "ファイル名",
         value: "memo",
-        validate: (value, values) => {
+        validate: (value) => {
           if (!value.trim()) return "名前を入力してください";
-          return windowsFileNameError(fileNameOf({ stem: value.trim(), extension: values[1] }));
+          return null;
         },
       },
       { label: "拡張子", value: SAVE_EXTENSIONS[0].extension, options: [

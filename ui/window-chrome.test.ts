@@ -43,6 +43,7 @@ describe("WindowChrome", () => {
     new WindowChrome(host, win, {
       onCloseRequest: async () => true,
       onGeometryChange,
+      onError: async () => {},
     });
 
     handlers.resized();

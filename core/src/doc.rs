@@ -34,8 +34,9 @@ impl Drop for RecoveryTemp {
     }
 }
 
-#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug, ts_rs::TS)]
 #[serde(rename_all = "lowercase")]
+#[ts(export)]
 pub enum DocKind {
     Text,
     Archive,
@@ -157,7 +158,8 @@ impl DocumentSource {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct DocInfo {
     pub kind: DocKind,
     pub line_count: usize,
@@ -169,42 +171,49 @@ pub struct DocInfo {
     pub folder_root: Option<String>, // フォルダ閲覧中のルート絶対パス
     pub view_only: bool,
     pub byte_len: u64,
+    pub is_huge: bool,
 }
 
 // char 単位の位置 (フロントと共有)
-#[derive(Serialize, serde::Deserialize, Clone, Copy)]
+#[derive(Serialize, serde::Deserialize, Clone, Copy, ts_rs::TS)]
+#[ts(export, rename = "Pos")]
 pub struct PosC {
     pub line: usize,
     pub col: usize,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct EditResult {
     pub caret: PosC,
     pub line_count: usize,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct EditManyItem {
     pub start: PosC,
     pub end: PosC,
     pub text: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct EditManyResult {
     pub carets: Vec<PosC>,
     pub line_count: usize,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct FindResult {
     pub start: PosC,
     pub end: PosC,
 }
 
 // Clone は途中経過の送出用 (確定した結果を残したまま、送る分だけ複製する)
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, ts_rs::TS)]
+#[ts(export)]
 pub struct WorkspaceSearchResult {
     pub rel_path: String,
     pub line: usize,
@@ -222,14 +231,16 @@ pub struct WorkspaceSearchResult {
 // チャンク分割検索の再開カーソル。1回の呼び出しで budget 行だけ走査し、
 // 続きがあればこれを次回呼び出しにそのまま渡す (巨大ファイルで全件不一致になっても
 // Mutex を長時間握り続けないようにするため)。
-#[derive(Serialize, serde::Deserialize, Clone, Copy)]
+#[derive(Serialize, serde::Deserialize, Clone, Copy, ts_rs::TS)]
+#[ts(export)]
 pub struct FindCursor {
     pub wrapped: bool,
     pub line: usize,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
 #[serde(tag = "kind")]
+#[ts(export)]
 pub enum FindOutcome {
     Found { start: PosC, end: PosC },
     More { cursor: FindCursor },
@@ -237,8 +248,9 @@ pub enum FindOutcome {
 }
 
 // 外部変更ポーリングの結果。Reloaded は未編集文書を自動で読み直した場合。
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
 #[serde(tag = "kind", rename_all = "lowercase")]
+#[ts(export)]
 pub enum ExternalCheck {
     Unchanged,
     Reloaded { info: DocInfo },
@@ -247,14 +259,16 @@ pub enum ExternalCheck {
 
 // 保存の結果。Conflict は保存先が外部で変更されていたため本体を上書きせず、
 // 編集内容を退避ファイルへ保存した場合。
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, ts_rs::TS)]
 #[serde(tag = "kind", rename_all = "lowercase")]
+#[ts(export)]
 pub enum SaveOutcome {
     Saved,
     Conflict { saved_to: String },
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct ReplaceChunkResult {
     pub done: bool,
     pub count: usize, // この置換セッションでの累計置換数
@@ -304,8 +318,8 @@ impl Doc {
     // 指定ディレクトリ (rel_dir が空文字ならルート) の直下だけを列挙する。
     // サブフォルダの中身は再帰しない (ツリーの展開ボタンで都度呼ばれる想定)。
     // ツリーの展開ボタン用の公開API。
-    pub fn list_folder_entries(&self, rel_dir: &str) -> Option<Vec<FolderEntry>> {
-        crate::folder::list_children(self.source.folder_root()?, rel_dir)
+    pub fn list_folder_entries(&self, rel_dir: &str) -> io::Result<Option<Vec<FolderEntry>>> {
+        self.source.folder_root().map(|root| crate::folder::list_children(root, rel_dir)).transpose()
     }
 
     pub fn workspace_root(&self) -> Option<PathBuf> {
@@ -315,15 +329,8 @@ impl Doc {
     // zip/xlsx/xls は拡張子で判定し、中身は読まないまま「未展開」状態で開く。
     // ツリーの展開ボタン (list_archive_entries) が押されて初めてエントリ名を、
     // エントリ選択 (select_entry) で初めてその1エントリの本文を読む。
-    fn is_lazy_archive_ext(path: &Path) -> bool {
-        matches!(
-            path.extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()).as_deref(),
-            Some("zip") | Some("xlsx") | Some("xls")
-        )
-    }
-
     fn open_file(path: &Path) -> io::Result<Doc> {
-        if Self::is_lazy_archive_ext(path) {
+        if crate::folder::is_lazy_archive_path(path) {
             let source_file = fileio::open_exclusive(path)?;
             if fileio::is_archive_handle(&source_file) {
                 let byte_len = source_file.metadata()?.len();
@@ -450,10 +457,11 @@ impl Doc {
             folder_entries: self
                 .source
                 .folder_root()
-                .and_then(|root| crate::folder::list_children(root, "")),
+                .and_then(|root| crate::folder::list_children(root, "").ok()),
             folder_root: self.source.folder_root().map(|p| p.to_string_lossy().into_owned()),
             view_only: self.source.is_view_only(),
             byte_len: self.byte_len,
+            is_huge: self.buf.is_huge(),
         }
     }
 
@@ -480,13 +488,14 @@ impl Doc {
     //   読んで該当エントリを展開する (フォルダ一覧はそのまま維持、閲覧専用)
     // - 直接開いた (フォルダ非経由) zip/xlsx/xls の1エントリ ("Sheet1"): エントリ名そのもの
     // - 従来の一括展開済みアーカイブ (上記以外の拡張子。docx 等): entries をエントリ名で検索
-    pub fn select_entry(&mut self, rel_path: &str) -> Option<DocInfo> {
+    pub fn select_entry(&mut self, rel_path: &str) -> io::Result<Option<DocInfo>> {
         if let Some(root) = self.source.folder_root().map(Path::to_path_buf) {
             if let Some((archive_rel, entry_name)) = rel_path.split_once("::") {
                 let archive_real = join_relative(&root, archive_rel);
-                let source_file = fileio::open_exclusive(&archive_real).ok()?;
-                let bytes = fileio::read_locked(&source_file).ok()?;
-                let text = crate::archive::decode_one(&bytes, entry_name)?;
+                let source_file = fileio::open_exclusive(&archive_real)?;
+                let bytes = fileio::read_locked(&source_file)?;
+                let text = crate::archive::decode_one(&bytes, entry_name)
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "アーカイブのエントリが見つかりません"))?;
                 self.byte_len = text.len() as u64;
                 self.buf = TextBuffer::from_text(&text);
                 self.undo.clear();
@@ -498,49 +507,55 @@ impl Doc {
                         entries: None,
                     },
                 };
-                return Some(self.info(archive_real.to_string_lossy().into_owned()));
+                return Ok(Some(self.info(archive_real.to_string_lossy().into_owned())));
             }
             let path = join_relative(&root, rel_path);
             if self.source.path() == Some(path.as_path()) {
-                return Some(self.info(path.to_string_lossy().into_owned()));
+                return Ok(Some(self.info(path.to_string_lossy().into_owned())));
             }
-            let mut d = Doc::open_file(&path).ok()?;
+            let mut d = Doc::open_file(&path)?;
             let path_str = path.to_string_lossy().into_owned();
             d.source.root = Some(root);
             let info = d.info(path_str);
             *self = d;
-            return Some(info);
+            return Ok(Some(info));
         }
         let (archive_path, text) = match &self.source.target {
             Target::Archive { path, source_file, entries } => {
                 let text = if let Some(entries) = entries {
-                    entries.iter().find(|entry| entry.name == rel_path)?.text.clone()
+                    match entries.iter().find(|entry| entry.name == rel_path) {
+                        Some(entry) => entry.text.clone(),
+                        None => return Ok(None),
+                    }
                 } else {
-                    let bytes = fileio::read_locked(source_file).ok()?;
-                    crate::archive::decode_one(&bytes, rel_path)?
+                    let bytes = fileio::read_locked(source_file)?;
+                    crate::archive::decode_one(&bytes, rel_path)
+                        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "アーカイブのエントリが見つかりません"))?
                 };
                 (path.to_string_lossy().into_owned(), text)
             }
-            _ => return None,
+            _ => return Ok(None),
         };
         self.byte_len = text.len() as u64;
         self.buf = TextBuffer::from_text(&text);
         self.undo.clear();
-        Some(self.info(archive_path))
+        Ok(Some(self.info(archive_path)))
     }
 
     // ツリーの展開ボタン用。zip/xlsx/xls の中身 (エントリ名一覧) だけを安価に取得する
     // (本文は展開しない)。rel_path が空文字なら「直接開いているアーカイブ自身」、
     // それ以外はフォルダ内の実ファイル (zip/xlsx/xls) の相対パス。
-    pub fn list_archive_entries(&self, rel_path: &str) -> Option<Vec<String>> {
+    pub fn list_archive_entries(&self, rel_path: &str) -> io::Result<Option<Vec<String>>> {
         let bytes = if rel_path.is_empty() {
-            let Target::Archive { source_file, .. } = &self.source.target else { return None };
-            fileio::read_locked(source_file).ok()?
+            let Target::Archive { source_file, .. } = &self.source.target else { return Ok(None) };
+            fileio::read_locked(source_file)?
         } else {
-            let path = join_relative(self.source.folder_root()?, rel_path);
-            std::fs::read(path).ok()?
+            let Some(root) = self.source.folder_root() else { return Ok(None) };
+            std::fs::read(join_relative(root, rel_path))?
         };
         crate::archive::list(&bytes)
+            .map(Some)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "アーカイブを読み取れません"))
     }
 
     // フォルダ内に空の新規ファイルを作り、その場で開く (サイドバーの「新規メモ作成」)。
@@ -1234,7 +1249,7 @@ mod tests {
         assert!(!d.source.is_view_only(), "何も選択されていない間は下書きを編集できる");
         assert_eq!(d.lines(0, 1), vec![""], "フォルダを開いた直後は何も表示しない");
 
-        let root_children = d.list_folder_entries("").unwrap();
+        let root_children = d.list_folder_entries("").unwrap().unwrap();
         let names: Vec<&str> = root_children.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(
             names,
@@ -1243,7 +1258,7 @@ mod tests {
         assert!(root_children[0].is_dir);
 
         // ファイルを選択すると編集可能な実ファイルとして開く
-        let info = d.select_entry("a.txt").unwrap();
+        let info = d.select_entry("a.txt").unwrap().unwrap();
         assert!(std::fs::OpenOptions::new().write(true).open(root.join("a.txt")).is_ok(), "小ファイルは選択中も他アプリから書き込める");
         assert!(!info.view_only, "フォルダの子ファイルは編集可能なはず");
         assert_eq!(d.lines(0, 1), vec!["hello"]);
@@ -1255,7 +1270,7 @@ mod tests {
         assert_eq!(d.lines(0, 1), vec!["hello!"]);
 
         // 別エントリへ切り替えると実ファイルとして開き直る
-        let info2 = d.select_entry("b.txt").unwrap();
+        let info2 = d.select_entry("b.txt").unwrap().unwrap();
         assert!(File::open(root.join("a.txt")).is_ok(), "選択解除したファイルも読み取れる");
         assert!(std::fs::OpenOptions::new().write(true).open(root.join("b.txt")).is_ok(), "新しく選択した小ファイルも書き込み可能なまま");
         assert_eq!(info2.kind, DocKind::Text);
@@ -1281,16 +1296,16 @@ mod tests {
         std::fs::write(deep.join("deep.txt"), "deep").unwrap();
 
         let d = Doc::open(&root).unwrap();
-        let root_children = d.list_folder_entries("").unwrap();
+        let root_children = d.list_folder_entries("").unwrap().unwrap();
         let names: Vec<&str> = root_children.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["sub1", "top.txt"], "ルート直下だけを見る (奥の deep.txt などは含まれない)");
         assert!(root_children.iter().find(|e| e.name == "sub1").unwrap().is_dir);
 
-        let sub1_children = d.list_folder_entries("sub1").unwrap();
+        let sub1_children = d.list_folder_entries("sub1").unwrap().unwrap();
         let sub1_names: Vec<&str> = sub1_children.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(sub1_names, vec!["sub1a", "inner.txt"]);
 
-        let deep_children = d.list_folder_entries("sub1/sub1a").unwrap();
+        let deep_children = d.list_folder_entries("sub1/sub1a").unwrap().unwrap();
         let deep_names: Vec<&str> = deep_children.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(deep_names, vec!["deep.txt"]);
 
@@ -1351,10 +1366,10 @@ mod tests {
         assert_eq!(d.lines(0, 1), vec![""], "展開前は中身が空のはず");
         assert!(d.workspace_root().is_none());
 
-        let names = d.list_archive_entries("").unwrap();
+        let names = d.list_archive_entries("").unwrap().unwrap();
         assert_eq!(names, vec!["memo.txt".to_string()]);
 
-        let info = d.select_entry("memo.txt").unwrap();
+        let info = d.select_entry("memo.txt").unwrap().unwrap();
         assert_eq!(info.kind, DocKind::Archive);
         assert_eq!(d.lines(0, 1), vec!["secret text"]);
         let save_target = root.join("must-not-save.txt");
@@ -1395,14 +1410,14 @@ mod tests {
         assert_eq!(d.lines(0, 1), vec![""], "フォルダを開いた直後は何も選択されていない");
         assert!(!d.source.is_view_only());
 
-        let root_children = d.list_folder_entries("").unwrap();
+        let root_children = d.list_folder_entries("").unwrap().unwrap();
         let names: Vec<&str> = root_children.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["a_note.txt", "data.zip"]);
 
-        let names = d.list_archive_entries("data.zip").unwrap();
+        let names = d.list_archive_entries("data.zip").unwrap().unwrap();
         assert_eq!(names, vec!["a.txt".to_string(), "b/c.txt".to_string()]);
 
-        let info = d.select_entry("data.zip::a.txt").unwrap();
+        let info = d.select_entry("data.zip::a.txt").unwrap().unwrap();
         // フォルダ閲覧中は kind は "text" のまま (folder_entries でツリーを組み立てるため)。
         // 実際に編集不可であることは view_only で示す。
         assert_eq!(info.kind, DocKind::Text);

@@ -29,6 +29,7 @@ export interface FavBarPorts {
   onAddGroupToTabs: (items: { path: string; kind: "file" | "folder" }[]) => void;
   currentFile: () => string | null;
   onSetDefault: (path: string) => void;
+  onError: (error: unknown) => Promise<void>;
 }
 
 export class FavBar {
@@ -47,6 +48,7 @@ export class FavBar {
   private onAddGroupToTabs: FavBarPorts["onAddGroupToTabs"];
   private currentFile: () => string | null;
   private onSetDefault: (path: string) => void;
+  private onError: (error: unknown) => Promise<void>;
 
   constructor(
     private host: HTMLElement,
@@ -57,6 +59,7 @@ export class FavBar {
     this.onAddGroupToTabs = ports.onAddGroupToTabs;
     this.currentFile = ports.currentFile;
     this.onSetDefault = ports.onSetDefault;
+    this.onError = ports.onError;
     this.host.addEventListener("contextmenu", (e) => {
       if (e.target !== this.host) return;
       e.preventDefault();
@@ -242,7 +245,7 @@ export class FavBar {
     if (!drag) return;
     this.justDragged = true;
     hideMenu();
-    void this.applyDrop(drag.source, drag.spot);
+    void this.applyDrop(drag.source, drag.spot).catch((error) => this.reportDropError(error));
   };
 
   private onDragKey = (e: KeyboardEvent) => {
@@ -331,9 +334,24 @@ export class FavBar {
 
   private async applyDrop(source: NodePath, spot: DropSpot | null) {
     if (!spot) return;
-    if (spot.kind === "root") await this.moveTo(source, null);
-    else if (spot.kind === "inside") await this.moveTo(source, spot.path);
-    else await this.moveAdjacent(source, spot.path, spot.kind === "after");
+    const before = structuredClone(this.nodes);
+    try {
+      if (spot.kind === "root") await this.moveTo(source, null);
+      else if (spot.kind === "inside") await this.moveTo(source, spot.path);
+      else await this.moveAdjacent(source, spot.path, spot.kind === "after");
+    } catch (error) {
+      this.nodes = before;
+      this.render();
+      throw error;
+    }
+  }
+
+  private async reportDropError(error: unknown) {
+    try {
+      await this.onError(error);
+    } catch (reportError) {
+      console.error("お気に入りの移動エラーを表示できませんでした", reportError);
+    }
   }
 
   private async moveAdjacent(source: NodePath, target: NodePath, after: boolean) {

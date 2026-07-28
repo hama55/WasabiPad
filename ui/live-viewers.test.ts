@@ -6,7 +6,7 @@ describe("LiveViewers", () => {
   it("sends the editor selection relative to a selected viewer range", async () => {
     vi.useFakeTimers();
     const openViewer = vi.fn(async () => "viewer-1");
-    const updateViewer = vi.fn(async () => {});
+    const updateViewer = vi.fn(async () => true);
     const viewers = new LiveViewers({
       openViewer,
       updateViewer,
@@ -28,6 +28,31 @@ describe("LiveViewers", () => {
     expect(updateViewer).toHaveBeenCalledWith("viewer-1", "first\nsecond", {
       start: { line: 1, col: 1 }, end: { line: 1, col: 1 },
     });
+    vi.useRealTimers();
+  });
+
+  it("一時失敗では追随を止めず、閉じたビューだけを外す", async () => {
+    vi.useFakeTimers();
+    const updateViewer = vi.fn()
+      .mockRejectedValueOnce(new Error("IPC disconnected"))
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false);
+    const viewers = new LiveViewers({
+      openViewer: async () => "viewer-1",
+      updateViewer,
+      wholeRange: async () => ({ start: { line: 0, col: 0 }, end: { line: 0, col: 0 } }),
+      textInRange: async () => "text",
+    });
+
+    await viewers.open("csv", null, { start: { line: 0, col: 0 }, end: { line: 0, col: 0 } });
+    viewers.scheduleRefresh();
+    await vi.advanceTimersByTimeAsync(120);
+    viewers.scheduleRefresh();
+    await vi.advanceTimersByTimeAsync(120);
+    viewers.scheduleRefresh();
+    await vi.advanceTimersByTimeAsync(120);
+
+    expect(updateViewer).toHaveBeenCalledTimes(3);
     vi.useRealTimers();
   });
 });

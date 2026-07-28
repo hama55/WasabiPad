@@ -1,104 +1,58 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import type { EditManyItem } from "./generated/EditManyItem";
+import type { EditManyResult } from "./generated/EditManyResult";
+import type { EditResult } from "./generated/EditResult";
+import type { BmNode } from "./generated/BmNode";
+import type { DocInfo } from "./generated/DocInfo";
+import type { Encoding } from "./generated/Encoding";
+import type { Eol } from "./generated/Eol";
+import type { ExternalCheck } from "./generated/ExternalCheck";
+import type { OpenRequest } from "./generated/OpenRequest";
+import type { FileNameMatchMode } from "./generated/FileNameMatchMode";
+import type { FindCursor } from "./generated/FindCursor";
+import type { FindResult } from "./generated/FindResult";
+import type { FindOutcome } from "./generated/FindOutcome";
+import type { FolderEntry } from "./generated/FolderEntry";
+import type { Pos } from "./generated/Pos";
+import type { ReplaceChunkResult } from "./generated/ReplaceChunkResult";
+import type { SaveOutcome } from "./generated/SaveOutcome";
+import type { ViewerFormat } from "./generated/ViewerFormat";
+import type { ViewerPayload } from "./generated/ViewerPayload";
+import type { ViewerSelection } from "./generated/ViewerSelection";
+import type { WorkspaceSearchBatch } from "./generated/WorkspaceSearchBatch";
+import type { WorkspaceSearchOptions } from "./generated/WorkspaceSearchOptions";
+import type { WorkspaceSearchOutcome } from "./generated/WorkspaceSearchOutcome";
+import type { WorkspaceSearchResult } from "./generated/WorkspaceSearchResult";
 
-// char 単位の位置 (backend と共有)。col は Unicode スカラー index。
-export interface Pos {
-  line: number;
-  col: number;
-}
+export type {
+  EditManyItem,
+  EditManyResult,
+  EditResult,
+  BmNode,
+  DocInfo,
+  Encoding,
+  Eol,
+  ExternalCheck,
+  OpenRequest,
+  FileNameMatchMode,
+  FindCursor,
+  FindResult,
+  FindOutcome,
+  FolderEntry,
+  Pos,
+  ReplaceChunkResult,
+  SaveOutcome,
+  ViewerFormat,
+  ViewerPayload,
+  ViewerSelection,
+  WorkspaceSearchBatch,
+  WorkspaceSearchOptions,
+  WorkspaceSearchOutcome,
+  WorkspaceSearchResult,
+};
 
-export type Encoding = "utf8" | "utf8bom" | "sjis" | "utf16le";
 export type ReadEncoding = "utf8" | "sjis" | "utf16le";
-export type Eol = "crlf" | "lf";
-
-export interface DocInfo {
-  kind: "text" | "archive";
-  line_count: number;
-  enc: Encoding;
-  eol: Eol;
-  path: string;
-  entries: string[] | null; // ZIP/.xls の閲覧専用エントリ名
-  folder_entries: FolderEntry[] | null; // フォルダ直下の子
-  folder_root: string | null; // フォルダ閲覧中のルート絶対パス
-  view_only: boolean;
-  byte_len: number;
-}
-
-export interface FolderEntry {
-  name: string;
-  is_dir: boolean;
-}
-
-// is_filename で意味が変わる項目があるので、読む側は必ず先に見ること:
-//   本文一致   line/col = 本文中の位置、preview = その行、highlights = preview 上の範囲
-//   ファイル名 line/col = 常に 0 (本文の位置ではない)、preview = "ファイル名: <パス>"
-export interface WorkspaceSearchResult {
-  rel_path: string;
-  line: number;
-  col: number;
-  preview: string;
-  // preview 上の一致範囲 [開始char, 長さ]。正規表現とファジーはフロントで
-  // 位置を再計算できないため、当てた backend が持って渡す。
-  highlights: [number, number][];
-  is_filename: boolean;
-  // ファジー一致の当てはまりの良さ (本文一致は 0)。並べ替えの鍵として使う
-  score: number;
-}
-
-export interface EditResult {
-  caret: Pos;
-  line_count: number;
-}
-
-export interface EditManyItem {
-  start: Pos;
-  end: Pos;
-  text: string;
-}
-
-export interface EditManyResult {
-  carets: Pos[];
-  line_count: number;
-}
-
-export interface FindResult {
-  start: Pos;
-  end: Pos;
-}
-
-// チャンク分割検索の再開カーソル。find_step の呼び出し間でそのまま受け渡しする。
-export interface FindCursor {
-  wrapped: boolean;
-  line: number;
-}
-
-export type FindOutcome =
-  | { kind: "Found"; start: Pos; end: Pos }
-  | { kind: "More"; cursor: FindCursor }
-  | { kind: "NotFound" };
-
-export interface ReplaceChunkResult {
-  done: boolean;
-  count: number;
-  caret: Pos;
-  line_count: number;
-}
-
-// 外部変更ポーリングの結果。reloaded は未編集文書が自動で読み直された場合
-export type ExternalCheck =
-  | { kind: "unchanged" }
-  | { kind: "reloaded"; info: DocInfo }
-  | { kind: "conflict" };
-
-// 保存の結果。conflict は保存先が外部で変更されていたため退避ファイルへ保存した場合
-export type SaveOutcome =
-  | { kind: "saved" }
-  | { kind: "conflict"; saved_to: string };
-
-export type BmNode =
-  | { kind: "file"; name: string; path: string }
-  | { kind: "directory"; name: string; path: string }
-  | { kind: "group"; name: string; children: BmNode[] };
 
 export const openPath = (path: string) => invoke<DocInfo>("open_path", { path });
 export const newDoc = () => invoke<void>("new_doc");
@@ -119,42 +73,9 @@ export const listArchiveEntries = (relPath: string) =>
 export const listFolderEntries = (relDir: string) =>
   invoke<FolderEntry[]>("list_folder_entries", { relDir });
 
-// フォルダ検索の打ち切り条件。既定値は ui/workspace-search-options.ts が持つ。
-// 各上限の 0 は「無制限」。
-export interface WorkspaceSearchOptions {
-  match_case: boolean;
-  use_regex: boolean;
-  whole_word: boolean;
-  max_file_bytes: number;
-  max_files: number;
-  max_results: number;
-  exclude_dirs: string[];
-  exclude_globs: string[];
-  exclude_binary: boolean;
-  respect_gitignore: boolean;
-  search_file_names: boolean;
-  search_contents: boolean;
-  workers: number; // 0 = 自動
-}
-
-// hit_* は上限で打ち切ったかどうか。件数だけでは「省略された」ことが分からない。
-// pattern_error は正規表現/除外パターンが壊れている場合の理由。
-export interface WorkspaceSearchOutcome {
-  results: WorkspaceSearchResult[];
-  scanned_files: number;
-  hit_file_limit: boolean;
-  hit_result_limit: boolean;
-  pattern_error: string | null;
-}
-
 // searchId は打ち切った検索の取りこぼしを次の検索から締め出すための世代番号
 export const workspaceSearch = (pat: string, options: WorkspaceSearchOptions, searchId: number) =>
   invoke<WorkspaceSearchOutcome>("workspace_search", { pat, options, searchId });
-
-export interface WorkspaceSearchBatch {
-  search_id: number;
-  results: WorkspaceSearchResult[];
-}
 
 // 検索中の途中経過。確定を待たずに出せるものを出す (走査順で、確定後の並びとは別)
 export const onWorkspaceSearchBatch = (handler: (batch: WorkspaceSearchBatch) => void) =>
@@ -241,10 +162,6 @@ export const nextMemoPath = (directory: string, stem: string, extension: string)
 export const initialPath = () => invoke<string | null>("initial_path");
 // 起動時に飛ぶ位置 (検索結果を別ウィンドウで開いたとき backend が引数へ載せる)
 export const initialGoto = () => invoke<Pos | null>("initial_goto");
-export interface OpenRequest {
-  path: string;
-  goto: Pos | null;
-}
 export const onOpenInTab = (handler: (request: OpenRequest) => void) =>
   listen<OpenRequest>("open-in-tab", (event) => handler(event.payload));
 
@@ -276,17 +193,6 @@ export const documentClient: DocumentClient = {
   replaceAllCancel,
 };
 
-export type ViewerFormat = "csv" | "markdown";
-export interface ViewerSelection {
-  start: Pos;
-  end: Pos;
-}
-export interface ViewerPayload {
-  format: ViewerFormat;
-  text: string;
-  selection: ViewerSelection | null;
-  source_path: string | null; // 相対パス画像の解決に使う元ファイル (未保存なら null)
-}
 export const openViewer = (
   format: ViewerFormat,
   text: string,
@@ -296,4 +202,4 @@ export const openViewer = (
 export const takeViewerPayload = (label: string) =>
   invoke<ViewerPayload>("take_viewer_payload", { label });
 export const updateViewer = (label: string, text: string, selection: ViewerSelection | null) =>
-  invoke<void>("update_viewer", { label, text, selection });
+  invoke<boolean>("update_viewer", { label, text, selection });

@@ -18,6 +18,7 @@ function mount(initial: BmNode[] = []) {
     {
       onOpen: (path) => opened.push(path),
       onAddGroupToTabs: (items) => addedGroups.push(items),
+      onError: async () => {},
       currentFile: () => "C:/work/memo.txt",
       onSetDefault: () => {},
     },

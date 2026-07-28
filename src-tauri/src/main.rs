@@ -20,7 +20,8 @@ use std::sync::{
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 // 受理する形式はこの enum が単一の定義。表示名はフロント (ui/format.ts) だけが持つ。
-#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export)]
 enum ViewerFormat {
     #[serde(rename = "csv")]
     Csv,
@@ -28,7 +29,8 @@ enum ViewerFormat {
     Markdown,
 }
 
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
 struct ViewerPayload {
     format: ViewerFormat,
     text: String,
@@ -37,7 +39,8 @@ struct ViewerPayload {
     source_path: Option<String>,
 }
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export)]
 struct ViewerSelection {
     start: PosC,
     end: PosC,
@@ -51,7 +54,8 @@ struct SearchCancel(Mutex<Arc<AtomicBool>>);
 
 static VIEWER_ID: AtomicU64 = AtomicU64::new(1);
 
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
 struct OpenRequest {
     path: String,
     goto: Option<PosC>,
@@ -93,6 +97,7 @@ fn line_char_len(line: usize, state: State) -> usize {
 #[tauri::command]
 fn select_entry(rel_path: String, state: State) -> Result<DocInfo, String> {
     with_doc(&state, |doc| doc.select_entry(&rel_path))
+        .map_err(|error| error.to_string())?
         .ok_or_else(|| "no entry".into())
 }
 
@@ -101,6 +106,7 @@ fn select_entry(rel_path: String, state: State) -> Result<DocInfo, String> {
 #[tauri::command]
 fn list_archive_entries(rel_path: String, state: State) -> Result<Vec<String>, String> {
     with_doc(&state, |doc| doc.list_archive_entries(&rel_path))
+        .map_err(|error| error.to_string())?
         .ok_or_else(|| "no entries".into())
 }
 
@@ -108,6 +114,7 @@ fn list_archive_entries(rel_path: String, state: State) -> Result<Vec<String>, S
 #[tauri::command]
 fn list_folder_entries(rel_dir: String, state: State) -> Result<Vec<FolderEntry>, String> {
     with_doc(&state, |doc| doc.list_folder_entries(&rel_dir))
+        .map_err(|error| error.to_string())?
         .ok_or_else(|| "no entries".into())
 }
 
@@ -122,7 +129,8 @@ fn take_over_search(cancel: &tauri::State<'_, SearchCancel>) -> Result<Arc<Atomi
 
 // 検索中の途中経過。search_id はフロントが発行した世代番号で、
 // 打ち切った検索の取りこぼしが次の検索へ混ざらないようにするためだけに載せる。
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
 struct WorkspaceSearchBatch {
     search_id: u32,
     results: Vec<wasabipad_core::WorkspaceSearchResult>,
@@ -421,23 +429,29 @@ fn update_viewer(
     selection: Option<ViewerSelection>,
     app: AppHandle,
     state: tauri::State<'_, ViewerStore>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
+    let Some(window) = app.get_webview_window(&label) else {
+        state
+            .0
+            .lock()
+            .map_err(|_| "ビューの更新に失敗しました".to_string())?
+            .remove(&label);
+        return Ok(false);
+    };
     let payload = {
         let mut payloads = state
             .0
             .lock()
             .map_err(|_| "ビューの更新に失敗しました".to_string())?;
-        let payload = payloads
-            .get_mut(&label)
-            .ok_or_else(|| "ビューが閉じられています".to_string())?;
+        let Some(payload) = payloads.get_mut(&label) else {
+            return Ok(false);
+        };
         payload.text = text;
         payload.selection = selection;
         payload.clone()
     };
-    app.get_webview_window(&label)
-        .ok_or_else(|| "ビューが閉じられています".to_string())?
-        .emit("viewer-update", payload)
-        .map_err(|e| e.to_string())
+    window.emit("viewer-update", payload).map_err(|e| e.to_string())?;
+    Ok(true)
 }
 
 fn main() {

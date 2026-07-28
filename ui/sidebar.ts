@@ -41,12 +41,7 @@ export interface SidebarPorts extends Omit<WorkspaceSearchPorts, "onViewChange" 
   onContextMenu: (x: number, y: number, target: ContextTarget | null) => void;
   onExpandArchive: (relPath: string) => Promise<string[]>;
   onExpandFolder: (relDir: string) => Promise<FolderEntry[]>;
-}
-
-// core の Doc::is_lazy_archive_ext と一致させる (check:ipc が両者の一致を検証する)
-const ARCHIVE_EXT = /\.(zip|xlsx|xls)$/i;
-function isArchiveName(name: string): boolean {
-  return ARCHIVE_EXT.test(name);
+  onTreeError: (error: unknown) => Promise<void>;
 }
 
 export class Sidebar {
@@ -59,6 +54,7 @@ export class Sidebar {
   private onContextMenu: (x: number, y: number, target: ContextTarget | null) => void;
   private onExpandArchive: (relPath: string) => Promise<string[]>;
   private onExpandFolder: (relDir: string) => Promise<FolderEntry[]>;
+  private onTreeError: (error: unknown) => Promise<void>;
 
   constructor(host: HTMLElement, ports: SidebarPorts, searchOptions: WorkspaceSearchOptions) {
     this.host = host;
@@ -66,9 +62,11 @@ export class Sidebar {
     this.onContextMenu = ports.onContextMenu;
     this.onExpandArchive = ports.onExpandArchive;
     this.onExpandFolder = ports.onExpandFolder;
+    this.onTreeError = ports.onTreeError;
     this.panel = new WorkspaceSearchPanel(searchOptions, {
       onSearch: ports.onSearch,
       onCancel: ports.onCancel,
+      onError: ports.onError,
       onOpen: ports.onOpen,
       onOptionsChange: ports.onOptionsChange,
       onContextMenu: (x, y, target) => this.onContextMenu(x, y, target),
@@ -83,8 +81,8 @@ export class Sidebar {
     });
   }
 
-  setWorkspaceSearch(on: boolean) {
-    this.panel.setVisible(on);
+  setWorkspaceSearch(folderRoot: string | null) {
+    this.panel.setFolderRoot(folderRoot);
   }
 
   acceptSearchBatch(searchId: number, results: WorkspaceSearchResult[]) {
@@ -177,7 +175,7 @@ export class Sidebar {
       label: entry.name,
       relPath: parent ? `${parent}/${entry.name}` : entry.name,
       depth,
-      kind: entry.is_dir ? "dir" : isArchiveName(entry.name) ? "archive" : "file",
+      kind: entry.is_dir ? "dir" : entry.is_archive ? "archive" : "file",
       expanded: false,
       childrenLoaded: false,
     }));
@@ -269,9 +267,9 @@ export class Sidebar {
           return;
         }
         if (r.kind === "dir") {
-          void this.expandFolderRow(r);
+          void this.expandFolderRow(r).catch((error) => this.reportTreeError(error));
         } else if (r.kind === "archive") {
-          void this.expandArchiveRow(r);
+          void this.expandArchiveRow(r).catch((error) => this.reportTreeError(error));
         } else {
           this.sel = r.relPath;
           this.render();
@@ -294,5 +292,13 @@ export class Sidebar {
       frag.appendChild(div);
     }
     return frag;
+  }
+
+  private async reportTreeError(error: unknown) {
+    try {
+      await this.onTreeError(error);
+    } catch (reportError) {
+      console.error("ツリー展開エラーを表示できませんでした", reportError);
+    }
   }
 }

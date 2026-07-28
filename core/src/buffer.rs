@@ -38,7 +38,6 @@ impl TextBuffer {
         TextBuffer { store: Store::Huge(Box::new(h)) }
     }
 
-    #[cfg(test)]
     pub fn is_huge(&self) -> bool {
         matches!(self.store, Store::Huge(_))
     }

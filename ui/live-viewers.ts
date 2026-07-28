@@ -11,7 +11,8 @@ const compare = (a: Pos, b: Pos) => a.line - b.line || a.col - b.col;
 
 export interface LiveViewerPorts {
   openViewer: (format: ViewerFormat, text: string, selection: ViewerSelection | null) => Promise<string | null>;
-  updateViewer: (label: string, text: string, selection: ViewerSelection | null) => Promise<void>;
+  // false は backend がビューの消滅を確認した場合だけ返す。
+  updateViewer: (label: string, text: string, selection: ViewerSelection | null) => Promise<boolean>;
   // range が null のときに映すべき全文の範囲
   wholeRange: () => Promise<{ start: Pos; end: Pos }>;
   textInRange: (start: Pos, end: Pos) => Promise<string>;
@@ -61,9 +62,10 @@ export class LiveViewers {
     for (const [label, viewer] of [...this.viewers]) {
       try {
         const { start, end } = viewer.range ?? (await this.ports.wholeRange());
-        await this.ports.updateViewer(label, await this.ports.textInRange(start, end), viewer.selection);
+        const exists = await this.ports.updateViewer(label, await this.ports.textInRange(start, end), viewer.selection);
+        if (!exists) this.viewers.delete(label);
       } catch {
-        this.viewers.delete(label); // 閉じられたビューは追随対象から外す
+        // 一時的なIPC/文書読込み失敗で追随を永久停止しない。次の編集で再試行する。
       }
     }
   }

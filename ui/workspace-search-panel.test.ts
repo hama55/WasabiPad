@@ -31,6 +31,7 @@ const outcome = (
   hit_file_limit: false,
   hit_result_limit: false,
   pattern_error: null,
+  file_name_match_mode: "fuzzy",
   ...extra,
 });
 
@@ -39,13 +40,15 @@ describe("WorkspaceSearchPanel", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
     document.body.replaceChildren();
   });
 
   function mount(
     onSearch: WorkspaceSearchPorts["onSearch"] = async () => outcome([]),
     onOpen: WorkspaceSearchPorts["onOpen"] = () => {},
-    onCancel: WorkspaceSearchPorts["onCancel"] = () => {}
+    onCancel: WorkspaceSearchPorts["onCancel"] = () => {},
+    onError: WorkspaceSearchPorts["onError"] = async () => {}
   ) {
     const host = document.createElement("div");
     document.body.appendChild(host);
@@ -53,6 +56,7 @@ describe("WorkspaceSearchPanel", () => {
     const panel = (mounted = new WorkspaceSearchPanel({ ...DEFAULT_SEARCH_OPTIONS }, {
       onSearch,
       onCancel,
+      onError,
       onOpen,
       onContextMenu: () => {},
       onOptionsChange: () => {},
@@ -61,7 +65,7 @@ describe("WorkspaceSearchPanel", () => {
       },
     }));
     host.append(panel.bar, tree);
-    panel.setVisible(true);
+    panel.setFolderRoot("C:\\workspace");
     return host;
   }
 
@@ -86,6 +90,18 @@ describe("WorkspaceSearchPanel", () => {
     // 既定は無制限なので、サイズや件数を対象外として読み上げてはいけない
     expect(text(host, ".ws-empty-detail")).not.toContain("MB超");
     expect(text(host, ".ws-empty-detail")).not.toContain("件目以降");
+  });
+
+  it("検索失敗時は検索中表示を解除してエラーを渡す", async () => {
+    vi.useFakeTimers();
+    const onError = vi.fn(async () => {});
+    const host = mount(async () => { throw new Error("IPC disconnected"); }, () => {}, () => {}, onError);
+
+    await search(host, "needle");
+
+    expect(onError).toHaveBeenCalledOnce();
+    expect(host.querySelector<HTMLButtonElement>(".ws-stop")?.hidden).toBe(true);
+    expect(host.querySelector(".ws-empty")).toBeNull();
   });
 
   it("結果をファイル単位のツリーにまとめ、一致箇所を強調する", async () => {
@@ -213,6 +229,105 @@ describe("WorkspaceSearchPanel", () => {
 
     expect(host.querySelectorAll(".ws-group")).toHaveLength(1);
     expect(calls, "条件が同じなら検索し直さない").toBe(1);
+  });
+
+  it("検索を中止しても、届いていた結果は残す", async () => {
+    vi.useFakeTimers();
+    let searchId = 0;
+    const onCancel = vi.fn();
+    const host = mount((_pat, _options, id) => {
+      searchId = id;
+      return new Promise<WorkspaceSearchOutcome>(() => {});
+    }, () => {}, onCancel);
+    await search(host, "needle");
+    mounted.acceptBatch(searchId, [hit("a.txt", 0, "needle")]);
+    await vi.advanceTimersByTimeAsync(100);
+
+    host.querySelector<HTMLButtonElement>(".ws-stop")!.click();
+
+    expect(onCancel).toHaveBeenCalledOnce();
+    expect(host.querySelectorAll(".ws-group")).toHaveLength(1);
+    expect(text(host, ".ws-summary")).toContain("検索を中止");
+    expect(text(host, ".ws-empty")).toContain("検索を中止しました");
+  });
+
+  it("フォルダごとに検索結果を保持する", async () => {
+    vi.useFakeTimers();
+    const host = mount(async () => outcome([hit("a.txt", 0, "needle")]));
+    await search(host, "needle");
+
+    mounted.setFolderRoot("C:\\other");
+    expect(host.querySelectorAll(".ws-group")).toHaveLength(0);
+
+    mounted.setFolderRoot("C:\\workspace");
+    expect(host.querySelectorAll(".ws-group")).toHaveLength(1);
+    expect(host.querySelector<HTMLInputElement>(".ws-search-row > input")?.value).toBe("needle");
+
+    mounted.setFolderRoot(null);
+    mounted.setFolderRoot("C:\\workspace");
+    expect(host.querySelectorAll(".ws-group")).toHaveLength(1);
+  });
+
+  it("検索をクリアしたら、停止済みの結果も消す", async () => {
+    vi.useFakeTimers();
+    let searchId = 0;
+    const host = mount((_pat, _options, id) => {
+      searchId = id;
+      return new Promise<WorkspaceSearchOutcome>(() => {});
+    });
+    await search(host, "needle");
+    mounted.acceptBatch(searchId, [hit("a.txt", 0, "needle")]);
+    await vi.advanceTimersByTimeAsync(100);
+
+    host.querySelector<HTMLButtonElement>(".ws-clear")!.click();
+
+    expect(host.querySelectorAll(".ws-group")).toHaveLength(0);
+    expect(host.querySelector<HTMLInputElement>(".ws-search-row > input")?.value).toBe("");
+  });
+
+  it("結果が届く前に中止しても、中止状態を表示する", async () => {
+    vi.useFakeTimers();
+    const host = mount(() => new Promise<WorkspaceSearchOutcome>(() => {}));
+    await search(host, "needle");
+
+    host.querySelector<HTMLButtonElement>(".ws-stop")!.click();
+
+    expect(text(host, ".ws-empty")).toContain("検索を中止しました");
+    expect(text(host, ".ws-empty")).not.toContain("検索中");
+    expect(host.querySelector<HTMLButtonElement>(".ws-stop")?.hidden).toBe(true);
+  });
+
+  it("中止通知が同期失敗しても、表示済みの結果を保持する", async () => {
+    vi.useFakeTimers();
+    const report = vi.spyOn(console, "error").mockImplementation(() => {});
+    let searchId = 0;
+    const onCancel = vi.fn(() => { throw new Error("cancel IPC failed"); });
+    const host = mount((_pat, _options, id) => {
+      searchId = id;
+      return new Promise<WorkspaceSearchOutcome>(() => {});
+    }, () => {}, onCancel);
+    await search(host, "needle");
+    mounted.acceptBatch(searchId, [hit("a.txt", 0, "needle")]);
+    await vi.advanceTimersByTimeAsync(100);
+
+    host.querySelector<HTMLButtonElement>(".ws-stop")!.click();
+
+    expect(onCancel).toHaveBeenCalledOnce();
+    expect(report).toHaveBeenCalledOnce();
+    expect(host.querySelectorAll(".ws-group")).toHaveLength(1);
+    expect(text(host, ".ws-empty")).toContain("検索を中止しました");
+  });
+
+  it("検索開始の同期失敗でも、検索中の表示を残さない", async () => {
+    vi.useFakeTimers();
+    const onError = vi.fn(async () => {});
+    const host = mount(() => { throw new Error("IPC setup failed"); }, () => {}, () => {}, onError);
+
+    await search(host, "needle");
+
+    expect(onError).toHaveBeenCalledOnce();
+    expect(host.querySelector<HTMLButtonElement>(".ws-stop")?.hidden).toBe(true);
+    expect(host.querySelector(".ws-empty")).toBeNull();
   });
 
   it("検索中でも折りたたみを操作でき、途中経過の到着で戻されない", async () => {

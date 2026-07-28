@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { DocInfo } from "./api";
 import { DocumentController, fileNameOf, type DocumentView } from "./document-controller";
+import { formatTitleBar } from "./format";
 import { confirmSaveDiscard } from "./prompt";
 
 vi.mock("./prompt", async (importOriginal) => ({
@@ -19,6 +20,7 @@ const info = (overrides: Partial<DocInfo> = {}): DocInfo => ({
   folder_root: null,
   view_only: false,
   byte_len: 1234,
+  is_huge: false,
   ...overrides,
 });
 
@@ -53,11 +55,11 @@ describe("DocumentController", () => {
     expect(controller.current.savePath).toBe("C:\\work\\memo.txt");
     expect(controller.current.sourceEncoding).toBe("sjis");
     expect(view.hideExternalBanner).toHaveBeenCalled();
-    expect(view.statusbar.setByteSize).toHaveBeenCalledWith(1234);
+    expect(view.statusbar.setByteSize).toHaveBeenCalledWith(1234, false);
     expect(view.statusbar.setLineCount).toHaveBeenCalledWith(42);
     expect(view.addressbar.render).toHaveBeenCalledWith("C:\\work\\memo.txt");
     expect(view.editor.open).toHaveBeenCalledWith(42, false, false);
-    expect(view.setTitle).toHaveBeenLastCalledWith("memo.txt — WasabiPad");
+    expect(view.setTitle).toHaveBeenLastCalledWith(formatTitleBar("memo.txt"));
   });
 
   it("marks the title dirty only on the first edit", () => {
@@ -70,7 +72,7 @@ describe("DocumentController", () => {
 
     expect(controller.current.lineCount).toBe(44);
     expect(view.setTitle).toHaveBeenCalledTimes(1);
-    expect(view.setTitle).toHaveBeenCalledWith("● memo.txt — WasabiPad");
+    expect(view.setTitle).toHaveBeenCalledWith(formatTitleBar("● memo.txt"));
   });
 
   it("keeps a read-only document unsavable", async () => {

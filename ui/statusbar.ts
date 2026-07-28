@@ -4,9 +4,6 @@ import { readEncodingOf } from "./session";
 import { formatByteSize, formatCursor, formatFontFamily, formatLineCount } from "./format";
 import { confirmMessage, promptFields } from "./prompt";
 
-// core の fileio::MMAP_THRESHOLD と一致させる (check:ipc が両者の一致を検証する)
-export const HUGE_FILE_THRESHOLD = 100 * 1024 * 1024;
-
 const THEMES = ["dark", "light"] as const;
 type Theme = (typeof THEMES)[number];
 const THEME_LABELS: Record<Theme, string> = { dark: "ダーク", light: "ライト" };
@@ -107,10 +104,10 @@ export class StatusBar {
   }
 
   // 無題文書はバイト数を持たないため null で空表示にする
-  setByteSize(bytes: number | null) {
+  setByteSize(bytes: number | null, isHuge = false) {
     const size = this.pick("st-size");
     size.textContent = bytes === null ? "" : formatByteSize(bytes);
-    size.classList.toggle("is-huge", bytes !== null && bytes >= HUGE_FILE_THRESHOLD);
+    size.classList.toggle("is-huge", bytes !== null && isHuge);
   }
 
   setMode(label: string) {

@@ -51,6 +51,14 @@ function setLoading(active: boolean, message = "読み込み中…") {
   editorHost.setAttribute("aria-busy", String(active));
 }
 
+async function reportBackgroundError(title: string, error: unknown) {
+  try {
+    await showError(title, error);
+  } catch (reportError) {
+    console.error(`${title}のエラーを表示できませんでした`, reportError);
+  }
+}
+
 function setSidebar(on: boolean, label = "") {
   sidebarAvailable = on;
   updateSidebarVisibility();
@@ -107,6 +115,7 @@ const editor: VirtualEditor = new VirtualEditor(editorHost, {
   onFontChange: (family, size) => statusbar.setFont(family, size),
   hasExternalFile: () => doc.current.savePath !== null,
   openExternally: () => { if (doc.current.savePath) void openInOtherApp(doc.current.savePath); },
+  onError: (message, error) => showError(message, error),
   openViewer: async (format, text, selection) => {
     try {
       return await api.openViewer(format, text, selection, doc.current.savePath);
@@ -135,8 +144,10 @@ const sidebar = new Sidebar(sidebarEl, {
   onContextMenu: (x, y, target) => folderActions.showContextMenu(x, y, target),
   onExpandArchive: (relPath) => api.listArchiveEntries(relPath),
   onExpandFolder: (relDir) => api.listFolderEntries(relDir),
+  onTreeError: (error) => showError("フォルダを展開できませんでした", error),
   onSearch: (pat, options, searchId) => api.workspaceSearch(pat, options, searchId),
-  onCancel: () => { void api.workspaceSearchCancel(); },
+  onCancel: () => api.workspaceSearchCancel(),
+  onError: (error) => showError("フォルダを検索できませんでした", error),
   onOptionsChange: saveSearchOptions,
   onOpen: async (result, newWindow) => {
     if (newWindow) {
@@ -156,7 +167,8 @@ const sidebar = new Sidebar(sidebarEl, {
 }, loadSearchOptions());
 
 // 検索の途中経過。確定を待たずに届いた分から並べる
-void api.onWorkspaceSearchBatch((batch) => sidebar.acceptSearchBatch(batch.search_id, batch.results));
+void api.onWorkspaceSearchBatch((batch) => sidebar.acceptSearchBatch(batch.search_id, batch.results))
+  .catch((error) => reportBackgroundError("検索結果の受信を開始できませんでした", error));
 
 // フォルダビュー由来の relPath は、独立したファイルタブ用の絶対パスへ戻す
 async function openInNewTab(relPath: string, goto?: api.Pos) {
@@ -176,6 +188,7 @@ const windowChrome = new WindowChrome($("titlebar"), win, {
     }
   },
   onGeometryChange: () => editor.syncWindowGeometry(),
+  onError: showError,
 });
 
 const doc: DocumentController = new DocumentController({
@@ -219,6 +232,7 @@ const favbar = new FavBar($("favbar"), {
   onAddGroupToTabs: (items) => tabs.addLinks(items),
   currentFile: () => addressbar.path || null,
   onSetDefault: (path) => setSetting("startupPath", path),
+  onError: (error) => showError("お気に入りを移動できませんでした", error),
 });
 
 const folderActions = new FolderActions(doc, {
@@ -242,8 +256,12 @@ function confirmReloadDiscardingEdits(): Promise<boolean> {
 }
 
 async function pickAndOpen(directory: boolean) {
-  const path = await openDialog({ directory });
-  if (typeof path === "string") void doc.openPath(path);
+  try {
+    const path = await openDialog({ directory });
+    if (typeof path === "string") await doc.openPath(path);
+  } catch (error) {
+    await reportBackgroundError("ファイルを開けませんでした", error);
+  }
 }
 
 const commands = createCommandRegistry({
@@ -290,17 +308,19 @@ window.addEventListener("keydown", (e) => {
 });
 
 // お気に入りバー上へのdropは登録、それ以外は従来どおり開く
-getCurrentWebview().onDragDropEvent((ev) => {
+void getCurrentWebview().onDragDropEvent((ev) => {
   if (ev.payload.type !== "drop" || ev.payload.paths.length === 0) return;
   const scale = window.devicePixelRatio || 1;
   const cssX = ev.payload.position.x / scale;
   const cssY = ev.payload.position.y / scale;
   if (document.elementFromPoint(cssX, cssY)?.closest("#favbar")) {
-    void favbar.addDropped(ev.payload.paths, cssX, cssY);
+    void favbar.addDropped(ev.payload.paths, cssX, cssY)
+      .catch((error) => reportBackgroundError("お気に入りへ追加できませんでした", error));
   } else {
-    void tabs.open(ev.payload.paths[0]);
+    void tabs.open(ev.payload.paths[0])
+      .catch((error) => reportBackgroundError("ドロップしたファイルを開けませんでした", error));
   }
-});
+}).catch((error) => reportBackgroundError("ファイルのドロップを受信できませんでした", error));
 
 // フォルダビューは他アプリによる増減を拾うため定期的に取り直す
 let folderRefreshRunning = false;
@@ -326,5 +346,8 @@ tabs = new TabManager($("tabs"), doc, {
   onChange: (state) => setSetting("openTabs", state),
 });
 await tabs.init(getSetting("openTabs"), cliPath, startupPath, cliGoto ?? undefined);
-void api.onOpenInTab((request) => { void tabs.open(request.path, request.goto ?? undefined); });
+void api.onOpenInTab((request) => {
+  void tabs.open(request.path, request.goto ?? undefined)
+    .catch((error) => reportBackgroundError("新規タブでファイルを開けませんでした", error));
+}).catch((error) => reportBackgroundError("新規タブ要求の受信を開始できませんでした", error));
 doc.updateTitle();
