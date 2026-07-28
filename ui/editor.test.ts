@@ -251,6 +251,31 @@ describe("VirtualEditor", () => {
     expect(host.querySelector(".ve-line")?.textContent).toBe("0123456789");
   });
 
+  it("長い折り返し行の途中ではIMEを実際の編集位置へ表示する", async () => {
+    const { editor, host, input } = mount("x".repeat(1000));
+    editor.open(1, false);
+    editor.setWrap(true);
+    await editor.selectRange(0, 500, 500);
+    const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
+    Object.defineProperties(scroll, {
+      clientHeight: { configurable: true, value: 100 },
+      clientWidth: { configurable: true, value: 300 },
+    });
+    scroll.scrollTop = 900;
+    const rect = {
+      x: 50, y: 940, left: 50, top: 940, right: 50, bottom: 960,
+      width: 0, height: 20, toJSON: () => ({}),
+    } as DOMRect;
+    const ranges = Object.assign([rect], { item: (index: number) => [rect][index] ?? null });
+    const getClientRects = vi.spyOn(Range.prototype, "getClientRects").mockReturnValue(ranges as DOMRectList);
+
+    input.dispatchEvent(new CompositionEvent("compositionstart"));
+
+    expect(input.style.top).toBe("40px");
+    expect(Number.parseFloat(input.style.left)).toBeGreaterThanOrEqual(8);
+    getClientRects.mockRestore();
+  });
+
   it("1論理行が多数行へ折り返されてもホイールで行内を移動する", async () => {
     const { editor, host } = mount("x".repeat(1000));
     editor.open(1, false);

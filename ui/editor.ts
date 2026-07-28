@@ -672,8 +672,10 @@ export class VirtualEditor {
     const s = this.lineCache.peek(this.sel.caret.line) ?? "";
     const lineEl = this.lineElem(this.sel.caret.line);
     const y = lineEl ? this.rowTop(this.sel.caret.line) : this.scroll.scrollTop;
-    const outsideViewport = y < this.scroll.scrollTop
-      || y + this.metrics.lineHeight > this.scroll.scrollTop + this.scroll.clientHeight;
+    const point = lineEl && this.wrap ? this.wrapPoint(lineEl, s, this.sel.caret.col) : null;
+    const caretY = point?.y ?? y;
+    const outsideViewport = caretY < this.scroll.scrollTop
+      || caretY + this.metrics.lineHeight > this.scroll.scrollTop + this.scroll.clientHeight;
     if (!lineEl || outsideViewport) {
       // 画面外の論理行座標へ focused textarea を置くと、巨大文書ではCSS座標上限を
       // 超えてスクロール範囲自体が変わる。入力フォーカスだけ表示領域内で維持する。
@@ -683,9 +685,7 @@ export class VirtualEditor {
       return;
     }
     this.caretEl.classList.toggle("on", document.activeElement === this.input);
-    const point = lineEl && this.wrap ? this.wrapPoint(lineEl, s, this.sel.caret.col) : null;
     const x = point?.x ?? (lineEl ? this.colToX(lineEl, s, this.sel.caret.col) : this.paddingLeft);
-    const caretY = point?.y ?? y;
     this.caretEl.style.top = `${caretY}px`;
     this.caretEl.style.left = `${x}px`;
     this.placeSecondaryCarets();
