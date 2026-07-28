@@ -51,6 +51,12 @@ struct SearchCancel(Mutex<Arc<AtomicBool>>);
 
 static VIEWER_ID: AtomicU64 = AtomicU64::new(1);
 
+#[derive(Clone, serde::Serialize)]
+struct OpenRequest {
+    path: String,
+    goto: Option<PosC>,
+}
+
 #[tauri::command]
 fn open_path(path: String, state: State) -> Result<DocInfo, String> {
     let d = Doc::open(&PathBuf::from(&path)).map_err(|e| e.to_string())?;
@@ -349,19 +355,6 @@ fn initial_goto() -> Option<PosC> {
     Some(PosC { line: line.parse().ok()?, col: col.parse().ok()? })
 }
 
-#[tauri::command]
-fn launch_new(path: Option<String>, line: Option<usize>, col: Option<usize>) -> Result<(), String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let mut command = Command::new(exe);
-    if let Some(path) = path.filter(|path| !path.is_empty()) {
-        command.arg(path);
-        if let Some(line) = line {
-            command.arg(format!("+{line}:{}", col.unwrap_or(0)));
-        }
-    }
-    command.spawn().map(|_| ()).map_err(|e| e.to_string())
-}
-
 // Windowsでは同期command中のWebView生成がイベントループを塞ぐためasyncで実行する。
 #[tauri::command]
 async fn open_viewer(
@@ -449,6 +442,20 @@ fn update_viewer(
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            let Some(path) = args.get(1).filter(|path| !path.is_empty()) else {
+                return;
+            };
+            let goto = args.get(2).and_then(|arg| {
+                let (line, col) = arg.strip_prefix('+')?.split_once(':')?;
+                Some(PosC { line: line.parse().ok()?, col: col.parse().ok()? })
+            });
+            let _ = app.emit("open-in-tab", OpenRequest { path: path.clone(), goto });
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .manage(Mutex::new(DocState(Doc::empty())))
         .manage(ViewerStore(Mutex::new(HashMap::new())))
@@ -491,7 +498,6 @@ fn main() {
             next_memo_path,
             initial_path,
             initial_goto,
-            launch_new,
             open_viewer,
             take_viewer_payload,
             update_viewer,

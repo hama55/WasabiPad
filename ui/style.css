@@ -39,7 +39,19 @@ body {
 .bar-toggle:hover { background: var(--hover); }
 #titletext {
   flex: 1;
+  min-width: 24px;
 }
+#tabs { display: flex; align-items: stretch; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.doc-tab {
+  display: flex; align-items: center; gap: 5px; min-width: 110px; max-width: 220px;
+  padding: 0 7px; border: 0; border-right: 1px solid var(--border);
+  background: var(--bg-title); color: var(--fg-dim); font: 12px var(--font-ui);
+}
+.doc-tab.active { background: var(--bg-editor); color: var(--fg); }
+.doc-tab:hover { background: var(--hover); }
+.doc-tab-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.doc-tab-close { margin-left: auto; padding: 1px 3px; border-radius: 3px; font-size: 14px; }
+.doc-tab-close:hover { background: var(--border); }
 #wincontrols { display: flex; }
 #wincontrols button {
   width: 46px; border: none; background: none; color: var(--fg);

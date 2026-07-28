@@ -4,6 +4,7 @@
 import type { WorkspaceSearchOptions } from "./api";
 import { loadSettings as loadSettingsJson, saveSettings as saveSettingsJson } from "./api";
 import { clampSearchOptions, DEFAULT_SEARCH_OPTIONS } from "./workspace-search-options";
+import type { StoredTabs } from "./tabs";
 
 export interface Settings {
   indentSize: number;
@@ -11,6 +12,7 @@ export interface Settings {
   registeredStrings: string[];
   // null は「未設定」。既定値は ui/workspace-search-options.ts だけが持つ
   workspaceSearchOptions: WorkspaceSearchOptions | null;
+  openTabs: StoredTabs;
 }
 
 const DEFAULTS: Settings = {
@@ -18,6 +20,7 @@ const DEFAULTS: Settings = {
   startupPath: null,
   registeredStrings: [],
   workspaceSearchOptions: null,
+  openTabs: { tabs: [], activeId: null },
 };
 
 let cache: Settings = { ...DEFAULTS };
@@ -41,7 +44,21 @@ export function parseSettings(text: string): Settings {
       typeof value.workspaceSearchOptions === "object" && value.workspaceSearchOptions !== null
         ? value.workspaceSearchOptions
         : null,
+    openTabs: validStoredTabs(value.openTabs) ? value.openTabs : DEFAULTS.openTabs,
   };
+}
+
+function validStoredTabs(value: unknown): value is StoredTabs {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Partial<StoredTabs>;
+  return Array.isArray(candidate.tabs)
+    && candidate.tabs.every((tab) =>
+      typeof tab === "object" && tab !== null
+      && typeof tab.id === "string"
+      && (typeof tab.path === "string" || tab.path === null)
+      && (tab.kind === "file" || tab.kind === "folder" || tab.kind === "blank")
+      && typeof tab.label === "string")
+    && (typeof candidate.activeId === "string" || candidate.activeId === null);
 }
 
 export async function initSettings(): Promise<void> {
@@ -61,6 +78,10 @@ export function setSetting<K extends keyof Settings>(key: K, value: Settings[K])
   void saveSettingsJson(JSON.stringify(cache, null, 2)).catch((error: unknown) => {
     console.error("設定を保存できませんでした", error);
   });
+}
+
+export function flushSettings(): Promise<void> {
+  return saveSettingsJson(JSON.stringify(cache, null, 2));
 }
 
 // 検索条件は手で編集されうるファイルに載るので、既定値で埋めてから丸める

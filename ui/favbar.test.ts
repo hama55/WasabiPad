@@ -12,12 +12,18 @@ function mount(initial: BmNode[] = []) {
     isDirectory: async (path) => !path.split("/").pop()!.includes("."),
   };
   const opened: string[] = [];
+  const addedGroups: { path: string; kind: "file" | "folder" }[][] = [];
   const favbar = new FavBar(
     document.getElementById("favbar")!,
-    { onOpen: (path) => opened.push(path), currentFile: () => "C:/work/memo.txt", onSetDefault: () => {} },
+    {
+      onOpen: (path) => opened.push(path),
+      onAddGroupToTabs: (items) => addedGroups.push(items),
+      currentFile: () => "C:/work/memo.txt",
+      onSetDefault: () => {},
+    },
     store
   );
-  return { favbar, saved, opened };
+  return { favbar, saved, opened, addedGroups };
 }
 
 // jsdom は elementFromPoint / レイアウトを持たないので、落とし先とその矩形を差し替える
@@ -92,5 +98,31 @@ describe("FavBar", () => {
     await favbar.init();
     document.querySelector<HTMLButtonElement>("#favbar button")!.click();
     expect(opened).toEqual(["C:/memo.txt"]);
+  });
+
+  it("グループ直下の項目だけをタブへ一括追加する", async () => {
+    const { favbar, addedGroups } = mount([{
+      kind: "group",
+      name: "work",
+      children: [
+        { kind: "file", name: "a", path: "C:/a.txt" },
+        { kind: "directory", name: "src", path: "C:/src" },
+        { kind: "group", name: "nested", children: [
+          { kind: "file", name: "b", path: "C:/b.txt" },
+        ] },
+      ],
+    }]);
+    await favbar.init();
+    document.querySelector<HTMLButtonElement>("#favbar button")!.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true })
+    );
+    const item = [...document.querySelectorAll<HTMLElement>("#dropdown > div")]
+      .find((element) => element.textContent === "直下の項目をタブに一括追加")!;
+    item.click();
+
+    expect(addedGroups).toEqual([[
+      { path: "C:/a.txt", kind: "file" },
+      { path: "C:/src", kind: "folder" },
+    ]]);
   });
 });
