@@ -59,6 +59,8 @@ export class VirtualEditor {
   private lineCache: LineCache;
   private raf = 0;
   private inputPositionRaf = 0;
+  private imeBlurTimer: number | undefined;
+  private imeBlurPending = false;
   private maxWidth = 0;
   private fontFamily: string;
   private fontSize: number;
@@ -184,8 +186,16 @@ export class VirtualEditor {
       this.syncImeAnchor();
       this.caretEl.classList.remove("on");
     });
-    this.input.addEventListener("compositionend", () => this.finishComposition());
+    this.input.addEventListener("compositionend", () => {
+      this.finishComposition();
+      if (this.imeBlurPending && this.imeBlurTimer === undefined) {
+        this.imeBlurTimer = window.setTimeout(() => this.blurImeAfterGeometry(), 0);
+      }
+    });
     this.input.addEventListener("blur", () => {
+      window.clearTimeout(this.imeBlurTimer);
+      this.imeBlurTimer = undefined;
+      this.imeBlurPending = false;
       if (this.composing || this.input.value) this.finishComposition();
       this.caretEl.classList.remove("on");
       this.secondaryCaretEls.forEach((caret) => caret.classList.remove("on"));
@@ -198,7 +208,7 @@ export class VirtualEditor {
       this.schedule();
     });
     window.addEventListener("focus", () => this.syncImeAnchorAfterLayout());
-    window.addEventListener("resize", () => this.syncImeAnchorAfterLayout());
+    window.addEventListener("resize", () => this.syncWindowGeometry());
     document.addEventListener("visibilitychange", () => {
       if (!document.hidden) this.syncImeAnchorAfterLayout();
     });
@@ -253,6 +263,14 @@ export class VirtualEditor {
 
   syncWindowGeometry() {
     this.syncImeAnchorAfterLayout();
+    window.clearTimeout(this.imeBlurTimer);
+    this.imeBlurTimer = undefined;
+    if (document.activeElement !== this.input) {
+      this.imeBlurPending = false;
+      return;
+    }
+    this.imeBlurPending = true;
+    this.imeBlurTimer = window.setTimeout(() => this.blurImeAfterGeometry(), 50);
   }
 
   openSearch() {
@@ -654,6 +672,14 @@ export class VirtualEditor {
       this.inputPositionRaf = 0;
       this.syncImeAnchor();
     });
+  }
+
+  private blurImeAfterGeometry() {
+    this.imeBlurTimer = undefined;
+    if (!this.imeBlurPending || this.composing || document.activeElement !== this.input) return;
+
+    this.imeBlurPending = false;
+    this.input.blur();
   }
 
   private keepImeAnchorInsideViewport() {

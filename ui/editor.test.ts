@@ -147,6 +147,54 @@ describe("VirtualEditor", () => {
     expect(input.style.left).not.toBe("-999px");
   });
 
+  it("ウィンドウ変更後にIME用textareaを次のユーザー操作までblurする", async () => {
+    const { editor, input } = mount("line");
+    editor.open(1, false);
+    await settle();
+    input.focus();
+    const blur = vi.spyOn(input, "blur");
+
+    editor.syncWindowGeometry();
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    expect(blur).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it("ウィンドウ変更後も別UIからフォーカスを奪わない", async () => {
+    const { editor, host, input } = mount("line");
+    editor.open(1, false);
+    await settle();
+    const button = document.createElement("button");
+    host.appendChild(button);
+    button.focus();
+    const focus = vi.spyOn(input, "focus");
+
+    editor.syncWindowGeometry();
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    expect(focus).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(button);
+  });
+
+  it("IME変換中のフォーカス再初期化は変換終了まで待つ", async () => {
+    const { editor, input } = mount("line");
+    editor.open(1, false);
+    await settle();
+    input.focus();
+    input.dispatchEvent(new CompositionEvent("compositionstart"));
+    const blur = vi.spyOn(input, "blur");
+
+    editor.syncWindowGeometry();
+    await new Promise((resolve) => setTimeout(resolve, 70));
+    expect(blur).not.toHaveBeenCalled();
+
+    input.dispatchEvent(new CompositionEvent("compositionend"));
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(blur).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(document.body);
+  });
+
   it("IMEアンカーの実矩形が領域外なら安全位置へ退避する", async () => {
     const { editor, host, input } = mount("line");
     editor.open(1, false);
