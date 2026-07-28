@@ -9,6 +9,7 @@
     "sync:ipc": "cargo test -p wasabipad-core export_bindings_ && cargo test -p wasabipad export_bindings_",
     "check:config": "node scripts/check-config.mjs",
     "sync:version": "node scripts/sync-version.mjs",
+    "release": "node scripts/release.mjs",
     "test": "vitest run",
     "build": "npm test && npm run check:config && npm run sync:ipc && npm run check:ipc && git diff --exit-code -- ui/generated && tsc --noEmit && vite build",
     "tauri": "tauri"
