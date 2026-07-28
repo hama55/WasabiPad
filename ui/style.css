@@ -49,6 +49,14 @@ body {
 }
 .doc-tab.active { background: var(--bg-editor); color: var(--fg); }
 .doc-tab:hover { background: var(--hover); }
+.doc-tab.doc-tab-drop-before { box-shadow: inset 2px 0 var(--accent); }
+.doc-tab.doc-tab-drop-after { box-shadow: inset -2px 0 var(--accent); }
+.doc-tab-ghost {
+  position: fixed; left: 0; top: 0; z-index: 10000; pointer-events: none;
+  max-width: 220px; padding: 5px 9px; border: 1px solid var(--accent);
+  border-radius: 4px; background: var(--bg-editor); color: var(--fg);
+  font: 12px var(--font-ui); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .doc-tab-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .doc-tab-close { margin-left: auto; padding: 1px 3px; border-radius: 3px; font-size: 14px; }
 .doc-tab-close:hover { background: var(--border); }

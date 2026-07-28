@@ -33,6 +33,17 @@ const stored: StoredTabs = {
   activeId: "a",
 };
 
+function dragOnto(from: HTMLElement, to: HTMLElement, ratio: number) {
+  const rect = { left: 0, top: 0, width: 100, height: 20, right: 100, bottom: 20 };
+  to.getBoundingClientRect = () => ({ ...rect, x: 0, y: 0, toJSON: () => "" });
+  document.elementFromPoint = () => to;
+  const at = (type: string, x: number) =>
+    new MouseEvent(type, { bubbles: true, button: 0, clientX: x, clientY: 10 });
+  from.dispatchEvent(at("pointerdown", 0));
+  window.dispatchEvent(at("pointermove", rect.width * ratio));
+  window.dispatchEvent(at("pointerup", rect.width * ratio));
+}
+
 describe("TabManager", () => {
   beforeEach(() => document.body.replaceChildren(document.createElement("div")));
 
@@ -132,5 +143,21 @@ describe("TabManager", () => {
       "C:\\work\\src",
     ]);
     expect(doc.openPath).toHaveBeenCalledTimes(1);
+  });
+
+  it("タブをドラッグして並べ替え、直後のclickでは切り替えない", async () => {
+    const { doc, host } = fixture();
+    const changes: StoredTabs[] = [];
+    const manager = new TabManager(host, doc, { onChange: (state) => changes.push(state) });
+    await manager.init(stored, null, null);
+    const [a, b] = host.querySelectorAll<HTMLElement>(".doc-tab");
+
+    dragOnto(b, a, 0.1);
+    b.click();
+
+    expect(manager.state.tabs.map((tab) => tab.id)).toEqual(["b", "a"]);
+    expect(manager.state.activeId).toBe("a");
+    expect(doc.openPath).toHaveBeenCalledTimes(1);
+    expect(changes.at(-1)?.tabs.map((tab) => tab.id)).toEqual(["b", "a"]);
   });
 });

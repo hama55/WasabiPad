@@ -22,13 +22,22 @@ interface TabPorts {
 }
 
 const newId = () => `tab-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+const DRAG_THRESHOLD = 5;
+type DropSpot = { targetId: string | null; after: boolean; el?: HTMLElement };
 
 export class TabManager {
   private tabs: StoredTab[] = [];
   private activeId = "";
   private transitionTarget: string | null = null;
+  private pendingDrag: { sourceId: string; x: number; y: number } | null = null;
+  private drag: { sourceId: string; ghost: HTMLElement; spot: DropSpot | null } | null = null;
+  private justDragged = false;
 
-  constructor(private host: HTMLElement, private doc: DocumentController, private ports: TabPorts) {}
+  constructor(private host: HTMLElement, private doc: DocumentController, private ports: TabPorts) {
+    // WebView2ではネイティブDnDがHTML5 DnDを奪うため、お気に入りバーと同じpointer方式を使う。
+    this.host.addEventListener("pointerdown", this.onPointerDown);
+    this.host.addEventListener("click", this.swallowClickAfterDrag, true);
+  }
 
   get state(): StoredTabs {
     return { tabs: this.tabs.map((tab) => ({ ...tab })), activeId: this.activeId || null };
@@ -197,11 +206,18 @@ export class TabManager {
     const buttons = this.tabs.map((tab) => {
       const button = document.createElement("button");
       button.className = "doc-tab";
+      button.dataset.tabId = tab.id;
       button.classList.toggle("active", tab.id === this.activeId);
       button.title = tab.path ?? "無題";
       button.innerHTML = `<span class="doc-tab-icon">${tab.kind === "folder" ? "📁" : "📄"}</span><span class="doc-tab-label"></span><span class="doc-tab-close">×</span>`;
       button.querySelector(".doc-tab-label")!.textContent = tab.label;
       button.addEventListener("click", (event) => {
+        if (this.justDragged) {
+          this.justDragged = false;
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
         if ((event.target as Element).closest(".doc-tab-close")) void this.close(tab.id);
         else void this.activate(tab.id);
       });
@@ -257,5 +273,96 @@ export class TabManager {
 
   private persist() {
     this.ports.onChange(this.state);
+  }
+
+  private onPointerDown = (event: PointerEvent) => {
+    this.justDragged = false;
+    if (event.button !== 0 || (event.target as Element | null)?.closest(".doc-tab-close")) return;
+    const tab = (event.target as Element | null)?.closest<HTMLElement>(".doc-tab");
+    const sourceId = tab?.dataset.tabId;
+    if (!sourceId) return;
+    this.pendingDrag = { sourceId, x: event.clientX, y: event.clientY };
+    tab.setPointerCapture?.(event.pointerId);
+    window.addEventListener("pointermove", this.onPointerMove);
+    window.addEventListener("pointerup", this.onPointerUp);
+    window.addEventListener("keydown", this.onDragKey);
+  };
+
+  private onPointerMove = (event: PointerEvent) => {
+    const pending = this.pendingDrag;
+    if (pending && Math.hypot(event.clientX - pending.x, event.clientY - pending.y) >= DRAG_THRESHOLD) {
+      this.pendingDrag = null;
+      this.drag = { sourceId: pending.sourceId, ghost: this.spawnGhost(pending.sourceId), spot: null };
+    }
+    if (!this.drag) return;
+    this.drag.ghost.style.transform = `translate(${event.clientX + 12}px, ${event.clientY + 12}px)`;
+    this.drag.spot = this.resolveDrop(event.clientX, event.clientY);
+    this.paintDrop(this.drag.spot);
+  };
+
+  private onPointerUp = () => {
+    const drag = this.drag;
+    this.endDrag();
+    if (!drag) return;
+    this.justDragged = true;
+    this.moveTab(drag.sourceId, drag.spot);
+  };
+
+  private onDragKey = (event: KeyboardEvent) => {
+    if (event.key === "Escape") this.endDrag();
+  };
+
+  private swallowClickAfterDrag = (event: MouseEvent) => {
+    if (!this.justDragged) return;
+    this.justDragged = false;
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  private resolveDrop(x: number, y: number): DropSpot | null {
+    const hit = document.elementFromPoint(x, y) as HTMLElement | null;
+    const target = hit?.closest<HTMLElement>(".doc-tab");
+    if (target?.dataset.tabId) {
+      const rect = target.getBoundingClientRect();
+      return { targetId: target.dataset.tabId, after: x >= rect.left + rect.width / 2, el: target };
+    }
+    return hit && this.host.contains(hit) ? { targetId: null, after: true } : null;
+  }
+
+  private paintDrop(spot: DropSpot | null) {
+    this.host.querySelectorAll(".doc-tab-drop-before, .doc-tab-drop-after")
+      .forEach((tab) => tab.classList.remove("doc-tab-drop-before", "doc-tab-drop-after"));
+    spot?.el?.classList.add(spot.after ? "doc-tab-drop-after" : "doc-tab-drop-before");
+  }
+
+  private spawnGhost(sourceId: string): HTMLElement {
+    const ghost = document.createElement("div");
+    ghost.className = "doc-tab-ghost";
+    ghost.textContent = this.tabs.find((tab) => tab.id === sourceId)?.label ?? "";
+    document.body.appendChild(ghost);
+    return ghost;
+  }
+
+  private endDrag() {
+    window.removeEventListener("pointermove", this.onPointerMove);
+    window.removeEventListener("pointerup", this.onPointerUp);
+    window.removeEventListener("keydown", this.onDragKey);
+    this.pendingDrag = null;
+    this.drag?.ghost.remove();
+    this.drag = null;
+    this.paintDrop(null);
+  }
+
+  private moveTab(sourceId: string, spot: DropSpot | null) {
+    if (!spot || spot.targetId === sourceId) return;
+    const source = this.tabs.findIndex((tab) => tab.id === sourceId);
+    if (source < 0) return;
+    const [tab] = this.tabs.splice(source, 1);
+    const target = spot.targetId === null
+      ? this.tabs.length
+      : this.tabs.findIndex((item) => item.id === spot.targetId) + (spot.after ? 1 : 0);
+    this.tabs.splice(Math.max(0, target), 0, tab);
+    this.render();
+    this.persist();
   }
 }
