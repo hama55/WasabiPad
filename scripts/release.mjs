@@ -44,7 +44,7 @@ run(npm, ["run", "sync:version"]);
 run("node", ["scripts/check-release-version.mjs", tag]);
 run(npm, ["run", "build"]);
 run("git", ["diff", "--check"]);
-run("git", ["add", "Cargo.toml", "package.json", "package-lock.json", "src-tauri/tauri.conf.json"]);
+run("git", ["add", "Cargo.toml", "Cargo.lock", "package.json", "package-lock.json", "src-tauri/tauri.conf.json"]);
 run("git", ["commit", "-m", `chore: release ${tag}`]);
 run("git", ["tag", "-a", tag, "-m", `Release ${tag}`]);
 
