@@ -282,17 +282,21 @@ describe("VirtualEditor", () => {
     editor.setWrap(true);
     await settle();
     const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
-    const line = host.querySelector<HTMLElement>(".ve-line")!;
     Object.defineProperty(scroll, "clientHeight", { configurable: true, value: 100 });
-    line.getBoundingClientRect = () => ({
-      x: 0, y: 0, left: 0, top: 0, right: 100, bottom: 2000,
-      width: 100, height: 2000, toJSON: () => ({}),
-    } as DOMRect);
+    const lineRect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      const height = this.classList.contains("ve-line") ? 2000 : 0;
+      return {
+        x: 0, y: 0, left: 0, top: 0, right: 100, bottom: height,
+        width: 100, height, toJSON: () => ({}),
+      } as DOMRect;
+    });
 
     scroll.dispatchEvent(new WheelEvent("wheel", { deltaY: 80 }));
     await settle();
 
+    const line = host.querySelector<HTMLElement>(".ve-line")!;
     expect(Number.parseFloat(line.style.top) - scroll.scrollTop).toBe(-80);
+    lineRect.mockRestore();
   });
 
   it("長い折り返し1行でも縦スクロールバーを表示し、つまみ位置へ移動する", async () => {
