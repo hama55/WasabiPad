@@ -118,6 +118,21 @@ describe("VirtualEditor", () => {
     expect(input.style.top).toBe("200px");
   });
 
+  it("ウィンドウ復帰時にIME入力位置を再同期する", async () => {
+    const { editor, input } = mount("line");
+    editor.open(1, false);
+    await settle();
+    input.focus();
+    input.style.top = "-999px";
+
+    window.dispatchEvent(new Event("focus"));
+    await settle();
+
+    expect(input.style.top).not.toBe("-999px");
+    input.dispatchEvent(new CompositionEvent("compositionstart"));
+    expect(Number.parseFloat(input.style.width)).toBeGreaterThanOrEqual(4);
+  });
+
   it("横スクロールバーを本文から分離して双方向に同期する", async () => {
     const { editor, host } = mount("wide line");
     editor.open(1, false);

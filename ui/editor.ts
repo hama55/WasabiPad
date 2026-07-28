@@ -182,6 +182,8 @@ export class VirtualEditor {
       this.input.classList.add("ime"); // 変換中は textarea を可視化
       this.placeCaret();
       this.resizeImeInput();
+      // WebView2がnative IMEへ渡すcaret矩形を、このイベント内で確定させる。
+      void this.input.getBoundingClientRect();
       this.caretEl.classList.remove("on");
     });
     this.input.addEventListener("compositionend", () => this.onCompositionEnd());
@@ -196,6 +198,7 @@ export class VirtualEditor {
       this.scrollbarDragging = false;
       this.schedule();
     });
+    window.addEventListener("focus", () => this.syncInputPositionAfterFocus());
 
     new ResizeObserver(() => {
       const topLine = this.wrap || this.metrics.scaleMode ? this.topLineF : this.pxToLine(this.scroll.scrollTop);
@@ -237,7 +240,10 @@ export class VirtualEditor {
   }
 
   focus() {
+    this.placeCaret();
     this.input.focus({ preventScroll: true });
+    this.placeCaret();
+    void this.input.getBoundingClientRect();
   }
 
   openSearch() {
@@ -597,17 +603,30 @@ export class VirtualEditor {
     this.caretEl.style.left = `${x}px`;
     this.placeSecondaryCarets();
     // IME 変換窓を追従させるため textarea も同座標へ
-    this.input.style.top = `${caretY}px`;
+    const minY = this.scroll.scrollTop;
+    const maxY = Math.max(minY, minY + this.scroll.clientHeight - this.metrics.lineHeight);
+    this.input.style.top = `${Math.max(minY, Math.min(caretY, maxY))}px`;
     if (this.composing && this.wrap) {
       this.input.style.left = `${this.paddingLeft}px`;
       const indent = Math.max(0, x - this.paddingLeft);
       this.input.style.textIndent = `${indent}px`;
       this.input.style.setProperty("--ime-indent", `${indent}px`);
     } else {
-      this.input.style.left = `${x}px`;
+      const minX = this.scroll.scrollLeft + this.paddingLeft;
+      const maxX = Math.max(minX, this.scroll.scrollLeft + this.scroll.clientWidth - 4);
+      this.input.style.left = `${Math.max(minX, Math.min(x, maxX))}px`;
       this.input.style.removeProperty("text-indent");
       this.input.style.removeProperty("--ime-indent");
     }
+  }
+
+  private syncInputPositionAfterFocus() {
+    this.placeCaret();
+    requestAnimationFrame(() => {
+      this.placeCaret();
+      // 最小化・Alt+Tab復帰後のnative IME照会より先にlayoutを確定させる。
+      void this.input.getBoundingClientRect();
+    });
   }
 
   private wrapPoint(lineEl: HTMLElement, s: string, col: number): { x: number; y: number } | null {
@@ -1190,8 +1209,8 @@ export class VirtualEditor {
       this.input.style.height = `${Math.max(this.metrics.lineHeight, this.input.scrollHeight)}px`;
       return;
     }
-    this.input.style.width = "1px";
-    this.input.style.width = `${this.input.scrollWidth + 2}px`;
+    this.input.style.width = "4px";
+    this.input.style.width = `${Math.max(4, this.input.scrollWidth + 2)}px`;
   }
 
   // ---- ホイール ----

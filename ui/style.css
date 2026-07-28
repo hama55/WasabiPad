@@ -340,7 +340,7 @@ body {
 @keyframes ve-blink { 50% { opacity: 0; } }
 .ve-input {
   position: absolute; z-index: 3;
-  width: 1px; height: var(--line-h); padding: 0; margin: 0; border: 0;
+  width: 4px; height: var(--line-h); padding: 0; margin: 0; border: 0;
   outline: none; resize: none; overflow: hidden;
   background: transparent; color: transparent; caret-color: transparent;
   font-family: var(--ve-font-family); font-size: var(--ve-font);
