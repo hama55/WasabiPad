@@ -27,20 +27,18 @@ pub fn join_relative(root: &Path, relative: &str) -> PathBuf {
 
 // 指定ディレクトリ (rel_dir が空文字ならルート) の直下だけを列挙する。
 // サブフォルダの中身は再帰しない (ツリーの展開ボタンで都度呼ばれる想定)。
-pub fn list_children(root: &Path, rel_dir: &str) -> Option<Vec<FolderEntry>> {
+pub fn list_children(root: &Path, rel_dir: &str) -> std::io::Result<Vec<FolderEntry>> {
     let dir = if rel_dir.is_empty() { root.to_path_buf() } else { join_relative(root, rel_dir) };
-    let mut items: Vec<FolderEntry> = std::fs::read_dir(&dir)
-        .ok()?
-        .flatten()
-        .filter_map(|e| {
-            let is_dir = e.file_type().ok()?.is_dir();
-            Some(FolderEntry {
-                name: e.file_name().to_string_lossy().into_owned(),
-                is_archive: !is_dir && is_lazy_archive_path(&e.path()),
-                is_dir,
-            })
-        })
-        .collect();
+    let mut items = Vec::new();
+    for entry in std::fs::read_dir(&dir)? {
+        let entry = entry?;
+        let is_dir = entry.file_type()?.is_dir();
+        items.push(FolderEntry {
+            name: entry.file_name().to_string_lossy().into_owned(),
+            is_archive: !is_dir && is_lazy_archive_path(&entry.path()),
+            is_dir,
+        });
+    }
     items.sort_by(|a, b| {
         b.is_dir
             .cmp(&a.is_dir)
@@ -48,7 +46,7 @@ pub fn list_children(root: &Path, rel_dir: &str) -> Option<Vec<FolderEntry>> {
             .then_with(|| a.name.cmp(&b.name))
     });
     items.truncate(MAX_ENTRIES);
-    Some(items)
+    Ok(items)
 }
 
 // 数字の並びを桁数ではなく数値として比較する (memo2 < memo10)。
@@ -111,7 +109,7 @@ mod tests {
 
         let names: Vec<String> = list_children(&root, "").unwrap().into_iter().map(|e| e.name).collect();
         assert_eq!(names, vec!["sub2", "sub10", "a2.txt", "a10.txt"]);
-        assert!(list_children(&root, "missing").is_none());
+        assert!(list_children(&root, "missing").is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 }

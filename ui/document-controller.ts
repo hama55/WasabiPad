@@ -1,8 +1,4 @@
 import * as api from "./api";
-import type { AddressBar } from "./addressbar";
-import type { StatusBar } from "./statusbar";
-import type { Sidebar } from "./sidebar";
-import type { VirtualEditor } from "./editor";
 import type { DocumentSession } from "./session";
 import { initialSession, sessionFromDocInfo } from "./session";
 import { promptSaveFormat } from "./save-format";
@@ -23,13 +19,37 @@ export interface MemoSpec {
   extension: string;
 }
 
+export interface DocumentEditorPort {
+  open: (lineCount: number, readOnly: boolean, keepViewers?: boolean) => void;
+  focus: () => void;
+  goTo: (line: number, col: number) => void;
+}
+
+export interface DocumentStatusPort {
+  setFormat: (session: DocumentSession) => void;
+  setByteSize: (bytes: number | null, isHuge?: boolean) => void;
+  setLineCount: (count: number) => void;
+}
+
+export interface DocumentAddressPort {
+  render: (path: string) => void;
+}
+
+export interface DocumentSidebarPort {
+  setWorkspaceSearch: (on: boolean) => void;
+  setArchiveEntries: (entries: string[]) => void;
+  setArchiveRoot: (displayName: string) => void;
+  setEntries: (entries: api.FolderEntry[]) => void;
+  selectByRelPath: (relPath: string) => void;
+}
+
 // 文書の入れ替えに伴って更新される表示先。実装 (VirtualEditor など) のうち
 // ここで実際に使う操作だけを要求する。
 export interface DocumentView {
-  editor: Pick<VirtualEditor, "open" | "focus" | "goTo">;
-  statusbar: Pick<StatusBar, "setFormat" | "setByteSize" | "setLineCount">;
-  addressbar: Pick<AddressBar, "render">;
-  sidebar: Pick<Sidebar, "setWorkspaceSearch" | "setArchiveEntries" | "setArchiveRoot" | "setEntries" | "selectByRelPath">;
+  editor: DocumentEditorPort;
+  statusbar: DocumentStatusPort;
+  addressbar: DocumentAddressPort;
+  sidebar: DocumentSidebarPort;
   setSidebar: (on: boolean, label?: string) => void;
   setLoading: (active: boolean, message?: string) => void;
   setTitle: (title: string) => void;

@@ -97,6 +97,7 @@ fn line_char_len(line: usize, state: State) -> usize {
 #[tauri::command]
 fn select_entry(rel_path: String, state: State) -> Result<DocInfo, String> {
     with_doc(&state, |doc| doc.select_entry(&rel_path))
+        .map_err(|error| error.to_string())?
         .ok_or_else(|| "no entry".into())
 }
 
@@ -105,6 +106,7 @@ fn select_entry(rel_path: String, state: State) -> Result<DocInfo, String> {
 #[tauri::command]
 fn list_archive_entries(rel_path: String, state: State) -> Result<Vec<String>, String> {
     with_doc(&state, |doc| doc.list_archive_entries(&rel_path))
+        .map_err(|error| error.to_string())?
         .ok_or_else(|| "no entries".into())
 }
 
@@ -112,6 +114,7 @@ fn list_archive_entries(rel_path: String, state: State) -> Result<Vec<String>, S
 #[tauri::command]
 fn list_folder_entries(rel_dir: String, state: State) -> Result<Vec<FolderEntry>, String> {
     with_doc(&state, |doc| doc.list_folder_entries(&rel_dir))
+        .map_err(|error| error.to_string())?
         .ok_or_else(|| "no entries".into())
 }
 
