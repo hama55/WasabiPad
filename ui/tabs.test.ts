@@ -111,7 +111,7 @@ describe("TabManager", () => {
     await manager.init(stored, null, null);
 
     host.querySelector<HTMLButtonElement>(".doc-tab-add")!.click();
-    await vi.waitFor(() => expect(manager.state.tabs).toHaveLength(3));
+    await vi.waitFor(() => expect(host.querySelectorAll(".doc-tab")).toHaveLength(3));
 
     expect(manager.state.tabs[2].kind).toBe("blank");
   });

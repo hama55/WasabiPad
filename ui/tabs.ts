@@ -147,13 +147,14 @@ export class TabManager {
 
   private async addAndActivate(tab: StoredTab) {
     this.transitionTarget = tab.id;
-    const proceeded = await this.doc.confirmDiscard(async () => {
-      this.syncActive(this.doc.current);
-      this.tabs.push(tab);
-      this.activeId = tab.id;
-      await this.loadActive();
-    });
-    if (!proceeded) {
+    try {
+      await this.doc.confirmDiscard(async () => {
+        this.syncActive(this.doc.current);
+        this.tabs.push(tab);
+        this.activeId = tab.id;
+        await this.loadActive();
+      });
+    } finally {
       this.transitionTarget = null;
       this.render();
       this.persist();

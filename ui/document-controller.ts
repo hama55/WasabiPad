@@ -251,7 +251,14 @@ export class DocumentController {
       return true;
     }
     if (choice !== "save") return false;
-    const saved = await this.save();
+    let saved: boolean;
+    try {
+      saved = await this.save();
+    } catch (error) {
+      // 保存後の画面更新だけが失敗した場合も、保存済みの文書を元タブへ留めない。
+      if (this.session.dirty) throw error;
+      saved = true;
+    }
     if (!saved && this.session.dirty) return false;
     await onProceed?.();
     return true;
