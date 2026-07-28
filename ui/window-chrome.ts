@@ -44,7 +44,6 @@ export class WindowChrome {
   }
 
   setTitle(title: string) {
-    this.pick("titletext").textContent = title;
     void this.win.setTitle(title);
   }
 

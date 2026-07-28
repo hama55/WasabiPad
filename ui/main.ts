@@ -13,11 +13,10 @@ import { WindowChrome } from "./window-chrome";
 import { ExternalWatch } from "./external-watch";
 import { FolderActions, openInOtherApp } from "./folder-actions";
 import { DocumentController, SAVE_EXTENSIONS } from "./document-controller";
-import { showMenu, MenuItem } from "./menu";
 import { showError } from "./dialogs";
 import { confirmMessage } from "./prompt";
 import { joinWindowsRoot } from "./path";
-import { createCommandRegistry, globalCommandForEvent, CommandId } from "./commands";
+import { createCommandRegistry, globalCommandForEvent } from "./commands";
 import { DEFAULT_EDITOR_CONFIG } from "./editor-config";
 import {
   getSetting,
@@ -54,7 +53,6 @@ function setSidebar(on: boolean, label = "") {
   const shown = on && sidebarVisible;
   sidebarEl.hidden = !shown;
   splitter.hidden = !shown;
-  $<HTMLButtonElement>("toggle-sidebar").disabled = !on;
   statusbar.setMode(label);
 }
 
@@ -77,8 +75,10 @@ statusbar.restoreTheme(localStorage.getItem("theme"));
 const addressbar = new AddressBar($("topbar"), {
   onOpen: (path) => void doc.openPath(path),
   onSave: () => void doc.save(),
+  onSaveAs: () => void doc.saveAs(),
   onNew: () => void doc.newFile(),
   onNewWindow: () => void api.launchNew(),
+  onFind: () => editor.openSearch(),
   onPick: () => void pickAndOpen(false),
   onFavorite: () => favbar.addCurrent(),
 });
@@ -234,37 +234,10 @@ const commands = createCommandRegistry({
   find: () => editor.openSearch(),
 });
 
-function commandMenuItem(id: CommandId, extra: Partial<MenuItem> = {}): MenuItem {
-  const command = commands[id];
-  return { label: command.label, key: command.shortcut, action: command.run, ...extra };
-}
-
-$("menu-file").addEventListener("click", (e) => {
-  const r = (e.target as HTMLElement).getBoundingClientRect();
-  showMenu(r.left, r.bottom, [
-    commandMenuItem("new"),
-    commandMenuItem("open"),
-    commandMenuItem("openFolder"),
-    commandMenuItem("save", { sep: true }),
-    commandMenuItem("saveAs"),
-    commandMenuItem("quit", { sep: true }),
-  ]);
-});
-$("menu-view").addEventListener("click", (e) => {
-  const r = (e.target as HTMLElement).getBoundingClientRect();
-  showMenu(r.left, r.bottom, [
-    commandMenuItem("find"),
-    { label: "起動時のデフォルトを解除", action: () => setSetting("startupPath", null), sep: true },
-  ]);
-});
-
-$("toggle-sidebar").addEventListener("click", () => {
-  if (!sidebarAvailable) return;
+$("toggle-bars").addEventListener("click", () => {
   sidebarVisible = !sidebarVisible;
+  $("navbars").hidden = !sidebarVisible;
   setSidebar(sidebarAvailable, statusbar.mode);
-});
-$("toggle-favbar").addEventListener("click", () => {
-  $("navbars").hidden = !$("navbars").hidden;
 });
 
 document.addEventListener("contextmenu", (e) => e.preventDefault());
