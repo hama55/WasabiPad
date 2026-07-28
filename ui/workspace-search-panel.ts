@@ -42,6 +42,14 @@ const PARTIAL_RENDER_MS = 100;
 
 type ToggleKey = BoolOptionKey;
 type SearchState = WorkspaceSearchOutcome | "searching" | "stopped" | null;
+type SearchViewState = {
+  pattern: string;
+  outcome: SearchState;
+  partial: WorkspaceSearchResult[];
+  collapseByDefault: boolean;
+  collapsed: Set<string>;
+  collapseTouched: boolean;
+};
 
 // 「どう当てるか」は入力欄の中へ (VSCode の Aa / ab / .* と同じ位置)。
 // 説明文は OPTION_TEXTS が持ち、ここが持つのは記号だけ。
@@ -63,14 +71,9 @@ export class WorkspaceSearchPanel {
   private summary: HTMLElement;
   private toggleButtons = new Map<ToggleKey, HTMLButtonElement>();
   private options: WorkspaceSearchOptions;
-  private outcome: SearchState = null;
-  private partial: WorkspaceSearchResult[] = []; // 検索中に届いた分 (並べ替えは描画時)
+  private folderRoot: string | null = null;
+  private states = new Map<string, SearchViewState>();
   private partialTimer: number | undefined;
-  // 畳み方は「既定 + 例外」で持つ。全パスを集合に入れる持ち方だと、
-  // 検索中に後から届いたファイルが既定から外れて開いたまま出てしまう。
-  private collapseByDefault = false;
-  private collapsed = new Set<string>(); // 既定と逆にするファイル
-  private collapseTouched = false; // 畳み方を手で変えたか (自動の畳み込みより手を優先する)
   private searchGen = 0;
   private searchTimer: number | undefined;
   private running: Promise<WorkspaceSearchOutcome> | null = null; // 走行中の検索
@@ -95,12 +98,31 @@ export class WorkspaceSearchPanel {
 
   // 結果ツリーを出すべきか (検索中か、結果が確定しているか)
   get showing(): boolean {
-    return this.outcome !== null;
+    return this.folderRoot !== null && this.state.outcome !== null;
   }
 
-  setVisible(on: boolean) {
-    this.bar.hidden = !on;
-    if (!on) this.clear(false);
+  setFolderRoot(folderRoot: string | null) {
+    if (folderRoot === this.folderRoot) return;
+    if (this.folderRoot && this.state.outcome === "searching") this.stop();
+    else {
+      this.searchGen++;
+      window.clearTimeout(this.searchTimer);
+    }
+    this.folderRoot = folderRoot;
+    this.bar.hidden = folderRoot === null;
+    if (folderRoot) this.searchInput.value = this.state.pattern;
+    this.ports.onViewChange();
+  }
+
+  private get state(): SearchViewState {
+    const root = this.folderRoot;
+    if (!root) throw new Error("フォルダ検索の対象がありません");
+    let state = this.states.get(root);
+    if (!state) {
+      state = { pattern: "", outcome: null, partial: [], collapseByDefault: false, collapsed: new Set(), collapseTouched: false };
+      this.states.set(root, state);
+    }
+    return state;
   }
 
   // ---- 検索バー ----
@@ -182,6 +204,7 @@ export class WorkspaceSearchPanel {
 
   private queueSearch(delay = 150) {
     const pat = this.searchInput.value;
+    this.state.pattern = pat;
     const gen = ++this.searchGen;
     window.clearTimeout(this.searchTimer);
     // 条件が1つでも変われば最初から引き直す (前回の結果は再利用しない)。
@@ -210,6 +233,7 @@ export class WorkspaceSearchPanel {
     this.stop();
     this.setOutcome(null);
     this.searchInput.value = "";
+    this.state.pattern = "";
     if (focus) this.searchInput.focus();
   }
 
@@ -226,53 +250,53 @@ export class WorkspaceSearchPanel {
   // 検索中に backend から届いた途中経過。世代が変わっていれば捨てる
   // (打ち切った検索の取りこぼしが次の検索の結果に混ざらないようにする)。
   acceptBatch(searchId: number, results: WorkspaceSearchResult[]) {
-    if (searchId !== this.searchGen || this.outcome !== "searching") return;
-    this.partial.push(...results);
-    this.autoCollapse(this.partial);
+    if (searchId !== this.searchGen || this.folderRoot === null || this.state.outcome !== "searching") return;
+    this.state.partial.push(...results);
+    this.autoCollapse(this.state.partial);
     // 描画は間引く。届くたびに数千行を組み直すと走査より描画が重くなる
     if (this.partialTimer !== undefined) return;
     this.partialTimer = window.setTimeout(() => {
       this.partialTimer = undefined;
-      if (this.outcome === "searching") this.ports.onViewChange();
+      if (this.folderRoot !== null && this.state.outcome === "searching") this.ports.onViewChange();
     }, PARTIAL_RENDER_MS);
   }
 
   // 件数が多いときはファイル一覧を先に見せる (中身は必要な分だけ開く)。
   // ただし利用者が畳み方を触ったあとは、途中経過が届くたびに上書きしない
   private autoCollapse(results: WorkspaceSearchResult[]) {
-    if (this.collapseTouched) return;
-    this.collapseByDefault = results.length > AUTO_COLLAPSE_MATCHES;
-    this.collapsed.clear();
+    if (this.state.collapseTouched) return;
+    this.state.collapseByDefault = results.length > AUTO_COLLAPSE_MATCHES;
+    this.state.collapsed.clear();
   }
 
   private setOutcome(outcome: SearchState) {
-    this.outcome = outcome;
+    this.state.outcome = outcome;
     this.searchStop.hidden = outcome !== "searching";
     window.clearTimeout(this.partialTimer);
     this.partialTimer = undefined;
-    if (outcome !== "stopped") this.partial = [];
+    if (outcome !== "stopped") this.state.partial = [];
     if (outcome === null) this.summary.hidden = true;
-    if (outcome === "searching") this.collapseTouched = false; // 新しい検索の始まり
+    if (outcome === "searching") this.state.collapseTouched = false; // 新しい検索の始まり
     if (outcome && outcome !== "searching" && outcome !== "stopped") this.autoCollapse(outcome.results);
     this.ports.onViewChange();
   }
 
   private toggleAllGroups() {
     if (!this.shownResults().length) return;
-    this.collapseTouched = true;
-    this.collapseByDefault = !this.collapseByDefault;
-    this.collapsed.clear();
+    this.state.collapseTouched = true;
+    this.state.collapseByDefault = !this.state.collapseByDefault;
+    this.state.collapsed.clear();
     this.ports.onViewChange();
   }
 
   // いま画面に出ている結果。検索中は届いた分、確定後は確定結果
   private shownResults(): WorkspaceSearchResult[] {
-    if (this.outcome === "searching" || this.outcome === "stopped") return this.partial;
-    return this.outcome?.results ?? [];
+    if (this.state.outcome === "searching" || this.state.outcome === "stopped") return this.state.partial;
+    return this.state.outcome?.results ?? [];
   }
 
   private isCollapsed(relPath: string): boolean {
-    return this.collapsed.has(relPath) !== this.collapseByDefault;
+    return this.state.collapsed.has(relPath) !== this.state.collapseByDefault;
   }
 
   // 検索は同時に1本だけ。走っているものが畳まれるのを待ってから始める。
@@ -302,29 +326,29 @@ export class WorkspaceSearchPanel {
 
   // ---- 結果ツリー (ファイル見出し + その下に一致行) ----
   renderTree(): DocumentFragment {
-    return this.outcome === "searching" || this.outcome === "stopped" ? this.searchingTree() : this.resultTree();
+    return this.state.outcome === "searching" || this.state.outcome === "stopped" ? this.searchingTree() : this.resultTree();
   }
 
   // 検索中の途中経過 (確定結果と同じ並びで、届いた分だけを見せる)
   private searchingTree(): DocumentFragment {
     const frag = document.createDocumentFragment();
-    if (!this.partial.length) {
+    if (!this.state.partial.length) {
       this.summary.hidden = true;
-      frag.appendChild(searchingRow(this.outcome === "stopped"));
+      frag.appendChild(searchingRow(this.state.outcome === "stopped"));
       return frag;
     }
-    const groups = groupResults(sortResults(this.partial, this.options));
+    const groups = groupResults(sortResults(this.state.partial, this.options));
     this.summary.hidden = false;
     this.summary.replaceChildren(
-      countRow(`${groups.length.toLocaleString()} 個のファイルに ${this.partial.length.toLocaleString()} 件 (${this.outcome === "stopped" ? "検索を中止" : "検索中"})`)
+      countRow(`${groups.length.toLocaleString()} 個のファイルに ${this.state.partial.length.toLocaleString()} 件 (${this.state.outcome === "stopped" ? "検索を中止" : "検索中"})`)
     );
     this.appendGroups(frag, groups);
-    frag.appendChild(searchingRow(this.outcome === "stopped"));
+    frag.appendChild(searchingRow(this.state.outcome === "stopped"));
     return frag;
   }
 
   private resultTree(): DocumentFragment {
-    const outcome = this.outcome as WorkspaceSearchOutcome;
+    const outcome = this.state.outcome as WorkspaceSearchOutcome;
     // 確定結果も途中経過と同じ関数に通す。backend の返す順は走査順で、並びは表示の都合
     const groups = groupResults(sortResults(outcome.results, this.options));
     this.renderSummary(outcome, groups.length);
@@ -401,10 +425,10 @@ export class WorkspaceSearchPanel {
     div.append(twisty, name, dir, count);
     div.title = group.relPath;
     div.addEventListener("click", () => {
-      this.collapseTouched = true;
+      this.state.collapseTouched = true;
       // 集合が持つのは「既定と逆にするファイル」。既定へ戻すなら取り除く
-      if (this.collapsed.has(group.relPath)) this.collapsed.delete(group.relPath);
-      else this.collapsed.add(group.relPath);
+      if (this.state.collapsed.has(group.relPath)) this.state.collapsed.delete(group.relPath);
+      else this.state.collapsed.add(group.relPath);
       this.ports.onViewChange();
     });
     this.bindOpen(div, group.matches[0]);

@@ -36,7 +36,7 @@ export interface DocumentAddressPort {
 }
 
 export interface DocumentSidebarPort {
-  setWorkspaceSearch: (on: boolean) => void;
+  setWorkspaceSearch: (folderRoot: string | null) => void;
   setArchiveEntries: (entries: string[]) => void;
   setArchiveRoot: (displayName: string) => void;
   setEntries: (entries: api.FolderEntry[]) => void;
@@ -120,7 +120,7 @@ export class DocumentController {
   private showTree(info: api.DocInfo) {
     if (info.kind === "archive") {
       this.view.setSidebar(true, "閲覧モード");
-      this.view.sidebar.setWorkspaceSearch(false);
+      this.view.sidebar.setWorkspaceSearch(null);
       if (info.entries) {
         this.view.sidebar.setArchiveEntries(info.entries);
       } else {
@@ -129,10 +129,10 @@ export class DocumentController {
       }
     } else if (info.folder_entries) {
       this.view.setSidebar(true, "");
-      this.view.sidebar.setWorkspaceSearch(true);
+      this.view.sidebar.setWorkspaceSearch(info.folder_root);
       this.view.sidebar.setEntries(info.folder_entries);
     } else {
-      this.view.sidebar.setWorkspaceSearch(false);
+      this.view.sidebar.setWorkspaceSearch(null);
       this.view.setSidebar(false);
     }
   }
@@ -151,7 +151,7 @@ export class DocumentController {
     this.view.statusbar.setLineCount(1);
     this.view.addressbar.render("");
     this.view.setSidebar(false);
-    this.view.sidebar.setWorkspaceSearch(false);
+    this.view.sidebar.setWorkspaceSearch(null);
     this.view.editor.open(1, false);
     this.view.editor.focus();
     this.updateTitle();

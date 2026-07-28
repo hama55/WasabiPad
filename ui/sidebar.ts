@@ -81,8 +81,8 @@ export class Sidebar {
     });
   }
 
-  setWorkspaceSearch(on: boolean) {
-    this.panel.setVisible(on);
+  setWorkspaceSearch(folderRoot: string | null) {
+    this.panel.setFolderRoot(folderRoot);
   }
 
   acceptSearchBatch(searchId: number, results: WorkspaceSearchResult[]) {

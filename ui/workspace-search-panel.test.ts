@@ -65,7 +65,7 @@ describe("WorkspaceSearchPanel", () => {
       },
     }));
     host.append(panel.bar, tree);
-    panel.setVisible(true);
+    panel.setFolderRoot("C:\\workspace");
     return host;
   }
 
@@ -249,6 +249,23 @@ describe("WorkspaceSearchPanel", () => {
     expect(host.querySelectorAll(".ws-group")).toHaveLength(1);
     expect(text(host, ".ws-summary")).toContain("検索を中止");
     expect(text(host, ".ws-empty")).toContain("検索を中止しました");
+  });
+
+  it("フォルダごとに検索結果を保持する", async () => {
+    vi.useFakeTimers();
+    const host = mount(async () => outcome([hit("a.txt", 0, "needle")]));
+    await search(host, "needle");
+
+    mounted.setFolderRoot("C:\\other");
+    expect(host.querySelectorAll(".ws-group")).toHaveLength(0);
+
+    mounted.setFolderRoot("C:\\workspace");
+    expect(host.querySelectorAll(".ws-group")).toHaveLength(1);
+    expect(host.querySelector<HTMLInputElement>(".ws-search-row > input")?.value).toBe("needle");
+
+    mounted.setFolderRoot(null);
+    mounted.setFolderRoot("C:\\workspace");
+    expect(host.querySelectorAll(".ws-group")).toHaveLength(1);
   });
 
   it("検索をクリアしたら、停止済みの結果も消す", async () => {
