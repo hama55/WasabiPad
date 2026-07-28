@@ -33,6 +33,18 @@ describe("LineCache", () => {
     expect(cache.has(2)).toBe(false);
   });
 
+  it("改行なし編集は取得済み行へ局所反映する", async () => {
+    const cache = new LineCache(fakeDocument("abcd").client);
+    await cache.fetch(0);
+
+    expect(cache.applySingleLineEdit(
+      { line: 0, col: 1 },
+      { line: 0, col: 3 },
+      "漢字",
+    )).toBe(true);
+    expect(cache.peek(0)).toBe("a漢字d");
+  });
+
   it("未取得行の長さは backend へ問い合わせる", async () => {
     const doc = document20();
     const cache = new LineCache(doc.client);

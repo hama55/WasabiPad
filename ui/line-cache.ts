@@ -70,6 +70,18 @@ export class LineCache {
     }
   }
 
+  applySingleLineEdit(start: Pos, end: Pos, inserted: string): boolean {
+    if (start.line !== end.line || inserted.includes("\n")) return false;
+    const chunk = LineCache.chunkOf(start.line);
+    const lines = this.chunks.get(chunk);
+    const index = start.line - chunk * CHUNK;
+    const current = lines?.[index];
+    if (current === undefined) return false;
+    const chars = [...current];
+    lines![index] = `${chars.slice(0, start.col).join("")}${inserted}${chars.slice(end.col).join("")}`;
+    return true;
+  }
+
   async textInRange(start: Pos, end: Pos): Promise<string> {
     const parts: string[] = [];
     for (let i = start.line; i <= end.line; i += 1) {

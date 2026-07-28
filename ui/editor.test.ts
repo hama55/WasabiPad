@@ -40,16 +40,47 @@ describe("VirtualEditor", () => {
   });
 
   it("入力は backend の edit へ委譲され、行数変化が通知される", async () => {
-    const { editor, doc, events, type } = mount("ab");
+    const { editor, doc, events, host, type } = mount("ab");
     editor.open(1, false);
     await settle();
+    const line = host.querySelector(".ve-line");
+    const gutterRow = host.querySelector(".ve-gnum");
+    const lineFetches = doc.calls.filter((call) => call.startsWith("lines(")).length;
     type("X");
     await settle();
     expect(doc.text()).toBe("Xab");
+    expect(host.querySelector(".ve-line")).toBe(line);
+    expect(host.querySelector(".ve-gnum")).toBe(gutterRow);
+    expect(doc.calls.filter((call) => call.startsWith("lines("))).toHaveLength(lineFetches);
     type("\n");
     await settle();
     expect(doc.text()).toBe("X\nab");
     expect(events.lineCount).toBe(2);
+  });
+
+  it("IME確定文字は backend 反映まで表示を保持する", async () => {
+    const { editor, doc, host, input } = mount("ab");
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const edit = doc.client.edit;
+    doc.client.edit = async (...args) => {
+      await gate;
+      return edit(...args);
+    };
+    editor.open(1, false);
+    await settle();
+
+    input.dispatchEvent(new CompositionEvent("compositionstart"));
+    input.value = "漢字";
+    input.dispatchEvent(new InputEvent("input", { isComposing: true }));
+    input.dispatchEvent(new CompositionEvent("compositionend"));
+
+    expect(host.querySelector(".ve-ime-commit")?.textContent).toBe("漢字");
+    expect(input.value).toBe("");
+    release();
+    await settle();
+    expect(host.querySelector(".ve-ime-commit")).toBeNull();
+    expect(doc.text()).toBe("漢字ab");
   });
 
   it("閲覧専用なら編集系の呼び出しを一切出さない", async () => {

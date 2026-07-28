@@ -178,8 +178,6 @@ export class VirtualEditor {
     this.input.addEventListener("keydown", (e) => this.onKeyDown(e));
     this.input.addEventListener("input", (e) => this.onInput(e as InputEvent));
     this.input.addEventListener("compositionstart", () => {
-      // スクロール直後でも、IMEが座標を照会する前に現在の表示位置へ同期する。
-      this.render();
       this.composing = true;
       this.input.classList.add("ime"); // 変換中は textarea を可視化
       this.placeCaret();
@@ -425,34 +423,10 @@ export class VirtualEditor {
     const curLine = wholeLineSelectEnd ? this.sel.caret.line - 1 : this.sel.caret.line;
     const caretLines = new Set([curLine, ...this.sel.secondary.map((caret) => caret.line)]);
     const selectedLines = this.selectedLineRange();
-    const frag = document.createDocumentFragment();
-    for (let i = first; i < last; i++) {
-      const text = this.lineCache.peek(i);
-      const line = el("div", "ve-line");
-      line.dataset.line = String(i);
-      line.textContent = text ?? "…";
-      frag.appendChild(line);
-    }
-
-    this.linesLayer.replaceChildren(frag);
+    this.renderVisibleLines(first, last);
     this.layoutVisibleLines(first, last, topLine, top);
 
-    const gfrag = document.createDocumentFragment();
-    for (let i = first; i < last; i++) {
-      const g = el("div", "ve-gnum");
-      g.style.top = `${this.rowTop(i) - top}px`;
-      const groups = lineNumberGroups(i + 1);
-      g.append(document.createTextNode(groups[0]));
-      for (const group of groups.slice(1)) {
-        const separator = el("span", "ve-gnum-separator");
-        separator.textContent = group;
-        g.appendChild(separator);
-      }
-      g.classList.toggle("selected-line", selectedLines !== null && i >= selectedLines.first && i <= selectedLines.last);
-      g.classList.toggle("caret-line", caretLines.has(i));
-      gfrag.appendChild(g);
-    }
-    this.gutter.replaceChildren(gfrag);
+    this.renderGutter(first, last, top, selectedLines, caretLines);
 
     // 新しい可視行DOMを基準にRangeを測定する。旧DOMを測るとスクロール後に欠落する。
     const selectionFrag = document.createDocumentFragment();
@@ -463,6 +437,67 @@ export class VirtualEditor {
     this.updateWidth();
     this.placeCaret();
     if (!needFetch) this.updateGutterWidth();
+  }
+
+  private renderVisibleLines(first: number, last: number) {
+    const current = [...this.linesLayer.querySelectorAll<HTMLElement>(":scope > .ve-line")];
+    const canReuse = current.length === last - first
+      && current.every((line, index) => line.dataset.line === String(first + index));
+    if (canReuse) {
+      this.linesLayer.querySelectorAll(":scope > .ve-sel").forEach((selection) => selection.remove());
+      current.forEach((line, index) => {
+        const text = this.lineCache.peek(first + index) ?? "…";
+        if (line.textContent !== text) line.textContent = text;
+      });
+      return;
+    }
+
+    const frag = document.createDocumentFragment();
+    for (let i = first; i < last; i++) {
+      const line = el("div", "ve-line");
+      line.dataset.line = String(i);
+      line.textContent = this.lineCache.peek(i) ?? "…";
+      frag.appendChild(line);
+    }
+    this.linesLayer.replaceChildren(frag);
+  }
+
+  private renderGutter(
+    first: number,
+    last: number,
+    top: number,
+    selectedLines: { first: number; last: number } | null,
+    caretLines: Set<number>,
+  ) {
+    let rows = [...this.gutter.querySelectorAll<HTMLElement>(":scope > .ve-gnum")];
+    const canReuse = rows.length === last - first
+      && rows.every((row, index) => row.dataset.line === String(first + index));
+    if (!canReuse) {
+      const frag = document.createDocumentFragment();
+      for (let i = first; i < last; i++) {
+        const row = el("div", "ve-gnum");
+        row.dataset.line = String(i);
+        const groups = lineNumberGroups(i + 1);
+        row.append(document.createTextNode(groups[0]));
+        for (const group of groups.slice(1)) {
+          const separator = el("span", "ve-gnum-separator");
+          separator.textContent = group;
+          row.appendChild(separator);
+        }
+        frag.appendChild(row);
+      }
+      this.gutter.replaceChildren(frag);
+      rows = [...this.gutter.querySelectorAll<HTMLElement>(":scope > .ve-gnum")];
+    }
+    rows.forEach((row, index) => {
+      const line = first + index;
+      row.style.top = `${this.rowTop(line) - top}px`;
+      row.classList.toggle(
+        "selected-line",
+        selectedLines !== null && line >= selectedLines.first && line <= selectedLines.last,
+      );
+      row.classList.toggle("caret-line", caretLines.has(line));
+    });
   }
 
   private layoutVisibleLines(first: number, last: number, topLine: number, viewTop: number) {
@@ -878,6 +913,7 @@ export class VirtualEditor {
     const oldTopLine = this.wrap || this.metrics.scaleMode ? this.topLineF : this.pxToLine(this.scroll.scrollTop);
     const oldIntraLinePx = this.wrapIntraLinePx;
     const wasAtBottom = oldTopLine >= this.maxTopLine();
+    const oldLineCount = this.lineCount;
     this.lineCount = Math.max(1, r.line_count);
     this.updateMetrics();
     // 行数変更前後の座標系を混在させない。末尾表示中は新しい末尾へ追従し、
@@ -885,7 +921,10 @@ export class VirtualEditor {
     const nextTopLine = wasAtBottom ? this.maxTopLine() : oldTopLine;
     if (this.wrap) this.setWrapAnchor(nextTopLine, nextTopLine === oldTopLine ? oldIntraLinePx : 0);
     else this.setTopLine(nextTopLine);
-    this.lineCache.invalidateFrom(fromLine);
+    const cached = oldLineCount === this.lineCount
+      && edits.length === 1
+      && this.lineCache.applySingleLineEdit(edits[0].start, edits[0].end, edits[0].text);
+    if (!cached) this.lineCache.invalidateFrom(fromLine);
     this.liveViewers.applyEdits(edits);
     this.sel.caret = r.caret;
     this.sel.anchor = r.caret;
@@ -903,6 +942,7 @@ export class VirtualEditor {
     for (let c = LineCache.chunkOf(first); c <= LineCache.chunkOf(last); c++) {
       await this.lineCache.fetch(c);
     }
+    if (!this.wrap) this.ensureVisible();
     this.render();
     if (!this.wrap) this.scroll.scrollLeft = previousScrollLeft;
     this.ensureVisible();
@@ -910,10 +950,10 @@ export class VirtualEditor {
     this.notifyCursor();
   }
 
-  private insertText(text: string) {
-    if (this.readOnly) return;
+  private insertText(text: string): Promise<void> {
+    if (this.readOnly) return Promise.resolve();
     if (this.sel.secondary.length) {
-      this.run(async () => {
+      return this.run(async () => {
         this.sel.multiCaretX = null;
         const carets = this.sel.all();
         const edits = carets.map((pos) => ({ start: pos, end: pos, text }));
@@ -925,9 +965,8 @@ export class VirtualEditor {
         this.sel.secondary = r.carets.slice(1);
         await this.renderAfterEdit();
       });
-      return;
     }
-    this.run(async () => {
+    return this.run(async () => {
       const [s, e] = this.sel.norm();
       const coalesce = !this.sel.hasSel() && text.length === 1 && text !== "\n";
       const r = await this.doc.edit(s, e, this.sel.caret, text, coalesce);
@@ -1103,10 +1142,10 @@ export class VirtualEditor {
 
   // ---- 入力 / IME ----
   // textarea の内容を文書へ流し込む。clear 済みなら二重挿入しない (IME終了時の重複対策)。
-  private flushInput() {
+  private flushInput(): Promise<void> {
     const v = this.input.value;
     this.input.value = "";
-    if (v) this.insertText(v);
+    return v ? this.insertText(v) : Promise.resolve();
   }
 
   private onInput(e: InputEvent) {
@@ -1118,6 +1157,8 @@ export class VirtualEditor {
   }
 
   private onCompositionEnd() {
+    const committed = this.input.value;
+    const overlay = committed ? this.showImeCommit(committed) : null;
     this.composing = false;
     this.input.classList.remove("ime");
     this.input.style.removeProperty("width");
@@ -1125,7 +1166,20 @@ export class VirtualEditor {
     this.input.style.removeProperty("text-indent");
     this.input.style.removeProperty("--ime-indent");
     this.syncCaretBlink();
-    this.flushInput();
+    void this.flushInput().finally(() => overlay?.remove());
+  }
+
+  private showImeCommit(text: string): HTMLElement {
+    const overlay = el("div", "ve-ime-commit");
+    overlay.textContent = text;
+    overlay.style.top = this.input.style.top;
+    overlay.style.left = this.input.style.left;
+    overlay.style.width = this.input.style.width;
+    overlay.style.height = this.input.style.height;
+    overlay.style.textIndent = this.input.style.textIndent;
+    overlay.style.setProperty("--ime-indent", this.input.style.getPropertyValue("--ime-indent"));
+    this.inner.appendChild(overlay);
+    return overlay;
   }
 
   private resizeImeInput() {

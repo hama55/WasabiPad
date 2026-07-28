@@ -346,12 +346,17 @@ body {
   font-family: var(--ve-font-family); font-size: var(--ve-font);
   line-height: var(--line-h); white-space: pre;
 }
-.ve-input.ime {
+.ve-input.ime, .ve-ime-commit {
   color: var(--editor-fg); background: var(--bg-editor);
   caret-color: var(--caret); z-index: 4;
 }
+.ve-ime-commit {
+  position: absolute; pointer-events: none; overflow: hidden;
+  font-family: var(--ve-font-family); font-size: var(--ve-font);
+  line-height: var(--line-h); white-space: pre;
+}
 .ve-sel, .ve-caret { pointer-events: none; }
-.ve-scroll.wrap .ve-input.ime {
+.ve-scroll.wrap .ve-input.ime, .ve-scroll.wrap .ve-ime-commit {
   white-space: pre-wrap; overflow-wrap: anywhere;
   max-width: calc(100% - var(--ve-pad-left));
   background:
