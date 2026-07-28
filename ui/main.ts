@@ -146,7 +146,7 @@ const sidebar = new Sidebar(sidebarEl, {
   onExpandFolder: (relDir) => api.listFolderEntries(relDir),
   onTreeError: (error) => showError("フォルダを展開できませんでした", error),
   onSearch: (pat, options, searchId) => api.workspaceSearch(pat, options, searchId),
-  onCancel: () => { void api.workspaceSearchCancel(); },
+  onCancel: () => api.workspaceSearchCancel(),
   onError: (error) => showError("フォルダを検索できませんでした", error),
   onOptionsChange: saveSearchOptions,
   onOpen: async (result, newWindow) => {

@@ -20,7 +20,7 @@ export interface WorkspaceSearchPorts {
     options: WorkspaceSearchOptions,
     searchId: number
   ) => Promise<WorkspaceSearchOutcome>;
-  onCancel: () => void;
+  onCancel: () => void | Promise<void>;
   onError: (error: unknown) => Promise<void>;
   // 一致の範囲は result.highlights が持つ。パターンを渡さないのは、
   // 正規表現や大小の畳み込みで「当たった長さ」がパターンの長さと一致しないため。
@@ -41,6 +41,7 @@ const AUTO_COLLAPSE_MATCHES = 500;
 const PARTIAL_RENDER_MS = 100;
 
 type ToggleKey = BoolOptionKey;
+type SearchState = WorkspaceSearchOutcome | "searching" | "stopped" | null;
 
 // 「どう当てるか」は入力欄の中へ (VSCode の Aa / ab / .* と同じ位置)。
 // 説明文は OPTION_TEXTS が持ち、ここが持つのは記号だけ。
@@ -62,7 +63,7 @@ export class WorkspaceSearchPanel {
   private summary: HTMLElement;
   private toggleButtons = new Map<ToggleKey, HTMLButtonElement>();
   private options: WorkspaceSearchOptions;
-  private outcome: WorkspaceSearchOutcome | "searching" | null = null;
+  private outcome: SearchState = null;
   private partial: WorkspaceSearchResult[] = []; // 検索中に届いた分 (並べ替えは描画時)
   private partialTimer: number | undefined;
   // 畳み方は「既定 + 例外」で持つ。全パスを集合に入れる持ち方だと、
@@ -187,7 +188,7 @@ export class WorkspaceSearchPanel {
     // 世代が変わった時点で走行中の結果は捨てると決まっているので、その場で止める。
     // 放っておくと走り切るまで次が始まらず、その間の途中経過も世代違いで捨てられて
     // 画面が空のまま待たされる。
-    if (this.running) this.ports.onCancel();
+    if (this.running) this.cancelRunningSearch();
     if (!pat) {
       this.setOutcome(null);
       return;
@@ -200,14 +201,26 @@ export class WorkspaceSearchPanel {
   private stop() {
     this.searchGen++; // 世代を進めれば、走行中の結果も待機中の要求も捨てられる
     window.clearTimeout(this.searchTimer);
-    if (this.running) this.ports.onCancel(); // 走っていないなら止めるものがない
-    this.setOutcome(null);
+    if (this.running) this.cancelRunningSearch(); // 走っていないなら止めるものがない
+    // すでに届いた結果は有用なので、停止しても表示したままにする。
+    this.setOutcome("stopped");
   }
 
   private clear(focus = true) {
     this.stop();
+    this.setOutcome(null);
     this.searchInput.value = "";
     if (focus) this.searchInput.focus();
+  }
+
+  private cancelRunningSearch() {
+    try {
+      void Promise.resolve(this.ports.onCancel()).catch((error) => {
+        console.error("検索の中止に失敗しました", error);
+      });
+    } catch (error) {
+      console.error("検索の中止に失敗しました", error);
+    }
   }
 
   // 検索中に backend から届いた途中経過。世代が変わっていれば捨てる
@@ -232,15 +245,15 @@ export class WorkspaceSearchPanel {
     this.collapsed.clear();
   }
 
-  private setOutcome(outcome: WorkspaceSearchOutcome | "searching" | null) {
+  private setOutcome(outcome: SearchState) {
     this.outcome = outcome;
     this.searchStop.hidden = outcome !== "searching";
     window.clearTimeout(this.partialTimer);
     this.partialTimer = undefined;
-    this.partial = [];
+    if (outcome !== "stopped") this.partial = [];
     if (outcome === null) this.summary.hidden = true;
     if (outcome === "searching") this.collapseTouched = false; // 新しい検索の始まり
-    if (outcome && outcome !== "searching") this.autoCollapse(outcome.results);
+    if (outcome && outcome !== "searching" && outcome !== "stopped") this.autoCollapse(outcome.results);
     this.ports.onViewChange();
   }
 
@@ -254,7 +267,7 @@ export class WorkspaceSearchPanel {
 
   // いま画面に出ている結果。検索中は届いた分、確定後は確定結果
   private shownResults(): WorkspaceSearchResult[] {
-    if (this.outcome === "searching") return this.partial;
+    if (this.outcome === "searching" || this.outcome === "stopped") return this.partial;
     return this.outcome?.results ?? [];
   }
 
@@ -268,9 +281,10 @@ export class WorkspaceSearchPanel {
   private async run(gen: number, pat: string, options: WorkspaceSearchOptions) {
     while (this.running) await this.running.catch(() => {});
     if (gen !== this.searchGen) return; // 待っている間にまた条件が変わった
-    const run = this.ports.onSearch(pat, options, gen);
-    this.running = run;
+    let run: Promise<WorkspaceSearchOutcome> | null = null;
     try {
+      run = this.ports.onSearch(pat, options, gen);
+      this.running = run;
       const outcome = await run;
       if (gen === this.searchGen) this.setOutcome(outcome);
     } catch (error) {
@@ -288,7 +302,7 @@ export class WorkspaceSearchPanel {
 
   // ---- 結果ツリー (ファイル見出し + その下に一致行) ----
   renderTree(): DocumentFragment {
-    return this.outcome === "searching" ? this.searchingTree() : this.resultTree();
+    return this.outcome === "searching" || this.outcome === "stopped" ? this.searchingTree() : this.resultTree();
   }
 
   // 検索中の途中経過 (確定結果と同じ並びで、届いた分だけを見せる)
@@ -296,16 +310,16 @@ export class WorkspaceSearchPanel {
     const frag = document.createDocumentFragment();
     if (!this.partial.length) {
       this.summary.hidden = true;
-      frag.appendChild(searchingRow());
+      frag.appendChild(searchingRow(this.outcome === "stopped"));
       return frag;
     }
     const groups = groupResults(sortResults(this.partial, this.options));
     this.summary.hidden = false;
     this.summary.replaceChildren(
-      countRow(`${groups.length.toLocaleString()} 個のファイルに ${this.partial.length.toLocaleString()} 件 (検索中)`)
+      countRow(`${groups.length.toLocaleString()} 個のファイルに ${this.partial.length.toLocaleString()} 件 (${this.outcome === "stopped" ? "検索を中止" : "検索中"})`)
     );
     this.appendGroups(frag, groups);
-    frag.appendChild(searchingRow());
+    frag.appendChild(searchingRow(this.outcome === "stopped"));
     return frag;
   }
 
@@ -442,10 +456,10 @@ function iconButton(className: string, label: string, title: string): HTMLButton
   return button;
 }
 
-function searchingRow(): HTMLElement {
+function searchingRow(stopped: boolean): HTMLElement {
   const div = document.createElement("div");
   div.className = "ws-empty";
-  div.textContent = "検索中…";
+  div.textContent = stopped ? "検索を中止しました" : "検索中…";
   return div;
 }
 
