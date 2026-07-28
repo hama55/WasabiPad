@@ -15,6 +15,23 @@ export function charLen(text: string): number {
   return [...text].length;
 }
 
+export function clampImeAnchor(
+  x: number,
+  y: number,
+  viewportWidth: number,
+  viewportHeight: number,
+  paddingLeft: number,
+  lineHeight: number,
+): { x: number; y: number } {
+  const minX = Math.max(0, paddingLeft);
+  const maxX = Math.max(minX, viewportWidth - 4);
+  const maxY = Math.max(0, viewportHeight - lineHeight);
+  return {
+    x: Math.max(minX, Math.min(Number.isFinite(x) ? x : minX, maxX)),
+    y: Math.max(0, Math.min(Number.isFinite(y) ? y : 0, maxY)),
+  };
+}
+
 export function u16ToChar(text: string, offset: number): number {
   let utf16 = 0;
   let chars = 0;

@@ -115,7 +115,8 @@ describe("VirtualEditor", () => {
     scroll.scrollTop = 200;
     scroll.dispatchEvent(new Event("scroll"));
     input.dispatchEvent(new CompositionEvent("compositionstart"));
-    expect(input.style.top).toBe("200px");
+    expect(input.style.top).toBe("0px");
+    expect(input.parentElement).toBe(host);
   });
 
   it("ウィンドウ復帰時にIME入力位置を再同期する", async () => {
@@ -131,6 +132,74 @@ describe("VirtualEditor", () => {
     expect(input.style.top).not.toBe("-999px");
     input.dispatchEvent(new CompositionEvent("compositionstart"));
     expect(Number.parseFloat(input.style.width)).toBeGreaterThanOrEqual(4);
+  });
+
+  it("ウィンドウの横幅変更時にIME入力位置を再同期する", async () => {
+    const { editor, input } = mount("line");
+    editor.open(1, false);
+    await settle();
+    input.focus();
+    input.style.left = "-999px";
+
+    window.dispatchEvent(new Event("resize"));
+    await settle();
+
+    expect(input.style.left).not.toBe("-999px");
+  });
+
+  it("IMEアンカーの実矩形が領域外なら安全位置へ退避する", async () => {
+    const { editor, host, input } = mount("line");
+    editor.open(1, false);
+    await settle();
+    const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
+    vi.spyOn(scroll, "getBoundingClientRect").mockReturnValue({
+      x: 40, y: 20, left: 40, top: 20, right: 240, bottom: 120,
+      width: 200, height: 100, toJSON: () => ({}),
+    } as DOMRect);
+    vi.spyOn(host, "getBoundingClientRect").mockReturnValue({
+      x: 0, y: 0, left: 0, top: 0, right: 300, bottom: 150,
+      width: 300, height: 150, toJSON: () => ({}),
+    } as DOMRect);
+    vi.spyOn(input, "getBoundingClientRect").mockReturnValue({
+      x: -100, y: -100, left: -100, top: -100, right: -96, bottom: -80,
+      width: 4, height: 20, toJSON: () => ({}),
+    } as DOMRect);
+
+    editor.syncWindowGeometry();
+
+    expect(input.style.left).toBe("48px");
+    expect(input.style.top).toBe("20px");
+  });
+
+  it("IME変換中文字列の幅を表示領域内に制限する", async () => {
+    const { editor, host, input } = mount("line");
+    editor.open(1, false);
+    await settle();
+    const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
+    Object.defineProperty(scroll, "clientWidth", { configurable: true, value: 100 });
+    Object.defineProperty(input, "scrollWidth", { configurable: true, value: 500 });
+
+    input.dispatchEvent(new CompositionEvent("compositionstart"));
+    input.value = "長い変換中文字列";
+    input.dispatchEvent(new InputEvent("input", { isComposing: true }));
+
+    expect(Number.parseFloat(input.style.width)).toBeLessThanOrEqual(88);
+  });
+
+  it("compositionendが来ないblurでもIME状態と入力を回収する", async () => {
+    const { editor, doc, input } = mount("ab");
+    editor.open(1, false);
+    await settle();
+    input.dispatchEvent(new CompositionEvent("compositionstart"));
+    input.value = "漢字";
+    input.dispatchEvent(new InputEvent("input", { isComposing: true }));
+
+    input.dispatchEvent(new FocusEvent("blur"));
+    await settle();
+
+    expect(input.classList.contains("ime")).toBe(false);
+    expect(input.value).toBe("");
+    expect(doc.text()).toBe("漢字ab");
   });
 
   it("横スクロールバーを本文から分離して双方向に同期する", async () => {

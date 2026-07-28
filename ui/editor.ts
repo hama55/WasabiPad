@@ -19,6 +19,7 @@ import {
   charClass,
   charLen,
   charToU16,
+  clampImeAnchor,
   comparePos as cmp,
   findProgressPercent,
   positionAfterDeletion,
@@ -57,6 +58,7 @@ export class VirtualEditor {
   private metrics: ViewportMetrics;
   private lineCache: LineCache;
   private raf = 0;
+  private inputPositionRaf = 0;
   private maxWidth = 0;
   private fontFamily: string;
   private fontSize: number;
@@ -91,7 +93,7 @@ export class VirtualEditor {
   private liveViewers: LiveViewers;
 
   constructor(
-    host: HTMLElement,
+    private host: HTMLElement,
     ports: EditorPorts,
     config: EditorConfig = DEFAULT_EDITOR_CONFIG,
     private doc: api.DocumentClient = api.documentClient
@@ -124,12 +126,12 @@ export class VirtualEditor {
     this.metrics.lineHeight = config.fontSize + config.lineHeightExtra;
     this.paddingLeft = config.paddingLeft;
     this.gutterWidth = config.gutterWidth;
-    host.classList.add("ve");
-    host.style.setProperty("--ve-font-family", this.fontFamily);
-    host.style.setProperty("--ve-font", `${this.fontSize}px`);
-    host.style.setProperty("--line-h", `${this.metrics.lineHeight}px`);
-    host.style.setProperty("--ve-pad-left", `${this.paddingLeft}px`);
-    host.style.setProperty("--gutter-w", `${this.gutterWidth}px`);
+    this.host.classList.add("ve");
+    this.host.style.setProperty("--ve-font-family", this.fontFamily);
+    this.host.style.setProperty("--ve-font", `${this.fontSize}px`);
+    this.host.style.setProperty("--line-h", `${this.metrics.lineHeight}px`);
+    this.host.style.setProperty("--ve-pad-left", `${this.paddingLeft}px`);
+    this.host.style.setProperty("--gutter-w", `${this.gutterWidth}px`);
 
     this.gutter = el("div", "ve-gutter");
     this.scroll = el("div", "ve-scroll");
@@ -144,20 +146,19 @@ export class VirtualEditor {
     this.input.autocapitalize = "off";
     (this.input as unknown as { autocorrect: string }).autocorrect = "off";
 
-    // caretEl/input は一度だけ挿入し、以後 render() では linesLayer の中身だけ差し替える。
-    // (inner.replaceChildren に caretEl/input を含めて呼ぶと、フォーカス中の input が
-    //  毎フレーム DOM から外れて再挿入され blur してしまい、クリック直後に一切入力できなくなる)
+    // caretEl は一度だけ挿入し、以後 render() では linesLayer の中身だけ差し替える。
     this.inner.appendChild(this.linesLayer);
     this.inner.appendChild(this.caretEl);
-    this.inner.appendChild(this.input);
     this.scroll.appendChild(this.inner);
     this.hScroll.appendChild(this.hScrollSpacer);
-    host.appendChild(this.gutter);
-    host.appendChild(this.scroll);
-    host.appendChild(this.hScroll);
+    this.host.appendChild(this.gutter);
+    this.host.appendChild(this.scroll);
+    this.host.appendChild(this.hScroll);
+    // native IME用textareaは仮想本文のclip領域外に置く。WebView2へ空のcaret矩形を渡さないため。
+    this.host.appendChild(this.input);
 
     this.findBar = new FindBar(
-      host,
+      this.host,
       (pat, forward, mc) => this.doFind(pat, forward, mc),
       (pat, rep, mc) => this.doReplaceAll(pat, rep, mc),
       (pat, rep, mc) => this.doReplaceNext(pat, rep, mc),
@@ -180,14 +181,12 @@ export class VirtualEditor {
     this.input.addEventListener("compositionstart", () => {
       this.composing = true;
       this.input.classList.add("ime"); // 変換中は textarea を可視化
-      this.placeCaret();
-      this.resizeImeInput();
-      // WebView2がnative IMEへ渡すcaret矩形を、このイベント内で確定させる。
-      void this.input.getBoundingClientRect();
+      this.syncImeAnchor();
       this.caretEl.classList.remove("on");
     });
-    this.input.addEventListener("compositionend", () => this.onCompositionEnd());
+    this.input.addEventListener("compositionend", () => this.finishComposition());
     this.input.addEventListener("blur", () => {
+      if (this.composing || this.input.value) this.finishComposition();
       this.caretEl.classList.remove("on");
       this.secondaryCaretEls.forEach((caret) => caret.classList.remove("on"));
     });
@@ -198,7 +197,13 @@ export class VirtualEditor {
       this.scrollbarDragging = false;
       this.schedule();
     });
-    window.addEventListener("focus", () => this.syncInputPositionAfterFocus());
+    window.addEventListener("focus", () => this.syncImeAnchorAfterLayout());
+    window.addEventListener("resize", () => this.syncImeAnchorAfterLayout());
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) this.syncImeAnchorAfterLayout();
+    });
+    window.visualViewport?.addEventListener("resize", () => this.syncImeAnchorAfterLayout());
+    window.visualViewport?.addEventListener("scroll", () => this.syncImeAnchorAfterLayout());
 
     new ResizeObserver(() => {
       const topLine = this.wrap || this.metrics.scaleMode ? this.topLineF : this.pxToLine(this.scroll.scrollTop);
@@ -208,6 +213,7 @@ export class VirtualEditor {
       const nextTopLine = wasAtBottom ? this.maxTopLine() : topLine;
       if (this.wrap) this.setWrapAnchor(nextTopLine, nextTopLine === topLine ? intraLinePx : 0);
       else this.setTopLine(nextTopLine);
+      this.syncImeAnchorAfterLayout();
       this.schedule();
     }).observe(this.scroll);
   }
@@ -240,10 +246,13 @@ export class VirtualEditor {
   }
 
   focus() {
-    this.placeCaret();
+    this.syncImeAnchor();
     this.input.focus({ preventScroll: true });
-    this.placeCaret();
-    void this.input.getBoundingClientRect();
+    this.syncImeAnchor();
+  }
+
+  syncWindowGeometry() {
+    this.syncImeAnchorAfterLayout();
   }
 
   openSearch() {
@@ -277,6 +286,7 @@ export class VirtualEditor {
     this.wrapIntraLinePx = 0;
     this.scroll.classList.toggle("wrap", on);
     this.scroll.parentElement!.classList.toggle("hscroll-hidden", on);
+    this.host.classList.toggle("wrap", on);
     this.hScroll.hidden = on;
     this.scroll.scrollLeft = 0;
     this.hScroll.scrollLeft = 0;
@@ -441,8 +451,8 @@ export class VirtualEditor {
 
     // 横スクロール用に inner 幅を可視行の最大幅へ更新
     this.updateWidth();
-    this.placeCaret();
     if (!needFetch) this.updateGutterWidth();
+    this.syncImeAnchor();
   }
 
   private renderVisibleLines(first: number, last: number) {
@@ -590,8 +600,7 @@ export class VirtualEditor {
       // 画面外の論理行座標へ focused textarea を置くと、巨大文書ではCSS座標上限を
       // 超えてスクロール範囲自体が変わる。入力フォーカスだけ表示領域内で維持する。
       this.caretEl.classList.remove("on");
-      this.input.style.top = `${this.scroll.scrollTop}px`;
-      this.input.style.left = `${this.scroll.scrollLeft + this.paddingLeft}px`;
+      this.placeInputAt(this.scroll.scrollLeft + this.paddingLeft, this.scroll.scrollTop);
       this.placeSecondaryCarets();
       return;
     }
@@ -603,30 +612,62 @@ export class VirtualEditor {
     this.caretEl.style.left = `${x}px`;
     this.placeSecondaryCarets();
     // IME 変換窓を追従させるため textarea も同座標へ
-    const minY = this.scroll.scrollTop;
-    const maxY = Math.max(minY, minY + this.scroll.clientHeight - this.metrics.lineHeight);
-    this.input.style.top = `${Math.max(minY, Math.min(caretY, maxY))}px`;
     if (this.composing && this.wrap) {
-      this.input.style.left = `${this.paddingLeft}px`;
+      this.placeInputAt(this.paddingLeft, caretY);
       const indent = Math.max(0, x - this.paddingLeft);
       this.input.style.textIndent = `${indent}px`;
       this.input.style.setProperty("--ime-indent", `${indent}px`);
     } else {
-      const minX = this.scroll.scrollLeft + this.paddingLeft;
-      const maxX = Math.max(minX, this.scroll.scrollLeft + this.scroll.clientWidth - 4);
-      this.input.style.left = `${Math.max(minX, Math.min(x, maxX))}px`;
+      this.placeInputAt(x, caretY);
       this.input.style.removeProperty("text-indent");
       this.input.style.removeProperty("--ime-indent");
     }
   }
 
-  private syncInputPositionAfterFocus() {
+  private placeInputAt(contentX: number, contentY: number) {
+    const viewportX = contentX - this.scroll.scrollLeft;
+    const viewportY = contentY - this.scroll.scrollTop;
+    const { x, y } = clampImeAnchor(
+      viewportX,
+      viewportY,
+      this.scroll.clientWidth,
+      this.scroll.clientHeight,
+      this.paddingLeft,
+      this.metrics.lineHeight,
+    );
+    this.input.style.left = `${this.scroll.offsetLeft + x}px`;
+    this.input.style.top = `${this.scroll.offsetTop + y}px`;
+  }
+
+  private syncImeAnchor() {
     this.placeCaret();
-    requestAnimationFrame(() => {
-      this.placeCaret();
-      // 最小化・Alt+Tab復帰後のnative IME照会より先にlayoutを確定させる。
-      void this.input.getBoundingClientRect();
+    if (this.composing) this.resizeImeInput();
+    this.keepImeAnchorInsideViewport();
+    // WebView2がnative IMEへ渡すcaret矩形を、現在のlayoutで確定させる。
+    void this.input.getBoundingClientRect();
+  }
+
+  private syncImeAnchorAfterLayout() {
+    this.syncImeAnchor();
+    if (this.inputPositionRaf) return;
+    this.inputPositionRaf = requestAnimationFrame(() => {
+      this.inputPositionRaf = 0;
+      this.syncImeAnchor();
     });
+  }
+
+  private keepImeAnchorInsideViewport() {
+    const viewport = this.scroll.getBoundingClientRect();
+    const input = this.input.getBoundingClientRect();
+    if (viewport.width <= 0 || viewport.height <= 0 || input.width <= 0 || input.height <= 0) return;
+    const inside = input.left >= viewport.left
+      && input.top >= viewport.top
+      && input.right <= viewport.right
+      && input.bottom <= viewport.bottom;
+    if (inside) return;
+    const host = this.host.getBoundingClientRect();
+    this.input.style.left = `${viewport.left - host.left + this.paddingLeft}px`;
+    this.input.style.top = `${viewport.top - host.top}px`;
   }
 
   private wrapPoint(lineEl: HTMLElement, s: string, col: number): { x: number; y: number } | null {
@@ -965,7 +1006,7 @@ export class VirtualEditor {
     this.render();
     if (!this.wrap) this.scroll.scrollLeft = previousScrollLeft;
     this.ensureVisible();
-    this.placeCaret();
+    this.syncImeAnchor();
     this.notifyCursor();
   }
 
@@ -1065,7 +1106,7 @@ export class VirtualEditor {
   private placeSecondaryCarets() {
     while (this.secondaryCaretEls.length < this.sel.secondary.length) {
       const caret = el("div", "ve-caret on");
-      this.inner.insertBefore(caret, this.input);
+      this.inner.appendChild(caret);
       this.secondaryCaretEls.push(caret);
     }
     for (let i = 0; i < this.secondaryCaretEls.length; i++) {
@@ -1169,13 +1210,13 @@ export class VirtualEditor {
 
   private onInput(e: InputEvent) {
     if (this.composing || e.isComposing) {
-      this.resizeImeInput();
+      this.syncImeAnchor();
       return;
     }
     this.flushInput();
   }
 
-  private onCompositionEnd() {
+  private finishComposition() {
     const committed = this.input.value;
     const overlay = committed ? this.showImeCommit(committed) : null;
     this.composing = false;
@@ -1197,20 +1238,24 @@ export class VirtualEditor {
     overlay.style.height = this.input.style.height;
     overlay.style.textIndent = this.input.style.textIndent;
     overlay.style.setProperty("--ime-indent", this.input.style.getPropertyValue("--ime-indent"));
-    this.inner.appendChild(overlay);
+    if (this.wrap) overlay.classList.add("wrap");
+    this.host.appendChild(overlay);
     return overlay;
   }
 
   private resizeImeInput() {
+    const left = Number.parseFloat(this.input.style.left) || this.scroll.offsetLeft + this.paddingLeft;
+    const viewportRight = this.scroll.offsetLeft + this.scroll.clientWidth;
+    const available = Math.max(4, viewportRight - left - 4);
     if (this.wrap) {
-      const available = Math.max(1, this.scroll.clientWidth - this.paddingLeft - 4);
       this.input.style.width = `${available}px`;
       this.input.style.height = "1px";
-      this.input.style.height = `${Math.max(this.metrics.lineHeight, this.input.scrollHeight)}px`;
+      const height = Math.max(this.metrics.lineHeight, this.input.scrollHeight);
+      this.input.style.height = `${Math.min(Math.max(this.metrics.lineHeight, this.scroll.clientHeight), height)}px`;
       return;
     }
     this.input.style.width = "4px";
-    this.input.style.width = `${Math.max(4, this.input.scrollWidth + 2)}px`;
+    this.input.style.width = `${Math.min(available, Math.max(4, this.input.scrollWidth + 2))}px`;
   }
 
   // ---- ホイール ----

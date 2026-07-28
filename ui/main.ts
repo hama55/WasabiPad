@@ -155,6 +155,7 @@ async function openInNewWindow(relPath: string, goto?: api.Pos) {
 
 const windowChrome = new WindowChrome($("titlebar"), win, {
   onCloseRequest: () => doc.confirmDiscard(),
+  onGeometryChange: () => editor.syncWindowGeometry(),
 });
 
 const doc: DocumentController = new DocumentController({
