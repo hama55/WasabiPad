@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import type { DocInfo } from "./api";
 import { DocumentController, fileNameOf, type DocumentView } from "./document-controller";
+import { confirmSaveDiscard } from "./prompt";
+
+vi.mock("./prompt", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./prompt")>(),
+  confirmSaveDiscard: vi.fn(),
+}));
 
 const info = (overrides: Partial<DocInfo> = {}): DocInfo => ({
   kind: "text",
@@ -73,6 +79,21 @@ describe("DocumentController", () => {
 
     expect(await controller.save()).toBe(false);
     expect(view.pickSavePath).not.toHaveBeenCalled();
+  });
+
+  it("continues after the file was saved even if a later view update failed", async () => {
+    const { controller } = fakeView();
+    controller.applyDocInfo(info());
+    controller.onEdit(42);
+    vi.mocked(confirmSaveDiscard).mockResolvedValueOnce("save");
+    vi.spyOn(controller, "save").mockImplementation(async () => {
+      controller.current.dirty = false;
+      throw new Error("post-save view failure");
+    });
+    const proceed = vi.fn();
+
+    expect(await controller.confirmDiscard(proceed)).toBe(true);
+    expect(proceed).toHaveBeenCalledOnce();
   });
 });
 

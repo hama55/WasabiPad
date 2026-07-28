@@ -15,6 +15,82 @@ export function charLen(text: string): number {
   return [...text].length;
 }
 
+export class WrapHeightMap {
+  private heights = new Map<number, number>();
+
+  constructor(private lineCount: number, private lineHeight: number) {}
+
+  reset(lineCount: number, lineHeight: number) {
+    this.lineCount = lineCount;
+    this.lineHeight = lineHeight;
+    this.heights.clear();
+  }
+
+  set(line: number, height: number): boolean {
+    const next = Math.max(this.lineHeight, height);
+    if (next === this.lineHeight) return this.heights.delete(line);
+    if (this.heights.get(line) === next) return false;
+    this.heights.set(line, next);
+    return true;
+  }
+
+  heightAt(line: number): number {
+    return this.heights.get(line) ?? this.lineHeight;
+  }
+
+  totalHeight(): number {
+    let total = this.lineCount * this.lineHeight;
+    for (const height of this.heights.values()) total += height - this.lineHeight;
+    return total;
+  }
+
+  offsetOf(line: number, intraLinePx = 0): number {
+    let offset = Math.max(0, Math.min(this.lineCount, line)) * this.lineHeight;
+    for (const [measuredLine, height] of this.heights) {
+      if (measuredLine < line) offset += height - this.lineHeight;
+    }
+    return offset + Math.max(0, Math.min(intraLinePx, this.heightAt(line)));
+  }
+
+  anchorAt(offset: number): { line: number; intraLinePx: number } {
+    let rest = Math.max(0, Math.min(offset, this.totalHeight()));
+    let cursor = 0;
+    const measured = [...this.heights].sort(([a], [b]) => a - b);
+    for (const [line, height] of measured) {
+      const baseHeight = (line - cursor) * this.lineHeight;
+      if (rest < baseHeight) {
+        return {
+          line: cursor + Math.floor(rest / this.lineHeight),
+          intraLinePx: rest % this.lineHeight,
+        };
+      }
+      rest -= baseHeight;
+      if (rest < height) return { line, intraLinePx: rest };
+      rest -= height;
+      cursor = line + 1;
+    }
+    const line = Math.min(this.lineCount - 1, cursor + Math.floor(rest / this.lineHeight));
+    return { line: Math.max(0, line), intraLinePx: rest % this.lineHeight };
+  }
+}
+
+export function clampImeAnchor(
+  x: number,
+  y: number,
+  viewportWidth: number,
+  viewportHeight: number,
+  paddingLeft: number,
+  lineHeight: number,
+): { x: number; y: number } {
+  const minX = Math.max(0, paddingLeft);
+  const maxX = Math.max(minX, viewportWidth - 4);
+  const maxY = Math.max(0, viewportHeight - lineHeight);
+  return {
+    x: Math.max(minX, Math.min(Number.isFinite(x) ? x : minX, maxX)),
+    y: Math.max(0, Math.min(Number.isFinite(y) ? y : 0, maxY)),
+  };
+}
+
 export function u16ToChar(text: string, offset: number): number {
   let utf16 = 0;
   let chars = 0;

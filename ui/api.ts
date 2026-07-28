@@ -241,8 +241,12 @@ export const nextMemoPath = (directory: string, stem: string, extension: string)
 export const initialPath = () => invoke<string | null>("initial_path");
 // 起動時に飛ぶ位置 (検索結果を別ウィンドウで開いたとき backend が引数へ載せる)
 export const initialGoto = () => invoke<Pos | null>("initial_goto");
-export const launchNew = (path?: string, goto?: Pos) =>
-  invoke<void>("launch_new", { path, line: goto?.line ?? null, col: goto?.col ?? null });
+export interface OpenRequest {
+  path: string;
+  goto: Pos | null;
+}
+export const onOpenInTab = (handler: (request: OpenRequest) => void) =>
+  listen<OpenRequest>("open-in-tab", (event) => handler(event.payload));
 
 // エディタが必要とする文書操作だけを切り出した口。エディタはこの型にだけ依存し、
 // 既定の実装 (下の documentClient) が Tauri の invoke を呼ぶ。

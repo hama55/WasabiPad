@@ -1,5 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { charLen, charToU16, comparePos, findProgressPercent, positionAfterDeletion, u16ToChar, unescapePattern, wordBounds } from "./editor-math";
+import {
+  charLen,
+  charToU16,
+  clampImeAnchor,
+  comparePos,
+  findProgressPercent,
+  positionAfterDeletion,
+  u16ToChar,
+  unescapePattern,
+  WrapHeightMap,
+  wordBounds,
+} from "./editor-math";
 
 describe("editor math", () => {
   it("converts Unicode scalar columns and DOM UTF-16 offsets", () => {
@@ -31,5 +42,21 @@ describe("editor math", () => {
       .toEqual({ line: 2, col: 6 });
     expect(positionAfterDeletion({ line: 2, col: 3 }, { line: 4, col: 5 }, { line: 6, col: 1 }))
       .toEqual({ line: 4, col: 1 });
+  });
+
+  it("IME anchor stays inside the visible editor area", () => {
+    expect(clampImeAnchor(-20, -10, 200, 100, 8, 20)).toEqual({ x: 8, y: 0 });
+    expect(clampImeAnchor(500, 200, 200, 100, 8, 20)).toEqual({ x: 196, y: 80 });
+    expect(clampImeAnchor(Number.NaN, Number.POSITIVE_INFINITY, 0, 0, 8, 20))
+      .toEqual({ x: 8, y: 0 });
+  });
+
+  it("maps a long wrapped logical line to visual scroll offsets", () => {
+    const heights = new WrapHeightMap(7, 20);
+    heights.set(6, 2000);
+
+    expect(heights.totalHeight()).toBe(2120);
+    expect(heights.offsetOf(6, 950)).toBe(1070);
+    expect(heights.anchorAt(1070)).toEqual({ line: 6, intraLinePx: 950 });
   });
 });

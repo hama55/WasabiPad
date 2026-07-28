@@ -13,14 +13,15 @@ import { WindowChrome } from "./window-chrome";
 import { ExternalWatch } from "./external-watch";
 import { FolderActions, openInOtherApp } from "./folder-actions";
 import { DocumentController, SAVE_EXTENSIONS } from "./document-controller";
-import { showMenu, MenuItem } from "./menu";
 import { showError } from "./dialogs";
 import { confirmMessage } from "./prompt";
 import { joinWindowsRoot } from "./path";
-import { createCommandRegistry, globalCommandForEvent, CommandId } from "./commands";
+import { createCommandRegistry, globalCommandForEvent } from "./commands";
 import { DEFAULT_EDITOR_CONFIG } from "./editor-config";
+import { TabManager } from "./tabs";
 import {
   getSetting,
+  flushSettings,
   initSettings,
   loadSearchOptions,
   saveSearchOptions,
@@ -40,8 +41,9 @@ const loading = $("loading");
 const loadingMessage = $("loading-message");
 
 let sidebarAvailable = false;
-let sidebarVisible = true;
+let sidebarCollapsed = false;
 let currentLine = 1;
+let tabs: TabManager;
 
 function setLoading(active: boolean, message = "読み込み中…") {
   loading.hidden = !active;
@@ -51,11 +53,19 @@ function setLoading(active: boolean, message = "読み込み中…") {
 
 function setSidebar(on: boolean, label = "") {
   sidebarAvailable = on;
-  const shown = on && sidebarVisible;
+  updateSidebarVisibility();
+  statusbar.setMode(label);
+}
+
+function updateSidebarVisibility() {
+  const shown = sidebarAvailable && !sidebarCollapsed;
   sidebarEl.hidden = !shown;
   splitter.hidden = !shown;
-  $<HTMLButtonElement>("toggle-sidebar").disabled = !on;
-  statusbar.setMode(label);
+  const toggle = $<HTMLButtonElement>("sidebar-toggle");
+  toggle.hidden = !sidebarAvailable;
+  toggle.textContent = shown ? "<<" : ">>";
+  toggle.title = shown ? "フォルダビューを閉じる" : "フォルダビューを開く";
+  toggle.style.left = shown ? `${Math.max(4, sidebarEl.getBoundingClientRect().width - 32)}px` : "4px";
 }
 
 // ---- 部品 ----
@@ -77,8 +87,9 @@ statusbar.restoreTheme(localStorage.getItem("theme"));
 const addressbar = new AddressBar($("topbar"), {
   onOpen: (path) => void doc.openPath(path),
   onSave: () => void doc.save(),
-  onNew: () => void doc.newFile(),
-  onNewWindow: () => void api.launchNew(),
+  onSaveAs: () => void doc.saveAs(),
+  onNew: () => void tabs.newBlank(),
+  onFind: () => editor.openSearch(),
   onPick: () => void pickAndOpen(false),
   onFavorite: () => favbar.addCurrent(),
 });
@@ -112,7 +123,7 @@ editor.setTabSize(statusbar.setIndent(getSetting("indentSize")));
 const sidebar = new Sidebar(sidebarEl, {
   onSelect: async (relPath, newWindow) => {
     if (newWindow) {
-      await openInNewWindow(relPath);
+      await openInNewTab(relPath);
       return;
     }
     if (!(await doc.confirmDiscard())) {
@@ -131,7 +142,7 @@ const sidebar = new Sidebar(sidebarEl, {
     if (newWindow) {
       // ファイル名一致の line/col は本文の位置ではない (どちらも 0) ので飛ばさない
       const goto = result.is_filename ? undefined : { line: result.line, col: result.col };
-      await openInNewWindow(result.rel_path, goto);
+      await openInNewTab(result.rel_path, goto);
       return;
     }
     if (!(await doc.confirmDiscard())) return;
@@ -147,14 +158,24 @@ const sidebar = new Sidebar(sidebarEl, {
 // 検索の途中経過。確定を待たずに届いた分から並べる
 void api.onWorkspaceSearchBatch((batch) => sidebar.acceptSearchBatch(batch.search_id, batch.results));
 
-// フォルダビュー由来の relPath は、別プロセスへ渡すため絶対パスへ戻す
-async function openInNewWindow(relPath: string, goto?: api.Pos) {
+// フォルダビュー由来の relPath は、独立したファイルタブ用の絶対パスへ戻す
+async function openInNewTab(relPath: string, goto?: api.Pos) {
   const root = doc.current.folderRoot;
-  if (root) await api.launchNew(joinWindowsRoot(root, relPath), goto);
+  if (root) await tabs.open(joinWindowsRoot(root, relPath), goto);
 }
 
 const windowChrome = new WindowChrome($("titlebar"), win, {
-  onCloseRequest: () => doc.confirmDiscard(),
+  onCloseRequest: async () => {
+    if (!await tabs.saveForExit()) return false;
+    try {
+      await flushSettings();
+      return true;
+    } catch (error) {
+      await showError("タブを保存できませんでした", error);
+      return false;
+    }
+  },
+  onGeometryChange: () => editor.syncWindowGeometry(),
 });
 
 const doc: DocumentController = new DocumentController({
@@ -166,6 +187,7 @@ const doc: DocumentController = new DocumentController({
   setLoading,
   setTitle: (title) => windowChrome.setTitle(title),
   notify: (text) => windowChrome.notify(text),
+  onSessionChange: (session) => tabs?.syncActive(session),
   hideExternalBanner: () => externalWatch.hide(),
   pickSavePath: async (defaultPath) => {
     const path = await saveDialog({
@@ -193,14 +215,15 @@ const externalWatch = new ExternalWatch($("external-banner"), {
 });
 
 const favbar = new FavBar($("favbar"), {
-  onOpen: (path, newWindow) => { void (newWindow ? api.launchNew(path) : doc.openPath(path)); },
+  onOpen: (path, newTab) => { void (newTab ? tabs.open(path) : doc.openPath(path)); },
+  onAddGroupToTabs: (items) => tabs.addLinks(items),
   currentFile: () => addressbar.path || null,
   onSetDefault: (path) => setSetting("startupPath", path),
 });
 
 const folderActions = new FolderActions(doc, {
   sidebar,
-  onOpenInNewWindow: (relPath, goto) => { void openInNewWindow(relPath, goto); },
+  onOpenInNewTab: (relPath, goto) => { void openInNewTab(relPath, goto); },
   onAddFavorite: (path) => favbar.addExternal(path),
   onSetStartupPath: (path) => setSetting("startupPath", path),
   onOpenPath: (path) => {
@@ -224,7 +247,7 @@ async function pickAndOpen(directory: boolean) {
 }
 
 const commands = createCommandRegistry({
-  newFile: () => doc.newFile(),
+  newFile: () => tabs.newBlank(),
   openFile: () => { void pickAndOpen(false); },
   openFolder: () => { void pickAndOpen(true); },
   save: () => doc.save(),
@@ -233,37 +256,12 @@ const commands = createCommandRegistry({
   find: () => editor.openSearch(),
 });
 
-function commandMenuItem(id: CommandId, extra: Partial<MenuItem> = {}): MenuItem {
-  const command = commands[id];
-  return { label: command.label, key: command.shortcut, action: command.run, ...extra };
-}
-
-$("menu-file").addEventListener("click", (e) => {
-  const r = (e.target as HTMLElement).getBoundingClientRect();
-  showMenu(r.left, r.bottom, [
-    commandMenuItem("new"),
-    commandMenuItem("open"),
-    commandMenuItem("openFolder"),
-    commandMenuItem("save", { sep: true }),
-    commandMenuItem("saveAs"),
-    commandMenuItem("quit", { sep: true }),
-  ]);
-});
-$("menu-view").addEventListener("click", (e) => {
-  const r = (e.target as HTMLElement).getBoundingClientRect();
-  showMenu(r.left, r.bottom, [
-    commandMenuItem("find"),
-    { label: "起動時のデフォルトを解除", action: () => setSetting("startupPath", null), sep: true },
-  ]);
-});
-
-$("toggle-sidebar").addEventListener("click", () => {
-  if (!sidebarAvailable) return;
-  sidebarVisible = !sidebarVisible;
-  setSidebar(sidebarAvailable, statusbar.mode);
-});
-$("toggle-favbar").addEventListener("click", () => {
+$("toggle-bars").addEventListener("click", () => {
   $("navbars").hidden = !$("navbars").hidden;
+});
+$("sidebar-toggle").addEventListener("click", () => {
+  sidebarCollapsed = !sidebarCollapsed;
+  updateSidebarVisibility();
 });
 
 document.addEventListener("contextmenu", (e) => e.preventDefault());
@@ -273,6 +271,7 @@ splitter.addEventListener("mousedown", (e) => {
   e.preventDefault();
   const move = (ev: MouseEvent) => {
     sidebarEl.style.width = `${Math.max(120, ev.clientX)}px`;
+    updateSidebarVisibility();
   };
   const up = () => {
     window.removeEventListener("mousemove", move);
@@ -299,7 +298,7 @@ getCurrentWebview().onDragDropEvent((ev) => {
   if (document.elementFromPoint(cssX, cssY)?.closest("#favbar")) {
     void favbar.addDropped(ev.payload.paths, cssX, cssY);
   } else {
-    void doc.openPath(ev.payload.paths[0]);
+    void tabs.open(ev.payload.paths[0]);
   }
 });
 
@@ -321,16 +320,11 @@ window.setInterval(async () => {
 await windowChrome.syncMaxIcon();
 await favbar.init();
 const cliPath = await api.initialPath();
+const cliGoto = await api.initialGoto();
 const startupPath = getSetting("startupPath");
-const bootPath = cliPath || startupPath;
-const opened = bootPath ? await doc.openPath(bootPath) : false;
-if (opened) {
-  // 検索結果を別ウィンドウで開いた場合、飛び先が起動引数に載っている
-  const goto = await api.initialGoto();
-  if (goto) editor.goTo(goto.line, goto.col);
-} else {
-  if (!cliPath && startupPath) setSetting("startupPath", null);
-  editor.open(1, false);
-  editor.focus();
-}
+tabs = new TabManager($("tabs"), doc, {
+  onChange: (state) => setSetting("openTabs", state),
+});
+await tabs.init(getSetting("openTabs"), cliPath, startupPath, cliGoto ?? undefined);
+void api.onOpenInTab((request) => { void tabs.open(request.path, request.goto ?? undefined); });
 doc.updateTitle();

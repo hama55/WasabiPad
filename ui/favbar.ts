@@ -26,6 +26,7 @@ export const bookmarkStore: BookmarkStore = {
 
 export interface FavBarPorts {
   onOpen: (path: string, newWindow: boolean) => void;
+  onAddGroupToTabs: (items: { path: string; kind: "file" | "folder" }[]) => void;
   currentFile: () => string | null;
   onSetDefault: (path: string) => void;
 }
@@ -43,6 +44,7 @@ export class FavBar {
   private justDragged = false;
   private menuRoot = document.getElementById("dropdown");
   private onOpen: (path: string, newWindow: boolean) => void;
+  private onAddGroupToTabs: FavBarPorts["onAddGroupToTabs"];
   private currentFile: () => string | null;
   private onSetDefault: (path: string) => void;
 
@@ -52,6 +54,7 @@ export class FavBar {
     private store: BookmarkStore = bookmarkStore
   ) {
     this.onOpen = ports.onOpen;
+    this.onAddGroupToTabs = ports.onAddGroupToTabs;
     this.currentFile = ports.currentFile;
     this.onSetDefault = ports.onSetDefault;
     this.host.addEventListener("contextmenu", (e) => {
@@ -142,11 +145,21 @@ export class FavBar {
     const items: MenuItem[] = [];
     if (node.kind === "group") {
       items.push(
+        {
+          label: "直下の項目をタブに一括追加",
+          action: () => this.onAddGroupToTabs(node.children.flatMap((child) =>
+            child.kind === "group" ? [] : [{
+              path: child.path,
+              kind: child.kind === "directory" ? "folder" as const : "file" as const,
+            }]
+          )),
+        },
         { label: "パスを追加...", action: () => this.addPath(path) },
         { label: "グループを追加...", action: () => this.addGroup(path) }
       );
     } else {
       items.push(
+        { label: "新規タブで開く", action: () => this.onOpen(node.path, true) },
         { label: "デフォルトに設定", action: () => this.onSetDefault(node.path) },
         { label: "編集...", action: () => this.editPath(path) }
       );

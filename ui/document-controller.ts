@@ -27,7 +27,7 @@ export interface MemoSpec {
 // 文書の入れ替えに伴って更新される表示先。実装 (VirtualEditor など) のうち
 // ここで実際に使う操作だけを要求する。
 export interface DocumentView {
-  editor: Pick<VirtualEditor, "open" | "focus">;
+  editor: Pick<VirtualEditor, "open" | "focus" | "goTo">;
   statusbar: Pick<StatusBar, "setFormat" | "setByteSize" | "setLineCount">;
   addressbar: Pick<AddressBar, "render">;
   sidebar: Pick<Sidebar, "setWorkspaceSearch" | "setArchiveEntries" | "setArchiveRoot" | "setEntries" | "selectByRelPath">;
@@ -35,6 +35,7 @@ export interface DocumentView {
   setLoading: (active: boolean, message?: string) => void;
   setTitle: (title: string) => void;
   notify: (text: string) => void;
+  onSessionChange?: (session: DocumentSession) => void;
   hideExternalBanner: () => void;
   // ファイル保存先を選ばせる (OS のダイアログ)
   pickSavePath: (defaultPath: string) => Promise<string | null>;
@@ -62,6 +63,7 @@ export class DocumentController {
 
   updateTitle() {
     this.view.setTitle(formatWindowTitle(this.session));
+    this.view.onSessionChange?.(this.session);
   }
 
   // アーカイブ選択後/フォルダのエントリ切替後で共通の状態反映。
@@ -78,8 +80,8 @@ export class DocumentController {
     this.updateTitle();
   }
 
-  async openPath(path: string): Promise<boolean> {
-    if (!(await this.confirmDiscard())) return false;
+  async openPath(path: string, confirm = true): Promise<boolean> {
+    if (confirm && !(await this.confirmDiscard())) return false;
     this.view.setLoading(true);
     try {
       const info = await api.openPath(path);
@@ -121,8 +123,8 @@ export class DocumentController {
     this.applyDocInfo(await api.selectEntry(relPath));
   }
 
-  async newFile() {
-    if (!(await this.confirmDiscard())) return;
+  async newFile(confirm = true) {
+    if (confirm && !(await this.confirmDiscard())) return;
     await api.newDoc();
     this.session = initialSession();
     this.view.statusbar.setFormat(this.session);
@@ -237,10 +239,33 @@ export class DocumentController {
     }
   }
 
-  async confirmDiscard(): Promise<boolean> {
-    if (!this.session.dirty || this.session.readOnly) return true;
+  async confirmDiscard(onProceed?: () => void | Promise<void>): Promise<boolean> {
+    if (!this.session.dirty || this.session.readOnly) {
+      await onProceed?.();
+      return true;
+    }
     const choice = await confirmSaveDiscard();
-    return choice === "discard" || (choice === "save" && await this.save());
+    if (choice === "discard") {
+      this.session.dirty = false;
+      await onProceed?.();
+      return true;
+    }
+    if (choice !== "save") return false;
+    let saved: boolean;
+    try {
+      saved = await this.save();
+    } catch (error) {
+      // 保存後の画面更新だけが失敗した場合も、保存済みの文書を元タブへ留めない。
+      if (this.session.dirty) throw error;
+      saved = true;
+    }
+    if (!saved && this.session.dirty) return false;
+    await onProceed?.();
+    return true;
+  }
+
+  goTo(pos: api.Pos) {
+    this.view.editor.goTo(pos.line, pos.col);
   }
 
   async promptMemoSpec(): Promise<MemoSpec | null> {

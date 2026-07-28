@@ -3,6 +3,7 @@ import type { Window } from "@tauri-apps/api/window";
 export interface WindowChromePorts {
   // 閉じてよければ true。false ならクローズを取り消す。
   onCloseRequest: () => Promise<boolean>;
+  onGeometryChange: () => void;
 }
 
 // タイトルバー (#titlebar) の最小化/最大化/閉じると、タイトル・通知の表示。
@@ -14,7 +15,12 @@ export class WindowChrome {
     this.pick("win-max").addEventListener("click", () => void this.toggleMaximize());
     this.pick("win-close").addEventListener("click", () => void this.win.close());
     this.pick("titletext").addEventListener("dblclick", () => void this.toggleMaximize());
-    void this.win.onResized(() => void this.syncMaxIcon());
+    void this.win.onResized(() => {
+      void this.syncMaxIcon();
+      ports.onGeometryChange();
+    });
+    void this.win.onMoved(() => ports.onGeometryChange());
+    void this.win.onScaleChanged(() => ports.onGeometryChange());
     void this.win.onCloseRequested(async (e) => {
       if (!(await ports.onCloseRequest())) e.preventDefault();
     });
@@ -38,7 +44,6 @@ export class WindowChrome {
   }
 
   setTitle(title: string) {
-    this.pick("titletext").textContent = title;
     void this.win.setTitle(title);
   }
 

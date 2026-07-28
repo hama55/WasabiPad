@@ -35,22 +35,36 @@ body {
   background: var(--bg-title);
   flex: none;
 }
-#menubar { display: flex; align-items: center; }
-.menubtn {
-  background: none; border: none; color: var(--fg);
-  padding: 0 10px; font-size: 13px; font-family: var(--font-ui);
-  cursor: default;
-}
-.menubtn:hover, .menubtn.open { background: var(--hover); }
 .bar-toggle { width: 34px; border: 0; background: none; color: var(--fg); font-size: 14px; }
 .bar-toggle:hover { background: var(--hover); }
-.bar-toggle:disabled { color: var(--fg-dim); }
 #titletext {
   flex: 1;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 12px; color: var(--fg);
-  overflow: hidden; white-space: nowrap;
+  min-width: 24px;
 }
+#tabs { display: flex; align-items: stretch; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.doc-tab {
+  display: flex; align-items: center; gap: 5px; min-width: 110px; max-width: 220px;
+  padding: 0 7px; border: 0; border-right: 1px solid var(--border);
+  background: var(--bg-title); color: var(--fg-dim); font: 12px var(--font-ui);
+}
+.doc-tab.active { background: var(--bg-editor); color: var(--fg); }
+.doc-tab:hover { background: var(--hover); }
+.doc-tab.doc-tab-drop-before { box-shadow: inset 2px 0 var(--accent); }
+.doc-tab.doc-tab-drop-after { box-shadow: inset -2px 0 var(--accent); }
+.doc-tab-ghost {
+  position: fixed; left: 0; top: 0; z-index: 10000; pointer-events: none;
+  max-width: 220px; padding: 5px 9px; border: 1px solid var(--accent);
+  border-radius: 4px; background: var(--bg-editor); color: var(--fg);
+  font: 12px var(--font-ui); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.doc-tab-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.doc-tab-close { margin-left: auto; padding: 1px 3px; border-radius: 3px; font-size: 14px; }
+.doc-tab-close:hover { background: var(--border); }
+.doc-tab-add {
+  flex: none; width: 32px; border: 0; border-right: 1px solid var(--border);
+  background: var(--bg-title); color: var(--fg); font-size: 18px;
+}
+.doc-tab-add:hover { background: var(--hover); }
 #wincontrols { display: flex; }
 #wincontrols button {
   width: 46px; border: none; background: none; color: var(--fg);
@@ -77,14 +91,14 @@ body {
 .addressbar-crumb { flex: none; max-width: 220px; overflow: hidden; text-overflow: ellipsis; border: 0; border-radius: 3px; padding: 2px 4px; background: none; color: inherit; font: inherit; cursor: default; }
 .addressbar-crumb:hover { background: var(--hover); }
 .addressbar-sep { flex: none; color: var(--fg-dim); }
-#addressbar-fav, #addressbar-open, #addressbar-save, #addressbar-new, #addressbar-new-window, #toggle-sidebar, #toggle-favbar {
+#addressbar-fav, #addressbar-open, #addressbar-save, #addressbar-save-as, #addressbar-new, #addressbar-find {
   flex: none; width: 26px; height: 26px;
   background: var(--bg-editor); color: var(--fg-dim);
   border: 1px solid var(--border); border-radius: 4px;
   font-size: 14px; cursor: default;
 }
-#toggle-sidebar, #toggle-favbar { background: var(--bg-title); }
-#addressbar-fav:hover, #addressbar-open:hover, #addressbar-save:hover, #addressbar-new:hover, #addressbar-new-window:hover, #toggle-sidebar:hover, #toggle-favbar:hover { background: var(--hover); color: var(--fg); }
+#addressbar-save-as { width: 32px; }
+#addressbar-fav:hover, #addressbar-open:hover, #addressbar-save:hover, #addressbar-save-as:hover, #addressbar-new:hover, #addressbar-find:hover { background: var(--hover); color: var(--fg); }
 
 /* ---- お気に入りバー ---- */
 #favbar {
@@ -140,6 +154,13 @@ body {
   overflow: auto; flex: none;
   padding: 4px 0;
 }
+#sidebar-toggle {
+  position: absolute; z-index: 8; bottom: 6px;
+  min-width: 28px; height: 24px; padding: 0 5px;
+  border: 1px solid var(--border); border-radius: 4px;
+  background: var(--bg-side); color: var(--fg-dim); font: 12px var(--font-ui);
+}
+#sidebar-toggle:hover { background: var(--hover); color: var(--fg); }
 /* ---- フォルダ検索バー ---- */
 /* 結果が長くなるため、入力欄と件数は上端へ貼り付けたままにする */
 .ws-search {
@@ -312,6 +333,7 @@ body {
 .ve.hscroll-hidden .ve-gutter,
 .ve.hscroll-hidden .ve-scroll { bottom: 0; }
 .ve-hscroll[hidden] { display: none; }
+/* 折返し行の実高をnative scrollHeightへ混ぜると、thumb dragと再描画がfeedbackする。 */
 .ve-inner { position: relative; min-height: 100%; overflow: clip; }
 .ve-line {
   position: absolute; left: 0; height: var(--line-h);
@@ -340,18 +362,24 @@ body {
 @keyframes ve-blink { 50% { opacity: 0; } }
 .ve-input {
   position: absolute; z-index: 3;
-  width: 1px; height: var(--line-h); padding: 0; margin: 0; border: 0;
+  width: 4px; height: var(--line-h); padding: 0; margin: 0; border: 0;
   outline: none; resize: none; overflow: hidden;
+  pointer-events: none;
   background: transparent; color: transparent; caret-color: transparent;
   font-family: var(--ve-font-family); font-size: var(--ve-font);
   line-height: var(--line-h); white-space: pre;
 }
-.ve-input.ime {
+.ve-input.ime, .ve-ime-commit {
   color: var(--editor-fg); background: var(--bg-editor);
   caret-color: var(--caret); z-index: 4;
 }
+.ve-ime-commit {
+  position: absolute; pointer-events: none; overflow: hidden;
+  font-family: var(--ve-font-family); font-size: var(--ve-font);
+  line-height: var(--line-h); white-space: pre;
+}
 .ve-sel, .ve-caret { pointer-events: none; }
-.ve-scroll.wrap .ve-input.ime {
+.ve.wrap .ve-input.ime, .ve-ime-commit.wrap {
   white-space: pre-wrap; overflow-wrap: anywhere;
   max-width: calc(100% - var(--ve-pad-left));
   background:
