@@ -402,28 +402,28 @@ function closeChart() {
 }
 
 async function start() {
-  applyTheme();
-  bindWindowControls();
-  themeButton.addEventListener("click", () => {
-    applyTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light");
-  });
-  delimiterInput.addEventListener("input", () => {
-    if (!delimiterInput.value || currentFormat !== "csv") return;
-    renderTable(currentText);
-  });
-  document.getElementById("chart-close")!.addEventListener("click", closeChart);
-  content.addEventListener("contextmenu", (event) => {
-    if (currentFormat === "markdown" || !(event.target as Element).closest(".viewer-grid")) return;
-    event.preventDefault();
-    showContextMenu(event.clientX, event.clientY);
-  });
-  document.addEventListener("mousedown", (event) => {
-    if (!contextMenu.contains(event.target as Node)) contextMenu.hidden = true;
-  });
-  await listen<ViewerPayload>("viewer-update", (event) => {
-    renderPayload(event.payload);
-  });
   try {
+    applyTheme();
+    bindWindowControls();
+    themeButton.addEventListener("click", () => {
+      applyTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light");
+    });
+    delimiterInput.addEventListener("input", () => {
+      if (!delimiterInput.value || currentFormat !== "csv") return;
+      renderTable(currentText);
+    });
+    document.getElementById("chart-close")!.addEventListener("click", closeChart);
+    content.addEventListener("contextmenu", (event) => {
+      if (currentFormat === "markdown" || !(event.target as Element).closest(".viewer-grid")) return;
+      event.preventDefault();
+      showContextMenu(event.clientX, event.clientY);
+    });
+    document.addEventListener("mousedown", (event) => {
+      if (!contextMenu.contains(event.target as Node)) contextMenu.hidden = true;
+    });
+    await listen<ViewerPayload>("viewer-update", (event) => {
+      renderPayload(event.payload);
+    });
     renderPayload(await takeViewerPayload(win.label));
   } catch (error) {
     title.textContent = formatTitleBar("表示できませんでした");

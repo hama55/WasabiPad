@@ -36,8 +36,9 @@ export interface EditorPorts {
   onFontChange: (fontFamily: string, fontSize: number) => void;
   hasExternalFile: () => boolean;
   openExternally: () => void;
+  onError: (message: string, error: unknown) => Promise<void>;
   openViewer: (format: api.ViewerFormat, text: string, selection: api.ViewerSelection | null) => Promise<string | null>;
-  updateViewer: (label: string, text: string, selection: api.ViewerSelection | null) => Promise<void>;
+  updateViewer: (label: string, text: string, selection: api.ViewerSelection | null) => Promise<boolean>;
 }
 
 // 全ファイル共通の仮想スクロールエディタ。文書は backend(mmap/overlay)が所有し、
@@ -95,6 +96,7 @@ export class VirtualEditor {
   private onFontChange: (fontFamily: string, fontSize: number) => void;
   private hasExternalFile: () => boolean;
   private openExternally: () => void;
+  private onError: (message: string, error: unknown) => Promise<void>;
   private liveViewers: LiveViewers;
 
   constructor(
@@ -125,6 +127,7 @@ export class VirtualEditor {
     this.onFontChange = ports.onFontChange;
     this.hasExternalFile = ports.hasExternalFile;
     this.openExternally = ports.openExternally;
+    this.onError = ports.onError;
     this.fontFamily = config.fontFamily;
     this.fontSize = config.fontSize;
     this.lineHeightExtra = config.lineHeightExtra;
@@ -1289,10 +1292,25 @@ export class VirtualEditor {
 
   // ---- 入力 / IME ----
   // textarea の内容を文書へ流し込む。clear 済みなら二重挿入しない (IME終了時の重複対策)。
-  private flushInput(): Promise<void> {
+  private async flushInput() {
     const v = this.input.value;
     this.input.value = "";
-    return v ? this.insertText(v) : Promise.resolve();
+    if (!v) return;
+    try {
+      await this.insertText(v);
+    } catch (error) {
+      // IPC失敗でtextareaを空にしたままにすると、未保存の入力だけが失われる。
+      this.input.value = v + this.input.value;
+      throw error;
+    }
+  }
+
+  private async reportInputError(error: unknown) {
+    try {
+      await this.onError("入力を反映できませんでした", error);
+    } catch (reportError) {
+      console.error("入力エラーを表示できませんでした", reportError);
+    }
   }
 
   private onInput(e: InputEvent) {
@@ -1300,7 +1318,7 @@ export class VirtualEditor {
       this.syncImeAnchor();
       return;
     }
-    this.flushInput();
+    void this.flushInput().catch((error) => this.reportInputError(error));
   }
 
   private finishComposition() {
@@ -1313,7 +1331,9 @@ export class VirtualEditor {
     this.input.style.removeProperty("text-indent");
     this.input.style.removeProperty("--ime-indent");
     this.syncCaretBlink();
-    void this.flushInput().finally(() => overlay?.remove());
+    void this.flushInput()
+      .catch((error) => this.reportInputError(error))
+      .finally(() => overlay?.remove());
   }
 
   private showImeCommit(text: string): HTMLElement {

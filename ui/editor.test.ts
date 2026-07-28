@@ -16,8 +16,9 @@ function mount(initial: string) {
     onFontChange: () => {},
     hasExternalFile: () => false,
     openExternally: () => {},
+    onError: async () => {},
     openViewer: async () => null,
-    updateViewer: async () => {},
+    updateViewer: async () => true,
   };
   const editor = new VirtualEditor(host, ports, undefined, doc.client);
   const input = host.querySelector<HTMLTextAreaElement>(".ve-input")!;

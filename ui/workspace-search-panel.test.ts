@@ -46,7 +46,8 @@ describe("WorkspaceSearchPanel", () => {
   function mount(
     onSearch: WorkspaceSearchPorts["onSearch"] = async () => outcome([]),
     onOpen: WorkspaceSearchPorts["onOpen"] = () => {},
-    onCancel: WorkspaceSearchPorts["onCancel"] = () => {}
+    onCancel: WorkspaceSearchPorts["onCancel"] = () => {},
+    onError: WorkspaceSearchPorts["onError"] = async () => {}
   ) {
     const host = document.createElement("div");
     document.body.appendChild(host);
@@ -54,6 +55,7 @@ describe("WorkspaceSearchPanel", () => {
     const panel = (mounted = new WorkspaceSearchPanel({ ...DEFAULT_SEARCH_OPTIONS }, {
       onSearch,
       onCancel,
+      onError,
       onOpen,
       onContextMenu: () => {},
       onOptionsChange: () => {},
@@ -87,6 +89,18 @@ describe("WorkspaceSearchPanel", () => {
     // 既定は無制限なので、サイズや件数を対象外として読み上げてはいけない
     expect(text(host, ".ws-empty-detail")).not.toContain("MB超");
     expect(text(host, ".ws-empty-detail")).not.toContain("件目以降");
+  });
+
+  it("検索失敗時は検索中表示を解除してエラーを渡す", async () => {
+    vi.useFakeTimers();
+    const onError = vi.fn(async () => {});
+    const host = mount(async () => { throw new Error("IPC disconnected"); }, () => {}, () => {}, onError);
+
+    await search(host, "needle");
+
+    expect(onError).toHaveBeenCalledOnce();
+    expect(host.querySelector<HTMLButtonElement>(".ws-stop")?.hidden).toBe(true);
+    expect(host.querySelector(".ws-empty")).toBeNull();
   });
 
   it("結果をファイル単位のツリーにまとめ、一致箇所を強調する", async () => {

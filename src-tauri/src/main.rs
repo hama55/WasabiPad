@@ -429,23 +429,29 @@ fn update_viewer(
     selection: Option<ViewerSelection>,
     app: AppHandle,
     state: tauri::State<'_, ViewerStore>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
+    let Some(window) = app.get_webview_window(&label) else {
+        state
+            .0
+            .lock()
+            .map_err(|_| "ビューの更新に失敗しました".to_string())?
+            .remove(&label);
+        return Ok(false);
+    };
     let payload = {
         let mut payloads = state
             .0
             .lock()
             .map_err(|_| "ビューの更新に失敗しました".to_string())?;
-        let payload = payloads
-            .get_mut(&label)
-            .ok_or_else(|| "ビューが閉じられています".to_string())?;
+        let Some(payload) = payloads.get_mut(&label) else {
+            return Ok(false);
+        };
         payload.text = text;
         payload.selection = selection;
         payload.clone()
     };
-    app.get_webview_window(&label)
-        .ok_or_else(|| "ビューが閉じられています".to_string())?
-        .emit("viewer-update", payload)
-        .map_err(|e| e.to_string())
+    window.emit("viewer-update", payload).map_err(|e| e.to_string())?;
+    Ok(true)
 }
 
 fn main() {

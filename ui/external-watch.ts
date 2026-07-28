@@ -56,13 +56,26 @@ export class ExternalWatch {
     try {
       this.ports.onReload(await api.reloadFromDisk());
     } catch (e) {
-      await this.ports.onError("再読込できませんでした", e);
+      await this.reportError("再読込できませんでした", e);
     }
   }
 
   private async ignore() {
     this.hide();
-    await api.ackExternal();
-    this.ports.onIgnore();
+    try {
+      await api.ackExternal();
+      this.ports.onIgnore();
+    } catch (error) {
+      this.banner.hidden = false; // 無視できていない競合を隠したままにしない。
+      await this.reportError("外部変更を無視できませんでした", error);
+    }
+  }
+
+  private async reportError(title: string, error: unknown) {
+    try {
+      await this.ports.onError(title, error);
+    } catch (reportError) {
+      console.error("外部変更エラーを表示できませんでした", reportError);
+    }
   }
 }

@@ -202,4 +202,4 @@ export const openViewer = (
 export const takeViewerPayload = (label: string) =>
   invoke<ViewerPayload>("take_viewer_payload", { label });
 export const updateViewer = (label: string, text: string, selection: ViewerSelection | null) =>
-  invoke<void>("update_viewer", { label, text, selection });
+  invoke<boolean>("update_viewer", { label, text, selection });

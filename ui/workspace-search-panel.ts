@@ -21,6 +21,7 @@ export interface WorkspaceSearchPorts {
     searchId: number
   ) => Promise<WorkspaceSearchOutcome>;
   onCancel: () => void;
+  onError: (error: unknown) => Promise<void>;
   // 一致の範囲は result.highlights が持つ。パターンを渡さないのは、
   // 正規表現や大小の畳み込みで「当たった長さ」がパターンの長さと一致しないため。
   onOpen: (result: WorkspaceSearchResult, newWindow: boolean) => void;
@@ -272,6 +273,14 @@ export class WorkspaceSearchPanel {
     try {
       const outcome = await run;
       if (gen === this.searchGen) this.setOutcome(outcome);
+    } catch (error) {
+      if (gen !== this.searchGen) return;
+      this.setOutcome(null);
+      try {
+        await this.ports.onError(error);
+      } catch (reportError) {
+        console.error("検索エラーを表示できませんでした", reportError);
+      }
     } finally {
       if (this.running === run) this.running = null;
     }

@@ -41,6 +41,7 @@ export interface SidebarPorts extends Omit<WorkspaceSearchPorts, "onViewChange" 
   onContextMenu: (x: number, y: number, target: ContextTarget | null) => void;
   onExpandArchive: (relPath: string) => Promise<string[]>;
   onExpandFolder: (relDir: string) => Promise<FolderEntry[]>;
+  onTreeError: (error: unknown) => Promise<void>;
 }
 
 export class Sidebar {
@@ -53,6 +54,7 @@ export class Sidebar {
   private onContextMenu: (x: number, y: number, target: ContextTarget | null) => void;
   private onExpandArchive: (relPath: string) => Promise<string[]>;
   private onExpandFolder: (relDir: string) => Promise<FolderEntry[]>;
+  private onTreeError: (error: unknown) => Promise<void>;
 
   constructor(host: HTMLElement, ports: SidebarPorts, searchOptions: WorkspaceSearchOptions) {
     this.host = host;
@@ -60,9 +62,11 @@ export class Sidebar {
     this.onContextMenu = ports.onContextMenu;
     this.onExpandArchive = ports.onExpandArchive;
     this.onExpandFolder = ports.onExpandFolder;
+    this.onTreeError = ports.onTreeError;
     this.panel = new WorkspaceSearchPanel(searchOptions, {
       onSearch: ports.onSearch,
       onCancel: ports.onCancel,
+      onError: ports.onError,
       onOpen: ports.onOpen,
       onOptionsChange: ports.onOptionsChange,
       onContextMenu: (x, y, target) => this.onContextMenu(x, y, target),
@@ -263,9 +267,9 @@ export class Sidebar {
           return;
         }
         if (r.kind === "dir") {
-          void this.expandFolderRow(r);
+          void this.expandFolderRow(r).catch((error) => this.reportTreeError(error));
         } else if (r.kind === "archive") {
-          void this.expandArchiveRow(r);
+          void this.expandArchiveRow(r).catch((error) => this.reportTreeError(error));
         } else {
           this.sel = r.relPath;
           this.render();
@@ -288,5 +292,13 @@ export class Sidebar {
       frag.appendChild(div);
     }
     return frag;
+  }
+
+  private async reportTreeError(error: unknown) {
+    try {
+      await this.onTreeError(error);
+    } catch (reportError) {
+      console.error("ツリー展開エラーを表示できませんでした", reportError);
+    }
   }
 }
