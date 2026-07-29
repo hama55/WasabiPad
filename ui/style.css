@@ -42,7 +42,7 @@ body {
 }
 #tabs { display: flex; flex: 1; align-items: stretch; min-width: 0; overflow: hidden; }
 .doc-tab {
-  display: flex; flex: 1 1 0; align-items: center; gap: 5px; min-width: 0;
+  display: flex; flex: 1 1 0; align-items: center; gap: 5px; min-width: 0; max-width: 240px;
   overflow: hidden; container-type: inline-size;
   padding: 0 7px; border: 0; border-right: 1px solid var(--border);
   background: var(--bg-title); color: var(--fg-dim); font: 12px var(--font-ui);
