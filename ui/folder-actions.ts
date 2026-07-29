@@ -11,7 +11,7 @@ import { getSetting } from "./settings";
 export interface FolderActionsPorts {
   sidebar: Pick<Sidebar, "setEntries" | "selectByRelPath" | "refreshFolderEntries">;
   onOpenInNewTab: (relPath: string, goto?: api.Pos) => void;
-  onOpenInNewWindow: (path: string) => void;
+  onOpenInNewWindow: (path: string, goto?: api.Pos) => void;
   onAddFavorite: (path: string) => void;
   onSetStartupPath: (path: string) => void;
   onOpenPath: (path: string) => void;
@@ -40,7 +40,7 @@ export class FolderActions {
       });
       items.push({
         label: "新規ウィンドウで開く",
-        action: () => this.ports.onOpenInNewWindow(this.toAbsolute(target.relPath)),
+        action: () => this.ports.onOpenInNewWindow(this.toAbsolute(target.relPath), target.goto),
       });
       if (!target.isDir) {
         items.push({ label: "アプリで開く", action: () => void openInOtherApp(this.toAbsolute(target.relPath)) });

@@ -152,7 +152,8 @@ export const setEol = (eol: Eol) => invoke<void>("set_eol", { eol });
 
 // 設定は不透明な JSON 文字列として往復させる (構造を知るのは ui/settings.ts だけ)
 export const loadSettings = () => invoke<string>("load_settings");
-export const saveSettings = (json: string) => invoke<void>("save_settings", { json });
+export const updateSetting = (key: string, valueJson: string) =>
+  invoke<void>("update_setting", { key, valueJson });
 
 export const loadBookmarks = () => invoke<BmNode[]>("load_bookmarks");
 export const saveBookmarks = (nodes: BmNode[]) => invoke<void>("save_bookmarks", { nodes });
@@ -161,10 +162,16 @@ export const nextMemoPath = (directory: string, stem: string, extension: string)
   invoke<string>("next_memo_path", { directory, stem, extension });
 export const initialPath = () => invoke<string | null>("initial_path");
 export const isSecondaryInstance = () => invoke<boolean>("is_secondary_instance");
-export const launchNewInstance = (path: string | null = null) =>
-  invoke<void>("launch_new_instance", { path });
+export const launchNewInstance = (
+  path: string | null = null,
+  goto: Pos | null = null,
+  selectedRelPath: string | null = null,
+  viewStateJson: string | null = null,
+) => invoke<void>("launch_new_instance", { path, goto, selectedRelPath, viewStateJson });
 // 起動時に飛ぶ位置 (検索結果を別ウィンドウで開いたとき backend が引数へ載せる)
 export const initialGoto = () => invoke<Pos | null>("initial_goto");
+export const initialSelectedRelPath = () => invoke<string | null>("initial_selected_rel_path");
+export const initialViewState = () => invoke<string | null>("initial_view_state");
 export const onOpenInTab = (handler: (request: OpenRequest) => void) =>
   listen<OpenRequest>("open-in-tab", (event) => handler(event.payload));
 

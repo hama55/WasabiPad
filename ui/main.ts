@@ -4,7 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import * as api from "./api";
-import { VirtualEditor } from "./editor";
+import { VirtualEditor, type EditorViewState } from "./editor";
 import { Sidebar } from "./sidebar";
 import { FavBar } from "./favbar";
 import { AddressBar } from "./addressbar";
@@ -62,9 +62,19 @@ async function reportBackgroundError(title: string, error: unknown) {
   }
 }
 
-async function launchNewWindow(path: string | null = null): Promise<boolean> {
+async function launchNewWindow(
+  path: string | null = null,
+  goto?: api.Pos,
+  selectedRelPath?: string,
+  viewState?: EditorViewState,
+): Promise<boolean> {
   try {
-    await api.launchNewInstance(path);
+    await api.launchNewInstance(
+      path,
+      goto ?? null,
+      selectedRelPath ?? null,
+      viewState ? JSON.stringify(viewState) : null,
+    );
     return true;
   } catch (error) {
     await reportBackgroundError("新規ウィンドウを開けませんでした", error);
@@ -252,7 +262,7 @@ const favbar = new FavBar($("favbar"), {
 const folderActions = new FolderActions(doc, {
   sidebar,
   onOpenInNewTab: (relPath, goto) => { void openInNewTab(relPath, goto); },
-  onOpenInNewWindow: (path) => { void launchNewWindow(path); },
+  onOpenInNewWindow: (path, goto) => { void launchNewWindow(path, goto); },
   onAddFavorite: (path) => favbar.addExternal(path),
   onSetStartupPath: (path) => setSetting("startupPath", path),
   onOpenPath: (path) => {
@@ -353,17 +363,36 @@ window.setInterval(async () => {
 
 // ---- 起動 ----
 await windowChrome.syncMaxIcon();
+// 以降はファイルエラーなどでユーザー操作待ちになるため、先に操作可能な画面を出す。
+await win.show();
 await favbar.init();
 const cliPath = await api.initialPath();
 const cliGoto = await api.initialGoto();
+const cliSelectedRelPath = await api.initialSelectedRelPath();
+const cliViewStateJson = await api.initialViewState();
+let cliViewState: EditorViewState | undefined;
+if (cliViewStateJson) {
+  try {
+    cliViewState = JSON.parse(cliViewStateJson) as EditorViewState;
+  } catch {
+    // 自プロセスが生成した引数が壊れていても、通常の起動は続ける。
+  }
+}
 const startupPath = getSetting("startupPath");
 tabs = new TabManager($("tabs"), doc, {
   onChange: (state) => {
     if (!secondaryInstance) setSetting("openTabs", state);
   },
-  onDetach: (path) => launchNewWindow(path),
+  onDetach: (path, goto, selectedRelPath, viewState) =>
+    launchNewWindow(path, goto, selectedRelPath, viewState),
 });
 const storedTabs = secondaryInstance ? { tabs: [], activeId: null } : getSetting("openTabs");
-await tabs.init(storedTabs, cliPath, secondaryInstance ? null : startupPath, cliGoto ?? undefined);
+await tabs.init(
+  storedTabs,
+  cliPath,
+  secondaryInstance ? null : startupPath,
+  cliGoto ?? undefined,
+  cliSelectedRelPath ?? undefined,
+  cliViewState,
+);
 doc.updateTitle();
-await win.show();

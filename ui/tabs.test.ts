@@ -17,6 +17,9 @@ function fixture() {
       session.displayPath = path;
       return true;
     }),
+    selectEntry: vi.fn(async (relPath: string) => {
+      session.selectedRelPath = relPath;
+    }),
     newFile: vi.fn(async () => {}),
     goTo: vi.fn(),
     captureViewState: vi.fn(() => ({
@@ -62,6 +65,55 @@ describe("TabManager", () => {
 
     expect(doc.openPath).toHaveBeenCalledTimes(1);
     expect(doc.openPath).toHaveBeenCalledWith("C:\\work\\a.txt", false);
+  });
+
+  it("folder tabは選択中entryを開いてから表示状態を復元する", async () => {
+    const { doc, host } = fixture();
+    const folderTabs: StoredTabs = {
+      tabs: [{
+        id: "folder",
+        path: "C:\\work",
+        kind: "folder",
+        label: "work",
+        selectedRelPath: "sub\\memo.txt",
+        viewState: {
+          anchor: { line: 10, col: 1 },
+          caret: { line: 10, col: 4 },
+          topLine: 8,
+          wrapIntraLinePx: 0,
+          scrollLeft: 20,
+        },
+      }],
+      activeId: "folder",
+    };
+    const manager = new TabManager(host, doc, { onChange: () => {} });
+
+    await manager.init(folderTabs, null, null);
+
+    expect(doc.selectEntry).toHaveBeenCalledWith("sub\\memo.txt");
+    expect(doc.restoreViewState).toHaveBeenCalledWith(folderTabs.tabs[0].viewState);
+    expect(vi.mocked(doc.selectEntry).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(doc.restoreViewState).mock.invocationCallOrder[0]);
+  });
+
+  it("folder tabの選択中entryが削除済みでも親フォルダは開く", async () => {
+    const { doc, host } = fixture();
+    vi.mocked(doc.selectEntry).mockRejectedValueOnce(new Error("missing"));
+    const folderTabs: StoredTabs = {
+      tabs: [{
+        id: "folder",
+        path: "C:\\work",
+        kind: "folder",
+        label: "work",
+        selectedRelPath: "deleted.txt",
+      }],
+      activeId: "folder",
+    };
+    const manager = new TabManager(host, doc, { onChange: () => {} });
+
+    await expect(manager.init(folderTabs, null, null)).resolves.toBeUndefined();
+    expect(doc.openPath).toHaveBeenCalledWith("C:\\work", false);
+    expect(manager.state.tabs[0].selectedRelPath).toBeUndefined();
   });
 
   it("tab移動前に未保存確認を通し、移動先のリンクを読み込む", async () => {
@@ -208,7 +260,15 @@ describe("TabManager", () => {
     a.dispatchEvent(at("pointerdown", 0));
     window.dispatchEvent(at("pointermove", -20));
     window.dispatchEvent(at("pointerup", -20));
-    await vi.waitFor(() => expect(onDetach).toHaveBeenCalledWith("C:\\work\\a.txt"));
+    await vi.waitFor(() => expect(onDetach).toHaveBeenCalledWith(
+      "C:\\work\\a.txt",
+      undefined,
+      undefined,
+      expect.objectContaining({
+        caret: { line: 0, col: 0 },
+        anchor: { line: 0, col: 0 },
+      }),
+    ));
 
     expect(manager.state.tabs.map((tab) => tab.id)).toEqual(["b"]);
     expect(manager.state.activeId).toBe("b");

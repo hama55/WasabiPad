@@ -353,15 +353,15 @@ fn save_bookmarks(nodes: Vec<BookmarkNode>) -> Result<(), String> {
     wasabipad_core::save_bookmarks(&nodes).map_err(|e| e.to_string())
 }
 
-// 設定は不透明な JSON 文字列として往復させる (構造を知るのは ui/settings.ts だけ)。
+// 設定値はJSONとして扱い、キー単位で更新して別プロセスの変更を巻き戻さない。
 #[tauri::command]
 fn load_settings() -> String {
     wasabipad_core::load_settings()
 }
 
 #[tauri::command]
-fn save_settings(json: String) -> Result<(), String> {
-    wasabipad_core::save_settings(&json).map_err(|e| e.to_string())
+fn update_setting(key: String, value_json: String) -> Result<(), String> {
+    wasabipad_core::update_setting(&key, &value_json).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -397,12 +397,26 @@ fn is_secondary_instance() -> bool {
 }
 
 #[tauri::command]
-fn launch_new_instance(path: Option<String>) -> Result<(), String> {
+fn launch_new_instance(
+    path: Option<String>,
+    goto: Option<PosC>,
+    selected_rel_path: Option<String>,
+    view_state_json: Option<String>,
+) -> Result<(), String> {
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
     let mut command = Command::new(executable);
     command.arg("--new-window");
     if let Some(path) = path {
         command.arg(path);
+        if let Some(goto) = goto {
+            command.arg(format!("+{}:{}", goto.line, goto.col));
+        }
+        if let Some(selected_rel_path) = selected_rel_path {
+            command.args(["--selected-rel-path", &selected_rel_path]);
+        }
+        if let Some(view_state_json) = view_state_json {
+            command.args(["--view-state", &view_state_json]);
+        }
     }
     command.spawn().map(|_| ()).map_err(|error| error.to_string())
 }
@@ -410,10 +424,30 @@ fn launch_new_instance(path: Option<String>) -> Result<(), String> {
 // 起動引数の "+行:桁" (0起点)。検索結果を別ウィンドウで開いたときの飛び先。
 #[tauri::command]
 fn initial_goto() -> Option<PosC> {
-    let offset = if is_secondary_instance() { 3 } else { 2 };
-    let arg = std::env::args().nth(offset)?;
-    let (line, col) = arg.strip_prefix('+')?.split_once(':')?;
-    Some(PosC { line: line.parse().ok()?, col: col.parse().ok()? })
+    std::env::args().find_map(|arg| {
+        let (line, col) = arg.strip_prefix('+')?.split_once(':')?;
+        Some(PosC { line: line.parse().ok()?, col: col.parse().ok()? })
+    })
+}
+
+fn argument_value(name: &str) -> Option<String> {
+    let mut args = std::env::args();
+    while let Some(arg) = args.next() {
+        if arg == name {
+            return args.next();
+        }
+    }
+    None
+}
+
+#[tauri::command]
+fn initial_selected_rel_path() -> Option<String> {
+    argument_value("--selected-rel-path")
+}
+
+#[tauri::command]
+fn initial_view_state() -> Option<String> {
+    argument_value("--view-state")
 }
 
 // Windowsでは同期command中のWebView生成がイベントループを塞ぐためasyncで実行する。
@@ -546,13 +580,15 @@ fn main() {
             load_bookmarks,
             save_bookmarks,
             load_settings,
-            save_settings,
+            update_setting,
             path_is_directory,
             next_memo_path,
             initial_path,
             is_secondary_instance,
             launch_new_instance,
             initial_goto,
+            initial_selected_rel_path,
+            initial_view_state,
             open_viewer,
             take_viewer_payload,
             update_viewer,

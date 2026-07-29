@@ -14,6 +14,7 @@ encoding_rs = "0.8"
 memchr = "2"
 miniz_oxide = "0.8"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 ts-rs = "12.0"
 # フォルダ検索は ripgrep のエンジンをライブラリとして使う (外部 rg.exe は同梱しない)。
 # ignore=並列walk+gitignore、grep-*=SIMDリテラル検索/mmap/バイナリ検出/文字コード変換。
@@ -29,5 +30,6 @@ features = [
     "Win32_System_Memory",
     "Win32_Security",
     "Win32_Storage_FileSystem",
+    "Win32_System_IO",
     "Win32_System_SystemInformation",
 ]

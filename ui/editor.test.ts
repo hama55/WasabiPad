@@ -340,7 +340,6 @@ describe("VirtualEditor", () => {
     await settle();
     const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
     const inner = host.querySelector<HTMLElement>(".ve-inner")!;
-    const line = host.querySelector<HTMLElement>(".ve-line")!;
     Object.defineProperties(scroll, {
       clientHeight: { configurable: true, value: 100 },
       clientWidth: { configurable: true, value: 100 },
@@ -353,14 +352,16 @@ describe("VirtualEditor", () => {
       x: 0, y: 0, left: 0, top: 0, right: 112, bottom: 100,
       width: 112, height: 100, toJSON: () => ({}),
     } as DOMRect);
-    line.getBoundingClientRect = () => ({
-      x: 0, y: 0, left: 0, top: 0, right: 100, bottom: 2000,
-      width: 100, height: 2000, toJSON: () => ({}),
-    } as DOMRect);
+    const lineRect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      const height = this.classList.contains("ve-line") ? 2000 : 0;
+      return {
+        x: 0, y: 0, left: 0, top: 0, right: 100, bottom: height,
+        width: 100, height, toJSON: () => ({}),
+      } as DOMRect;
+    });
 
     scroll.dispatchEvent(new Event("scroll"));
-    await settle();
-    expect(Number.parseFloat(inner.style.height)).toBe(2000);
+    await vi.waitFor(() => expect(Number.parseFloat(inner.style.height)).toBe(2000));
 
     scroll.dispatchEvent(new MouseEvent("mousedown", { clientX: 105, clientY: 20 }));
     scroll.scrollTop = 950;
@@ -368,8 +369,10 @@ describe("VirtualEditor", () => {
     await settle();
     window.dispatchEvent(new MouseEvent("mouseup"));
 
-    expect(Number.parseFloat(line.style.top) - scroll.scrollTop).toBe(-950);
+    const renderedLine = host.querySelector<HTMLElement>(".ve-line")!;
+    expect(Number.parseFloat(renderedLine.style.top) - scroll.scrollTop).toBe(-950);
     expect(Number.parseFloat(inner.style.height)).toBe(2000);
+    lineRect.mockRestore();
   });
 
   it("compositionendが来ないblurでもIME状態と入力を回収する", async () => {

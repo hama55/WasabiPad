@@ -2,7 +2,7 @@
 // UI から同期的に読めるよう、起動時に一度だけ読み込んでメモリへ載せる。
 // 配色モードだけは localStorage に残す (ウィンドウ間の即時同期を storage イベントに任せるため)。
 import type { WorkspaceSearchOptions } from "./api";
-import { loadSettings as loadSettingsJson, saveSettings as saveSettingsJson } from "./api";
+import { loadSettings as loadSettingsJson, updateSetting } from "./api";
 import { clampSearchOptions, DEFAULT_SEARCH_OPTIONS } from "./workspace-search-options";
 import type { StoredTabs } from "./tabs";
 
@@ -24,6 +24,7 @@ const DEFAULTS: Settings = {
 };
 
 let cache: Settings = { ...DEFAULTS };
+let pendingSave = Promise.resolve();
 
 // 手で編集されうるファイルなので、型が合わない項目は既定値へ落とす
 export function parseSettings(text: string): Settings {
@@ -58,6 +59,7 @@ function validStoredTabs(value: unknown): value is StoredTabs {
       && (typeof tab.path === "string" || tab.path === null)
       && (tab.kind === "file" || tab.kind === "folder" || tab.kind === "blank")
       && typeof tab.label === "string"
+      && (!("selectedRelPath" in tab) || tab.selectedRelPath === undefined || typeof tab.selectedRelPath === "string")
       && (!("viewState" in tab) || tab.viewState === undefined || validViewState(tab.viewState)))
     && (typeof candidate.activeId === "string" || candidate.activeId === null);
 }
@@ -84,6 +86,7 @@ export async function initSettings(): Promise<void> {
   } catch {
     cache = { ...DEFAULTS };
   }
+  pendingSave = Promise.resolve();
 }
 
 export function getSetting<K extends keyof Settings>(key: K): Settings[K] {
@@ -92,13 +95,16 @@ export function getSetting<K extends keyof Settings>(key: K): Settings[K] {
 
 export function setSetting<K extends keyof Settings>(key: K, value: Settings[K]): void {
   cache = { ...cache, [key]: value };
-  void saveSettingsJson(JSON.stringify(cache, null, 2)).catch((error: unknown) => {
+  pendingSave = pendingSave
+    .catch(() => {})
+    .then(() => updateSetting(key, JSON.stringify(value)));
+  void pendingSave.catch((error: unknown) => {
     console.error("設定を保存できませんでした", error);
   });
 }
 
 export function flushSettings(): Promise<void> {
-  return saveSettingsJson(JSON.stringify(cache, null, 2));
+  return pendingSave;
 }
 
 // 検索条件は手で編集されうるファイルに載るので、既定値で埋めてから丸める

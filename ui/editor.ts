@@ -318,8 +318,9 @@ export class VirtualEditor {
     const topLine = Math.max(0, Math.min(this.maxTopLine(), state.topLine));
     if (this.wrap) this.setWrapAnchor(topLine, Math.max(0, state.wrapIntraLinePx));
     else this.setTopLine(topLine);
-    this.setHorizontalScroll(Math.max(0, state.scrollLeft));
+    await this.lineCache.line(Math.floor(topLine));
     this.render();
+    this.setHorizontalScroll(Math.max(0, state.scrollLeft));
     this.notifyCursor();
   }
 

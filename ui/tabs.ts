@@ -12,6 +12,7 @@ export interface StoredTab {
   label: string;
   goto?: Pos;
   viewState?: EditorViewState;
+  selectedRelPath?: string;
 }
 
 export interface StoredTabs {
@@ -21,7 +22,12 @@ export interface StoredTabs {
 
 interface TabPorts {
   onChange: (state: StoredTabs) => void;
-  onDetach?: (path: string | null) => Promise<boolean>;
+  onDetach?: (
+    path: string | null,
+    goto?: Pos,
+    selectedRelPath?: string,
+    viewState?: EditorViewState,
+  ) => Promise<boolean>;
 }
 
 const newId = () => `tab-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -56,11 +62,23 @@ export class TabManager {
     };
   }
 
-  async init(stored: StoredTabs, initialPath: string | null, startupPath: string | null, initialGoto?: Pos) {
-    this.tabs = stored.tabs.length ? stored.tabs.map((tab) => ({ ...tab })) : [
-      this.link(initialPath ?? startupPath, initialPath ? initialGoto : undefined),
-    ];
+  async init(
+    stored: StoredTabs,
+    initialPath: string | null,
+    startupPath: string | null,
+    initialGoto?: Pos,
+    initialSelectedRelPath?: string,
+    initialViewState?: EditorViewState,
+  ) {
+    const initialTab = this.link(initialPath ?? startupPath, initialPath ? initialGoto : undefined);
+    initialTab.selectedRelPath = initialSelectedRelPath;
+    initialTab.viewState = initialViewState;
+    this.tabs = stored.tabs.length ? stored.tabs.map((tab) => ({ ...tab })) : [initialTab];
     const incoming = initialPath && stored.tabs.length ? this.link(initialPath, initialGoto) : null;
+    if (incoming) {
+      incoming.selectedRelPath = initialSelectedRelPath;
+      incoming.viewState = initialViewState;
+    }
     if (incoming) this.tabs.push(incoming);
     this.activeId = incoming?.id ?? (stored.activeId && this.tabs.some((tab) => tab.id === stored.activeId)
       ? stored.activeId
@@ -76,6 +94,7 @@ export class TabManager {
     tab.path = session.folderRoot ?? session.savePath ?? (session.readOnly ? session.displayPath : null);
     tab.kind = session.folderRoot ? "folder" : tab.path ? "file" : "blank";
     tab.label = tab.kind === "blank" ? "無題" : basename(tab.path!);
+    tab.selectedRelPath = session.selectedRelPath || undefined;
     // 保存完了通知はタブ切替処理の途中でも届く。ここでDOMを作り直すと、
     // 選択元のクリック処理がまだ継続中なのに操作対象だけが差し替わる。
     if (this.transitionTarget) return;
@@ -196,10 +215,19 @@ export class TabManager {
         tab.kind = "blank";
         tab.label = "無題";
         await this.doc.newFile(false);
-      } else if (tab.goto) {
+      } else if (tab.selectedRelPath) {
+        try {
+          await this.doc.selectEntry(tab.selectedRelPath);
+        } catch {
+          // 前回選択した項目が削除済みでも、親フォルダ自体は開ける。
+          delete tab.selectedRelPath;
+          delete tab.viewState;
+        }
+      }
+      if (opened && tab.goto) {
         this.doc.goTo(tab.goto);
         delete tab.goto;
-      } else if (tab.viewState) {
+      } else if (opened && tab.viewState) {
         await this.doc.restoreViewState(tab.viewState);
       }
     } else {
@@ -402,9 +430,17 @@ export class TabManager {
     if (index < 0) return;
     const wasActive = id === this.activeId;
     if (wasActive && !(await this.doc.confirmDiscard())) return;
-    if (wasActive) this.syncActive(this.doc.current);
+    if (wasActive) {
+      this.rememberActiveView();
+      this.syncActive(this.doc.current);
+    }
     const tab = this.tabs.find((item) => item.id === id);
-    if (!tab || !this.ports.onDetach || !await this.ports.onDetach(tab.path)) return;
+    if (!tab || !this.ports.onDetach || !await this.ports.onDetach(
+      tab.path,
+      tab.viewState ? undefined : tab.goto,
+      tab.selectedRelPath,
+      tab.viewState,
+    )) return;
     this.tabs.splice(this.tabs.indexOf(tab), 1);
     if (!wasActive) {
       this.render();

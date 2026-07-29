@@ -3922,6 +3922,7 @@ dependencies = [
  "memchr",
  "miniz_oxide",
  "serde",
+ "serde_json",
  "ts-rs",
  "windows-sys 0.60.2",
 ]

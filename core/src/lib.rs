@@ -25,5 +25,5 @@ pub use doc::{
 };
 pub use fileio::{Encoding, EncodingId, Eol};
 pub use filename::{next_available_path, validate_windows_file_name};
-pub use settings::{load as load_settings, save as save_settings};
+pub use settings::{load as load_settings, update as update_setting};
 pub use workspace_search::{search_workspace, FileNameMatchMode, SearchOptions, WorkspaceSearchOutcome};

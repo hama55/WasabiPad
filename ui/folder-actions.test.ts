@@ -30,7 +30,8 @@ describe("FolderActions", () => {
 
   it("右クリック項目を操作別に区切り、新規ウィンドウで開ける", () => {
     const { actions, dropdown, ports } = fixture();
-    actions.showContextMenu(0, 0, { relPath: "memo.txt", isDir: false });
+    const goto = { line: 499, col: 8 };
+    actions.showContextMenu(0, 0, { relPath: "memo.txt", isDir: false, goto });
 
     expect([...dropdown.querySelectorAll(".dd-label")].map((label) => label.textContent)).toEqual([
       "新規タブで開く",
@@ -45,6 +46,6 @@ describe("FolderActions", () => {
     expect(dropdown.querySelectorAll(".dd-sep")).toHaveLength(2);
 
     dropdown.querySelectorAll<HTMLElement>(".dd-item")[1].click();
-    expect(ports.onOpenInNewWindow).toHaveBeenCalledWith("C:\\work\\memo.txt");
+    expect(ports.onOpenInNewWindow).toHaveBeenCalledWith("C:\\work\\memo.txt", goto);
   });
 });

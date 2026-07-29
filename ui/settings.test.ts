@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("./api", () => ({
   loadSettings: async () => "{}",
-  saveSettings: async () => {},
+  updateSetting: async () => {},
 }));
 
 import { parseSettings } from "./settings";
