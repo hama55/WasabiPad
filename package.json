@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "check:ipc": "node scripts/check-ipc-contract.mjs",
-    "sync:ipc": "cargo test -p wasabipad-core export_bindings_ && cargo test -p wasabipad export_bindings_",
+    "sync:ipc": "node scripts/sync-ipc.mjs",
     "check:config": "node scripts/check-config.mjs",
     "sync:version": "node scripts/sync-version.mjs",
     "release": "node scripts/release.mjs",

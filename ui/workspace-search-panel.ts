@@ -451,7 +451,7 @@ export class WorkspaceSearchPanel {
     return div;
   }
 
-  // ホイールクリックと右クリックは、どちらの行でも「別 WasabiPad で開く」入口になる
+  // ホイールクリックと右クリックは、どちらの行でも「新規タブで開く」入口になる
   private bindOpen(row: HTMLElement, match: WorkspaceSearchResult) {
     row.addEventListener("auxclick", (e) => {
       if (e.button !== 1) return;

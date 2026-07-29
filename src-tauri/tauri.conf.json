@@ -15,6 +15,7 @@
         "title": "WasabiPad",
         "width": 1100,
         "height": 750,
+        "visible": false,
         "decorations": false,
         "dragDropEnabled": true
       }

@@ -26,7 +26,8 @@ function mount(initial: string) {
     input.value = value;
     input.dispatchEvent(new InputEvent("input"));
   };
-  const press = (key: string) => input.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+  const press = (key: string, options: KeyboardEventInit = {}) =>
+    input.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, ...options }));
   return { editor, doc, events, host, input, type, press };
 }
 
@@ -95,6 +96,37 @@ describe("VirtualEditor", () => {
     await settle();
     expect(doc.text()).toBe("ab");
     expect(doc.calls.filter((call) => call.startsWith("edit"))).toEqual([]);
+  });
+
+  it("改行時に現在行の先頭タブを引き継ぐ", async () => {
+    const { editor, doc, press } = mount("\t\tmemo");
+    editor.open(1, false);
+    await settle();
+    editor.goTo(0, 6);
+
+    press("Enter");
+    await settle();
+
+    expect(doc.text()).toBe("\t\tmemo\n\t\t");
+  });
+
+  it("複数行選択中のTabは各行の先頭へタブを挿入する", async () => {
+    const { editor, doc, press } = mount("one\ntwo\nthree");
+    editor.open(3, false);
+    await settle();
+    await editor.restoreViewState({
+      anchor: { line: 0, col: 1 },
+      caret: { line: 1, col: 1 },
+      topLine: 0,
+      wrapIntraLinePx: 0,
+      scrollLeft: 0,
+    });
+
+    press("Tab");
+    await settle();
+
+    expect(doc.text()).toBe("\tone\n\ttwo\nthree");
+    expect(doc.calls).toContain("editMany(2)");
   });
 
   it("goTo はキャレット位置を1始まりで通知する", async () => {
@@ -233,6 +265,7 @@ describe("VirtualEditor", () => {
     input.dispatchEvent(new InputEvent("input", { isComposing: true }));
 
     expect(Number.parseFloat(input.style.width)).toBeLessThanOrEqual(88);
+    expect(scroll.scrollLeft).toBeGreaterThan(0);
   });
 
   it("折り返し中のIME背景は変換中文字列の範囲だけを覆う", async () => {
@@ -393,6 +426,28 @@ describe("VirtualEditor", () => {
     expect(scroll.scrollLeft).toBeGreaterThan(0);
     expect(hScroll.scrollLeft).toBe(scroll.scrollLeft);
     rect.mockRestore();
+  });
+
+  it("選択位置と縦横の表示位置を復元する", async () => {
+    const { editor, host } = mount(Array.from({ length: 40 }, (_, i) => `line ${i}`).join("\n"));
+    const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
+    Object.defineProperty(scroll, "clientHeight", { configurable: true, value: 100 });
+    editor.open(40, false);
+    await settle();
+    scroll.scrollTop = 200;
+    scroll.scrollLeft = 35;
+    scroll.dispatchEvent(new Event("scroll"));
+    await editor.selectRange(12, 1, 4);
+    const state = editor.captureViewState();
+
+    editor.open(40, false);
+    await editor.restoreViewState(state);
+    const restored = editor.captureViewState();
+
+    expect(restored.anchor).toEqual(state.anchor);
+    expect(restored.caret).toEqual(state.caret);
+    expect(restored.topLine).toBe(state.topLine);
+    expect(restored.scrollLeft).toBe(state.scrollLeft);
   });
 
   it("キャレット行と選択行を行番号の背景だけで強調する", async () => {

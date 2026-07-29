@@ -1,6 +1,7 @@
 import type { Pos } from "./api";
 import type { DocumentController } from "./document-controller";
 import type { DocumentSession } from "./session";
+import type { EditorViewState } from "./editor";
 import { basename } from "./path";
 import { showMenu, type MenuItem } from "./menu";
 
@@ -10,6 +11,7 @@ export interface StoredTab {
   kind: "file" | "folder" | "blank";
   label: string;
   goto?: Pos;
+  viewState?: EditorViewState;
 }
 
 export interface StoredTabs {
@@ -19,6 +21,7 @@ export interface StoredTabs {
 
 interface TabPorts {
   onChange: (state: StoredTabs) => void;
+  onDetach?: (path: string | null) => Promise<boolean>;
 }
 
 const newId = () => `tab-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -40,7 +43,17 @@ export class TabManager {
   }
 
   get state(): StoredTabs {
-    return { tabs: this.tabs.map((tab) => ({ ...tab })), activeId: this.activeId || null };
+    return {
+      tabs: this.tabs.map((tab) => ({
+        ...tab,
+        viewState: tab.viewState ? {
+          ...tab.viewState,
+          anchor: { ...tab.viewState.anchor },
+          caret: { ...tab.viewState.caret },
+        } : undefined,
+      })),
+      activeId: this.activeId || null,
+    };
   }
 
   async init(stored: StoredTabs, initialPath: string | null, startupPath: string | null, initialGoto?: Pos) {
@@ -114,6 +127,7 @@ export class TabManager {
 
   private async switchTo(id: string) {
     try {
+      this.rememberActiveView();
       this.syncActive(this.doc.current);
       this.activeId = id;
       await this.loadActive();
@@ -138,6 +152,7 @@ export class TabManager {
     if (index < 0) return;
     if (id === this.activeId) {
       if (!(await this.doc.confirmDiscard())) return;
+      this.rememberActiveView();
       this.tabs.splice(index, 1);
       this.activeId = this.tabs[Math.min(index, this.tabs.length - 1)].id;
       await this.loadActive();
@@ -150,6 +165,7 @@ export class TabManager {
 
   async saveForExit(): Promise<boolean> {
     if (this.doc.current.dirty && !await this.doc.save()) return false;
+    this.rememberActiveView();
     this.syncActive(this.doc.current);
     return true;
   }
@@ -158,6 +174,7 @@ export class TabManager {
     this.transitionTarget = tab.id;
     try {
       await this.doc.confirmDiscard(async () => {
+        this.rememberActiveView();
         this.syncActive(this.doc.current);
         this.tabs.push(tab);
         this.activeId = tab.id;
@@ -182,10 +199,18 @@ export class TabManager {
       } else if (tab.goto) {
         this.doc.goTo(tab.goto);
         delete tab.goto;
+      } else if (tab.viewState) {
+        await this.doc.restoreViewState(tab.viewState);
       }
     } else {
       await this.doc.newFile(false);
+      if (tab.viewState) await this.doc.restoreViewState(tab.viewState);
     }
+  }
+
+  private rememberActiveView() {
+    const tab = this.active();
+    if (tab) tab.viewState = this.doc.captureViewState();
   }
 
   private active() {
@@ -210,7 +235,8 @@ export class TabManager {
       button.classList.toggle("active", tab.id === this.activeId);
       button.title = tab.path ?? "無題";
       button.innerHTML = `<span class="doc-tab-icon">${tab.kind === "folder" ? "📁" : "📄"}</span><span class="doc-tab-label"></span><span class="doc-tab-close">×</span>`;
-      button.querySelector(".doc-tab-label")!.textContent = tab.label;
+      const dirty = tab.id === this.activeId && this.doc.current.dirty;
+      button.querySelector(".doc-tab-label")!.textContent = `${dirty ? "● " : ""}${tab.label}`;
       button.addEventListener("click", (event) => {
         if (this.justDragged) {
           this.justDragged = false;
@@ -300,13 +326,18 @@ export class TabManager {
     this.paintDrop(this.drag.spot);
   };
 
-  private onPointerUp = () => {
+  private onPointerUp = (event: PointerEvent) => {
     const drag = this.drag;
     this.endDrag();
     if (!drag) return;
     this.justDragged = true;
-    this.moveTab(drag.sourceId, drag.spot);
+    if (drag.spot) this.moveTab(drag.sourceId, drag.spot);
+    else if (this.outsideWindow(event.clientX, event.clientY)) void this.detachTab(drag.sourceId);
   };
+
+  private outsideWindow(x: number, y: number): boolean {
+    return x < 0 || y < 0 || x >= window.innerWidth || y >= window.innerHeight;
+  }
 
   private onDragKey = (event: KeyboardEvent) => {
     if (event.key === "Escape") this.endDrag();
@@ -362,6 +393,33 @@ export class TabManager {
       ? this.tabs.length
       : this.tabs.findIndex((item) => item.id === spot.targetId) + (spot.after ? 1 : 0);
     this.tabs.splice(Math.max(0, target), 0, tab);
+    this.render();
+    this.persist();
+  }
+
+  private async detachTab(id: string) {
+    const index = this.tabs.findIndex((tab) => tab.id === id);
+    if (index < 0) return;
+    const wasActive = id === this.activeId;
+    if (wasActive && !(await this.doc.confirmDiscard())) return;
+    if (wasActive) this.syncActive(this.doc.current);
+    const tab = this.tabs.find((item) => item.id === id);
+    if (!tab || !this.ports.onDetach || !await this.ports.onDetach(tab.path)) return;
+    this.tabs.splice(this.tabs.indexOf(tab), 1);
+    if (!wasActive) {
+      this.render();
+      this.persist();
+      return;
+    }
+    if (this.tabs.length === 0) {
+      const blank = this.link(null);
+      this.tabs = [blank];
+      this.activeId = blank.id;
+      await this.doc.newFile(false);
+    } else {
+      this.activeId = this.tabs[Math.min(index, this.tabs.length - 1)].id;
+      await this.loadActive();
+    }
     this.render();
     this.persist();
   }

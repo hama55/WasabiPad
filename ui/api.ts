@@ -160,6 +160,9 @@ export const pathIsDirectory = (path: string) => invoke<boolean>("path_is_direct
 export const nextMemoPath = (directory: string, stem: string, extension: string) =>
   invoke<string>("next_memo_path", { directory, stem, extension });
 export const initialPath = () => invoke<string | null>("initial_path");
+export const isSecondaryInstance = () => invoke<boolean>("is_secondary_instance");
+export const launchNewInstance = (path: string | null = null) =>
+  invoke<void>("launch_new_instance", { path });
 // 起動時に飛ぶ位置 (検索結果を別ウィンドウで開いたとき backend が引数へ載せる)
 export const initialGoto = () => invoke<Pos | null>("initial_goto");
 export const onOpenInTab = (handler: (request: OpenRequest) => void) =>

@@ -157,18 +157,18 @@ export class FavBar {
             }]
           )),
         },
-        { label: "パスを追加...", action: () => this.addPath(path) },
+        { label: "パスを追加...", action: () => this.addPath(path), sep: true },
         { label: "グループを追加...", action: () => this.addGroup(path) }
       );
     } else {
       items.push(
         { label: "新規タブで開く", action: () => this.onOpen(node.path, true) },
-        { label: "デフォルトに設定", action: () => this.onSetDefault(node.path) },
+        { label: "デフォルトに設定", action: () => this.onSetDefault(node.path), sep: true },
         { label: "編集...", action: () => this.editPath(path) }
       );
     }
     items.push(
-      { label: "移動", action: () => {}, sub: this.moveDestinations(path) },
+      { label: "移動", action: () => {}, sub: this.moveDestinations(path), sep: true },
       { label: "削除", action: () => this.remove(path) }
     );
     return items;

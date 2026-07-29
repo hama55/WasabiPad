@@ -19,6 +19,21 @@ use std::sync::{
 };
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
+#[cfg(target_os = "windows")]
+#[repr(C)]
+struct OpenAsInfo {
+    file: *const u16,
+    class: *const u16,
+    flags: u32,
+}
+
+#[cfg(target_os = "windows")]
+#[link(name = "shell32")]
+extern "system" {
+    #[link_name = "SHOpenWithDialog"]
+    fn sh_open_with_dialog(parent: *mut std::ffi::c_void, info: *const OpenAsInfo) -> i32;
+}
+
 // 受理する形式はこの enum が単一の定義。表示名はフロント (ui/format.ts) だけが持つ。
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize, ts_rs::TS)]
 #[ts(export)]
@@ -56,6 +71,7 @@ static VIEWER_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, serde::Serialize, ts_rs::TS)]
 #[ts(export)]
+#[allow(dead_code)] // 既存IPC型との互換性維持のため、single-instance撤去後も生成対象として残す
 struct OpenRequest {
     path: String,
     goto: Option<PosC>,
@@ -192,18 +208,33 @@ fn reveal_in_explorer(path: String, is_dir: bool) -> Result<(), String> {
 
 #[tauri::command]
 fn open_in_other_app(path: String) -> Result<(), String> {
-    let system_root = std::env::var_os("SystemRoot")
-        .ok_or_else(|| "Windowsのシステムフォルダを取得できません".to_string())?;
-    let system32 = PathBuf::from(system_root).join("System32");
-    let rundll32 = system32.join("rundll32.exe");
-    let shell32_entry = format!("{},OpenAs_RunDLL", system32.join("shell32.dll").display());
-    // OpenAs_RunDLL はWindows標準の「プログラムから開く」選択画面を表示する。
-    Command::new(rundll32)
-        .arg(shell32_entry)
-        .arg(path)
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::ffi::OsStrExt;
+
+        let target = PathBuf::from(path);
+        if !target.is_file() {
+            return Err("対象ファイルが見つかりません".to_string());
+        }
+        let wide: Vec<u16> = target.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+        let info = OpenAsInfo {
+            file: wide.as_ptr(),
+            class: std::ptr::null(),
+            // 選択したアプリで対象ファイルを開く。既定アプリの変更は要求しない。
+            flags: 0x0000_0004,
+        };
+        let result = unsafe { sh_open_with_dialog(std::ptr::null_mut(), &info) };
+        return if result >= 0 {
+            Ok(())
+        } else {
+            Err(format!("アプリ選択画面を開けませんでした (HRESULT: 0x{result:08X})"))
+        };
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = path;
+        Err("この機能はWindowsでのみ使用できます".to_string())
+    }
 }
 
 #[tauri::command]
@@ -352,13 +383,35 @@ fn next_memo_path(directory: String, stem: String, extension: String) -> Result<
 
 #[tauri::command]
 fn initial_path() -> Option<String> {
-    std::env::args().nth(1)
+    let mut args = std::env::args().skip(1);
+    match args.next().as_deref() {
+        Some("--new-window") => args.next(),
+        Some(path) => Some(path.to_string()),
+        None => None,
+    }
+}
+
+#[tauri::command]
+fn is_secondary_instance() -> bool {
+    std::env::args().nth(1).as_deref() == Some("--new-window")
+}
+
+#[tauri::command]
+fn launch_new_instance(path: Option<String>) -> Result<(), String> {
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let mut command = Command::new(executable);
+    command.arg("--new-window");
+    if let Some(path) = path {
+        command.arg(path);
+    }
+    command.spawn().map(|_| ()).map_err(|error| error.to_string())
 }
 
 // 起動引数の "+行:桁" (0起点)。検索結果を別ウィンドウで開いたときの飛び先。
 #[tauri::command]
 fn initial_goto() -> Option<PosC> {
-    let arg = std::env::args().nth(2)?;
+    let offset = if is_secondary_instance() { 3 } else { 2 };
+    let arg = std::env::args().nth(offset)?;
     let (line, col) = arg.strip_prefix('+')?.split_once(':')?;
     Some(PosC { line: line.parse().ok()?, col: col.parse().ok()? })
 }
@@ -456,20 +509,6 @@ fn update_viewer(
 
 fn main() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-            let Some(path) = args.get(1).filter(|path| !path.is_empty()) else {
-                return;
-            };
-            let goto = args.get(2).and_then(|arg| {
-                let (line, col) = arg.strip_prefix('+')?.split_once(':')?;
-                Some(PosC { line: line.parse().ok()?, col: col.parse().ok()? })
-            });
-            let _ = app.emit("open-in-tab", OpenRequest { path: path.clone(), goto });
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
-        }))
         .plugin(tauri_plugin_dialog::init())
         .manage(Mutex::new(DocState(Doc::empty())))
         .manage(ViewerStore(Mutex::new(HashMap::new())))
@@ -511,6 +550,8 @@ fn main() {
             path_is_directory,
             next_memo_path,
             initial_path,
+            is_secondary_instance,
+            launch_new_instance,
             initial_goto,
             open_viewer,
             take_viewer_payload,

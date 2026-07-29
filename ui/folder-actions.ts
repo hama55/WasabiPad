@@ -11,6 +11,7 @@ import { getSetting } from "./settings";
 export interface FolderActionsPorts {
   sidebar: Pick<Sidebar, "setEntries" | "selectByRelPath" | "refreshFolderEntries">;
   onOpenInNewTab: (relPath: string, goto?: api.Pos) => void;
+  onOpenInNewWindow: (path: string) => void;
   onAddFavorite: (path: string) => void;
   onSetStartupPath: (path: string) => void;
   onOpenPath: (path: string) => void;
@@ -37,18 +38,26 @@ export class FolderActions {
         label: "新規タブで開く",
         action: () => this.ports.onOpenInNewTab(target.relPath, target.goto),
       });
-      items.push({ label: "アドレスバーに設定", action: () => this.ports.onOpenPath(this.toAbsolute(target.relPath)) });
-    }
-    items.push({ label: "新規メモ作成...", action: () => void this.createNote(target?.isDir ? target.relPath : null) });
-    if (target) {
-      items.push({ label: "名前を変更...", action: () => void this.rename(target.relPath) });
+      items.push({
+        label: "新規ウィンドウで開く",
+        action: () => this.ports.onOpenInNewWindow(this.toAbsolute(target.relPath)),
+      });
       if (!target.isDir) {
         items.push({ label: "アプリで開く", action: () => void openInOtherApp(this.toAbsolute(target.relPath)) });
       }
+      items.push({ label: "アドレスバーに設定", action: () => this.ports.onOpenPath(this.toAbsolute(target.relPath)) });
+    }
+    items.push({
+      label: "新規メモ作成...",
+      action: () => void this.createNote(target?.isDir ? target.relPath : null),
+      sep: items.length > 0,
+    });
+    if (target) {
+      items.push({ label: "名前を変更...", action: () => void this.rename(target.relPath) });
     }
     const revealPath = target ? this.toAbsolute(target.relPath) : root;
     const revealIsDir = target ? target.isDir : true;
-    items.push({ label: "お気に入りに追加", action: () => this.ports.onAddFavorite(revealPath) });
+    items.push({ label: "お気に入りに追加", action: () => this.ports.onAddFavorite(revealPath), sep: true });
     items.push({ label: "エクスプローラで開く", action: () => void revealInExplorer(revealPath, revealIsDir) });
     showMenu(x, y, items);
   }
@@ -112,6 +121,6 @@ export async function openInOtherApp(path: string) {
   try {
     await api.openInOtherApp(path);
   } catch (e) {
-    await showError("他のアプリで開けませんでした", e);
+    await showError("アプリで開けませんでした", e);
   }
 }

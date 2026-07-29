@@ -6,6 +6,7 @@ import { confirmSaveDiscard, promptFields } from "./prompt";
 import { showError } from "./dialogs";
 import { formatWindowTitle } from "./format";
 import { basename, relativePathWithinRoot } from "./path";
+import type { EditorViewState } from "./editor";
 
 // 保存ダイアログのフィルタと新規メモの拡張子候補で共有する
 export const SAVE_EXTENSIONS = [
@@ -23,6 +24,8 @@ export interface DocumentEditorPort {
   open: (lineCount: number, readOnly: boolean, keepViewers?: boolean) => void;
   focus: () => void;
   goTo: (line: number, col: number) => void;
+  captureViewState: () => EditorViewState;
+  restoreViewState: (state: EditorViewState) => Promise<void>;
 }
 
 export interface DocumentStatusPort {
@@ -215,16 +218,13 @@ export class DocumentController {
   }
 
   private async saveTo(path: string, folderDraftRoot: string | null = null): Promise<boolean> {
-    this.view.setLoading(true, "書き込み中…");
     let outcome: api.SaveOutcome;
     try {
       outcome = await api.saveFile(path, this.session.encoding, this.session.eol);
     } catch (e) {
-      this.view.setLoading(false);
       await showError("保存できませんでした", e);
       return false;
     }
-    this.view.setLoading(false);
     if (outcome.kind === "conflict") {
       // 本体は上書きされていない。dirty のまま残し、バナーで再読込/無視を選ばせる
       await showError(
@@ -285,6 +285,14 @@ export class DocumentController {
 
   goTo(pos: api.Pos) {
     this.view.editor.goTo(pos.line, pos.col);
+  }
+
+  captureViewState(): EditorViewState {
+    return this.view.editor.captureViewState();
+  }
+
+  restoreViewState(state: EditorViewState): Promise<void> {
+    return this.view.editor.restoreViewState(state);
   }
 
   async promptMemoSpec(): Promise<MemoSpec | null> {

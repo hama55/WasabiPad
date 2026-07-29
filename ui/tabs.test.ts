@@ -19,6 +19,14 @@ function fixture() {
     }),
     newFile: vi.fn(async () => {}),
     goTo: vi.fn(),
+    captureViewState: vi.fn(() => ({
+      anchor: { line: 0, col: 0 },
+      caret: { line: 0, col: 0 },
+      topLine: 0,
+      wrapIntraLinePx: 0,
+      scrollLeft: 0,
+    })),
+    restoreViewState: vi.fn(async () => {}),
     save: vi.fn(async () => true),
   } as unknown as DocumentController;
   const host = document.createElement("div");
@@ -67,6 +75,20 @@ describe("TabManager", () => {
     expect(manager.state.activeId).toBe("b");
   });
 
+  it("tabごとに選択位置と表示位置を復元する", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} });
+    await manager.init(stored, null, null);
+    await manager.activate("b");
+    await manager.activate("a");
+
+    expect(doc.captureViewState).toHaveBeenCalledTimes(2);
+    expect(doc.restoreViewState).toHaveBeenCalledWith(expect.objectContaining({
+      topLine: 0,
+      scrollLeft: 0,
+    }));
+  });
+
   it("保存完了時にtabが再描画されても要求したtabへ切り替える", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} });
@@ -93,6 +115,18 @@ describe("TabManager", () => {
     await manager.activate("b");
 
     expect(manager.state.activeId).toBe("a");
+  });
+
+  it("変更中のactive tabだけファイル名の先頭に印を付ける", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} });
+    await manager.init(stored, null, null);
+
+    doc.current.dirty = true;
+    manager.syncActive(doc.current);
+    const labels = [...host.querySelectorAll<HTMLElement>(".doc-tab-label")].map((label) => label.textContent);
+
+    expect(labels).toEqual(["● a.txt", "b.txt"]);
   });
 
   it("保存処理へ渡した継続処理が、確定した移動先tabを開く", async () => {
@@ -159,5 +193,43 @@ describe("TabManager", () => {
     expect(manager.state.activeId).toBe("a");
     expect(doc.openPath).toHaveBeenCalledTimes(1);
     expect(changes.at(-1)?.tabs.map((tab) => tab.id)).toEqual(["b", "a"]);
+  });
+
+  it("ウィンドウの外へドラッグすると新規ウィンドウへ移す", async () => {
+    const { doc, host } = fixture();
+    const onDetach = vi.fn(async () => true);
+    const manager = new TabManager(host, doc, { onChange: () => {}, onDetach });
+    await manager.init(stored, null, null);
+    const a = host.querySelector<HTMLElement>(".doc-tab")!;
+    document.elementFromPoint = () => null;
+    const at = (type: string, x: number) =>
+      new MouseEvent(type, { bubbles: true, button: 0, clientX: x, clientY: 100 });
+
+    a.dispatchEvent(at("pointerdown", 0));
+    window.dispatchEvent(at("pointermove", -20));
+    window.dispatchEvent(at("pointerup", -20));
+    await vi.waitFor(() => expect(onDetach).toHaveBeenCalledWith("C:\\work\\a.txt"));
+
+    expect(manager.state.tabs.map((tab) => tab.id)).toEqual(["b"]);
+    expect(manager.state.activeId).toBe("b");
+  });
+
+  it("同じウィンドウ内のタブ領域外へのdropはキャンセルする", async () => {
+    const { doc, host } = fixture();
+    const onDetach = vi.fn(async () => true);
+    const manager = new TabManager(host, doc, { onChange: () => {}, onDetach });
+    await manager.init(stored, null, null);
+    const a = host.querySelector<HTMLElement>(".doc-tab")!;
+    document.elementFromPoint = () => document.body;
+    const at = (type: string, x: number) =>
+      new MouseEvent(type, { bubbles: true, button: 0, clientX: x, clientY: 100 });
+
+    a.dispatchEvent(at("pointerdown", 0));
+    window.dispatchEvent(at("pointermove", 20));
+    window.dispatchEvent(at("pointerup", 20));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(onDetach).not.toHaveBeenCalled();
+    expect(manager.state.tabs.map((tab) => tab.id)).toEqual(["a", "b"]);
   });
 });

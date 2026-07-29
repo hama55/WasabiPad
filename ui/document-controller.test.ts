@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import * as api from "./api";
 import type { DocInfo } from "./api";
 import { DocumentController, fileNameOf, type DocumentView } from "./document-controller";
 import { formatTitleBar } from "./format";
@@ -96,6 +97,17 @@ describe("DocumentController", () => {
 
     expect(await controller.confirmDiscard(proceed)).toBe(true);
     expect(proceed).toHaveBeenCalledOnce();
+  });
+
+  it("上書き保存中に全面ローディングを表示しない", async () => {
+    const { view, controller } = fakeView();
+    controller.applyDocInfo(info());
+    controller.onEdit(42);
+    vi.spyOn(api, "saveFile").mockResolvedValueOnce({ kind: "saved" });
+    view.setLoading.mockClear();
+
+    expect(await controller.save()).toBe(true);
+    expect(view.setLoading).not.toHaveBeenCalled();
   });
 });
 

@@ -30,6 +30,14 @@ import {
 } from "./editor-math";
 
 const OVERSCAN = 8;
+export interface EditorViewState {
+  anchor: Pos;
+  caret: Pos;
+  topLine: number;
+  wrapIntraLinePx: number;
+  scrollLeft: number;
+}
+
 export interface EditorPorts {
   onDocChange: (lineCount: number) => void;
   onCursor: (line: number, col: number) => void;
@@ -275,6 +283,44 @@ export class VirtualEditor {
     this.syncImeAnchor();
     this.input.focus({ preventScroll: true });
     this.syncImeAnchor();
+  }
+
+  captureViewState(): EditorViewState {
+    const topLine = this.wrap || this.metrics.scaleMode
+      ? this.topLineF
+      : this.pxToLine(this.scroll.scrollTop);
+    return {
+      anchor: { ...this.sel.anchor },
+      caret: { ...this.sel.caret },
+      topLine,
+      wrapIntraLinePx: this.wrapIntraLinePx,
+      scrollLeft: this.scroll.scrollLeft,
+    };
+  }
+
+  async restoreViewState(state: EditorViewState) {
+    const anchorLine = Math.max(0, Math.min(this.lineCount - 1, state.anchor.line));
+    const caretLine = Math.max(0, Math.min(this.lineCount - 1, state.caret.line));
+    const [anchorText, caretText] = await Promise.all([
+      this.lineCache.line(anchorLine),
+      this.lineCache.line(caretLine),
+    ]);
+    this.sel.anchor = {
+      line: anchorLine,
+      col: Math.max(0, Math.min(charLen(anchorText), state.anchor.col)),
+    };
+    this.sel.caret = {
+      line: caretLine,
+      col: Math.max(0, Math.min(charLen(caretText), state.caret.col)),
+    };
+    this.sel.secondary = [];
+    this.sel.goalX = null;
+    const topLine = Math.max(0, Math.min(this.maxTopLine(), state.topLine));
+    if (this.wrap) this.setWrapAnchor(topLine, Math.max(0, state.wrapIntraLinePx));
+    else this.setTopLine(topLine);
+    this.setHorizontalScroll(Math.max(0, state.scrollLeft));
+    this.render();
+    this.notifyCursor();
   }
 
   syncWindowGeometry() {
@@ -1125,6 +1171,49 @@ export class VirtualEditor {
     });
   }
 
+  private insertNewlineWithIndent(): Promise<void> {
+    if (this.readOnly) return Promise.resolve();
+    if (this.sel.secondary.length) return this.insertText("\n");
+    return this.run(async () => {
+      const [s, e] = this.sel.norm();
+      const line = await this.lineCache.line(s.line);
+      const indent = line.match(/^\t*/)?.[0] ?? "";
+      const text = `\n${indent}`;
+      const r = await this.doc.edit(s, e, this.sel.caret, text, false);
+      this.applyResult(r, s.line, [{ start: s, end: e, text }]);
+      await this.renderAfterEdit();
+    });
+  }
+
+  private indentSelection(): Promise<void> {
+    const range = this.selectedLineRange();
+    if (!range) return this.insertText("\t");
+    if (this.readOnly) return Promise.resolve();
+    return this.run(async () => {
+      const anchor = { ...this.sel.anchor };
+      const caret = { ...this.sel.caret };
+      const edits = Array.from({ length: range.last - range.first + 1 }, (_, index) => {
+        const pos = { line: range.first + index, col: 0 };
+        return { start: pos, end: pos, text: "\t" };
+      });
+      const move = (pos: Pos): Pos => ({
+        line: pos.line,
+        col: pos.line >= range.first && pos.line <= range.last ? pos.col + 1 : pos.col,
+      });
+      const nextAnchor = move(anchor);
+      const nextCaret = move(caret);
+      const r = await this.doc.editMany(
+        edits,
+        caret,
+        Math.max(0, Math.min(edits.length - 1, caret.line - range.first)),
+      );
+      this.applyResult({ caret: nextCaret, line_count: r.line_count }, range.first, edits);
+      this.sel.anchor = nextAnchor;
+      this.sel.caret = nextCaret;
+      await this.renderAfterEdit();
+    });
+  }
+
   private deleteSel() {
     this.run(async () => {
       const [s, e] = this.sel.norm();
@@ -1278,8 +1367,8 @@ export class VirtualEditor {
       case "End": e.preventDefault(); this.end(ext); break;
       case "Backspace": e.preventDefault(); this.backspace(); break;
       case "Delete": e.preventDefault(); this.deleteForward(); break;
-      case "Enter": e.preventDefault(); this.insertText("\n"); break;
-      case "Tab": e.preventDefault(); this.insertText("\t"); break;
+      case "Enter": e.preventDefault(); void this.insertNewlineWithIndent(); break;
+      case "Tab": e.preventDefault(); void this.indentSelection(); break;
       case "Escape": this.findBar.close(); break;
     }
   }
@@ -1315,6 +1404,7 @@ export class VirtualEditor {
 
   private onInput(e: InputEvent) {
     if (this.composing || e.isComposing) {
+      this.ensureCompositionVisible();
       this.syncImeAnchor();
       return;
     }
@@ -1330,6 +1420,7 @@ export class VirtualEditor {
     this.input.style.removeProperty("height");
     this.input.style.removeProperty("text-indent");
     this.input.style.removeProperty("--ime-indent");
+    if (!committed) this.updateWidth();
     this.syncCaretBlink();
     void this.flushInput()
       .catch((error) => this.reportInputError(error))
@@ -1366,6 +1457,23 @@ export class VirtualEditor {
     }
     this.input.style.width = "4px";
     this.input.style.width = `${Math.min(available, Math.max(4, this.input.scrollWidth + 2))}px`;
+  }
+
+  private ensureCompositionVisible() {
+    if (this.wrap) return;
+    const line = this.lineCache.peek(this.sel.caret.line) ?? "";
+    const lineEl = this.lineElem(this.sel.caret.line);
+    if (!lineEl) return;
+    const caretX = this.colToX(lineEl, line, this.sel.caret.col);
+    const inputWidth = Math.max(this.measureInputText(), this.input.scrollWidth) + 2;
+    const right = caretX + inputWidth;
+    const width = Math.max(this.maxWidth, right + 20);
+    this.inner.style.width = `${width}px`;
+    const viewportDifference = this.hScroll.clientWidth - this.scroll.clientWidth;
+    this.hScrollSpacer.style.width = `${Math.max(0, width + viewportDifference)}px`;
+    if (right > this.scroll.scrollLeft + this.scroll.clientWidth - 20) {
+      this.setHorizontalScroll(right - this.scroll.clientWidth + 20);
+    }
   }
 
   private measureInputText(): number {
@@ -1596,7 +1704,7 @@ export class VirtualEditor {
         sep: index === 0,
       })),
     );
-    if (this.hasExternalFile()) items.push({ label: "他のアプリで開く", action: this.openExternally });
+    if (this.hasExternalFile()) items.push({ label: "アプリで開く", action: this.openExternally, sep: true });
     showMenu(e.clientX, e.clientY, items);
   }
 

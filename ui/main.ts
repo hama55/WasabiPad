@@ -30,9 +30,12 @@ import {
 
 const win = getCurrentWindow();
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
+window.addEventListener("error", () => { void win.show(); }, { once: true });
+window.addEventListener("unhandledrejection", () => { void win.show(); }, { once: true });
 
 // 以降のモジュール初期化は設定値を同期的に読むため、ここで一度だけ待つ
 await initSettings();
+const secondaryInstance = await api.isSecondaryInstance();
 
 const editorHost = $("editorhost");
 const sidebarEl = $("sidebar");
@@ -56,6 +59,16 @@ async function reportBackgroundError(title: string, error: unknown) {
     await showError(title, error);
   } catch (reportError) {
     console.error(`${title}のエラーを表示できませんでした`, reportError);
+  }
+}
+
+async function launchNewWindow(path: string | null = null): Promise<boolean> {
+  try {
+    await api.launchNewInstance(path);
+    return true;
+  } catch (error) {
+    await reportBackgroundError("新規ウィンドウを開けませんでした", error);
+    return false;
   }
 }
 
@@ -96,7 +109,7 @@ const addressbar = new AddressBar($("topbar"), {
   onOpen: (path) => void doc.openPath(path),
   onSave: () => void doc.save(),
   onSaveAs: () => void doc.saveAs(),
-  onNew: () => void tabs.newBlank(),
+  onNew: () => { void launchNewWindow(); },
   onFind: () => editor.openSearch(),
   onPick: () => void pickAndOpen(false),
   onFavorite: () => favbar.addCurrent(),
@@ -179,6 +192,7 @@ async function openInNewTab(relPath: string, goto?: api.Pos) {
 const windowChrome = new WindowChrome($("titlebar"), win, {
   onCloseRequest: async () => {
     if (!await tabs.saveForExit()) return false;
+    if (secondaryInstance) return true;
     try {
       await flushSettings();
       return true;
@@ -238,6 +252,7 @@ const favbar = new FavBar($("favbar"), {
 const folderActions = new FolderActions(doc, {
   sidebar,
   onOpenInNewTab: (relPath, goto) => { void openInNewTab(relPath, goto); },
+  onOpenInNewWindow: (path) => { void launchNewWindow(path); },
   onAddFavorite: (path) => favbar.addExternal(path),
   onSetStartupPath: (path) => setSetting("startupPath", path),
   onOpenPath: (path) => {
@@ -343,11 +358,12 @@ const cliPath = await api.initialPath();
 const cliGoto = await api.initialGoto();
 const startupPath = getSetting("startupPath");
 tabs = new TabManager($("tabs"), doc, {
-  onChange: (state) => setSetting("openTabs", state),
+  onChange: (state) => {
+    if (!secondaryInstance) setSetting("openTabs", state);
+  },
+  onDetach: (path) => launchNewWindow(path),
 });
-await tabs.init(getSetting("openTabs"), cliPath, startupPath, cliGoto ?? undefined);
-void api.onOpenInTab((request) => {
-  void tabs.open(request.path, request.goto ?? undefined)
-    .catch((error) => reportBackgroundError("新規タブでファイルを開けませんでした", error));
-}).catch((error) => reportBackgroundError("新規タブ要求の受信を開始できませんでした", error));
+const storedTabs = secondaryInstance ? { tabs: [], activeId: null } : getSetting("openTabs");
+await tabs.init(storedTabs, cliPath, secondaryInstance ? null : startupPath, cliGoto ?? undefined);
 doc.updateTitle();
+await win.show();
