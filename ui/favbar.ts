@@ -25,7 +25,7 @@ export const bookmarkStore: BookmarkStore = {
 };
 
 export interface FavBarPorts {
-  onOpen: (path: string, newWindow: boolean) => void;
+  onOpen: (path: string, newTab: boolean) => void;
   onAddGroupToTabs: (items: { path: string; kind: "file" | "folder" }[]) => void;
   currentFile: () => string | null;
   onSetDefault: (path: string) => void;
@@ -44,7 +44,7 @@ export class FavBar {
   } | null = null;
   private justDragged = false;
   private menuRoot = document.getElementById("dropdown");
-  private onOpen: (path: string, newWindow: boolean) => void;
+  private onOpen: (path: string, newTab: boolean) => void;
   private onAddGroupToTabs: FavBarPorts["onAddGroupToTabs"];
   private currentFile: () => string | null;
   private onSetDefault: (path: string) => void;

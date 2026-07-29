@@ -6,7 +6,7 @@ import { confirmSaveDiscard, promptFields } from "./prompt";
 import { showError } from "./dialogs";
 import { formatWindowTitle } from "./format";
 import { basename, relativePathWithinRoot } from "./path";
-import type { EditorViewState } from "./editor";
+import type { EditorViewState } from "./editor-view-state";
 
 // 保存ダイアログのフィルタと新規メモの拡張子候補で共有する
 export const SAVE_EXTENSIONS = [

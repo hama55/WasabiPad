@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { TabManager, type StoredTabs } from "./tabs";
-import type { DocumentController } from "./document-controller";
+import { TabManager, type StoredTabs, type TabDocumentPort } from "./tabs";
 import { initialSession } from "./session";
 
 function fixture() {
@@ -31,7 +30,7 @@ function fixture() {
     })),
     restoreViewState: vi.fn(async () => {}),
     save: vi.fn(async () => true),
-  } as unknown as DocumentController;
+  } satisfies TabDocumentPort;
   const host = document.createElement("div");
   return { doc, host };
 }

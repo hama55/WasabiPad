@@ -1,7 +1,6 @@
 import type { Pos } from "./api";
-import type { DocumentController } from "./document-controller";
 import type { DocumentSession } from "./session";
-import type { EditorViewState } from "./editor";
+import { cloneEditorViewState, type EditorViewState } from "./editor-view-state";
 import { basename } from "./path";
 import { showMenu, type MenuItem } from "./menu";
 
@@ -18,6 +17,18 @@ export interface StoredTab {
 export interface StoredTabs {
   tabs: StoredTab[];
   activeId: string | null;
+}
+
+export interface TabDocumentPort {
+  readonly current: DocumentSession;
+  confirmDiscard: (onProceed?: () => void | Promise<void>) => Promise<boolean>;
+  openPath: (path: string, confirm?: boolean) => Promise<boolean>;
+  selectEntry: (relPath: string) => Promise<void>;
+  newFile: (confirm?: boolean) => Promise<void>;
+  goTo: (position: Pos) => void;
+  captureViewState: () => EditorViewState;
+  restoreViewState: (state: EditorViewState) => Promise<void>;
+  save: () => Promise<boolean>;
 }
 
 interface TabPorts {
@@ -42,7 +53,7 @@ export class TabManager {
   private drag: { sourceId: string; ghost: HTMLElement; spot: DropSpot | null } | null = null;
   private justDragged = false;
 
-  constructor(private host: HTMLElement, private doc: DocumentController, private ports: TabPorts) {
+  constructor(private host: HTMLElement, private doc: TabDocumentPort, private ports: TabPorts) {
     // WebView2ではネイティブDnDがHTML5 DnDを奪うため、お気に入りバーと同じpointer方式を使う。
     this.host.addEventListener("pointerdown", this.onPointerDown);
     this.host.addEventListener("click", this.swallowClickAfterDrag, true);
@@ -52,11 +63,7 @@ export class TabManager {
     return {
       tabs: this.tabs.map((tab) => ({
         ...tab,
-        viewState: tab.viewState ? {
-          ...tab.viewState,
-          anchor: { ...tab.viewState.anchor },
-          caret: { ...tab.viewState.caret },
-        } : undefined,
+        viewState: tab.viewState ? cloneEditorViewState(tab.viewState) : undefined,
       })),
       activeId: this.activeId || null,
     };

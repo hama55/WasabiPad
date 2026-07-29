@@ -1,7 +1,7 @@
 import * as api from "./api";
 import type { ContextTarget, Sidebar } from "./sidebar";
-import type { DocumentController } from "./document-controller";
-import { fileNameOf } from "./document-controller";
+import { fileNameOf, type MemoSpec } from "./document-controller";
+import type { DocumentSession } from "./session";
 import { showMenu, MenuItem } from "./menu";
 import { promptFields } from "./prompt";
 import { showError } from "./dialogs";
@@ -17,9 +17,17 @@ export interface FolderActionsPorts {
   onOpenPath: (path: string) => void;
 }
 
+export interface FolderDocumentPort {
+  readonly current: DocumentSession;
+  promptMemoSpec: () => Promise<MemoSpec | null>;
+  setSelectedRelPath: (relPath: string) => void;
+  applyDocInfo: (info: api.DocInfo) => void;
+  applyRenamed: (info: api.DocInfo, selectedRelPath: string) => void;
+}
+
 // フォルダビュー上のファイル操作 (右クリックメニューとその実行)。
 export class FolderActions {
-  constructor(private doc: DocumentController, private ports: FolderActionsPorts) {}
+  constructor(private doc: FolderDocumentPort, private ports: FolderActionsPorts) {}
 
   private get root(): string | null {
     return this.doc.current.folderRoot;

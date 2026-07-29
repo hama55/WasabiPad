@@ -24,7 +24,7 @@ export interface WorkspaceSearchPorts {
   onError: (error: unknown) => Promise<void>;
   // 一致の範囲は result.highlights が持つ。パターンを渡さないのは、
   // 正規表現や大小の畳み込みで「当たった長さ」がパターンの長さと一致しないため。
-  onOpen: (result: WorkspaceSearchResult, newWindow: boolean) => void;
+  onOpen: (result: WorkspaceSearchResult, newTab: boolean) => void;
   onContextMenu: (x: number, y: number, target: ContextTarget) => void;
   // 検索条件が変わった。保存先を知るのは呼び出し側 (ここは永続化を知らない)
   onOptionsChange: (options: WorkspaceSearchOptions) => void;

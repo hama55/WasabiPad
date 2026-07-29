@@ -1,15 +1,25 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { DocumentController } from "./document-controller";
-import { FolderActions, type FolderActionsPorts } from "./folder-actions";
+import { initialSession } from "./session";
+import {
+  FolderActions,
+  type FolderActionsPorts,
+  type FolderDocumentPort,
+} from "./folder-actions";
 
 function fixture() {
   const dropdown = document.createElement("div");
   dropdown.id = "dropdown";
   document.body.replaceChildren(dropdown);
+  const session = initialSession();
+  session.folderRoot = "C:\\work";
   const doc = {
-    current: { folderRoot: "C:\\work" },
-  } as unknown as DocumentController;
+    current: session,
+    promptMemoSpec: vi.fn(async () => null),
+    setSelectedRelPath: vi.fn(),
+    applyDocInfo: vi.fn(),
+    applyRenamed: vi.fn(),
+  } satisfies FolderDocumentPort;
   const ports = {
     sidebar: {
       setEntries: vi.fn(),

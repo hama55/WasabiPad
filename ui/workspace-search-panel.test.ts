@@ -140,7 +140,7 @@ describe("WorkspaceSearchPanel", () => {
     const opened: boolean[] = [];
     const host = mount(
       async () => outcome([hit("a.txt", 3, "needle")]),
-      (_result, newWindow) => opened.push(newWindow)
+      (_result, newTab) => opened.push(newTab)
     );
     await search(host, "needle");
 

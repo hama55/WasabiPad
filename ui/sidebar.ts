@@ -37,7 +37,7 @@ export interface ContextTarget {
 // 検索の依頼 (onSearch / onCancel / onOpen / onOptionsChange) は
 // WorkspaceSearchPanel のもので、ここはそのまま素通しする。
 export interface SidebarPorts extends Omit<WorkspaceSearchPorts, "onViewChange" | "onContextMenu"> {
-  onSelect: (relPath: string, newWindow: boolean) => void;
+  onSelect: (relPath: string, newTab: boolean) => void;
   onContextMenu: (x: number, y: number, target: ContextTarget | null) => void;
   onExpandArchive: (relPath: string) => Promise<string[]>;
   onExpandFolder: (relDir: string) => Promise<FolderEntry[]>;
@@ -50,7 +50,7 @@ export class Sidebar {
   private panel: WorkspaceSearchPanel;
   private rows: Row[] = [];
   private sel: string | null = null; // 選択中の relPath
-  private onSelect: (relPath: string, newWindow: boolean) => void;
+  private onSelect: (relPath: string, newTab: boolean) => void;
   private onContextMenu: (x: number, y: number, target: ContextTarget | null) => void;
   private onExpandArchive: (relPath: string) => Promise<string[]>;
   private onExpandFolder: (relDir: string) => Promise<FolderEntry[]>;
@@ -261,8 +261,8 @@ export class Sidebar {
       div.appendChild(arrow);
       div.appendChild(document.createTextNode(r.label));
 
-      const activate = (newWindow: boolean) => {
-        if (newWindow && r.kind !== "archiveEntry") {
+      const activate = (newTab: boolean) => {
+        if (newTab && r.kind !== "archiveEntry") {
           this.onSelect(r.relPath, true);
           return;
         }

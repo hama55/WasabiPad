@@ -4,7 +4,12 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import * as api from "./api";
-import { VirtualEditor, type EditorViewState } from "./editor";
+import { VirtualEditor } from "./editor";
+import {
+  parseEditorViewState,
+  serializeEditorViewState,
+  type EditorViewState,
+} from "./editor-view-state";
 import { Sidebar } from "./sidebar";
 import { FavBar } from "./favbar";
 import { AddressBar } from "./addressbar";
@@ -73,7 +78,7 @@ async function launchNewWindow(
       path,
       goto ?? null,
       selectedRelPath ?? null,
-      viewState ? JSON.stringify(viewState) : null,
+      viewState ? serializeEditorViewState(viewState) : null,
     );
     return true;
   } catch (error) {
@@ -153,8 +158,8 @@ editor.setFont(DEFAULT_EDITOR_CONFIG.fontFamily, DEFAULT_EDITOR_CONFIG.fontSize)
 editor.setTabSize(statusbar.setIndent(getSetting("indentSize")));
 
 const sidebar = new Sidebar(sidebarEl, {
-  onSelect: async (relPath, newWindow) => {
-    if (newWindow) {
+  onSelect: async (relPath, newTab) => {
+    if (newTab) {
       await openInNewTab(relPath);
       return;
     }
@@ -172,8 +177,8 @@ const sidebar = new Sidebar(sidebarEl, {
   onCancel: () => api.workspaceSearchCancel(),
   onError: (error) => showError("フォルダを検索できませんでした", error),
   onOptionsChange: saveSearchOptions,
-  onOpen: async (result, newWindow) => {
-    if (newWindow) {
+  onOpen: async (result, newTab) => {
+    if (newTab) {
       // ファイル名一致の line/col は本文の位置ではない (どちらも 0) ので飛ばさない
       const goto = result.is_filename ? undefined : { line: result.line, col: result.col };
       await openInNewTab(result.rel_path, goto);
@@ -370,14 +375,7 @@ const cliPath = await api.initialPath();
 const cliGoto = await api.initialGoto();
 const cliSelectedRelPath = await api.initialSelectedRelPath();
 const cliViewStateJson = await api.initialViewState();
-let cliViewState: EditorViewState | undefined;
-if (cliViewStateJson) {
-  try {
-    cliViewState = JSON.parse(cliViewStateJson) as EditorViewState;
-  } catch {
-    // 自プロセスが生成した引数が壊れていても、通常の起動は続ける。
-  }
-}
+const cliViewState = parseEditorViewState(cliViewStateJson);
 const startupPath = getSetting("startupPath");
 tabs = new TabManager($("tabs"), doc, {
   onChange: (state) => {

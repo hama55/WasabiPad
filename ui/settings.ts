@@ -5,6 +5,7 @@ import type { WorkspaceSearchOptions } from "./api";
 import { loadSettings as loadSettingsJson, updateSetting } from "./api";
 import { clampSearchOptions, DEFAULT_SEARCH_OPTIONS } from "./workspace-search-options";
 import type { StoredTabs } from "./tabs";
+import { isEditorViewState } from "./editor-view-state";
 
 export interface Settings {
   indentSize: number;
@@ -60,24 +61,8 @@ function validStoredTabs(value: unknown): value is StoredTabs {
       && (tab.kind === "file" || tab.kind === "folder" || tab.kind === "blank")
       && typeof tab.label === "string"
       && (!("selectedRelPath" in tab) || tab.selectedRelPath === undefined || typeof tab.selectedRelPath === "string")
-      && (!("viewState" in tab) || tab.viewState === undefined || validViewState(tab.viewState)))
+      && (!("viewState" in tab) || tab.viewState === undefined || isEditorViewState(tab.viewState)))
     && (typeof candidate.activeId === "string" || candidate.activeId === null);
-}
-
-function validViewState(value: unknown): boolean {
-  if (typeof value !== "object" || value === null) return false;
-  const state = value as Record<string, unknown>;
-  return validPos(state.anchor)
-    && validPos(state.caret)
-    && typeof state.topLine === "number"
-    && typeof state.wrapIntraLinePx === "number"
-    && typeof state.scrollLeft === "number";
-}
-
-function validPos(value: unknown): boolean {
-  if (typeof value !== "object" || value === null) return false;
-  const pos = value as Record<string, unknown>;
-  return typeof pos.line === "number" && typeof pos.col === "number";
 }
 
 export async function initSettings(): Promise<void> {

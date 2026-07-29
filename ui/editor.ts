@@ -28,15 +28,10 @@ import {
   WrapHeightMap,
   wordBounds,
 } from "./editor-math";
+import type { EditorViewState } from "./editor-view-state";
 
 const OVERSCAN = 8;
-export interface EditorViewState {
-  anchor: Pos;
-  caret: Pos;
-  topLine: number;
-  wrapIntraLinePx: number;
-  scrollLeft: number;
-}
+export type { EditorViewState } from "./editor-view-state";
 
 export interface EditorPorts {
   onDocChange: (lineCount: number) => void;
