@@ -274,15 +274,16 @@ describe("TabManager", () => {
     a.dispatchEvent(at("pointerdown", 0));
     window.dispatchEvent(at("pointermove", -20));
     window.dispatchEvent(at("pointerup", -20));
-    await vi.waitFor(() => expect(onDetach).toHaveBeenCalledWith(
-      "C:\\work\\a.txt",
-      undefined,
-      undefined,
-      expect.objectContaining({
+    await vi.waitFor(() => expect(onDetach).toHaveBeenCalledWith(expect.objectContaining({
+      secondary: true,
+      path: "C:\\work\\a.txt",
+      goto: null,
+      selectedRelPath: null,
+      viewState: expect.objectContaining({
         caret: { line: 0, col: 0 },
         anchor: { line: 0, col: 0 },
       }),
-    ));
+    })));
 
     expect(manager.state.tabs.map((tab) => tab.id)).toEqual(["b"]);
     expect(manager.state.activeId).toBe("b");

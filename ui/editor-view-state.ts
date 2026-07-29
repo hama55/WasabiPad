@@ -1,12 +1,6 @@
+import type { EditorViewState } from "./generated/EditorViewState";
 import type { Pos } from "./api";
-
-export interface EditorViewState {
-  anchor: Pos;
-  caret: Pos;
-  topLine: number;
-  wrapIntraLinePx: number;
-  scrollLeft: number;
-}
+export type { EditorViewState } from "./generated/EditorViewState";
 
 const isNumber = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value);

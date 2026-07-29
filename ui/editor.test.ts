@@ -9,14 +9,18 @@ function mount(initial: string) {
   const host = document.createElement("div");
   document.body.replaceChildren(host);
   const doc = fakeDocument(initial);
-  const events = { lineCount: 0, cursor: [0, 0] as [number, number] };
+  const events = {
+    lineCount: 0,
+    cursor: [0, 0] as [number, number],
+    errors: [] as { message: string; error: unknown }[],
+  };
   const ports: EditorPorts = {
     onDocChange: (lineCount) => { events.lineCount = lineCount; },
     onCursor: (line, col) => { events.cursor = [line, col]; },
     onFontChange: () => {},
     hasExternalFile: () => false,
     openExternally: () => {},
-    onError: async () => {},
+    onError: async (message, error) => { events.errors.push({ message, error }); },
     openViewer: async () => null,
     updateViewer: async () => true,
   };
@@ -127,6 +131,37 @@ describe("VirtualEditor", () => {
 
     expect(doc.text()).toBe("\tone\n\ttwo\nthree");
     expect(doc.calls).toContain("editMany(2)");
+  });
+
+  it("キー編集失敗を通知し、次の編集queueは継続する", async () => {
+    const { doc, editor, events, press, type } = mount("abc");
+    editor.open(1, false);
+    await settle();
+    vi.spyOn(doc.client, "edit").mockRejectedValueOnce(new Error("ipc failed"));
+
+    press("Enter");
+    await vi.waitFor(() => expect(events.errors).toHaveLength(1));
+    type("x");
+    await vi.waitFor(() => expect(doc.text()).toContain("x"));
+
+    expect(events.errors[0].message).toBe("編集を反映できませんでした");
+  });
+
+  it("Clipboard失敗をイベント境界で通知する", async () => {
+    const { editor, events, press } = mount("abc");
+    editor.open(1, false);
+    await settle();
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn(async () => { throw new Error("denied"); }), readText: vi.fn() },
+    });
+    press("a", { ctrlKey: true });
+    await settle();
+
+    press("c", { ctrlKey: true });
+    await vi.waitFor(() => expect(events.errors).toHaveLength(1));
+
+    expect(events.errors[0].message).toBe("クリップボードへコピーできませんでした");
   });
 
   it("goTo はキャレット位置を1始まりで通知する", async () => {

@@ -1,4 +1,4 @@
-import type { Pos } from "./api";
+import type { Pos, WindowRequest } from "./api";
 import type { DocumentSession } from "./session";
 import { cloneEditorViewState, type EditorViewState } from "./editor-view-state";
 import { basename } from "./path";
@@ -34,12 +34,7 @@ export interface TabDocumentPort {
 interface TabPorts {
   onChange: (state: StoredTabs) => void;
   onError?: (error: unknown) => void | Promise<void>;
-  onDetach?: (
-    path: string | null,
-    goto?: Pos,
-    selectedRelPath?: string,
-    viewState?: EditorViewState,
-  ) => Promise<boolean>;
+  onDetach?: (request: WindowRequest) => Promise<boolean>;
 }
 
 const newId = () => `tab-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -481,12 +476,13 @@ export class TabManager {
       this.syncActive(this.doc.current);
     }
     const tab = this.tabs.find((item) => item.id === id);
-    if (!tab || !this.ports.onDetach || !await this.ports.onDetach(
-      tab.path,
-      tab.viewState ? undefined : tab.goto,
-      tab.selectedRelPath,
-      tab.viewState,
-    )) return;
+    if (!tab || !this.ports.onDetach || !await this.ports.onDetach({
+      secondary: true,
+      path: tab.path,
+      goto: tab.viewState ? null : tab.goto ?? null,
+      selectedRelPath: tab.selectedRelPath ?? null,
+      viewState: tab.viewState ?? null,
+    })) return;
     this.tabs.splice(this.tabs.indexOf(tab), 1);
     if (!wasActive) {
       this.render();

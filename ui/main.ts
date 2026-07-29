@@ -5,11 +5,6 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import * as api from "./api";
 import { VirtualEditor } from "./editor";
-import {
-  parseEditorViewState,
-  serializeEditorViewState,
-  type EditorViewState,
-} from "./editor-view-state";
 import { Sidebar } from "./sidebar";
 import { FavBar } from "./favbar";
 import { AddressBar } from "./addressbar";
@@ -40,7 +35,8 @@ window.addEventListener("unhandledrejection", () => { void win.show(); }, { once
 
 // 以降のモジュール初期化は設定値を同期的に読むため、ここで一度だけ待つ
 await initSettings();
-const secondaryInstance = await api.isSecondaryInstance();
+const windowRequest = await api.initialWindowRequest();
+const secondaryInstance = windowRequest.secondary;
 
 const editorHost = $("editorhost");
 const sidebarEl = $("sidebar");
@@ -67,19 +63,16 @@ async function reportBackgroundError(title: string, error: unknown) {
   }
 }
 
-async function launchNewWindow(
-  path: string | null = null,
-  goto?: api.Pos,
-  selectedRelPath?: string,
-  viewState?: EditorViewState,
-): Promise<boolean> {
+async function launchNewWindow(request: Partial<api.WindowRequest> = {}): Promise<boolean> {
   try {
-    await api.launchNewInstance(
-      path,
-      goto ?? null,
-      selectedRelPath ?? null,
-      viewState ? serializeEditorViewState(viewState) : null,
-    );
+    await api.launchNewInstance({
+      secondary: true,
+      path: null,
+      goto: null,
+      selectedRelPath: null,
+      viewState: null,
+      ...request,
+    });
     return true;
   } catch (error) {
     await reportBackgroundError("新規ウィンドウを開けませんでした", error);
@@ -267,7 +260,7 @@ const favbar = new FavBar($("favbar"), {
 const folderActions = new FolderActions(doc, {
   sidebar,
   onOpenInNewTab: (relPath, goto) => { void openInNewTab(relPath, goto); },
-  onOpenInNewWindow: (path, goto) => { void launchNewWindow(path, goto); },
+  onOpenInNewWindow: (path, goto) => { void launchNewWindow({ path, goto: goto ?? null }); },
   onAddFavorite: (path) => favbar.addExternal(path),
   onSetStartupPath: (path) => setSetting("startupPath", path),
   onOpenPath: (path) => {
@@ -371,27 +364,21 @@ await windowChrome.syncMaxIcon();
 // 以降はファイルエラーなどでユーザー操作待ちになるため、先に操作可能な画面を出す。
 await win.show();
 await favbar.init();
-const cliPath = await api.initialPath();
-const cliGoto = await api.initialGoto();
-const cliSelectedRelPath = await api.initialSelectedRelPath();
-const cliViewStateJson = await api.initialViewState();
-const cliViewState = parseEditorViewState(cliViewStateJson);
 const startupPath = getSetting("startupPath");
 tabs = new TabManager($("tabs"), doc, {
   onChange: (state) => {
     if (!secondaryInstance) setSetting("openTabs", state);
   },
   onError: (error) => reportBackgroundError("タブを操作できませんでした", error),
-  onDetach: (path, goto, selectedRelPath, viewState) =>
-    launchNewWindow(path, goto, selectedRelPath, viewState),
+  onDetach: (request) => launchNewWindow(request),
 });
 const storedTabs = secondaryInstance ? { tabs: [], activeId: null } : getSetting("openTabs");
 await tabs.init(
   storedTabs,
-  cliPath,
+  windowRequest.path,
   secondaryInstance ? null : startupPath,
-  cliGoto ?? undefined,
-  cliSelectedRelPath ?? undefined,
-  cliViewState,
+  windowRequest.goto ?? undefined,
+  windowRequest.selectedRelPath ?? undefined,
+  windowRequest.viewState ?? undefined,
 );
 doc.updateTitle();

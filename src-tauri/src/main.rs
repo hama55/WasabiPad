@@ -69,12 +69,28 @@ struct SearchCancel(Mutex<Arc<AtomicBool>>);
 
 static VIEWER_ID: AtomicU64 = AtomicU64::new(1);
 
-#[derive(Clone, serde::Serialize, ts_rs::TS)]
+#[derive(Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
 #[ts(export)]
-#[allow(dead_code)] // 既存IPC型との互換性維持のため、single-instance撤去後も生成対象として残す
-struct OpenRequest {
-    path: String,
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+struct EditorViewState {
+    anchor: PosC,
+    caret: PosC,
+    top_line: f64,
+    wrap_intra_line_px: f64,
+    scroll_left: f64,
+}
+
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+struct WindowRequest {
+    secondary: bool,
+    path: Option<String>,
     goto: Option<PosC>,
+    selected_rel_path: Option<String>,
+    view_state: Option<EditorViewState>,
 }
 
 #[tauri::command]
@@ -382,72 +398,63 @@ fn next_memo_path(directory: String, stem: String, extension: String) -> Result<
 }
 
 #[tauri::command]
-fn initial_path() -> Option<String> {
-    let mut args = std::env::args().skip(1);
-    match args.next().as_deref() {
-        Some("--new-window") => args.next(),
-        Some(path) => Some(path.to_string()),
-        None => None,
-    }
-}
-
-#[tauri::command]
-fn is_secondary_instance() -> bool {
-    std::env::args().nth(1).as_deref() == Some("--new-window")
-}
-
-#[tauri::command]
-fn launch_new_instance(
-    path: Option<String>,
-    goto: Option<PosC>,
-    selected_rel_path: Option<String>,
-    view_state_json: Option<String>,
-) -> Result<(), String> {
+fn launch_new_instance(mut request: WindowRequest) -> Result<(), String> {
+    request.secondary = true;
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let json = serde_json::to_string(&request).map_err(|error| error.to_string())?;
     let mut command = Command::new(executable);
-    command.arg("--new-window");
-    if let Some(path) = path {
-        command.arg(path);
-        if let Some(goto) = goto {
-            command.arg(format!("+{}:{}", goto.line, goto.col));
-        }
-        if let Some(selected_rel_path) = selected_rel_path {
-            command.args(["--selected-rel-path", &selected_rel_path]);
-        }
-        if let Some(view_state_json) = view_state_json {
-            command.args(["--view-state", &view_state_json]);
-        }
-    }
+    command.args(["--wasabipad-window-request", &json]);
     command.spawn().map(|_| ()).map_err(|error| error.to_string())
 }
 
-// 起動引数の "+行:桁" (0起点)。検索結果を別ウィンドウで開いたときの飛び先。
-#[tauri::command]
-fn initial_goto() -> Option<PosC> {
-    std::env::args().find_map(|arg| {
+fn parse_window_request(mut args: impl Iterator<Item = String>) -> Result<WindowRequest, String> {
+    let Some(first) = args.next() else {
+        return Ok(WindowRequest::default());
+    };
+    if first == "--wasabipad-window-request" {
+        let json = args.next().ok_or_else(|| "ウィンドウ要求がありません".to_string())?;
+        return serde_json::from_str(&json).map_err(|error| error.to_string());
+    }
+    let goto = args.next().and_then(|arg| {
         let (line, col) = arg.strip_prefix('+')?.split_once(':')?;
         Some(PosC { line: line.parse().ok()?, col: col.parse().ok()? })
-    })
+    });
+    Ok(WindowRequest { path: Some(first), goto, ..WindowRequest::default() })
 }
 
-fn argument_value(name: &str) -> Option<String> {
-    let mut args = std::env::args();
-    while let Some(arg) = args.next() {
-        if arg == name {
-            return args.next();
-        }
+#[tauri::command]
+fn initial_window_request() -> Result<WindowRequest, String> {
+    parse_window_request(std::env::args().skip(1))
+}
+
+#[cfg(test)]
+mod window_request_tests {
+    use super::parse_window_request;
+
+    #[test]
+    fn internal_request_round_trips_as_one_json_argument() {
+        let json = r#"{"secondary":true,"path":"C:\\日本語 folder\\memo.txt","goto":{"line":3,"col":4},"selectedRelPath":"sub\\memo.txt","viewState":{"anchor":{"line":1,"col":2},"caret":{"line":3,"col":4},"topLine":1.5,"wrapIntraLinePx":2,"scrollLeft":80}}"#;
+        let request = parse_window_request(
+            ["--wasabipad-window-request".to_string(), json.to_string()].into_iter(),
+        )
+        .unwrap();
+        assert!(request.secondary);
+        assert_eq!(request.path.as_deref(), Some(r"C:\日本語 folder\memo.txt"));
+        assert_eq!(request.goto.unwrap().line, 3);
+        assert_eq!(request.selected_rel_path.as_deref(), Some(r"sub\memo.txt"));
+        assert_eq!(request.view_state.unwrap().scroll_left, 80.0);
     }
-    None
-}
 
-#[tauri::command]
-fn initial_selected_rel_path() -> Option<String> {
-    argument_value("--selected-rel-path")
-}
-
-#[tauri::command]
-fn initial_view_state() -> Option<String> {
-    argument_value("--view-state")
+    #[test]
+    fn legacy_file_association_is_normalized_to_the_same_request() {
+        let request = parse_window_request(
+            [r"C:\work\memo.txt".to_string(), "+8:2".to_string()].into_iter(),
+        )
+        .unwrap();
+        assert!(!request.secondary);
+        assert_eq!(request.path.as_deref(), Some(r"C:\work\memo.txt"));
+        assert_eq!(request.goto.unwrap().col, 2);
+    }
 }
 
 // Windowsでは同期command中のWebView生成がイベントループを塞ぐためasyncで実行する。
@@ -583,12 +590,8 @@ fn main() {
             update_setting,
             path_is_directory,
             next_memo_path,
-            initial_path,
-            is_secondary_instance,
             launch_new_instance,
-            initial_goto,
-            initial_selected_rel_path,
-            initial_view_state,
+            initial_window_request,
             open_viewer,
             take_viewer_payload,
             update_viewer,

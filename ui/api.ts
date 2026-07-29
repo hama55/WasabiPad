@@ -8,7 +8,7 @@ import type { DocInfo } from "./generated/DocInfo";
 import type { Encoding } from "./generated/Encoding";
 import type { Eol } from "./generated/Eol";
 import type { ExternalCheck } from "./generated/ExternalCheck";
-import type { OpenRequest } from "./generated/OpenRequest";
+import type { WindowRequest } from "./generated/WindowRequest";
 import type { FileNameMatchMode } from "./generated/FileNameMatchMode";
 import type { FindCursor } from "./generated/FindCursor";
 import type { FindResult } from "./generated/FindResult";
@@ -34,7 +34,7 @@ export type {
   Encoding,
   Eol,
   ExternalCheck,
-  OpenRequest,
+  WindowRequest,
   FileNameMatchMode,
   FindCursor,
   FindResult,
@@ -160,20 +160,9 @@ export const saveBookmarks = (nodes: BmNode[]) => invoke<void>("save_bookmarks",
 export const pathIsDirectory = (path: string) => invoke<boolean>("path_is_directory", { path });
 export const nextMemoPath = (directory: string, stem: string, extension: string) =>
   invoke<string>("next_memo_path", { directory, stem, extension });
-export const initialPath = () => invoke<string | null>("initial_path");
-export const isSecondaryInstance = () => invoke<boolean>("is_secondary_instance");
-export const launchNewInstance = (
-  path: string | null = null,
-  goto: Pos | null = null,
-  selectedRelPath: string | null = null,
-  viewStateJson: string | null = null,
-) => invoke<void>("launch_new_instance", { path, goto, selectedRelPath, viewStateJson });
-// 起動時に飛ぶ位置 (検索結果を別ウィンドウで開いたとき backend が引数へ載せる)
-export const initialGoto = () => invoke<Pos | null>("initial_goto");
-export const initialSelectedRelPath = () => invoke<string | null>("initial_selected_rel_path");
-export const initialViewState = () => invoke<string | null>("initial_view_state");
-export const onOpenInTab = (handler: (request: OpenRequest) => void) =>
-  listen<OpenRequest>("open-in-tab", (event) => handler(event.payload));
+export const launchNewInstance = (request: WindowRequest) =>
+  invoke<void>("launch_new_instance", { request });
+export const initialWindowRequest = () => invoke<WindowRequest>("initial_window_request");
 
 // エディタが必要とする文書操作だけを切り出した口。エディタはこの型にだけ依存し、
 // 既定の実装 (下の documentClient) が Tauri の invoke を呼ぶ。
