@@ -56,6 +56,7 @@ export class ExternalWatch {
     try {
       this.ports.onReload(await api.reloadFromDisk());
     } catch (e) {
+      this.banner.hidden = false;
       await this.reportError("再読込できませんでした", e);
     }
   }

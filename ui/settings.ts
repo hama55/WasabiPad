@@ -26,6 +26,7 @@ const DEFAULTS: Settings = {
 
 let cache: Settings = { ...DEFAULTS };
 let pendingSave = Promise.resolve();
+const saveErrors = new Map<keyof Settings, unknown>();
 
 // 手で編集されうるファイルなので、型が合わない項目は既定値へ落とす
 export function parseSettings(text: string): Settings {
@@ -72,6 +73,7 @@ export async function initSettings(): Promise<void> {
     cache = { ...DEFAULTS };
   }
   pendingSave = Promise.resolve();
+  saveErrors.clear();
 }
 
 export function getSetting<K extends keyof Settings>(key: K): Settings[K] {
@@ -81,15 +83,21 @@ export function getSetting<K extends keyof Settings>(key: K): Settings[K] {
 export function setSetting<K extends keyof Settings>(key: K, value: Settings[K]): void {
   cache = { ...cache, [key]: value };
   pendingSave = pendingSave
-    .catch(() => {})
-    .then(() => updateSetting(key, JSON.stringify(value)));
-  void pendingSave.catch((error: unknown) => {
-    console.error("設定を保存できませんでした", error);
-  });
+    .then(async () => {
+      try {
+        await updateSetting(key, JSON.stringify(value));
+        saveErrors.delete(key);
+      } catch (error) {
+        saveErrors.set(key, error);
+        console.error("設定を保存できませんでした", error);
+      }
+    });
 }
 
-export function flushSettings(): Promise<void> {
-  return pendingSave;
+export async function flushSettings(): Promise<void> {
+  await pendingSave;
+  const error = saveErrors.values().next().value;
+  if (error !== undefined) throw error;
 }
 
 // 検索条件は手で編集されうるファイルに載るので、既定値で埋めてから丸める

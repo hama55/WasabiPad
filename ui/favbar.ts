@@ -157,25 +157,28 @@ export class FavBar {
             }]
           )),
         },
-        { label: "パスを追加...", action: () => this.addPath(path), sep: true },
-        { label: "グループを追加...", action: () => this.addGroup(path) }
+        { label: "パスを追加...", action: () => this.runMutation(() => this.addPath(path)), sep: true },
+        { label: "グループを追加...", action: () => this.runMutation(() => this.addGroup(path)) }
       );
     } else {
       items.push(
         { label: "新規タブで開く", action: () => this.onOpen(node.path, true) },
         { label: "デフォルトに設定", action: () => this.onSetDefault(node.path), sep: true },
-        { label: "編集...", action: () => this.editPath(path) }
+        { label: "編集...", action: () => this.runMutation(() => this.editPath(path)) }
       );
     }
     items.push(
       { label: "移動", action: () => {}, sub: this.moveDestinations(path), sep: true },
-      { label: "削除", action: () => this.remove(path) }
+      { label: "削除", action: () => this.runMutation(() => this.remove(path)) }
     );
     return items;
   }
 
   private moveDestinations(source: NodePath): MenuItem[] {
-    const items: MenuItem[] = [{ label: "お気に入りバー", action: () => this.moveTo(source, null) }];
+    const items: MenuItem[] = [{
+      label: "お気に入りバー",
+      action: () => this.runMutation(() => this.moveTo(source, null)),
+    }];
     const visit = (nodes: BmNode[], parent: NodePath, names: string[]) => {
       nodes.forEach((node, index) => {
         if (node.kind !== "group") return;
@@ -183,7 +186,10 @@ export class FavBar {
         const isSourceOrChild = path.length >= source.length && source.every((part, i) => path[i] === part);
         if (isSourceOrChild) return;
         const groupNames = [...names, node.name];
-        items.push({ label: groupNames.join(" / "), action: () => this.moveTo(source, path) });
+        items.push({
+          label: groupNames.join(" / "),
+          action: () => this.runMutation(() => this.moveTo(source, path)),
+        });
         visit(node.children, path, groupNames);
       });
     };
@@ -334,16 +340,9 @@ export class FavBar {
 
   private async applyDrop(source: NodePath, spot: DropSpot | null) {
     if (!spot) return;
-    const before = structuredClone(this.nodes);
-    try {
-      if (spot.kind === "root") await this.moveTo(source, null);
-      else if (spot.kind === "inside") await this.moveTo(source, spot.path);
-      else await this.moveAdjacent(source, spot.path, spot.kind === "after");
-    } catch (error) {
-      this.nodes = before;
-      this.render();
-      throw error;
-    }
+    if (spot.kind === "root") await this.moveTo(source, null);
+    else if (spot.kind === "inside") await this.moveTo(source, spot.path);
+    else await this.moveAdjacent(source, spot.path, spot.kind === "after");
   }
 
   private async reportDropError(error: unknown) {
@@ -354,6 +353,10 @@ export class FavBar {
     }
   }
 
+  private runMutation(operation: () => Promise<void>) {
+    void operation().catch((error) => this.reportDropError(error));
+  }
+
   private async moveAdjacent(source: NodePath, target: NodePath, after: boolean) {
     if (source.join(".") === target.join(".")) return;
     if (target.length > source.length && source.every((part, i) => target[i] === part)) return;
@@ -361,12 +364,13 @@ export class FavBar {
     const targetNode = this.nodeAt(target);
     const node = sourceList?.[source.at(-1)!];
     if (!sourceList || !targetNode || !node) return;
-    sourceList.splice(source.at(-1)!, 1);
-    const targetList = this.findParentList(targetNode, this.nodes);
-    if (!targetList) return;
-    const targetIndex = targetList.indexOf(targetNode);
-    targetList.splice(targetIndex + (after ? 1 : 0), 0, node);
-    await this.persist();
+    await this.mutateAndPersist(() => {
+      sourceList.splice(source.at(-1)!, 1);
+      const targetList = this.findParentList(targetNode, this.nodes);
+      if (!targetList) return;
+      const targetIndex = targetList.indexOf(targetNode);
+      targetList.splice(targetIndex + (after ? 1 : 0), 0, node);
+    });
   }
 
   private findParentList(target: BmNode, nodes: BmNode[]): BmNode[] | null {
@@ -385,9 +389,10 @@ export class FavBar {
     const node = sourceList?.[source.at(-1)!];
     const targetList = target ? this.childrenAt(target) : this.nodes;
     if (!sourceList || !node || !targetList) return;
-    sourceList.splice(source.at(-1)!, 1);
-    targetList.push(node);
-    await this.persist();
+    await this.mutateAndPersist(() => {
+      sourceList.splice(source.at(-1)!, 1);
+      targetList.push(node);
+    });
   }
 
   private async addPath(parent: NodePath = []) {
@@ -408,11 +413,11 @@ export class FavBar {
   private async addPaths(paths: string[], parent: NodePath = []) {
     const list = parent.length ? this.childrenAt(parent) : this.nodes;
     if (!list) return;
-    for (const path of paths) {
+    const additions = await Promise.all(paths.map(async (path): Promise<BmNode> => {
       const name = path.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? path;
-      list.push({ kind: await this.store.isDirectory(path) ? "directory" : "file", name, path });
-    }
-    await this.persist();
+      return { kind: await this.store.isDirectory(path) ? "directory" : "file", name, path };
+    }));
+    await this.mutateAndPersist(() => list.push(...additions));
   }
 
   private async addGroup(parent: NodePath = []) {
@@ -421,8 +426,9 @@ export class FavBar {
     if (!name) return;
     const list = parent.length ? this.childrenAt(parent) : this.nodes;
     if (!list) return;
-    list.push({ kind: "group", name, children: [] });
-    await this.persist();
+    await this.mutateAndPersist(() => {
+      list.push({ kind: "group", name, children: [] });
+    });
   }
 
   async addCurrent() {
@@ -442,17 +448,32 @@ export class FavBar {
       { label: "パス", value: node.path },
     ]);
     if (!result?.[0].trim() || !result[1].trim()) return;
-    Object.assign(node, { name: result[0].trim(), path: result[1].trim(), kind: await this.store.isDirectory(result[1].trim()) ? "directory" : "file" });
-    await this.persist();
+    const next = {
+      name: result[0].trim(),
+      path: result[1].trim(),
+      kind: await this.store.isDirectory(result[1].trim()) ? "directory" as const : "file" as const,
+    };
+    await this.mutateAndPersist(() => {
+      Object.assign(node, next);
+    });
   }
 
   private async remove(path: NodePath) {
-    this.listAt(path.slice(0, -1))?.splice(path.at(-1)!, 1);
-    await this.persist();
+    await this.mutateAndPersist(() => {
+      this.listAt(path.slice(0, -1))?.splice(path.at(-1)!, 1);
+    });
   }
 
-  private async persist() {
-    await this.store.save(this.nodes);
-    this.render();
+  private async mutateAndPersist(mutate: () => void) {
+    const before = structuredClone(this.nodes);
+    try {
+      mutate();
+      await this.store.save(this.nodes);
+      this.render();
+    } catch (error) {
+      this.nodes = before;
+      this.render();
+      throw error;
+    }
   }
 }

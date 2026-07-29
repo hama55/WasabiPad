@@ -33,6 +33,7 @@ export interface TabDocumentPort {
 
 interface TabPorts {
   onChange: (state: StoredTabs) => void;
+  onError?: (error: unknown) => void | Promise<void>;
   onDetach?: (
     path: string | null,
     goto?: Pos,
@@ -142,36 +143,42 @@ export class TabManager {
   async activate(id: string): Promise<boolean> {
     if (id === this.activeId) return true;
     this.transitionTarget = id;
-    const proceeded = await this.doc.confirmDiscard(() => this.switchTo(id));
+    let proceeded: boolean;
+    try {
+      proceeded = await this.doc.confirmDiscard(() => this.switchTo(id));
+    } catch (error) {
+      this.transitionTarget = null;
+      this.render();
+      throw error;
+    }
     if (!proceeded) {
       this.transitionTarget = null;
       this.render();
-      this.persist();
     }
     return this.activeId === id;
   }
 
   private async switchTo(id: string) {
+    this.rememberActiveView();
+    this.syncActive(this.doc.current);
     try {
-      this.rememberActiveView();
-      this.syncActive(this.doc.current);
-      this.activeId = id;
-      await this.loadActive();
+      await this.commitTransition(async () => {
+        this.activeId = id;
+        await this.loadActive();
+      });
     } finally {
       if (this.transitionTarget === id) this.transitionTarget = null;
-      this.render();
-      this.persist();
     }
   }
 
   async close(id: string) {
     if (this.tabs.length === 1) {
       if (id === this.activeId && !(await this.doc.confirmDiscard())) return;
-      this.tabs = [this.link(null)];
-      this.activeId = this.tabs[0].id;
-      await this.doc.newFile(false);
-      this.render();
-      this.persist();
+      await this.commitTransition(async () => {
+        this.tabs = [this.link(null)];
+        this.activeId = this.tabs[0].id;
+        await this.doc.newFile(false);
+      });
       return;
     }
     const index = this.tabs.findIndex((tab) => tab.id === id);
@@ -179,14 +186,17 @@ export class TabManager {
     if (id === this.activeId) {
       if (!(await this.doc.confirmDiscard())) return;
       this.rememberActiveView();
-      this.tabs.splice(index, 1);
-      this.activeId = this.tabs[Math.min(index, this.tabs.length - 1)].id;
-      await this.loadActive();
+      this.syncActive(this.doc.current);
+      await this.commitTransition(async () => {
+        this.tabs.splice(index, 1);
+        this.activeId = this.tabs[Math.min(index, this.tabs.length - 1)].id;
+        await this.loadActive();
+      });
     } else {
       this.tabs.splice(index, 1);
+      this.render();
+      this.persist();
     }
-    this.render();
-    this.persist();
   }
 
   async saveForExit(): Promise<boolean> {
@@ -202,15 +212,34 @@ export class TabManager {
       await this.doc.confirmDiscard(async () => {
         this.rememberActiveView();
         this.syncActive(this.doc.current);
-        this.tabs.push(tab);
-        this.activeId = tab.id;
-        await this.loadActive();
+        await this.commitTransition(async () => {
+          this.tabs.push(tab);
+          this.activeId = tab.id;
+          await this.loadActive();
+        });
       });
     } finally {
       this.transitionTarget = null;
-      this.render();
-      this.persist();
     }
+  }
+
+  private async commitTransition(operation: () => Promise<void>) {
+    const before = this.state;
+    try {
+      await operation();
+    } catch (error) {
+      this.tabs = before.tabs;
+      this.activeId = before.activeId ?? before.tabs[0]?.id ?? "";
+      try {
+        if (this.activeId) await this.loadActive();
+      } catch (recoveryError) {
+        console.error("元のタブへ復帰できませんでした", recoveryError);
+      }
+      this.render();
+      throw error;
+    }
+    this.render();
+    this.persist();
   }
 
   private async loadActive() {
@@ -279,11 +308,11 @@ export class TabManager {
           event.stopPropagation();
           return;
         }
-        if ((event.target as Element).closest(".doc-tab-close")) void this.close(tab.id);
-        else void this.activate(tab.id);
+        if ((event.target as Element).closest(".doc-tab-close")) this.run(() => this.close(tab.id));
+        else this.run(() => this.activate(tab.id));
       });
       button.addEventListener("auxclick", (event) => {
-        if (event.button === 1) void this.close(tab.id);
+        if (event.button === 1) this.run(() => this.close(tab.id));
       });
       button.addEventListener("contextmenu", (event) => {
         event.preventDefault();
@@ -303,10 +332,10 @@ export class TabManager {
 
   private contextItems(tab: StoredTab): MenuItem[] {
     return [
-      { label: "閉じる", action: () => void this.close(tab.id) },
-      { label: "ほかのタブを閉じる", action: () => void this.keepOnly(tab.id), sep: true },
-      { label: "右側のタブを閉じる", action: () => void this.closeRight(tab.id) },
-      { label: "保存済みのタブを閉じる", action: () => void this.closeSaved(tab.id) },
+      { label: "閉じる", action: () => this.run(() => this.close(tab.id)) },
+      { label: "ほかのタブを閉じる", action: () => this.run(() => this.keepOnly(tab.id)), sep: true },
+      { label: "右側のタブを閉じる", action: () => this.run(() => this.closeRight(tab.id)) },
+      { label: "保存済みのタブを閉じる", action: () => this.run(() => this.closeSaved(tab.id)) },
     ];
   }
 
@@ -367,7 +396,7 @@ export class TabManager {
     if (!drag) return;
     this.justDragged = true;
     if (drag.spot) this.moveTab(drag.sourceId, drag.spot);
-    else if (this.outsideWindow(event.clientX, event.clientY)) void this.detachTab(drag.sourceId);
+    else if (this.outsideWindow(event.clientX, event.clientY)) this.run(() => this.detachTab(drag.sourceId));
   };
 
   private outsideWindow(x: number, y: number): boolean {
@@ -430,6 +459,16 @@ export class TabManager {
     this.tabs.splice(Math.max(0, target), 0, tab);
     this.render();
     this.persist();
+  }
+
+  private run(operation: () => Promise<unknown>) {
+    void operation().catch(async (error) => {
+      try {
+        await this.ports.onError?.(error);
+      } catch (reportError) {
+        console.error("タブ操作エラーを表示できませんでした", reportError);
+      }
+    });
   }
 
   private async detachTab(id: string) {

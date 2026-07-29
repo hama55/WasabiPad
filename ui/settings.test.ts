@@ -1,13 +1,20 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const { updateSettingMock } = vi.hoisted(() => ({ updateSettingMock: vi.fn(async () => {}) }));
 vi.mock("./api", () => ({
   loadSettings: async () => "{}",
-  updateSetting: async () => {},
+  updateSetting: updateSettingMock,
 }));
 
-import { parseSettings } from "./settings";
+import { flushSettings, initSettings, parseSettings, setSetting } from "./settings";
 
 describe("settings", () => {
+  beforeEach(async () => {
+    updateSettingMock.mockReset();
+    updateSettingMock.mockResolvedValue(undefined);
+    await initSettings();
+  });
+
   it("壊れたJSONは既定値として扱う", () => {
     expect(parseSettings("{ not json").indentSize).toBe(8);
     expect(parseSettings("[]").registeredStrings).toEqual([]);
@@ -26,5 +33,28 @@ describe("settings", () => {
     expect(parseSettings("{}").workspaceSearchOptions).toBeNull();
     expect(parseSettings(JSON.stringify({ workspaceSearchOptions: { max_files: 5 } })).workspaceSearchOptions)
       .toEqual({ max_files: 5 });
+  });
+
+  it("先行保存の失敗を後続成功で握り潰さない", async () => {
+    updateSettingMock
+      .mockRejectedValueOnce(new Error("openTabs failed"))
+      .mockResolvedValueOnce(undefined);
+
+    setSetting("openTabs", { tabs: [], activeId: null });
+    setSetting("indentSize", 4);
+
+    await expect(flushSettings()).rejects.toThrow("openTabs failed");
+    expect(updateSettingMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("失敗したキーを再保存できればflushを成功扱いに戻す", async () => {
+    updateSettingMock
+      .mockRejectedValueOnce(new Error("temporary"))
+      .mockResolvedValueOnce(undefined);
+
+    setSetting("indentSize", 4);
+    setSetting("indentSize", 8);
+
+    await expect(flushSettings()).resolves.toBeUndefined();
   });
 });

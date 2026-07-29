@@ -381,6 +381,7 @@ tabs = new TabManager($("tabs"), doc, {
   onChange: (state) => {
     if (!secondaryInstance) setSetting("openTabs", state);
   },
+  onError: (error) => reportBackgroundError("タブを操作できませんでした", error),
   onDetach: (path, goto, selectedRelPath, viewState) =>
     launchNewWindow(path, goto, selectedRelPath, viewState),
 });

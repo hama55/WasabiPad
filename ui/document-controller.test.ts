@@ -4,11 +4,13 @@ import type { DocInfo } from "./api";
 import { DocumentController, fileNameOf, type DocumentView } from "./document-controller";
 import { formatTitleBar } from "./format";
 import { confirmSaveDiscard } from "./prompt";
+import * as saveFormat from "./save-format";
 
 vi.mock("./prompt", async (importOriginal) => ({
   ...await importOriginal<typeof import("./prompt")>(),
   confirmSaveDiscard: vi.fn(),
 }));
+vi.mock("./dialogs", () => ({ showError: vi.fn(async () => {}) }));
 
 const info = (overrides: Partial<DocInfo> = {}): DocInfo => ({
   kind: "text",
@@ -43,7 +45,7 @@ function fakeView() {
     setTitle: vi.fn(),
     notify: vi.fn(),
     hideExternalBanner: vi.fn(),
-    pickSavePath: vi.fn(async () => null),
+    pickSavePath: vi.fn(async (): Promise<string | null> => null),
   };
   return { view, controller: new DocumentController(view as unknown as DocumentView) };
 }
@@ -108,6 +110,21 @@ describe("DocumentController", () => {
 
     expect(await controller.save()).toBe(true);
     expect(view.setLoading).not.toHaveBeenCalled();
+  });
+
+  it("別名保存失敗後に選択した文字コードを元文書へ持ち越さない", async () => {
+    const { view, controller } = fakeView();
+    controller.applyDocInfo(info({ enc: "sjis", eol: "lf" }));
+    view.pickSavePath.mockResolvedValueOnce("C:\\readonly\\memo.txt");
+    vi.spyOn(saveFormat, "promptSaveFormat").mockResolvedValueOnce({
+      encoding: "utf8",
+      eol: "crlf",
+    });
+    vi.spyOn(api, "saveFile").mockRejectedValueOnce(new Error("denied"));
+
+    expect(await controller.saveAs()).toBe(false);
+    expect(controller.current.encoding).toBe("sjis");
+    expect(controller.current.eol).toBe("lf");
   });
 });
 

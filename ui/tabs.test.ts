@@ -126,6 +126,21 @@ describe("TabManager", () => {
     expect(manager.state.activeId).toBe("b");
   });
 
+  it("移動先の読込失敗時は元active tabへ戻し、壊れた状態を保存しない", async () => {
+    const { doc, host } = fixture();
+    const changes: StoredTabs[] = [];
+    const manager = new TabManager(host, doc, { onChange: (state) => changes.push(state) });
+    await manager.init(stored, null, null);
+    changes.length = 0;
+    vi.mocked(doc.openPath).mockRejectedValueOnce(new Error("load failed"));
+
+    await expect(manager.activate("b")).rejects.toThrow("load failed");
+
+    expect(manager.state.activeId).toBe("a");
+    expect(changes).toEqual([]);
+    expect(doc.openPath).toHaveBeenLastCalledWith("C:\\work\\a.txt", false);
+  });
+
   it("tabごとに選択位置と表示位置を復元する", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} });

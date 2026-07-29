@@ -74,15 +74,21 @@ export class FolderActions {
     const spec = await this.doc.promptMemoSpec();
     if (!spec) return;
     const name = fileNameOf(spec);
+    let info: api.DocInfo;
     try {
-      const info = await api.createNote(relDir, name);
-      const relPath = relDir ? `${relDir}/${name}` : name;
-      this.doc.setSelectedRelPath(relPath);
-      this.doc.applyDocInfo(info);
+      info = await api.createNote(relDir, name);
+    } catch (e) {
+      await showError("新規メモを作成できませんでした", e);
+      return;
+    }
+    const relPath = relDir ? `${relDir}/${name}` : name;
+    this.doc.setSelectedRelPath(relPath);
+    this.doc.applyDocInfo(info);
+    try {
       await this.ports.sidebar.refreshFolderEntries();
       this.ports.sidebar.selectByRelPath(relPath);
     } catch (e) {
-      await showError("新規メモを作成できませんでした", e);
+      await showError("メモは作成されましたが一覧を更新できませんでした", e);
     }
   }
 

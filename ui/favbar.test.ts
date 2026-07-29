@@ -3,13 +3,14 @@ import { describe, expect, it, vi } from "vitest";
 import type { BmNode } from "./api";
 import { FavBar, type BookmarkStore } from "./favbar";
 
-function mount(initial: BmNode[] = []) {
+function mount(initial: BmNode[] = [], storeOverrides: Partial<BookmarkStore> = {}) {
   document.body.innerHTML = `<div id="favbar"></div><div id="dropdown" hidden></div>`;
   const saved: BmNode[][] = [];
   const store: BookmarkStore = {
     load: async () => initial,
     save: async (nodes) => { saved.push(structuredClone(nodes)); },
     isDirectory: async (path) => !path.split("/").pop()!.includes("."),
+    ...storeOverrides,
   };
   const opened: string[] = [];
   const addedGroups: { path: string; kind: "file" | "folder" }[][] = [];
@@ -56,6 +57,26 @@ describe("FavBar", () => {
     await favbar.init();
     await favbar.addCurrent();
     expect(saved[0]).toEqual([{ kind: "file", name: "memo.txt", path: "C:/work/memo.txt" }]);
+  });
+
+  it("保存失敗した追加を次の成功操作へ混入させない", async () => {
+    const persisted: BmNode[][] = [];
+    const save = vi.fn()
+      .mockRejectedValueOnce(new Error("disk full"))
+      .mockImplementationOnce(async (nodes: BmNode[]) => {
+        persisted.push(structuredClone(nodes));
+      });
+    const { favbar } = mount(
+      [{ kind: "file", name: "base", path: "C:/base.txt" }],
+      { save },
+    );
+    await favbar.init();
+
+    await expect(favbar.addExternal("C:/failed.txt")).rejects.toThrow("disk full");
+    await favbar.addExternal("C:/success.txt");
+
+    expect(persisted[0].map((node) => node.name)).toEqual(["base", "success.txt"]);
+    expect(document.querySelectorAll("#favbar button")).toHaveLength(2);
   });
 
   it("ドラッグで並べ替えできる", async () => {

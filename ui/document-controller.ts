@@ -1,7 +1,7 @@
 import * as api from "./api";
 import type { DocumentSession } from "./session";
 import { initialSession, sessionFromDocInfo } from "./session";
-import { promptSaveFormat } from "./save-format";
+import { promptSaveFormat, type SaveFormat } from "./save-format";
 import { confirmSaveDiscard, promptFields } from "./prompt";
 import { showError } from "./dialogs";
 import { formatWindowTitle } from "./format";
@@ -197,9 +197,7 @@ export class DocumentController {
   private async saveAsTo(path: string, folderDraftRoot: string | null = null): Promise<boolean> {
     const format = await promptSaveFormat(this.session);
     if (!format) return false;
-    this.session.encoding = format.encoding;
-    this.session.eol = format.eol;
-    return this.saveTo(path, folderDraftRoot);
+    return this.saveTo(path, folderDraftRoot, format);
   }
 
   // フォルダを開いた状態の無題文書は、保存先ダイアログではなくフォルダ直下へ採番して置く
@@ -217,10 +215,14 @@ export class DocumentController {
     }
   }
 
-  private async saveTo(path: string, folderDraftRoot: string | null = null): Promise<boolean> {
+  private async saveTo(
+    path: string,
+    folderDraftRoot: string | null = null,
+    format: SaveFormat = this.session,
+  ): Promise<boolean> {
     let outcome: api.SaveOutcome;
     try {
-      outcome = await api.saveFile(path, this.session.encoding, this.session.eol);
+      outcome = await api.saveFile(path, format.encoding, format.eol);
     } catch (e) {
       await showError("保存できませんでした", e);
       return false;
@@ -233,6 +235,8 @@ export class DocumentController {
       );
       return false;
     }
+    this.session.encoding = format.encoding;
+    this.session.eol = format.eol;
     this.session.savePath = path;
     this.session.displayPath = path;
     this.session.sourceEncoding = this.session.encoding;
