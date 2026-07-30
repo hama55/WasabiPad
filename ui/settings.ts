@@ -6,9 +6,12 @@ import { loadSettings as loadSettingsJson, updateSetting } from "./api";
 import { clampSearchOptions, DEFAULT_SEARCH_OPTIONS } from "./workspace-search-options";
 import type { StoredTabs } from "./tabs";
 import { isEditorViewState } from "./editor-view-state";
+import { DEFAULT_EDITOR_CONFIG } from "./editor-config";
 
 export interface Settings {
   indentSize: number;
+  fontFamily: string;
+  fontSize: number;
   startupPath: string | null;
   registeredStrings: string[];
   // null は「未設定」。既定値は ui/workspace-search-options.ts だけが持つ
@@ -18,6 +21,8 @@ export interface Settings {
 
 const DEFAULTS: Settings = {
   indentSize: 8,
+  fontFamily: DEFAULT_EDITOR_CONFIG.fontFamily,
+  fontSize: DEFAULT_EDITOR_CONFIG.fontSize,
   startupPath: null,
   registeredStrings: [],
   workspaceSearchOptions: null,
@@ -39,6 +44,12 @@ export function parseSettings(text: string): Settings {
   if (typeof value !== "object" || value === null) return { ...DEFAULTS };
   return {
     indentSize: typeof value.indentSize === "number" ? value.indentSize : DEFAULTS.indentSize,
+    fontFamily: typeof value.fontFamily === "string" && value.fontFamily.length > 0
+      ? value.fontFamily
+      : DEFAULTS.fontFamily,
+    fontSize: typeof value.fontSize === "number" && value.fontSize >= 8 && value.fontSize <= 72
+      ? value.fontSize
+      : DEFAULTS.fontSize,
     startupPath: typeof value.startupPath === "string" ? value.startupPath : null,
     registeredStrings: Array.isArray(value.registeredStrings)
       ? value.registeredStrings.filter((item): item is string => typeof item === "string" && item.length > 0)

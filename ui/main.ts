@@ -17,7 +17,6 @@ import { showError } from "./dialogs";
 import { confirmMessage } from "./prompt";
 import { joinWindowsRoot } from "./path";
 import { createCommandRegistry, globalCommandForEvent } from "./commands";
-import { DEFAULT_EDITOR_CONFIG } from "./editor-config";
 import { TabManager } from "./tabs";
 import {
   getSetting,
@@ -48,6 +47,7 @@ let sidebarAvailable = false;
 let sidebarCollapsed = false;
 let currentLine = 1;
 let tabs: TabManager;
+let restoringEditorFont = true;
 
 function setLoading(active: boolean, message = "読み込み中…") {
   loading.hidden = !active;
@@ -133,7 +133,13 @@ const editor: VirtualEditor = new VirtualEditor(editorHost, {
     currentLine = line;
     statusbar.setCursor(line, col);
   },
-  onFontChange: (family, size) => statusbar.setFont(family, size),
+  onFontChange: (family, size) => {
+    statusbar.setFont(family, size);
+    if (!restoringEditorFont) {
+      setSetting("fontFamily", family);
+      setSetting("fontSize", size);
+    }
+  },
   hasExternalFile: () => doc.current.savePath !== null,
   openExternally: () => { if (doc.current.savePath) void openInOtherApp(doc.current.savePath); },
   onError: (message, error) => showError(message, error),
@@ -147,7 +153,8 @@ const editor: VirtualEditor = new VirtualEditor(editorHost, {
   },
   updateViewer: api.updateViewer,
 });
-editor.setFont(DEFAULT_EDITOR_CONFIG.fontFamily, DEFAULT_EDITOR_CONFIG.fontSize);
+editor.setFont(getSetting("fontFamily"), getSetting("fontSize"));
+restoringEditorFont = false;
 editor.setTabSize(statusbar.setIndent(getSetting("indentSize")));
 
 const sidebar = new Sidebar(sidebarEl, {

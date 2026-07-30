@@ -29,6 +29,16 @@ describe("settings", () => {
     expect(settings.registeredStrings).toEqual(["ok"]);
   });
 
+  it("フォント設定を復元し、不正な値は既定値へ戻す", () => {
+    const saved = parseSettings(JSON.stringify({ fontFamily: "Meiryo, sans-serif", fontSize: 16 }));
+    expect(saved.fontFamily).toBe("Meiryo, sans-serif");
+    expect(saved.fontSize).toBe(16);
+
+    const invalid = parseSettings(JSON.stringify({ fontFamily: "", fontSize: 100 }));
+    expect(invalid.fontFamily).toBe('Consolas, "MS Gothic", monospace');
+    expect(invalid.fontSize).toBe(14);
+  });
+
   it("未設定のフォルダ検索オプションは null のまま返す", () => {
     expect(parseSettings("{}").workspaceSearchOptions).toBeNull();
     expect(parseSettings(JSON.stringify({ workspaceSearchOptions: { max_files: 5 } })).workspaceSearchOptions)
