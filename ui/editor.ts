@@ -1,5 +1,6 @@
 import * as api from "./api";
 import type { Pos } from "./api";
+import { readText as readClipboardText, writeText as writeClipboardText } from "@tauri-apps/plugin-clipboard-manager";
 import { FindBar } from "./findbar";
 import { DEFAULT_EDITOR_CONFIG, EditorConfig } from "./editor-config";
 import { showMenu, type MenuItem } from "./menu";
@@ -1258,7 +1259,7 @@ export class VirtualEditor {
     if (!this.sel.hasSel()) return;
     const [s, e] = this.sel.norm();
     const text = await this.lineCache.textInRange(s, e);
-    await navigator.clipboard.writeText(text);
+    await writeClipboardText(text);
     if (cut && !this.readOnly) await this.deleteSel();
   }
 
@@ -1283,7 +1284,7 @@ export class VirtualEditor {
   }
 
 
-  private async openTextViewer(format: api.ViewerFormat) {
+  async openTextViewer(format: api.ViewerFormat) {
     const [selectionStart, selectionEnd] = this.sel.norm();
     const selection = { start: selectionStart, end: selectionEnd };
     if (!this.sel.hasSel()) return this.liveViewers.open(format, null, selection);
@@ -1308,7 +1309,7 @@ export class VirtualEditor {
 
   private async paste() {
     if (this.readOnly) return;
-    const text = (await navigator.clipboard.readText()).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    const text = (await readClipboardText()).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
     if (text) await this.insertText(text);
   }
 

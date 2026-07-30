@@ -12,6 +12,7 @@ export interface FolderActionsPorts {
   sidebar: Pick<Sidebar, "setEntries" | "selectByRelPath" | "refreshFolderEntries">;
   onOpenInNewTab: (relPath: string, goto?: api.Pos) => void;
   onOpenInNewWindow: (path: string, goto?: api.Pos) => void;
+  onOpenViewer: (relPath: string, format: api.ViewerFormat) => void;
   onAddFavorite: (path: string) => void;
   onSetStartupPath: (path: string) => void;
   onOpenPath: (path: string) => void;
@@ -51,6 +52,13 @@ export class FolderActions {
         action: () => this.ports.onOpenInNewWindow(this.toAbsolute(target.relPath), target.goto),
       });
       if (!target.isDir) {
+        const viewerFormat = viewerFormatFor(target.relPath);
+        if (viewerFormat) {
+          items.push({
+            label: viewerFormat === "csv" ? "CSVビュー" : "Markdownビュー",
+            action: () => this.ports.onOpenViewer(target.relPath, viewerFormat),
+          });
+        }
         items.push({ label: "アプリで開く", action: () => void openInOtherApp(this.toAbsolute(target.relPath)) });
       }
       items.push({ label: "アドレスバーに設定", action: () => this.ports.onOpenPath(this.toAbsolute(target.relPath)) });
@@ -121,6 +129,12 @@ export class FolderActions {
       await showError("名前を変更できませんでした", e);
     }
   }
+}
+
+function viewerFormatFor(path: string): api.ViewerFormat | null {
+  const extension = path.slice(path.lastIndexOf(".")).toLowerCase();
+  if (extension === ".csv") return "csv";
+  return extension === ".md" || extension === ".markdown" ? "markdown" : null;
 }
 
 export async function revealInExplorer(path: string, isDir: boolean) {

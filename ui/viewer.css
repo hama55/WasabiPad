@@ -7,6 +7,7 @@
   --row-alt: #242424;
   --source-selected-bg: #ffffff;
   --source-selected-fg: #3b3b3b;
+  --viewer-font-size: 14px;
 }
 
 :root[data-theme="light"] {
@@ -48,7 +49,7 @@ main { position: relative; flex: 1; min-height: 0; }
 
 .viewer-grid {
   border-collapse: separate; border-spacing: 0;
-  min-width: 100%; font: 13px var(--font-mono);
+  min-width: 100%; font: var(--viewer-font-size) var(--font-mono);
 }
 .viewer-grid th, .viewer-grid td {
   max-width: 520px; padding: 5px 9px; overflow: hidden; text-overflow: ellipsis;
@@ -78,7 +79,7 @@ main { position: relative; flex: 1; min-height: 0; }
   outline-offset: -1px;
 }
 
-article { max-width: 900px; margin: 0 auto; padding: 24px 36px 64px; line-height: 1.65; }
+article { max-width: 900px; margin: 0 auto; padding: 24px 36px 64px; line-height: 1.65; font-size: var(--viewer-font-size); }
 article h1, article h2 { border-bottom: 1px solid var(--border-strong); padding-bottom: .25em; }
 article ul, article ol { padding-inline-start: 2em; }
 article pre, article code { font-family: var(--font-mono); background: var(--bg-side); }

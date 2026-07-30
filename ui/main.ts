@@ -268,6 +268,13 @@ const folderActions = new FolderActions(doc, {
   sidebar,
   onOpenInNewTab: (relPath, goto) => { void openInNewTab(relPath, goto); },
   onOpenInNewWindow: (path, goto) => { void launchNewWindow({ path, goto: goto ?? null }); },
+  onOpenViewer: (relPath, format) => {
+    void (async () => {
+      if (!(await doc.confirmDiscard())) return;
+      await doc.selectEntry(relPath);
+      await editor.openTextViewer(format);
+    })();
+  },
   onAddFavorite: (path) => favbar.addExternal(path),
   onSetStartupPath: (path) => setSetting("startupPath", path),
   onOpenPath: (path) => {

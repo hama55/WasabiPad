@@ -1,5 +1,14 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const { readClipboardText, writeClipboardText } = vi.hoisted(() => ({
+  readClipboardText: vi.fn(async () => ""),
+  writeClipboardText: vi.fn(async () => {}),
+}));
+vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
+  readText: readClipboardText,
+  writeText: writeClipboardText,
+}));
 import { fakeDocument, installDomStubs, settle } from "./test-doubles";
 import { VirtualEditor, type EditorPorts } from "./editor";
 
@@ -36,7 +45,13 @@ function mount(initial: string) {
 }
 
 describe("VirtualEditor", () => {
-  beforeEach(() => document.body.replaceChildren());
+  beforeEach(() => {
+    document.body.replaceChildren();
+    readClipboardText.mockReset();
+    readClipboardText.mockResolvedValue("");
+    writeClipboardText.mockReset();
+    writeClipboardText.mockResolvedValue(undefined);
+  });
 
   it("注入された DocumentClient から可視行を取得する", async () => {
     const { editor, doc } = mount("one\ntwo\nthree");
@@ -151,10 +166,7 @@ describe("VirtualEditor", () => {
     const { editor, events, press } = mount("abc");
     editor.open(1, false);
     await settle();
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText: vi.fn(async () => { throw new Error("denied"); }), readText: vi.fn() },
-    });
+    writeClipboardText.mockRejectedValueOnce(new Error("denied"));
     press("a", { ctrlKey: true });
     await settle();
 

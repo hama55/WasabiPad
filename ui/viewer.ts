@@ -5,8 +5,10 @@ import Chart from "chart.js/auto";
 import MarkdownIt from "markdown-it";
 import Papa from "papaparse";
 import { takeViewerPayload, type ViewerFormat, type ViewerPayload, type ViewerSelection } from "./api";
-import { DEFAULT_EDITOR_CONFIG } from "./editor-config";
-import { VIEWER_FORMAT_LABELS, formatTitleBar } from "./format";
+import { VIEWER_FORMAT_LABELS, formatFontFamily, formatTitleBar } from "./format";
+import { basename } from "./path";
+import { getSetting, initSettings, setSetting } from "./settings";
+import { promptFields } from "./prompt";
 import {
   chartColumnLabel,
   chartPointRadius,
@@ -25,14 +27,24 @@ const MAX_TABLE_COLUMNS = 200;
 const VIEWER_THEME_KEY = "viewerTheme";
 const CHART_COLORS = ["#4fc3f7", "#ffb74d", "#81c784", "#e57373", "#ba68c8", "#fff176", "#4dd0e1", "#f06292"];
 
-// 等幅フォントの定義はエディタ既定値ただ一つ。CSSは値を持たない。
-document.documentElement.style.setProperty("--font-mono", DEFAULT_EDITOR_CONFIG.fontFamily);
+const FONT_FAMILIES = [
+  "Consolas, \"MS Gothic\", monospace",
+  "Cascadia Mono, \"MS Gothic\", monospace",
+  "\"MS Gothic\", monospace",
+  "\"Yu Gothic UI\", sans-serif",
+  "Meiryo, sans-serif",
+  "\"BIZ UDPGothic\", sans-serif",
+];
+
+await initSettings();
 
 const win = getCurrentWindow();
 const content = document.getElementById("viewer-content")!;
 const title = document.getElementById("viewer-title")!;
 const summary = document.getElementById("viewer-summary")!;
 const themeButton = document.getElementById("viewer-theme")!;
+const fontButton = document.getElementById("viewer-font")!;
+const fontSizeButton = document.getElementById("viewer-font-size")!;
 const contextMenu = document.getElementById("viewer-context-menu")!;
 const chartPanel = document.getElementById("chart-panel")!;
 const chartTitle = document.getElementById("chart-title")!;
@@ -47,6 +59,35 @@ let currentSelection: ViewerSelection | null = null;
 let currentSourcePath: string | null = null;
 let chart: Chart<"line" | "bar", (number | null)[], string> | null = null;
 let chartColumns: { x: number; y: number[]; reverseX: boolean; type: ChartTypeId } | null = null;
+let fontFamily = getSetting("fontFamily");
+let fontSize = getSetting("fontSize");
+
+function applyFont(family: string, size: number) {
+  fontFamily = family;
+  fontSize = size;
+  document.documentElement.style.setProperty("--font-mono", family);
+  document.documentElement.style.setProperty("--viewer-font-size", `${size}px`);
+  fontButton.textContent = formatFontFamily(family);
+  fontSizeButton.textContent = `${size}px`;
+  setSetting("fontFamily", family);
+  setSetting("fontSize", size);
+}
+
+async function promptFont() {
+  const options = FONT_FAMILIES.map((value) => ({ label: formatFontFamily(value), value }));
+  if (!options.some((option) => option.value === fontFamily)) {
+    options.unshift({ label: formatFontFamily(fontFamily), value: fontFamily });
+  }
+  const result = await promptFields("フォント", [{ label: "フォント", value: fontFamily, options }]);
+  const family = result?.[0].trim();
+  if (family) applyFont(family, fontSize);
+}
+
+async function promptFontSize() {
+  const result = await promptFields("フォントサイズ", [{ label: "サイズ (8〜72px)", value: String(fontSize) }]);
+  const size = Number(result?.[0]);
+  if (Number.isInteger(size) && size >= 8 && size <= 72) applyFont(fontFamily, size);
+}
 
 function applyTheme(theme = localStorage.getItem(VIEWER_THEME_KEY)) {
   const value = theme === "light" ? "light" : "dark";
@@ -74,6 +115,8 @@ function bindWindowControls() {
     await win.toggleMaximize();
     await syncMaxIcon();
   });
+  fontButton.addEventListener("click", () => void promptFont());
+  fontSizeButton.addEventListener("click", () => void promptFontSize());
   void win.onResized(() => { void syncMaxIcon(); });
   void syncMaxIcon();
 }
@@ -177,7 +220,8 @@ function renderPayload(payload: ViewerPayload) {
   currentText = payload.text;
   currentSelection = payload.selection;
   currentSourcePath = payload.source_path;
-  title.textContent = formatTitleBar(VIEWER_FORMAT_LABELS[payload.format]);
+  const sourceName = payload.source_path ? basename(payload.source_path) : "";
+  title.textContent = formatTitleBar(`${sourceName ? `${sourceName} — ` : ""}${VIEWER_FORMAT_LABELS[payload.format]}`);
   void win.setTitle(title.textContent);
   delimiterControl.hidden = payload.format !== "csv";
   if (payload.format === "markdown") renderMarkdown(payload.text);
@@ -404,7 +448,8 @@ function closeChart() {
 async function start() {
   try {
     applyTheme();
-    bindWindowControls();
+bindWindowControls();
+applyFont(fontFamily, fontSize);
     themeButton.addEventListener("click", () => {
       applyTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light");
     });

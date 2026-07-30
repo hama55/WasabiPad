@@ -1,7 +1,10 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "windows": ["main", "viewer-*"],
+  "windows": [
+    "main",
+    "viewer-*"
+  ],
   "permissions": [
     "core:default",
     "core:window:allow-minimize",
@@ -11,6 +14,8 @@
     "core:window:allow-show",
     "core:window:allow-start-dragging",
     "core:window:allow-set-title",
-    "dialog:default"
+    "dialog:default",
+    "clipboard-manager:allow-read-text",
+    "clipboard-manager:allow-write-text"
   ]
 }

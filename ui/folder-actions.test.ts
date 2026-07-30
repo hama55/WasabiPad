@@ -33,6 +33,7 @@ function fixture() {
     },
     onOpenInNewTab: vi.fn(),
     onOpenInNewWindow: vi.fn(),
+    onOpenViewer: vi.fn(),
     onAddFavorite: vi.fn(),
     onSetStartupPath: vi.fn(),
     onOpenPath: vi.fn(),
@@ -62,6 +63,19 @@ describe("FolderActions", () => {
 
     dropdown.querySelectorAll<HTMLElement>(".dd-item")[1].click();
     expect(ports.onOpenInNewWindow).toHaveBeenCalledWith("C:\\work\\memo.txt", goto);
+  });
+
+  it("CSVとMarkdownだけに対応するビューを表示する", () => {
+    const { actions, dropdown, ports } = fixture();
+    actions.showContextMenu(0, 0, { relPath: "table.CSV", isDir: false });
+
+    expect([...dropdown.querySelectorAll(".dd-label")].map((label) => label.textContent)).toContain("CSVビュー");
+    dropdown.querySelectorAll<HTMLElement>(".dd-item")[2].click();
+    expect(ports.onOpenViewer).toHaveBeenCalledWith("table.CSV", "csv");
+
+    actions.showContextMenu(0, 0, { relPath: "memo.txt", isDir: false });
+    expect([...dropdown.querySelectorAll(".dd-label")].map((label) => label.textContent)).not.toContain("CSVビュー");
+    expect([...dropdown.querySelectorAll(".dd-label")].map((label) => label.textContent)).not.toContain("Markdownビュー");
   });
 
   it("作成成功後の一覧更新失敗を作成失敗として表示しない", async () => {

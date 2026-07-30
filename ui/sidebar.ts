@@ -73,6 +73,8 @@ export class Sidebar {
       onViewChange: () => this.render(),
     });
     this.tree = document.createElement("div");
+    this.tree.tabIndex = 0;
+    this.tree.addEventListener("keydown", (event) => this.onTreeKeyDown(event));
     this.host.append(this.panel.bar, this.tree);
     this.host.addEventListener("contextmenu", (e) => {
       if (e.target !== this.host && e.target !== this.tree) return; // 個々の行上は行側のリスナーに任せる
@@ -246,13 +248,27 @@ export class Sidebar {
     this.tree.replaceChildren(this.panel.showing ? this.panel.renderTree() : this.folderTree());
   }
 
+  private onTreeKeyDown(event: KeyboardEvent) {
+    if (this.panel.showing || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
+    const visible = this.visible();
+    if (!visible.length) return;
+    event.preventDefault();
+    const current = this.sel === null ? -1 : visible.findIndex((index) => this.rows[index].relPath === this.sel);
+    const next = event.key === "ArrowUp"
+      ? visible[Math.max(0, current < 0 ? visible.length - 1 : current - 1)]
+      : visible[Math.min(visible.length - 1, current + 1)];
+    this.sel = this.rows[next].relPath;
+    this.render();
+    this.tree.querySelector<HTMLElement>(".fv-row.sel")?.scrollIntoView?.({ block: "nearest" });
+  }
+
   // ---- フォルダ/アーカイブのツリー ----
   private folderTree(): DocumentFragment {
     const frag = document.createDocumentFragment();
     for (const i of this.visible()) {
       const r = this.rows[i];
       const div = document.createElement("div");
-      div.className = "fv-row" + (r.kind !== "dir" && r.relPath === this.sel ? " sel" : "");
+      div.className = "fv-row" + (r.relPath === this.sel ? " sel" : "");
       div.style.paddingLeft = `${r.depth * 14 + 4}px`;
 
       const arrow = document.createElement("span");
@@ -276,7 +292,10 @@ export class Sidebar {
           this.onSelect(r.relPath, false);
         }
       };
-      div.addEventListener("click", (e) => activate(e.ctrlKey));
+      div.addEventListener("click", (e) => {
+        this.tree.focus();
+        activate(e.ctrlKey);
+      });
       div.addEventListener("auxclick", (e) => {
         if (e.button === 1) activate(true);
       });

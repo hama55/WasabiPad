@@ -550,6 +550,7 @@ fn update_viewer(
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(Mutex::new(DocState(Doc::empty())))
         .manage(ViewerStore(Mutex::new(HashMap::new())))
