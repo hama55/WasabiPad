@@ -2,20 +2,12 @@ import type { ReadEncoding } from "./api";
 import type { DocumentSession } from "./session";
 import { readEncodingOf } from "./session";
 import { formatByteSize, formatCursor, formatFontFamily, formatLineCount } from "./format";
+import { promptFontFamily, promptFontSize } from "./font-controls";
 import { confirmMessage, promptFields } from "./prompt";
 
 const THEMES = ["dark", "light"] as const;
 type Theme = (typeof THEMES)[number];
 const THEME_LABELS: Record<Theme, string> = { dark: "ダーク", light: "ライト" };
-
-const FONT_FAMILIES = [
-  "Consolas, \"MS Gothic\", monospace",
-  "Cascadia Mono, \"MS Gothic\", monospace",
-  "\"MS Gothic\", monospace",
-  "\"Yu Gothic UI\", sans-serif",
-  "Meiryo, sans-serif",
-  "\"BIZ UDPGothic\", sans-serif",
-];
 
 export interface StatusBarPorts {
   onGoTo: (line: number) => void;
@@ -136,27 +128,13 @@ export class StatusBar {
   }
 
   private async promptFont() {
-    const options = FONT_FAMILIES.map((value) => ({
-      label: value.replace(/,.*$/, "").replaceAll('"', ""),
-      value,
-    }));
-    if (!options.some((option) => option.value === this.fontFamily)) {
-      options.unshift({ label: formatFontFamily(this.fontFamily), value: this.fontFamily });
-    }
-    const result = await promptFields("フォント", [
-      { label: "フォント", value: this.fontFamily, options },
-    ]);
-    const family = result?.[0].trim();
+    const family = await promptFontFamily(this.fontFamily);
     if (family) this.ports.onFont(family, this.fontSize);
   }
 
   private async promptFontSize() {
-    const result = await promptFields("フォントサイズ", [
-      { label: "サイズ (8〜72px)", value: String(this.fontSize) },
-    ]);
-    const size = Number(result?.[0]);
-    if (!Number.isInteger(size) || size < 8 || size > 72) return;
-    this.ports.onFont(this.fontFamily, size);
+    const size = await promptFontSize(this.fontSize);
+    if (size !== null) this.ports.onFont(this.fontFamily, size);
   }
 
   private async promptGoTo() {

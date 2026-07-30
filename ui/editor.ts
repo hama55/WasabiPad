@@ -2,6 +2,7 @@ import * as api from "./api";
 import type { Pos } from "./api";
 import { readText as readClipboardText, writeText as writeClipboardText } from "@tauri-apps/plugin-clipboard-manager";
 import { FindBar } from "./findbar";
+import { clampFontSize } from "./font-controls";
 import { DEFAULT_EDITOR_CONFIG, EditorConfig } from "./editor-config";
 import { showMenu, type MenuItem } from "./menu";
 import { VIEWER_FORMAT_LABELS } from "./format";
@@ -383,7 +384,7 @@ export class VirtualEditor {
     const topLine = this.wrap || this.metrics.scaleMode ? this.topLineF : this.pxToLine(this.scroll.scrollTop);
     const wasAtBottom = topLine >= this.maxTopLine();
     this.fontFamily = fontFamily;
-    this.fontSize = Math.max(8, Math.min(72, fontSize));
+    this.fontSize = clampFontSize(fontSize);
     this.metrics.lineHeight = this.fontSize + this.lineHeightExtra;
     this.scroll.parentElement!.style.setProperty("--ve-font-family", this.fontFamily);
     this.scroll.parentElement!.style.setProperty("--ve-font", `${this.fontSize}px`);

@@ -8,7 +8,7 @@ import { takeViewerPayload, type ViewerFormat, type ViewerPayload, type ViewerSe
 import { VIEWER_FORMAT_LABELS, formatFontFamily, formatTitleBar } from "./format";
 import { basename } from "./path";
 import { getSetting, initSettings, setSetting } from "./settings";
-import { promptFields } from "./prompt";
+import { clampFontSize, promptFontFamily, promptFontSize as promptFontSizeDialog } from "./font-controls";
 import {
   chartColumnLabel,
   chartPointRadius,
@@ -26,15 +26,6 @@ const MAX_TABLE_ROWS = 10_000;
 const MAX_TABLE_COLUMNS = 200;
 const VIEWER_THEME_KEY = "viewerTheme";
 const CHART_COLORS = ["#4fc3f7", "#ffb74d", "#81c784", "#e57373", "#ba68c8", "#fff176", "#4dd0e1", "#f06292"];
-
-const FONT_FAMILIES = [
-  "Consolas, \"MS Gothic\", monospace",
-  "Cascadia Mono, \"MS Gothic\", monospace",
-  "\"MS Gothic\", monospace",
-  "\"Yu Gothic UI\", sans-serif",
-  "Meiryo, sans-serif",
-  "\"BIZ UDPGothic\", sans-serif",
-];
 
 await initSettings();
 
@@ -62,31 +53,33 @@ let chartColumns: { x: number; y: number[]; reverseX: boolean; type: ChartTypeId
 let fontFamily = getSetting("fontFamily");
 let fontSize = getSetting("fontSize");
 
-function applyFont(family: string, size: number) {
+function applyFont(family: string, size: number, persist = true) {
   fontFamily = family;
   fontSize = size;
   document.documentElement.style.setProperty("--font-mono", family);
   document.documentElement.style.setProperty("--viewer-font-size", `${size}px`);
   fontButton.textContent = formatFontFamily(family);
   fontSizeButton.textContent = `${size}px`;
-  setSetting("fontFamily", family);
-  setSetting("fontSize", size);
+  if (persist) {
+    setSetting("fontFamily", family);
+    setSetting("fontSize", size);
+  }
 }
 
 async function promptFont() {
-  const options = FONT_FAMILIES.map((value) => ({ label: formatFontFamily(value), value }));
-  if (!options.some((option) => option.value === fontFamily)) {
-    options.unshift({ label: formatFontFamily(fontFamily), value: fontFamily });
-  }
-  const result = await promptFields("フォント", [{ label: "フォント", value: fontFamily, options }]);
-  const family = result?.[0].trim();
+  const family = await promptFontFamily(fontFamily);
   if (family) applyFont(family, fontSize);
 }
 
 async function promptFontSize() {
-  const result = await promptFields("フォントサイズ", [{ label: "サイズ (8〜72px)", value: String(fontSize) }]);
-  const size = Number(result?.[0]);
-  if (Number.isInteger(size) && size >= 8 && size <= 72) applyFont(fontFamily, size);
+  const size = await promptFontSizeDialog(fontSize);
+  if (size !== null) applyFont(fontFamily, size);
+}
+
+function onViewerWheel(event: WheelEvent) {
+  if (!event.ctrlKey) return;
+  event.preventDefault();
+  if (event.deltaY) applyFont(fontFamily, clampFontSize(fontSize + (event.deltaY < 0 ? 1 : -1)));
 }
 
 function applyTheme(theme = localStorage.getItem(VIEWER_THEME_KEY)) {
@@ -117,6 +110,7 @@ function bindWindowControls() {
   });
   fontButton.addEventListener("click", () => void promptFont());
   fontSizeButton.addEventListener("click", () => void promptFontSize());
+  content.addEventListener("wheel", onViewerWheel, { passive: false });
   void win.onResized(() => { void syncMaxIcon(); });
   void syncMaxIcon();
 }
@@ -449,7 +443,7 @@ async function start() {
   try {
     applyTheme();
 bindWindowControls();
-applyFont(fontFamily, fontSize);
+applyFont(fontFamily, fontSize, false);
     themeButton.addEventListener("click", () => {
       applyTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light");
     });
