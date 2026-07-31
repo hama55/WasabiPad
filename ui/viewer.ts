@@ -21,10 +21,10 @@ import {
 } from "./chart-data";
 import { csvColumnAt, decodeDelimiter, isSingleCsvCellSelection } from "./csv-viewer";
 import { resolveAssetPath } from "./viewer-assets";
+import { normalizeTheme, THEME_STORAGE_KEY } from "./theme";
 
 const MAX_TABLE_ROWS = 10_000;
 const MAX_TABLE_COLUMNS = 200;
-const VIEWER_THEME_KEY = "viewerTheme";
 const CHART_COLORS = ["#4fc3f7", "#ffb74d", "#81c784", "#e57373", "#ba68c8", "#fff176", "#4dd0e1", "#f06292"];
 
 await initSettings();
@@ -82,11 +82,11 @@ function onViewerWheel(event: WheelEvent) {
   if (event.deltaY) applyFont(fontFamily, clampFontSize(fontSize + (event.deltaY < 0 ? 1 : -1)));
 }
 
-function applyTheme(theme = localStorage.getItem(VIEWER_THEME_KEY)) {
-  const value = theme === "light" ? "light" : "dark";
+function applyTheme(theme = localStorage.getItem(THEME_STORAGE_KEY)) {
+  const value = normalizeTheme(theme);
   document.documentElement.dataset.theme = value;
   themeButton.textContent = value === "dark" ? "ダーク" : "ライト";
-  localStorage.setItem(VIEWER_THEME_KEY, value);
+  localStorage.setItem(THEME_STORAGE_KEY, value);
   if (chartColumns) renderChart();
 }
 
@@ -474,7 +474,7 @@ applyFont(fontFamily, fontSize, false);
 }
 
 window.addEventListener("storage", (event) => {
-  if (event.key === VIEWER_THEME_KEY) applyTheme(event.newValue);
+  if (event.key === THEME_STORAGE_KEY) applyTheme(event.newValue);
 });
 
 void start();

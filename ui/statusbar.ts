@@ -2,11 +2,10 @@ import type { ReadEncoding } from "./api";
 import type { DocumentSession } from "./session";
 import { readEncodingOf } from "./session";
 import { formatByteSize, formatCursor, formatFontFamily, formatLineCount } from "./format";
-import { promptFontFamily, promptFontSize } from "./font-controls";
+import { DEFAULT_INDENT_SIZE, INDENT_SIZES, promptFontFamily, promptFontSize } from "./font-controls";
 import { confirmMessage, promptFields } from "./prompt";
+import { normalizeTheme, THEME_STORAGE_KEY, THEMES, type Theme } from "./theme";
 
-const THEMES = ["dark", "light"] as const;
-type Theme = (typeof THEMES)[number];
 const THEME_LABELS: Record<Theme, string> = { dark: "ダーク", light: "ライト" };
 
 export interface StatusBarPorts {
@@ -63,18 +62,18 @@ export class StatusBar {
 
   // 保存済みの配色を復元する。未保存/未知の値はダーク扱い。
   restoreTheme(saved: string | null) {
-    this.applyTheme((THEMES as readonly string[]).includes(saved ?? "") ? (saved as Theme) : "dark");
+    this.applyTheme(normalizeTheme(saved));
   }
 
   private applyTheme(theme: Theme) {
     document.documentElement.setAttribute("data-theme", theme);
     this.pick("st-theme").textContent = THEME_LABELS[theme];
-    localStorage.setItem("theme", theme);
+    localStorage.setItem(THEME_STORAGE_KEY, theme);
   }
 
   // 選択肢に無いインデント幅は既定の8へ丸め、丸めた結果を返す
   setIndent(size: number): number {
-    this.indentSelect.value = String([2, 4, 8].includes(size) ? size : 8);
+    this.indentSelect.value = String(INDENT_SIZES.includes(size as typeof INDENT_SIZES[number]) ? size : DEFAULT_INDENT_SIZE);
     return Number(this.indentSelect.value);
   }
 

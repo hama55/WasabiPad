@@ -7,6 +7,7 @@ import { promptFields } from "./prompt";
 import { showError } from "./dialogs";
 import { basename, joinWindowsRoot, rebaseWindowsPath, relativePathFromRoot } from "./path";
 import { getSetting } from "./settings";
+import { VIEWER_FORMAT_LABELS } from "./format";
 
 export interface FolderActionsPorts {
   sidebar: Pick<Sidebar, "setEntries" | "selectByRelPath" | "refreshFolderEntries">;
@@ -55,7 +56,7 @@ export class FolderActions {
         const viewerFormat = viewerFormatFor(target.relPath);
         if (viewerFormat) {
           items.push({
-            label: viewerFormat === "csv" ? "CSVビュー" : "Markdownビュー",
+            label: VIEWER_FORMAT_LABELS[viewerFormat],
             action: () => this.ports.onOpenViewer(target.relPath, viewerFormat),
           });
         }

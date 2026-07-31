@@ -36,10 +36,6 @@ export interface WorkspaceSearchPorts {
 const MAX_RENDERED_ROWS = 3000;
 // これを超える結果は畳んで出す (件数が多いときにファイル一覧を先に見せるため)
 const AUTO_COLLAPSE_MATCHES = 500;
-// 検索中の再描画の間引き。backend の送出間隔 (PROGRESS_INTERVAL) と同じ刻みで、
-// これより細かく描いても届く中身が増えないため意味がない
-const PARTIAL_RENDER_MS = 100;
-
 type ToggleKey = BoolOptionKey;
 type SearchState = WorkspaceSearchOutcome | "searching" | "stopped" | null;
 type SearchViewState = {
@@ -73,7 +69,6 @@ export class WorkspaceSearchPanel {
   private options: WorkspaceSearchOptions;
   private folderRoot: string | null = null;
   private states = new Map<string, SearchViewState>();
-  private partialTimer: number | undefined;
   private searchGen = 0;
   private searchTimer: number | undefined;
   private running: Promise<WorkspaceSearchOutcome> | null = null; // 走行中の検索
@@ -253,12 +248,8 @@ export class WorkspaceSearchPanel {
     if (searchId !== this.searchGen || this.folderRoot === null || this.state.outcome !== "searching") return;
     this.state.partial.push(...results);
     this.autoCollapse(this.state.partial);
-    // 描画は間引く。届くたびに数千行を組み直すと走査より描画が重くなる
-    if (this.partialTimer !== undefined) return;
-    this.partialTimer = window.setTimeout(() => {
-      this.partialTimer = undefined;
-      if (this.folderRoot !== null && this.state.outcome === "searching") this.ports.onViewChange();
-    }, PARTIAL_RENDER_MS);
+    // backend が送出間隔を制限するため、ここで同じ待機を重ねない。
+    this.ports.onViewChange();
   }
 
   // 件数が多いときはファイル一覧を先に見せる (中身は必要な分だけ開く)。
@@ -272,8 +263,6 @@ export class WorkspaceSearchPanel {
   private setOutcome(outcome: SearchState) {
     this.state.outcome = outcome;
     this.searchStop.hidden = outcome !== "searching";
-    window.clearTimeout(this.partialTimer);
-    this.partialTimer = undefined;
     if (outcome !== "stopped") this.state.partial = [];
     if (outcome === null) this.summary.hidden = true;
     if (outcome === "searching") this.state.collapseTouched = false; // 新しい検索の始まり

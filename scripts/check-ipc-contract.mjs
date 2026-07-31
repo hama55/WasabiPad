@@ -7,7 +7,6 @@ const backend = read("src-tauri/src/main.rs");
 const coreDoc = read("core/src/doc.rs");
 const fileio = read("core/src/fileio.rs");
 const frontend = read("ui/api.ts");
-const searchPanelTs = read("ui/workspace-search-panel.ts");
 const folder = read("core/src/folder.rs");
 const workspaceSearch = read("core/src/workspace_search.rs");
 const generatedSearchOptions = read("ui/generated/WorkspaceSearchOptions.ts");
@@ -114,17 +113,10 @@ function optionValues(id) {
 assertSameSet("read encoding options", tsUnion("ReadEncoding"), optionValues("st-source-enc"));
 // 保存側の選択肢は ui/save-format.ts が Record<Encoding|Eol, string> で持つため tsc が検証する
 
-// 検索の途中経過は「送る側 (core) と描く側 (ui)」で刻みと上限が噛み合う必要がある。
-// 送出が細かすぎれば IPC だけが増え、上限が描画上限を超えれば出せない分を送ることになる。
-const progressInterval = Number(
-  workspaceSearch.match(/PROGRESS_INTERVAL[^;]*from_millis\((\d+)\)/)?.[1]
-);
-const partialRenderMs = Number(searchPanelTs.match(/PARTIAL_RENDER_MS = (\d+);/)?.[1]);
-if (!progressInterval || progressInterval !== partialRenderMs) {
-  fail(`search progress interval; core=${progressInterval}, ui=${partialRenderMs}`);
-}
+// 検索途中経過の送出頻度は backend が単独で管理する。UI は届いた batch を描く。
+// 送出上限だけは DOM 上限を超えないことを検証する。
 const progressMax = Number(workspaceSearch.match(/PROGRESS_MAX: usize = ([\d_]+);/)?.[1]?.replace(/_/g, ""));
-const maxRenderedRows = Number(searchPanelTs.match(/MAX_RENDERED_ROWS = ([\d_]+);/)?.[1]?.replace(/_/g, ""));
+const maxRenderedRows = Number(read("ui/workspace-search-panel.ts").match(/MAX_RENDERED_ROWS = ([\d_]+);/)?.[1]?.replace(/_/g, ""));
 if (!progressMax || !maxRenderedRows || progressMax > maxRenderedRows) {
   fail(`search progress cap exceeds rendered rows; core=${progressMax}, ui=${maxRenderedRows}`);
 }

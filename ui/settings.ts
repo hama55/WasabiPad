@@ -7,6 +7,7 @@ import { clampSearchOptions, DEFAULT_SEARCH_OPTIONS } from "./workspace-search-o
 import type { StoredTabs } from "./tabs";
 import { isEditorViewState } from "./editor-view-state";
 import { DEFAULT_EDITOR_CONFIG } from "./editor-config";
+import { DEFAULT_INDENT_SIZE, INDENT_SIZES, isValidFontSize } from "./font-controls";
 
 export interface Settings {
   indentSize: number;
@@ -20,7 +21,7 @@ export interface Settings {
 }
 
 const DEFAULTS: Settings = {
-  indentSize: 8,
+  indentSize: DEFAULT_INDENT_SIZE,
   fontFamily: DEFAULT_EDITOR_CONFIG.fontFamily,
   fontSize: DEFAULT_EDITOR_CONFIG.fontSize,
   startupPath: null,
@@ -43,11 +44,13 @@ export function parseSettings(text: string): Settings {
   }
   if (typeof value !== "object" || value === null) return { ...DEFAULTS };
   return {
-    indentSize: typeof value.indentSize === "number" ? value.indentSize : DEFAULTS.indentSize,
+    indentSize: typeof value.indentSize === "number" && INDENT_SIZES.includes(value.indentSize as typeof INDENT_SIZES[number])
+      ? value.indentSize
+      : DEFAULTS.indentSize,
     fontFamily: typeof value.fontFamily === "string" && value.fontFamily.length > 0
       ? value.fontFamily
       : DEFAULTS.fontFamily,
-    fontSize: typeof value.fontSize === "number" && value.fontSize >= 8 && value.fontSize <= 72
+    fontSize: isValidFontSize(value.fontSize)
       ? value.fontSize
       : DEFAULTS.fontSize,
     startupPath: typeof value.startupPath === "string" ? value.startupPath : null,

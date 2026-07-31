@@ -26,6 +26,7 @@ import {
   saveSearchOptions,
   setSetting,
 } from "./settings";
+import { THEME_STORAGE_KEY } from "./theme";
 
 const win = getCurrentWindow();
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -111,7 +112,10 @@ const statusbar = new StatusBar($("statusbar"), {
     return doc.reloadWithEncoding(encoding);
   },
 });
-statusbar.restoreTheme(localStorage.getItem("theme"));
+statusbar.restoreTheme(localStorage.getItem(THEME_STORAGE_KEY));
+window.addEventListener("storage", (event) => {
+  if (event.key === THEME_STORAGE_KEY) statusbar.restoreTheme(event.newValue);
+});
 
 const addressbar = new AddressBar($("topbar"), {
   onOpen: (path) => void doc.openPath(path),

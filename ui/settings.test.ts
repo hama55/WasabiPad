@@ -29,12 +29,17 @@ describe("settings", () => {
     expect(settings.registeredStrings).toEqual(["ok"]);
   });
 
+  it("インデント幅はUIと同じ候補だけ復元する", () => {
+    expect(parseSettings(JSON.stringify({ indentSize: 4 })).indentSize).toBe(4);
+    expect(parseSettings(JSON.stringify({ indentSize: 3 })).indentSize).toBe(8);
+  });
+
   it("フォント設定を復元し、不正な値は既定値へ戻す", () => {
     const saved = parseSettings(JSON.stringify({ fontFamily: "Meiryo, sans-serif", fontSize: 16 }));
     expect(saved.fontFamily).toBe("Meiryo, sans-serif");
     expect(saved.fontSize).toBe(16);
 
-    const invalid = parseSettings(JSON.stringify({ fontFamily: "", fontSize: 100 }));
+    const invalid = parseSettings(JSON.stringify({ fontFamily: "", fontSize: 12.5 }));
     expect(invalid.fontFamily).toBe('Consolas, "MS Gothic", monospace');
     expect(invalid.fontSize).toBe(14);
   });

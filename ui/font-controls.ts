@@ -3,6 +3,12 @@ import { promptFields } from "./prompt";
 
 export const MIN_FONT_SIZE = 8;
 export const MAX_FONT_SIZE = 72;
+export const INDENT_SIZES = [2, 4, 8] as const;
+export const DEFAULT_INDENT_SIZE = 8;
+
+export function isValidFontSize(size: unknown): size is number {
+  return typeof size === "number" && Number.isInteger(size) && size >= MIN_FONT_SIZE && size <= MAX_FONT_SIZE;
+}
 
 export const FONT_FAMILIES = [
   "Consolas, \"MS Gothic\", monospace",
@@ -27,7 +33,7 @@ export async function promptFontSize(current: number): Promise<number | null> {
     { label: `サイズ (${MIN_FONT_SIZE}〜${MAX_FONT_SIZE}px)`, value: String(current) },
   ]);
   const size = Number(result?.[0]);
-  return Number.isInteger(size) && size >= MIN_FONT_SIZE && size <= MAX_FONT_SIZE ? size : null;
+  return isValidFontSize(size) ? size : null;
 }
 
 export function clampFontSize(size: number): number {
