@@ -23,7 +23,7 @@ export interface TabDocumentPort {
   readonly current: DocumentSession;
   confirmDiscard: (onProceed?: () => void | Promise<void>) => Promise<boolean>;
   openPath: (path: string, confirm?: boolean) => Promise<boolean>;
-  selectEntry: (relPath: string) => Promise<void>;
+  selectEntry: (relPath: string) => Promise<boolean | void>;
   newFile: (confirm?: boolean) => Promise<void>;
   goTo: (position: Pos) => void;
   captureViewState: () => EditorViewState;
@@ -247,9 +247,13 @@ export class TabManager {
         tab.label = "無題";
         await this.doc.newFile(false);
       } else if (tab.selectedRelPath) {
+        let selectionFailed = false;
         try {
-          await this.doc.selectEntry(tab.selectedRelPath);
+          selectionFailed = (await this.doc.selectEntry(tab.selectedRelPath)) === false;
         } catch {
+          selectionFailed = true;
+        }
+        if (selectionFailed) {
           // 前回選択した項目が削除済みでも、親フォルダ自体は開ける。
           delete tab.selectedRelPath;
           delete tab.viewState;

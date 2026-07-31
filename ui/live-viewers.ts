@@ -21,20 +21,23 @@ export interface LiveViewerPorts {
 export class LiveViewers {
   private viewers = new Map<string, { range: TrackedRange | null; selection: ViewerSelection | null }>();
   private timer: number | undefined;
+  private generation = 0;
 
   constructor(private ports: LiveViewerPorts) {}
 
   clear() {
+    this.generation++;
     this.viewers.clear();
     window.clearTimeout(this.timer);
   }
 
   // range=null は「全文を映す」= 以後の編集で常に最新の全文へ追随する
   async open(format: ViewerFormat, range: TrackedRange | null, selection: TrackedRange) {
+    const generation = this.generation;
     const { start, end } = range ?? (await this.ports.wholeRange());
     const viewerSelection = relativeSelection(range, selection);
     const label = await this.ports.openViewer(format, await this.ports.textInRange(start, end), viewerSelection);
-    if (label) this.viewers.set(label, { range, selection: viewerSelection });
+    if (label && generation === this.generation) this.viewers.set(label, { range, selection: viewerSelection });
   }
 
   // 編集を各ビューの追跡範囲へ反映する (範囲外の編集なら位置だけずれる)

@@ -140,9 +140,18 @@ export class DocumentController {
     }
   }
 
-  async selectEntry(relPath: string) {
-    this.session.selectedRelPath = relPath;
-    this.applyDocInfo(await api.selectEntry(relPath));
+  async selectEntry(relPath: string): Promise<boolean> {
+    this.view.setLoading(true);
+    try {
+      this.applyDocInfo(await api.selectEntry(relPath));
+      this.session.selectedRelPath = relPath;
+      return true;
+    } catch (error) {
+      await showError("開けませんでした", error);
+      return false;
+    } finally {
+      this.view.setLoading(false);
+    }
   }
 
   async newFile(confirm = true) {

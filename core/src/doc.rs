@@ -26,14 +26,6 @@ pub struct Doc {
     byte_len: u64, // ステータスバー表示用。開いた実体のバイト数
 }
 
-struct RecoveryTemp(PathBuf);
-
-impl Drop for RecoveryTemp {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
-}
-
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug, ts_rs::TS)]
 #[serde(rename_all = "lowercase")]
 #[ts(export)]
@@ -46,12 +38,11 @@ pub enum DocKind {
 // 以前は Folder 変種が File/Archive の中身を丸ごと再掲していたため、
 // 全アクセサが同じ形を2回ずつ match する必要があった。
 enum Target {
-    None { recovery_temp: Option<RecoveryTemp> },
+    None,
     File {
         path: PathBuf,
         source_file: Option<File>,
         stamp: Option<FileStamp>, // ハンドル非保持 (=外部編集可) の場合の変更検知用
-        recovery_temp: Option<RecoveryTemp>,
     },
     Archive {
         path: PathBuf,
@@ -68,13 +59,13 @@ struct DocumentSource {
 
 impl DocumentSource {
     fn untitled() -> Self {
-        Self { root: None, target: Target::None { recovery_temp: None } }
+        Self { root: None, target: Target::None }
     }
 
     fn file(path: PathBuf, source_file: Option<File>, stamp: Option<FileStamp>) -> Self {
         Self {
             root: None,
-            target: Target::File { path, source_file, stamp, recovery_temp: None },
+            target: Target::File { path, source_file, stamp },
         }
     }
 
@@ -113,24 +104,7 @@ impl DocumentSource {
     fn display_path(&self) -> Option<&Path> {
         match &self.target {
             Target::File { path, .. } | Target::Archive { path, .. } => Some(path),
-            Target::None { .. } => None,
-        }
-    }
-
-    fn recovery_slot(&mut self) -> Option<&mut Option<RecoveryTemp>> {
-        match &mut self.target {
-            Target::None { recovery_temp } | Target::File { recovery_temp, .. } => Some(recovery_temp),
-            Target::Archive { .. } => None,
-        }
-    }
-
-    fn take_recovery(&mut self) -> Option<RecoveryTemp> {
-        self.recovery_slot().and_then(Option::take)
-    }
-
-    fn set_recovery(&mut self, recovery: RecoveryTemp) {
-        if let Some(slot) = self.recovery_slot() {
-            *slot = Some(recovery);
+            Target::None => None,
         }
     }
 
@@ -140,8 +114,11 @@ impl DocumentSource {
         }
     }
 
-    fn holds_handle(&self) -> bool {
-        matches!(self.target, Target::File { source_file: Some(_), .. })
+    fn take_source_file(&mut self) -> Option<File> {
+        match &mut self.target {
+            Target::File { source_file, .. } => source_file.take(),
+            _ => None,
+        }
     }
 
     fn stamp(&self) -> Option<FileStamp> {
@@ -893,7 +870,7 @@ impl Doc {
                 if fileio::stamp(path).ok() != Some(stored) {
                     let conflict = fileio::conflict_path(path);
                     let transaction = fileio::begin_save(&conflict, &self.buf, enc, eol)?;
-                    transaction.commit(&conflict).map_err(|f| f.into_parts().0)?;
+                    transaction.commit(&conflict).map_err(fileio::SaveCommitError::into_error)?;
                     return Ok(SaveOutcome::Conflict {
                         saved_to: conflict.to_string_lossy().into_owned(),
                     });
@@ -902,27 +879,27 @@ impl Doc {
         }
         let transaction = fileio::begin_save(path, &self.buf, enc, eol)?;
         let workspace_root = self.source.folder_root().map(Path::to_path_buf);
-        let old_recovery = self.source.take_recovery();
-        let held_handle = same_target && self.source.holds_handle();
-        self.buf = TextBuffer::new();
-        if same_target {
-            self.source.set_source_file(None);
-        }
+        // 差し替え中だけ旧mmap/ハンドルを解放する。失敗時は編集中の内容と監視状態を戻す。
+        let old_buf = std::mem::replace(&mut self.buf, TextBuffer::new());
+        let old_source_file = if same_target { self.source.take_source_file() } else { None };
         if let Err(failure) = transaction.commit(path) {
-            let (rename_error, tmp) = failure.into_parts();
-            // 差し替えに失敗しても、書き出し済みtempから編集中内容を復元する。
-            let recovered = fileio::open_buffer(&tmp)?;
-            self.buf = recovered.buf;
-            if held_handle {
-                self.source.set_source_file(fileio::open_exclusive(path).ok());
+            self.buf = old_buf;
+            if same_target {
+                self.source.set_source_file(old_source_file);
             }
-            drop(old_recovery);
-            self.source.set_recovery(RecoveryTemp(tmp));
-            return Err(rename_error);
+            return Err(failure.into_error());
         }
-        let o = fileio::open_buffer(path)?;
+        let o = match fileio::open_buffer(path) {
+            Ok(opened) => opened,
+            Err(error) => {
+                self.buf = old_buf;
+                if same_target {
+                    self.source.set_source_file(old_source_file);
+                }
+                return Err(error);
+            }
+        };
         self.buf = o.buf;
-        drop(old_recovery);
         self.enc = enc;
         self.eol = eol;
         self.source = DocumentSource {

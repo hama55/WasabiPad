@@ -37,7 +37,7 @@ export interface ContextTarget {
 // 検索の依頼 (onSearch / onCancel / onOpen / onOptionsChange) は
 // WorkspaceSearchPanel のもので、ここはそのまま素通しする。
 export interface SidebarPorts extends Omit<WorkspaceSearchPorts, "onViewChange" | "onContextMenu"> {
-  onSelect: (relPath: string, newTab: boolean) => void;
+  onSelect: (relPath: string, newTab: boolean) => void | Promise<boolean | void>;
   onContextMenu: (x: number, y: number, target: ContextTarget | null) => void;
   onExpandArchive: (relPath: string) => Promise<string[]>;
   onExpandFolder: (relDir: string) => Promise<FolderEntry[]>;
@@ -50,7 +50,7 @@ export class Sidebar {
   private panel: WorkspaceSearchPanel;
   private rows: Row[] = [];
   private sel: string | null = null; // 選択中の relPath
-  private onSelect: (relPath: string, newTab: boolean) => void;
+  private onSelect: (relPath: string, newTab: boolean) => void | Promise<boolean | void>;
   private onContextMenu: (x: number, y: number, target: ContextTarget | null) => void;
   private onExpandArchive: (relPath: string) => Promise<string[]>;
   private onExpandFolder: (relDir: string) => Promise<FolderEntry[]>;
@@ -279,7 +279,7 @@ export class Sidebar {
 
       const activate = (newTab: boolean) => {
         if (newTab && r.kind !== "archiveEntry") {
-          this.onSelect(r.relPath, true);
+          void Promise.resolve(this.onSelect(r.relPath, true)).catch((error) => this.reportTreeError(error));
           return;
         }
         if (r.kind === "dir") {
@@ -287,9 +287,17 @@ export class Sidebar {
         } else if (r.kind === "archive") {
           void this.expandArchiveRow(r).catch((error) => this.reportTreeError(error));
         } else {
+          const previous = this.sel;
           this.sel = r.relPath;
           this.render();
-          this.onSelect(r.relPath, false);
+          void Promise.resolve(this.onSelect(r.relPath, false))
+            .then((opened) => {
+              if (opened === false) {
+                this.sel = previous;
+                this.render();
+              }
+            })
+            .catch((error) => this.reportTreeError(error));
         }
       };
       div.addEventListener("click", (e) => {

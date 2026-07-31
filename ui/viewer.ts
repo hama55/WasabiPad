@@ -22,6 +22,7 @@ import {
 import { csvColumnAt, decodeDelimiter, isSingleCsvCellSelection } from "./csv-viewer";
 import { resolveAssetPath } from "./viewer-assets";
 import { normalizeTheme, THEME_STORAGE_KEY } from "./theme";
+import { showError } from "./dialogs";
 
 const MAX_TABLE_ROWS = 10_000;
 const MAX_TABLE_COLUMNS = 200;
@@ -97,22 +98,34 @@ async function syncMaxIcon() {
   button.title = maximized ? "元に戻す" : "最大化";
 }
 
+function reportWindowError(title: string, error: unknown) {
+  void showError(title, error).catch((reportError) => {
+    console.error(`${title}のエラーを表示できませんでした`, reportError);
+  });
+}
+
+function runWindowAction(title: string, operation: () => Promise<void>) {
+  void operation().catch((error) => reportWindowError(title, error));
+}
+
 function bindWindowControls() {
-  document.getElementById("win-min")!.addEventListener("click", () => { void win.minimize(); });
-  document.getElementById("win-max")!.addEventListener("click", async () => {
+  document.getElementById("win-min")!.addEventListener("click", () => runWindowAction("ウィンドウを最小化できませんでした", () => win.minimize()));
+  document.getElementById("win-max")!.addEventListener("click", () => runWindowAction("ウィンドウを最大化できませんでした", async () => {
     await win.toggleMaximize();
     await syncMaxIcon();
-  });
-  document.getElementById("win-close")!.addEventListener("click", () => { void win.close(); });
-  title.addEventListener("dblclick", async () => {
+  }));
+  document.getElementById("win-close")!.addEventListener("click", () => runWindowAction("ウィンドウを閉じられませんでした", () => win.close()));
+  title.addEventListener("dblclick", () => runWindowAction("ウィンドウを最大化できませんでした", async () => {
     await win.toggleMaximize();
     await syncMaxIcon();
-  });
+  }));
   fontButton.addEventListener("click", () => void promptFont());
   fontSizeButton.addEventListener("click", () => void promptFontSize());
   content.addEventListener("wheel", onViewerWheel, { passive: false });
-  void win.onResized(() => { void syncMaxIcon(); });
-  void syncMaxIcon();
+  void win.onResized(() => {
+    void syncMaxIcon().catch((error) => reportWindowError("最大化状態を取得できませんでした", error));
+  }).catch((error) => reportWindowError("ウィンドウサイズ監視を開始できませんでした", error));
+  void syncMaxIcon().catch((error) => reportWindowError("最大化状態を取得できませんでした", error));
 }
 
 function renderTable(text: string) {

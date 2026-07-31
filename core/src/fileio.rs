@@ -388,9 +388,11 @@ impl Drop for SaveTransaction {
 }
 
 impl SaveCommitError {
-    pub fn into_parts(mut self) -> (io::Error, PathBuf) {
-        (self.error.take().unwrap(), self.temp.take().unwrap())
+    // temp はこの値の Drop に任せる。呼び出し側がエラーだけ必要な場合に残骸を出さない。
+    pub fn into_error(mut self) -> io::Error {
+        self.error.take().unwrap()
     }
+
 }
 
 impl Drop for SaveCommitError {
@@ -587,6 +589,19 @@ mod tests {
         let temp = transaction.path().to_path_buf();
         assert!(temp.exists());
         drop(transaction);
+        assert!(!temp.exists());
+    }
+
+    #[test]
+    fn save_commit_error_removes_temp_file_when_only_error_is_needed() {
+        let temp = unique_temp_path("failed_save");
+        std::fs::write(&temp, "draft").unwrap();
+        let failure = SaveCommitError {
+            error: Some(io::Error::other("rename failed")),
+            temp: Some(temp.clone()),
+        };
+
+        assert_eq!(failure.into_error().kind(), io::ErrorKind::Other);
         assert!(!temp.exists());
     }
 

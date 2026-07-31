@@ -55,4 +55,28 @@ describe("LiveViewers", () => {
     expect(updateViewer).toHaveBeenCalledTimes(3);
     vi.useRealTimers();
   });
+
+  it("文書切替中に開いた旧ビューを再登録しない", async () => {
+    vi.useFakeTimers();
+    let resolveOpen!: (label: string) => void;
+    const openViewer = vi.fn(() => new Promise<string>((resolve) => { resolveOpen = resolve; }));
+    const updateViewer = vi.fn(async () => true);
+    const viewers = new LiveViewers({
+      openViewer,
+      updateViewer,
+      wholeRange: async () => ({ start: { line: 0, col: 0 }, end: { line: 0, col: 0 } }),
+      textInRange: async () => "text",
+    });
+
+    const opening = viewers.open("csv", null, { start: { line: 0, col: 0 }, end: { line: 0, col: 0 } });
+    await vi.waitFor(() => expect(openViewer).toHaveBeenCalledOnce());
+    viewers.clear();
+    resolveOpen("old-viewer");
+    await opening;
+    viewers.scheduleRefresh();
+    await vi.advanceTimersByTimeAsync(120);
+
+    expect(updateViewer).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
 });

@@ -189,7 +189,7 @@ const sidebar = new Sidebar(sidebarEl, {
       return;
     }
     if (!(await doc.confirmDiscard())) return;
-    await doc.selectEntry(result.rel_path);
+    if (!(await doc.selectEntry(result.rel_path))) return;
     // 当たった長さは backend が返す範囲から取る。正規表現や大小の畳み込みでは
     // 入力したパターンの長さと一致しない。
     const [, length] = result.highlights[0] ?? [0, 0];
@@ -275,9 +275,9 @@ const folderActions = new FolderActions(doc, {
   onOpenViewer: (relPath, format) => {
     void (async () => {
       if (!(await doc.confirmDiscard())) return;
-      await doc.selectEntry(relPath);
+      if (!(await doc.selectEntry(relPath))) return;
       await editor.openTextViewer(format);
-    })();
+    })().catch((error) => reportBackgroundError("ビューを開けませんでした", error));
   },
   onAddFavorite: (path) => favbar.addExternal(path),
   onSetStartupPath: (path) => setSetting("startupPath", path),

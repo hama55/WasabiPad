@@ -5,6 +5,7 @@ import { DocumentController, fileNameOf, type DocumentView } from "./document-co
 import { formatTitleBar } from "./format";
 import { confirmSaveDiscard } from "./prompt";
 import * as saveFormat from "./save-format";
+import { showError } from "./dialogs";
 
 vi.mock("./prompt", async (importOriginal) => ({
   ...await importOriginal<typeof import("./prompt")>(),
@@ -125,6 +126,17 @@ describe("DocumentController", () => {
     expect(await controller.saveAs()).toBe(false);
     expect(controller.current.encoding).toBe("sjis");
     expect(controller.current.eol).toBe("lf");
+  });
+
+  it("エントリ選択失敗時は既存の選択状態を保つ", async () => {
+    const { view, controller } = fakeView();
+    controller.current.selectedRelPath = "before.txt";
+    vi.spyOn(api, "selectEntry").mockRejectedValueOnce(new Error("missing"));
+
+    expect(await controller.selectEntry("missing.txt")).toBe(false);
+    expect(controller.current.selectedRelPath).toBe("before.txt");
+    expect(showError).toHaveBeenCalledWith("開けませんでした", expect.any(Error));
+    expect(view.setLoading).toHaveBeenLastCalledWith(false);
   });
 });
 
