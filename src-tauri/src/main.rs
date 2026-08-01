@@ -55,6 +55,9 @@ struct ViewerPayload {
     selection: Option<ViewerSelection>,
     // Markdown 内の相対パス画像は元ファイルの位置からしか解決できない (未保存なら None)
     source_path: Option<String>,
+    // アーカイブ内メモの画像は、アーカイブエントリを IPC 経由で読む。
+    archive_path: Option<String>,
+    archive_entry: Option<String>,
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
@@ -265,7 +268,7 @@ fn select_entry(rel_path: String, state: State) -> Result<DocInfo, String> {
         .ok_or_else(|| "no entry".into())
 }
 
-// ツリーの展開ボタン用。zip/xlsx/xls の中身一覧だけを安価に取得する (本文は読まない)。
+// ツリーの展開ボタン用。アーカイブの中身一覧だけを安価に取得する (本文は読まない)。
 // rel_path が空文字なら直接開いているアーカイブ自身、それ以外はフォルダ内の相対パス。
 #[tauri::command]
 fn list_archive_entries(rel_path: String, state: State) -> Result<Vec<String>, String> {
@@ -274,7 +277,7 @@ fn list_archive_entries(rel_path: String, state: State) -> Result<Vec<String>, S
         .ok_or_else(|| "no entries".into())
 }
 
-// パスワード付き 7z 用。入力されたパスワードを記憶させ、UI が失敗した操作を再試行する。
+// パスワード付き 7z/zip 用。入力されたパスワードを記憶させ、UI が失敗した操作を再試行する。
 #[tauri::command]
 fn set_archive_password(rel_path: String, password: String, state: State) -> Result<(), String> {
     with_doc(&state, |doc| doc.set_archive_password(&rel_path, &password)).map_err(|error| error.to_string())
@@ -361,7 +364,7 @@ fn save_pasted_image(bytes: Vec<u8>, mime_type: String, state: State) -> Result<
 fn cleanup_unused_images(path: String, state: State) -> Result<(), String> {
     let requested = PathBuf::from(path);
     with_doc(&state, |doc| {
-        if doc.path() != Some(requested.as_path()) {
+        if doc.display_path() != Some(requested.as_path()) {
             return Ok(());
         }
         doc.cleanup_unused_images()
@@ -590,6 +593,13 @@ fn initial_window_request() -> Result<WindowRequest, String> {
 }
 
 #[tauri::command]
+fn read_archive_asset(archive_path: String, entry: String, state: State) -> Result<Vec<u8>, String> {
+    let archive = PathBuf::from(archive_path);
+    with_doc(&state, |doc| doc.read_archive_asset(&archive, &entry))
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn take_pending_window_requests(state: tauri::State<'_, InstanceServer>) -> Vec<WindowRequest> {
     state
         .pending
@@ -636,16 +646,25 @@ async fn open_viewer(
     selection: Option<ViewerSelection>,
     source_path: Option<String>,
     app: AppHandle,
+    doc_state: State<'_>,
     state: tauri::State<'_, ViewerStore>,
 ) -> Result<String, String> {
     // 形式名入りのタイトルは payload 受信後にフロントが設定する。ここは生成時の暫定表示。
     let title = app.package_info().name.clone();
     let label = format!("viewer-{}", VIEWER_ID.fetch_add(1, Ordering::Relaxed));
+    let archive_source = with_doc(&doc_state, |doc| doc.viewer_source());
     state
         .0
         .lock()
         .map_err(|_| "ビューの準備に失敗しました".to_string())?
-        .insert(label.clone(), ViewerPayload { format, text, selection, source_path });
+        .insert(label.clone(), ViewerPayload {
+            format,
+            text,
+            selection,
+            source_path,
+            archive_path: archive_source.as_ref().map(|(path, _)| path.to_string_lossy().into_owned()),
+            archive_entry: archive_source.map(|(_, entry)| entry),
+        });
 
     let window = match WebviewWindowBuilder::new(&app, &label, WebviewUrl::App("viewer.html".into()))
         .title(title)
@@ -763,6 +782,7 @@ fn main() {
             delete_entry,
             save_pasted_image,
             cleanup_unused_images,
+            read_archive_asset,
             reveal_in_explorer,
             open_in_other_app,
             edit,

@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import Chart from "chart.js/auto";
 import MarkdownIt from "markdown-it";
 import Papa from "papaparse";
-import { takeViewerPayload, type ViewerFormat, type ViewerPayload, type ViewerSelection } from "./api";
+import { readArchiveAsset, takeViewerPayload, type ViewerFormat, type ViewerPayload, type ViewerSelection } from "./api";
 import { VIEWER_FORMAT_LABELS, formatFontFamily, formatTitleBar } from "./format";
 import { basename } from "./path";
 import { getSetting, initSettings, setSetting } from "./settings";
@@ -20,7 +20,7 @@ import {
   type ChartTypeId,
 } from "./chart-data";
 import { csvColumnAt, decodeDelimiter, isSingleCsvCellSelection } from "./csv-viewer";
-import { resolveAssetPath } from "./viewer-assets";
+import { resolveArchiveAssetEntry, resolveAssetPath } from "./viewer-assets";
 import { normalizeTheme, THEME_STORAGE_KEY } from "./theme";
 import { showError } from "./dialogs";
 import {
@@ -55,6 +55,10 @@ let currentRows: string[][] = [];
 let currentText = "";
 let currentSelection: ViewerSelection | null = null;
 let currentSourcePath: string | null = null;
+let currentArchivePath: string | null = null;
+let currentArchiveEntry: string | null = null;
+let markdownRenderGeneration = 0;
+let archiveAssetUrls: string[] = [];
 let chart: Chart<"line" | "bar", (number | null)[], string> | null = null;
 let chartColumns: { x: number; y: number[]; reverseX: boolean; type: ChartTypeId } | null = null;
 let fontFamily = getSetting("fontFamily");
@@ -135,6 +139,8 @@ function bindWindowControls() {
 }
 
 function renderTable(text: string) {
+  markdownRenderGeneration++;
+  revokeArchiveAssetUrls();
   const sourceLines = text.split(/\r?\n/);
   const parsed = Papa.parse<string[]>(text, {
     delimiter: decodeDelimiter(delimiterInput.value),
@@ -175,7 +181,58 @@ function renderTable(text: string) {
   if (chartColumns) renderChart();
 }
 
-function renderMarkdown(text: string) {
+function revokeArchiveAssetUrls() {
+  archiveAssetUrls.forEach((url) => URL.revokeObjectURL(url));
+  archiveAssetUrls = [];
+}
+
+function archiveAssetMimeType(src: string): string {
+  const extension = src.split(/[?#]/, 1)[0].split(".").pop()?.toLowerCase();
+  return ({
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    gif: "image/gif",
+    webp: "image/webp",
+    bmp: "image/bmp",
+    svg: "image/svg+xml",
+  } as Record<string, string>)[extension ?? ""] ?? "application/octet-stream";
+}
+
+async function loadArchiveImages(
+  article: HTMLElement,
+  generation: number,
+  archivePath: string | null,
+  archiveEntry: string | null,
+) {
+  const images = [...article.querySelectorAll<HTMLImageElement>("img")];
+  await Promise.all(images.map(async (image) => {
+    const src = image.getAttribute("src") ?? "";
+    const entry = resolveArchiveAssetEntry(archiveEntry, src);
+    if (archivePath && archiveEntry && entry) {
+      try {
+        const bytes = await readArchiveAsset(archivePath, entry);
+        if (generation !== markdownRenderGeneration) return;
+        const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: archiveAssetMimeType(src) }));
+        archiveAssetUrls.push(url);
+        image.src = url;
+      } catch {
+        if (generation !== markdownRenderGeneration) return;
+        image.removeAttribute("src");
+        image.alt = `${image.alt || "画像"}（読み込めません）`;
+      }
+      return;
+    }
+    const resolved = resolveAssetPath(currentSourcePath, src);
+    if (resolved) image.src = convertFileSrc(resolved);
+  }));
+}
+
+async function renderMarkdown(text: string) {
+  const generation = ++markdownRenderGeneration;
+  const archivePath = currentArchivePath;
+  const archiveEntry = currentArchiveEntry;
+  revokeArchiveAssetUrls();
   currentRows = [];
   closeChart();
   const article = document.createElement("article");
@@ -199,10 +256,6 @@ function renderMarkdown(text: string) {
     const end = Number(element.dataset.sourceEnd);
     element.classList.toggle("viewer-source-selected", markdownBlockSelected(currentSelection, start, end));
   });
-  article.querySelectorAll("img").forEach((image) => {
-    const resolved = resolveAssetPath(currentSourcePath, image.getAttribute("src") ?? "");
-    if (resolved) image.src = convertFileSrc(resolved);
-  });
   article.querySelectorAll("a").forEach((link) => {
     link.target = "_blank";
     link.rel = "noreferrer";
@@ -212,6 +265,7 @@ function renderMarkdown(text: string) {
   summary.classList.remove("warning");
   summary.title = "";
   summary.textContent = `${text.length.toLocaleString()}文字`;
+  await loadArchiveImages(article, generation, archivePath, archiveEntry);
 }
 
 function renderPayload(payload: ViewerPayload) {
@@ -219,6 +273,8 @@ function renderPayload(payload: ViewerPayload) {
   currentText = payload.text;
   currentSelection = payload.selection;
   currentSourcePath = payload.source_path;
+  currentArchivePath = payload.archive_path;
+  currentArchiveEntry = payload.archive_entry;
   const sourceName = payload.source_path ? basename(payload.source_path) : "";
   title.textContent = formatTitleBar(`${sourceName ? `${sourceName} — ` : ""}${VIEWER_FORMAT_LABELS[payload.format]}`);
   void win.setTitle(title.textContent);

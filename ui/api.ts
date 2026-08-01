@@ -102,6 +102,8 @@ export const savePastedImage = (bytes: number[], mimeType: string) =>
   invoke<string>("save_pasted_image", { bytes, mimeType });
 export const cleanupUnusedImages = (path: string) =>
   invoke<void>("cleanup_unused_images", { path });
+export const readArchiveAsset = (archivePath: string, entry: string) =>
+  invoke<number[]>("read_archive_asset", { archivePath, entry });
 
 export const revealInExplorer = (path: string, isDir: boolean) =>
   invoke<void>("reveal_in_explorer", { path, isDir });

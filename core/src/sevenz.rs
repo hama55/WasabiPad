@@ -4,7 +4,8 @@
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::OnceLock;
+use std::sync::{atomic::{AtomicUsize, Ordering}, OnceLock};
+use std::time::{Duration, SystemTime};
 
 // パスワード起因の失敗を UI 側で識別するためのマーカー (表示前に UI が拾って
 // パスワード入力ダイアログへ差し替える)。
@@ -14,6 +15,16 @@ pub fn is_7z_path(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| e.eq_ignore_ascii_case("7z"))
+}
+
+pub fn is_zip_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("zip"))
+}
+
+pub fn is_updateable_archive_path(path: &Path) -> bool {
+    is_7z_path(path) || is_zip_path(path)
 }
 
 fn find_exe() -> Option<PathBuf> {
@@ -128,6 +139,73 @@ pub fn is_header_encrypted(archive: &Path) -> bool {
     matches!(list(archive, ""), Err(e) if e.kind() == io::ErrorKind::PermissionDenied)
 }
 
+const WORKSPACE_PREFIX: &str = "WasabiPad-archive-temp-";
+const WORKSPACE_MARKER: &str = ".wasabipad-workspace";
+const STALE_WORKSPACE_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+static WORKSPACE_SEQ: AtomicUsize = AtomicUsize::new(0);
+
+// アーカイブ更新用の作業領域。ユーザーがアーカイブと同じフォルダで確認できる位置に置き、
+// Drop で必ず消す。プロセス異常終了時の残骸は、次回同じフォルダを使うときに回収する。
+pub struct ArchiveWorkspace {
+    path: PathBuf,
+}
+
+impl ArchiveWorkspace {
+    pub fn new(archive: &Path) -> io::Result<Self> {
+        let parent = archive.parent().filter(|path| !path.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+        cleanup_stale_workspaces(parent)?;
+        for _ in 0..100 {
+            let seq = WORKSPACE_SEQ.fetch_add(1, Ordering::Relaxed);
+            let path = parent.join(format!("{WORKSPACE_PREFIX}{}-{seq}", std::process::id()));
+            match std::fs::create_dir(&path) {
+                Ok(()) => {
+                    if let Err(error) = std::fs::write(path.join(WORKSPACE_MARKER), b"WasabiPad archive workspace\n") {
+                        let _ = std::fs::remove_dir_all(&path);
+                        return Err(error);
+                    }
+                    return Ok(Self { path });
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Err(io::Error::new(io::ErrorKind::AlreadyExists, "アーカイブ用の一時フォルダを作れません"))
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for ArchiveWorkspace {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+pub fn cleanup_stale_workspaces(parent: &Path) -> io::Result<()> {
+    let now = SystemTime::now();
+    let Ok(entries) = std::fs::read_dir(parent) else { return Ok(()) };
+    for entry in entries {
+        let entry = entry?;
+        let file_name = entry.file_name();
+        let name = file_name.to_string_lossy();
+        if !name.starts_with(WORKSPACE_PREFIX) || !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let marker = entry.path().join(WORKSPACE_MARKER);
+        if !marker.is_file() {
+            continue;
+        }
+        let Ok(modified) = entry.metadata().and_then(|metadata| metadata.modified()) else { continue };
+        let Ok(age) = now.duration_since(modified) else { continue };
+        if age >= STALE_WORKSPACE_AGE {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+    Ok(())
+}
+
 // 編集済みエントリ1件を書き戻す。data_root はエントリの相対パス構造を再現した
 // 一時ディレクトリ (7z u は cwd からの相対パスでエントリ名を決める)。
 // 呼び出し側は書庫の排他ハンドルを解放してから呼ぶこと (7z が書庫を差し替えるため)。
@@ -142,6 +220,22 @@ pub fn update(archive: &Path, entry: &str, data_root: &Path, password: &str, hea
         cmd.arg("-mhe=on");
     }
     cmd.arg(archive).arg(entry.replace('/', "\\")).current_dir(data_root);
+    run(cmd)?;
+    Ok(())
+}
+
+pub fn delete(archive: &Path, entries: &[String], password: &str) -> io::Result<()> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+    let mut cmd = base_command()?;
+    if !password.is_empty() {
+        cmd.arg(format!("-p{password}"));
+    }
+    cmd.arg("d").arg(archive);
+    for entry in entries {
+        cmd.arg(entry.replace('/', "\\"));
+    }
     run(cmd)?;
     Ok(())
 }

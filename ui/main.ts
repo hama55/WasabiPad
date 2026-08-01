@@ -15,7 +15,7 @@ import { FolderActions, isImagePath, openInOtherApp, revealInExplorer } from "./
 import { DocumentController, SAVE_EXTENSIONS } from "./document-controller";
 import { showError } from "./dialogs";
 import { confirmMessage } from "./prompt";
-import { isPasswordCancelled, withArchivePassword } from "./archive-password";
+import { archiveRelOf, isPasswordCancelled, withArchivePassword } from "./archive-password";
 import { basename, joinWindowsRoot } from "./path";
 import { createCommandRegistry, globalCommandForEvent } from "./commands";
 import { TabManager } from "./tabs";
@@ -63,10 +63,12 @@ function scheduleImageCleanup() {
   window.clearTimeout(imageCleanupTimer);
   const path = doc.current.savePath;
   if (!path) return;
+  const archiveRelPath = archiveRelOf(doc.current.selectedRelPath);
   imageCleanupTimer = window.setTimeout(() => {
     imageCleanupTimer = undefined;
     if (doc.current.savePath !== path) return;
-    void api.cleanupUnusedImages(path).catch((error) => reportBackgroundError("不要な画像を削除できませんでした", error));
+    void withArchivePassword(archiveRelPath, () => api.cleanupUnusedImages(path))
+      .catch((error) => reportBackgroundError("不要な画像を削除できませんでした", error));
   }, 400);
 }
 
@@ -228,8 +230,10 @@ const editor: VirtualEditor = new VirtualEditor(editorHost, {
   },
   updateViewer: api.updateViewer,
   saveImage: async (bytes, mimeType) => {
-    if (!doc.current.savePath) throw new Error("画像を貼り付けるには、先にメモを保存してください");
-    return api.savePastedImage(bytes, mimeType);
+    return withArchivePassword(
+      archiveRelOf(doc.current.selectedRelPath),
+      () => api.savePastedImage(bytes, mimeType),
+    );
   },
 });
 editor.setFont(getSetting("fontFamily"), getSetting("fontSize"));

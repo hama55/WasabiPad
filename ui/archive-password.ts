@@ -1,4 +1,4 @@
-// パスワード付き 7z の再試行フロー。バックエンドはパスワード起因の失敗を
+// パスワード付き 7z/zip の再試行フロー。バックエンドはパスワード起因の失敗を
 // "7z-password:required" / "7z-password:wrong" マーカーで返すため、ここで拾って
 // 入力ダイアログ → set_archive_password → 元の操作をやり直す、を合うまで繰り返す。
 import * as api from "./api";

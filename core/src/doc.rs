@@ -53,7 +53,7 @@ enum Target {
         path: PathBuf,
         source_file: File,
         entries: Option<Vec<Entry>>,
-        // 7z.exe 経由で書き戻せる表示中エントリ名。zip/xls は常に None (閲覧専用)。
+        // 7z.exe 経由で書き戻せる表示中エントリ名。7z/zip のテキストだけが対象。
         editable_entry: Option<String>,
     },
 }
@@ -76,7 +76,7 @@ impl DocumentSource {
         }
     }
 
-    // 編集して保存できるパス (アーカイブ内のエントリは保存先を持たないので None)
+    // 通常ファイルとして編集して保存できるパス。アーカイブ内エントリは None。
     fn path(&self) -> Option<&Path> {
         match &self.target {
             Target::File { path, .. } => Some(path),
@@ -150,7 +150,7 @@ pub struct DocInfo {
     pub enc: EncodingId,
     pub eol: Eol,
     pub path: String,
-    pub entries: Option<Vec<String>>, // archive(zip/xls) の閲覧専用エントリ名
+    pub entries: Option<Vec<String>>, // 非編集アーカイブのエントリ名
     pub folder_entries: Option<Vec<FolderEntry>>, // フォルダ直下の子 (サブフォルダ含む、再帰しない)
     pub folder_root: Option<String>, // フォルダ閲覧中のルート絶対パス
     pub view_only: bool,
@@ -274,6 +274,35 @@ impl Doc {
         self.source.path()
     }
 
+    pub fn display_path(&self) -> Option<&Path> {
+        self.source.display_path()
+    }
+
+    pub fn viewer_source(&self) -> Option<(PathBuf, String)> {
+        match &self.source.target {
+            Target::Archive { path, editable_entry: Some(entry), .. } => Some((path.clone(), entry.clone())),
+            _ => None,
+        }
+    }
+
+    pub fn read_archive_asset(&self, archive: &Path, entry: &str) -> io::Result<Vec<u8>> {
+        let Target::Archive { path, .. } = &self.source.target else {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "アーカイブを開いていません"));
+        };
+        if path != archive || !crate::sevenz::is_updateable_archive_path(archive) {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "表示中のアーカイブと一致しません"));
+        }
+        if !valid_archive_entry_path(entry) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "アーカイブ内パスが不正です"));
+        }
+        let bytes = crate::sevenz::extract(archive, entry, self.sevenz_password(archive))
+            .map_err(|error| self.annotate_sevenz_error(archive, error))?;
+        if bytes.len() > crate::ziptext::MAX_ENTRY {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "画像サイズが大きすぎます"));
+        }
+        Ok(bytes)
+    }
+
     pub fn empty() -> Doc {
         Doc {
             buf: TextBuffer::new(),
@@ -293,6 +322,7 @@ impl Doc {
     // ZIP/.xls/単一ファイルは open_file へ委譲。
     pub fn open(path: &Path) -> io::Result<Doc> {
         if path.is_dir() {
+            let _ = crate::sevenz::cleanup_stale_workspaces(path);
             let mut doc = Doc::empty();
             doc.source = DocumentSource { root: Some(path.to_path_buf()), ..DocumentSource::untitled() };
             return Ok(doc);
@@ -315,6 +345,11 @@ impl Doc {
     // ツリーの展開ボタン (list_archive_entries) が押されて初めてエントリ名を、
     // エントリ選択 (select_entry) で初めてその1エントリの本文を読む。
     fn open_file(path: &Path) -> io::Result<Doc> {
+        if crate::sevenz::is_updateable_archive_path(path) {
+            if let Some(parent) = path.parent() {
+                let _ = crate::sevenz::cleanup_stale_workspaces(parent);
+            }
+        }
         if crate::folder::is_lazy_archive_path(path) {
             let source_file = fileio::open_exclusive(path)?;
             if fileio::is_archive_handle(&source_file) {
@@ -474,7 +509,7 @@ impl Doc {
     // サイドバーでの別エントリ選択。rel_path の形は3通り:
     // - フォルダの実ファイル ("sub/a.txt"): そのファイルとして開き直す (編集可)
     // - フォルダ内 zip/xlsx/xls の1エントリ ("sub/data.zip::Sheet1"): そのアーカイブだけを
-    //   読んで該当エントリを展開する (フォルダ一覧はそのまま維持、閲覧専用)
+    //   読んで該当エントリを展開する (フォルダ一覧はそのまま維持)
     // - 直接開いた (フォルダ非経由) zip/xlsx/xls の1エントリ ("Sheet1"): エントリ名そのもの
     // - 従来の一括展開済みアーカイブ (上記以外の拡張子。docx 等): entries をエントリ名で検索
     pub fn select_entry(&mut self, rel_path: &str) -> io::Result<Option<DocInfo>> {
@@ -482,8 +517,8 @@ impl Doc {
             if let Some((archive_rel, entry_name)) = rel_path.split_once("::") {
                 let archive_real = join_relative(&root, archive_rel);
                 let source_file = fileio::open_exclusive(&archive_real)?;
-                let (text, meta) = if crate::sevenz::is_7z_path(&archive_real) {
-                    self.decode_sevenz(&archive_real, entry_name)?
+                let (text, meta) = if crate::sevenz::is_updateable_archive_path(&archive_real) {
+                    self.decode_archive_entry(&archive_real, entry_name)?
                 } else {
                     let bytes = fileio::read_locked(&source_file)?;
                     let text = crate::archive::decode_one(&bytes, entry_name)
@@ -522,9 +557,9 @@ impl Doc {
         }
         let (archive_path, text, meta) = match &self.source.target {
             Target::Archive { path, source_file, entries, .. } => {
-                if crate::sevenz::is_7z_path(path) {
+                if crate::sevenz::is_updateable_archive_path(path) {
                     let path = path.clone();
-                    let (text, meta) = self.decode_sevenz(&path, rel_path)?;
+                    let (text, meta) = self.decode_archive_entry(&path, rel_path)?;
                     (path.to_string_lossy().into_owned(), text, meta)
                 } else {
                     let text = if let Some(entries) = entries {
@@ -555,11 +590,25 @@ impl Doc {
         Ok(Some(self.info(archive_path)))
     }
 
-    // 7z の1エントリを展開してテキスト化する。編集して書き戻せる (=テキストとして
+    // 7z/zip の1エントリを展開してテキスト化する。編集して書き戻せる (=テキストとして
     // 復元可能な) 場合のみ検出した enc/eol を返す。バイナリ等は説明文 + None (閲覧専用)。
-    fn decode_sevenz(&self, archive: &Path, entry: &str) -> io::Result<(String, Option<(Encoding, Eol)>)> {
-        let bytes = crate::sevenz::extract(archive, entry, self.sevenz_password(archive))
-            .map_err(|e| self.annotate_sevenz_error(archive, e))?;
+    fn decode_archive_entry(&self, archive: &Path, entry: &str) -> io::Result<(String, Option<(Encoding, Eol)>)> {
+        let bytes = match crate::sevenz::extract(archive, entry, self.sevenz_password(archive)) {
+            Ok(bytes) => bytes,
+            Err(error) if crate::sevenz::is_zip_path(archive) && !error.to_string().contains(crate::sevenz::PASSWORD_ERROR_MARKER) => {
+                // テスト用の最小 ZIP や一部の古い ZIP は CRC 情報が厳密でないことがある。
+                // 7z で読めない場合だけ既存の軽量パーサへ戻し、通常の ZIP 互換性を保つ。
+                let raw = std::fs::read(archive)?;
+                let text = crate::archive::decode_one(&raw, entry)
+                    .ok_or(error)?;
+                let editable = !text.starts_with("(バイナリ:")
+                    && !text.starts_with("(暗号化エントリ)")
+                    && !text.starts_with("(未対応の圧縮方式:")
+                    && !text.starts_with("(サイズ超過のためスキップ:");
+                return Ok((text.clone(), editable.then_some((Encoding::Utf8 { bom: false }, fileio::detect_eol(&text)))));
+            }
+            Err(error) => return Err(self.annotate_sevenz_error(archive, error)),
+        };
         if bytes.len() > crate::ziptext::MAX_ENTRY {
             return Ok((format!("(サイズ超過のためスキップ: {} bytes)", bytes.len()), None));
         }
@@ -614,19 +663,19 @@ impl Doc {
     // (本文は展開しない)。rel_path が空文字なら「直接開いているアーカイブ自身」、
     // それ以外はフォルダ内の実ファイル (zip/xlsx/xls) の相対パス。
     pub fn list_archive_entries(&self, rel_path: &str) -> io::Result<Option<Vec<String>>> {
-        // 7z は自前パーサではなく 7z.exe に一覧させる (パスワード付き書庫に対応)
-        let sevenz_abs = if rel_path.is_empty() {
+        // 7z/zip は自前パーサではなく 7z.exe に一覧させる (暗号化書庫に対応)
+        let archive_abs = if rel_path.is_empty() {
             match &self.source.target {
-                Target::Archive { path, .. } if crate::sevenz::is_7z_path(path) => Some(path.clone()),
+                Target::Archive { path, .. } if crate::sevenz::is_updateable_archive_path(path) => Some(path.clone()),
                 _ => None,
             }
         } else {
             self.source
                 .folder_root()
                 .map(|root| join_relative(root, rel_path))
-                .filter(|p| crate::sevenz::is_7z_path(p))
+                .filter(|p| crate::sevenz::is_updateable_archive_path(p))
         };
-        if let Some(p) = sevenz_abs {
+        if let Some(p) = archive_abs {
             return crate::sevenz::list(&p, self.sevenz_password(&p))
                 .map(Some)
                 .map_err(|e| self.annotate_sevenz_error(&p, e));
@@ -766,7 +815,7 @@ impl Doc {
     }
 
     // メモごとに画像を分けないと、同じフォルダ内のメモ同士で画像の持ち主が分からなくなる。
-    pub fn save_pasted_image(&self, bytes: &[u8], mime_type: &str) -> io::Result<String> {
+    pub fn save_pasted_image(&mut self, bytes: &[u8], mime_type: &str) -> io::Result<String> {
         if self.source.is_view_only() {
             return Err(io::Error::new(io::ErrorKind::PermissionDenied, "閲覧専用の文書には画像を貼り付けられません"));
         }
@@ -775,6 +824,13 @@ impl Doc {
         }
         let extension = image_extension(mime_type)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "対応していない画像形式です"))?;
+        if let Target::Archive { path, editable_entry: Some(entry), .. } = &self.source.target {
+            if crate::sevenz::is_updateable_archive_path(path) {
+                let archive = path.clone();
+                let memo_entry = entry.clone();
+                return self.save_archive_image(&archive, &memo_entry, bytes, extension);
+            }
+        }
         let memo = self
             .source
             .path()
@@ -798,10 +854,49 @@ impl Doc {
         Ok(format!("image_markdown/{memo_name}/{name}"))
     }
 
+    fn save_archive_image(
+        &mut self,
+        archive: &Path,
+        memo_entry: &str,
+        bytes: &[u8],
+        extension: &str,
+    ) -> io::Result<String> {
+        let password = self.sevenz_password(archive).to_string();
+        let existing = crate::sevenz::list(archive, &password)
+            .map_err(|error| self.annotate_sevenz_error(archive, error))?;
+        let memo_name = archive_entry_stem(memo_entry)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "メモの画像フォルダ名を作れません"))?;
+        let parent = archive_entry_parent(memo_entry);
+        let relative_dir = archive_join(parent, &format!("image_markdown/{memo_name}"));
+        let image_name = next_archive_image_name(&existing, &relative_dir, extension)?;
+        let relative_src = format!("image_markdown/{memo_name}/{image_name}");
+        let entry = archive_join(parent, &relative_src);
+        let workspace = crate::sevenz::ArchiveWorkspace::new(archive)?;
+        let staged = workspace.path().join(entry.replace('/', std::path::MAIN_SEPARATOR_STR));
+        if let Some(parent) = staged.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&staged, bytes)?;
+        let header_encrypted = crate::sevenz::is_7z_path(archive)
+            && !password.is_empty()
+            && crate::sevenz::is_header_encrypted(archive);
+        self.run_archive_command(archive, || {
+            crate::sevenz::update(archive, &entry, workspace.path(), &password, header_encrypted)
+        })?;
+        Ok(relative_src)
+    }
+
     // 本文から参照が消えた画像を削除する。旧 image フォルダも既存メモのために整理する。
-    pub fn cleanup_unused_images(&self) -> io::Result<()> {
+    pub fn cleanup_unused_images(&mut self) -> io::Result<()> {
         if self.source.is_view_only() {
             return Ok(());
+        }
+        if let Target::Archive { path, editable_entry: Some(entry), .. } = &self.source.target {
+            if crate::sevenz::is_updateable_archive_path(path) {
+                let archive = path.clone();
+                let memo_entry = entry.clone();
+                return self.cleanup_archive_images(&archive, &memo_entry);
+            }
         }
         let Some(memo) = self.source.path() else { return Ok(()) };
         let Some(parent) = memo.parent() else { return Ok(()) };
@@ -823,6 +918,60 @@ impl Doc {
         let legacy_dir = parent.join("image");
         cleanup_image_dir(&legacy_dir, "image", &referenced)?;
         Ok(())
+    }
+
+    fn cleanup_archive_images(&mut self, archive: &Path, memo_entry: &str) -> io::Result<()> {
+        let password = self.sevenz_password(archive).to_string();
+        let entries = crate::sevenz::list(archive, &password)
+            .map_err(|error| self.annotate_sevenz_error(archive, error))?;
+        let memo_name = archive_entry_stem(memo_entry)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "メモの画像フォルダ名を作れません"))?;
+        let parent = archive_entry_parent(memo_entry);
+        let relative_prefix = archive_join(parent, &format!("image_markdown/{memo_name}"));
+        let referenced = referenced_image_files(&self.buf);
+        let stale: Vec<String> = entries
+            .into_iter()
+            .filter(|entry| {
+                let normalized = entry.replace('\\', "/").to_lowercase();
+                let Some(name) = normalized.strip_prefix(&(relative_prefix.to_lowercase() + "/")) else { return false };
+                !name.contains('/') && !referenced.contains(&format!("image_markdown/{}/{name}", memo_name.to_lowercase()))
+            })
+            .collect();
+        if stale.is_empty() {
+            return Ok(());
+        }
+        self.run_archive_command(archive, || crate::sevenz::delete(archive, &stale, &password))
+    }
+
+    fn run_archive_command<F>(&mut self, archive: &Path, operation: F) -> io::Result<()>
+    where
+        F: FnOnce() -> io::Result<()>,
+    {
+        let Target::Archive { path, source_file, entries, editable_entry } =
+            std::mem::replace(&mut self.source.target, Target::None)
+        else {
+            unreachable!("アーカイブ更新の呼び出し元で Target::Archive を確認済み");
+        };
+        if path != archive {
+            self.source.target = Target::Archive { path, source_file, entries, editable_entry };
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "更新対象のアーカイブが変わっています"));
+        }
+        drop(source_file);
+        let command_result = operation().map_err(|error| self.annotate_sevenz_error(archive, error));
+        let reopened = fileio::open_exclusive(&path);
+        match reopened {
+            Ok(source_file) => {
+                self.source.target = Target::Archive { path, source_file, entries, editable_entry };
+                command_result
+            }
+            Err(reopen_error) => {
+                if command_result.is_err() {
+                    command_result
+                } else {
+                    Err(reopen_error)
+                }
+            }
+        }
     }
 
     // 範囲[start,end)を削除して text を挿入する統一プリミティブ。
@@ -1097,7 +1246,7 @@ impl Doc {
         if let Target::Archive { path: archive_path, editable_entry: Some(entry), .. } = &self.source.target {
             if archive_path == path {
                 let (archive_path, entry) = (archive_path.clone(), entry.clone());
-                return self.save_sevenz_entry(&archive_path, &entry, enc, eol);
+                return self.save_archive_entry(&archive_path, &entry, enc, eol);
             }
         }
         if self.source.is_view_only() {
@@ -1149,46 +1298,24 @@ impl Doc {
         Ok(SaveOutcome::Saved)
     }
 
-    // 7z エントリの書き戻し。エントリの相対パス構造を一時フォルダへ再現して 7z u で
-    // 更新する。7z.exe が書庫本体を差し替えるため、排他ハンドルは実行中だけ手放す。
-    fn save_sevenz_entry(&mut self, archive: &Path, entry: &str, enc: Encoding, eol: Eol) -> io::Result<SaveOutcome> {
+    // 7z/zip エントリの書き戻し。アーカイブと同じフォルダの作業領域へ構造を再現して
+    // 7z u で更新する。7z.exe が書庫本体を差し替えるため、排他ハンドルは実行中だけ手放す。
+    fn save_archive_entry(&mut self, archive: &Path, entry: &str, enc: Encoding, eol: Eol) -> io::Result<SaveOutcome> {
         let password = self.sevenz_password(archive).to_string();
         // ヘッダ暗号化 (-mhe=on) は更新時に指定し直さないと失われるため事前に検出する
-        let header_encrypted = !password.is_empty() && crate::sevenz::is_header_encrypted(archive);
-
-        static SAVE_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let seq = SAVE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let staging = std::env::temp_dir().join(format!("wasabipad_7z_save_{}_{seq}", std::process::id()));
-        let entry_file = staging.join(entry.replace('/', std::path::MAIN_SEPARATOR_STR));
+        let header_encrypted = crate::sevenz::is_7z_path(archive)
+            && !password.is_empty()
+            && crate::sevenz::is_header_encrypted(archive);
+        let workspace = crate::sevenz::ArchiveWorkspace::new(archive)?;
+        let entry_file = workspace.path().join(entry.replace('/', std::path::MAIN_SEPARATOR_STR));
         if let Some(parent) = entry_file.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let transaction = fileio::begin_save(&entry_file, &self.buf, enc, eol)?;
-        if let Err(failure) = transaction.commit(&entry_file) {
-            let _ = std::fs::remove_dir_all(&staging);
-            return Err(failure.into_error());
-        }
-
-        let Target::Archive { path, source_file, entries, editable_entry } =
-            std::mem::replace(&mut self.source.target, Target::None)
-        else {
-            unreachable!("呼び出し元で Target::Archive を確認済み");
-        };
-        drop(source_file); // 7z.exe が書庫を差し替えられるように解放
-        let update_result = crate::sevenz::update(&path, entry, &staging, &password, header_encrypted)
-            .map_err(|e| self.annotate_sevenz_error(&path, e));
-        let reopened = fileio::open_exclusive(&path);
-        let _ = std::fs::remove_dir_all(&staging);
-        match reopened {
-            Ok(f) => {
-                self.source.target = Target::Archive { path, source_file: f, entries, editable_entry };
-            }
-            Err(reopen_error) => {
-                update_result?;
-                return Err(reopen_error);
-            }
-        }
-        update_result?;
+        transaction.commit(&entry_file).map_err(fileio::SaveCommitError::into_error)?;
+        self.run_archive_command(archive, || {
+            crate::sevenz::update(archive, entry, workspace.path(), &password, header_encrypted)
+        })?;
         self.enc = enc;
         self.eol = eol;
         self.undo.break_coalescing();
@@ -1239,6 +1366,48 @@ fn image_extension(mime_type: &str) -> Option<&'static str> {
         "image/svg+xml" => Some("svg"),
         _ => None,
     }
+}
+
+fn archive_entry_parent(entry: &str) -> &str {
+    entry.rsplit_once('/').map(|(parent, _)| parent).unwrap_or("")
+}
+
+fn archive_entry_stem(entry: &str) -> Option<&str> {
+    let name = entry.rsplit('/').next()?;
+    let stem = name.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(name);
+    (!stem.is_empty()).then_some(stem)
+}
+
+fn archive_join(parent: &str, child: &str) -> String {
+    if parent.is_empty() {
+        child.to_string()
+    } else {
+        format!("{parent}/{child}")
+    }
+}
+
+fn valid_archive_entry_path(entry: &str) -> bool {
+    !entry.is_empty()
+        && !entry.starts_with('/')
+        && !entry.starts_with('\\')
+        && !entry.split(['/', '\\']).any(|part| part == "..")
+}
+
+fn next_archive_image_name(entries: &[String], directory: &str, extension: &str) -> io::Result<String> {
+    let prefix = format!("{}/", directory.replace('\\', "/").to_lowercase());
+    for index in 1..=10_000usize {
+        let stem = if index == 1 {
+            "pasted-image".to_string()
+        } else {
+            format!("pasted-image-{index}")
+        };
+        let name = format!("{stem}.{extension}");
+        let full = format!("{prefix}{}", name.to_lowercase());
+        if !entries.iter().any(|entry| entry.replace('\\', "/").to_lowercase() == full) {
+            return Ok(name);
+        }
+    }
+    Err(io::Error::new(io::ErrorKind::AlreadyExists, "画像ファイル名を決められません"))
 }
 
 fn referenced_image_files(buf: &TextBuffer) -> HashSet<String> {
@@ -1402,6 +1571,17 @@ mod tests {
         assert!(crate::sevenz::is_header_encrypted(&archive));
         assert_eq!(crate::sevenz::extract(&archive, "a.txt", "pw").unwrap(), b"Xhello\n");
 
+        let image_src = d.save_pasted_image(&[1, 2, 3, 4], "image/png").unwrap();
+        assert_eq!(image_src, "image_markdown/a/pasted-image.png");
+        assert_eq!(crate::sevenz::extract(&archive, &image_src, "pw").unwrap(), [1, 2, 3, 4]);
+        assert!(!std::fs::read_dir(&root)
+            .unwrap()
+            .flatten()
+            .any(|entry| entry.file_name().to_string_lossy().starts_with("WasabiPad-archive-temp-")));
+        d.cleanup_unused_images().unwrap();
+        assert!(!crate::sevenz::list(&archive, "pw").unwrap().contains(&image_src));
+        assert!(crate::sevenz::is_header_encrypted(&archive));
+
         // 排他ハンドルは取り直されており、続けて編集・保存できる
         d.edit(pos(0, 0), pos(0, 1), pos(0, 0), "", false).expect("再編集できる");
         d.save(&archive, Encoding::Utf8 { bom: false }, Eol::Lf).unwrap();
@@ -1436,6 +1616,61 @@ mod tests {
         d.edit(pos(0, 0), pos(0, 0), pos(0, 0), "Y", false).expect("編集できる");
         d.save(&archive, Encoding::Utf8 { bom: false }, Eol::Lf).unwrap();
         assert_eq!(crate::sevenz::extract(&archive, "sub/b.txt", "").unwrap(), b"Yworld\n");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn zip_entry_image_is_saved_inside_archive() {
+        if !crate::sevenz::available() {
+            return;
+        }
+        let root = sevenz_root("zip-image");
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("memo.md"), "# memo\n").unwrap();
+        let archive = root.join("memo.zip");
+        crate::sevenz::create_archive_for_test(&archive, &src, "", false).unwrap();
+
+        let mut d = Doc::open(&archive).unwrap();
+        let info = d.select_entry("memo.md").unwrap().unwrap();
+        assert!(!info.view_only);
+        let image_src = d.save_pasted_image(&[9, 8, 7], "image/png").unwrap();
+        assert_eq!(image_src, "image_markdown/memo/pasted-image.png");
+        assert_eq!(crate::sevenz::extract(&archive, &image_src, "").unwrap(), [9, 8, 7]);
+        assert_eq!(d.read_archive_asset(&archive, &image_src).unwrap(), [9, 8, 7]);
+        d.cleanup_unused_images().unwrap();
+        assert!(!crate::sevenz::list(&archive, "").unwrap().contains(&image_src));
+        assert!(!std::fs::read_dir(&root)
+            .unwrap()
+            .flatten()
+            .any(|entry| entry.file_name().to_string_lossy().starts_with("WasabiPad-archive-temp-")));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn password_zip_entry_image_is_saved_inside_archive() {
+        if !crate::sevenz::available() {
+            return;
+        }
+        let root = sevenz_root("zip-image-pw");
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("memo.md"), "# memo\n").unwrap();
+        let archive = root.join("memo.zip");
+        crate::sevenz::create_archive_for_test(&archive, &src, "pw", false).unwrap();
+
+        let mut d = Doc::open(&archive).unwrap();
+        d.set_archive_password("", "bad").unwrap();
+        let error = match d.select_entry("memo.md") {
+            Ok(_) => panic!("誤った ZIP パスワードが受理された"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains(crate::sevenz::PASSWORD_ERROR_MARKER), "{error}");
+        d.set_archive_password("", "pw").unwrap();
+        let info = d.select_entry("memo.md").unwrap().unwrap();
+        assert!(!info.view_only);
+        let image_src = d.save_pasted_image(&[5, 4, 3], "image/png").unwrap();
+        assert_eq!(crate::sevenz::extract(&archive, &image_src, "pw").unwrap(), [5, 4, 3]);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1784,7 +2019,7 @@ mod tests {
 
     #[test]
     fn pasted_image_is_saved_under_the_memo_specific_directory() {
-        let (root, d) = image_fixture("path");
+        let (root, mut d) = image_fixture("path");
         let src = d.save_pasted_image(&[1, 2, 3], "image/png").unwrap();
         assert_eq!(src, "image_markdown/memo/pasted-image.png");
         let image = root.join(src.replace('/', std::path::MAIN_SEPARATOR_STR));
@@ -1795,7 +2030,7 @@ mod tests {
 
     #[test]
     fn referenced_pasted_image_is_kept_during_cleanup() {
-        let (root, d) = image_fixture("keep");
+        let (root, mut d) = image_fixture("keep");
         let src = d.save_pasted_image(&[1, 2, 3], "image/png").unwrap();
         let image = root.join(src.replace('/', std::path::MAIN_SEPARATOR_STR));
         let tag = format!("<img src=\"{src}\" alt=\"貼り付け画像\" width=\"900\">\n");
@@ -1809,7 +2044,7 @@ mod tests {
 
     #[test]
     fn unreferenced_pasted_image_is_removed_with_empty_directory() {
-        let (root, d) = image_fixture("remove");
+        let (root, mut d) = image_fixture("remove");
         let src = d.save_pasted_image(&[1, 2, 3], "image/png").unwrap();
         let image = root.join(src.replace('/', std::path::MAIN_SEPARATOR_STR));
         let mut d = d;
@@ -1931,22 +2166,13 @@ mod tests {
         let info = d.select_entry("memo.txt").unwrap().unwrap();
         assert_eq!(info.kind, DocKind::Archive);
         assert_eq!(d.lines(0, 1), vec!["secret text"]);
-        let save_target = root.join("must-not-save.txt");
-        let error = d.save(&save_target, Encoding::Utf8 { bom: false }, Eol::Lf).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-        assert_eq!(d.lines(0, 1), vec!["secret text"]);
-        assert!(!save_target.exists());
-
-        // 閲覧専用文書は編集を黙って握り潰さず、編集不可であることを返す
-        assert!(d.edit(p(0, 0), p(0, 0), p(0, 0), "X", false).is_none());
-        assert!(d
-            .edit_many(
-                vec![EditManyItem { start: p(0, 0), end: p(0, 0), text: "X".into() }],
-                p(0, 0),
-                0
-            )
-            .is_none());
-        assert_eq!(d.lines(0, 1), vec!["secret text"]);
+        assert!(!info.view_only, "ZIP のテキストエントリは編集可能");
+        assert!(d.edit(p(0, 0), p(0, 0), p(0, 0), "X", false).is_some());
+        assert_eq!(d.lines(0, 1), vec!["Xsecret text"]);
+        let outcome = d.save(&zpath, Encoding::Utf8 { bom: false }, Eol::Lf).unwrap();
+        assert!(matches!(outcome, SaveOutcome::Saved));
+        let saved = std::fs::read(&zpath).unwrap();
+        assert_eq!(crate::archive::decode_one(&saved, "memo.txt").as_deref(), Some("Xsecret text"));
 
         drop(d);
         std::fs::remove_dir_all(&root).unwrap();
@@ -1978,9 +2204,9 @@ mod tests {
 
         let info = d.select_entry("data.zip::a.txt").unwrap().unwrap();
         // フォルダ閲覧中は kind は "text" のまま (folder_entries でツリーを組み立てるため)。
-        // 実際に編集不可であることは view_only で示す。
+        // ZIP のテキストエントリは書き戻し可能。
         assert_eq!(info.kind, DocKind::Text);
-        assert!(info.view_only);
+        assert!(!info.view_only);
         assert_eq!(d.lines(0, 1), vec!["ZIPCONTENT"]);
         assert!(d.workspace_root().is_some(), "フォルダルートは選択後も維持される");
 
