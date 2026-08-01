@@ -6,6 +6,7 @@ export function promptFields(
   fields: {
     label: string;
     value: string;
+    type?: "password";
     options?: { label: string; value: string }[];
     validate?: (value: string, values: string[]) => string | null;
   }[]
@@ -37,6 +38,7 @@ export function promptFields(
         }
       } else {
         input.spellcheck = false;
+        if (f.type) (input as HTMLInputElement).type = f.type;
       }
       input.value = f.value;
       row.appendChild(label);

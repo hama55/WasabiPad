@@ -142,6 +142,12 @@ fn list_archive_entries(rel_path: String, state: State) -> Result<Vec<String>, S
         .ok_or_else(|| "no entries".into())
 }
 
+// パスワード付き 7z 用。入力されたパスワードを記憶させ、UI が失敗した操作を再試行する。
+#[tauri::command]
+fn set_archive_password(rel_path: String, password: String, state: State) -> Result<(), String> {
+    with_doc(&state, |doc| doc.set_archive_password(&rel_path, &password)).map_err(|error| error.to_string())
+}
+
 // フォルダの展開時に、その直下だけを取得する。
 #[tauri::command]
 fn list_folder_entries(rel_dir: String, state: State) -> Result<Vec<FolderEntry>, String> {
@@ -563,6 +569,7 @@ fn main() {
             line_char_len,
             select_entry,
             list_archive_entries,
+            set_archive_password,
             list_folder_entries,
             workspace_search,
             workspace_search_cancel,

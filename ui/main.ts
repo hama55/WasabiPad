@@ -15,6 +15,7 @@ import { FolderActions, openInOtherApp } from "./folder-actions";
 import { DocumentController, SAVE_EXTENSIONS } from "./document-controller";
 import { showError } from "./dialogs";
 import { confirmMessage } from "./prompt";
+import { isPasswordCancelled, withArchivePassword } from "./archive-password";
 import { joinWindowsRoot } from "./path";
 import { createCommandRegistry, globalCommandForEvent } from "./commands";
 import { TabManager } from "./tabs";
@@ -174,9 +175,12 @@ const sidebar = new Sidebar(sidebarEl, {
     await doc.selectEntry(relPath);
   },
   onContextMenu: (x, y, target) => folderActions.showContextMenu(x, y, target),
-  onExpandArchive: (relPath) => api.listArchiveEntries(relPath),
+  onExpandArchive: (relPath) =>
+    withArchivePassword(relPath, () => api.listArchiveEntries(relPath)),
   onExpandFolder: (relDir) => api.listFolderEntries(relDir),
-  onTreeError: (error) => showError("フォルダを展開できませんでした", error),
+  onTreeError: async (error) => {
+    if (!isPasswordCancelled(error)) await showError("フォルダを展開できませんでした", error);
+  },
   onSearch: (pat, options, searchId) => api.workspaceSearch(pat, options, searchId),
   onCancel: () => api.workspaceSearchCancel(),
   onError: (error) => showError("フォルダを検索できませんでした", error),

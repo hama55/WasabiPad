@@ -69,6 +69,10 @@ export const selectEntry = (relPath: string) => invoke<DocInfo>("select_entry", 
 export const listArchiveEntries = (relPath: string) =>
   invoke<string[]>("list_archive_entries", { relPath });
 
+// パスワード付き 7z 用。入力されたパスワードを記憶させ、失敗した操作を再試行する。
+export const setArchivePassword = (relPath: string, password: string) =>
+  invoke<void>("set_archive_password", { relPath, password });
+
 // 指定フォルダの直下だけを取得する。サブフォルダの中身は展開時まで取得しない。
 export const listFolderEntries = (relDir: string) =>
   invoke<FolderEntry[]>("list_folder_entries", { relDir });

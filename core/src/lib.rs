@@ -12,6 +12,7 @@ mod fuzzy;
 mod hugebuf;
 mod search;
 mod settings;
+mod sevenz;
 mod undo;
 mod workspace_search;
 mod xlstext;

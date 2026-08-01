@@ -3,6 +3,7 @@ import type { DocumentSession } from "./session";
 import { initialSession, sessionFromDocInfo } from "./session";
 import { promptSaveFormat, type SaveFormat } from "./save-format";
 import { confirmSaveDiscard, promptFields } from "./prompt";
+import { archiveRelOf, isPasswordCancelled, withArchivePassword } from "./archive-password";
 import { showError } from "./dialogs";
 import { formatWindowTitle } from "./format";
 import { basename, relativePathWithinRoot } from "./path";
@@ -122,7 +123,9 @@ export class DocumentController {
   // 開いた対象に応じてサイドバーの中身を決める (アーカイブ / フォルダ / 単一ファイル)
   private showTree(info: api.DocInfo) {
     if (info.kind === "archive") {
-      this.view.setSidebar(true, "閲覧モード");
+      // 7z はエントリを編集して書き戻せるため「閲覧」とは表示しない
+      const editable = info.path.toLowerCase().endsWith(".7z");
+      this.view.setSidebar(true, editable ? "アーカイブ" : "閲覧モード");
       this.view.sidebar.setWorkspaceSearch(null);
       if (info.entries) {
         this.view.sidebar.setArchiveEntries(info.entries);
@@ -143,11 +146,13 @@ export class DocumentController {
   async selectEntry(relPath: string): Promise<boolean> {
     this.view.setLoading(true);
     try {
-      this.applyDocInfo(await api.selectEntry(relPath));
+      this.applyDocInfo(
+        await withArchivePassword(archiveRelOf(relPath), () => api.selectEntry(relPath))
+      );
       this.session.selectedRelPath = relPath;
       return true;
     } catch (error) {
-      await showError("開けませんでした", error);
+      if (!isPasswordCancelled(error)) await showError("開けませんでした", error);
       return false;
     } finally {
       this.view.setLoading(false);
@@ -231,9 +236,12 @@ export class DocumentController {
   ): Promise<boolean> {
     let outcome: api.SaveOutcome;
     try {
-      outcome = await api.saveFile(path, format.encoding, format.eol);
+      // 7z エントリの書き戻し中にパスワードが要求されたら入力させて再試行する
+      outcome = await withArchivePassword(archiveRelOf(this.session.selectedRelPath), () =>
+        api.saveFile(path, format.encoding, format.eol)
+      );
     } catch (e) {
-      await showError("保存できませんでした", e);
+      if (!isPasswordCancelled(e)) await showError("保存できませんでした", e);
       return false;
     }
     if (outcome.kind === "conflict") {

@@ -234,7 +234,7 @@ fn read_released(
     })
 }
 
-fn decode(bytes: &[u8]) -> (String, Encoding) {
+pub(crate) fn decode(bytes: &[u8]) -> (String, Encoding) {
     if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
         return (
             String::from_utf8_lossy(&bytes[3..]).into_owned(),
@@ -328,7 +328,7 @@ pub(crate) fn detect_eol_bytes(bytes: &[u8]) -> Eol {
     }
 }
 
-fn detect_eol(text: &str) -> Eol {
+pub(crate) fn detect_eol(text: &str) -> Eol {
     detect_eol_bytes(text.as_bytes())
 }
 

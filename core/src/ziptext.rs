@@ -2,7 +2,7 @@
 // 各エントリは左のフォルダビューに並び、選択されたものだけをエディタに表示する。
 use encoding_rs::SHIFT_JIS;
 
-const MAX_ENTRY: usize = 32 * 1024 * 1024; // 1エントリの展開上限
+pub(crate) const MAX_ENTRY: usize = 32 * 1024 * 1024; // 1エントリの展開上限
 const MAX_TOTAL: usize = 256 * 1024 * 1024; // 合計上限
 
 pub struct Entry {

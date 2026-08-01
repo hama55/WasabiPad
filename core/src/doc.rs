@@ -12,6 +12,7 @@ use crate::folder::join_relative;
 use crate::search::{find_backward, find_chunk, ChunkStep};
 use crate::ziptext::Entry;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -24,6 +25,9 @@ pub struct Doc {
     source: DocumentSource,
     replace_progress: Option<ReplaceProgress>, // 全置換のチャンク間進行状態
     byte_len: u64, // ステータスバー表示用。開いた実体のバイト数
+    // 7z のパスワードをアーカイブ絶対パス単位でメモリ保持する (ディスクへは残さない)。
+    // 同じフォルダ内の複数の 7z を行き来しても都度入力し直さずに済む。
+    sevenz_passwords: HashMap<PathBuf, String>,
 }
 
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug, ts_rs::TS)]
@@ -48,6 +52,8 @@ enum Target {
         path: PathBuf,
         source_file: File,
         entries: Option<Vec<Entry>>,
+        // 7z.exe 経由で書き戻せる表示中エントリ名。zip/xls は常に None (閲覧専用)。
+        editable_entry: Option<String>,
     },
 }
 
@@ -89,7 +95,7 @@ impl DocumentSource {
     }
 
     fn is_view_only(&self) -> bool {
-        matches!(self.target, Target::Archive { .. })
+        matches!(self.target, Target::Archive { editable_entry: None, .. })
     }
 
     // フォルダ閲覧中は kind を Text のままにする (ツリーは folder_entries が組み立てるため)。
@@ -276,6 +282,7 @@ impl Doc {
             source: DocumentSource::untitled(),
             replace_progress: None,
             byte_len: 0,
+            sevenz_passwords: HashMap::new(),
         }
     }
 
@@ -318,10 +325,11 @@ impl Doc {
                 eol: Eol::Lf,
                 source: DocumentSource {
                     root: None,
-                    target: Target::Archive { path: path.to_path_buf(), source_file, entries: None },
+                    target: Target::Archive { path: path.to_path_buf(), source_file, entries: None, editable_entry: None },
                 },
                 replace_progress: None,
                 byte_len,
+                sevenz_passwords: HashMap::new(),
                 });
             }
         }
@@ -334,6 +342,7 @@ impl Doc {
                     path: path.to_path_buf(),
                     source_file: o.source_file.expect("アーカイブは排他ハンドルを保持する"),
                     entries: Some(entries),
+                    editable_entry: None,
                 },
             }
         } else {
@@ -347,6 +356,7 @@ impl Doc {
             source,
             replace_progress: None,
             byte_len: o.byte_len,
+            sevenz_passwords: HashMap::new(),
         })
     }
 
@@ -371,6 +381,7 @@ impl Doc {
             source,
             replace_progress: None,
             byte_len: o.byte_len,
+            sevenz_passwords: std::mem::take(&mut self.sevenz_passwords),
         };
         let info = replacement.info(path.to_string_lossy().into_owned());
         *self = replacement;
@@ -470,9 +481,18 @@ impl Doc {
             if let Some((archive_rel, entry_name)) = rel_path.split_once("::") {
                 let archive_real = join_relative(&root, archive_rel);
                 let source_file = fileio::open_exclusive(&archive_real)?;
-                let bytes = fileio::read_locked(&source_file)?;
-                let text = crate::archive::decode_one(&bytes, entry_name)
-                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "アーカイブのエントリが見つかりません"))?;
+                let (text, meta) = if crate::sevenz::is_7z_path(&archive_real) {
+                    self.decode_sevenz(&archive_real, entry_name)?
+                } else {
+                    let bytes = fileio::read_locked(&source_file)?;
+                    let text = crate::archive::decode_one(&bytes, entry_name)
+                        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "アーカイブのエントリが見つかりません"))?;
+                    (text, None)
+                };
+                if let Some((enc, eol)) = meta {
+                    self.enc = enc;
+                    self.eol = eol;
+                }
                 self.byte_len = text.len() as u64;
                 self.buf = TextBuffer::from_text(&text);
                 self.undo.clear();
@@ -482,6 +502,7 @@ impl Doc {
                         path: archive_real.clone(),
                         source_file,
                         entries: None,
+                        editable_entry: meta.map(|_| entry_name.to_string()),
                     },
                 };
                 return Ok(Some(self.info(archive_real.to_string_lossy().into_owned())));
@@ -493,36 +514,122 @@ impl Doc {
             let mut d = Doc::open_file(&path)?;
             let path_str = path.to_string_lossy().into_owned();
             d.source.root = Some(root);
+            d.sevenz_passwords = std::mem::take(&mut self.sevenz_passwords);
             let info = d.info(path_str);
             *self = d;
             return Ok(Some(info));
         }
-        let (archive_path, text) = match &self.source.target {
-            Target::Archive { path, source_file, entries } => {
-                let text = if let Some(entries) = entries {
-                    match entries.iter().find(|entry| entry.name == rel_path) {
-                        Some(entry) => entry.text.clone(),
-                        None => return Ok(None),
-                    }
+        let (archive_path, text, meta) = match &self.source.target {
+            Target::Archive { path, source_file, entries, .. } => {
+                if crate::sevenz::is_7z_path(path) {
+                    let path = path.clone();
+                    let (text, meta) = self.decode_sevenz(&path, rel_path)?;
+                    (path.to_string_lossy().into_owned(), text, meta)
                 } else {
-                    let bytes = fileio::read_locked(source_file)?;
-                    crate::archive::decode_one(&bytes, rel_path)
-                        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "アーカイブのエントリが見つかりません"))?
-                };
-                (path.to_string_lossy().into_owned(), text)
+                    let text = if let Some(entries) = entries {
+                        match entries.iter().find(|entry| entry.name == rel_path) {
+                            Some(entry) => entry.text.clone(),
+                            None => return Ok(None),
+                        }
+                    } else {
+                        let bytes = fileio::read_locked(source_file)?;
+                        crate::archive::decode_one(&bytes, rel_path)
+                            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "アーカイブのエントリが見つかりません"))?
+                    };
+                    (path.to_string_lossy().into_owned(), text, None)
+                }
             }
             _ => return Ok(None),
         };
+        if let Some((enc, eol)) = meta {
+            self.enc = enc;
+            self.eol = eol;
+        }
+        if let Target::Archive { editable_entry, .. } = &mut self.source.target {
+            *editable_entry = meta.map(|_| rel_path.to_string());
+        }
         self.byte_len = text.len() as u64;
         self.buf = TextBuffer::from_text(&text);
         self.undo.clear();
         Ok(Some(self.info(archive_path)))
     }
 
+    // 7z の1エントリを展開してテキスト化する。編集して書き戻せる (=テキストとして
+    // 復元可能な) 場合のみ検出した enc/eol を返す。バイナリ等は説明文 + None (閲覧専用)。
+    fn decode_sevenz(&self, archive: &Path, entry: &str) -> io::Result<(String, Option<(Encoding, Eol)>)> {
+        let bytes = crate::sevenz::extract(archive, entry, self.sevenz_password(archive))
+            .map_err(|e| self.annotate_sevenz_error(archive, e))?;
+        if bytes.len() > crate::ziptext::MAX_ENTRY {
+            return Ok((format!("(サイズ超過のためスキップ: {} bytes)", bytes.len()), None));
+        }
+        // UTF-16 (BOM付き) 以外で NUL を含むものはバイナリとみなし書き戻し対象から外す
+        if !bytes.starts_with(&[0xFF, 0xFE]) && bytes.contains(&0) {
+            return Ok((format!("(バイナリ: {} bytes)", bytes.len()), None));
+        }
+        let (text, enc) = fileio::decode(&bytes);
+        let eol = fileio::detect_eol(&text);
+        Ok((text, Some((enc, eol))))
+    }
+
+    fn sevenz_password(&self, archive: &Path) -> &str {
+        self.sevenz_passwords.get(archive).map(String::as_str).unwrap_or("")
+    }
+
+    // パスワード起因の失敗に「未入力か誤りか」を付け ("7z-password:required" 等)、
+    // UI がダイアログの文言を選べるようにする。
+    fn annotate_sevenz_error(&self, archive: &Path, error: io::Error) -> io::Error {
+        if error.kind() == io::ErrorKind::PermissionDenied
+            && error.to_string().contains(crate::sevenz::PASSWORD_ERROR_MARKER)
+        {
+            let state = if self.sevenz_password(archive).is_empty() { "required" } else { "wrong" };
+            return io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("{}:{state}", crate::sevenz::PASSWORD_ERROR_MARKER),
+            );
+        }
+        error
+    }
+
+    // パスワード入力ダイアログの結果を保持する。rel_path はパスワードを要求した対象:
+    // "" = 直接開いている書庫、それ以外 = フォルダルートからの相対パス。
+    pub fn set_archive_password(&mut self, rel_path: &str, password: &str) -> io::Result<()> {
+        let path = if rel_path.is_empty() {
+            match &self.source.target {
+                Target::Archive { path, .. } => path.clone(),
+                _ => return Err(io::Error::new(io::ErrorKind::InvalidInput, "アーカイブを開いていません")),
+            }
+        } else {
+            let root = self
+                .source
+                .folder_root()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "フォルダを開いていません"))?;
+            join_relative(root, rel_path)
+        };
+        self.sevenz_passwords.insert(path, password.to_string());
+        Ok(())
+    }
+
     // ツリーの展開ボタン用。zip/xlsx/xls の中身 (エントリ名一覧) だけを安価に取得する
     // (本文は展開しない)。rel_path が空文字なら「直接開いているアーカイブ自身」、
     // それ以外はフォルダ内の実ファイル (zip/xlsx/xls) の相対パス。
     pub fn list_archive_entries(&self, rel_path: &str) -> io::Result<Option<Vec<String>>> {
+        // 7z は自前パーサではなく 7z.exe に一覧させる (パスワード付き書庫に対応)
+        let sevenz_abs = if rel_path.is_empty() {
+            match &self.source.target {
+                Target::Archive { path, .. } if crate::sevenz::is_7z_path(path) => Some(path.clone()),
+                _ => None,
+            }
+        } else {
+            self.source
+                .folder_root()
+                .map(|root| join_relative(root, rel_path))
+                .filter(|p| crate::sevenz::is_7z_path(p))
+        };
+        if let Some(p) = sevenz_abs {
+            return crate::sevenz::list(&p, self.sevenz_password(&p))
+                .map(Some)
+                .map_err(|e| self.annotate_sevenz_error(&p, e));
+        }
         let bytes = if rel_path.is_empty() {
             let Target::Archive { source_file, .. } = &self.source.target else { return Ok(None) };
             fileio::read_locked(source_file)?
@@ -861,6 +968,14 @@ impl Doc {
     // 保存。tempへ全量書出し後、排他とmmapを短時間だけ解放して差し替え、即座に再取得する。
     // 保存先が外部で変更されていた場合は本体を上書きせず、退避ファイルへ保存して知らせる。
     pub fn save(&mut self, path: &Path, enc: Encoding, eol: Eol) -> io::Result<SaveOutcome> {
+        // 7z のエントリ表示中に書庫自身のパスへ保存 = エントリの書き戻し。
+        // 別パスへの保存 (名前を付けて保存) は通常ファイルとして下へ流す。
+        if let Target::Archive { path: archive_path, editable_entry: Some(entry), .. } = &self.source.target {
+            if archive_path == path {
+                let (archive_path, entry) = (archive_path.clone(), entry.clone());
+                return self.save_sevenz_entry(&archive_path, &entry, enc, eol);
+            }
+        }
         if self.source.is_view_only() {
             return Err(io::Error::new(io::ErrorKind::PermissionDenied, "閲覧専用文書は保存できません"));
         }
@@ -910,6 +1025,52 @@ impl Doc {
         Ok(SaveOutcome::Saved)
     }
 
+    // 7z エントリの書き戻し。エントリの相対パス構造を一時フォルダへ再現して 7z u で
+    // 更新する。7z.exe が書庫本体を差し替えるため、排他ハンドルは実行中だけ手放す。
+    fn save_sevenz_entry(&mut self, archive: &Path, entry: &str, enc: Encoding, eol: Eol) -> io::Result<SaveOutcome> {
+        let password = self.sevenz_password(archive).to_string();
+        // ヘッダ暗号化 (-mhe=on) は更新時に指定し直さないと失われるため事前に検出する
+        let header_encrypted = !password.is_empty() && crate::sevenz::is_header_encrypted(archive);
+
+        static SAVE_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = SAVE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let staging = std::env::temp_dir().join(format!("wasabipad_7z_save_{}_{seq}", std::process::id()));
+        let entry_file = staging.join(entry.replace('/', std::path::MAIN_SEPARATOR_STR));
+        if let Some(parent) = entry_file.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let transaction = fileio::begin_save(&entry_file, &self.buf, enc, eol)?;
+        if let Err(failure) = transaction.commit(&entry_file) {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(failure.into_error());
+        }
+
+        let Target::Archive { path, source_file, entries, editable_entry } =
+            std::mem::replace(&mut self.source.target, Target::None)
+        else {
+            unreachable!("呼び出し元で Target::Archive を確認済み");
+        };
+        drop(source_file); // 7z.exe が書庫を差し替えられるように解放
+        let update_result = crate::sevenz::update(&path, entry, &staging, &password, header_encrypted)
+            .map_err(|e| self.annotate_sevenz_error(&path, e));
+        let reopened = fileio::open_exclusive(&path);
+        let _ = std::fs::remove_dir_all(&staging);
+        match reopened {
+            Ok(f) => {
+                self.source.target = Target::Archive { path, source_file: f, entries, editable_entry };
+            }
+            Err(reopen_error) => {
+                update_result?;
+                return Err(reopen_error);
+            }
+        }
+        update_result?;
+        self.enc = enc;
+        self.eol = eol;
+        self.undo.break_coalescing();
+        Ok(SaveOutcome::Saved)
+    }
+
     pub fn set_enc(&mut self, enc: Encoding) {
         self.enc = enc;
     }
@@ -950,6 +1111,115 @@ impl Doc {
 mod tests {
     use super::*;
 
+    fn pos(line: usize, col: usize) -> PosC {
+        PosC { line, col }
+    }
+
+    fn sevenz_root(tag: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!("wasabipad_doc7z_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    // 直接開いた パスワード付き 7z: 一覧→パスワード設定→選択→編集→保存→再読込の一巡
+    #[test]
+    fn sevenz_password_entry_edit_and_save_roundtrip() {
+        if !crate::sevenz::available() {
+            return;
+        }
+        let root = sevenz_root("direct");
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("a.txt"), "hello\n").unwrap();
+        let archive = root.join("t.7z");
+        crate::sevenz::create_archive_for_test(&archive, &src, "pw", true).unwrap();
+
+        let mut d = Doc::open(&archive).unwrap();
+        assert!(d.info(String::new()).view_only, "エントリ未選択の間は閲覧専用");
+
+        // パスワード無しの一覧は required マーカー付きで失敗する
+        let err = d.list_archive_entries("").unwrap_err();
+        assert!(err.to_string().contains("7z-password:required"), "{err}");
+
+        // 誤ったパスワードは wrong マーカー
+        d.set_archive_password("", "bad").unwrap();
+        let err = d.list_archive_entries("").unwrap_err();
+        assert!(err.to_string().contains("7z-password:wrong"), "{err}");
+
+        d.set_archive_password("", "pw").unwrap();
+        assert_eq!(d.list_archive_entries("").unwrap().unwrap(), vec!["a.txt".to_string()]);
+
+        let info = d.select_entry("a.txt").unwrap().unwrap();
+        assert!(!info.view_only, "7z のテキストエントリは編集可能");
+        assert_eq!(d.lines(0, 2), vec!["hello".to_string(), String::new()]);
+
+        d.edit(pos(0, 0), pos(0, 0), pos(0, 0), "X", false).expect("編集できる");
+        let outcome = d.save(&archive, Encoding::Utf8 { bom: false }, Eol::Lf).unwrap();
+        assert!(matches!(outcome, SaveOutcome::Saved));
+
+        // 書き戻し後もパスワード + ヘッダ暗号化が維持され、内容が更新されている
+        assert!(crate::sevenz::is_header_encrypted(&archive));
+        assert_eq!(crate::sevenz::extract(&archive, "a.txt", "pw").unwrap(), b"Xhello\n");
+
+        // 排他ハンドルは取り直されており、続けて編集・保存できる
+        d.edit(pos(0, 0), pos(0, 1), pos(0, 0), "", false).expect("再編集できる");
+        d.save(&archive, Encoding::Utf8 { bom: false }, Eol::Lf).unwrap();
+        assert_eq!(crate::sevenz::extract(&archive, "a.txt", "pw").unwrap(), b"hello\n");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // フォルダ内の 7z ("sub/t.7z::b.txt" 形式) の展開と書き戻し
+    #[test]
+    fn sevenz_inside_folder_edits_entry() {
+        if !crate::sevenz::available() {
+            return;
+        }
+        let root = sevenz_root("folder");
+        let src = root.join("srcdata");
+        std::fs::create_dir_all(src.join("sub")).unwrap();
+        std::fs::write(src.join("sub").join("b.txt"), "world\n").unwrap();
+        let ws = root.join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        let archive = ws.join("t.7z");
+        crate::sevenz::create_archive_for_test(&archive, &src, "", false).unwrap();
+
+        let mut d = Doc::open(&ws).unwrap();
+        assert_eq!(
+            d.list_archive_entries("t.7z").unwrap().unwrap(),
+            vec!["sub/b.txt".to_string()]
+        );
+        let info = d.select_entry("t.7z::sub/b.txt").unwrap().unwrap();
+        assert!(!info.view_only);
+        assert_eq!(d.lines(0, 1), vec!["world".to_string()]);
+
+        d.edit(pos(0, 0), pos(0, 0), pos(0, 0), "Y", false).expect("編集できる");
+        d.save(&archive, Encoding::Utf8 { bom: false }, Eol::Lf).unwrap();
+        assert_eq!(crate::sevenz::extract(&archive, "sub/b.txt", "").unwrap(), b"Yworld\n");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // バイナリエントリは説明文表示のみで編集不可のまま
+    #[test]
+    fn sevenz_binary_entry_stays_view_only() {
+        if !crate::sevenz::available() {
+            return;
+        }
+        let root = sevenz_root("bin");
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("a.bin"), [0u8, 1, 2, 255]).unwrap();
+        let archive = root.join("t.7z");
+        crate::sevenz::create_archive_for_test(&archive, &src, "", false).unwrap();
+
+        let mut d = Doc::open(&archive).unwrap();
+        let info = d.select_entry("a.bin").unwrap().unwrap();
+        assert!(info.view_only);
+        assert_eq!(d.lines(0, 1), vec!["(バイナリ: 4 bytes)".to_string()]);
+        assert!(d.edit(pos(0, 0), pos(0, 0), pos(0, 0), "X", false).is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     fn doc(t: &str) -> Doc {
         Doc {
             buf: TextBuffer::from_text(t),
@@ -959,6 +1229,7 @@ mod tests {
             source: DocumentSource::untitled(),
             replace_progress: None,
             byte_len: 0,
+            sevenz_passwords: HashMap::new(),
         }
     }
     fn p(line: usize, col: usize) -> PosC {

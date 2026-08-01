@@ -17,7 +17,7 @@ pub struct FolderEntry {
 pub fn is_lazy_archive_path(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|extension| extension.to_str()).map(str::to_ascii_lowercase).as_deref(),
-        Some("zip") | Some("xlsx") | Some("xls")
+        Some("zip") | Some("xlsx") | Some("xls") | Some("7z")
     )
 }
 
