@@ -1,15 +1,20 @@
 // インストール済み 7z.exe を子プロセスとして呼び、.7z の一覧・展開・書き戻しを行う。
 // 自前実装しないのは、7z (LZMA2/AES-256/solid) の再実装が割に合わないため。
 // パスワードは常に -p で渡す (省略すると 7z が対話プロンプトで待ち続けてハングする)。
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::{atomic::{AtomicUsize, Ordering}, OnceLock};
-use std::time::{Duration, SystemTime};
+use std::process::{Command, Stdio};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    OnceLock,
+};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime};
 
 // パスワード起因の失敗を UI 側で識別するためのマーカー (表示前に UI が拾って
 // パスワード入力ダイアログへ差し替える)。
 pub const PASSWORD_ERROR_MARKER: &str = "7z-password";
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub fn is_7z_path(path: &Path) -> bool {
     path.extension()
@@ -37,14 +42,22 @@ fn find_exe() -> Option<PathBuf> {
         }
     }
     // PATH 上にあればそれを使う (which 相当は Command 実行時に解決される)
-    Command::new("7z").arg("--help").output().ok().map(|_| PathBuf::from("7z"))
+    Command::new("7z")
+        .arg("--help")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|_| PathBuf::from("7z"))
 }
 
 fn exe() -> io::Result<&'static Path> {
     static EXE: OnceLock<Option<PathBuf>> = OnceLock::new();
-    EXE.get_or_init(find_exe)
-        .as_deref()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "7-Zip (7z.exe) が見つかりません。7-Zip をインストールしてください"))
+    EXE.get_or_init(find_exe).as_deref().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "7-Zip (7z.exe) が見つかりません。7-Zip をインストールしてください",
+        )
+    })
 }
 
 // 読み取り系 (l/e): パスワード未指定でも必ず -p を渡す。裸の 7z は暗号化書庫で
@@ -72,25 +85,106 @@ fn is_password_failure(stderr: &str) -> bool {
     stderr.contains("Wrong password") || stderr.contains("Cannot open encrypted archive")
 }
 
+fn join_output(
+    stdout: thread::JoinHandle<io::Result<Vec<u8>>>,
+    stderr: thread::JoinHandle<io::Result<Vec<u8>>>,
+) -> io::Result<(Vec<u8>, Vec<u8>)> {
+    let stdout = stdout
+        .join()
+        .map_err(|_| io::Error::other("7z の標準出力読込が異常終了しました"))??;
+    let stderr = stderr
+        .join()
+        .map_err(|_| io::Error::other("7z の標準エラー読込が異常終了しました"))??;
+    Ok((stdout, stderr))
+}
+
 fn run(mut cmd: Command) -> io::Result<Vec<u8>> {
-    let out = cmd.output()?;
-    if out.status.success() {
-        return Ok(out.stdout);
+    let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("7z の標準出力を取得できません"));
+    let stdout = match stdout {
+        Ok(stdout) => stdout,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+    };
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| io::Error::other("7z の標準エラーを取得できません"));
+    let stderr = match stderr {
+        Ok(stderr) => stderr,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+    };
+    let stdout_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.take(u64::MAX).read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let stderr_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stderr.take(u64::MAX).read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let deadline = Instant::now() + COMMAND_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = join_output(stdout_reader, stderr_reader);
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "7z の処理が制限時間を超えました",
+                ));
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(25)),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = join_output(stdout_reader, stderr_reader);
+                return Err(error);
+            }
+        }
+    };
+    let (stdout, stderr) = join_output(stdout_reader, stderr_reader)?;
+    if status.success() {
+        return Ok(stdout);
     }
-    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let stderr = String::from_utf8_lossy(&stderr).into_owned();
     if is_password_failure(&stderr) {
-        return Err(io::Error::new(io::ErrorKind::PermissionDenied, PASSWORD_ERROR_MARKER));
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            PASSWORD_ERROR_MARKER,
+        ));
     }
     Err(io::Error::new(
         io::ErrorKind::InvalidData,
-        format!("7z が失敗しました: {}", stderr.lines().find(|l| !l.trim().is_empty()).unwrap_or("(詳細不明)")),
+        format!(
+            "7z が失敗しました: {}",
+            stderr
+                .lines()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or("(詳細不明)")
+        ),
     ))
 }
 
 // エントリ名一覧 (ディレクトリ除く)。ヘッダ暗号化書庫はパスワードが合うまで失敗する。
 pub fn list(archive: &Path, password: &str) -> io::Result<Vec<String>> {
     let mut cmd = base_command()?;
-    cmd.arg(read_password_arg(password)).arg("l").arg("-slt").arg("-ba").arg(archive);
+    cmd.arg(read_password_arg(password))
+        .arg("l")
+        .arg("-slt")
+        .arg("-ba")
+        .arg(archive);
     let stdout = run(cmd)?;
     let text = String::from_utf8_lossy(&stdout);
     let mut names = Vec::new();
@@ -113,7 +207,10 @@ pub fn list(archive: &Path, password: &str) -> io::Result<Vec<String>> {
         }
     }
     if names.is_empty() {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "アーカイブを読み取れません"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "アーカイブを読み取れません",
+        ));
     }
     names.sort();
     Ok(names)
@@ -122,12 +219,19 @@ pub fn list(archive: &Path, password: &str) -> io::Result<Vec<String>> {
 // 1エントリの生バイト列を stdout 経由で取得 (一時ファイルを作らない)。
 pub fn extract(archive: &Path, entry: &str, password: &str) -> io::Result<Vec<u8>> {
     let mut cmd = base_command()?;
-    cmd.arg(read_password_arg(password)).arg("e").arg("-so").arg(archive).arg(entry.replace('/', "\\"));
+    cmd.arg(read_password_arg(password))
+        .arg("e")
+        .arg("-so")
+        .arg(archive)
+        .arg(entry.replace('/', "\\"));
     let out = run(cmd)?;
     if out.is_empty() {
         // 7z e は該当なしでも成功終了するため、空出力は一覧と突き合わせて実在確認する
         if !list(archive, password)?.iter().any(|n| n == entry) {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "アーカイブのエントリが見つかりません"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "アーカイブのエントリが見つかりません",
+            ));
         }
     }
     Ok(out)
@@ -135,8 +239,12 @@ pub fn extract(archive: &Path, entry: &str, password: &str) -> io::Result<Vec<u8
 
 // ヘッダ暗号化 (エントリ名も秘匿) かどうか。パスワード無しの一覧が
 // パスワードエラーになる書庫は -mhe=on で作られている。
-pub fn is_header_encrypted(archive: &Path) -> bool {
-    matches!(list(archive, ""), Err(e) if e.kind() == io::ErrorKind::PermissionDenied)
+pub fn is_header_encrypted(archive: &Path) -> io::Result<bool> {
+    match list(archive, "") {
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => Ok(true),
+        Err(error) => Err(error),
+    }
 }
 
 pub(crate) const WORKSPACE_PREFIX: &str = "WasabiPad-archive-temp-";
@@ -152,14 +260,20 @@ pub struct ArchiveWorkspace {
 
 impl ArchiveWorkspace {
     pub fn new(archive: &Path) -> io::Result<Self> {
-        let parent = archive.parent().filter(|path| !path.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+        let parent = archive
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
         cleanup_stale_workspaces(parent)?;
         for _ in 0..100 {
             let seq = WORKSPACE_SEQ.fetch_add(1, Ordering::Relaxed);
             let path = parent.join(format!("{WORKSPACE_PREFIX}{}-{seq}", std::process::id()));
             match std::fs::create_dir(&path) {
                 Ok(()) => {
-                    if let Err(error) = std::fs::write(path.join(WORKSPACE_MARKER), b"WasabiPad archive workspace\n") {
+                    if let Err(error) = std::fs::write(
+                        path.join(WORKSPACE_MARKER),
+                        b"WasabiPad archive workspace\n",
+                    ) {
                         let _ = std::fs::remove_dir_all(&path);
                         return Err(error);
                     }
@@ -169,7 +283,10 @@ impl ArchiveWorkspace {
                 Err(error) => return Err(error),
             }
         }
-        Err(io::Error::new(io::ErrorKind::AlreadyExists, "アーカイブ用の一時フォルダを作れません"))
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "アーカイブ用の一時フォルダを作れません",
+        ))
     }
 
     pub fn path(&self) -> &Path {
@@ -185,7 +302,9 @@ impl Drop for ArchiveWorkspace {
 
 pub fn cleanup_stale_workspaces(parent: &Path) -> io::Result<()> {
     let now = SystemTime::now();
-    let Ok(entries) = std::fs::read_dir(parent) else { return Ok(()) };
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return Ok(());
+    };
     for entry in entries {
         let entry = entry?;
         let file_name = entry.file_name();
@@ -197,8 +316,12 @@ pub fn cleanup_stale_workspaces(parent: &Path) -> io::Result<()> {
         if !marker.is_file() {
             continue;
         }
-        let Ok(modified) = entry.metadata().and_then(|metadata| metadata.modified()) else { continue };
-        let Ok(age) = now.duration_since(modified) else { continue };
+        let Ok(modified) = entry.metadata().and_then(|metadata| metadata.modified()) else {
+            continue;
+        };
+        let Ok(age) = now.duration_since(modified) else {
+            continue;
+        };
         if age >= STALE_WORKSPACE_AGE {
             let _ = std::fs::remove_dir_all(entry.path());
         }
@@ -209,7 +332,13 @@ pub fn cleanup_stale_workspaces(parent: &Path) -> io::Result<()> {
 // 編集済みエントリ1件を書き戻す。data_root はエントリの相対パス構造を再現した
 // 一時ディレクトリ (7z u は cwd からの相対パスでエントリ名を決める)。
 // 呼び出し側は書庫の排他ハンドルを解放してから呼ぶこと (7z が書庫を差し替えるため)。
-pub fn update(archive: &Path, entry: &str, data_root: &Path, password: &str, header_encrypted: bool) -> io::Result<()> {
+pub fn update(
+    archive: &Path,
+    entry: &str,
+    data_root: &Path,
+    password: &str,
+    header_encrypted: bool,
+) -> io::Result<()> {
     let mut cmd = base_command()?;
     // 書き込み系で空パスワードに -p を付けると空文字で暗号化されてしまうため省略する
     if !password.is_empty() {
@@ -219,7 +348,9 @@ pub fn update(archive: &Path, entry: &str, data_root: &Path, password: &str, hea
     if header_encrypted {
         cmd.arg("-mhe=on");
     }
-    cmd.arg(archive).arg(entry.replace('/', "\\")).current_dir(data_root);
+    cmd.arg(archive)
+        .arg(entry.replace('/', "\\"))
+        .current_dir(data_root);
     run(cmd)?;
     Ok(())
 }
@@ -248,7 +379,12 @@ pub(crate) fn available() -> bool {
 
 // src_root 直下のファイル群から書庫を作る (テスト専用。アプリ本体は書庫を新規作成しない)
 #[cfg(test)]
-pub(crate) fn create_archive_for_test(archive: &Path, src_root: &Path, password: &str, header: bool) -> io::Result<()> {
+pub(crate) fn create_archive_for_test(
+    archive: &Path,
+    src_root: &Path,
+    password: &str,
+    header: bool,
+) -> io::Result<()> {
     let mut cmd = base_command()?;
     if !password.is_empty() {
         cmd.arg(format!("-p{password}"));
@@ -294,16 +430,23 @@ mod tests {
         }
         let root = temp_root("plain");
         let archive = create_archive(&root, "t.7z", "", false);
-        assert_eq!(list(&archive, "").unwrap(), vec!["a.txt".to_string(), "sub/b.txt".to_string()]);
+        assert_eq!(
+            list(&archive, "").unwrap(),
+            vec!["a.txt".to_string(), "sub/b.txt".to_string()]
+        );
         assert_eq!(extract(&archive, "sub/b.txt", "").unwrap(), b"world\n");
-        assert!(!is_header_encrypted(&archive));
+        assert!(!is_header_encrypted(&archive).unwrap());
 
         let edit_root = root.join("edit");
         std::fs::create_dir_all(edit_root.join("sub")).unwrap();
         std::fs::write(edit_root.join("sub").join("b.txt"), "updated\n").unwrap();
         update(&archive, "sub/b.txt", &edit_root, "", false).unwrap();
         assert_eq!(extract(&archive, "sub/b.txt", "").unwrap(), b"updated\n");
-        assert_eq!(extract(&archive, "a.txt", "").unwrap(), b"hello\n", "他エントリは無傷");
+        assert_eq!(
+            extract(&archive, "a.txt", "").unwrap(),
+            b"hello\n",
+            "他エントリは無傷"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -319,7 +462,7 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
         assert!(err.to_string().contains(PASSWORD_ERROR_MARKER));
         assert!(list(&archive, "bad").is_err());
-        assert!(is_header_encrypted(&archive));
+        assert!(is_header_encrypted(&archive).unwrap());
 
         assert_eq!(list(&archive, "secret").unwrap().len(), 2);
         assert_eq!(extract(&archive, "a.txt", "secret").unwrap(), b"hello\n");
@@ -329,7 +472,10 @@ mod tests {
         std::fs::create_dir_all(&edit_root).unwrap();
         std::fs::write(edit_root.join("a.txt"), "reworked\n").unwrap();
         update(&archive, "a.txt", &edit_root, "secret", true).unwrap();
-        assert!(is_header_encrypted(&archive), "保存後もヘッダ暗号化のまま");
+        assert!(
+            is_header_encrypted(&archive).unwrap(),
+            "保存後もヘッダ暗号化のまま"
+        );
         assert_eq!(extract(&archive, "a.txt", "secret").unwrap(), b"reworked\n");
         let _ = std::fs::remove_dir_all(&root);
     }

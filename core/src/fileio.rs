@@ -109,7 +109,10 @@ fn stamp_of(file: &File) -> io::Result<FileStamp> {
 }
 
 fn stamp_of_metadata(meta: std::fs::Metadata) -> io::Result<FileStamp> {
-    Ok(FileStamp { len: meta.len(), mtime: meta.modified()? })
+    Ok(FileStamp {
+        len: meta.len(),
+        mtime: meta.modified()?,
+    })
 }
 
 pub struct Opened {
@@ -118,7 +121,7 @@ pub struct Opened {
     pub eol: Eol,
     // ZIP/.xls のエントリ一覧 (閲覧専用のフォルダビュー用)。buf は先頭エントリ
     pub entries: Option<Vec<crate::ziptext::Entry>>,
-    pub byte_len: u64, // ステータスバー表示用。開いた実体のバイト数
+    pub byte_len: u64,             // ステータスバー表示用。開いた実体のバイト数
     pub source_file: Option<File>, // mmap/アーカイブのみ排他保持。小ファイルは None
     pub stamp: Option<FileStamp>,  // ハンドル非保持 (=外部編集可) の場合のみ Some
 }
@@ -137,7 +140,10 @@ fn opened_from_entries(entries: Vec<crate::ziptext::Entry>, source_file: File) -
 }
 
 pub fn open_exclusive(path: &Path) -> io::Result<File> {
-    OpenOptions::new().read(true).share_mode(FILE_SHARE_READ).open(path)
+    OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(path)
 }
 
 pub fn read_locked(file: &File) -> io::Result<Vec<u8>> {
@@ -149,7 +155,9 @@ pub fn read_locked(file: &File) -> io::Result<Vec<u8>> {
 }
 
 pub fn is_archive_handle(file: &File) -> bool {
-    let Ok(mut f) = file.try_clone() else { return false };
+    let Ok(mut f) = file.try_clone() else {
+        return false;
+    };
     if f.seek(SeekFrom::Start(0)).is_err() {
         return false;
     }
@@ -187,7 +195,15 @@ fn open_buffer_impl(path: &Path, threshold: u64) -> io::Result<Opened> {
         // シグネチャはあるが解析不能 → 通常テキストとして扱う
         let (text, enc) = decode(&bytes);
         let eol = detect_eol(&text);
-        return Ok(Opened { buf: TextBuffer::from_text(&text), enc, eol, entries: None, byte_len: len, source_file: Some(source_file), stamp: None });
+        return Ok(Opened {
+            buf: TextBuffer::from_text(&text),
+            enc,
+            eol,
+            entries: None,
+            byte_len: len,
+            source_file: Some(source_file),
+            stamp: None,
+        });
     }
 
     // UTF-16LE (行分割が byte 単位不可) と空ファイルは None/スキップして通常読込へ
@@ -208,7 +224,15 @@ fn open_buffer_impl(path: &Path, threshold: u64) -> io::Result<Opened> {
     let bytes = read_locked(&source_file)?;
     let (text, enc) = decode(&bytes);
     let eol = detect_eol(&text);
-    Ok(Opened { buf: TextBuffer::from_text(&text), enc, eol, entries: None, byte_len: len, source_file: Some(source_file), stamp: None })
+    Ok(Opened {
+        buf: TextBuffer::from_text(&text),
+        enc,
+        eol,
+        entries: None,
+        byte_len: len,
+        source_file: Some(source_file),
+        stamp: None,
+    })
 }
 
 // 小ファイル経路: stamp を読取前に記録してから RAM へ読み切り、ハンドルを解放する
@@ -258,11 +282,17 @@ pub fn open_buffer_as(path: &Path, requested: Encoding) -> io::Result<Opened> {
     const MAX_UTF16_BYTES: u64 = 256 * 1024 * 1024;
     let probe = File::open(path)?;
     if is_archive_handle(&probe) {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "アーカイブは文字コードを指定して再読込できません"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "アーカイブは文字コードを指定して再読込できません",
+        ));
     }
     let len = probe.metadata()?.len();
     if requested == Encoding::Utf16Le && len > MAX_UTF16_BYTES {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "256MBを超えるUTF-16LEファイルは指定再読込できません"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "256MBを超えるUTF-16LEファイルは指定再読込できません",
+        ));
     }
     if len == 0 || len < MMAP_THRESHOLD {
         return read_released(probe, len, |b| decode_as(b, requested));
@@ -270,30 +300,62 @@ pub fn open_buffer_as(path: &Path, requested: Encoding) -> io::Result<Opened> {
     drop(probe);
     let source_file = open_exclusive(path)?;
     if let Some((h, enc, eol)) = HugeBuf::open_as(source_file.try_clone()?, requested)? {
-        return Ok(Opened { buf: TextBuffer::from_huge(h), enc, eol, entries: None, byte_len: len, source_file: Some(source_file), stamp: None });
+        return Ok(Opened {
+            buf: TextBuffer::from_huge(h),
+            enc,
+            eol,
+            entries: None,
+            byte_len: len,
+            source_file: Some(source_file),
+            stamp: None,
+        });
     }
     let bytes = read_locked(&source_file)?;
     let (text, enc) = decode_as(&bytes, requested)?;
     let eol = detect_eol(&text);
-    Ok(Opened { buf: TextBuffer::from_text(&text), enc, eol, entries: None, byte_len: len, source_file: Some(source_file), stamp: None })
+    Ok(Opened {
+        buf: TextBuffer::from_text(&text),
+        enc,
+        eol,
+        entries: None,
+        byte_len: len,
+        source_file: Some(source_file),
+        stamp: None,
+    })
 }
 
 fn decode_as(bytes: &[u8], requested: Encoding) -> io::Result<(String, Encoding)> {
     match requested {
         Encoding::Utf8 { .. } => {
-            let (body, bom) = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) { (&bytes[3..], true) } else { (bytes, false) };
-            let text = String::from_utf8(body.to_vec()).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "UTF-8として読み込めません"))?;
+            let (body, bom) = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+                (&bytes[3..], true)
+            } else {
+                (bytes, false)
+            };
+            let text = String::from_utf8(body.to_vec()).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "UTF-8として読み込めません")
+            })?;
             Ok((text, Encoding::Utf8 { bom }))
         }
         Encoding::ShiftJis => {
             let (text, _, had_errors) = SHIFT_JIS.decode(bytes);
-            if had_errors { return Err(io::Error::new(io::ErrorKind::InvalidData, "Shift-JISとして読み込めません")); }
+            if had_errors {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Shift-JISとして読み込めません",
+                ));
+            }
             Ok((text.into_owned(), Encoding::ShiftJis))
         }
         Encoding::Utf16Le => {
             let body = bytes.strip_prefix(&[0xFF, 0xFE]).unwrap_or(bytes);
             let (text, _, had_errors) = encoding_rs::UTF_16LE.decode(body);
-            if had_errors { return Err(io::Error::new(io::ErrorKind::InvalidData, "UTF-16LEとして読み込めません")); }
+            if had_errors {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "UTF-16LEとして読み込めません",
+                ));
+            }
             Ok((text.into_owned(), Encoding::Utf16Le))
         }
     }
@@ -336,10 +398,12 @@ fn encode_str<'a>(enc: Encoding, s: &'a str) -> io::Result<Cow<'a, [u8]>> {
     Ok(match enc {
         Encoding::Utf8 { .. } => Cow::Borrowed(s.as_bytes()),
         Encoding::ShiftJis => match SHIFT_JIS.encode(s) {
-            (_, _, true) => return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Shift-JISで表現できない文字が含まれています",
-            )),
+            (_, _, true) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Shift-JISで表現できない文字が含まれています",
+                ))
+            }
             (Cow::Borrowed(b), _, false) => Cow::Borrowed(b),
             (Cow::Owned(v), _, false) => Cow::Owned(v),
         },
@@ -374,7 +438,10 @@ impl SaveTransaction {
         let temp = self.temp.take().unwrap();
         match std::fs::rename(&temp, target) {
             Ok(()) => Ok(()),
-            Err(error) => Err(SaveCommitError { error: Some(error), temp: Some(temp) }),
+            Err(error) => Err(SaveCommitError {
+                error: Some(error),
+                temp: Some(temp),
+            }),
         }
     }
 }
@@ -392,7 +459,6 @@ impl SaveCommitError {
     pub fn into_error(mut self) -> io::Error {
         self.error.take().unwrap()
     }
-
 }
 
 impl Drop for SaveCommitError {
@@ -414,11 +480,21 @@ pub(crate) fn conflict_path(path: &Path) -> PathBuf {
         "{:04}{:02}{:02}-{:02}{:02}{:02}",
         now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond
     );
-    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "無題".into());
-    let ext = path.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "無題".into());
+    let ext = path
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
     let dir = path.parent().unwrap_or(Path::new("."));
     for number in 1.. {
-        let numbered = if number == 1 { String::new() } else { format!("-{number}") };
+        let numbered = if number == 1 {
+            String::new()
+        } else {
+            format!("-{number}")
+        };
         let candidate = dir.join(format!("{stem}.conflict-{ts}{numbered}{ext}"));
         if !candidate.exists() {
             return candidate;
@@ -435,13 +511,18 @@ pub fn begin_save(
     eol: Eol,
 ) -> io::Result<SaveTransaction> {
     let mut tmp = path.as_os_str().to_owned();
-    tmp.push(format!(".mptmp-{}-{}", std::process::id(), TEMP_SEQ.fetch_add(1, Ordering::Relaxed)));
+    tmp.push(format!(
+        ".mptmp-{}-{}",
+        std::process::id(),
+        TEMP_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
     let tmp = PathBuf::from(tmp);
     let write_result = (|| -> io::Result<()> {
         let f = std::fs::File::create(&tmp)?;
         let mut w = BufWriter::with_capacity(1 << 20, f);
         write_stream(&mut w, buf, enc, eol)?;
         w.flush()?;
+        w.get_ref().sync_all()?;
         Ok(())
     })();
     if let Err(error) = write_result {
@@ -514,10 +595,19 @@ mod tests {
     }
 
     fn assert_exclusive_until_drop(path: &Path, opened: Opened) {
-        assert!(File::open(path).is_ok(), "読み取り専用アクセスは許可するはず");
-        assert!(OpenOptions::new().write(true).open(path).is_err(), "書き込みを拒否するはず");
+        assert!(
+            File::open(path).is_ok(),
+            "読み取り専用アクセスは許可するはず"
+        );
+        assert!(
+            OpenOptions::new().write(true).open(path).is_err(),
+            "書き込みを拒否するはず"
+        );
         let renamed = path.with_extension("locked-rename");
-        assert!(std::fs::rename(path, &renamed).is_err(), "名前変更を拒否するはず");
+        assert!(
+            std::fs::rename(path, &renamed).is_err(),
+            "名前変更を拒否するはず"
+        );
         assert!(std::fs::remove_file(path).is_err(), "削除を拒否するはず");
         drop(opened);
         assert!(File::open(path).is_ok(), "文書解放後は読み取れるはず");
@@ -525,14 +615,23 @@ mod tests {
     }
 
     fn assert_released(path: &Path, opened: &Opened) {
-        assert!(opened.source_file.is_none(), "小ファイルはハンドルを保持しないはず");
-        assert!(opened.stamp.is_some(), "小ファイルは外部変更検知用の stamp を持つはず");
+        assert!(
+            opened.source_file.is_none(),
+            "小ファイルはハンドルを保持しないはず"
+        );
+        assert!(
+            opened.stamp.is_some(),
+            "小ファイルは外部変更検知用の stamp を持つはず"
+        );
         assert!(
             OpenOptions::new().write(true).open(path).is_ok(),
             "開いている間も他アプリの書き込みを許可するはず"
         );
         let renamed = path.with_extension("free-rename");
-        assert!(std::fs::rename(path, &renamed).is_ok(), "名前変更も許可するはず");
+        assert!(
+            std::fs::rename(path, &renamed).is_ok(),
+            "名前変更も許可するはず"
+        );
         std::fs::rename(&renamed, path).unwrap();
     }
 
@@ -565,7 +664,12 @@ mod tests {
         let (sjis, _, _) = SHIFT_JIS.encode("日本語");
         assert_eq!(decode_as(&sjis, Encoding::ShiftJis).unwrap().0, "日本語");
         assert!(decode_as(&sjis, Encoding::Utf8 { bom: false }).is_err());
-        assert_eq!(decode_as(b"\xEF\xBB\xBFhello", Encoding::Utf8 { bom: false }).unwrap().1, Encoding::Utf8 { bom: true });
+        assert_eq!(
+            decode_as(b"\xEF\xBB\xBFhello", Encoding::Utf8 { bom: false })
+                .unwrap()
+                .1,
+            Encoding::Utf8 { bom: true }
+        );
     }
 
     #[test]
@@ -655,7 +759,10 @@ mod tests {
 
     #[test]
     fn mmap_and_ram_buffers_apply_edits_identically() {
-        let mut original = (0..4100).map(|i| i.to_string()).collect::<Vec<_>>().join("\n");
+        let mut original = (0..4100)
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
         original.replace_range(
             original.match_indices('\n').nth(4095).unwrap().0 + 1
                 ..original.match_indices('\n').nth(4096).unwrap().0,
@@ -664,18 +771,31 @@ mod tests {
         let path = unique_temp_path("buffer_equivalence");
         std::fs::write(&path, &original).unwrap();
         let opened = open_buffer_impl(&path, 0).unwrap();
-        let Opened { mut buf, source_file, .. } = opened;
+        let Opened {
+            mut buf,
+            source_file,
+            ..
+        } = opened;
         let mut ram = TextBuffer::from_text(&original);
 
-        let insert_at = crate::buffer::Pos { line: 4096, col: "日".len() };
+        let insert_at = crate::buffer::Pos {
+            line: 4096,
+            col: "日".len(),
+        };
         let huge_end = buf.insert(insert_at, "X\nY");
         let ram_end = ram.insert(insert_at, "X\nY");
         assert_eq!(huge_end, ram_end);
 
         let delete_from = crate::buffer::Pos { line: 4094, col: 1 };
         let delete_to = crate::buffer::Pos { line: 4098, col: 1 };
-        assert_eq!(buf.range_text(delete_from, delete_to), ram.range_text(delete_from, delete_to));
-        assert_eq!(buf.delete(delete_from, delete_to), ram.delete(delete_from, delete_to));
+        assert_eq!(
+            buf.range_text(delete_from, delete_to),
+            ram.range_text(delete_from, delete_to)
+        );
+        assert_eq!(
+            buf.delete(delete_from, delete_to),
+            ram.delete(delete_from, delete_to)
+        );
         assert_eq!(buf.line_count(), ram.line_count());
         for line in 0..buf.line_count() {
             assert_eq!(buf.line(line), ram.line(line));

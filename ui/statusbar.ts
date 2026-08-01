@@ -27,6 +27,7 @@ export interface StatusBarPorts {
   onIndent: (size: number) => void;
   // 再読込を受け入れたら true。false なら選択を元へ戻す (成否の判断は呼び出し側に残す)
   onReadEncoding: (encoding: ReadEncoding) => Promise<boolean>;
+  onError?: (title: string, error: unknown) => void | Promise<void>;
 }
 
 // ステータスバー全体 (#statusbar) を1つの部品として閉じる。表示中の文書がどう
@@ -48,26 +49,46 @@ export class StatusBar {
       ...READ_ENCODINGS.map((encoding) => option(encoding, READ_ENCODING_LABELS[encoding])),
     );
     this.pick("st-theme").addEventListener("click", () => {
-      const current = (document.documentElement.getAttribute("data-theme") as Theme) ?? "dark";
-      this.applyTheme(THEMES[(THEMES.indexOf(current) + 1) % THEMES.length]);
+      this.run("テーマを変更できませんでした", () => {
+        const current = (document.documentElement.getAttribute("data-theme") as Theme) ?? "dark";
+        this.applyTheme(THEMES[(THEMES.indexOf(current) + 1) % THEMES.length]);
+      });
     });
-    this.pick("st-font").addEventListener("click", () => void this.promptFont());
-    this.pick("st-font-size").addEventListener("click", () => void this.promptFontSize());
+    this.pick("st-font").addEventListener("click", () => this.run("フォントを変更できませんでした", () => this.promptFont()));
+    this.pick("st-font-size").addEventListener("click", () => this.run("文字サイズを変更できませんでした", () => this.promptFontSize()));
     this.pick("st-wrap").addEventListener("click", () => {
-      this.wrap = !this.wrap;
-      this.pick("st-wrap").textContent = `折り返し: ${this.wrap ? "オン" : "オフ"}`;
-      this.ports.onWrap(this.wrap);
+      this.run("折り返しを変更できませんでした", () => {
+        this.wrap = !this.wrap;
+        this.pick("st-wrap").textContent = `折り返し: ${this.wrap ? "オン" : "オフ"}`;
+        this.ports.onWrap(this.wrap);
+      });
     });
     this.indentSelect.addEventListener("change", () => {
-      this.ports.onIndent(Number(this.indentSelect.value));
+      this.run("インデント幅を変更できませんでした", () => this.ports.onIndent(Number(this.indentSelect.value)));
     });
-    this.pick("st-pos").addEventListener("click", () => void this.promptGoTo());
-    this.pick("st-lines").addEventListener("click", () => void this.promptGoToLast());
-    this.sourceEncodingSelect.addEventListener("change", () => void this.requestReadEncoding());
+    this.pick("st-pos").addEventListener("click", () => this.run("指定行へ移動できませんでした", () => this.promptGoTo()));
+    this.pick("st-lines").addEventListener("click", () => this.run("最後の行へ移動できませんでした", () => this.promptGoToLast()));
+    this.sourceEncodingSelect.addEventListener("change", () => this.run("文字コードを変更できませんでした", () => this.requestReadEncoding()));
   }
 
   private pick<T extends HTMLElement>(id: string): T {
     return this.host.querySelector<T>(`#${id}`)!;
+  }
+
+  private run(title: string, operation: () => void | Promise<unknown>) {
+    try {
+      void Promise.resolve(operation()).catch((error) => this.reportError(title, error));
+    } catch (error) {
+      void this.reportError(title, error);
+    }
+  }
+
+  private async reportError(title: string, error: unknown) {
+    try {
+      await this.ports.onError?.(title, error);
+    } catch (reportError) {
+      console.error(`${title}のエラーを表示できませんでした`, reportError);
+    }
   }
 
   private get indentSelect() {

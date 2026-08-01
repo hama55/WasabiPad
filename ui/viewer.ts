@@ -115,8 +115,12 @@ function reportWindowError(title: string, error: unknown) {
   });
 }
 
+function runViewerOperation(title: string, operation: () => void | Promise<unknown>) {
+  void Promise.resolve().then(operation).catch((error) => reportWindowError(title, error));
+}
+
 function runWindowAction(title: string, operation: () => Promise<void>) {
-  void operation().catch((error) => reportWindowError(title, error));
+  runViewerOperation(title, operation);
 }
 
 function bindWindowControls() {
@@ -130,8 +134,8 @@ function bindWindowControls() {
     await win.toggleMaximize();
     await syncMaxIcon();
   }));
-  fontButton.addEventListener("click", () => void promptFont());
-  fontSizeButton.addEventListener("click", () => void promptFontSize());
+  fontButton.addEventListener("click", () => runViewerOperation("フォントを変更できませんでした", promptFont));
+  fontSizeButton.addEventListener("click", () => runViewerOperation("文字サイズを変更できませんでした", promptFontSize));
   content.addEventListener("wheel", onViewerWheel, { passive: false });
   void win.onResized(() => {
     void syncMaxIcon().catch((error) => reportWindowError("最大化状態を取得できませんでした", error));
@@ -208,27 +212,33 @@ async function loadArchiveImages(
 ) {
   const images = [...article.querySelectorAll<HTMLImageElement>("img")];
   await Promise.all(images.map(async (image) => {
-    const src = image.getAttribute("src") ?? "";
-    const entry = resolveArchiveAssetEntry(archiveEntry, src);
-    if (archivePath && archiveEntry && entry) {
-      try {
-        const bytes = await readArchiveAsset(archivePath, entry);
-        if (generation !== markdownRenderGeneration) return;
-        const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: archiveAssetMimeType(src) }));
-        archiveAssetUrls.push(url);
-        image.src = url;
-        await waitForImageLayout(image);
-      } catch {
-        if (generation !== markdownRenderGeneration) return;
-        image.removeAttribute("src");
-        image.alt = `${image.alt || "画像"}（読み込めません）`;
+    try {
+      const src = image.getAttribute("src") ?? "";
+      const entry = resolveArchiveAssetEntry(archiveEntry, src);
+      if (archivePath && archiveEntry && entry) {
+        try {
+          const bytes = await readArchiveAsset(archivePath, entry);
+          if (generation !== markdownRenderGeneration) return;
+          const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: archiveAssetMimeType(src) }));
+          archiveAssetUrls.push(url);
+          image.src = url;
+          await waitForImageLayout(image);
+        } catch {
+          if (generation !== markdownRenderGeneration) return;
+          image.removeAttribute("src");
+          image.alt = `${image.alt || "画像"}（読み込めません）`;
+        }
+        return;
       }
-      return;
-    }
-    const resolved = resolveAssetPath(currentSourcePath, src);
-    if (resolved && generation === markdownRenderGeneration) {
-      image.src = convertFileSrc(resolved);
-      await waitForImageLayout(image);
+      const resolved = resolveAssetPath(currentSourcePath, src);
+      if (resolved && generation === markdownRenderGeneration) {
+        image.src = convertFileSrc(resolved);
+        await waitForImageLayout(image);
+      }
+    } catch {
+      if (generation !== markdownRenderGeneration) return;
+      image.removeAttribute("src");
+      image.alt = `${image.alt || "画像"}（読み込めません）`;
     }
   }));
 }
@@ -237,13 +247,16 @@ async function waitForImageLayout(image: HTMLImageElement) {
   if (!image.getAttribute("src")) return;
   if (!image.complete) {
     await new Promise<void>((resolve) => {
+      let timeout: number | undefined;
       const finish = () => {
+        window.clearTimeout(timeout);
         image.removeEventListener("load", finish);
         image.removeEventListener("error", finish);
         resolve();
       };
       image.addEventListener("load", finish, { once: true });
       image.addEventListener("error", finish, { once: true });
+      timeout = window.setTimeout(finish, 2000);
       if (image.complete) finish();
     });
   }
@@ -311,9 +324,9 @@ function renderPayload(payload: ViewerPayload) {
   const sourceName = payload.source_path ? basename(payload.source_path) : "";
   const handler = VIEWER_HANDLERS[payload.format];
   title.textContent = formatTitleBar(`${sourceName ? `${sourceName} — ` : ""}${handler.label}`);
-  void win.setTitle(title.textContent);
+  runViewerOperation("タイトルを更新できませんでした", () => win.setTitle(title.textContent));
   delimiterControl.hidden = !handler.supportsDelimiter;
-  void handler.render(payload.text);
+  runViewerOperation("ビューを描画できませんでした", () => handler.render(payload.text));
 }
 
 function csvRowSelected(line: string, rowIndex: number) {
@@ -535,7 +548,7 @@ applyFont(fontFamily, fontSize, false);
     delimiterInput.addEventListener("input", () => {
       const handler = VIEWER_HANDLERS[currentFormat];
       if (!delimiterInput.value || !handler.supportsDelimiter) return;
-      void VIEWER_HANDLERS[currentFormat].render(currentText);
+      runViewerOperation("ビューを再描画できませんでした", () => VIEWER_HANDLERS[currentFormat].render(currentText));
     });
     document.getElementById("chart-close")!.addEventListener("click", closeChart);
     content.addEventListener("contextmenu", (event) => {

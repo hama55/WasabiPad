@@ -66,16 +66,16 @@ pub(crate) fn open_in_other_app(path: String) -> Result<(), String> {
     }
 }
 
-pub(crate) fn load_bookmarks() -> Vec<BookmarkNode> {
-    wasabipad_core::load_bookmarks()
+pub(crate) fn load_bookmarks() -> Result<Vec<BookmarkNode>, String> {
+    wasabipad_core::load_bookmarks().map_err(|error| error.to_string())
 }
 
 pub(crate) fn save_bookmarks(nodes: Vec<BookmarkNode>) -> Result<(), String> {
     wasabipad_core::save_bookmarks(&nodes).map_err(|e| e.to_string())
 }
 
-pub(crate) fn load_settings() -> String {
-    wasabipad_core::load_settings()
+pub(crate) fn load_settings() -> Result<String, String> {
+    wasabipad_core::load_settings().map_err(|error| error.to_string())
 }
 
 pub(crate) fn update_setting(key: String, value_json: String) -> Result<(), String> {

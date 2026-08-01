@@ -24,7 +24,7 @@ export interface WorkspaceSearchPorts {
   onError: (error: unknown) => Promise<void>;
   // 一致の範囲は result.highlights が持つ。パターンを渡さないのは、
   // 正規表現や大小の畳み込みで「当たった長さ」がパターンの長さと一致しないため。
-  onOpen: (result: WorkspaceSearchResult, newTab: boolean) => void;
+  onOpen: (result: WorkspaceSearchResult, newTab: boolean) => unknown;
   onContextMenu: (x: number, y: number, target: ContextTarget) => void;
   // 検索条件が変わった。保存先を知るのは呼び出し側 (ここは永続化を知らない)
   onOptionsChange: (options: WorkspaceSearchOptions) => void;
@@ -212,7 +212,9 @@ export class WorkspaceSearchPanel {
       return;
     }
     this.setOutcome("searching");
-    this.searchTimer = window.setTimeout(() => void this.run(gen, pat, this.options), delay);
+    this.searchTimer = window.setTimeout(() => {
+      void this.run(gen, pat, this.options).catch((error) => this.reportUiError(error));
+    }, delay);
   }
 
   // 走査量は無制限が既定なので、待たされたら止められる必要がある
@@ -435,9 +437,25 @@ export class WorkspaceSearchPanel {
     preview.appendChild(highlightedPreview(match.preview, match.highlights));
     div.append(mark, preview);
     div.title = match.preview;
-    div.addEventListener("click", () => this.ports.onOpen(match, false));
+    div.addEventListener("click", () => this.invokeOpen(match, false));
     this.bindOpen(div, match);
     return div;
+  }
+
+  private invokeOpen(match: WorkspaceSearchResult, newTab: boolean) {
+    try {
+      void Promise.resolve(this.ports.onOpen(match, newTab)).catch((error) => this.reportUiError(error));
+    } catch (error) {
+      void this.reportUiError(error);
+    }
+  }
+
+  private async reportUiError(error: unknown) {
+    try {
+      await this.ports.onError(error);
+    } catch (reportError) {
+      console.error("検索結果を開けませんでした", reportError);
+    }
   }
 
   // ホイールクリックと右クリックは、どちらの行でも「新規タブで開く」入口になる
@@ -445,7 +463,7 @@ export class WorkspaceSearchPanel {
     row.addEventListener("auxclick", (e) => {
       if (e.button !== 1) return;
       e.preventDefault();
-      this.ports.onOpen(match, true);
+      this.invokeOpen(match, true);
     });
     row.addEventListener("contextmenu", (e) => {
       e.preventDefault();

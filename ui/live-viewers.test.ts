@@ -79,4 +79,26 @@ describe("LiveViewers", () => {
     expect(updateViewer).not.toHaveBeenCalled();
     vi.useRealTimers();
   });
+
+  it("文書切替後に保留中の旧ビュー更新を続けない", async () => {
+    vi.useFakeTimers();
+    let resolveUpdate!: (exists: boolean) => void;
+    const updateViewer = vi.fn(() => new Promise<boolean>((resolve) => { resolveUpdate = resolve; }));
+    const viewers = new LiveViewers({
+      openViewer: async () => "viewer-1",
+      updateViewer,
+      wholeRange: async () => ({ start: { line: 0, col: 0 }, end: { line: 0, col: 0 } }),
+      textInRange: async () => "text",
+    });
+
+    await viewers.open("csv", null, { start: { line: 0, col: 0 }, end: { line: 0, col: 0 } });
+    viewers.scheduleRefresh();
+    await vi.advanceTimersByTimeAsync(120);
+    viewers.clear();
+    resolveUpdate(true);
+    await Promise.resolve();
+
+    expect(updateViewer).toHaveBeenCalledOnce();
+    vi.useRealTimers();
+  });
 });

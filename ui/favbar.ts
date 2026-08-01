@@ -26,7 +26,7 @@ export const bookmarkStore: BookmarkStore = {
 };
 
 export interface FavBarPorts {
-  onOpen: (path: string, newTab: boolean) => void;
+  onOpen: (path: string, newTab: boolean) => unknown;
   onAddGroupToTabs: (items: { path: string; kind: "file" | "folder" }[]) => void;
   currentFile: () => string | null;
   onError: (error: unknown) => Promise<void>;
@@ -34,6 +34,7 @@ export interface FavBarPorts {
 
 export class FavBar {
   private nodes: BmNode[] = [];
+  private loadFailed = false;
   private pending: { source: NodePath; x: number; y: number } | null = null;
   private drag: {
     source: NodePath;
@@ -62,8 +63,8 @@ export class FavBar {
       if (e.target !== this.host) return;
       e.preventDefault();
       showMenu(e.clientX, e.clientY, [
-        { label: "パスを追加...", action: () => this.addPath() },
-        { label: "グループを追加...", action: () => this.addGroup() },
+        { label: "パスを追加...", action: () => this.runMutation(() => this.addPath()) },
+        { label: "グループを追加...", action: () => this.runMutation(() => this.addGroup()) },
       ]);
     });
     // WebView2 のネイティブ drag-drop が HTML5 DnD を奪うため pointer で自作する
@@ -73,7 +74,13 @@ export class FavBar {
   }
 
   async init() {
-    this.nodes = await this.store.load();
+    try {
+      this.nodes = await this.store.load();
+      this.loadFailed = false;
+    } catch (error) {
+      this.loadFailed = true;
+      await this.reportDropError(error);
+    }
     this.render();
   }
 
@@ -97,9 +104,9 @@ export class FavBar {
       });
     } else {
       button.title = node.path;
-      button.addEventListener("click", (e) => this.onOpen(node.path, e.ctrlKey));
+      button.addEventListener("click", (e) => this.runOpen(node.path, e.ctrlKey));
       button.addEventListener("auxclick", (e) => {
-        if (e.button === 1) this.onOpen(node.path, true);
+        if (e.button === 1) this.runOpen(node.path, true);
       });
     }
 
@@ -137,7 +144,7 @@ export class FavBar {
             ...common,
             onContextMenu,
             label: child.name,
-            action: (e?: MouseEvent) => this.onOpen(child.path, e?.ctrlKey || e?.button === 1),
+            action: (e?: MouseEvent) => this.runOpen(child.path, Boolean(e?.ctrlKey || e?.button === 1)),
           };
     });
   }
@@ -160,8 +167,8 @@ export class FavBar {
       );
     } else {
       items.push(
-        { label: "新規タブで開く", action: () => this.onOpen(node.path, true) },
-        { label: "エクスプローラで開く", action: () => void revealInExplorer(node.path, node.kind === "directory"), sep: true },
+        { label: "新規タブで開く", action: () => this.runOpen(node.path, true) },
+        { label: "エクスプローラで開く", action: () => this.runMutation(() => revealInExplorer(node.path, node.kind === "directory")), sep: true },
         { label: "編集...", action: () => this.runMutation(() => this.editPath(path)) }
       );
     }
@@ -352,7 +359,19 @@ export class FavBar {
   }
 
   private runMutation(operation: () => Promise<void>) {
-    void operation().catch((error) => this.reportDropError(error));
+    try {
+      void Promise.resolve(operation()).catch((error) => this.reportDropError(error));
+    } catch (error) {
+      void this.reportDropError(error);
+    }
+  }
+
+  private runOpen(path: string, newTab: boolean) {
+    try {
+      void Promise.resolve(this.onOpen(path, newTab)).catch((error) => this.reportDropError(error));
+    } catch (error) {
+      void this.reportDropError(error);
+    }
   }
 
   private async moveAdjacent(source: NodePath, target: NodePath, after: boolean) {
@@ -463,15 +482,23 @@ export class FavBar {
   }
 
   private async mutateAndPersist(mutate: () => void) {
+    if (this.loadFailed) {
+      throw new Error("お気に入りを読み込めないため変更を保存できません");
+    }
     const before = structuredClone(this.nodes);
     try {
       mutate();
       await this.store.save(this.nodes);
-      this.render();
     } catch (error) {
       this.nodes = before;
-      this.render();
+      try {
+        this.render();
+      } catch (renderError) {
+        console.error("お気に入りの失敗状態を画面へ戻せませんでした", renderError);
+      }
       throw error;
     }
+    // 保存済みの変更を、後続の描画失敗で巻き戻すとメモリとディスクが不一致になる。
+    this.render();
   }
 }

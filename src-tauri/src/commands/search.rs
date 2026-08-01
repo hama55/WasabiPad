@@ -34,11 +34,18 @@ pub(crate) async fn workspace_search(
         .ok_or_else(|| "folder is not open".to_string())?;
     let flag = take_over_search(&cancel)?;
     tauri::async_runtime::spawn_blocking(move || {
+        let emit_flag = Arc::clone(&flag);
         let emit = |results| {
-            let _ = app.emit(
-                EVENT_WORKSPACE_SEARCH_BATCH,
-                WorkspaceSearchBatch { search_id, results },
-            );
+            if app
+                .emit(
+                    EVENT_WORKSPACE_SEARCH_BATCH,
+                    WorkspaceSearchBatch { search_id, results },
+                )
+                .is_err()
+            {
+                // WebViewが閉じた後も走査を続けると、結果を誰にも届けられない。
+                emit_flag.store(true, Ordering::Relaxed);
+            }
         };
         wasabipad_core::search_workspace(&root, &pat, &options, &flag, &emit)
     })

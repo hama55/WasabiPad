@@ -52,11 +52,13 @@ impl InstanceServer {
     }
 
     pub(crate) fn start(&self, app: &AppHandle) {
-        let listener = self
-            .listener
-            .lock()
-            .ok()
-            .and_then(|mut listener| listener.take());
+        let listener = match self.listener.lock() {
+            Ok(mut listener) => listener.take(),
+            Err(poisoned) => {
+                eprintln!("インスタンス受付のロックが壊れたため、既存状態を保持して復旧します");
+                poisoned.into_inner().take()
+            }
+        };
         let Some(listener) = listener else { return };
         let pending = Arc::clone(&self.pending);
         let app = app.clone();
@@ -66,8 +68,12 @@ impl InstanceServer {
                 let Some(request) = read_window_request(stream) else {
                     continue;
                 };
-                if let Ok(mut requests) = pending.lock() {
-                    requests.push(request);
+                match pending.lock() {
+                    Ok(mut requests) => requests.push(request),
+                    Err(poisoned) => {
+                        eprintln!("外部起動要求のロックが壊れたため、待機要求を保持して復旧します");
+                        poisoned.into_inner().push(request);
+                    }
                 }
                 let _ = app.emit(EVENT_EXTERNAL_WINDOW_REQUEST, ());
             }
@@ -206,9 +212,11 @@ pub(crate) fn initial_window_request() -> Result<WindowRequest, String> {
 pub(crate) fn take_pending_window_requests(
     state: &tauri::State<'_, InstanceServer>,
 ) -> Vec<WindowRequest> {
-    state
-        .pending
-        .lock()
-        .map(|mut requests| std::mem::take(&mut *requests))
-        .unwrap_or_default()
+    match state.pending.lock() {
+        Ok(mut requests) => std::mem::take(&mut *requests),
+        Err(poisoned) => {
+            eprintln!("外部起動要求のロックが壊れたため、待機要求を保持して取り出します");
+            std::mem::take(&mut *poisoned.into_inner())
+        }
+    }
 }

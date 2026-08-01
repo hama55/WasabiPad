@@ -16,12 +16,14 @@ export interface LiveViewerPorts {
   // range が null のときに映すべき全文の範囲
   wholeRange: () => Promise<{ start: Pos; end: Pos }>;
   textInRange: (start: Pos, end: Pos) => Promise<string>;
+  onError?: (error: unknown) => void | Promise<void>;
 }
 
 export class LiveViewers {
   private viewers = new Map<string, { format: ViewerFormat; range: TrackedRange | null; selection: ViewerSelection | null }>();
   private timer: number | undefined;
   private generation = 0;
+  private errorReported = false;
 
   constructor(private ports: LiveViewerPorts) {}
 
@@ -29,6 +31,8 @@ export class LiveViewers {
     this.generation++;
     this.viewers.clear();
     window.clearTimeout(this.timer);
+    this.timer = undefined;
+    this.errorReported = false;
   }
 
   has(format: ViewerFormat) {
@@ -62,17 +66,36 @@ export class LiveViewers {
   scheduleRefresh() {
     if (!this.viewers.size) return;
     window.clearTimeout(this.timer);
-    this.timer = window.setTimeout(() => { void this.refresh(); }, DEBOUNCE_MS);
+    const generation = this.generation;
+    this.timer = window.setTimeout(() => {
+      this.timer = undefined;
+      void this.refresh(generation).catch(() => {
+        // 個別ビューの更新失敗は refresh 内で隔離する。ここは予期しない
+        // コレクション/実装エラーが未処理Promiseになるのを防ぐ境界。
+      });
+    }, DEBOUNCE_MS);
   }
 
-  private async refresh() {
+  private async refresh(generation: number) {
     for (const [label, viewer] of [...this.viewers]) {
+      if (generation !== this.generation) return;
       try {
         const { start, end } = viewer.range ?? (await this.ports.wholeRange());
-        const exists = await this.ports.updateViewer(label, await this.ports.textInRange(start, end), viewer.selection);
+        const text = await this.ports.textInRange(start, end);
+        if (generation !== this.generation) return;
+        const exists = await this.ports.updateViewer(label, text, viewer.selection);
+        if (generation !== this.generation) return;
+        this.errorReported = false;
         if (!exists) this.viewers.delete(label);
-      } catch {
+      } catch (error) {
         // 一時的なIPC/文書読込み失敗で追随を永久停止しない。次の編集で再試行する。
+        if (this.errorReported) continue;
+        this.errorReported = true;
+        try {
+          await this.ports.onError?.(error);
+        } catch (reportError) {
+          console.error("プレビュー更新エラーを表示できませんでした", reportError);
+        }
       }
     }
   }

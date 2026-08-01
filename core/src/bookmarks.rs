@@ -45,29 +45,47 @@ fn serialize_into(nodes: &[Node], depth: usize, out: &mut String) {
 }
 
 // path は常に Group を指す (parse が push 直後の添字のみ積むため)
-fn descend<'a>(mut list: &'a mut Vec<Node>, path: &[usize]) -> &'a mut Vec<Node> {
+fn descend<'a>(mut list: &'a mut Vec<Node>, path: &[usize]) -> io::Result<&'a mut Vec<Node>> {
     for &i in path {
         match list.get_mut(i) {
             Some(Node::Group { children, .. }) => list = children,
-            _ => unreachable!(),
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "お気に入りの階層が壊れています",
+                ))
+            }
         }
     }
-    list
+    Ok(list)
 }
 
-fn parse(text: &str) -> Vec<Node> {
+fn parse(text: &str) -> io::Result<Vec<Node>> {
     let mut root: Vec<Node> = Vec::new();
     // stack[d] = 深さdの親グループへのインデックス経路
     let mut path_stack: Vec<usize> = Vec::new();
     for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
         let depth = line.bytes().take_while(|&b| b == b'\t').count();
         let body = &line[depth..];
         let mut it = body.split('\t');
         let kind = it.next().unwrap_or("");
         let node = match kind {
             "l" | "f" | "d" => {
-                let name = it.next().unwrap_or("").to_string();
-                let p = it.next().unwrap_or("").to_string();
+                let name = it
+                    .next()
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "お気に入りの名前がありません")
+                    })?
+                    .to_string();
+                let p = it
+                    .next()
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "お気に入りのパスがありません")
+                    })?
+                    .to_string();
                 if kind == "d" || (kind == "l" && PathBuf::from(&p).is_dir()) {
                     Node::Directory { name, path: p }
                 } else {
@@ -75,28 +93,56 @@ fn parse(text: &str) -> Vec<Node> {
                 }
             }
             "g" => Node::Group {
-                name: it.next().unwrap_or("").to_string(),
+                name: it
+                    .next()
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "お気に入りグループ名がありません",
+                        )
+                    })?
+                    .to_string(),
                 children: Vec::new(),
             },
-            _ => continue,
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "不明なお気に入りレコードです",
+                ))
+            }
         };
+        if depth > path_stack.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "お気に入りの階層が壊れています",
+            ));
+        }
         path_stack.truncate(depth);
-        let list = descend(&mut root, &path_stack);
+        let list = descend(&mut root, &path_stack)?;
         let is_group = matches!(node, Node::Group { .. });
         list.push(node);
         if is_group {
             path_stack.push(list.len() - 1);
         }
     }
-    root
+    Ok(root)
 }
 
-pub fn load() -> Vec<Node> {
-    store_path()
-        .and_then(std::fs::read_to_string)
-        .or_else(|_| std::fs::read_to_string(legacy_store_path()))
-        .map(|t| parse(&t))
-        .unwrap_or_default()
+pub fn load() -> io::Result<Vec<Node>> {
+    let text = match store_path().and_then(std::fs::read_to_string) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            match std::fs::read_to_string(legacy_store_path()) {
+                Ok(text) => text,
+                Err(legacy_error) if legacy_error.kind() == io::ErrorKind::NotFound => {
+                    String::new()
+                }
+                Err(legacy_error) => return Err(legacy_error),
+            }
+        }
+        Err(error) => return Err(error),
+    };
+    parse(&text)
 }
 
 pub fn save(nodes: &[Node]) -> io::Result<()> {
@@ -114,14 +160,20 @@ mod tests {
         let nodes = vec![Node::Group {
             name: "work".to_string(),
             children: vec![
-                Node::File { name: "memo".to_string(), path: r"C:\work\memo.txt".to_string() },
-                Node::Directory { name: "src".to_string(), path: r"C:\work\src".to_string() },
+                Node::File {
+                    name: "memo".to_string(),
+                    path: r"C:\work\memo.txt".to_string(),
+                },
+                Node::Directory {
+                    name: "src".to_string(),
+                    path: r"C:\work\src".to_string(),
+                },
             ],
         }];
         let mut text = String::new();
         serialize_into(&nodes, 0, &mut text);
 
-        let parsed = parse(&text);
+        let parsed = parse(&text).unwrap();
         let mut reparsed_text = String::new();
         serialize_into(&parsed, 0, &mut reparsed_text);
 
@@ -130,11 +182,17 @@ mod tests {
 
     #[test]
     fn legacy_link_record_is_still_loaded_as_file() {
-        let parsed = parse("l\tmemo\tC:\\missing\\memo.txt\n");
+        let parsed = parse("l\tmemo\tC:\\missing\\memo.txt\n").unwrap();
         assert!(matches!(
             parsed.as_slice(),
             [Node::File { name, path }]
                 if name == "memo" && path == r"C:\missing\memo.txt"
         ));
+    }
+
+    #[test]
+    fn malformed_hierarchy_is_reported_instead_of_panicking() {
+        assert!(parse("f\troot\tC:\\root.txt\n\tf\tmemo\tC:\\memo.txt\n").is_err());
+        assert!(parse("unknown\tmemo\tC:\\memo.txt\n").is_err());
     }
 }

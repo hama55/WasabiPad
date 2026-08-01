@@ -95,6 +95,25 @@ describe("DocumentController", () => {
     expect(openPath).toHaveBeenCalledWith("C:\\work\\memo.txt");
   });
 
+  it("捨てた古い読込結果で後から開いた文書を上書きしない", async () => {
+    const { controller } = fakeView();
+    let resolveFirst!: (value: DocInfo) => void;
+    let resolveSecond!: (value: DocInfo) => void;
+    vi.spyOn(api, "openPath").mockImplementation((path) => new Promise((resolve) => {
+      if (path.endsWith("first.txt")) resolveFirst = resolve;
+      else resolveSecond = resolve;
+    }));
+
+    const first = controller.openPath("C:\\work\\first.txt", false);
+    const second = controller.openPath("C:\\work\\second.txt", false);
+    resolveFirst(info({ path: "C:\\work\\first.txt" }));
+    expect(await first).toBe(false);
+    resolveSecond(info({ path: "C:\\work\\second.txt" }));
+
+    expect(await second).toBe(true);
+    expect(controller.current.savePath).toBe("C:\\work\\second.txt");
+  });
+
   it("reflects an opened document into every view it owns", () => {
     const { view, controller } = fakeView();
     controller.applyDocInfo(info());

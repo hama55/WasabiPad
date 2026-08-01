@@ -2,27 +2,27 @@
 // 文書本体は core::Doc が所有し、フロントへは可視スライスだけを渡す (全文は渡さない)。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod state;
-mod instance;
-mod viewer;
 mod commands;
+mod instance;
+mod state;
+mod viewer;
 
-use wasabipad_core::{
-    self, BookmarkNode, Doc, DocInfo, EditManyItem, EditManyResult, EditResult, EncodingId,
-    Eol, ExternalCheck, FindCursor, FindOutcome, FindResult, FolderEntry, PosC,
-    ReplaceChunkResult, SaveOutcome, SearchOptions, WorkspaceSearchOutcome,
+use commands::{document, search, system};
+use instance::{
+    forward_to_latest_instance, initial_window_request as read_initial_window_request,
+    launch_new_instance as spawn_new_instance, parse_window_request,
+    take_pending_window_requests as drain_pending_window_requests, InstanceServer,
 };
 use state::{DocState, State};
 use std::collections::HashMap;
 use std::sync::{atomic::AtomicBool, Arc, Mutex};
 use tauri::{AppHandle, Manager};
-use commands::{document, search, system};
-use instance::{
-    forward_to_latest_instance, initial_window_request as read_initial_window_request,
-    launch_new_instance as spawn_new_instance, parse_window_request, take_pending_window_requests as drain_pending_window_requests,
-    InstanceServer,
-};
 use viewer::ViewerStore;
+use wasabipad_core::{
+    self, BookmarkNode, Doc, DocInfo, EditManyItem, EditManyResult, EditResult, EncodingId, Eol,
+    ExternalCheck, FindCursor, FindOutcome, FindResult, FolderEntry, PosC, ReplaceChunkResult,
+    SaveOutcome, SearchOptions, WorkspaceSearchOutcome,
+};
 
 const EVENT_EXTERNAL_WINDOW_REQUEST: &str = "external-window-request";
 const EVENT_WORKSPACE_SEARCH_BATCH: &str = "workspace-search-batch";
@@ -299,7 +299,7 @@ fn set_eol(eol: Eol, state: State) {
 }
 
 #[tauri::command]
-fn load_bookmarks() -> Vec<BookmarkNode> {
+fn load_bookmarks() -> Result<Vec<BookmarkNode>, String> {
     system::load_bookmarks()
 }
 
@@ -310,7 +310,7 @@ fn save_bookmarks(nodes: Vec<BookmarkNode>) -> Result<(), String> {
 
 // 設定値はJSONとして扱い、キー単位で更新して別プロセスの変更を巻き戻さない。
 #[tauri::command]
-fn load_settings() -> String {
+fn load_settings() -> Result<String, String> {
     system::load_settings()
 }
 
@@ -345,7 +345,11 @@ fn initial_window_request() -> Result<WindowRequest, String> {
 }
 
 #[tauri::command]
-fn read_archive_asset(archive_path: String, entry: String, state: State) -> Result<Vec<u8>, String> {
+fn read_archive_asset(
+    archive_path: String,
+    entry: String,
+    state: State,
+) -> Result<Vec<u8>, String> {
     document::read_archive_asset(archive_path, entry, state)
 }
 
@@ -374,10 +378,9 @@ mod window_request_tests {
 
     #[test]
     fn legacy_file_association_is_normalized_to_the_same_request() {
-        let request = parse_window_request(
-            [r"C:\work\memo.txt".to_string(), "+8:2".to_string()].into_iter(),
-        )
-        .unwrap();
+        let request =
+            parse_window_request([r"C:\work\memo.txt".to_string(), "+8:2".to_string()].into_iter())
+                .unwrap();
         assert!(!request.secondary);
         assert_eq!(request.path.as_deref(), Some(r"C:\work\memo.txt"));
         assert_eq!(request.goto.unwrap().col, 2);
@@ -433,12 +436,14 @@ fn main() {
     }
 
     let instance_server = InstanceServer::new();
-    tauri::Builder::default()
+    let app = match tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(Mutex::new(DocState(Doc::empty())))
         .manage(ViewerStore(Mutex::new(HashMap::new())))
-        .manage(search::SearchCancel(Mutex::new(Arc::new(AtomicBool::new(false)))))
+        .manage(search::SearchCancel(Mutex::new(Arc::new(AtomicBool::new(
+            false,
+        )))))
         .manage(instance_server)
         .setup(|app| {
             app.state::<InstanceServer>().start(app.handle());
@@ -493,10 +498,16 @@ fn main() {
             update_viewer,
         ])
         .build(tauri::generate_context!())
-        .expect("error while building WasabiPad")
-        .run(|app, event| {
-            if matches!(event, tauri::RunEvent::Exit) {
-                app.state::<InstanceServer>().remove_endpoint();
-            }
-        });
+    {
+        Ok(app) => app,
+        Err(error) => {
+            eprintln!("WasabiPadの起動準備に失敗しました: {error}");
+            return;
+        }
+    };
+    app.run(|app, event| {
+        if matches!(event, tauri::RunEvent::Exit) {
+            app.state::<InstanceServer>().remove_endpoint();
+        }
+    });
 }

@@ -87,6 +87,7 @@ export interface DocumentView {
 // 他の部品は current で読むか、ここのメソッド経由で変更する。
 export class DocumentController {
   private session = initialSession();
+  private loadRequest = 0;
 
   constructor(
     private view: DocumentView,
@@ -107,8 +108,33 @@ export class DocumentController {
   }
 
   updateTitle() {
-    this.view.setTitle(formatWindowTitle(this.session));
-    this.view.onSessionChange?.(this.session);
+    try {
+      this.view.setTitle(formatWindowTitle(this.session));
+    } catch (error) {
+      void this.reportError("タイトルを更新できませんでした", error);
+    }
+    try {
+      this.view.onSessionChange?.(this.session);
+    } catch (error) {
+      void this.reportError("タブ状態を更新できませんでした", error);
+    }
+  }
+
+  private setLoading(active: boolean, request: number) {
+    if (request !== this.loadRequest) return;
+    try {
+      this.view.setLoading(active);
+    } catch (error) {
+      void this.reportError(active ? "読み込み表示を開始できませんでした" : "読み込み表示を終了できませんでした", error);
+    }
+  }
+
+  private async reportError(title: string, error: unknown) {
+    try {
+      await this.services.showError(title, error);
+    } catch (reportError) {
+      console.error(`${title}のエラーを表示できませんでした`, reportError);
+    }
   }
 
   // アーカイブ選択後/フォルダのエントリ切替後で共通の状態反映。
@@ -128,18 +154,20 @@ export class DocumentController {
 
   async openPath(path: string, confirm = true): Promise<boolean> {
     if (confirm && !(await this.confirmDiscard())) return false;
-    this.view.setLoading(true);
+    const request = ++this.loadRequest;
     try {
+      this.setLoading(true, request);
       const info = await this.services.api.openPath(path);
+      if (request !== this.loadRequest) return false;
       this.session.selectedRelPath = "";
       this.showTree(info);
       this.applyDocInfo(info);
       return true;
     } catch (e) {
-      await this.services.showError("開けませんでした", e);
+      if (request === this.loadRequest) await this.reportError("開けませんでした", e);
       return false;
     } finally {
-      this.view.setLoading(false);
+      this.setLoading(false, request);
     }
   }
 
@@ -167,32 +195,43 @@ export class DocumentController {
   }
 
   async selectEntry(relPath: string): Promise<boolean> {
-    this.view.setLoading(true);
+    const request = ++this.loadRequest;
     try {
+      this.setLoading(true, request);
       const info = await this.services.withArchivePassword(
         archiveRelOf(relPath),
         () => this.services.api.selectEntry(relPath),
       );
+      if (request !== this.loadRequest) return false;
       this.session.selectedRelPath = relPath;
       this.applyDocInfo(info, false, false);
       // 選択した行を一覧側にも戻す。深い階層は必要ならここで展開する。
       try {
         await this.view.sidebar.selectByRelPath(relPath);
-      } catch {
+      } catch (error) {
         // 本文の読込は成功しているため、一覧の再展開失敗で選択を取り消さない。
+        await this.reportError("一覧の選択状態を更新できませんでした", error);
       }
       return true;
     } catch (error) {
-      if (!this.services.isPasswordCancelled(error)) await this.services.showError("開けませんでした", error);
+      if (request === this.loadRequest && !this.services.isPasswordCancelled(error)) {
+        await this.reportError("開けませんでした", error);
+      }
       return false;
     } finally {
-      this.view.setLoading(false);
+      this.setLoading(false, request);
     }
   }
 
   async newFile(confirm = true) {
     if (confirm && !(await this.confirmDiscard())) return;
-    await this.services.api.newDoc();
+    ++this.loadRequest;
+    try {
+      await this.services.api.newDoc();
+    } catch (error) {
+      await this.reportError("新規文書を作成できませんでした", error);
+      return;
+    }
     this.session = initialSession();
     this.view.statusbar.setFormat(this.session);
     this.view.statusbar.setByteSize(null);
@@ -206,15 +245,18 @@ export class DocumentController {
   }
 
   async reloadWithEncoding(encoding: api.ReadEncoding): Promise<boolean> {
-    this.view.setLoading(true);
+    const request = ++this.loadRequest;
     try {
-      this.applyDocInfo(await this.services.api.reloadWithEncoding(encoding));
+      this.setLoading(true, request);
+      const info = await this.services.api.reloadWithEncoding(encoding);
+      if (request !== this.loadRequest) return false;
+      this.applyDocInfo(info);
       return true;
     } catch (error) {
-      await this.services.showError("再読込できませんでした", error);
+      if (request === this.loadRequest) await this.reportError("再読込できませんでした", error);
       return false;
     } finally {
-      this.view.setLoading(false);
+      this.setLoading(false, request);
     }
   }
 
@@ -225,19 +267,24 @@ export class DocumentController {
   }
 
   async saveAs(): Promise<boolean> {
-    if (this.session.folderRoot && !this.session.savePath && !this.session.selectedRelPath) {
-      return this.saveFolderDraft();
+    try {
+      if (this.session.folderRoot && !this.session.savePath && !this.session.selectedRelPath) {
+        return this.saveFolderDraft();
+      }
+      let defaultPath = this.session.savePath ?? "";
+      let newMemoFormat: SaveFormat | undefined;
+      if (!defaultPath) {
+        const spec = await this.promptNewMemoSave();
+        if (!spec) return false;
+        defaultPath = fileNameOf(spec.memo);
+        newMemoFormat = spec.format;
+      }
+      const path = await this.view.pickSavePath(defaultPath);
+      return path ? this.saveAsTo(path, null, newMemoFormat) : false;
+    } catch (error) {
+      await this.reportError("名前を付けて保存できませんでした", error);
+      return false;
     }
-    let defaultPath = this.session.savePath ?? "";
-    let newMemoFormat: SaveFormat | undefined;
-    if (!defaultPath) {
-      const spec = await this.promptNewMemoSave();
-      if (!spec) return false;
-      defaultPath = fileNameOf(spec.memo);
-      newMemoFormat = spec.format;
-    }
-    const path = await this.view.pickSavePath(defaultPath);
-    return path ? this.saveAsTo(path, null, newMemoFormat) : false;
   }
 
   // 別名保存だけが保存形式の決定点。以降の上書き保存はここで決めた形式を使い回す。
@@ -246,9 +293,14 @@ export class DocumentController {
     folderDraftRoot: string | null = null,
     format?: SaveFormat,
   ): Promise<boolean> {
-    const chosen = format ?? await this.services.promptSaveFormat(this.session);
-    if (!chosen) return false;
-    return this.saveTo(path, folderDraftRoot, chosen);
+    try {
+      const chosen = format ?? await this.services.promptSaveFormat(this.session);
+      if (!chosen) return false;
+      return await this.saveTo(path, folderDraftRoot, chosen);
+    } catch (error) {
+      await this.reportError("保存形式を決められませんでした", error);
+      return false;
+    }
   }
 
   // フォルダを開いた状態の無題文書は、保存先ダイアログではなくフォルダ直下へ採番して置く
@@ -261,7 +313,7 @@ export class DocumentController {
       const path = await this.services.api.nextMemoPath(root, spec.memo.stem, spec.memo.extension);
       return this.saveAsTo(path, root, spec.format);
     } catch (e) {
-      await this.services.showError("ファイル名を決められませんでした", e);
+      await this.reportError("ファイル名を決められませんでした", e);
       return false;
     }
   }
@@ -278,12 +330,12 @@ export class DocumentController {
         this.services.api.saveFile(path, format.encoding, format.eol)
       );
     } catch (e) {
-      if (!this.services.isPasswordCancelled(e)) await this.services.showError("保存できませんでした", e);
+      if (!this.services.isPasswordCancelled(e)) await this.reportError("保存できませんでした", e);
       return false;
     }
     if (outcome.kind === "conflict") {
       // 本体は上書きされていない。dirty のまま残し、バナーで再読込/無視を選ばせる
-      await this.services.showError(
+      await this.reportError(
         "保存先が他のアプリで変更されています",
         `編集内容を退避保存しました:\n${outcome.saved_to}`
       );
@@ -296,10 +348,14 @@ export class DocumentController {
     this.session.sourceEncoding = this.session.encoding;
     this.session.sourceEol = this.session.eol;
     this.session.dirty = false;
-    this.view.addressbar.render(path);
-    this.view.statusbar.setFormat(this.session);
-    this.updateTitle();
-    this.view.notify("保存しました");
+    try {
+      this.view.addressbar.render(path);
+      this.view.statusbar.setFormat(this.session);
+      this.updateTitle();
+      this.view.notify("保存しました");
+    } catch (error) {
+      await this.reportError("保存後の画面更新に失敗しました", error);
+    }
     if (folderDraftRoot) await this.revealSavedDraft(folderDraftRoot, path);
     return true;
   }
@@ -307,12 +363,15 @@ export class DocumentController {
   private async revealSavedDraft(folderDraftRoot: string, path: string) {
     const rel = relativePathWithinRoot(folderDraftRoot, path);
     if (rel === null) return;
-    this.session.selectedRelPath = rel;
+    const previous = this.session.selectedRelPath;
     try {
       this.view.sidebar.setEntries(await this.services.api.listFolderEntries(""));
       await this.view.sidebar.selectByRelPath(rel);
-    } catch {
+      this.session.selectedRelPath = rel;
+    } catch (error) {
+      this.session.selectedRelPath = previous;
       // 保存自体は成功しているため、一覧更新の失敗でdirtyへ戻さない。
+      await this.reportError("保存後に一覧を更新できませんでした", error);
     }
   }
 
@@ -328,15 +387,7 @@ export class DocumentController {
       return true;
     }
     if (choice !== "save") return false;
-    let saved: boolean;
-    try {
-      saved = await this.save();
-    } catch (error) {
-      // 保存後の画面更新だけが失敗した場合も、保存済みの文書を元タブへ留めない。
-      if (this.session.dirty) throw error;
-      saved = true;
-    }
-    if (!saved && this.session.dirty) return false;
+    if (!await this.save()) return false;
     await onProceed?.();
     return true;
   }

@@ -56,6 +56,22 @@ export class FolderActions {
     return joinWindowsRoot(this.root!, relPath);
   }
 
+  private run(title: string, operation: () => void | Promise<unknown>) {
+    try {
+      void Promise.resolve(operation()).catch((error) => this.reportError(title, error));
+    } catch (error) {
+      void this.reportError(title, error);
+    }
+  }
+
+  private async reportError(title: string, error: unknown) {
+    try {
+      await this.services.showError(title, error);
+    } catch (reportError) {
+      console.error(`${title}のエラーを表示できませんでした`, reportError);
+    }
+  }
+
   showContextMenu(x: number, y: number, target: ContextTarget | null) {
     const root = this.root;
     if (!root) return; // アーカイブ閲覧中はファイル操作の対象がない
@@ -79,22 +95,22 @@ export class FolderActions {
         }
         items.push({
           label: "アプリで開く",
-          action: () => void this.services.openInOtherApp(this.toAbsolute(target.relPath)),
+          action: () => this.run("アプリで開けませんでした", () => this.services.openInOtherApp(this.toAbsolute(target.relPath))),
         });
       }
       items.push({ label: "アドレスバーに設定", action: () => this.ports.onOpenPath(this.toAbsolute(target.relPath)) });
     }
     items.push({
       label: "新規メモ作成...",
-      action: () => void this.createNote(target?.isDir ? target.relPath : null),
+      action: () => this.run("新規メモを作成できませんでした", () => this.createNote(target?.isDir ? target.relPath : null)),
       sep: items.length > 0,
     });
     if (target) {
-      items.push({ label: "名前を変更...", action: () => void this.rename(target.relPath) });
+      items.push({ label: "名前を変更...", action: () => this.run("名前を変更できませんでした", () => this.rename(target.relPath)) });
       items.push({
         label: "その他",
         action: () => {},
-        sub: [{ label: "削除", action: () => void this.delete(target) }],
+        sub: [{ label: "削除", action: () => this.run("削除できませんでした", () => this.delete(target)) }],
       });
     }
     const revealPath = target ? this.toAbsolute(target.relPath) : root;
@@ -102,7 +118,7 @@ export class FolderActions {
     items.push({ label: "お気に入りに追加", action: () => this.ports.onAddFavorite(revealPath), sep: true });
     items.push({
       label: "エクスプローラで開く",
-      action: () => void this.services.revealInExplorer(revealPath, revealIsDir),
+      action: () => this.run("エクスプローラで開けませんでした", () => this.services.revealInExplorer(revealPath, revealIsDir)),
     });
     showMenu(x, y, items);
   }
@@ -115,7 +131,7 @@ export class FolderActions {
     try {
       info = await this.services.api.createNote(relDir, name);
     } catch (e) {
-      await this.services.showError("新規メモを作成できませんでした", e);
+      await this.reportError("新規メモを作成できませんでした", e);
       return;
     }
     const relPath = relDir ? `${relDir}/${name}` : name;
@@ -125,7 +141,7 @@ export class FolderActions {
       await this.ports.sidebar.refreshFolderEntries();
       await this.ports.sidebar.selectByRelPath(relPath);
     } catch (e) {
-      await this.services.showError("メモは作成されましたが一覧を更新できませんでした", e);
+      await this.reportError("メモは作成されましたが一覧を更新できませんでした", e);
     }
   }
 
@@ -141,8 +157,14 @@ export class FolderActions {
     const oldAbsolute = this.toAbsolute(relPath);
     const separator = relPath.lastIndexOf("/");
     const newAbsolute = this.toAbsolute(separator < 0 ? newName : `${relPath.slice(0, separator + 1)}${newName}`);
+    let info: api.DocInfo;
     try {
-      const info = await this.services.api.renameEntry(relPath, newName);
+      info = await this.services.api.renameEntry(relPath, newName);
+    } catch (e) {
+      await this.reportError("名前を変更できませんでした", e);
+      return;
+    }
+    try {
       this.ports.sidebar.setEntries(info.folder_entries ?? []);
       const root = this.root;
       if (info.path && root) {
@@ -155,7 +177,7 @@ export class FolderActions {
       const rebased = startupPath && rebaseWindowsPath(startupPath, oldAbsolute, newAbsolute);
       if (rebased) this.ports.onSetStartupPath(rebased);
     } catch (e) {
-      await this.services.showError("名前を変更できませんでした", e);
+      await this.reportError("名前は変更されましたが画面を更新できませんでした", e);
     }
   }
 
@@ -163,8 +185,14 @@ export class FolderActions {
     const name = basename(target.relPath);
     const kind = target.isDir ? "フォルダと中身" : "ファイル";
     if (!await this.services.confirmMessage("削除", `「${name}」${kind}を削除します。元に戻せません。`, "削除")) return;
+    let info: api.DocInfo;
     try {
-      const info = await this.services.api.deleteEntry(target.relPath);
+      info = await this.services.api.deleteEntry(target.relPath);
+    } catch (e) {
+      await this.reportError("削除できませんでした", e);
+      return;
+    }
+    try {
       const selected = this.doc.current.selectedRelPath;
       const deletedSelection = selected === target.relPath
         || selected.startsWith(`${target.relPath}/`)
@@ -175,7 +203,7 @@ export class FolderActions {
       }
       await this.ports.sidebar.refreshFolderEntries();
     } catch (e) {
-      await this.services.showError("削除できませんでした", e);
+      await this.reportError("削除は完了しましたが一覧を更新できませんでした", e);
     }
   }
 }
@@ -189,7 +217,7 @@ export async function revealInExplorer(path: string, isDir: boolean) {
   try {
     await api.revealInExplorer(path, isDir);
   } catch (e) {
-    await showError("開けませんでした", e);
+    await reportExternalError("開けませんでした", e);
   }
 }
 
@@ -197,6 +225,14 @@ export async function openInOtherApp(path: string) {
   try {
     await api.openInOtherApp(path);
   } catch (e) {
-    await showError("アプリで開けませんでした", e);
+    await reportExternalError("アプリで開けませんでした", e);
+  }
+}
+
+async function reportExternalError(title: string, error: unknown) {
+  try {
+    await showError(title, error);
+  } catch (reportError) {
+    console.error(`${title}のエラーを表示できませんでした`, reportError);
   }
 }

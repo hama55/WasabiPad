@@ -3,8 +3,8 @@ export interface MenuItem {
   label: string;
   iconClass?: string;
   key?: string; // ショートカット表示
-  trailing?: { label: string; title: string; action: () => void };
-  action: (event?: MouseEvent) => void;
+  trailing?: { label: string; title: string; action: () => void | Promise<unknown> };
+  action: (event?: MouseEvent) => void | Promise<unknown>;
   sub?: MenuItem[];
   sep?: boolean; // trueならこの項目の前に区切り線
   favPath?: string; // お気に入りツリー上の位置。並べ替えD&Dの掴み手/落とし先になる
@@ -12,6 +12,16 @@ export interface MenuItem {
 }
 
 const dd = () => document.getElementById("dropdown")!;
+
+function invokeAction(action: () => void | Promise<unknown>) {
+  try {
+    void Promise.resolve(action()).catch((error) => {
+      console.error("メニュー操作に失敗しました", error);
+    });
+  } catch (error) {
+    console.error("メニュー操作に失敗しました", error);
+  }
+}
 
 export function showMenu(x: number, y: number, items: MenuItem[]) {
   const el = dd();
@@ -52,7 +62,7 @@ export function showMenu(x: number, y: number, items: MenuItem[]) {
         e.preventDefault();
         e.stopPropagation();
         hideMenu();
-        item.trailing!.action();
+        invokeAction(item.trailing!.action);
       });
       div.appendChild(trailing);
     }
@@ -63,7 +73,7 @@ export function showMenu(x: number, y: number, items: MenuItem[]) {
         showMenu(r.right, r.top, item.sub);
       } else {
         hideMenu();
-        item.action(e);
+        invokeAction(() => item.action(e));
       }
     });
     div.addEventListener("auxclick", (e) => {
@@ -71,7 +81,7 @@ export function showMenu(x: number, y: number, items: MenuItem[]) {
       e.preventDefault();
       e.stopPropagation();
       hideMenu();
-      item.action(e);
+      invokeAction(() => item.action(e));
     });
     if (item.onContextMenu) {
       div.addEventListener("contextmenu", (e) => {

@@ -70,19 +70,25 @@ fn replace_file(source: &std::path::Path, target: &std::path::Path) -> io::Resul
     std::fs::rename(source, target)
 }
 
-pub fn load() -> String {
+pub fn load() -> io::Result<String> {
     with_settings_lock(|| {
-        Ok(config_path("settings.json")
-            .and_then(std::fs::read_to_string)
-            .unwrap_or_else(|_| "{}".to_string()))
+        let path = config_path("settings.json")?;
+        match std::fs::read_to_string(path) {
+            Ok(contents) => Ok(contents),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok("{}".to_string()),
+            Err(error) => Err(error),
+        }
     })
-    .unwrap_or_else(|_| "{}".to_string())
 }
 
 pub fn update(key: &str, value_json: &str) -> io::Result<()> {
     with_settings_lock(|| {
         let path = config_path("settings.json")?;
-        let current = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".to_string());
+        let current = match std::fs::read_to_string(&path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => "{}".to_string(),
+            Err(error) => return Err(error),
+        };
         let json = merge_setting(&current, key, value_json)?;
         write_config(path, &json)
     })

@@ -19,6 +19,7 @@ function fixture() {
     }),
     selectEntry: vi.fn(async (relPath: string) => {
       session.selectedRelPath = relPath;
+      return true;
     }),
     newFile: vi.fn(async () => {}),
     goTo: vi.fn(),
@@ -114,7 +115,7 @@ describe("TabManager", () => {
 
     await expect(manager.init(folderTabs, null, null)).resolves.toBeUndefined();
     expect(doc.openPath).toHaveBeenCalledWith("C:\\work", false);
-    expect(manager.state.tabs[0].selectedRelPath).toBeUndefined();
+    expect(manager.state.tabs[0].selectedRelPath).toBe("deleted.txt");
   });
 
   it("tab移動前に未保存確認を通し、移動先のリンクを読み込む", async () => {

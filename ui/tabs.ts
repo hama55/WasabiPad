@@ -243,6 +243,7 @@ export class TabManager {
       const tab = this.active()!;
       const rememberedRelPath = tab.selectedRelPath;
       const rememberedLine = tab.selectedLine ?? (tab.kind === "folder" ? tab.viewState?.caret.line : undefined);
+      let selectionRestored = false;
       if (tab.path) {
         const opened = await this.doc.openPath(tab.path, false);
         if (!opened) {
@@ -251,24 +252,21 @@ export class TabManager {
           tab.label = "無題";
           await this.doc.newFile(false);
         } else if (rememberedRelPath) {
-          let selectionFailed = false;
           try {
-            selectionFailed = (await this.doc.selectEntry(rememberedRelPath)) === false;
-          } catch {
-            selectionFailed = true;
+            selectionRestored = (await this.doc.selectEntry(rememberedRelPath)) === true;
+          } catch (error) {
+            // 一時的なIPC失敗で復元情報を消すと、次回タブ切替でも再試行できない。
+            await this.reportError(error);
           }
-          if (selectionFailed) {
-            // 前回選択した項目が削除済みでも、親フォルダ自体は開ける。
-            delete tab.selectedRelPath;
-            delete tab.selectedLine;
-            delete tab.viewState;
-          }
+          // 選択に失敗しても記録は保持する。項目削除と一時的な読込失敗を区別できないため、
+          // 次回タブを開いたときに再試行できる状態を優先する。
+          if (!selectionRestored) delete tab.selectedLine;
         }
         const selectedLine = rememberedLine;
         if (opened && tab.goto) {
           this.doc.goTo(tab.goto);
           delete tab.goto;
-        } else if (opened && tab.kind === "folder" && tab.selectedRelPath && selectedLine !== undefined) {
+        } else if (opened && tab.kind === "folder" && selectionRestored && tab.selectedRelPath && selectedLine !== undefined) {
           tab.selectedLine = selectedLine;
           delete tab.viewState;
           this.doc.goTo({ line: selectedLine, col: 0 });
@@ -346,7 +344,7 @@ export class TabManager {
     add.title = "新規タブ";
     add.setAttribute("aria-label", "新規タブ");
     add.textContent = "+";
-    add.addEventListener("click", () => { void this.newBlank(); });
+    add.addEventListener("click", () => this.run(() => this.newBlank()));
     this.host.replaceChildren(...buttons, add);
   }
 
@@ -355,7 +353,7 @@ export class TabManager {
     if (tab.path) {
       items.push({
         label: "エクスプローラで開く",
-        action: () => void revealInExplorer(tab.path!, tab.kind === "folder"),
+        action: () => this.run(() => revealInExplorer(tab.path!, tab.kind === "folder")),
       });
     }
     items.push(
@@ -490,13 +488,17 @@ export class TabManager {
   }
 
   private run(operation: () => Promise<unknown>) {
-    void operation().catch(async (error) => {
-      try {
-        await this.ports.onError?.(error);
-      } catch (reportError) {
-        console.error("タブ操作エラーを表示できませんでした", reportError);
-      }
-    });
+    void Promise.resolve()
+      .then(operation)
+      .catch((error) => this.reportError(error));
+  }
+
+  private async reportError(error: unknown) {
+    try {
+      await this.ports.onError?.(error);
+    } catch (reportError) {
+      console.error("タブ操作エラーを表示できませんでした", reportError);
+    }
   }
 
   private async detachTab(id: string) {

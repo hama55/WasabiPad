@@ -67,7 +67,8 @@ export function parseSettings(text: string): Settings {
 export async function initSettings(): Promise<void> {
   try {
     cache = parseSettings(await loadSettingsJson());
-  } catch {
+  } catch (error) {
+    console.error("設定を読み込めませんでした", error);
     cache = { ...DEFAULTS };
   }
   pendingSave = Promise.resolve();

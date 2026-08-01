@@ -135,6 +135,7 @@ export class VirtualEditor {
         return { start: { line: 0, col: 0 }, end: { line: last, col: await this.lineCache.lineLength(last) } };
       },
       textInRange: (start, end) => this.lineCache.textInRange(start, end),
+      onError: (error) => this.reportActionError("プレビューを更新できませんでした", error),
     });
     this.onDocChange = ports.onDocChange;
     this.onCursor = ports.onCursor;
@@ -186,7 +187,8 @@ export class VirtualEditor {
       (pat, forward, mc) => this.doFind(pat, forward, mc),
       (pat, rep, mc) => this.doReplaceAll(pat, rep, mc),
       (pat, rep, mc) => this.doReplaceNext(pat, rep, mc),
-      () => { this.findGen++; this.lastFindMatch = null; this.focus(); }
+      () => { this.findGen++; this.lastFindMatch = null; this.focus(); },
+      (message, error) => this.reportActionError(message, error),
     );
 
     this.scroll.addEventListener("scroll", () => {
@@ -548,7 +550,9 @@ export class VirtualEditor {
     for (let c = LineCache.chunkOf(first); c <= LineCache.chunkOf(last - 1); c++) {
       if (!this.lineCache.has(c)) {
         needFetch = true;
-        this.lineCache.fetch(c).then(() => this.schedule());
+        void this.lineCache.fetch(c)
+          .then(() => this.schedule())
+          .catch((error) => this.reportActionError("表示用の行を読み込めませんでした", error));
       }
     }
 
@@ -1304,7 +1308,7 @@ export class VirtualEditor {
     if (this.readOnly) return;
     const [s, e] = this.sel.norm();
     if (cmp(target, s) >= 0 && cmp(target, e) <= 0) return;
-    this.run(async () => {
+    void this.run(async () => {
       const text = await this.lineCache.textInRange(s, e);
       const drop = cmp(target, e) > 0 ? positionAfterDeletion(s, e, target) : target;
       const deleted = await this.doc.edit(s, e, e, "", false);
@@ -1312,7 +1316,7 @@ export class VirtualEditor {
       const inserted = await this.doc.edit(drop, drop, drop, text, false);
       this.applyResult(inserted, drop.line, [{ start: drop, end: drop, text }]);
       await this.renderAfterEdit();
-    });
+    }).catch((error) => this.reportActionError("選択範囲を移動できませんでした", error));
   }
 
   private async paste() {
@@ -1373,7 +1377,7 @@ export class VirtualEditor {
       switch (e.key.toLowerCase()) {
         case "z": e.preventDefault(); this.dispatch("編集を反映できませんでした", () => this.doUndo(e.shiftKey)); return;
         case "y": e.preventDefault(); this.dispatch("編集を反映できませんでした", () => this.doUndo(true)); return;
-        case "a": e.preventDefault(); this.selectAll(); return;
+        case "a": e.preventDefault(); this.dispatch("全選択できませんでした", () => this.selectAll()); return;
         case "c": e.preventDefault(); this.dispatch("クリップボードへコピーできませんでした", () => this.copy(false)); return;
         case "x": e.preventDefault(); this.dispatch("切り取りできませんでした", () => this.copy(true)); return;
         case "v":
@@ -1383,26 +1387,26 @@ export class VirtualEditor {
           this.dispatch("クリップボードから貼り付けできませんでした", () => this.paste());
           return;
         case "f": e.preventDefault(); this.openSearch(); return;
-        case "arrowleft": e.preventDefault(); this.wordMove(-1, ext); return;
-        case "arrowright": e.preventDefault(); this.wordMove(1, ext); return;
+        case "arrowleft": e.preventDefault(); this.dispatch("カーソルを移動できませんでした", () => this.wordMove(-1, ext)); return;
+        case "arrowright": e.preventDefault(); this.dispatch("カーソルを移動できませんでした", () => this.wordMove(1, ext)); return;
         case "home": e.preventDefault(); this.moveTo({ line: 0, col: 0 }, ext); return;
-        case "end": e.preventDefault(); this.gotoEnd(ext); return;
+        case "end": e.preventDefault(); this.dispatch("カーソルを移動できませんでした", () => this.gotoEnd(ext)); return;
       }
       return;
     }
     if (e.altKey && !e.shiftKey) {
-      if (e.key === "ArrowUp") { e.preventDefault(); this.addCaretVert(-1); return; }
-      if (e.key === "ArrowDown") { e.preventDefault(); this.addCaretVert(1); return; }
+      if (e.key === "ArrowUp") { e.preventDefault(); this.dispatch("カーソルを移動できませんでした", () => this.addCaretVert(-1)); return; }
+      if (e.key === "ArrowDown") { e.preventDefault(); this.dispatch("カーソルを移動できませんでした", () => this.addCaretVert(1)); return; }
     }
     switch (e.key) {
-      case "ArrowLeft": e.preventDefault(); this.horiz(-1, ext); break;
-      case "ArrowRight": e.preventDefault(); this.horiz(1, ext); break;
-      case "ArrowUp": e.preventDefault(); this.vert(-1, ext); break;
-      case "ArrowDown": e.preventDefault(); this.vert(1, ext); break;
-      case "PageUp": e.preventDefault(); this.vert(-this.pageRows(), ext); break;
-      case "PageDown": e.preventDefault(); this.vert(this.pageRows(), ext); break;
-      case "Home": e.preventDefault(); this.home(ext); break;
-      case "End": e.preventDefault(); this.end(ext); break;
+      case "ArrowLeft": e.preventDefault(); this.dispatch("カーソルを移動できませんでした", () => this.horiz(-1, ext)); break;
+      case "ArrowRight": e.preventDefault(); this.dispatch("カーソルを移動できませんでした", () => this.horiz(1, ext)); break;
+      case "ArrowUp": e.preventDefault(); this.dispatch("カーソルを移動できませんでした", () => this.vert(-1, ext)); break;
+      case "ArrowDown": e.preventDefault(); this.dispatch("カーソルを移動できませんでした", () => this.vert(1, ext)); break;
+      case "PageUp": e.preventDefault(); this.dispatch("カーソルを移動できませんでした", () => this.vert(-this.pageRows(), ext)); break;
+      case "PageDown": e.preventDefault(); this.dispatch("カーソルを移動できませんでした", () => this.vert(this.pageRows(), ext)); break;
+      case "Home": e.preventDefault(); this.dispatch("カーソルを移動できませんでした", () => this.home(ext)); break;
+      case "End": e.preventDefault(); this.dispatch("カーソルを移動できませんでした", () => this.end(ext)); break;
       case "Backspace": e.preventDefault(); this.dispatch("編集を反映できませんでした", () => this.backspace()); break;
       case "Delete": e.preventDefault(); this.dispatch("編集を反映できませんでした", () => this.deleteForward()); break;
       case "Enter": e.preventDefault(); this.dispatch("編集を反映できませんでした", () => this.insertNewlineWithIndent()); break;
@@ -1732,7 +1736,10 @@ export class VirtualEditor {
       items.push({ label: "削除", action: () => {
         if (this.sel.hasSel()) this.dispatch("編集を反映できませんでした", () => this.deleteSel());
       } });
-      if (this.sel.hasSel()) items.push({ label: "選択範囲を登録文字列に追加", action: () => { void this.addSelectionAsRegisteredString(); } });
+      if (this.sel.hasSel()) items.push({
+        label: "選択範囲を登録文字列に追加",
+        action: () => this.dispatch("登録文字列に追加できませんでした", () => this.addSelectionAsRegisteredString()),
+      });
       const registered = loadRegisteredStrings();
       if (registered.length) {
         items.push({
@@ -1740,18 +1747,23 @@ export class VirtualEditor {
           action: () => {},
           sub: registered.map((text) => ({
             label: registeredStringLabel(text),
-            action: () => this.insertText(text),
+            action: () => this.dispatch("登録文字列を挿入できませんでした", () => this.insertText(text)),
             trailing: { label: "×", title: "登録文字列を削除", action: () => removeRegisteredString(text) },
           })),
         });
       }
     }
-    items.push({ label: "すべて選択", key: "Ctrl+A", action: () => this.selectAll(), sep: true });
+    items.push({
+      label: "すべて選択",
+      key: "Ctrl+A",
+      action: () => this.dispatch("全選択できませんでした", () => this.selectAll()),
+      sep: true,
+    });
     const viewerFormats = Object.entries(VIEWER_FORMAT_LABELS) as [api.ViewerFormat, string][];
     items.push(
       ...viewerFormats.map(([format, label], index) => ({
         label,
-        action: () => { void this.openTextViewer(format); },
+        action: () => this.dispatch("ビューを開けませんでした", () => this.openTextViewer(format)),
         sep: index === 0,
       })),
     );
