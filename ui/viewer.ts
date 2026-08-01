@@ -5,7 +5,8 @@ import Chart from "chart.js/auto";
 import MarkdownIt from "markdown-it";
 import Papa from "papaparse";
 import { EVENT_NAMES, readArchiveAsset, takeViewerPayload, type ViewerFormat, type ViewerPayload, type ViewerSelection } from "./api";
-import { VIEWER_FORMAT_LABELS, formatFontFamily, formatTitleBar } from "./format";
+import { formatFontFamily, formatTitleBar } from "./format";
+import { createViewerFormatHandlers } from "./viewer-formats";
 import { basename } from "./path";
 import { getSetting, initSettings, setSetting } from "./settings";
 import { clampFontSize, promptFontFamily, promptFontSize as promptFontSizeDialog } from "./font-controls";
@@ -295,6 +296,11 @@ async function renderMarkdown(text: string) {
   if (generation === markdownRenderGeneration) scrollMarkdownCaret(highlightTargets, selection);
 }
 
+const VIEWER_HANDLERS = createViewerFormatHandlers({
+  csv: renderTable,
+  markdown: renderMarkdown,
+});
+
 function renderPayload(payload: ViewerPayload) {
   currentFormat = payload.format;
   currentText = payload.text;
@@ -303,11 +309,11 @@ function renderPayload(payload: ViewerPayload) {
   currentArchivePath = payload.archive_path;
   currentArchiveEntry = payload.archive_entry;
   const sourceName = payload.source_path ? basename(payload.source_path) : "";
-  title.textContent = formatTitleBar(`${sourceName ? `${sourceName} — ` : ""}${VIEWER_FORMAT_LABELS[payload.format]}`);
+  const handler = VIEWER_HANDLERS[payload.format];
+  title.textContent = formatTitleBar(`${sourceName ? `${sourceName} — ` : ""}${handler.label}`);
   void win.setTitle(title.textContent);
-  delimiterControl.hidden = payload.format !== "csv";
-  if (payload.format === "markdown") renderMarkdown(payload.text);
-  else renderTable(payload.text);
+  delimiterControl.hidden = !handler.supportsDelimiter;
+  void handler.render(payload.text);
 }
 
 function csvRowSelected(line: string, rowIndex: number) {
@@ -527,12 +533,13 @@ applyFont(fontFamily, fontSize, false);
       applyTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light");
     });
     delimiterInput.addEventListener("input", () => {
-      if (!delimiterInput.value || currentFormat !== "csv") return;
-      renderTable(currentText);
+      const handler = VIEWER_HANDLERS[currentFormat];
+      if (!delimiterInput.value || !handler.supportsDelimiter) return;
+      void VIEWER_HANDLERS[currentFormat].render(currentText);
     });
     document.getElementById("chart-close")!.addEventListener("click", closeChart);
     content.addEventListener("contextmenu", (event) => {
-      if (currentFormat === "markdown" || !(event.target as Element).closest(".viewer-grid")) return;
+      if (!VIEWER_HANDLERS[currentFormat].supportsChart || !(event.target as Element).closest(".viewer-grid")) return;
       event.preventDefault();
       showContextMenu(event.clientX, event.clientY);
     });

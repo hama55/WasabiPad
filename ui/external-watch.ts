@@ -1,4 +1,4 @@
-import * as api from "./api";
+import type * as api from "./api";
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -13,12 +13,18 @@ export interface ExternalWatchPorts {
   onIgnore: () => void;
 }
 
+export type ExternalWatchApi = Pick<typeof api, "pollExternal" | "reloadFromDisk" | "ackExternal">;
+
 // 対象文書かどうか (小ファイル=ハンドル非保持) の判定は backend が持つ。
 // 未編集なら backend が自動再読込し、dirty なら競合バナーで再読込/無視を選ばせる。
 export class ExternalWatch {
   private polling = false;
 
-  constructor(private banner: HTMLElement, private ports: ExternalWatchPorts) {
+  constructor(
+    private banner: HTMLElement,
+    private ports: ExternalWatchPorts,
+    private api: ExternalWatchApi,
+  ) {
     this.pick("external-reload").addEventListener("click", () => void this.reloadFromDisk());
     this.pick("external-ignore").addEventListener("click", () => void this.ignore());
     window.setInterval(() => void this.poll(), POLL_INTERVAL_MS);
@@ -37,7 +43,7 @@ export class ExternalWatch {
     if (this.polling || !this.banner.hidden || !this.ports.canPoll()) return;
     this.polling = true;
     try {
-      const check = await api.pollExternal(this.ports.isDirty());
+      const check = await this.api.pollExternal(this.ports.isDirty());
       if (check.kind === "reloaded") {
         this.ports.onReload(check.info);
         this.ports.onNotice("外部の変更を再読込しました");
@@ -54,7 +60,7 @@ export class ExternalWatch {
   private async reloadFromDisk() {
     this.hide();
     try {
-      this.ports.onReload(await api.reloadFromDisk());
+      this.ports.onReload(await this.api.reloadFromDisk());
     } catch (e) {
       this.banner.hidden = false;
       await this.reportError("再読込できませんでした", e);
@@ -64,7 +70,7 @@ export class ExternalWatch {
   private async ignore() {
     this.hide();
     try {
-      await api.ackExternal();
+      await this.api.ackExternal();
       this.ports.onIgnore();
     } catch (error) {
       this.banner.hidden = false; // 無視できていない競合を隠したままにしない。

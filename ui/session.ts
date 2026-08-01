@@ -38,7 +38,7 @@ export function initialSession(): DocumentSession {
 }
 
 export function sessionFromDocInfo(
-  previous: DocumentSession,
+  previous: Readonly<DocumentSession>,
   info: DocInfo
 ): DocumentSession {
   const folderDraft = info.folder_root === info.path;
@@ -57,7 +57,7 @@ export function sessionFromDocInfo(
   };
 }
 
-export function displayName(session: DocumentSession): string {
+export function displayName(session: Readonly<DocumentSession>): string {
   const path = session.savePath ?? (session.readOnly ? session.displayPath : "");
   return path ? basename(path) : "無題";
 }

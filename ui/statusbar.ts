@@ -128,7 +128,7 @@ export class StatusBar {
   }
 
   // ステータスバーが示すのは読込時の形式だけ。保存形式は別名保存ダイアログが持つ。
-  setFormat(session: DocumentSession) {
+  setFormat(session: Readonly<DocumentSession>) {
     const source = this.sourceEncodingSelect;
     this.shownReadEncoding = readEncodingOf(session.sourceEncoding);
     source.value = this.shownReadEncoding;

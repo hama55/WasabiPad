@@ -9,7 +9,7 @@ export { isStoredTab, isStoredTabs, type StoredTab, type StoredTabs } from "./st
 import type { StoredTab, StoredTabs } from "./stored-tabs";
 
 export interface TabDocumentPort {
-  readonly current: DocumentSession;
+  readonly current: Readonly<DocumentSession>;
   confirmDiscard: (onProceed?: () => void | Promise<void>) => Promise<boolean>;
   openPath: (path: string, confirm?: boolean) => Promise<boolean>;
   selectEntry: (relPath: string) => Promise<boolean | void>;
@@ -80,7 +80,7 @@ export class TabManager {
     this.persist();
   }
 
-  syncActive(session: DocumentSession) {
+  syncActive(session: Readonly<DocumentSession>) {
     const tab = this.active();
     if (!tab) return;
     tab.path = session.folderRoot ?? session.savePath ?? (session.readOnly ? session.displayPath : null);

@@ -3,38 +3,64 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod state;
+mod instance;
+mod viewer;
+mod commands;
 
 use wasabipad_core::{
     self, BookmarkNode, Doc, DocInfo, EditManyItem, EditManyResult, EditResult, EncodingId,
     Eol, ExternalCheck, FindCursor, FindOutcome, FindResult, FolderEntry, PosC,
     ReplaceChunkResult, SaveOutcome, SearchOptions, WorkspaceSearchOutcome,
 };
-use state::{with_doc, DocState, State};
+use state::{DocState, State};
 use std::collections::HashMap;
-use std::io::{Read, Write};
-use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
-use std::path::PathBuf;
-use std::process::Command;
-use std::sync::{
-    atomic::{AtomicBool, AtomicU64, Ordering},
-    Arc, Mutex,
+use std::sync::{atomic::AtomicBool, Arc, Mutex};
+use tauri::{AppHandle, Manager};
+use commands::{document, search, system};
+use instance::{
+    forward_to_latest_instance, initial_window_request as read_initial_window_request,
+    launch_new_instance as spawn_new_instance, parse_window_request, take_pending_window_requests as drain_pending_window_requests,
+    InstanceServer,
 };
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use viewer::ViewerStore;
 
-#[cfg(target_os = "windows")]
-#[repr(C)]
-struct OpenAsInfo {
-    file: *const u16,
-    class: *const u16,
-    flags: u32,
+const EVENT_EXTERNAL_WINDOW_REQUEST: &str = "external-window-request";
+const EVENT_WORKSPACE_SEARCH_BATCH: &str = "workspace-search-batch";
+const EVENT_VIEWER_UPDATE: &str = "viewer-update";
+
+fn viewer_label(id: u64) -> String {
+    format!("viewer-{}", id)
 }
 
-#[cfg(target_os = "windows")]
-#[link(name = "shell32")]
-extern "system" {
-    #[link_name = "SHOpenWithDialog"]
-    fn sh_open_with_dialog(parent: *mut std::ffi::c_void, info: *const OpenAsInfo) -> i32;
+#[derive(Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+struct EditorViewState {
+    anchor: PosC,
+    caret: PosC,
+    top_line: f64,
+    wrap_intra_line_px: f64,
+    scroll_left: f64,
+}
+
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+struct WindowRequest {
+    secondary: bool,
+    path: Option<String>,
+    goto: Option<PosC>,
+    selected_rel_path: Option<String>,
+    view_state: Option<EditorViewState>,
+}
+
+#[derive(Clone, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
+struct WorkspaceSearchBatch {
+    search_id: u32,
+    results: Vec<wasabipad_core::WorkspaceSearchResult>,
 }
 
 // 受理する形式はこの enum が単一の定義。表示名はフロント (ui/format.ts) だけが持つ。
@@ -67,249 +93,53 @@ struct ViewerSelection {
     end: PosC,
 }
 
-struct ViewerStore(Mutex<HashMap<String, ViewerPayload>>);
-
-// 進行中のフォルダ検索を止めるための共有フラグ。走査量は無制限を既定にしたため、
-// 打ち切る手段がないと巨大フォルダで利用者がアプリを閉じるしかなくなる。
-struct SearchCancel(Mutex<Arc<AtomicBool>>);
-
-static VIEWER_ID: AtomicU64 = AtomicU64::new(1);
-const EVENT_EXTERNAL_WINDOW_REQUEST: &str = "external-window-request";
-const EVENT_WORKSPACE_SEARCH_BATCH: &str = "workspace-search-batch";
-const EVENT_VIEWER_UPDATE: &str = "viewer-update";
-
-#[derive(Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
-#[ts(export)]
-#[serde(rename_all = "camelCase")]
-#[ts(rename_all = "camelCase")]
-struct EditorViewState {
-    anchor: PosC,
-    caret: PosC,
-    top_line: f64,
-    wrap_intra_line_px: f64,
-    scroll_left: f64,
-}
-
-#[derive(Clone, Default, serde::Serialize, serde::Deserialize, ts_rs::TS)]
-#[ts(export)]
-#[serde(rename_all = "camelCase")]
-#[ts(rename_all = "camelCase")]
-struct WindowRequest {
-    secondary: bool,
-    path: Option<String>,
-    goto: Option<PosC>,
-    selected_rel_path: Option<String>,
-    view_state: Option<EditorViewState>,
-}
-
-// Explorerから起動された新プロセスが、既存プロセスのうち最も新しいものへ
-// ファイルを渡すためのローカルエンドポイント。
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-struct InstanceEndpoint {
-    port: u16,
-    pid: u32,
-    started_at: u128,
-}
-
-struct InstanceServer {
-    listener: Mutex<Option<TcpListener>>,
-    endpoint: Option<InstanceEndpoint>,
-    pending: Arc<Mutex<Vec<WindowRequest>>>,
-}
-
-const INSTANCE_DIR: &str = "wasabipad-instances";
-
-impl InstanceServer {
-    fn new() -> Self {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).ok();
-        let endpoint = listener
-            .as_ref()
-            .and_then(|listener| listener.local_addr().ok())
-            .map(|address| InstanceEndpoint {
-                port: address.port(),
-                pid: std::process::id(),
-                started_at: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos(),
-            });
-        if let Some(endpoint) = &endpoint {
-            write_instance_endpoint(endpoint);
-        }
-        Self { listener: Mutex::new(listener), endpoint, pending: Arc::new(Mutex::new(Vec::new())) }
-    }
-
-    fn start(&self, app: &AppHandle) {
-        let listener = self.listener.lock().ok().and_then(|mut listener| listener.take());
-        let Some(listener) = listener else { return };
-        let pending = Arc::clone(&self.pending);
-        let app = app.clone();
-        std::thread::spawn(move || {
-            for incoming in listener.incoming() {
-                let Ok(stream) = incoming else { continue };
-                let Some(request) = read_window_request(stream) else { continue };
-                if let Ok(mut requests) = pending.lock() {
-                    requests.push(request);
-                }
-                let _ = app.emit(EVENT_EXTERNAL_WINDOW_REQUEST, ());
-            }
-        });
-    }
-
-    fn remove_endpoint(&self) {
-        let Some(endpoint) = &self.endpoint else { return };
-        let path = instance_endpoint_path(endpoint.pid);
-        let matches = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|text| serde_json::from_str::<InstanceEndpoint>(&text).ok())
-            .is_some_and(|current| current.port == endpoint.port && current.started_at == endpoint.started_at);
-        if matches {
-            let _ = std::fs::remove_file(path);
-        }
-    }
-}
-
-fn instance_directory() -> PathBuf {
-    std::env::temp_dir().join(INSTANCE_DIR)
-}
-
-fn instance_endpoint_path(pid: u32) -> PathBuf {
-    instance_directory().join(format!("instance-{pid}.json"))
-}
-
-fn write_instance_endpoint(endpoint: &InstanceEndpoint) {
-    let directory = instance_directory();
-    if std::fs::create_dir_all(&directory).is_err() {
-        return;
-    }
-    if let Ok(text) = serde_json::to_string(endpoint) {
-        let _ = std::fs::write(instance_endpoint_path(endpoint.pid), text);
-    }
-}
-
-fn read_instance_endpoints() -> Vec<(PathBuf, InstanceEndpoint)> {
-    let Ok(entries) = std::fs::read_dir(instance_directory()) else { return Vec::new() };
-    let mut endpoints = entries
-        .flatten()
-        .filter_map(|entry| {
-            let path = entry.path();
-            let text = std::fs::read_to_string(&path).ok()?;
-            Some((path, serde_json::from_str::<InstanceEndpoint>(&text).ok()?))
-        })
-        .collect::<Vec<_>>();
-    endpoints.sort_by(|(_, left), (_, right)|
-        right.started_at.cmp(&left.started_at).then_with(|| right.pid.cmp(&left.pid)));
-    endpoints
-}
-
-fn read_window_request(mut stream: TcpStream) -> Option<WindowRequest> {
-    let mut bytes = Vec::new();
-    stream.read_to_end(&mut bytes).ok()?;
-    serde_json::from_slice(&bytes).ok()
-}
-
-fn send_window_request(endpoint: &InstanceEndpoint, request: &WindowRequest) -> bool {
-    let address = SocketAddr::from(([127, 0, 0, 1], endpoint.port));
-    let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(250)) else {
-        return false;
-    };
-    let Ok(bytes) = serde_json::to_vec(request) else { return false };
-    if stream.write_all(&bytes).is_err() {
-        return false;
-    }
-    let _ = stream.shutdown(Shutdown::Write);
-    true
-}
-
-fn forward_to_latest_instance(request: &WindowRequest) -> bool {
-    for (path, endpoint) in read_instance_endpoints() {
-        if send_window_request(&endpoint, request) {
-            return true;
-        }
-        let _ = std::fs::remove_file(path);
-    }
-    false
-}
-
 #[tauri::command]
 fn open_path(path: String, state: State) -> Result<DocInfo, String> {
-    let d = Doc::open(&PathBuf::from(&path)).map_err(|e| e.to_string())?;
-    // フォルダを開いた場合 d.path は先頭の実ファイルを指す (フォルダ自体は保存先を持たない)
-    let info_path = d
-        .path()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or(path);
-    let info = d.info(info_path);
-    with_doc(&state, |doc| *doc = d);
-    Ok(info)
+    document::open_path(path, state)
 }
 
 #[tauri::command]
 fn new_doc(state: State) {
-    with_doc(&state, |doc| *doc = Doc::empty());
+    document::new_doc(state);
 }
 
 #[tauri::command]
 fn close_doc(state: State) {
-    with_doc(&state, |doc| *doc = Doc::empty()); // mmap解放 (ファイルロック解除)
+    document::close_doc(state);
 }
 
 #[tauri::command]
 fn lines(start: usize, count: usize, state: State) -> Vec<String> {
-    with_doc(&state, |doc| doc.lines(start, count))
+    document::lines(start, count, state)
 }
 
 #[tauri::command]
 fn line_char_len(line: usize, state: State) -> usize {
-    with_doc(&state, |doc| doc.line_char_len(line))
+    document::line_char_len(line, state)
 }
 
 #[tauri::command]
 fn select_entry(rel_path: String, state: State) -> Result<DocInfo, String> {
-    with_doc(&state, |doc| doc.select_entry(&rel_path))
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "no entry".into())
+    document::select_entry(rel_path, state)
 }
 
 // ツリーの展開ボタン用。アーカイブの中身一覧だけを安価に取得する (本文は読まない)。
 // rel_path が空文字なら直接開いているアーカイブ自身、それ以外はフォルダ内の相対パス。
 #[tauri::command]
 fn list_archive_entries(rel_path: String, state: State) -> Result<Vec<String>, String> {
-    with_doc(&state, |doc| doc.list_archive_entries(&rel_path))
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "no entries".into())
+    document::list_archive_entries(rel_path, state)
 }
 
 // パスワード付き 7z/zip 用。入力されたパスワードを記憶させ、UI が失敗した操作を再試行する。
 #[tauri::command]
 fn set_archive_password(rel_path: String, password: String, state: State) -> Result<(), String> {
-    with_doc(&state, |doc| doc.set_archive_password(&rel_path, &password)).map_err(|error| error.to_string())
+    document::set_archive_password(rel_path, password, state)
 }
 
 // フォルダの展開時に、その直下だけを取得する。
 #[tauri::command]
 fn list_folder_entries(rel_dir: String, state: State) -> Result<Vec<FolderEntry>, String> {
-    with_doc(&state, |doc| doc.list_folder_entries(&rel_dir))
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "no entries".into())
-}
-
-// 直前の検索へ中止を通知し、今回の検索用のフラグを差し替える
-fn take_over_search(cancel: &tauri::State<'_, SearchCancel>) -> Result<Arc<AtomicBool>, String> {
-    let flag = Arc::new(AtomicBool::new(false));
-    let mut slot = cancel.0.lock().map_err(|_| "検索を開始できません".to_string())?;
-    slot.store(true, Ordering::Relaxed);
-    *slot = flag.clone();
-    Ok(flag)
-}
-
-// 検索中の途中経過。search_id はフロントが発行した世代番号で、
-// 打ち切った検索の取りこぼしが次の検索へ混ざらないようにするためだけに載せる。
-#[derive(Clone, serde::Serialize, ts_rs::TS)]
-#[ts(export)]
-struct WorkspaceSearchBatch {
-    search_id: u32,
-    results: Vec<wasabipad_core::WorkspaceSearchResult>,
+    document::list_folder_entries(rel_dir, state)
 }
 
 #[tauri::command]
@@ -319,106 +149,50 @@ async fn workspace_search(
     search_id: u32,
     app: AppHandle,
     state: State<'_>,
-    cancel: tauri::State<'_, SearchCancel>,
+    cancel: tauri::State<'_, search::SearchCancel>,
 ) -> Result<WorkspaceSearchOutcome, String> {
-    let root = with_doc(&state, |doc| doc.workspace_root())
-        .ok_or_else(|| "folder is not open".to_string())?;
-    let flag = take_over_search(&cancel)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let emit = |results| {
-            let _ = app.emit(EVENT_WORKSPACE_SEARCH_BATCH, WorkspaceSearchBatch { search_id, results });
-        };
-        wasabipad_core::search_workspace(&root, &pat, &options, &flag, &emit)
-    })
-    .await
-    .map_err(|error| error.to_string())
+    search::workspace_search(pat, options, search_id, app, state, cancel).await
 }
 
 #[tauri::command]
-fn workspace_search_cancel(cancel: tauri::State<'_, SearchCancel>) -> Result<(), String> {
-    take_over_search(&cancel).map(|_| ())
+fn workspace_search_cancel(cancel: tauri::State<'_, search::SearchCancel>) -> Result<(), String> {
+    search::workspace_search_cancel(cancel)
 }
 
 #[tauri::command]
 fn create_note(dir: Option<String>, name: String, state: State) -> Result<DocInfo, String> {
-    with_doc(&state, |doc| doc.create_note(dir.as_deref(), &name))
-        .map_err(|e| e.to_string())
+    document::create_note(dir, name, state)
 }
 
 #[tauri::command]
 fn rename_entry(rel_path: String, new_name: String, state: State) -> Result<DocInfo, String> {
-    with_doc(&state, |doc| doc.rename_entry(&rel_path, &new_name))
-        .map_err(|e| e.to_string())
+    document::rename_entry(rel_path, new_name, state)
 }
 
 #[tauri::command]
 fn delete_entry(rel_path: String, state: State) -> Result<DocInfo, String> {
-    with_doc(&state, |doc| doc.delete_entry(&rel_path))
-        .map_err(|e| e.to_string())
+    document::delete_entry(rel_path, state)
 }
 
 #[tauri::command]
 fn save_pasted_image(bytes: Vec<u8>, mime_type: String, state: State) -> Result<String, String> {
-    with_doc(&state, |doc| doc.save_pasted_image(&bytes, &mime_type))
-        .map_err(|e| e.to_string())
+    document::save_pasted_image(bytes, mime_type, state)
 }
 
 #[tauri::command]
 fn cleanup_unused_images(path: String, state: State) -> Result<(), String> {
-    let requested = PathBuf::from(path);
-    with_doc(&state, |doc| {
-        if doc.display_path() != Some(requested.as_path()) {
-            return Ok(());
-        }
-        doc.cleanup_unused_images()
-    })
-    .map_err(|e| e.to_string())
+    document::cleanup_unused_images(path, state)
 }
 
 // サイドバーの「エクスプローラで開く」用。状態を持たないので Doc へは委譲しない。
 #[tauri::command]
 fn reveal_in_explorer(path: String, is_dir: bool) -> Result<(), String> {
-    let mut cmd = std::process::Command::new("explorer");
-    if is_dir {
-        cmd.arg(&path);
-    } else {
-        // 空白入りパスでも explorer の legacy parser がパス部分だけを正しく引用できるよう分離する
-        cmd.arg("/select,").arg(&path);
-    }
-    // explorer は既存ウィンドウへ委譲した場合など正常時でも非0を返すことがあるため終了コードは見ない
-    cmd.spawn().map_err(|e| e.to_string())?;
-    Ok(())
+    system::reveal_in_explorer(path, is_dir)
 }
 
 #[tauri::command]
 fn open_in_other_app(path: String) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::ffi::OsStrExt;
-
-        let target = PathBuf::from(path);
-        if !target.is_file() {
-            return Err("対象ファイルが見つかりません".to_string());
-        }
-        let wide: Vec<u16> = target.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
-        let info = OpenAsInfo {
-            file: wide.as_ptr(),
-            class: std::ptr::null(),
-            // 選択したアプリで対象ファイルを開く。既定アプリの変更は要求しない。
-            flags: 0x0000_0004,
-        };
-        let result = unsafe { sh_open_with_dialog(std::ptr::null_mut(), &info) };
-        return if result >= 0 {
-            Ok(())
-        } else {
-            Err(format!("アプリ選択画面を開けませんでした (HRESULT: 0x{result:08X})"))
-        };
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = path;
-        Err("この機能はWindowsでのみ使用できます".to_string())
-    }
+    system::open_in_other_app(path)
 }
 
 #[tauri::command]
@@ -430,8 +204,7 @@ fn edit(
     coalesce: bool,
     state: State,
 ) -> Result<EditResult, String> {
-    with_doc(&state, |doc| doc.edit(start, end, caret_before, &text, coalesce))
-        .ok_or_else(|| "閲覧専用の文書は編集できません".to_string())
+    document::edit(start, end, caret_before, text, coalesce, state)
 }
 
 #[tauri::command]
@@ -441,18 +214,17 @@ fn edit_many(
     primary_index: usize,
     state: State,
 ) -> Result<EditManyResult, String> {
-    with_doc(&state, |doc| doc.edit_many(edits, caret_before, primary_index))
-        .ok_or_else(|| "閲覧専用の文書は編集できません".to_string())
+    document::edit_many(edits, caret_before, primary_index, state)
 }
 
 #[tauri::command]
 fn undo(state: State) -> Option<EditResult> {
-    with_doc(&state, Doc::undo)
+    document::undo(state)
 }
 
 #[tauri::command]
 fn redo(state: State) -> Option<EditResult> {
-    with_doc(&state, Doc::redo)
+    document::redo(state)
 }
 
 #[tauri::command]
@@ -463,7 +235,7 @@ fn find(
     match_case: bool,
     state: State,
 ) -> Option<FindResult> {
-    with_doc(&state, |doc| doc.find(&pat, from, forward, match_case))
+    document::find(pat, from, forward, match_case, state)
 }
 
 #[tauri::command]
@@ -475,7 +247,7 @@ fn find_step(
     budget: usize,
     state: State,
 ) -> FindOutcome {
-    with_doc(&state, |doc| doc.find_step(&pat, from, match_case, cursor, budget))
+    document::find_step(pat, from, match_case, cursor, budget, state)
 }
 
 #[tauri::command]
@@ -486,129 +258,100 @@ fn replace_all_chunk(
     budget: usize,
     state: State,
 ) -> ReplaceChunkResult {
-    with_doc(&state, |doc| doc.replace_all_chunk(&pat, &rep, match_case, budget))
+    document::replace_all_chunk(pat, rep, match_case, budget, state)
 }
 
 #[tauri::command]
 fn replace_all_cancel(state: State) -> EditResult {
-    with_doc(&state, Doc::replace_all_cancel)
+    document::replace_all_cancel(state)
 }
 
 #[tauri::command]
 fn save_file(path: String, enc: EncodingId, eol: Eol, state: State) -> Result<SaveOutcome, String> {
-    with_doc(&state, |doc| doc.save(&PathBuf::from(path), enc.into(), eol))
-        .map_err(|e| e.to_string())
+    document::save_file(path, enc, eol, state)
 }
 
 // 外部変更ポーリング (フロントの定期タイマーから呼ぶ)。dirty はフロントが管理する
 // 未保存フラグ。小/巨大ファイルの区別も含め、判定はすべて core 側が持つ。
 #[tauri::command]
 fn poll_external(dirty: bool, state: State) -> ExternalCheck {
-    with_doc(&state, |doc| doc.poll_external(dirty))
+    document::poll_external(dirty, state)
 }
 
 #[tauri::command]
 fn reload_from_disk(state: State) -> Result<DocInfo, String> {
-    with_doc(&state, |doc| doc.reload_from_disk()).map_err(|e| e.to_string())
+    document::reload_from_disk(state)
 }
 
 #[tauri::command]
 fn ack_external(state: State) {
-    with_doc(&state, Doc::ack_external);
+    document::ack_external(state);
 }
 
 #[tauri::command]
 fn set_encoding(enc: EncodingId, state: State) {
-    with_doc(&state, |doc| doc.set_enc(enc.into()));
+    document::set_encoding(enc, state);
 }
 
 #[tauri::command]
 fn set_eol(eol: Eol, state: State) {
-    with_doc(&state, |doc| doc.set_eol(eol));
+    document::set_eol(eol, state);
 }
 
 #[tauri::command]
 fn load_bookmarks() -> Vec<BookmarkNode> {
-    wasabipad_core::load_bookmarks()
+    system::load_bookmarks()
 }
 
 #[tauri::command]
 fn save_bookmarks(nodes: Vec<BookmarkNode>) -> Result<(), String> {
-    wasabipad_core::save_bookmarks(&nodes).map_err(|e| e.to_string())
+    system::save_bookmarks(nodes)
 }
 
 // 設定値はJSONとして扱い、キー単位で更新して別プロセスの変更を巻き戻さない。
 #[tauri::command]
 fn load_settings() -> String {
-    wasabipad_core::load_settings()
+    system::load_settings()
 }
 
 #[tauri::command]
 fn update_setting(key: String, value_json: String) -> Result<(), String> {
-    wasabipad_core::update_setting(&key, &value_json).map_err(|e| e.to_string())
+    system::update_setting(key, value_json)
 }
 
 #[tauri::command]
 fn path_is_directory(path: String) -> bool {
-    PathBuf::from(path).is_dir()
+    system::path_is_directory(path)
 }
 
 #[tauri::command]
 fn reload_with_encoding(enc: EncodingId, state: State) -> Result<DocInfo, String> {
-    with_doc(&state, |doc| doc.reload_with_encoding(enc.into())).map_err(|e| e.to_string())
+    document::reload_with_encoding(enc, state)
 }
 
 #[tauri::command]
 fn next_memo_path(directory: String, stem: String, extension: String) -> Result<String, String> {
-    wasabipad_core::next_available_path(&PathBuf::from(directory), &stem, &extension)
-        .map(|path| path.to_string_lossy().into_owned())
-        .map_err(|e| e.to_string())
+    system::next_memo_path(directory, stem, extension)
 }
 
 #[tauri::command]
-fn launch_new_instance(mut request: WindowRequest) -> Result<(), String> {
-    request.secondary = true;
-    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-    let json = serde_json::to_string(&request).map_err(|error| error.to_string())?;
-    let mut command = Command::new(executable);
-    command.args(["--wasabipad-window-request", &json]);
-    command.spawn().map(|_| ()).map_err(|error| error.to_string())
-}
-
-fn parse_window_request(mut args: impl Iterator<Item = String>) -> Result<WindowRequest, String> {
-    let Some(first) = args.next() else {
-        return Ok(WindowRequest::default());
-    };
-    if first == "--wasabipad-window-request" {
-        let json = args.next().ok_or_else(|| "ウィンドウ要求がありません".to_string())?;
-        return serde_json::from_str(&json).map_err(|error| error.to_string());
-    }
-    let goto = args.next().and_then(|arg| {
-        let (line, col) = arg.strip_prefix('+')?.split_once(':')?;
-        Some(PosC { line: line.parse().ok()?, col: col.parse().ok()? })
-    });
-    Ok(WindowRequest { path: Some(first), goto, ..WindowRequest::default() })
+fn launch_new_instance(request: WindowRequest) -> Result<(), String> {
+    spawn_new_instance(request)
 }
 
 #[tauri::command]
 fn initial_window_request() -> Result<WindowRequest, String> {
-    parse_window_request(std::env::args().skip(1))
+    read_initial_window_request()
 }
 
 #[tauri::command]
 fn read_archive_asset(archive_path: String, entry: String, state: State) -> Result<Vec<u8>, String> {
-    let archive = PathBuf::from(archive_path);
-    with_doc(&state, |doc| doc.read_archive_asset(&archive, &entry))
-        .map_err(|error| error.to_string())
+    document::read_archive_asset(archive_path, entry, state)
 }
 
 #[tauri::command]
 fn take_pending_window_requests(state: tauri::State<'_, InstanceServer>) -> Vec<WindowRequest> {
-    state
-        .pending
-        .lock()
-        .map(|mut requests| std::mem::take(&mut *requests))
-        .unwrap_or_default()
+    drain_pending_window_requests(&state)
 }
 
 #[cfg(test)]
@@ -652,47 +395,7 @@ async fn open_viewer(
     doc_state: State<'_>,
     state: tauri::State<'_, ViewerStore>,
 ) -> Result<String, String> {
-    // 形式名入りのタイトルは payload 受信後にフロントが設定する。ここは生成時の暫定表示。
-    let title = app.package_info().name.clone();
-    let label = format!("viewer-{}", VIEWER_ID.fetch_add(1, Ordering::Relaxed));
-    let archive_source = with_doc(&doc_state, |doc| doc.viewer_source());
-    state
-        .0
-        .lock()
-        .map_err(|_| "ビューの準備に失敗しました".to_string())?
-        .insert(label.clone(), ViewerPayload {
-            format,
-            text,
-            selection,
-            source_path,
-            archive_path: archive_source.as_ref().map(|(path, _)| path.to_string_lossy().into_owned()),
-            archive_entry: archive_source.map(|(_, entry)| entry),
-        });
-
-    let window = match WebviewWindowBuilder::new(&app, &label, WebviewUrl::App("viewer.html".into()))
-        .title(title)
-        .decorations(false)
-        .inner_size(960.0, 700.0)
-        .build()
-    {
-        Ok(window) => window,
-        Err(error) => {
-            if let Ok(mut payloads) = state.0.lock() {
-                payloads.remove(&label);
-            }
-            return Err(error.to_string());
-        }
-    };
-    let cleanup_app = app.clone();
-    let cleanup_label = label.clone();
-    window.on_window_event(move |event| {
-        if matches!(event, tauri::WindowEvent::Destroyed) {
-            if let Ok(mut payloads) = cleanup_app.state::<ViewerStore>().0.lock() {
-                payloads.remove(&cleanup_label);
-            }
-        }
-    });
-    Ok(label)
+    viewer::open_viewer(format, text, selection, source_path, app, doc_state, state).await
 }
 
 #[tauri::command]
@@ -700,13 +403,7 @@ fn take_viewer_payload(
     label: String,
     state: tauri::State<'_, ViewerStore>,
 ) -> Result<ViewerPayload, String> {
-    state
-        .0
-        .lock()
-        .map_err(|_| "ビューの読込みに失敗しました".to_string())?
-        .get(&label)
-        .cloned()
-        .ok_or_else(|| "表示内容が見つかりません".to_string())
+    viewer::take_viewer_payload(label, state)
 }
 
 #[tauri::command]
@@ -717,28 +414,7 @@ fn update_viewer(
     app: AppHandle,
     state: tauri::State<'_, ViewerStore>,
 ) -> Result<bool, String> {
-    let Some(window) = app.get_webview_window(&label) else {
-        state
-            .0
-            .lock()
-            .map_err(|_| "ビューの更新に失敗しました".to_string())?
-            .remove(&label);
-        return Ok(false);
-    };
-    let payload = {
-        let mut payloads = state
-            .0
-            .lock()
-            .map_err(|_| "ビューの更新に失敗しました".to_string())?;
-        let Some(payload) = payloads.get_mut(&label) else {
-            return Ok(false);
-        };
-        payload.text = text;
-        payload.selection = selection;
-        payload.clone()
-    };
-    window.emit(EVENT_VIEWER_UPDATE, payload).map_err(|e| e.to_string())?;
-    Ok(true)
+    viewer::update_viewer(label, text, selection, app, state)
 }
 
 fn main() {
@@ -762,7 +438,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(Mutex::new(DocState(Doc::empty())))
         .manage(ViewerStore(Mutex::new(HashMap::new())))
-        .manage(SearchCancel(Mutex::new(Arc::new(AtomicBool::new(false)))))
+        .manage(search::SearchCancel(Mutex::new(Arc::new(AtomicBool::new(false)))))
         .manage(instance_server)
         .setup(|app| {
             app.state::<InstanceServer>().start(app.handle());

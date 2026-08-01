@@ -19,7 +19,7 @@ function fixture() {
     onError: vi.fn(async () => {}),
     onIgnore: vi.fn(),
   } satisfies ExternalWatchPorts;
-  new ExternalWatch(banner, ports);
+  new ExternalWatch(banner, ports, api);
   return { banner, ports };
 }
 

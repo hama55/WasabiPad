@@ -11,10 +11,21 @@ import { AddressBar } from "./addressbar";
 import { StatusBar } from "./statusbar";
 import { WindowChrome } from "./window-chrome";
 import { ExternalWatch } from "./external-watch";
-import { FolderActions, isImagePath, openInOtherApp, revealInExplorer } from "./folder-actions";
-import { DocumentController, SAVE_EXTENSIONS } from "./document-controller";
+import {
+  FolderActions,
+  isImagePath,
+  openInOtherApp,
+  revealInExplorer,
+  type FolderActionsServices,
+} from "./folder-actions";
+import {
+  DocumentController,
+  SAVE_EXTENSIONS,
+  type DocumentControllerServices,
+} from "./document-controller";
 import { showError } from "./dialogs";
-import { confirmMessage } from "./prompt";
+import { confirmMessage, confirmSaveDiscard, promptFields } from "./prompt";
+import { promptSaveFormat, saveFormatFields, saveFormatFromValues } from "./save-format";
 import { isPasswordCancelled, withArchivePassword } from "./archive-password";
 import { archiveRelOf, isArchiveEntryPath } from "./archive-path";
 import { basename, joinWindowsRoot } from "./path";
@@ -329,7 +340,17 @@ const doc: DocumentController = new DocumentController({
     });
     return path ?? null;
   },
-});
+}, {
+  api,
+  showError,
+  confirmSaveDiscard,
+  promptFields,
+  promptSaveFormat,
+  saveFormatFields,
+  saveFormatFromValues,
+  isPasswordCancelled,
+  withArchivePassword,
+} satisfies DocumentControllerServices);
 
 const externalWatch = new ExternalWatch($("external-banner"), {
   canPoll: () => doc.current.savePath !== null && loading.hidden,
@@ -342,7 +363,7 @@ const externalWatch = new ExternalWatch($("external-banner"), {
   onNotice: (text) => windowChrome.notify(text),
   onError: showError,
   onIgnore: () => editor.focus(),
-});
+}, api);
 
 const favbar = new FavBar($("favbar"), {
   onOpen: (path, newTab) => { void (newTab ? tabs.open(path) : doc.openPath(path)); },
@@ -368,7 +389,15 @@ const folderActions = new FolderActions(doc, {
     addressbar.render(path);
     void doc.openPath(path);
   },
-});
+}, {
+  api,
+  showError,
+  confirmMessage,
+  promptFields,
+  getStartupPath: () => getSetting("startupPath"),
+  revealInExplorer,
+  openInOtherApp,
+} satisfies FolderActionsServices);
 
 // ---- 配線 ----
 function confirmReloadDiscardingEdits(): Promise<boolean> {

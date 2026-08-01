@@ -6,6 +6,8 @@ import { initialSession } from "./session";
 import {
   FolderActions,
   isImagePath,
+  openInOtherApp,
+  revealInExplorer,
   type FolderActionsPorts,
   type FolderDocumentPort,
 } from "./folder-actions";
@@ -16,7 +18,7 @@ vi.mock("./prompt", async (importOriginal) => ({
   ...await importOriginal<typeof import("./prompt")>(),
   confirmMessage: vi.fn(async () => true),
 }));
-import { confirmMessage } from "./prompt";
+import { confirmMessage, promptFields } from "./prompt";
 
 function fixture() {
   const dropdown = document.createElement("div");
@@ -44,7 +46,20 @@ function fixture() {
     onSetStartupPath: vi.fn(),
     onOpenPath: vi.fn(),
   } satisfies FolderActionsPorts;
-  return { actions: new FolderActions(doc, ports), doc, dropdown, ports };
+  return {
+    actions: new FolderActions(doc, ports, {
+      api,
+      showError,
+      confirmMessage,
+      promptFields,
+      getStartupPath: () => null,
+      revealInExplorer,
+      openInOtherApp,
+    }),
+    doc,
+    dropdown,
+    ports,
+  };
 }
 
 describe("FolderActions", () => {

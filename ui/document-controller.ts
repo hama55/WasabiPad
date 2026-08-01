@@ -1,11 +1,11 @@
-import * as api from "./api";
+import type * as api from "./api";
 import type { DocumentSession } from "./session";
 import { initialSession, sessionFromDocInfo } from "./session";
-import { promptSaveFormat, saveFormatFields, saveFormatFromValues, type SaveFormat } from "./save-format";
-import { confirmSaveDiscard, promptFields } from "./prompt";
-import { isPasswordCancelled, withArchivePassword } from "./archive-password";
+import type { promptSaveFormat, saveFormatFields, saveFormatFromValues, SaveFormat } from "./save-format";
+import type { confirmSaveDiscard, promptFields } from "./prompt";
+import type { isPasswordCancelled, withArchivePassword } from "./archive-password";
 import { archiveRelOf } from "./archive-path";
-import { showError } from "./dialogs";
+import type { showError } from "./dialogs";
 import { formatWindowTitle } from "./format";
 import { basename, relativePathWithinRoot } from "./path";
 import type { EditorViewState } from "./editor-view-state";
@@ -22,6 +22,24 @@ export interface MemoSpec {
   extension: string;
 }
 
+export type DocumentControllerApi = Pick<
+  typeof api,
+  "openPath" | "newDoc" | "selectEntry" | "reloadWithEncoding" | "saveFile" |
+  "nextMemoPath" | "listFolderEntries"
+>;
+
+export interface DocumentControllerServices {
+  api: DocumentControllerApi;
+  showError: typeof showError;
+  confirmSaveDiscard: typeof confirmSaveDiscard;
+  promptFields: typeof promptFields;
+  promptSaveFormat: typeof promptSaveFormat;
+  saveFormatFields: typeof saveFormatFields;
+  saveFormatFromValues: typeof saveFormatFromValues;
+  isPasswordCancelled: typeof isPasswordCancelled;
+  withArchivePassword: typeof withArchivePassword;
+}
+
 export interface DocumentEditorPort {
   open: (lineCount: number, readOnly: boolean, keepViewers?: boolean) => void;
   focus: () => void;
@@ -31,7 +49,7 @@ export interface DocumentEditorPort {
 }
 
 export interface DocumentStatusPort {
-  setFormat: (session: DocumentSession) => void;
+  setFormat: (session: Readonly<DocumentSession>) => void;
   setByteSize: (bytes: number | null, isHuge?: boolean) => void;
   setLineCount: (count: number) => void;
 }
@@ -59,7 +77,7 @@ export interface DocumentView {
   setLoading: (active: boolean, message?: string) => void;
   setTitle: (title: string) => void;
   notify: (text: string) => void;
-  onSessionChange?: (session: DocumentSession) => void;
+  onSessionChange?: (session: Readonly<DocumentSession>) => void;
   hideExternalBanner: () => void;
   // ファイル保存先を選ばせる (OS のダイアログ)
   pickSavePath: (defaultPath: string) => Promise<string | null>;
@@ -70,9 +88,12 @@ export interface DocumentView {
 export class DocumentController {
   private session = initialSession();
 
-  constructor(private view: DocumentView) {}
+  constructor(
+    private view: DocumentView,
+    private services: DocumentControllerServices,
+  ) {}
 
-  get current(): DocumentSession {
+  get current(): Readonly<DocumentSession> {
     return this.session;
   }
 
@@ -109,13 +130,13 @@ export class DocumentController {
     if (confirm && !(await this.confirmDiscard())) return false;
     this.view.setLoading(true);
     try {
-      const info = await api.openPath(path);
+      const info = await this.services.api.openPath(path);
       this.session.selectedRelPath = "";
       this.showTree(info);
       this.applyDocInfo(info);
       return true;
     } catch (e) {
-      await showError("開けませんでした", e);
+      await this.services.showError("開けませんでした", e);
       return false;
     } finally {
       this.view.setLoading(false);
@@ -148,7 +169,10 @@ export class DocumentController {
   async selectEntry(relPath: string): Promise<boolean> {
     this.view.setLoading(true);
     try {
-      const info = await withArchivePassword(archiveRelOf(relPath), () => api.selectEntry(relPath));
+      const info = await this.services.withArchivePassword(
+        archiveRelOf(relPath),
+        () => this.services.api.selectEntry(relPath),
+      );
       this.session.selectedRelPath = relPath;
       this.applyDocInfo(info, false, false);
       // 選択した行を一覧側にも戻す。深い階層は必要ならここで展開する。
@@ -159,7 +183,7 @@ export class DocumentController {
       }
       return true;
     } catch (error) {
-      if (!isPasswordCancelled(error)) await showError("開けませんでした", error);
+      if (!this.services.isPasswordCancelled(error)) await this.services.showError("開けませんでした", error);
       return false;
     } finally {
       this.view.setLoading(false);
@@ -168,7 +192,7 @@ export class DocumentController {
 
   async newFile(confirm = true) {
     if (confirm && !(await this.confirmDiscard())) return;
-    await api.newDoc();
+    await this.services.api.newDoc();
     this.session = initialSession();
     this.view.statusbar.setFormat(this.session);
     this.view.statusbar.setByteSize(null);
@@ -184,10 +208,10 @@ export class DocumentController {
   async reloadWithEncoding(encoding: api.ReadEncoding): Promise<boolean> {
     this.view.setLoading(true);
     try {
-      this.applyDocInfo(await api.reloadWithEncoding(encoding));
+      this.applyDocInfo(await this.services.api.reloadWithEncoding(encoding));
       return true;
     } catch (error) {
-      await showError("再読込できませんでした", error);
+      await this.services.showError("再読込できませんでした", error);
       return false;
     } finally {
       this.view.setLoading(false);
@@ -222,7 +246,7 @@ export class DocumentController {
     folderDraftRoot: string | null = null,
     format?: SaveFormat,
   ): Promise<boolean> {
-    const chosen = format ?? await promptSaveFormat(this.session);
+    const chosen = format ?? await this.services.promptSaveFormat(this.session);
     if (!chosen) return false;
     return this.saveTo(path, folderDraftRoot, chosen);
   }
@@ -234,10 +258,10 @@ export class DocumentController {
     const spec = await this.promptNewMemoSave();
     if (!spec) return false;
     try {
-      const path = await api.nextMemoPath(root, spec.memo.stem, spec.memo.extension);
+      const path = await this.services.api.nextMemoPath(root, spec.memo.stem, spec.memo.extension);
       return this.saveAsTo(path, root, spec.format);
     } catch (e) {
-      await showError("ファイル名を決められませんでした", e);
+      await this.services.showError("ファイル名を決められませんでした", e);
       return false;
     }
   }
@@ -250,16 +274,16 @@ export class DocumentController {
     let outcome: api.SaveOutcome;
     try {
       // 7z エントリの書き戻し中にパスワードが要求されたら入力させて再試行する
-      outcome = await withArchivePassword(archiveRelOf(this.session.selectedRelPath), () =>
-        api.saveFile(path, format.encoding, format.eol)
+      outcome = await this.services.withArchivePassword(archiveRelOf(this.session.selectedRelPath), () =>
+        this.services.api.saveFile(path, format.encoding, format.eol)
       );
     } catch (e) {
-      if (!isPasswordCancelled(e)) await showError("保存できませんでした", e);
+      if (!this.services.isPasswordCancelled(e)) await this.services.showError("保存できませんでした", e);
       return false;
     }
     if (outcome.kind === "conflict") {
       // 本体は上書きされていない。dirty のまま残し、バナーで再読込/無視を選ばせる
-      await showError(
+      await this.services.showError(
         "保存先が他のアプリで変更されています",
         `編集内容を退避保存しました:\n${outcome.saved_to}`
       );
@@ -285,8 +309,8 @@ export class DocumentController {
     if (rel === null) return;
     this.session.selectedRelPath = rel;
     try {
-      this.view.sidebar.setEntries(await api.listFolderEntries(""));
-      this.view.sidebar.selectByRelPath(rel);
+      this.view.sidebar.setEntries(await this.services.api.listFolderEntries(""));
+      await this.view.sidebar.selectByRelPath(rel);
     } catch {
       // 保存自体は成功しているため、一覧更新の失敗でdirtyへ戻さない。
     }
@@ -297,7 +321,7 @@ export class DocumentController {
       await onProceed?.();
       return true;
     }
-    const choice = await confirmSaveDiscard();
+    const choice = await this.services.confirmSaveDiscard();
     if (choice === "discard") {
       this.session.dirty = false;
       await onProceed?.();
@@ -330,7 +354,7 @@ export class DocumentController {
   }
 
   async promptMemoSpec(): Promise<MemoSpec | null> {
-    const result = await promptFields("新規メモ作成", [
+    const result = await this.services.promptFields("新規メモ作成", [
       {
         label: "ファイル名",
         value: "memo",
@@ -349,7 +373,7 @@ export class DocumentController {
   }
 
   private async promptNewMemoSave(): Promise<{ memo: MemoSpec; format: SaveFormat } | null> {
-    const result = await promptFields("新規メモ保存", [
+    const result = await this.services.promptFields("新規メモ保存", [
       {
         label: "ファイル名",
         value: "memo",
@@ -359,11 +383,11 @@ export class DocumentController {
         ...SAVE_EXTENSIONS.map(({ extension }) => ({ label: `.${extension}`, value: extension })),
         { label: "拡張子なし", value: "" },
       ] },
-      ...saveFormatFields(this.session),
+      ...this.services.saveFormatFields(this.session),
     ]);
     const stem = result?.[0].trim();
     return stem
-      ? { memo: { stem, extension: result![1] }, format: saveFormatFromValues(result!, 2) }
+      ? { memo: { stem, extension: result![1] }, format: this.services.saveFormatFromValues(result!, 2) }
       : null;
   }
 

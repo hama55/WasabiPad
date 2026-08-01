@@ -2,14 +2,14 @@ import type { ViewerFormat } from "./api";
 import type { DocumentSession } from "./session";
 import { displayName } from "./session";
 import { APP_NAME } from "./app-config";
+import { VIEWER_FORMATS } from "./viewer-formats";
 export { APP_NAME };
 
 // ウィンドウタイトルの体裁はここだけで決める (メモ本体・ビューで共通)。
 // ビュー形式の表示名。エディタの右クリックメニューとビュー側タイトルで共有する。
-export const VIEWER_FORMAT_LABELS: Record<ViewerFormat, string> = {
-  csv: "CSVビュー",
-  markdown: "Markdownビュー",
-};
+export const VIEWER_FORMAT_LABELS: Record<ViewerFormat, string> = Object.fromEntries(
+  Object.values(VIEWER_FORMATS).map((spec) => [spec.id, spec.label]),
+) as Record<ViewerFormat, string>;
 
 export function formatByteSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -26,5 +26,5 @@ export const formatLineCount = (count: number) => `${count.toLocaleString("ja-JP
 export const formatCursor = (line: number, column: number) => `${line}行 ${column}列`;
 export const formatFontFamily = (family: string) => family.split(",")[0].replaceAll("\"", "").trim();
 export const formatTitleBar = (subject: string) => `${subject} — ${APP_NAME}`;
-export const formatWindowTitle = (session: DocumentSession) =>
+export const formatWindowTitle = (session: Readonly<DocumentSession>) =>
   formatTitleBar(`${session.dirty ? "● " : ""}${displayName(session)}`);

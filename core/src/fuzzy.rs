@@ -88,12 +88,12 @@ pub fn fuzzy_match(pattern: &str, word: &str, match_case: bool) -> Option<FuzzyM
     let mut ends = vec![SCORE_MIN; rows * cols];
     let mut best = vec![SCORE_MIN; rows * cols];
 
-    for i in 0..rows {
+    for (i, &pat_char) in pat.iter().enumerate() {
         let gap = if i == rows - 1 { SCORE_GAP_TRAILING } else { SCORE_GAP_INNER };
         let mut carried = SCORE_MIN;
         for j in 0..cols {
             let at = i * cols + j;
-            if same(pat[i], target[j], match_case) {
+            if same(pat_char, target[j], match_case) {
                 let score = if i == 0 {
                     (j as i32) * SCORE_GAP_LEADING + bonus[j]
                 } else if j == 0 {

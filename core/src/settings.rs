@@ -116,6 +116,7 @@ fn with_settings_lock<T>(operation: impl FnOnce() -> io::Result<T>) -> io::Resul
         .create(true)
         .read(true)
         .write(true)
+        .truncate(false)
         .open(path)?;
     let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
     let handle = file.as_raw_handle();
