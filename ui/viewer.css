@@ -134,38 +134,6 @@ article tbody tr:nth-child(even) { background: var(--row-alt); }
 }
 #viewer-context-menu button:hover { background: var(--accent); color: #fff; }
 
-.pf-overlay {
-  position: fixed; inset: 0; z-index: 2000;
-  background: #00000066;
-  display: flex; align-items: center; justify-content: center;
-}
-.pf-box {
-  background: var(--bg-side); border: 1px solid var(--border-strong); border-radius: 6px;
-  box-shadow: 0 8px 24px #000a; padding: 14px; width: 360px;
-}
-.pf-title { font-size: 13px; color: var(--fg); margin-bottom: 10px; }
-.pf-message { color: var(--fg); white-space: pre-wrap; line-height: 1.6; }
-.pf-row { display: flex; flex-direction: column; gap: 3px; margin-bottom: 8px; }
-.pf-row label { font-size: 12px; color: var(--fg-dim); }
-.pf-row input, .pf-row select {
-  background: var(--bg-editor); color: var(--fg);
-  border: 1px solid var(--border); border-radius: 4px;
-  padding: 5px 8px; font-size: 13px; font-family: var(--font-ui);
-  outline: none;
-}
-.pf-row input:focus, .pf-row select:focus { border-color: var(--bg-status); }
-.pf-row input[aria-invalid="true"] { border-color: #f48771; }
-.pf-error { min-height: 15px; color: #f48771; font-size: 11px; }
-.pf-btns { display: flex; justify-content: flex-end; gap: 6px; margin-top: 12px; }
-.pf-btns button {
-  background: var(--bg-editor); border: 1px solid var(--border-strong); border-radius: 4px;
-  color: var(--fg); font-size: 13px; padding: 5px 12px; cursor: default;
-}
-.pf-btns button:hover { background: var(--hover); }
-.pf-btns .pf-ok { background: var(--accent); border-color: var(--accent); color: #fff; }
-.pf-btns .pf-ok:hover { background: var(--bg-status); }
-.pf-btns .pf-ok:disabled { opacity: .5; pointer-events: none; }
-
 .viewer-dialog-overlay {
   position: fixed; inset: 0; z-index: 2000;
   display: flex; align-items: center; justify-content: center;

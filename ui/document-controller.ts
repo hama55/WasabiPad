@@ -3,7 +3,8 @@ import type { DocumentSession } from "./session";
 import { initialSession, sessionFromDocInfo } from "./session";
 import { promptSaveFormat, saveFormatFields, saveFormatFromValues, type SaveFormat } from "./save-format";
 import { confirmSaveDiscard, promptFields } from "./prompt";
-import { archiveRelOf, isPasswordCancelled, withArchivePassword } from "./archive-password";
+import { isPasswordCancelled, withArchivePassword } from "./archive-password";
+import { archiveRelOf } from "./archive-path";
 import { showError } from "./dialogs";
 import { formatWindowTitle } from "./format";
 import { basename, relativePathWithinRoot } from "./path";
@@ -124,9 +125,8 @@ export class DocumentController {
   // 開いた対象に応じてサイドバーの中身を決める (アーカイブ / フォルダ / 単一ファイル)
   private showTree(info: api.DocInfo) {
     if (info.kind === "archive") {
-      // 7z/zip はテキストエントリを編集して書き戻せるため「閲覧」とは表示しない
-      const lowerPath = info.path.toLowerCase();
-      const editable = lowerPath.endsWith(".7z") || lowerPath.endsWith(".zip");
+      // 編集可否は拡張子ではなく、アーカイブを開いたbackendの判定に従う。
+      const editable = !info.view_only;
       this.view.setSidebar(true, editable ? "アーカイブ" : "閲覧モード");
       this.view.sidebar.setWorkspaceSearch(null);
       if (info.entries) {

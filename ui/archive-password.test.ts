@@ -2,7 +2,6 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { promptFields } from "./prompt";
 import * as api from "./api";
 import {
-  archiveRelOf,
   isPasswordCancelled,
   PASSWORD_ERROR_MARKER,
   withArchivePassword,
@@ -70,13 +69,5 @@ describe("withArchivePassword", () => {
     }).catch((e) => e);
     expect(isPasswordCancelled(error)).toBe(true);
     expect(setPassword).not.toHaveBeenCalled();
-  });
-});
-
-describe("archiveRelOf", () => {
-  it("エントリ表記から書庫の相対パスを取り出す", () => {
-    expect(archiveRelOf("sub/data.7z::dir/a.txt")).toBe("sub/data.7z");
-    expect(archiveRelOf("a.txt")).toBe("");
-    expect(archiveRelOf("")).toBe("");
   });
 });

@@ -216,6 +216,7 @@ async function loadArchiveImages(
         const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: archiveAssetMimeType(src) }));
         archiveAssetUrls.push(url);
         image.src = url;
+        await waitForImageLayout(image);
       } catch {
         if (generation !== markdownRenderGeneration) return;
         image.removeAttribute("src");
@@ -224,14 +225,39 @@ async function loadArchiveImages(
       return;
     }
     const resolved = resolveAssetPath(currentSourcePath, src);
-    if (resolved) image.src = convertFileSrc(resolved);
+    if (resolved && generation === markdownRenderGeneration) {
+      image.src = convertFileSrc(resolved);
+      await waitForImageLayout(image);
+    }
   }));
+}
+
+async function waitForImageLayout(image: HTMLImageElement) {
+  if (!image.getAttribute("src")) return;
+  if (!image.complete) {
+    await new Promise<void>((resolve) => {
+      const finish = () => {
+        image.removeEventListener("load", finish);
+        image.removeEventListener("error", finish);
+        resolve();
+      };
+      image.addEventListener("load", finish, { once: true });
+      image.addEventListener("error", finish, { once: true });
+      if (image.complete) finish();
+    });
+  }
+  try {
+    await image.decode?.();
+  } catch {
+    // 壊れた画像でも本文の中央スクロールは継続する。
+  }
 }
 
 async function renderMarkdown(text: string) {
   const generation = ++markdownRenderGeneration;
   const archivePath = currentArchivePath;
   const archiveEntry = currentArchiveEntry;
+  const selection = currentSelection;
   revokeArchiveAssetUrls();
   currentRows = [];
   closeChart();
@@ -254,18 +280,19 @@ async function renderMarkdown(text: string) {
   highlightTargets.forEach((element) => {
     const start = Number(element.dataset.sourceStart);
     const end = Number(element.dataset.sourceEnd);
-    element.classList.toggle("viewer-source-selected", markdownBlockSelected(currentSelection, start, end));
+    element.classList.toggle("viewer-source-selected", markdownBlockSelected(selection, start, end));
   });
   article.querySelectorAll("a").forEach((link) => {
     link.target = "_blank";
     link.rel = "noreferrer";
   });
   content.replaceChildren(article);
-  scrollMarkdownCaret(highlightTargets, currentSelection);
   summary.classList.remove("warning");
   summary.title = "";
   summary.textContent = `${text.length.toLocaleString()}文字`;
   await loadArchiveImages(article, generation, archivePath, archiveEntry);
+  // 画像の高さが確定する前にスクロールすると、読込後のレイアウト変化で中央位置が崩れる。
+  if (generation === markdownRenderGeneration) scrollMarkdownCaret(highlightTargets, selection);
 }
 
 function renderPayload(payload: ViewerPayload) {

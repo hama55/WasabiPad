@@ -42,6 +42,18 @@ export function scrollMarkdownCaret(sourceElements: HTMLElement[], selection: Vi
     const start = Number(element.dataset.sourceStart);
     const end = Number(element.dataset.sourceEnd);
     return start <= line && line < end;
-  });
+  }) ?? sourceElements.reduce<HTMLElement | undefined>((nearest, element) => {
+    if (markdownLineDistance(element, line) < (nearest ? markdownLineDistance(nearest, line) : Infinity)) {
+      return element;
+    }
+    return nearest;
+  }, undefined);
   target?.scrollIntoView?.({ block: "center", inline: "nearest" });
+}
+
+function markdownLineDistance(element: HTMLElement, line: number): number {
+  const start = Number(element.dataset.sourceStart);
+  const end = Number(element.dataset.sourceEnd);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return Infinity;
+  return line < start ? start - line : line >= end ? line - end + 1 : 0;
 }

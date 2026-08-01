@@ -7,11 +7,12 @@
     "dev": "vite",
     "check:ipc": "node scripts/check-ipc-contract.mjs",
     "sync:ipc": "node scripts/sync-ipc.mjs",
+    "sync:config": "node scripts/sync-app-config.mjs",
     "check:config": "node scripts/check-config.mjs",
     "sync:version": "node scripts/sync-version.mjs",
     "release": "node scripts/release.mjs",
     "test": "vitest run",
-    "build": "npm test && npm run check:config && npm run sync:ipc && npm run check:ipc && git diff --exit-code -- ui/generated && tsc --noEmit && vite build",
+    "build": "npm test && npm run sync:config && npm run check:config && npm run sync:ipc && npm run check:ipc && git diff --exit-code -- ui/generated && tsc --noEmit && vite build",
     "tauri": "tauri"
   },
   "dependencies": {

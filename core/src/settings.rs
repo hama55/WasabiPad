@@ -1,4 +1,4 @@
-// アプリ設定の構造はフロント (ui/settings.ts) だけが持つ。
+// アプリ設定JSONの構造はフロント (ui/settings.ts) だけが持つ。
 // core はキー単位でJSON値を差し替え、複数プロセスが古い設定全体を上書きしないようにする。
 use std::fs::OpenOptions;
 use std::io;
@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
+// ディレクトリ名は app-config.json から scripts/sync-app-config.mjs が同期する。
 // インストーラは exe を %LOCALAPPDATA%\WasabiPad\ へ置く。設定もそこへ揃えると
 // インストール版では従来の「exe 隣」と同じ場所になり、保存先が分かれない。
 pub(crate) fn config_path(file: &str) -> io::Result<PathBuf> {

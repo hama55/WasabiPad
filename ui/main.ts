@@ -15,7 +15,8 @@ import { FolderActions, isImagePath, openInOtherApp, revealInExplorer } from "./
 import { DocumentController, SAVE_EXTENSIONS } from "./document-controller";
 import { showError } from "./dialogs";
 import { confirmMessage } from "./prompt";
-import { archiveRelOf, isPasswordCancelled, withArchivePassword } from "./archive-password";
+import { isPasswordCancelled, withArchivePassword } from "./archive-password";
+import { archiveRelOf, isArchiveEntryPath } from "./archive-path";
 import { basename, joinWindowsRoot } from "./path";
 import { createCommandRegistry, globalCommandForEvent } from "./commands";
 import { TabManager } from "./tabs";
@@ -90,7 +91,7 @@ function parentPath(path: string): string | null {
 
 function memoPathForExplorer(): string | null {
   const session = doc.current;
-  if (session.folderRoot && session.selectedRelPath && !session.selectedRelPath.includes("::")) {
+  if (session.folderRoot && session.selectedRelPath && !isArchiveEntryPath(session.selectedRelPath)) {
     return joinWindowsRoot(session.folderRoot, session.selectedRelPath);
   }
   return session.savePath;

@@ -1,5 +1,6 @@
 import type { FolderEntry, Pos, WorkspaceSearchOptions, WorkspaceSearchResult } from "./api";
 import { WorkspaceSearchPanel, type WorkspaceSearchPorts } from "./workspace-search-panel";
+import { archiveEntryPath } from "./archive-path";
 
 // フォルダ/ZIP/Excelのエントリ名 ("sub/a.txt" 形式) からツリーを構築して表示。
 // 実データは backend が保持し、選択時に relPath を親へ通知するだけ。
@@ -92,9 +93,10 @@ export class Sidebar {
   }
 
   // "sub/a.txt" 形式の名前一覧からディレクトリ見出し+葉の行を組み立てる。
-  // relPrefix は葉の relPath に前置する文字列 (アーカイブ内エントリの "data.zip::" 用)。
+  // relPrefix はアーカイブ内エントリの親パス。直接開いた書庫では空文字。
   private buildRows(names: string[], depth: number, relPrefix: string, leafKindOf: (name: string) => RowKind): Row[] {
     const rows: Row[] = [];
+    const relPathOf = (name: string) => archiveEntryPath(relPrefix, name);
     let prevDirs: string[] = [];
     names.forEach((name) => {
       const parts = name.split("/");
@@ -105,7 +107,7 @@ export class Sidebar {
       for (let d = common; d < dirs.length; d++) {
         rows.push({
           label: dirs[d],
-          relPath: relPrefix + dirs.slice(0, d + 1).join("/"),
+          relPath: relPathOf(dirs.slice(0, d + 1).join("/")),
           depth: depth + d,
           kind: "dir",
           expanded: false,
@@ -114,7 +116,7 @@ export class Sidebar {
       }
       rows.push({
         label: parts[parts.length - 1],
-        relPath: relPrefix + name,
+        relPath: relPathOf(name),
         depth: depth + dirs.length,
         kind: leafKindOf(name),
         expanded: false,
@@ -219,8 +221,7 @@ export class Sidebar {
   private async expandArchiveRow(r: Row) {
     if (!r.childrenLoaded) {
       const names = await this.onExpandArchive(r.relPath);
-      const prefix = r.relPath === "" ? "" : `${r.relPath}::`;
-      const children = this.buildRows(names, r.depth + 1, prefix, () => "archiveEntry");
+      const children = this.buildRows(names, r.depth + 1, r.relPath, () => "archiveEntry");
       const idx = this.rows.indexOf(r);
       this.rows.splice(idx + 1, 0, ...children);
       r.childrenLoaded = true;

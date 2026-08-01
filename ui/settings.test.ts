@@ -50,6 +50,17 @@ describe("settings", () => {
       .toEqual({ max_files: 5 });
   });
 
+  it("不正なStoredTab.gotoを復元しない", () => {
+    const settings = parseSettings(JSON.stringify({
+      openTabs: {
+        tabs: [{ id: "tab-1", path: "memo.txt", kind: "file", label: "memo", goto: { line: 1 } }],
+        activeId: "tab-1",
+      },
+    }));
+
+    expect(settings.openTabs.tabs).toEqual([]);
+  });
+
   it("先行保存の失敗を後続成功で握り潰さない", async () => {
     updateSettingMock
       .mockRejectedValueOnce(new Error("openTabs failed"))

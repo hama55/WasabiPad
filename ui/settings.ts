@@ -4,8 +4,7 @@
 import type { WorkspaceSearchOptions } from "./api";
 import { loadSettings as loadSettingsJson, updateSetting } from "./api";
 import { clampSearchOptions, DEFAULT_SEARCH_OPTIONS } from "./workspace-search-options";
-import type { StoredTabs } from "./tabs";
-import { isEditorViewState } from "./editor-view-state";
+import { isStoredTabs, type StoredTabs } from "./stored-tabs";
 import { DEFAULT_EDITOR_CONFIG } from "./editor-config";
 import { DEFAULT_INDENT_SIZE, INDENT_SIZES, isValidFontSize } from "./font-controls";
 
@@ -61,24 +60,8 @@ export function parseSettings(text: string): Settings {
       typeof value.workspaceSearchOptions === "object" && value.workspaceSearchOptions !== null
         ? value.workspaceSearchOptions
         : null,
-    openTabs: validStoredTabs(value.openTabs) ? value.openTabs : DEFAULTS.openTabs,
+    openTabs: isStoredTabs(value.openTabs) ? value.openTabs : DEFAULTS.openTabs,
   };
-}
-
-function validStoredTabs(value: unknown): value is StoredTabs {
-  if (typeof value !== "object" || value === null) return false;
-  const candidate = value as Partial<StoredTabs>;
-  return Array.isArray(candidate.tabs)
-    && candidate.tabs.every((tab) =>
-      typeof tab === "object" && tab !== null
-      && typeof tab.id === "string"
-      && (typeof tab.path === "string" || tab.path === null)
-      && (tab.kind === "file" || tab.kind === "folder" || tab.kind === "blank")
-      && typeof tab.label === "string"
-      && (!("selectedRelPath" in tab) || tab.selectedRelPath === undefined || typeof tab.selectedRelPath === "string")
-      && (!("selectedLine" in tab) || tab.selectedLine === undefined || (typeof tab.selectedLine === "number" && Number.isInteger(tab.selectedLine) && tab.selectedLine >= 0))
-      && (!("viewState" in tab) || tab.viewState === undefined || isEditorViewState(tab.viewState)))
-    && (typeof candidate.activeId === "string" || candidate.activeId === null);
 }
 
 export async function initSettings(): Promise<void> {

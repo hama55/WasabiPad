@@ -1,10 +1,10 @@
 import type { ViewerFormat } from "./api";
 import type { DocumentSession } from "./session";
 import { displayName } from "./session";
+import { APP_NAME } from "./app-config";
+export { APP_NAME };
 
-// アプリ名とウィンドウタイトルの体裁はここだけで決める (メモ本体・ビューで共通)
-export const APP_NAME = "WasabiPad";
-
+// ウィンドウタイトルの体裁はここだけで決める (メモ本体・ビューで共通)。
 // ビュー形式の表示名。エディタの右クリックメニューとビュー側タイトルで共有する。
 export const VIEWER_FORMAT_LABELS: Record<ViewerFormat, string> = {
   csv: "CSVビュー",

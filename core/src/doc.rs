@@ -514,7 +514,7 @@ impl Doc {
     // - 従来の一括展開済みアーカイブ (上記以外の拡張子。docx 等): entries をエントリ名で検索
     pub fn select_entry(&mut self, rel_path: &str) -> io::Result<Option<DocInfo>> {
         if let Some(root) = self.source.folder_root().map(Path::to_path_buf) {
-            if let Some((archive_rel, entry_name)) = rel_path.split_once("::") {
+            if let Some((archive_rel, entry_name)) = rel_path.split_once(crate::folder::ARCHIVE_ENTRY_SEPARATOR) {
                 let archive_real = join_relative(&root, archive_rel);
                 let source_file = fileio::open_exclusive(&archive_real)?;
                 let (text, meta) = if crate::sevenz::is_updateable_archive_path(&archive_real) {

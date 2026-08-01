@@ -71,4 +71,25 @@ describe("Markdown viewer specifications", () => {
 
     expect(scrollIntoView).toHaveBeenCalledWith({ block: "center", inline: "nearest" });
   });
+
+  it("空行では最寄りのMarkdownブロックを中央へスクロールする", () => {
+    const before = document.createElement("p");
+    before.dataset.sourceStart = "0";
+    before.dataset.sourceEnd = "2";
+    const after = document.createElement("p");
+    after.dataset.sourceStart = "4";
+    after.dataset.sourceEnd = "6";
+    const beforeScroll = vi.fn();
+    const afterScroll = vi.fn();
+    before.scrollIntoView = beforeScroll;
+    after.scrollIntoView = afterScroll;
+
+    scrollMarkdownCaret([before, after], {
+      start: { line: 3, col: 0 },
+      end: { line: 3, col: 0 },
+    });
+
+    expect(beforeScroll).not.toHaveBeenCalled();
+    expect(afterScroll).toHaveBeenCalledWith({ block: "center", inline: "nearest" });
+  });
 });

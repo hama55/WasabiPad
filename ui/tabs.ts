@@ -5,22 +5,8 @@ import { basename } from "./path";
 import { showMenu, type MenuItem } from "./menu";
 import { revealInExplorer } from "./folder-actions";
 import { DRAG_THRESHOLD } from "./interaction-constants";
-
-export interface StoredTab {
-  id: string;
-  path: string | null;
-  kind: "file" | "folder" | "blank";
-  label: string;
-  goto?: Pos;
-  viewState?: EditorViewState;
-  selectedRelPath?: string;
-  selectedLine?: number;
-}
-
-export interface StoredTabs {
-  tabs: StoredTab[];
-  activeId: string | null;
-}
+export { isStoredTab, isStoredTabs, type StoredTab, type StoredTabs } from "./stored-tabs";
+import type { StoredTab, StoredTabs } from "./stored-tabs";
 
 export interface TabDocumentPort {
   readonly current: DocumentSession;

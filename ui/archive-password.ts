@@ -36,9 +36,3 @@ export async function withArchivePassword<T>(
     }
   }
 }
-
-// "sub/data.7z::entry" / "" (直接開いた書庫のエントリ名) から書庫の相対パスを得る
-export function archiveRelOf(relPath: string): string {
-  const sep = relPath.indexOf("::");
-  return sep >= 0 ? relPath.slice(0, sep) : "";
-}

@@ -8,6 +8,7 @@ import { showError } from "./dialogs";
 import { basename, joinWindowsRoot, rebaseWindowsPath, relativePathFromRoot } from "./path";
 import { getSetting } from "./settings";
 import { VIEWER_FORMAT_LABELS } from "./format";
+import { isArchiveEntryUnder } from "./archive-path";
 
 export interface FolderActionsPorts {
   sidebar: Pick<Sidebar, "setEntries" | "selectByRelPath" | "refreshFolderEntries">;
@@ -145,7 +146,7 @@ export class FolderActions {
       const selected = this.doc.current.selectedRelPath;
       const deletedSelection = selected === target.relPath
         || selected.startsWith(`${target.relPath}/`)
-        || selected.startsWith(`${target.relPath}::`);
+        || isArchiveEntryUnder(selected, target.relPath);
       if (deletedSelection) {
         this.doc.setSelectedRelPath("");
         this.doc.applyDocInfo(info, false, true);

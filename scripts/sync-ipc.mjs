@@ -6,6 +6,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
@@ -40,6 +41,33 @@ export function syncGeneratedFiles(sourceDirectory, targetDirectory) {
   }
 }
 
+function camelCase(value) {
+  return value.replace(/_([a-z])/g, (_match, letter) => letter.toUpperCase());
+}
+
+function syncCommandNames(targetDirectory) {
+  const backend = readFileSync(join(root, "src-tauri", "src", "main.rs"), "utf8");
+  const commands = [...backend.matchAll(/#\[tauri::command\]\s*\r?\n(?:async\s+)?fn\s+(\w+)/g)]
+    .map((match) => match[1]);
+  const keys = new Set();
+  const entries = commands.map((command) => {
+    const key = camelCase(command);
+    if (keys.has(key)) throw new Error(`IPC command key collision: ${key}`);
+    keys.add(key);
+    return `  ${key}: "${command}",`;
+  });
+  const contents = [
+    "// This file was generated from src-tauri/src/main.rs by scripts/sync-ipc.mjs.",
+    "export const IPC_COMMANDS = {",
+    ...entries,
+    "} as const;",
+    "",
+  ].join("\n");
+  const target = join(targetDirectory, "IpcCommands.ts");
+  mkdirSync(targetDirectory, { recursive: true });
+  if (!existsSync(target) || readFileSync(target, "utf8") !== contents) writeFileSync(target, contents);
+}
+
 function exportPackage(packageName, exportDirectory) {
   const result = spawnSync(
     "cargo",
@@ -64,6 +92,7 @@ function main() {
     exportPackage("wasabipad-core", exportDirectory);
     exportPackage("wasabipad", exportDirectory);
     syncGeneratedFiles(exportDirectory, join(root, "ui", "generated"));
+    syncCommandNames(join(root, "ui", "generated"));
   } finally {
     rmSync(exportDirectory, { recursive: true, force: true });
   }

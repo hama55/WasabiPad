@@ -8,6 +8,7 @@ const coreDoc = read("core/src/doc.rs");
 const fileio = read("core/src/fileio.rs");
 const sevenz = read("core/src/sevenz.rs");
 const frontend = read("ui/api.ts");
+const archivePath = read("ui/archive-path.ts");
 const archivePassword = read("ui/archive-password.ts");
 const folder = read("core/src/folder.rs");
 const workspaceSearch = read("core/src/workspace_search.rs");
@@ -19,6 +20,7 @@ const generatedEncoding = read("ui/generated/Encoding.ts");
 const generatedEol = read("ui/generated/Eol.ts");
 const generatedDocKind = read("ui/generated/DocKind.ts");
 const generatedViewerFormat = read("ui/generated/ViewerFormat.ts");
+const generatedIpcCommands = read("ui/generated/IpcCommands.ts");
 const capabilities = JSON.parse(read("src-tauri/capabilities/default.json"));
 
 function fail(message) {
@@ -134,7 +136,7 @@ function rustCommandParameters(source, command) {
 }
 
 function invokeArgumentKeys(source, command) {
-  const call = source.match(new RegExp(`invoke(?:<[^;()]+>)?\\(\\s*"${command}"`));
+  const call = source.match(new RegExp(`invoke(?:<[^;()]+>)?\\(\\s*IPC_COMMANDS\\.${camelCase(command)}`));
   if (!call) fail(`cannot find TypeScript invoke ${command}`);
   let comma = call.index + call[0].length;
   while (/\s/.test(source[comma] ?? "")) comma += 1;
@@ -178,9 +180,15 @@ const handler = handlerBlock
   .split(",")
   .map((name) => name.trim())
   .filter(Boolean);
-const invokes = names(/invoke(?:<[^;()]+>)?\(\s*"([^"]+)"/g, frontend);
 assertSameSet("Tauri command registration", commands, handler);
-assertSameSet("TypeScript invoke commands", commands, invokes);
+if (!generatedIpcCommands.startsWith("// This file was generated from src-tauri/src/main.rs")) {
+  fail("IpcCommands.ts must be generated from Rust command definitions");
+}
+const generatedCommandNames = names(/^\s+\w+:\s+"([^"]+)",$/gm, generatedIpcCommands);
+const generatedCommandKeys = names(/^\s+(\w+):\s+"[^"]+",$/gm, generatedIpcCommands);
+assertSameSet("generated IPC command names", commands, generatedCommandNames);
+assertSameSet("generated IPC command keys", commands.map(camelCase), generatedCommandKeys);
+assertSameSet("TypeScript IPC command bindings", generatedCommandKeys, names(/IPC_COMMANDS\.(\w+)/g, frontend));
 
 // Tauri は Rust の引数名を camelCase のIPCキーとして受け取る。名前だけの集合を
 // 照合すると edit の caret_before/caretBefore のような実行時だけの破綻を見逃す。
@@ -269,6 +277,12 @@ const passwordMarker = sevenz.match(/pub const PASSWORD_ERROR_MARKER: &str = "([
 const uiPasswordMarker = archivePassword.match(/const PASSWORD_ERROR_MARKER = "([^"]+)"/)?.[1];
 if (!passwordMarker || !uiPasswordMarker || passwordMarker !== uiPasswordMarker) {
   fail(`archive password marker; core=${passwordMarker ?? "<not found>"}, ui=${uiPasswordMarker ?? "<not found>"}`);
+}
+
+const archiveSeparator = folder.match(/pub const ARCHIVE_ENTRY_SEPARATOR: &str = "([^"]+)"/)?.[1];
+const uiArchiveSeparator = archivePath.match(/export const ARCHIVE_ENTRY_SEPARATOR = "([^"]+)"/)?.[1];
+if (!archiveSeparator || !uiArchiveSeparator || archiveSeparator !== uiArchiveSeparator) {
+  fail(`archive entry separator; core=${archiveSeparator ?? "<not found>"}, ui=${uiArchiveSeparator ?? "<not found>"}`);
 }
 
 for (const [uiName, rustName] of [
