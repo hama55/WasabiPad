@@ -128,8 +128,8 @@ describe("FolderActions", () => {
     const other = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
       .find((item) => item.textContent?.includes("その他"));
     other!.click();
-    expect(dropdown.querySelector<HTMLElement>(".dd-item")?.textContent).toBe("削除");
-    dropdown.querySelector<HTMLElement>(".dd-item")!.click();
+    expect(dropdown.querySelector<HTMLElement>(".dd-submenu .dd-item")?.textContent).toBe("削除");
+    dropdown.querySelector<HTMLElement>(".dd-submenu .dd-item")!.click();
     await vi.waitFor(() => expect(api.deleteEntry).toHaveBeenCalledWith("memo.txt"));
 
     expect(confirmMessage).toHaveBeenCalledWith(

@@ -1,21 +1,36 @@
 // 共有ドロップダウンメニュー (タイトルバーのメニュー・お気に入りグループ・右クリックで使用)
-export interface MenuItem {
+type MenuAction = (event?: MouseEvent) => void | Promise<unknown>;
+
+interface MenuItemBase {
   label: string;
   iconClass?: string;
   key?: string; // ショートカット表示
   trailing?: { label: string; title: string; action: () => void | Promise<unknown> };
-  action: (event?: MouseEvent) => void | Promise<unknown>;
-  sub?: MenuItem[];
   sep?: boolean; // trueならこの項目の前に区切り線
   favPath?: string; // お気に入りツリー上の位置。並べ替えD&Dの掴み手/落とし先になる
   onContextMenu?: (x: number, y: number) => void;
 }
 
-const dd = () => document.getElementById("dropdown")!;
+type SubmenuItem = MenuItemBase & { sub: MenuItem[]; action?: never };
+type LeafMenuItem = MenuItemBase & { sub?: never; action: MenuAction };
 
-function invokeAction(action: () => void | Promise<unknown>) {
+export type MenuItem = SubmenuItem | LeafMenuItem;
+
+function hasSubmenu(item: MenuItem): item is SubmenuItem {
+  return Array.isArray(item.sub);
+}
+
+interface MenuState {
+  root: HTMLElement;
+  panels: HTMLElement[];
+}
+
+const dd = () => document.getElementById("dropdown")!;
+let activeMenu: MenuState | null = null;
+
+function invokeMenuCallback(callback: () => void | Promise<unknown>) {
   try {
-    void Promise.resolve(action()).catch((error) => {
+    void Promise.resolve(callback()).catch((error) => {
       console.error("メニュー操作に失敗しました", error);
     });
   } catch (error) {
@@ -23,9 +38,36 @@ function invokeAction(action: () => void | Promise<unknown>) {
   }
 }
 
-export function showMenu(x: number, y: number, items: MenuItem[]) {
-  const el = dd();
-  el.replaceChildren();
+function invokeLeaf(item: LeafMenuItem, event: MouseEvent) {
+  hideMenu();
+  invokeMenuCallback(() => item.action(event));
+}
+
+function positionMenu(el: HTMLElement, x: number, y: number) {
+  el.style.left = "0px";
+  el.style.top = "0px";
+  const r = el.getBoundingClientRect();
+  el.style.left = `${Math.min(x, window.innerWidth - r.width - 4)}px`;
+  el.style.top = `${Math.min(y, window.innerHeight - r.height - 4)}px`;
+}
+
+function showSubmenu(state: MenuState, parent: HTMLElement, x: number, y: number, items: MenuItem[]) {
+  if (activeMenu !== state) return;
+  const parentIndex = state.panels.indexOf(parent);
+  if (parentIndex < 0) return;
+  for (const menu of state.panels.splice(parentIndex + 1)) {
+    menu.remove();
+  }
+  const submenu = document.createElement("div");
+  submenu.className = "dd-menu dd-submenu";
+  state.root.appendChild(submenu);
+  state.panels.push(submenu);
+  renderItems(state, submenu, items);
+  submenu.hidden = false;
+  positionMenu(submenu, x, y);
+}
+
+function renderItems(state: MenuState, el: HTMLElement, items: MenuItem[]) {
   for (const item of items) {
     if (item.sep) {
       const s = document.createElement("div");
@@ -36,7 +78,6 @@ export function showMenu(x: number, y: number, items: MenuItem[]) {
     div.className = "dd-item";
     if (item.favPath) {
       div.dataset.favPath = item.favPath;
-      div.dataset.favDrag = item.favPath;
     }
     const label = document.createElement("span");
     label.className = "dd-label";
@@ -45,7 +86,7 @@ export function showMenu(x: number, y: number, items: MenuItem[]) {
       icon.className = item.iconClass;
       label.append(icon);
     }
-    label.append(document.createTextNode(item.sub ? `${item.label} ▸` : item.label));
+    label.append(document.createTextNode(hasSubmenu(item) ? `${item.label} ▸` : item.label));
     div.appendChild(label);
     if (item.key) {
       const k = document.createElement("span");
@@ -53,55 +94,64 @@ export function showMenu(x: number, y: number, items: MenuItem[]) {
       k.textContent = item.key;
       div.appendChild(k);
     }
-    if (item.trailing) {
+    const trailingAction = item.trailing;
+    if (trailingAction) {
       const trailing = document.createElement("button");
       trailing.className = "dd-trailing";
-      trailing.textContent = item.trailing.label;
-      trailing.title = item.trailing.title;
+      trailing.textContent = trailingAction.label;
+      trailing.title = trailingAction.title;
       trailing.addEventListener("click", (e) => {
         e.preventDefault();
         e.stopPropagation();
         hideMenu();
-        invokeAction(item.trailing!.action);
+        invokeMenuCallback(trailingAction.action);
       });
       div.appendChild(trailing);
     }
     div.addEventListener("click", (e) => {
       e.stopPropagation();
-      if (item.sub) {
+      if (hasSubmenu(item)) {
         const r = div.getBoundingClientRect();
-        showMenu(r.right, r.top, item.sub);
+        showSubmenu(state, el, r.right, r.top, item.sub);
       } else {
-        hideMenu();
-        invokeAction(() => item.action(e));
+        invokeLeaf(item, e);
       }
     });
     div.addEventListener("auxclick", (e) => {
-      if (e.button !== 1 || item.sub) return;
+      if (e.button !== 1 || hasSubmenu(item)) return;
       e.preventDefault();
       e.stopPropagation();
-      hideMenu();
-      invokeAction(() => item.action(e));
+      invokeLeaf(item, e);
     });
-    if (item.onContextMenu) {
+    const onContextMenu = item.onContextMenu;
+    if (onContextMenu) {
       div.addEventListener("contextmenu", (e) => {
         e.preventDefault();
         e.stopPropagation();
-        item.onContextMenu!(e.clientX, e.clientY);
+        invokeMenuCallback(() => onContextMenu(e.clientX, e.clientY));
       });
     }
     el.appendChild(div);
   }
+}
+
+export function showMenu(x: number, y: number, items: MenuItem[]) {
+  const el = dd();
+  const state: MenuState = { root: el, panels: [el] };
+  activeMenu = state;
+  el.classList.add("dd-menu");
+  el.replaceChildren();
+  renderItems(state, el, items);
   el.hidden = false;
-  el.style.left = "0px";
-  el.style.top = "0px";
-  const r = el.getBoundingClientRect();
-  el.style.left = `${Math.min(x, window.innerWidth - r.width - 4)}px`;
-  el.style.top = `${Math.min(y, window.innerHeight - r.height - 4)}px`;
+  positionMenu(el, x, y);
 }
 
 export function hideMenu() {
-  dd().hidden = true;
+  const el = dd();
+  el.hidden = true;
+  // 非表示後も古い項目のイベントハンドラを保持しないため、DOMごと破棄する。
+  el.replaceChildren();
+  activeMenu = null;
 }
 
 window.addEventListener("mousedown", (e) => {

@@ -1,4 +1,5 @@
 import type { ViewerSelection } from "./api";
+import { scrollViewerCaret } from "./viewer-scroll";
 
 const IMG_ATTRIBUTES = ["src", "alt", "title", "width", "height"];
 
@@ -36,24 +37,8 @@ export function markdownBlockSelected(selection: ViewerSelection | null, start: 
 }
 
 export function scrollMarkdownCaret(sourceElements: HTMLElement[], selection: ViewerSelection | null) {
-  const line = selection?.end.line;
-  if (line === undefined) return;
-  const target = sourceElements.find((element) => {
-    const start = Number(element.dataset.sourceStart);
-    const end = Number(element.dataset.sourceEnd);
-    return start <= line && line < end;
-  }) ?? sourceElements.reduce<HTMLElement | undefined>((nearest, element) => {
-    if (markdownLineDistance(element, line) < (nearest ? markdownLineDistance(nearest, line) : Infinity)) {
-      return element;
-    }
-    return nearest;
-  }, undefined);
-  target?.scrollIntoView?.({ block: "center", inline: "nearest" });
-}
-
-function markdownLineDistance(element: HTMLElement, line: number): number {
-  const start = Number(element.dataset.sourceStart);
-  const end = Number(element.dataset.sourceEnd);
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return Infinity;
-  return line < start ? start - line : line >= end ? line - end + 1 : 0;
+  scrollViewerCaret(sourceElements, selection, (element) => ({
+    start: Number(element.dataset.sourceStart),
+    end: Number(element.dataset.sourceEnd),
+  }));
 }

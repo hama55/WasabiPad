@@ -1744,7 +1744,6 @@ export class VirtualEditor {
       if (registered.length) {
         items.push({
           label: "登録文字列",
-          action: () => {},
           sub: registered.map((text) => ({
             label: registeredStringLabel(text),
             action: () => this.dispatch("登録文字列を挿入できませんでした", () => this.insertText(text)),

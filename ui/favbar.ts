@@ -93,7 +93,6 @@ export class FavBar {
   private button(node: BmNode, path: NodePath): HTMLButtonElement {
     const button = document.createElement("button");
     button.dataset.favPath = path.join(".");
-    button.dataset.favDrag = path.join(".");
     button.append(this.icon(node.kind), document.createTextNode(node.name));
 
     if (node.kind === "group") {
@@ -137,7 +136,6 @@ export class FavBar {
             ...common,
             onContextMenu,
             label: child.name,
-            action: () => {},
             sub: this.groupItems(child.children, path),
           }
         : {
@@ -173,7 +171,7 @@ export class FavBar {
       );
     }
     items.push(
-      { label: "移動", action: () => {}, sub: this.moveDestinations(path), sep: true },
+      { label: "移動", sub: this.moveDestinations(path), sep: true },
       { label: "削除", action: () => this.runMutation(() => this.remove(path)) }
     );
     return items;
@@ -230,8 +228,8 @@ export class FavBar {
   private onPointerDown = (e: PointerEvent) => {
     this.justDragged = false;
     if (e.button !== 0) return;
-    const origin = (e.target as HTMLElement | null)?.closest<HTMLElement>("[data-fav-drag]");
-    const source = origin ? this.decodePath(origin.dataset.favDrag ?? "") : null;
+    const origin = (e.target as HTMLElement | null)?.closest<HTMLElement>("[data-fav-path]");
+    const source = origin ? this.decodePath(origin.dataset.favPath ?? "") : null;
     if (!source) return;
     this.pending = { source, x: e.clientX, y: e.clientY };
     // ウィンドウ外で指を離しても pointerup を受け取れるようにする

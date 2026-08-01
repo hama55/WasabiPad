@@ -109,7 +109,6 @@ export class FolderActions {
       items.push({ label: "名前を変更...", action: () => this.run("名前を変更できませんでした", () => this.rename(target.relPath)) });
       items.push({
         label: "その他",
-        action: () => {},
         sub: [{ label: "削除", action: () => this.run("削除できませんでした", () => this.delete(target)) }],
       });
     }

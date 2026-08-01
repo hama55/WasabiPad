@@ -30,6 +30,7 @@ import {
   renderRawHtml,
   scrollMarkdownCaret,
 } from "./viewer-markdown";
+import { scrollViewerCaret } from "./viewer-scroll";
 
 const MAX_TABLE_ROWS = 10_000;
 const MAX_TABLE_COLUMNS = 200;
@@ -58,12 +59,16 @@ let currentSelection: ViewerSelection | null = null;
 let currentSourcePath: string | null = null;
 let currentArchivePath: string | null = null;
 let currentArchiveEntry: string | null = null;
-let markdownRenderGeneration = 0;
+let renderGeneration = 0;
 let archiveAssetUrls: string[] = [];
 let chart: Chart<"line" | "bar", (number | null)[], string> | null = null;
 let chartColumns: { x: number; y: number[]; reverseX: boolean; type: ChartTypeId } | null = null;
 let fontFamily = getSetting("fontFamily");
 let fontSize = getSetting("fontSize");
+
+function scrollCsvRows(rows: HTMLElement[], selection: ViewerSelection | null) {
+  scrollViewerCaret(rows, selection, (_row, index) => ({ start: index, end: index + 1 }));
+}
 
 function applyFont(family: string, size: number, persist = true) {
   fontFamily = family;
@@ -119,18 +124,14 @@ function runViewerOperation(title: string, operation: () => void | Promise<unkno
   void Promise.resolve().then(operation).catch((error) => reportWindowError(title, error));
 }
 
-function runWindowAction(title: string, operation: () => Promise<void>) {
-  runViewerOperation(title, operation);
-}
-
 function bindWindowControls() {
-  document.getElementById("win-min")!.addEventListener("click", () => runWindowAction("ウィンドウを最小化できませんでした", () => win.minimize()));
-  document.getElementById("win-max")!.addEventListener("click", () => runWindowAction("ウィンドウを最大化できませんでした", async () => {
+  document.getElementById("win-min")!.addEventListener("click", () => runViewerOperation("ウィンドウを最小化できませんでした", () => win.minimize()));
+  document.getElementById("win-max")!.addEventListener("click", () => runViewerOperation("ウィンドウを最大化できませんでした", async () => {
     await win.toggleMaximize();
     await syncMaxIcon();
   }));
-  document.getElementById("win-close")!.addEventListener("click", () => runWindowAction("ウィンドウを閉じられませんでした", () => win.close()));
-  title.addEventListener("dblclick", () => runWindowAction("ウィンドウを最大化できませんでした", async () => {
+  document.getElementById("win-close")!.addEventListener("click", () => runViewerOperation("ウィンドウを閉じられませんでした", () => win.close()));
+  title.addEventListener("dblclick", () => runViewerOperation("ウィンドウを最大化できませんでした", async () => {
     await win.toggleMaximize();
     await syncMaxIcon();
   }));
@@ -144,7 +145,7 @@ function bindWindowControls() {
 }
 
 function renderTable(text: string) {
-  markdownRenderGeneration++;
+  renderGeneration++;
   revokeArchiveAssetUrls();
   const sourceLines = text.split(/\r?\n/);
   const parsed = Papa.parse<string[]>(text, {
@@ -156,6 +157,7 @@ function renderTable(text: string) {
   table.className = "viewer-grid";
   const body = document.createElement("tbody");
   const fragment = document.createDocumentFragment();
+  const rows: HTMLTableRowElement[] = [];
 
   currentRows.slice(0, MAX_TABLE_ROWS).forEach((row, rowIndex) => {
     const tr = document.createElement("tr");
@@ -170,11 +172,13 @@ function renderTable(text: string) {
       tr.appendChild(cell);
     });
     tr.classList.toggle("viewer-source-selected", csvRowSelected(sourceLines[rowIndex] ?? "", rowIndex));
+    rows.push(tr);
     fragment.appendChild(tr);
   });
   body.appendChild(fragment);
   table.appendChild(body);
   content.replaceChildren(table);
+  scrollCsvRows(rows, currentSelection);
 
   const maxColumns = currentRows.reduce((max, row) => Math.max(max, row.length), 0);
   const truncated = currentRows.length > MAX_TABLE_ROWS || maxColumns > MAX_TABLE_COLUMNS;
@@ -218,25 +222,25 @@ async function loadArchiveImages(
       if (archivePath && archiveEntry && entry) {
         try {
           const bytes = await readArchiveAsset(archivePath, entry);
-          if (generation !== markdownRenderGeneration) return;
+          if (generation !== renderGeneration) return;
           const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: archiveAssetMimeType(src) }));
           archiveAssetUrls.push(url);
           image.src = url;
           await waitForImageLayout(image);
         } catch {
-          if (generation !== markdownRenderGeneration) return;
+          if (generation !== renderGeneration) return;
           image.removeAttribute("src");
           image.alt = `${image.alt || "画像"}（読み込めません）`;
         }
         return;
       }
       const resolved = resolveAssetPath(currentSourcePath, src);
-      if (resolved && generation === markdownRenderGeneration) {
+      if (resolved && generation === renderGeneration) {
         image.src = convertFileSrc(resolved);
         await waitForImageLayout(image);
       }
     } catch {
-      if (generation !== markdownRenderGeneration) return;
+      if (generation !== renderGeneration) return;
       image.removeAttribute("src");
       image.alt = `${image.alt || "画像"}（読み込めません）`;
     }
@@ -268,7 +272,7 @@ async function waitForImageLayout(image: HTMLImageElement) {
 }
 
 async function renderMarkdown(text: string) {
-  const generation = ++markdownRenderGeneration;
+  const generation = ++renderGeneration;
   const archivePath = currentArchivePath;
   const archiveEntry = currentArchiveEntry;
   const selection = currentSelection;
@@ -306,7 +310,7 @@ async function renderMarkdown(text: string) {
   summary.textContent = `${text.length.toLocaleString()}文字`;
   await loadArchiveImages(article, generation, archivePath, archiveEntry);
   // 画像の高さが確定する前にスクロールすると、読込後のレイアウト変化で中央位置が崩れる。
-  if (generation === markdownRenderGeneration) scrollMarkdownCaret(highlightTargets, selection);
+  if (generation === renderGeneration) scrollMarkdownCaret(highlightTargets, selection);
 }
 
 const VIEWER_HANDLERS = createViewerFormatHandlers({
@@ -358,7 +362,7 @@ function showContextMenu(x: number, y: number) {
   item.textContent = "グラフを作成...";
   item.addEventListener("click", () => {
     contextMenu.hidden = true;
-    openChartDialog();
+    runViewerOperation("グラフ設定を開けませんでした", openChartDialog);
   });
   contextMenu.appendChild(item);
   contextMenu.hidden = false;
@@ -467,7 +471,7 @@ function openChartDialog() {
     const type = isChartTypeId(typeSelect.value) ? typeSelect.value : DEFAULT_CHART_TYPE;
     chartColumns = { x: Number(xSelect.value), y, reverseX: reverseInput.checked, type };
     finish();
-    renderChart();
+    runViewerOperation("グラフを描画できませんでした", renderChart);
   });
 }
 
@@ -535,6 +539,9 @@ function closeChart() {
   chart?.destroy();
   chart = null;
   chartColumns = null;
+  if (currentFormat === "csv") {
+    scrollCsvRows([...content.querySelectorAll<HTMLTableRowElement>(".viewer-grid tbody > tr")], currentSelection);
+  }
 }
 
 async function start() {
@@ -543,24 +550,28 @@ async function start() {
 bindWindowControls();
 applyFont(fontFamily, fontSize, false);
     themeButton.addEventListener("click", () => {
-      applyTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light");
+      runViewerOperation("配色を変更できませんでした", () => {
+        applyTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light");
+      });
     });
     delimiterInput.addEventListener("input", () => {
       const handler = VIEWER_HANDLERS[currentFormat];
       if (!delimiterInput.value || !handler.supportsDelimiter) return;
       runViewerOperation("ビューを再描画できませんでした", () => VIEWER_HANDLERS[currentFormat].render(currentText));
     });
-    document.getElementById("chart-close")!.addEventListener("click", closeChart);
+    document.getElementById("chart-close")!.addEventListener("click", () => {
+      runViewerOperation("グラフを閉じられませんでした", closeChart);
+    });
     content.addEventListener("contextmenu", (event) => {
       if (!VIEWER_HANDLERS[currentFormat].supportsChart || !(event.target as Element).closest(".viewer-grid")) return;
       event.preventDefault();
-      showContextMenu(event.clientX, event.clientY);
+      runViewerOperation("グラフメニューを表示できませんでした", () => showContextMenu(event.clientX, event.clientY));
     });
     document.addEventListener("mousedown", (event) => {
       if (!contextMenu.contains(event.target as Node)) contextMenu.hidden = true;
     });
     await listen<ViewerPayload>(EVENT_NAMES.viewerUpdate, (event) => {
-      renderPayload(event.payload);
+      runViewerOperation("ビューを更新できませんでした", () => renderPayload(event.payload));
     });
     renderPayload(await takeViewerPayload(win.label));
   } catch (error) {
@@ -573,7 +584,9 @@ applyFont(fontFamily, fontSize, false);
 }
 
 window.addEventListener("storage", (event) => {
-  if (event.key === THEME_STORAGE_KEY) applyTheme(event.newValue);
+  if (event.key === THEME_STORAGE_KEY) {
+    runViewerOperation("配色を同期できませんでした", () => applyTheme(event.newValue));
+  }
 });
 
 void start();
