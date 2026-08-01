@@ -3,7 +3,7 @@ import type { ContextTarget, Sidebar } from "./sidebar";
 import { fileNameOf, type MemoSpec } from "./document-controller";
 import type { DocumentSession } from "./session";
 import { showMenu, MenuItem } from "./menu";
-import { promptFields } from "./prompt";
+import { confirmMessage, promptFields } from "./prompt";
 import { showError } from "./dialogs";
 import { basename, joinWindowsRoot, rebaseWindowsPath, relativePathFromRoot } from "./path";
 import { getSetting } from "./settings";
@@ -23,7 +23,7 @@ export interface FolderDocumentPort {
   readonly current: DocumentSession;
   promptMemoSpec: () => Promise<MemoSpec | null>;
   setSelectedRelPath: (relPath: string) => void;
-  applyDocInfo: (info: api.DocInfo) => void;
+  applyDocInfo: (info: api.DocInfo, keepViewers?: boolean, updateTree?: boolean) => void;
   applyRenamed: (info: api.DocInfo, selectedRelPath: string) => void;
 }
 
@@ -71,6 +71,11 @@ export class FolderActions {
     });
     if (target) {
       items.push({ label: "名前を変更...", action: () => void this.rename(target.relPath) });
+      items.push({
+        label: "その他",
+        action: () => {},
+        sub: [{ label: "削除", action: () => void this.delete(target) }],
+      });
     }
     const revealPath = target ? this.toAbsolute(target.relPath) : root;
     const revealIsDir = target ? target.isDir : true;
@@ -128,6 +133,26 @@ export class FolderActions {
       if (rebased) this.ports.onSetStartupPath(rebased);
     } catch (e) {
       await showError("名前を変更できませんでした", e);
+    }
+  }
+
+  private async delete(target: ContextTarget) {
+    const name = basename(target.relPath);
+    const kind = target.isDir ? "フォルダと中身" : "ファイル";
+    if (!await confirmMessage("削除", `「${name}」${kind}を削除します。元に戻せません。`, "削除")) return;
+    try {
+      const info = await api.deleteEntry(target.relPath);
+      const selected = this.doc.current.selectedRelPath;
+      const deletedSelection = selected === target.relPath
+        || selected.startsWith(`${target.relPath}/`)
+        || selected.startsWith(`${target.relPath}::`);
+      if (deletedSelection) {
+        this.doc.setSelectedRelPath("");
+        this.doc.applyDocInfo(info, false, true);
+      }
+      await this.ports.sidebar.refreshFolderEntries();
+    } catch (e) {
+      await showError("削除できませんでした", e);
     }
   }
 }

@@ -291,7 +291,7 @@ body {
 .fv-arrow { width: 22px; text-align: center; color: var(--fg-dim); flex: none; font-size: 16px; }
 
 /* ---- 仮想スクロールエディタ ---- */
-#editorhost { flex: 1; min-width: 0; }
+#editorhost { position: relative; flex: 1; min-width: 0; }
 .ve {
   position: relative;
   background: var(--bg-editor);

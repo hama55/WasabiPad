@@ -12,6 +12,7 @@ export interface StoredTab {
   goto?: Pos;
   viewState?: EditorViewState;
   selectedRelPath?: string;
+  selectedLine?: number;
 }
 
 export interface StoredTabs {
@@ -45,6 +46,7 @@ export class TabManager {
   private tabs: StoredTab[] = [];
   private activeId = "";
   private transitionTarget: string | null = null;
+  private loadingActive = false;
   private pendingDrag: { sourceId: string; x: number; y: number } | null = null;
   private drag: { sourceId: string; ghost: HTMLElement; spot: DropSpot | null } | null = null;
   private justDragged = false;
@@ -98,10 +100,21 @@ export class TabManager {
     tab.kind = session.folderRoot ? "folder" : tab.path ? "file" : "blank";
     tab.label = tab.kind === "blank" ? "無題" : basename(tab.path!);
     tab.selectedRelPath = session.selectedRelPath || undefined;
+    if (tab.kind !== "folder" || !tab.selectedRelPath) delete tab.selectedLine;
     // 保存完了通知はタブ切替処理の途中でも届く。ここでDOMを作り直すと、
     // 選択元のクリック処理がまだ継続中なのに操作対象だけが差し替わる。
     if (this.transitionTarget) return;
     this.render();
+    this.persist();
+  }
+
+  syncCursor(line: number) {
+    if (this.transitionTarget || this.loadingActive) return;
+    const tab = this.active();
+    if (!tab || tab.kind !== "folder" || !tab.selectedRelPath) return;
+    const selectedLine = Math.max(0, Math.floor(line));
+    if (tab.selectedLine === selectedLine) return;
+    tab.selectedLine = selectedLine;
     this.persist();
   }
 
@@ -238,42 +251,63 @@ export class TabManager {
   }
 
   private async loadActive() {
-    const tab = this.active()!;
-    if (tab.path) {
-      const opened = await this.doc.openPath(tab.path, false);
-      if (!opened) {
-        tab.path = null;
-        tab.kind = "blank";
-        tab.label = "無題";
-        await this.doc.newFile(false);
-      } else if (tab.selectedRelPath) {
-        let selectionFailed = false;
-        try {
-          selectionFailed = (await this.doc.selectEntry(tab.selectedRelPath)) === false;
-        } catch {
-          selectionFailed = true;
+    this.loadingActive = true;
+    try {
+      const tab = this.active()!;
+      const rememberedRelPath = tab.selectedRelPath;
+      const rememberedLine = tab.selectedLine ?? (tab.kind === "folder" ? tab.viewState?.caret.line : undefined);
+      if (tab.path) {
+        const opened = await this.doc.openPath(tab.path, false);
+        if (!opened) {
+          tab.path = null;
+          tab.kind = "blank";
+          tab.label = "無題";
+          await this.doc.newFile(false);
+        } else if (rememberedRelPath) {
+          let selectionFailed = false;
+          try {
+            selectionFailed = (await this.doc.selectEntry(rememberedRelPath)) === false;
+          } catch {
+            selectionFailed = true;
+          }
+          if (selectionFailed) {
+            // 前回選択した項目が削除済みでも、親フォルダ自体は開ける。
+            delete tab.selectedRelPath;
+            delete tab.selectedLine;
+            delete tab.viewState;
+          }
         }
-        if (selectionFailed) {
-          // 前回選択した項目が削除済みでも、親フォルダ自体は開ける。
-          delete tab.selectedRelPath;
+        const selectedLine = rememberedLine;
+        if (opened && tab.goto) {
+          this.doc.goTo(tab.goto);
+          delete tab.goto;
+        } else if (opened && tab.kind === "folder" && tab.selectedRelPath && selectedLine !== undefined) {
+          tab.selectedLine = selectedLine;
           delete tab.viewState;
+          this.doc.goTo({ line: selectedLine, col: 0 });
+        } else if (opened && tab.kind !== "folder" && tab.viewState) {
+          await this.doc.restoreViewState(tab.viewState);
         }
+      } else {
+        await this.doc.newFile(false);
+        if (tab.viewState) await this.doc.restoreViewState(tab.viewState);
       }
-      if (opened && tab.goto) {
-        this.doc.goTo(tab.goto);
-        delete tab.goto;
-      } else if (opened && tab.viewState) {
-        await this.doc.restoreViewState(tab.viewState);
-      }
-    } else {
-      await this.doc.newFile(false);
-      if (tab.viewState) await this.doc.restoreViewState(tab.viewState);
+    } finally {
+      this.loadingActive = false;
     }
   }
 
   private rememberActiveView() {
     const tab = this.active();
-    if (tab) tab.viewState = this.doc.captureViewState();
+    if (!tab) return;
+    const view = this.doc.captureViewState();
+    if (tab.kind === "folder") {
+      if (tab.selectedRelPath) tab.selectedLine = view.caret.line;
+      else delete tab.selectedLine;
+      delete tab.viewState;
+    } else {
+      tab.viewState = view;
+    }
   }
 
   private active() {

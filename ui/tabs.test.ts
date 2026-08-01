@@ -66,7 +66,7 @@ describe("TabManager", () => {
     expect(doc.openPath).toHaveBeenCalledWith("C:\\work\\a.txt", false);
   });
 
-  it("folder tabは選択中entryを開いてから表示状態を復元する", async () => {
+  it("folder tabは選択中entryを開いてから選択行を復元する", async () => {
     const { doc, host } = fixture();
     const folderTabs: StoredTabs = {
       tabs: [{
@@ -90,9 +90,10 @@ describe("TabManager", () => {
     await manager.init(folderTabs, null, null);
 
     expect(doc.selectEntry).toHaveBeenCalledWith("sub\\memo.txt");
-    expect(doc.restoreViewState).toHaveBeenCalledWith(folderTabs.tabs[0].viewState);
+    expect(doc.goTo).toHaveBeenCalledWith({ line: 10, col: 0 });
+    expect(doc.restoreViewState).not.toHaveBeenCalled();
     expect(vi.mocked(doc.selectEntry).mock.invocationCallOrder[0])
-      .toBeLessThan(vi.mocked(doc.restoreViewState).mock.invocationCallOrder[0]);
+      .toBeLessThan(vi.mocked(doc.goTo).mock.invocationCallOrder[0]);
   });
 
   it("folder tabの選択中entryが削除済みでも親フォルダは開く", async () => {

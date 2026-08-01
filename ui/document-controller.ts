@@ -1,7 +1,7 @@
 import * as api from "./api";
 import type { DocumentSession } from "./session";
 import { initialSession, sessionFromDocInfo } from "./session";
-import { promptSaveFormat, type SaveFormat } from "./save-format";
+import { promptSaveFormat, saveFormatFields, saveFormatFromValues, type SaveFormat } from "./save-format";
 import { confirmSaveDiscard, promptFields } from "./prompt";
 import { archiveRelOf, isPasswordCancelled, withArchivePassword } from "./archive-password";
 import { showError } from "./dialogs";
@@ -44,7 +44,7 @@ export interface DocumentSidebarPort {
   setArchiveEntries: (entries: string[]) => void;
   setArchiveRoot: (displayName: string) => void;
   setEntries: (entries: api.FolderEntry[]) => void;
-  selectByRelPath: (relPath: string) => void;
+  selectByRelPath: (relPath: string) => void | Promise<void>;
 }
 
 // 文書の入れ替えに伴って更新される表示先。実装 (VirtualEditor など) のうち
@@ -91,13 +91,14 @@ export class DocumentController {
 
   // アーカイブ選択後/フォルダのエントリ切替後で共通の状態反映。
   // keepViewers は「同じファイルの読み直し」= 開いているCSV/Markdownビューを維持する場合。
-  applyDocInfo(info: api.DocInfo, keepViewers = false) {
+  applyDocInfo(info: api.DocInfo, keepViewers = false, updateTree = false) {
     this.view.hideExternalBanner();
     this.session = sessionFromDocInfo(this.session, info);
     this.view.statusbar.setFormat(this.session);
     this.view.statusbar.setByteSize(info.byte_len, info.is_huge);
     this.view.statusbar.setLineCount(info.line_count);
     this.view.addressbar.render(info.path);
+    if (updateTree) this.showTree(info);
     this.view.editor.open(info.line_count, this.session.readOnly, keepViewers);
     this.view.editor.focus();
     this.updateTitle();
@@ -146,10 +147,15 @@ export class DocumentController {
   async selectEntry(relPath: string): Promise<boolean> {
     this.view.setLoading(true);
     try {
-      this.applyDocInfo(
-        await withArchivePassword(archiveRelOf(relPath), () => api.selectEntry(relPath))
-      );
+      const info = await withArchivePassword(archiveRelOf(relPath), () => api.selectEntry(relPath));
       this.session.selectedRelPath = relPath;
+      this.applyDocInfo(info, false, false);
+      // 選択した行を一覧側にも戻す。深い階層は必要ならここで展開する。
+      try {
+        await this.view.sidebar.selectByRelPath(relPath);
+      } catch {
+        // 本文の読込は成功しているため、一覧の再展開失敗で選択を取り消さない。
+      }
       return true;
     } catch (error) {
       if (!isPasswordCancelled(error)) await showError("開けませんでした", error);
@@ -198,31 +204,37 @@ export class DocumentController {
       return this.saveFolderDraft();
     }
     let defaultPath = this.session.savePath ?? "";
+    let newMemoFormat: SaveFormat | undefined;
     if (!defaultPath) {
-      const spec = await this.promptMemoSpec();
+      const spec = await this.promptNewMemoSave();
       if (!spec) return false;
-      defaultPath = fileNameOf(spec);
+      defaultPath = fileNameOf(spec.memo);
+      newMemoFormat = spec.format;
     }
     const path = await this.view.pickSavePath(defaultPath);
-    return path ? this.saveAsTo(path) : false;
+    return path ? this.saveAsTo(path, null, newMemoFormat) : false;
   }
 
   // 別名保存だけが保存形式の決定点。以降の上書き保存はここで決めた形式を使い回す。
-  private async saveAsTo(path: string, folderDraftRoot: string | null = null): Promise<boolean> {
-    const format = await promptSaveFormat(this.session);
-    if (!format) return false;
-    return this.saveTo(path, folderDraftRoot, format);
+  private async saveAsTo(
+    path: string,
+    folderDraftRoot: string | null = null,
+    format?: SaveFormat,
+  ): Promise<boolean> {
+    const chosen = format ?? await promptSaveFormat(this.session);
+    if (!chosen) return false;
+    return this.saveTo(path, folderDraftRoot, chosen);
   }
 
   // フォルダを開いた状態の無題文書は、保存先ダイアログではなくフォルダ直下へ採番して置く
   private async saveFolderDraft(): Promise<boolean> {
     const root = this.session.folderRoot;
     if (!root) return false;
-    const spec = await this.promptMemoSpec();
+    const spec = await this.promptNewMemoSave();
     if (!spec) return false;
     try {
-      const path = await api.nextMemoPath(root, spec.stem, spec.extension);
-      return this.saveAsTo(path, root);
+      const path = await api.nextMemoPath(root, spec.memo.stem, spec.memo.extension);
+      return this.saveAsTo(path, root, spec.format);
     } catch (e) {
       await showError("ファイル名を決められませんでした", e);
       return false;
@@ -333,6 +345,25 @@ export class DocumentController {
     ]);
     const stem = result?.[0].trim();
     return stem ? { stem, extension: result![1] } : null;
+  }
+
+  private async promptNewMemoSave(): Promise<{ memo: MemoSpec; format: SaveFormat } | null> {
+    const result = await promptFields("新規メモ保存", [
+      {
+        label: "ファイル名",
+        value: "memo",
+        validate: (value) => value.trim() ? null : "名前を入力してください",
+      },
+      { label: "拡張子", value: SAVE_EXTENSIONS[0].extension, options: [
+        ...SAVE_EXTENSIONS.map(({ extension }) => ({ label: `.${extension}`, value: extension })),
+        { label: "拡張子なし", value: "" },
+      ] },
+      ...saveFormatFields(this.session),
+    ]);
+    const stem = result?.[0].trim();
+    return stem
+      ? { memo: { stem, extension: result![1] }, format: saveFormatFromValues(result!, 2) }
+      : null;
   }
 
   // フォルダビューでの名前変更後、開いている文書のパスを追従させる

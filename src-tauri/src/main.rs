@@ -213,6 +213,30 @@ fn rename_entry(rel_path: String, new_name: String, state: State) -> Result<DocI
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn delete_entry(rel_path: String, state: State) -> Result<DocInfo, String> {
+    with_doc(&state, |doc| doc.delete_entry(&rel_path))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn save_pasted_image(bytes: Vec<u8>, mime_type: String, state: State) -> Result<String, String> {
+    with_doc(&state, |doc| doc.save_pasted_image(&bytes, &mime_type))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn cleanup_unused_images(path: String, state: State) -> Result<(), String> {
+    let requested = PathBuf::from(path);
+    with_doc(&state, |doc| {
+        if doc.path() != Some(requested.as_path()) {
+            return Ok(());
+        }
+        doc.cleanup_unused_images()
+    })
+    .map_err(|e| e.to_string())
+}
+
 // サイドバーの「エクスプローラで開く」用。状態を持たないので Doc へは委譲しない。
 #[tauri::command]
 fn reveal_in_explorer(path: String, is_dir: bool) -> Result<(), String> {
@@ -575,6 +599,9 @@ fn main() {
             workspace_search_cancel,
             create_note,
             rename_entry,
+            delete_entry,
+            save_pasted_image,
+            cleanup_unused_images,
             reveal_in_explorer,
             open_in_other_app,
             edit,

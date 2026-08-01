@@ -14,7 +14,7 @@ import { VirtualEditor, type EditorPorts } from "./editor";
 
 installDomStubs();
 
-function mount(initial: string) {
+function mount(initial: string, saveImage?: EditorPorts["saveImage"]) {
   const host = document.createElement("div");
   document.body.replaceChildren(host);
   const doc = fakeDocument(initial);
@@ -32,6 +32,7 @@ function mount(initial: string) {
     onError: async (message, error) => { events.errors.push({ message, error }); },
     openViewer: async () => null,
     updateViewer: async () => true,
+    saveImage,
   };
   const editor = new VirtualEditor(host, ports, undefined, doc.client);
   const input = host.querySelector<HTMLTextAreaElement>(".ve-input")!;
@@ -174,6 +175,25 @@ describe("VirtualEditor", () => {
     await vi.waitFor(() => expect(events.errors).toHaveLength(1));
 
     expect(events.errors[0].message).toBe("クリップボードへコピーできませんでした");
+  });
+
+  it("画像の貼り付けで相対リンク付きタグを挿入する", async () => {
+    const saveImage = vi.fn(async () => "image/pasted-image.png");
+    const { editor, doc, input } = mount("memo", saveImage);
+    editor.open(1, false);
+    await settle();
+    const image = new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" });
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", {
+      value: { items: [{ type: "image/png", getAsFile: () => image }] },
+    });
+
+    input.dispatchEvent(event);
+    await settle();
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(saveImage).toHaveBeenCalledWith([1, 2, 3], "image/png");
+    expect(doc.text()).toContain("<img src=\"image/pasted-image.png\" alt=\"貼り付け画像\" width=\"900\">");
   });
 
   it("goTo はキャレット位置を1始まりで通知する", async () => {

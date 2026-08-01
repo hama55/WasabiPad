@@ -50,11 +50,23 @@ let sidebarCollapsed = false;
 let currentLine = 1;
 let tabs: TabManager;
 let restoringEditorFont = true;
+let imageCleanupTimer: number | undefined;
 
 function setLoading(active: boolean, message = "読み込み中…") {
   loading.hidden = !active;
   loadingMessage.textContent = message;
   editorHost.setAttribute("aria-busy", String(active));
+}
+
+function scheduleImageCleanup() {
+  window.clearTimeout(imageCleanupTimer);
+  const path = doc.current.savePath;
+  if (!path) return;
+  imageCleanupTimer = window.setTimeout(() => {
+    imageCleanupTimer = undefined;
+    if (doc.current.savePath !== path) return;
+    void api.cleanupUnusedImages(path).catch((error) => reportBackgroundError("不要な画像を削除できませんでした", error));
+  }, 400);
 }
 
 async function reportBackgroundError(title: string, error: unknown) {
@@ -133,10 +145,12 @@ const editor: VirtualEditor = new VirtualEditor(editorHost, {
   onDocChange: (lineCount) => {
     doc.onEdit(lineCount);
     statusbar.setLineCount(lineCount);
+    scheduleImageCleanup();
   },
   onCursor: (line, col) => {
     currentLine = line;
     statusbar.setCursor(line, col);
+    tabs?.syncCursor(line - 1);
   },
   onFontChange: (family, size) => {
     statusbar.setFont(family, size);
@@ -157,6 +171,10 @@ const editor: VirtualEditor = new VirtualEditor(editorHost, {
     }
   },
   updateViewer: api.updateViewer,
+  saveImage: async (bytes, mimeType) => {
+    if (!doc.current.savePath) throw new Error("画像を貼り付けるには、先にメモを保存してください");
+    return api.savePastedImage(bytes, mimeType);
+  },
 });
 editor.setFont(getSetting("fontFamily"), getSetting("fontSize"));
 restoringEditorFont = false;

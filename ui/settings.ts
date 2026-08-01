@@ -76,6 +76,7 @@ function validStoredTabs(value: unknown): value is StoredTabs {
       && (tab.kind === "file" || tab.kind === "folder" || tab.kind === "blank")
       && typeof tab.label === "string"
       && (!("selectedRelPath" in tab) || tab.selectedRelPath === undefined || typeof tab.selectedRelPath === "string")
+      && (!("selectedLine" in tab) || tab.selectedLine === undefined || (typeof tab.selectedLine === "number" && Number.isInteger(tab.selectedLine) && tab.selectedLine >= 0))
       && (!("viewState" in tab) || tab.viewState === undefined || isEditorViewState(tab.viewState)))
     && (typeof candidate.activeId === "string" || candidate.activeId === null);
 }

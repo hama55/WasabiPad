@@ -95,6 +95,13 @@ export const createNote = (dir: string | null, name: string) =>
 // サイドバー上のファイル/フォルダをリネームする (relPath はフォルダルートからの相対パス)
 export const renameEntry = (relPath: string, newName: string) =>
   invoke<DocInfo>("rename_entry", { relPath, newName });
+export const deleteEntry = (relPath: string) =>
+  invoke<DocInfo>("delete_entry", { relPath });
+
+export const savePastedImage = (bytes: number[], mimeType: string) =>
+  invoke<string>("save_pasted_image", { bytes, mimeType });
+export const cleanupUnusedImages = (path: string) =>
+  invoke<void>("cleanup_unused_images", { path });
 
 export const revealInExplorer = (path: string, isDir: boolean) =>
   invoke<void>("reveal_in_explorer", { path, isDir });

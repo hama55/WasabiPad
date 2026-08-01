@@ -196,12 +196,22 @@ export class Sidebar {
   }
 
   // 新規作成/リネーム後、相対パスからそのファイル行を再選択する (無ければ何もしない)。
-  selectByRelPath(relPath: string) {
-    const row = this.rows.find((r) => r.kind !== "dir" && r.relPath === relPath);
-    if (!row) return;
-    for (const r of this.rows) {
-      if (r.kind === "dir" && relPath.startsWith(r.relPath + "/")) r.expanded = true;
+  // タブ復帰時は深い階層がまだ展開されていないため、必要な親だけ非同期で開く。
+  async selectByRelPath(relPath: string) {
+    if (this.panel.showing) return;
+    const parts = relPath.split("/");
+    for (let depth = 1; depth < parts.length; depth++) {
+      const parent = parts.slice(0, depth).join("/");
+      const row = this.rows.find((candidate) => candidate.kind === "dir" && candidate.relPath === parent);
+      if (!row) return;
+      if (!row.childrenLoaded) await this.expandFolderRow(row);
+      else if (!row.expanded) {
+        row.expanded = true;
+        this.render();
+      }
     }
+    const row = this.rows.find((candidate) => candidate.kind !== "dir" && candidate.relPath === relPath);
+    if (!row) return;
     this.sel = row.relPath;
     this.render();
   }

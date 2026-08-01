@@ -11,6 +11,11 @@ import {
 import type { MemoSpec } from "./document-controller";
 
 vi.mock("./dialogs", () => ({ showError: vi.fn(async () => {}) }));
+vi.mock("./prompt", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./prompt")>(),
+  confirmMessage: vi.fn(async () => true),
+}));
+import { confirmMessage } from "./prompt";
 
 function fixture() {
   const dropdown = document.createElement("div");
@@ -56,6 +61,7 @@ describe("FolderActions", () => {
       "アドレスバーに設定",
       "新規メモ作成...",
       "名前を変更...",
+      "その他 ▸",
       "お気に入りに追加",
       "エクスプローラで開く",
     ]);
@@ -76,6 +82,26 @@ describe("FolderActions", () => {
     actions.showContextMenu(0, 0, { relPath: "memo.txt", isDir: false });
     expect([...dropdown.querySelectorAll(".dd-label")].map((label) => label.textContent)).not.toContain("CSVビュー");
     expect([...dropdown.querySelectorAll(".dd-label")].map((label) => label.textContent)).not.toContain("Markdownビュー");
+  });
+
+  it("削除はその他サブメニューを経由する", async () => {
+    const { actions, dropdown, ports } = fixture();
+    vi.spyOn(api, "deleteEntry").mockResolvedValueOnce({} as api.DocInfo);
+    actions.showContextMenu(0, 0, { relPath: "memo.txt", isDir: false });
+
+    const other = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent?.includes("その他"));
+    other!.click();
+    expect(dropdown.querySelector<HTMLElement>(".dd-item")?.textContent).toBe("削除");
+    dropdown.querySelector<HTMLElement>(".dd-item")!.click();
+    await vi.waitFor(() => expect(api.deleteEntry).toHaveBeenCalledWith("memo.txt"));
+
+    expect(confirmMessage).toHaveBeenCalledWith(
+      "削除",
+      "「memo.txt」ファイルを削除します。元に戻せません。",
+      "削除",
+    );
+    expect(ports.sidebar.refreshFolderEntries).toHaveBeenCalled();
   });
 
   it("作成成功後の一覧更新失敗を作成失敗として表示しない", async () => {

@@ -49,6 +49,7 @@ export interface EditorPorts {
   onError: (message: string, error: unknown) => Promise<void>;
   openViewer: (format: api.ViewerFormat, text: string, selection: api.ViewerSelection | null) => Promise<string | null>;
   updateViewer: (label: string, text: string, selection: api.ViewerSelection | null) => Promise<boolean>;
+  saveImage?: (bytes: number[], mimeType: string) => Promise<string>;
 }
 
 // 全ファイル共通の仮想スクロールエディタ。文書は backend(mmap/overlay)が所有し、
@@ -107,6 +108,7 @@ export class VirtualEditor {
   private hasExternalFile: () => boolean;
   private openExternally: () => void;
   private onError: (message: string, error: unknown) => Promise<void>;
+  private onPasteImage?: (bytes: number[], mimeType: string) => Promise<string>;
   private liveViewers: LiveViewers;
 
   constructor(
@@ -138,6 +140,7 @@ export class VirtualEditor {
     this.hasExternalFile = ports.hasExternalFile;
     this.openExternally = ports.openExternally;
     this.onError = ports.onError;
+    this.onPasteImage = ports.saveImage;
     this.fontFamily = config.fontFamily;
     this.fontSize = config.fontSize;
     this.lineHeightExtra = config.lineHeightExtra;
@@ -195,6 +198,7 @@ export class VirtualEditor {
     this.scroll.addEventListener("contextmenu", (e) => this.onContextMenu(e));
     this.gutter.addEventListener("mousedown", (e) => this.onGutterMouseDown(e));
     this.input.addEventListener("keydown", (e) => this.onKeyDown(e));
+    this.input.addEventListener("paste", (e) => this.onPaste(e));
     this.input.addEventListener("input", (e) => this.onInput(e as InputEvent));
     this.input.addEventListener("compositionstart", () => {
       this.composing = true;
@@ -1310,8 +1314,52 @@ export class VirtualEditor {
 
   private async paste() {
     if (this.readOnly) return;
+    const image = await this.readClipboardImage();
+    if (image && this.onPasteImage) {
+      await this.insertImage(image.bytes, image.mimeType);
+      return;
+    }
     const text = (await readClipboardText()).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
     if (text) await this.insertText(text);
+  }
+
+  private onPaste(event: ClipboardEvent) {
+    if (this.readOnly) return;
+    const item = [...(event.clipboardData?.items ?? [])]
+      .find((candidate) => candidate.type.toLowerCase().startsWith("image/"));
+    const file = item?.getAsFile();
+    if (!file) return;
+    event.preventDefault();
+    this.dispatch("クリップボードから画像を貼り付けできませんでした", () => this.insertImageBlob(file));
+  }
+
+  private async readClipboardImage(): Promise<{ bytes: number[]; mimeType: string } | null> {
+    if (!navigator.clipboard?.read) return null;
+    try {
+      for (const item of await navigator.clipboard.read()) {
+        const mimeType = item.types.find((type) => type.toLowerCase().startsWith("image/"));
+        if (!mimeType) continue;
+        const blob = await item.getType(mimeType);
+        return { bytes: Array.from(new Uint8Array(await blob.arrayBuffer())), mimeType };
+      }
+    } catch {
+      // 画像の読込権限が無い環境では、通常の文字貼り付けへフォールバックする。
+    }
+    return null;
+  }
+
+  private async insertImageBlob(blob: Blob) {
+    await this.insertImage(
+      Array.from(new Uint8Array(await blob.arrayBuffer())),
+      blob.type,
+    );
+  }
+
+  private async insertImage(bytes: number[], mimeType: string) {
+    if (!this.onPasteImage) return;
+    const src = await this.onPasteImage(bytes, mimeType);
+    await this.insertText(`<img src="${src}" alt="貼り付け画像" width="900">\n`);
+    if (!this.liveViewers.has("markdown")) await this.openTextViewer("markdown");
   }
 
   // ---- キー入力 ----
@@ -1325,7 +1373,12 @@ export class VirtualEditor {
         case "a": e.preventDefault(); this.selectAll(); return;
         case "c": e.preventDefault(); this.dispatch("クリップボードへコピーできませんでした", () => this.copy(false)); return;
         case "x": e.preventDefault(); this.dispatch("切り取りできませんでした", () => this.copy(true)); return;
-        case "v": e.preventDefault(); this.dispatch("クリップボードから貼り付けできませんでした", () => this.paste()); return;
+        case "v":
+          // 画像対応時は native paste イベントから画像を受け取り、文字列は textarea の input で処理する。
+          if (this.onPasteImage) return;
+          e.preventDefault();
+          this.dispatch("クリップボードから貼り付けできませんでした", () => this.paste());
+          return;
         case "f": e.preventDefault(); this.openSearch(); return;
         case "arrowleft": e.preventDefault(); this.wordMove(-1, ext); return;
         case "arrowright": e.preventDefault(); this.wordMove(1, ext); return;

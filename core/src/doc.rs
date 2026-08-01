@@ -8,11 +8,12 @@ use crate::buffer::{Pos, TextBuffer};
 use crate::fileio::{self, Encoding, EncodingId, Eol, FileStamp};
 use crate::undo::{Edit, UndoEntry, UndoStack};
 pub use crate::folder::FolderEntry;
+use crate::filename::next_available_path;
 use crate::folder::join_relative;
 use crate::search::{find_backward, find_chunk, ChunkStep};
 use crate::ziptext::Entry;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -701,6 +702,126 @@ impl Doc {
         Ok(self.info(path_str))
     }
 
+    // フォルダビューからの削除は、開いているフォルダの配下だけに限定する。
+    // 巨大ファイルを選択中でも削除できるよう、削除対象なら保持中のハンドルを先に解放する。
+    pub fn delete_entry(&mut self, rel_path: &str) -> io::Result<DocInfo> {
+        if rel_path.is_empty() {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "フォルダ自体は削除できません"));
+        }
+        let root = self
+            .source
+            .folder_root()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| io::Error::other("フォルダを開いていません"))?;
+        let target = join_relative(&root, rel_path);
+        let metadata = std::fs::symlink_metadata(&target)?;
+        if metadata.file_type().is_symlink() {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "シンボリックリンクは削除できません"));
+        }
+        let canonical_root = root.canonicalize()?;
+        let canonical_target = target.canonicalize()?;
+        if canonical_target == canonical_root || !canonical_target.starts_with(&canonical_root) {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "フォルダの外は削除できません"));
+        }
+
+        let current_path = self.source.display_path().map(Path::to_path_buf);
+        let affected = current_path.as_ref().is_some_and(|path| {
+            path.canonicalize().ok().is_some_and(|current| {
+                current == canonical_target || current.starts_with(&canonical_target)
+            })
+        });
+        let held_target = if affected {
+            Some(std::mem::replace(&mut self.source.target, Target::None))
+        } else {
+            None
+        };
+        let delete_result = if metadata.is_dir() {
+            std::fs::remove_dir_all(&target)
+        } else {
+            std::fs::remove_file(&target)
+        };
+        if let Err(error) = delete_result {
+            if let Some(target) = held_target {
+                self.source.target = target;
+            }
+            return Err(error);
+        }
+
+        if affected {
+            drop(held_target);
+            self.buf = TextBuffer::new();
+            self.undo.clear();
+            self.enc = Encoding::Utf8 { bom: false };
+            self.eol = Eol::Crlf;
+            self.replace_progress = None;
+            self.byte_len = 0;
+            self.source.target = Target::None;
+            return Ok(self.info(root.to_string_lossy().into_owned()));
+        }
+
+        let path = self.source.display_path()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| root.to_string_lossy().into_owned());
+        Ok(self.info(path))
+    }
+
+    // 貼り付け画像はメモと同じフォルダの image 配下へ置き、本文には相対リンクだけを残す。
+    pub fn save_pasted_image(&self, bytes: &[u8], mime_type: &str) -> io::Result<String> {
+        if self.source.is_view_only() {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "閲覧専用の文書には画像を貼り付けられません"));
+        }
+        if bytes.is_empty() {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "画像データが空です"));
+        }
+        let extension = image_extension(mime_type)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "対応していない画像形式です"))?;
+        let memo = self
+            .source
+            .path()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "先にメモを保存してください"))?;
+        let parent = memo
+            .parent()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "メモの保存先が不正です"))?;
+        let image_dir = parent.join("image");
+        std::fs::create_dir_all(&image_dir)?;
+        let path = next_available_path(&image_dir, "pasted-image", extension)?;
+        std::fs::write(&path, bytes)?;
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "画像ファイル名を作れません"))?;
+        Ok(format!("image/{name}"))
+    }
+
+    // 本文から参照が消えた画像を削除する。image フォルダが無ければ本文全走査をしない。
+    pub fn cleanup_unused_images(&self) -> io::Result<()> {
+        if self.source.is_view_only() {
+            return Ok(());
+        }
+        let Some(memo) = self.source.path() else { return Ok(()) };
+        let Some(parent) = memo.parent() else { return Ok(()) };
+        let image_dir = parent.join("image");
+        if !image_dir.is_dir() {
+            return Ok(());
+        }
+        let referenced = referenced_image_files(&self.buf);
+        for entry in std::fs::read_dir(&image_dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_lowercase();
+            if !referenced.contains(&name) {
+                std::fs::remove_file(entry.path())?;
+            }
+        }
+        let mut remaining = std::fs::read_dir(&image_dir)?;
+        if remaining.next().is_none() {
+            let _ = std::fs::remove_dir(&image_dir);
+        }
+        Ok(())
+    }
+
     // 範囲[start,end)を削除して text を挿入する統一プリミティブ。
     // 挿入=start==end, 削除=text空, 置換=両方。位置は char 単位。
     pub fn edit(
@@ -1103,6 +1224,80 @@ impl Doc {
         let col = s[..p.col.min(s.len())].chars().count();
         PosC { line: p.line, col }
     }
+}
+
+fn image_extension(mime_type: &str) -> Option<&'static str> {
+    match mime_type.split(';').next().unwrap_or_default().trim().to_ascii_lowercase().as_str() {
+        "image/png" => Some("png"),
+        "image/jpeg" => Some("jpg"),
+        "image/gif" => Some("gif"),
+        "image/webp" => Some("webp"),
+        "image/bmp" => Some("bmp"),
+        "image/svg+xml" => Some("svg"),
+        _ => None,
+    }
+}
+
+fn referenced_image_files(buf: &TextBuffer) -> HashSet<String> {
+    let mut referenced = HashSet::new();
+    for line in 0..buf.line_count() {
+        let text = buf.line(line);
+        let lower = text.to_ascii_lowercase();
+        let mut from = 0;
+        while let Some(relative) = lower[from..].find("<img") {
+            let start = from + relative;
+            let Some(end_relative) = lower[start..].find('>') else { break };
+            let end = start + end_relative;
+            if let Some(src) = image_src_in_tag(&text[start..=end]) {
+                if let Some(name) = image_name_from_src(&src) {
+                    referenced.insert(name);
+                }
+            }
+            from = end + 1;
+        }
+    }
+    referenced
+}
+
+fn image_src_in_tag(tag: &str) -> Option<String> {
+    let lower = tag.to_ascii_lowercase();
+    let mut from = 0;
+    while let Some(relative) = lower[from..].find("src") {
+        let start = from + relative;
+        let before_ok = start == 0 || !lower.as_bytes()[start - 1].is_ascii_alphanumeric();
+        let after = start + 3;
+        let after_ok = after == lower.len()
+            || lower.as_bytes()[after].is_ascii_whitespace()
+            || lower.as_bytes()[after] == b'=';
+        if before_ok && after_ok {
+            let mut equal = after;
+            while equal < lower.len() && lower.as_bytes()[equal].is_ascii_whitespace() { equal += 1; }
+            if equal < lower.len() && lower.as_bytes()[equal] == b'=' {
+                let mut value = equal + 1;
+                while value < tag.len() && tag.as_bytes()[value].is_ascii_whitespace() { value += 1; }
+                if value < tag.len() && matches!(tag.as_bytes()[value], b'"' | b'\'') {
+                    let quote = tag.as_bytes()[value];
+                    let begin = value + 1;
+                    let Some(end) = tag[begin..].as_bytes().iter().position(|byte| *byte == quote) else { return None };
+                    return Some(tag[begin..begin + end].to_string());
+                }
+                let value_end = tag[value..].find(char::is_whitespace).map(|end| value + end).unwrap_or(tag.len());
+                return Some(tag[value..value_end].trim_end_matches('/').to_string());
+            }
+        }
+        from = after;
+    }
+    None
+}
+
+fn image_name_from_src(src: &str) -> Option<String> {
+    let normalized = src.replace('\\', "/");
+    let lower = normalized.to_lowercase();
+    let name = lower.strip_prefix("image/")?;
+    if name.is_empty() || name.contains('/') || name == "." || name == ".." {
+        return None;
+    }
+    Some(name.to_string())
 }
 
 // ---- 検索 ----
@@ -1529,6 +1724,48 @@ mod tests {
 
         drop(d); // 選択中ファイルの排他を解放してからfixtureを削除
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn pasted_image_is_saved_and_removed_when_tag_disappears() {
+        let root = std::env::temp_dir().join(format!("wasabipad_image_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("memo.md"), "").unwrap();
+
+        let mut d = Doc::open(&root).unwrap();
+        d.select_entry("memo.md").unwrap().unwrap();
+        let src = d.save_pasted_image(&[1, 2, 3], "image/png").unwrap();
+        let image = root.join(src.replace('/', std::path::MAIN_SEPARATOR_STR));
+        assert!(image.is_file());
+
+        let tag = format!("<img src=\"{src}\" alt=\"貼り付け画像\" width=\"900\">\n");
+        d.edit(pos(0, 0), pos(0, 0), pos(0, 0), &tag, false).unwrap();
+        d.cleanup_unused_images().unwrap();
+        assert!(image.is_file(), "参照中の画像は残す");
+        d.edit(pos(0, 0), pos(1, 0), pos(0, 0), "", false).unwrap();
+        d.cleanup_unused_images().unwrap();
+        assert!(!image.exists(), "タグ削除後は画像も削除する");
+        assert!(!root.join("image").exists(), "空になったimageフォルダも整理する");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn deleting_selected_folder_entry_resets_the_document_to_the_folder() {
+        let root = std::env::temp_dir().join(format!("wasabipad_delete_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("memo.txt"), "memo").unwrap();
+
+        let mut d = Doc::open(&root).unwrap();
+        d.select_entry("memo.txt").unwrap().unwrap();
+        let info = d.delete_entry("memo.txt").unwrap();
+        assert!(!root.join("memo.txt").exists());
+        assert!(d.path().is_none());
+        assert_eq!(d.line_count(), 1);
+        let root_string = root.to_string_lossy().into_owned();
+        assert_eq!(info.folder_root.as_deref(), Some(root_string.as_str()));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     // サブフォルダはツリーの展開ボタンを押すまでその中身 (さらに奥のファイル) を
