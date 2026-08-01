@@ -2,13 +2,13 @@ import { BmNode, loadBookmarks, pathIsDirectory, saveBookmarks } from "./api";
 import { hideMenu, showMenu, MenuItem } from "./menu";
 import { promptFields } from "./prompt";
 import { revealInExplorer } from "./folder-actions";
+import { DRAG_THRESHOLD } from "./interaction-constants";
 
 type NodePath = number[];
 type DropKind = "before" | "inside" | "after";
 // お気に入りバーの空白部分に落とした場合はトップレベル末尾へ
 type DropSpot = { kind: "root" } | { kind: DropKind; path: NodePath; el: HTMLElement };
 
-const DRAG_THRESHOLD = 5;
 const GROUP_OPEN_DELAY = 650;
 const DROP_CLASSES = ["fav-drop", "fav-drop-before", "fav-drop-after"];
 

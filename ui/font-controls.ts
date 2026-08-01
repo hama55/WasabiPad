@@ -1,5 +1,6 @@
 import { formatFontFamily } from "./format";
 import { promptFields } from "./prompt";
+import { DEFAULT_FONT_FAMILY } from "./editor-config";
 
 export const MIN_FONT_SIZE = 8;
 export const MAX_FONT_SIZE = 72;
@@ -11,7 +12,7 @@ export function isValidFontSize(size: unknown): size is number {
 }
 
 export const FONT_FAMILIES = [
-  "Consolas, \"MS Gothic\", monospace",
+  DEFAULT_FONT_FAMILY,
   "Cascadia Mono, \"MS Gothic\", monospace",
   "\"MS Gothic\", monospace",
   "\"Yu Gothic UI\", sans-serif",

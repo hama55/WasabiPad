@@ -4,7 +4,7 @@
 import * as api from "./api";
 import { promptFields } from "./prompt";
 
-const MARKER = "7z-password";
+export const PASSWORD_ERROR_MARKER = "7z-password";
 
 // 入力ダイアログをキャンセルした印。呼び出し側はエラー表示せず静かに中断する。
 export class PasswordCancelled extends Error {}
@@ -24,8 +24,8 @@ export async function withArchivePassword<T>(
       return await op();
     } catch (error) {
       const message = String(error);
-      if (!message.includes(MARKER)) throw error;
-      const title = message.includes(`${MARKER}:wrong`)
+      if (!message.includes(PASSWORD_ERROR_MARKER)) throw error;
+      const title = message.includes(`${PASSWORD_ERROR_MARKER}:wrong`)
         ? "パスワードが違います"
         : "パスワード付きアーカイブです";
       const values = await promptFields(title, [

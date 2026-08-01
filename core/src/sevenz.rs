@@ -139,7 +139,7 @@ pub fn is_header_encrypted(archive: &Path) -> bool {
     matches!(list(archive, ""), Err(e) if e.kind() == io::ErrorKind::PermissionDenied)
 }
 
-const WORKSPACE_PREFIX: &str = "WasabiPad-archive-temp-";
+pub(crate) const WORKSPACE_PREFIX: &str = "WasabiPad-archive-temp-";
 const WORKSPACE_MARKER: &str = ".wasabipad-workspace";
 const STALE_WORKSPACE_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 static WORKSPACE_SEQ: AtomicUsize = AtomicUsize::new(0);

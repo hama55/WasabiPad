@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import Chart from "chart.js/auto";
 import MarkdownIt from "markdown-it";
 import Papa from "papaparse";
-import { readArchiveAsset, takeViewerPayload, type ViewerFormat, type ViewerPayload, type ViewerSelection } from "./api";
+import { EVENT_NAMES, readArchiveAsset, takeViewerPayload, type ViewerFormat, type ViewerPayload, type ViewerSelection } from "./api";
 import { VIEWER_FORMAT_LABELS, formatFontFamily, formatTitleBar } from "./format";
 import { basename } from "./path";
 import { getSetting, initSettings, setSetting } from "./settings";
@@ -512,7 +512,7 @@ applyFont(fontFamily, fontSize, false);
     document.addEventListener("mousedown", (event) => {
       if (!contextMenu.contains(event.target as Node)) contextMenu.hidden = true;
     });
-    await listen<ViewerPayload>("viewer-update", (event) => {
+    await listen<ViewerPayload>(EVENT_NAMES.viewerUpdate, (event) => {
       renderPayload(event.payload);
     });
     renderPayload(await takeViewerPayload(win.label));

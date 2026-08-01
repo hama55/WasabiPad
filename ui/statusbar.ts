@@ -1,4 +1,4 @@
-import type { ReadEncoding } from "./api";
+import { READ_ENCODINGS, type ReadEncoding } from "./api";
 import type { DocumentSession } from "./session";
 import { readEncodingOf } from "./session";
 import { formatByteSize, formatCursor, formatFontFamily, formatLineCount } from "./format";
@@ -7,6 +7,18 @@ import { confirmMessage, promptFields } from "./prompt";
 import { normalizeTheme, THEME_STORAGE_KEY, THEMES, type Theme } from "./theme";
 
 const THEME_LABELS: Record<Theme, string> = { dark: "ダーク", light: "ライト" };
+const READ_ENCODING_LABELS: Record<ReadEncoding, string> = {
+  utf8: "UTF-8",
+  sjis: "Shift-JIS",
+  utf16le: "UTF-16LE",
+};
+
+function option(value: string, label: string): HTMLOptionElement {
+  const element = document.createElement("option");
+  element.value = value;
+  element.textContent = label;
+  return element;
+}
 
 export interface StatusBarPorts {
   onGoTo: (line: number) => void;
@@ -29,6 +41,12 @@ export class StatusBar {
   private shownReadEncoding: ReadEncoding = "utf8";
 
   constructor(private host: HTMLElement, private ports: StatusBarPorts) {
+    this.indentSelect.replaceChildren(
+      ...INDENT_SIZES.map((size) => option(String(size), `インデント: ${size}`)),
+    );
+    this.sourceEncodingSelect.replaceChildren(
+      ...READ_ENCODINGS.map((encoding) => option(encoding, READ_ENCODING_LABELS[encoding])),
+    );
     this.pick("st-theme").addEventListener("click", () => {
       const current = (document.documentElement.getAttribute("data-theme") as Theme) ?? "dark";
       this.applyTheme(THEMES[(THEMES.indexOf(current) + 1) % THEMES.length]);

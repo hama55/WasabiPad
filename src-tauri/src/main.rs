@@ -74,6 +74,9 @@ struct ViewerStore(Mutex<HashMap<String, ViewerPayload>>);
 struct SearchCancel(Mutex<Arc<AtomicBool>>);
 
 static VIEWER_ID: AtomicU64 = AtomicU64::new(1);
+const EVENT_EXTERNAL_WINDOW_REQUEST: &str = "external-window-request";
+const EVENT_WORKSPACE_SEARCH_BATCH: &str = "workspace-search-batch";
+const EVENT_VIEWER_UPDATE: &str = "viewer-update";
 
 #[derive(Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
 #[ts(export)]
@@ -148,7 +151,7 @@ impl InstanceServer {
                 if let Ok(mut requests) = pending.lock() {
                     requests.push(request);
                 }
-                let _ = app.emit("external-window-request", ());
+                let _ = app.emit(EVENT_EXTERNAL_WINDOW_REQUEST, ());
             }
         });
     }
@@ -323,7 +326,7 @@ async fn workspace_search(
     let flag = take_over_search(&cancel)?;
     tauri::async_runtime::spawn_blocking(move || {
         let emit = |results| {
-            let _ = app.emit("workspace-search-batch", WorkspaceSearchBatch { search_id, results });
+            let _ = app.emit(EVENT_WORKSPACE_SEARCH_BATCH, WorkspaceSearchBatch { search_id, results });
         };
         wasabipad_core::search_workspace(&root, &pat, &options, &flag, &emit)
     })
@@ -734,7 +737,7 @@ fn update_viewer(
         payload.selection = selection;
         payload.clone()
     };
-    window.emit("viewer-update", payload).map_err(|e| e.to_string())?;
+    window.emit(EVENT_VIEWER_UPDATE, payload).map_err(|e| e.to_string())?;
     Ok(true)
 }
 

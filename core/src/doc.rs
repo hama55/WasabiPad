@@ -1549,12 +1549,16 @@ mod tests {
 
         // パスワード無しの一覧は required マーカー付きで失敗する
         let err = d.list_archive_entries("").unwrap_err();
-        assert!(err.to_string().contains("7z-password:required"), "{err}");
+        assert!(err
+            .to_string()
+            .contains(&format!("{}:required", crate::sevenz::PASSWORD_ERROR_MARKER)), "{err}");
 
         // 誤ったパスワードは wrong マーカー
         d.set_archive_password("", "bad").unwrap();
         let err = d.list_archive_entries("").unwrap_err();
-        assert!(err.to_string().contains("7z-password:wrong"), "{err}");
+        assert!(err
+            .to_string()
+            .contains(&format!("{}:wrong", crate::sevenz::PASSWORD_ERROR_MARKER)), "{err}");
 
         d.set_archive_password("", "pw").unwrap();
         assert_eq!(d.list_archive_entries("").unwrap().unwrap(), vec!["a.txt".to_string()]);
@@ -1577,7 +1581,7 @@ mod tests {
         assert!(!std::fs::read_dir(&root)
             .unwrap()
             .flatten()
-            .any(|entry| entry.file_name().to_string_lossy().starts_with("WasabiPad-archive-temp-")));
+            .any(|entry| entry.file_name().to_string_lossy().starts_with(crate::sevenz::WORKSPACE_PREFIX)));
         d.cleanup_unused_images().unwrap();
         assert!(!crate::sevenz::list(&archive, "pw").unwrap().contains(&image_src));
         assert!(crate::sevenz::is_header_encrypted(&archive));
@@ -1643,7 +1647,7 @@ mod tests {
         assert!(!std::fs::read_dir(&root)
             .unwrap()
             .flatten()
-            .any(|entry| entry.file_name().to_string_lossy().starts_with("WasabiPad-archive-temp-")));
+            .any(|entry| entry.file_name().to_string_lossy().starts_with(crate::sevenz::WORKSPACE_PREFIX)));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -2106,45 +2110,6 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
-    // ziptext.rs のテストヘルパーと同一形式 (格納のみ) の最小 ZIP を組み立てる
-    fn build_test_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
-        let mut out = Vec::new();
-        let mut cd = Vec::new();
-        for (name, data) in entries {
-            let loff = out.len() as u32;
-            let crc = 0u32;
-            out.extend_from_slice(&0x0403_4B50u32.to_le_bytes());
-            out.extend_from_slice(&[20, 0, 0, 0x08, 0, 0, 0, 0, 0, 0]);
-            out.extend_from_slice(&crc.to_le_bytes());
-            out.extend_from_slice(&(data.len() as u32).to_le_bytes());
-            out.extend_from_slice(&(data.len() as u32).to_le_bytes());
-            out.extend_from_slice(&(name.len() as u16).to_le_bytes());
-            out.extend_from_slice(&0u16.to_le_bytes());
-            out.extend_from_slice(name.as_bytes());
-            out.extend_from_slice(data);
-            cd.extend_from_slice(&0x0201_4B50u32.to_le_bytes());
-            cd.extend_from_slice(&[20, 0, 20, 0, 0, 0x08, 0, 0, 0, 0, 0, 0]);
-            cd.extend_from_slice(&crc.to_le_bytes());
-            cd.extend_from_slice(&(data.len() as u32).to_le_bytes());
-            cd.extend_from_slice(&(data.len() as u32).to_le_bytes());
-            cd.extend_from_slice(&(name.len() as u16).to_le_bytes());
-            cd.extend_from_slice(&[0u8; 12]);
-            cd.extend_from_slice(&loff.to_le_bytes());
-            cd.extend_from_slice(name.as_bytes());
-        }
-        let cd_off = out.len() as u32;
-        let cd_len = cd.len() as u32;
-        out.extend_from_slice(&cd);
-        out.extend_from_slice(&0x0605_4B50u32.to_le_bytes());
-        out.extend_from_slice(&[0, 0, 0, 0]);
-        out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
-        out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
-        out.extend_from_slice(&cd_len.to_le_bytes());
-        out.extend_from_slice(&cd_off.to_le_bytes());
-        out.extend_from_slice(&0u16.to_le_bytes());
-        out
-    }
-
     // .zip を直接開いた場合、展開ボタン (list_archive_entries) を押すまでは
     // 中身を一切読まない (空のまま) ことを確認する
     #[test]
@@ -2152,7 +2117,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("wasabipad_doctest_zip2_{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let zpath = root.join("notes.zip");
-        std::fs::write(&zpath, build_test_zip(&[("memo.txt", b"secret text")])).unwrap();
+        std::fs::write(&zpath, crate::ziptext::build_stored_zip(&[("memo.txt", b"secret text")])).unwrap();
 
         let mut d = Doc::open(&zpath).unwrap();
         assert!(std::fs::OpenOptions::new().write(true).open(&zpath).is_err(), "直接開いたアーカイブを書き込み禁止にする");
@@ -2187,7 +2152,7 @@ mod tests {
         std::fs::write(root.join("a_note.txt"), "hello").unwrap();
         std::fs::write(
             root.join("data.zip"),
-            build_test_zip(&[("b/c.txt", b"x"), ("a.txt", b"ZIPCONTENT")]),
+            crate::ziptext::build_stored_zip(&[("b/c.txt", b"x"), ("a.txt", b"ZIPCONTENT")]),
         )
         .unwrap();
 

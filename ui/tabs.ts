@@ -4,6 +4,7 @@ import { cloneEditorViewState, type EditorViewState } from "./editor-view-state"
 import { basename } from "./path";
 import { showMenu, type MenuItem } from "./menu";
 import { revealInExplorer } from "./folder-actions";
+import { DRAG_THRESHOLD } from "./interaction-constants";
 
 export interface StoredTab {
   id: string;
@@ -40,7 +41,6 @@ interface TabPorts {
 }
 
 const newId = () => `tab-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-const DRAG_THRESHOLD = 5;
 type DropSpot = { targetId: string | null; after: boolean; el?: HTMLElement };
 
 export class TabManager {

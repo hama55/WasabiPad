@@ -217,53 +217,53 @@ pub fn parse(bytes: &[u8]) -> Option<Vec<Entry>> {
 }
 
 #[cfg(test)]
+pub(crate) fn build_stored_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut cd = Vec::new();
+    for (name, data) in entries {
+        let loff = out.len() as u32;
+        let crc = 0u32; // 検証しないので 0 で可
+        // local header
+        out.extend_from_slice(&0x0403_4B50u32.to_le_bytes());
+        out.extend_from_slice(&[20, 0, 0, 0x08, 0, 0, 0, 0, 0, 0]); // ver,flags(utf8),method0,time,date
+        out.extend_from_slice(&crc.to_le_bytes());
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(name.as_bytes());
+        out.extend_from_slice(data);
+        // central dir entry
+        cd.extend_from_slice(&0x0201_4B50u32.to_le_bytes());
+        cd.extend_from_slice(&[20, 0, 20, 0, 0, 0x08, 0, 0, 0, 0, 0, 0]);
+        cd.extend_from_slice(&crc.to_le_bytes());
+        cd.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        cd.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        cd.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        cd.extend_from_slice(&[0u8; 12]); // xlen,clen,disk,int_attr,ext_attr
+        cd.extend_from_slice(&loff.to_le_bytes());
+        cd.extend_from_slice(name.as_bytes());
+    }
+    let cd_off = out.len() as u32;
+    let cd_len = cd.len() as u32;
+    out.extend_from_slice(&cd);
+    out.extend_from_slice(&0x0605_4B50u32.to_le_bytes());
+    out.extend_from_slice(&[0, 0, 0, 0]);
+    out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+    out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+    out.extend_from_slice(&cd_len.to_le_bytes());
+    out.extend_from_slice(&cd_off.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
-    // 最小 ZIP (stored, "a.txt" = "hello\nworld", "b/c.txt" = "x")
-    fn build_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
-        let mut out = Vec::new();
-        let mut cd = Vec::new();
-        for (name, data) in entries {
-            let loff = out.len() as u32;
-            let crc = 0u32; // 検証しないので 0 で可
-            // local header
-            out.extend_from_slice(&0x0403_4B50u32.to_le_bytes());
-            out.extend_from_slice(&[20, 0, 0, 0x08, 0, 0, 0, 0, 0, 0]); // ver,flags(utf8),method0,time,date
-            out.extend_from_slice(&crc.to_le_bytes());
-            out.extend_from_slice(&(data.len() as u32).to_le_bytes());
-            out.extend_from_slice(&(data.len() as u32).to_le_bytes());
-            out.extend_from_slice(&(name.len() as u16).to_le_bytes());
-            out.extend_from_slice(&0u16.to_le_bytes());
-            out.extend_from_slice(name.as_bytes());
-            out.extend_from_slice(data);
-            // central dir entry
-            cd.extend_from_slice(&0x0201_4B50u32.to_le_bytes());
-            cd.extend_from_slice(&[20, 0, 20, 0, 0, 0x08, 0, 0, 0, 0, 0, 0]);
-            cd.extend_from_slice(&crc.to_le_bytes());
-            cd.extend_from_slice(&(data.len() as u32).to_le_bytes());
-            cd.extend_from_slice(&(data.len() as u32).to_le_bytes());
-            cd.extend_from_slice(&(name.len() as u16).to_le_bytes());
-            cd.extend_from_slice(&[0u8; 12]); // xlen,clen,disk,int_attr,ext_attr
-            cd.extend_from_slice(&loff.to_le_bytes());
-            cd.extend_from_slice(name.as_bytes());
-        }
-        let cd_off = out.len() as u32;
-        let cd_len = cd.len() as u32;
-        out.extend_from_slice(&cd);
-        out.extend_from_slice(&0x0605_4B50u32.to_le_bytes());
-        out.extend_from_slice(&[0, 0, 0, 0]);
-        out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
-        out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
-        out.extend_from_slice(&cd_len.to_le_bytes());
-        out.extend_from_slice(&cd_off.to_le_bytes());
-        out.extend_from_slice(&0u16.to_le_bytes());
-        out
-    }
-
     #[test]
     fn parse_stored_zip() {
-        let z = build_zip(&[("b/c.txt", b"x"), ("a.txt", b"hello\nworld")]);
+        let z = build_stored_zip(&[("b/c.txt", b"x"), ("a.txt", b"hello\nworld")]);
         let r = parse(&z).unwrap();
         // パス順にソートされる
         assert_eq!(r[0].name, "a.txt");
@@ -274,14 +274,14 @@ mod tests {
 
     #[test]
     fn list_names_returns_sorted_names_without_decoding() {
-        let z = build_zip(&[("b/c.txt", b"x"), ("a.txt", b"hello\nworld")]);
+        let z = build_stored_zip(&[("b/c.txt", b"x"), ("a.txt", b"hello\nworld")]);
         let names = list_names(&z).unwrap();
         assert_eq!(names, vec!["a.txt".to_string(), "b/c.txt".to_string()]);
     }
 
     #[test]
     fn decode_one_returns_only_the_requested_entry() {
-        let z = build_zip(&[("b/c.txt", b"x"), ("a.txt", b"hello\nworld")]);
+        let z = build_stored_zip(&[("b/c.txt", b"x"), ("a.txt", b"hello\nworld")]);
         assert_eq!(decode_one(&z, "b/c.txt").unwrap(), "x");
         assert_eq!(decode_one(&z, "a.txt").unwrap(), "hello\nworld");
         assert!(decode_one(&z, "missing.txt").is_none());
@@ -290,14 +290,14 @@ mod tests {
     #[test]
     fn sjis_entry_decodes() {
         let (sjis, _, _) = SHIFT_JIS.encode("日本語\r\nテスト");
-        let z = build_zip(&[("a.txt", &sjis)]);
+        let z = build_stored_zip(&[("a.txt", &sjis)]);
         let r = parse(&z).unwrap();
         assert_eq!(r[0].text, "日本語\nテスト");
     }
 
     #[test]
     fn binary_entry_shows_size() {
-        let z = build_zip(&[("a.bin", &[0u8, 1, 2, 255])]);
+        let z = build_stored_zip(&[("a.bin", &[0u8, 1, 2, 255])]);
         let r = parse(&z).unwrap();
         assert_eq!(r[0].text, "(バイナリ: 4 bytes)");
     }

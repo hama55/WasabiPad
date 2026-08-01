@@ -4,6 +4,7 @@ import * as api from "./api";
 import {
   archiveRelOf,
   isPasswordCancelled,
+  PASSWORD_ERROR_MARKER,
   withArchivePassword,
 } from "./archive-password";
 
@@ -40,7 +41,7 @@ describe("withArchivePassword", () => {
     let attempt = 0;
     const result = await withArchivePassword("sub/data.7z", async () => {
       attempt += 1;
-      if (attempt === 1) throw new Error("7z-password:required");
+      if (attempt === 1) throw new Error(`${PASSWORD_ERROR_MARKER}:required`);
       return "ok";
     });
     expect(result).toBe("ok");
@@ -54,8 +55,8 @@ describe("withArchivePassword", () => {
     let attempt = 0;
     await withArchivePassword("", async () => {
       attempt += 1;
-      if (attempt === 1) throw new Error("7z-password:required");
-      if (attempt === 2) throw new Error("7z-password:wrong");
+      if (attempt === 1) throw new Error(`${PASSWORD_ERROR_MARKER}:required`);
+      if (attempt === 2) throw new Error(`${PASSWORD_ERROR_MARKER}:wrong`);
       return "ok";
     });
     expect(prompt).toHaveBeenCalledTimes(2);
@@ -65,7 +66,7 @@ describe("withArchivePassword", () => {
   it("キャンセルは PasswordCancelled で静かに中断する", async () => {
     prompt.mockResolvedValueOnce(null);
     const error = await withArchivePassword("", async () => {
-      throw new Error("7z-password:required");
+      throw new Error(`${PASSWORD_ERROR_MARKER}:required`);
     }).catch((e) => e);
     expect(isPasswordCancelled(error)).toBe(true);
     expect(setPassword).not.toHaveBeenCalled();

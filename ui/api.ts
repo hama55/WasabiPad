@@ -52,7 +52,14 @@ export type {
   WorkspaceSearchResult,
 };
 
-export type ReadEncoding = "utf8" | "sjis" | "utf16le";
+export const READ_ENCODINGS = ["utf8", "sjis", "utf16le"] as const;
+export type ReadEncoding = (typeof READ_ENCODINGS)[number];
+
+export const EVENT_NAMES = {
+  externalWindowRequest: "external-window-request",
+  workspaceSearchBatch: "workspace-search-batch",
+  viewerUpdate: "viewer-update",
+} as const;
 
 export const openPath = (path: string) => invoke<DocInfo>("open_path", { path });
 export const newDoc = () => invoke<void>("new_doc");
@@ -83,7 +90,7 @@ export const workspaceSearch = (pat: string, options: WorkspaceSearchOptions, se
 
 // 検索中の途中経過。確定を待たずに出せるものを出す (走査順で、確定後の並びとは別)
 export const onWorkspaceSearchBatch = (handler: (batch: WorkspaceSearchBatch) => void) =>
-  listen<WorkspaceSearchBatch>("workspace-search-batch", (event) => handler(event.payload));
+  listen<WorkspaceSearchBatch>(EVENT_NAMES.workspaceSearchBatch, (event) => handler(event.payload));
 
 // 進行中の検索を打ち切る (無制限指定で走り出した検索から抜ける手段)
 export const workspaceSearchCancel = () => invoke<void>("workspace_search_cancel");
@@ -177,7 +184,7 @@ export const launchNewInstance = (request: WindowRequest) =>
   invoke<void>("launch_new_instance", { request });
 export const initialWindowRequest = () => invoke<WindowRequest>("initial_window_request");
 export const onExternalWindowRequest = (handler: () => void) =>
-  listen("external-window-request", () => handler());
+  listen(EVENT_NAMES.externalWindowRequest, () => handler());
 export const takePendingWindowRequests = () =>
   invoke<WindowRequest[]>("take_pending_window_requests");
 
