@@ -163,6 +163,11 @@ function viewerFormatFor(path: string): api.ViewerFormat | null {
   return extension === ".md" || extension === ".markdown" ? "markdown" : null;
 }
 
+export function isImagePath(path: string): boolean {
+  const extension = path.slice(path.lastIndexOf(".")).toLowerCase();
+  return [".apng", ".avif", ".bmp", ".gif", ".ico", ".jpeg", ".jpg", ".png", ".svg", ".webp"].includes(extension);
+}
+
 export async function revealInExplorer(path: string, isDir: boolean) {
   try {
     await api.revealInExplorer(path, isDir);

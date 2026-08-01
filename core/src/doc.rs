@@ -765,7 +765,7 @@ impl Doc {
         Ok(self.info(path))
     }
 
-    // 貼り付け画像はメモと同じフォルダの image 配下へ置き、本文には相対リンクだけを残す。
+    // メモごとに画像を分けないと、同じフォルダ内のメモ同士で画像の持ち主が分からなくなる。
     pub fn save_pasted_image(&self, bytes: &[u8], mime_type: &str) -> io::Result<String> {
         if self.source.is_view_only() {
             return Err(io::Error::new(io::ErrorKind::PermissionDenied, "閲覧専用の文書には画像を貼り付けられません"));
@@ -782,7 +782,12 @@ impl Doc {
         let parent = memo
             .parent()
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "メモの保存先が不正です"))?;
-        let image_dir = parent.join("image");
+        let memo_name = memo
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "メモの画像フォルダ名を作れません"))?;
+        let image_dir = parent.join("image_markdown").join(memo_name);
         std::fs::create_dir_all(&image_dir)?;
         let path = next_available_path(&image_dir, "pasted-image", extension)?;
         std::fs::write(&path, bytes)?;
@@ -790,35 +795,33 @@ impl Doc {
             .file_name()
             .and_then(|value| value.to_str())
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "画像ファイル名を作れません"))?;
-        Ok(format!("image/{name}"))
+        Ok(format!("image_markdown/{memo_name}/{name}"))
     }
 
-    // 本文から参照が消えた画像を削除する。image フォルダが無ければ本文全走査をしない。
+    // 本文から参照が消えた画像を削除する。旧 image フォルダも既存メモのために整理する。
     pub fn cleanup_unused_images(&self) -> io::Result<()> {
         if self.source.is_view_only() {
             return Ok(());
         }
         let Some(memo) = self.source.path() else { return Ok(()) };
         let Some(parent) = memo.parent() else { return Ok(()) };
-        let image_dir = parent.join("image");
-        if !image_dir.is_dir() {
-            return Ok(());
-        }
+        let memo_name = memo
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .filter(|value| !value.is_empty());
         let referenced = referenced_image_files(&self.buf);
-        for entry in std::fs::read_dir(&image_dir)? {
-            let entry = entry?;
-            if !entry.file_type()?.is_file() {
-                continue;
-            }
-            let name = entry.file_name().to_string_lossy().to_lowercase();
-            if !referenced.contains(&name) {
-                std::fs::remove_file(entry.path())?;
-            }
+        if let Some(memo_name) = memo_name {
+            let image_root = parent.join("image_markdown");
+            let image_dir = image_root.join(memo_name);
+            cleanup_image_dir(
+                &image_dir,
+                &format!("image_markdown/{}", memo_name.to_lowercase()),
+                &referenced,
+            )?;
+            remove_empty_dir(&image_root)?;
         }
-        let mut remaining = std::fs::read_dir(&image_dir)?;
-        if remaining.next().is_none() {
-            let _ = std::fs::remove_dir(&image_dir);
-        }
+        let legacy_dir = parent.join("image");
+        cleanup_image_dir(&legacy_dir, "image", &referenced)?;
         Ok(())
     }
 
@@ -1291,13 +1294,55 @@ fn image_src_in_tag(tag: &str) -> Option<String> {
 }
 
 fn image_name_from_src(src: &str) -> Option<String> {
-    let normalized = src.replace('\\', "/");
-    let lower = normalized.to_lowercase();
-    let name = lower.strip_prefix("image/")?;
-    if name.is_empty() || name.contains('/') || name == "." || name == ".." {
-        return None;
+    let parts: Vec<String> = src
+        .replace('\\', "/")
+        .split('/')
+        .map(|part| part.to_lowercase())
+        .collect();
+    match parts.as_slice() {
+        [root, name] if root == "image" && valid_image_path_part(name) => {
+            Some(format!("image/{name}"))
+        }
+        [root, memo, name]
+            if root == "image_markdown"
+                && valid_image_path_part(memo)
+                && valid_image_path_part(name) =>
+        {
+            Some(format!("image_markdown/{memo}/{name}"))
+        }
+        _ => None,
     }
-    Some(name.to_string())
+}
+
+fn valid_image_path_part(value: &str) -> bool {
+    !value.is_empty() && value != "." && value != ".."
+}
+
+fn cleanup_image_dir(dir: &Path, prefix: &str, referenced: &HashSet<String>) -> io::Result<()> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_lowercase();
+        if !referenced.contains(&format!("{prefix}/{name}")) {
+            std::fs::remove_file(entry.path())?;
+        }
+    }
+    remove_empty_dir(dir)
+}
+
+fn remove_empty_dir(dir: &Path) -> io::Result<()> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    if std::fs::read_dir(dir)?.next().is_none() {
+        let _ = std::fs::remove_dir(dir);
+    }
+    Ok(())
 }
 
 // ---- 検索 ----
@@ -1726,27 +1771,56 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
-    #[test]
-    fn pasted_image_is_saved_and_removed_when_tag_disappears() {
-        let root = std::env::temp_dir().join(format!("wasabipad_image_{}", std::process::id()));
+    fn image_fixture(name: &str) -> (PathBuf, Doc) {
+        let root = std::env::temp_dir().join(format!("wasabipad_image_{name}_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("memo.md"), "").unwrap();
 
         let mut d = Doc::open(&root).unwrap();
         d.select_entry("memo.md").unwrap().unwrap();
+        (root, d)
+    }
+
+    #[test]
+    fn pasted_image_is_saved_under_the_memo_specific_directory() {
+        let (root, d) = image_fixture("path");
         let src = d.save_pasted_image(&[1, 2, 3], "image/png").unwrap();
+        assert_eq!(src, "image_markdown/memo/pasted-image.png");
         let image = root.join(src.replace('/', std::path::MAIN_SEPARATOR_STR));
         assert!(image.is_file());
+        drop(d);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
+    #[test]
+    fn referenced_pasted_image_is_kept_during_cleanup() {
+        let (root, d) = image_fixture("keep");
+        let src = d.save_pasted_image(&[1, 2, 3], "image/png").unwrap();
+        let image = root.join(src.replace('/', std::path::MAIN_SEPARATOR_STR));
         let tag = format!("<img src=\"{src}\" alt=\"貼り付け画像\" width=\"900\">\n");
+        let mut d = d;
         d.edit(pos(0, 0), pos(0, 0), pos(0, 0), &tag, false).unwrap();
         d.cleanup_unused_images().unwrap();
         assert!(image.is_file(), "参照中の画像は残す");
+        drop(d);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn unreferenced_pasted_image_is_removed_with_empty_directory() {
+        let (root, d) = image_fixture("remove");
+        let src = d.save_pasted_image(&[1, 2, 3], "image/png").unwrap();
+        let image = root.join(src.replace('/', std::path::MAIN_SEPARATOR_STR));
+        let mut d = d;
+        let tag = format!("<img src=\"{src}\" alt=\"貼り付け画像\" width=\"900\">\n");
+        d.edit(pos(0, 0), pos(0, 0), pos(0, 0), &tag, false).unwrap();
+        d.cleanup_unused_images().unwrap();
         d.edit(pos(0, 0), pos(1, 0), pos(0, 0), "", false).unwrap();
         d.cleanup_unused_images().unwrap();
         assert!(!image.exists(), "タグ削除後は画像も削除する");
-        assert!(!root.join("image").exists(), "空になったimageフォルダも整理する");
+        assert!(!root.join("image_markdown").exists(), "空になった画像フォルダも整理する");
+        drop(d);
         let _ = std::fs::remove_dir_all(&root);
     }
 

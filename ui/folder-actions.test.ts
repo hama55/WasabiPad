@@ -5,6 +5,7 @@ import { showError } from "./dialogs";
 import { initialSession } from "./session";
 import {
   FolderActions,
+  isImagePath,
   type FolderActionsPorts,
   type FolderDocumentPort,
 } from "./folder-actions";
@@ -82,6 +83,26 @@ describe("FolderActions", () => {
     actions.showContextMenu(0, 0, { relPath: "memo.txt", isDir: false });
     expect([...dropdown.querySelectorAll(".dd-label")].map((label) => label.textContent)).not.toContain("CSVビュー");
     expect([...dropdown.querySelectorAll(".dd-label")].map((label) => label.textContent)).not.toContain("Markdownビュー");
+  });
+
+  it("ファイルのExplorerメニューはその絶対パスを渡す", async () => {
+    const reveal = vi.spyOn(api, "revealInExplorer").mockResolvedValue();
+    try {
+      const { actions, dropdown } = fixture();
+      actions.showContextMenu(0, 0, { relPath: "memo.txt", isDir: false });
+      [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+        .find((item) => item.textContent === "エクスプローラで開く")?.click();
+
+      await vi.waitFor(() => expect(reveal).toHaveBeenCalledWith("C:\\work\\memo.txt", false));
+    } finally {
+      reveal.mockRestore();
+    }
+  });
+
+  it("画像ファイルの拡張子を大文字小文字に関係なく判定する", () => {
+    expect(isImagePath("picture.PNG")).toBe(true);
+    expect(isImagePath("picture.webp")).toBe(true);
+    expect(isImagePath("memo.md")).toBe(false);
   });
 
   it("削除はその他サブメニューを経由する", async () => {

@@ -14,7 +14,11 @@ import { VirtualEditor, type EditorPorts } from "./editor";
 
 installDomStubs();
 
-function mount(initial: string, saveImage?: EditorPorts["saveImage"]) {
+function mount(
+  initial: string,
+  saveImage?: EditorPorts["saveImage"],
+  overrides: Partial<Pick<EditorPorts, "hasExternalFile" | "revealInExplorer">> = {},
+) {
   const host = document.createElement("div");
   document.body.replaceChildren(host);
   const doc = fakeDocument(initial);
@@ -27,8 +31,9 @@ function mount(initial: string, saveImage?: EditorPorts["saveImage"]) {
     onDocChange: (lineCount) => { events.lineCount = lineCount; },
     onCursor: (line, col) => { events.cursor = [line, col]; },
     onFontChange: () => {},
-    hasExternalFile: () => false,
+    hasExternalFile: overrides.hasExternalFile ?? (() => false),
     openExternally: () => {},
+    revealInExplorer: overrides.revealInExplorer,
     onError: async (message, error) => { events.errors.push({ message, error }); },
     openViewer: async () => null,
     updateViewer: async () => true,
@@ -178,7 +183,7 @@ describe("VirtualEditor", () => {
   });
 
   it("画像の貼り付けで相対リンク付きタグを挿入する", async () => {
-    const saveImage = vi.fn(async () => "image/pasted-image.png");
+    const saveImage = vi.fn(async () => "image_markdown/memo/pasted-image.png");
     const { editor, doc, input } = mount("memo", saveImage);
     editor.open(1, false);
     await settle();
@@ -193,7 +198,29 @@ describe("VirtualEditor", () => {
 
     expect(event.defaultPrevented).toBe(true);
     expect(saveImage).toHaveBeenCalledWith([1, 2, 3], "image/png");
-    expect(doc.text()).toContain("<img src=\"image/pasted-image.png\" alt=\"貼り付け画像\" width=\"900\">");
+    expect(doc.text()).toContain("<img src=\"image_markdown/memo/pasted-image.png\" alt=\"貼り付け画像\" width=\"900\">");
+  });
+
+  it("保存済みメモの右クリックから格納フォルダを開く", async () => {
+    const revealInExplorer = vi.fn();
+    const { editor, host } = mount("memo", undefined, {
+      hasExternalFile: () => true,
+      revealInExplorer,
+    });
+    const dropdown = document.createElement("div");
+    dropdown.id = "dropdown";
+    document.body.appendChild(dropdown);
+    editor.open(1, false);
+    await settle();
+
+    host.querySelector<HTMLElement>(".ve-scroll")!.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, clientX: 0, clientY: 0 }),
+    );
+    const item = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((element) => element.textContent === "エクスプローラで開く");
+    item?.click();
+
+    expect(revealInExplorer).toHaveBeenCalledTimes(1);
   });
 
   it("goTo はキャレット位置を1始まりで通知する", async () => {

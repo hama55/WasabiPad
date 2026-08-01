@@ -174,6 +174,10 @@ export const nextMemoPath = (directory: string, stem: string, extension: string)
 export const launchNewInstance = (request: WindowRequest) =>
   invoke<void>("launch_new_instance", { request });
 export const initialWindowRequest = () => invoke<WindowRequest>("initial_window_request");
+export const onExternalWindowRequest = (handler: () => void) =>
+  listen("external-window-request", () => handler());
+export const takePendingWindowRequests = () =>
+  invoke<WindowRequest[]>("take_pending_window_requests");
 
 // エディタが必要とする文書操作だけを切り出した口。エディタはこの型にだけ依存し、
 // 既定の実装 (下の documentClient) が Tauri の invoke を呼ぶ。

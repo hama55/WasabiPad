@@ -3,6 +3,7 @@ import type { DocumentSession } from "./session";
 import { cloneEditorViewState, type EditorViewState } from "./editor-view-state";
 import { basename } from "./path";
 import { showMenu, type MenuItem } from "./menu";
+import { revealInExplorer } from "./folder-actions";
 
 export interface StoredTab {
   id: string;
@@ -364,12 +365,20 @@ export class TabManager {
   }
 
   private contextItems(tab: StoredTab): MenuItem[] {
-    return [
+    const items: MenuItem[] = [];
+    if (tab.path) {
+      items.push({
+        label: "エクスプローラで開く",
+        action: () => void revealInExplorer(tab.path!, tab.kind === "folder"),
+      });
+    }
+    items.push(
       { label: "閉じる", action: () => this.run(() => this.close(tab.id)) },
       { label: "ほかのタブを閉じる", action: () => this.run(() => this.keepOnly(tab.id)), sep: true },
       { label: "右側のタブを閉じる", action: () => this.run(() => this.closeRight(tab.id)) },
       { label: "保存済みのタブを閉じる", action: () => this.run(() => this.closeSaved(tab.id)) },
-    ];
+    );
+    return items;
   }
 
   private async keepOnly(id: string) {

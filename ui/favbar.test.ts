@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
+import * as api from "./api";
 import type { BmNode } from "./api";
 import { FavBar, type BookmarkStore } from "./favbar";
 
@@ -21,7 +22,6 @@ function mount(initial: BmNode[] = [], storeOverrides: Partial<BookmarkStore> = 
       onAddGroupToTabs: (items) => addedGroups.push(items),
       onError: async () => {},
       currentFile: () => "C:/work/memo.txt",
-      onSetDefault: () => {},
     },
     store
   );
@@ -146,5 +146,33 @@ describe("FavBar", () => {
       { path: "C:/a.txt", kind: "file" },
       { path: "C:/src", kind: "folder" },
     ]]);
+  });
+
+  it("お気に入りのファイルとフォルダをExplorerで開き、デフォルト設定項目を表示しない", async () => {
+    const reveal = vi.spyOn(api, "revealInExplorer").mockResolvedValue();
+    try {
+      const { favbar } = mount([
+        { kind: "file", name: "memo.txt", path: "C:/memo.txt" },
+        { kind: "directory", name: "docs", path: "C:/docs" },
+      ]);
+      await favbar.init();
+      const buttons = document.querySelectorAll<HTMLButtonElement>("#favbar button");
+
+      buttons[0].dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+      expect([...document.querySelectorAll("#dropdown .dd-label")].map((label) => label.textContent))
+        .not.toContain("デフォルトに設定");
+      [...document.querySelectorAll<HTMLElement>("#dropdown .dd-item")]
+        .find((item) => item.textContent === "エクスプローラで開く")?.click();
+
+      buttons[1].dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+      [...document.querySelectorAll<HTMLElement>("#dropdown .dd-item")]
+        .find((item) => item.textContent === "エクスプローラで開く")?.click();
+      await vi.waitFor(() => expect(reveal).toHaveBeenCalledTimes(2));
+
+      expect(reveal).toHaveBeenNthCalledWith(1, "C:/memo.txt", false);
+      expect(reveal).toHaveBeenNthCalledWith(2, "C:/docs", true);
+    } finally {
+      reveal.mockRestore();
+    }
   });
 });

@@ -1,6 +1,7 @@
 import { BmNode, loadBookmarks, pathIsDirectory, saveBookmarks } from "./api";
 import { hideMenu, showMenu, MenuItem } from "./menu";
 import { promptFields } from "./prompt";
+import { revealInExplorer } from "./folder-actions";
 
 type NodePath = number[];
 type DropKind = "before" | "inside" | "after";
@@ -28,7 +29,6 @@ export interface FavBarPorts {
   onOpen: (path: string, newTab: boolean) => void;
   onAddGroupToTabs: (items: { path: string; kind: "file" | "folder" }[]) => void;
   currentFile: () => string | null;
-  onSetDefault: (path: string) => void;
   onError: (error: unknown) => Promise<void>;
 }
 
@@ -47,7 +47,6 @@ export class FavBar {
   private onOpen: (path: string, newTab: boolean) => void;
   private onAddGroupToTabs: FavBarPorts["onAddGroupToTabs"];
   private currentFile: () => string | null;
-  private onSetDefault: (path: string) => void;
   private onError: (error: unknown) => Promise<void>;
 
   constructor(
@@ -58,7 +57,6 @@ export class FavBar {
     this.onOpen = ports.onOpen;
     this.onAddGroupToTabs = ports.onAddGroupToTabs;
     this.currentFile = ports.currentFile;
-    this.onSetDefault = ports.onSetDefault;
     this.onError = ports.onError;
     this.host.addEventListener("contextmenu", (e) => {
       if (e.target !== this.host) return;
@@ -163,7 +161,7 @@ export class FavBar {
     } else {
       items.push(
         { label: "新規タブで開く", action: () => this.onOpen(node.path, true) },
-        { label: "デフォルトに設定", action: () => this.onSetDefault(node.path), sep: true },
+        { label: "エクスプローラで開く", action: () => void revealInExplorer(node.path, node.kind === "directory"), sep: true },
         { label: "編集...", action: () => this.runMutation(() => this.editPath(path)) }
       );
     }

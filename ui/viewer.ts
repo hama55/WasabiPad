@@ -23,6 +23,12 @@ import { csvColumnAt, decodeDelimiter, isSingleCsvCellSelection } from "./csv-vi
 import { resolveAssetPath } from "./viewer-assets";
 import { normalizeTheme, THEME_STORAGE_KEY } from "./theme";
 import { showError } from "./dialogs";
+import {
+  markdownBlockSelected,
+  markdownHighlightTargets,
+  renderRawHtml,
+  scrollMarkdownCaret,
+} from "./viewer-markdown";
 
 const MAX_TABLE_ROWS = 10_000;
 const MAX_TABLE_COLUMNS = 200;
@@ -169,23 +175,6 @@ function renderTable(text: string) {
   if (chartColumns) renderChart();
 }
 
-// 生HTMLは <img> だけ通す。他のタグは今まで通り文字列として見せる。
-const IMG_ONLY = /^<img\b[^>]*>$/i;
-const IMG_ATTRIBUTES = ["src", "alt", "title", "width", "height"];
-
-function renderRawHtml(raw: string, escape: (text: string) => string): string {
-  if (!IMG_ONLY.test(raw.trim())) return escape(raw);
-  // template の中身は不活性なので、この時点で画像取得もハンドラ実行も起きない
-  const template = document.createElement("template");
-  template.innerHTML = raw.trim();
-  const img = template.content.firstElementChild;
-  if (!(img instanceof HTMLImageElement)) return escape(raw);
-  for (const name of img.getAttributeNames()) {
-    if (!IMG_ATTRIBUTES.includes(name.toLowerCase())) img.removeAttribute(name);
-  }
-  return img.outerHTML;
-}
-
 function renderMarkdown(text: string) {
   currentRows = [];
   closeChart();
@@ -203,10 +192,12 @@ function renderMarkdown(text: string) {
     }
   });
   article.innerHTML = markdown.renderer.render(tokens, markdown.options, {});
-  article.querySelectorAll<HTMLElement>("[data-source-start]").forEach((element) => {
+  const sourceElements = [...article.querySelectorAll<HTMLElement>("[data-source-start]")];
+  const highlightTargets = markdownHighlightTargets(sourceElements);
+  highlightTargets.forEach((element) => {
     const start = Number(element.dataset.sourceStart);
     const end = Number(element.dataset.sourceEnd);
-    element.classList.toggle("viewer-source-selected", markdownBlockSelected(start, end));
+    element.classList.toggle("viewer-source-selected", markdownBlockSelected(currentSelection, start, end));
   });
   article.querySelectorAll("img").forEach((image) => {
     const resolved = resolveAssetPath(currentSourcePath, image.getAttribute("src") ?? "");
@@ -217,6 +208,7 @@ function renderMarkdown(text: string) {
     link.rel = "noreferrer";
   });
   content.replaceChildren(article);
+  scrollMarkdownCaret(highlightTargets, currentSelection);
   summary.classList.remove("warning");
   summary.title = "";
   summary.textContent = `${text.length.toLocaleString()}文字`;
@@ -256,15 +248,6 @@ function csvSourceLineSelected(rowIndex: number) {
   const { start, end } = currentSelection;
   if (start.line === end.line && start.col === end.col) return rowIndex === start.line;
   return rowIndex >= start.line && (rowIndex < end.line || (rowIndex === end.line && end.col > 0));
-}
-
-function markdownBlockSelected(start: number, end: number) {
-  if (!currentSelection) return false;
-  const { start: selectionStart, end: selectionEnd } = currentSelection;
-  const lastSelectedLine = selectionStart.line === selectionEnd.line && selectionStart.col === selectionEnd.col
-    ? selectionEnd.line
-    : selectionEnd.line - Number(selectionEnd.col === 0);
-  return start <= lastSelectedLine && end > selectionStart.line;
 }
 
 function showContextMenu(x: number, y: number) {

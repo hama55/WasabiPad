@@ -46,6 +46,7 @@ export interface EditorPorts {
   onFontChange: (fontFamily: string, fontSize: number) => void;
   hasExternalFile: () => boolean;
   openExternally: () => void;
+  revealInExplorer?: () => void;
   onError: (message: string, error: unknown) => Promise<void>;
   openViewer: (format: api.ViewerFormat, text: string, selection: api.ViewerSelection | null) => Promise<string | null>;
   updateViewer: (label: string, text: string, selection: api.ViewerSelection | null) => Promise<boolean>;
@@ -107,6 +108,7 @@ export class VirtualEditor {
   private onFontChange: (fontFamily: string, fontSize: number) => void;
   private hasExternalFile: () => boolean;
   private openExternally: () => void;
+  private revealInExplorer?: () => void;
   private onError: (message: string, error: unknown) => Promise<void>;
   private onPasteImage?: (bytes: number[], mimeType: string) => Promise<string>;
   private liveViewers: LiveViewers;
@@ -139,6 +141,7 @@ export class VirtualEditor {
     this.onFontChange = ports.onFontChange;
     this.hasExternalFile = ports.hasExternalFile;
     this.openExternally = ports.openExternally;
+    this.revealInExplorer = ports.revealInExplorer;
     this.onError = ports.onError;
     this.onPasteImage = ports.saveImage;
     this.fontFamily = config.fontFamily;
@@ -1752,7 +1755,10 @@ export class VirtualEditor {
         sep: index === 0,
       })),
     );
-    if (this.hasExternalFile()) items.push({ label: "アプリで開く", action: this.openExternally, sep: true });
+    if (this.hasExternalFile()) {
+      items.push({ label: "アプリで開く", action: this.openExternally, sep: true });
+      if (this.revealInExplorer) items.push({ label: "エクスプローラで開く", action: this.revealInExplorer });
+    }
     showMenu(e.clientX, e.clientY, items);
   }
 

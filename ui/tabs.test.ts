@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import * as api from "./api";
 import { TabManager, type StoredTabs, type TabDocumentPort } from "./tabs";
 import { initialSession } from "./session";
 
@@ -307,5 +308,35 @@ describe("TabManager", () => {
 
     expect(onDetach).not.toHaveBeenCalled();
     expect(manager.state.tabs.map((tab) => tab.id)).toEqual(["a", "b"]);
+  });
+
+  it("ファイルとフォルダのタブをExplorerで開く", async () => {
+    const reveal = vi.spyOn(api, "revealInExplorer").mockResolvedValue();
+    try {
+      const { doc, host } = fixture();
+      document.body.appendChild(Object.assign(document.createElement("div"), { id: "dropdown" }));
+      const manager = new TabManager(host, doc, { onChange: () => {} });
+      await manager.init({
+        tabs: [
+          { id: "file", path: "C:\\work\\memo.txt", kind: "file", label: "memo.txt" },
+          { id: "folder", path: "C:\\work\\docs", kind: "folder", label: "docs" },
+        ],
+        activeId: "file",
+      }, null, null);
+
+      const tabs = host.querySelectorAll<HTMLElement>(".doc-tab");
+      tabs[0].dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+      [...document.querySelectorAll<HTMLElement>("#dropdown .dd-item")]
+        .find((item) => item.textContent === "エクスプローラで開く")?.click();
+      tabs[1].dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+      [...document.querySelectorAll<HTMLElement>("#dropdown .dd-item")]
+        .find((item) => item.textContent === "エクスプローラで開く")?.click();
+
+      await vi.waitFor(() => expect(reveal).toHaveBeenCalledTimes(2));
+      expect(reveal).toHaveBeenNthCalledWith(1, "C:\\work\\memo.txt", false);
+      expect(reveal).toHaveBeenNthCalledWith(2, "C:\\work\\docs", true);
+    } finally {
+      reveal.mockRestore();
+    }
   });
 });

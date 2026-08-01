@@ -11,12 +11,12 @@ import { AddressBar } from "./addressbar";
 import { StatusBar } from "./statusbar";
 import { WindowChrome } from "./window-chrome";
 import { ExternalWatch } from "./external-watch";
-import { FolderActions, openInOtherApp } from "./folder-actions";
+import { FolderActions, isImagePath, openInOtherApp, revealInExplorer } from "./folder-actions";
 import { DocumentController, SAVE_EXTENSIONS } from "./document-controller";
 import { showError } from "./dialogs";
 import { confirmMessage } from "./prompt";
 import { isPasswordCancelled, withArchivePassword } from "./archive-password";
-import { joinWindowsRoot } from "./path";
+import { basename, joinWindowsRoot } from "./path";
 import { createCommandRegistry, globalCommandForEvent } from "./commands";
 import { TabManager } from "./tabs";
 import {
@@ -51,6 +51,7 @@ let currentLine = 1;
 let tabs: TabManager;
 let restoringEditorFont = true;
 let imageCleanupTimer: number | undefined;
+let externalRequestChain = Promise.resolve();
 
 function setLoading(active: boolean, message = "読み込み中…") {
   loading.hidden = !active;
@@ -77,6 +78,40 @@ async function reportBackgroundError(title: string, error: unknown) {
   }
 }
 
+function parentPath(path: string): string | null {
+  const normalized = path.replace(/\\/g, "/");
+  const separator = normalized.lastIndexOf("/");
+  if (separator < 0) return null;
+  if (separator === 2 && /^[A-Za-z]:/.test(normalized)) return normalized.slice(0, separator + 1);
+  return normalized.slice(0, separator) || "/";
+}
+
+function memoPathForExplorer(): string | null {
+  const session = doc.current;
+  if (session.folderRoot && session.selectedRelPath && !session.selectedRelPath.includes("::")) {
+    return joinWindowsRoot(session.folderRoot, session.selectedRelPath);
+  }
+  return session.savePath;
+}
+
+function escapeHtmlAttribute(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+}
+
+async function openImageInViewer(relPath: string): Promise<boolean> {
+  const root = doc.current.folderRoot;
+  if (!root) return false;
+  const path = joinWindowsRoot(root, relPath);
+  const name = escapeHtmlAttribute(basename(relPath));
+  try {
+    await api.openViewer("markdown", `<img src="${name}" alt="${name}">`, null, path);
+    return true;
+  } catch (error) {
+    await showError("画像を表示できませんでした", error);
+    return false;
+  }
+}
+
 async function launchNewWindow(request: Partial<api.WindowRequest> = {}): Promise<boolean> {
   try {
     await api.launchNewInstance({
@@ -92,6 +127,22 @@ async function launchNewWindow(request: Partial<api.WindowRequest> = {}): Promis
     await reportBackgroundError("新規ウィンドウを開けませんでした", error);
     return false;
   }
+}
+
+function drainExternalWindowRequests() {
+  externalRequestChain = externalRequestChain.then(async () => {
+    const requests = await api.takePendingWindowRequests();
+    for (const request of requests) {
+      if (!request.path) continue;
+      try {
+        await tabs.open(request.path, request.goto ?? undefined);
+        await win.show();
+        await win.setFocus();
+      } catch (error) {
+        await reportBackgroundError("外部からファイルを開けませんでした", error);
+      }
+    }
+  }).catch((error) => reportBackgroundError("外部からの起動要求を処理できませんでした", error));
 }
 
 function setSidebar(on: boolean, label = "") {
@@ -161,6 +212,11 @@ const editor: VirtualEditor = new VirtualEditor(editorHost, {
   },
   hasExternalFile: () => doc.current.savePath !== null,
   openExternally: () => { if (doc.current.savePath) void openInOtherApp(doc.current.savePath); },
+  revealInExplorer: () => {
+    const path = memoPathForExplorer();
+    const folder = path && parentPath(path);
+    if (folder) void revealInExplorer(folder, true);
+  },
   onError: (message, error) => showError(message, error),
   openViewer: async (format, text, selection) => {
     try {
@@ -182,6 +238,7 @@ editor.setTabSize(statusbar.setIndent(getSetting("indentSize")));
 
 const sidebar = new Sidebar(sidebarEl, {
   onSelect: async (relPath, newTab) => {
+    if (isImagePath(relPath) && doc.current.folderRoot) return openImageInViewer(relPath);
     if (newTab) {
       await openInNewTab(relPath);
       return;
@@ -286,7 +343,6 @@ const favbar = new FavBar($("favbar"), {
   onOpen: (path, newTab) => { void (newTab ? tabs.open(path) : doc.openPath(path)); },
   onAddGroupToTabs: (items) => tabs.addLinks(items),
   currentFile: () => addressbar.path || null,
-  onSetDefault: (path) => setSetting("startupPath", path),
   onError: (error) => showError("お気に入りを移動できませんでした", error),
 });
 
@@ -421,4 +477,10 @@ await tabs.init(
   windowRequest.selectedRelPath ?? undefined,
   windowRequest.viewState ?? undefined,
 );
+try {
+  await api.onExternalWindowRequest(drainExternalWindowRequests);
+  drainExternalWindowRequests();
+} catch (error) {
+  await reportBackgroundError("外部からの起動要求を受信できませんでした", error);
+}
 doc.updateTitle();
