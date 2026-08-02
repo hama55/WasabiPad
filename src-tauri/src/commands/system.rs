@@ -66,6 +66,35 @@ pub(crate) fn open_in_other_app(path: String) -> Result<(), String> {
     }
 }
 
+pub(crate) fn run_external_command(command: String, path: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+
+        let target = PathBuf::from(path);
+        if !target.is_file() {
+            return Err("対象ファイルが見つかりません".to_string());
+        }
+        let command = command.trim();
+        if command.is_empty() {
+            return Err("コマンドが空です".to_string());
+        }
+        // {file}の置換とプレフィックスの連結はUI側で済ませ、確認欄と同じ文字列を実行する。
+        std::process::Command::new("cmd.exe")
+            .args(["/D", "/C", command])
+            // 外部GUIアプリを起動するときにコンソール画面を出さない。
+            .creation_flags(0x0800_0000)
+            .spawn()
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (command, path);
+        Err("この機能はWindowsでのみ使用できます".to_string())
+    }
+}
+
 pub(crate) fn load_bookmarks() -> Result<Vec<BookmarkNode>, String> {
     wasabipad_core::load_bookmarks().map_err(|error| error.to_string())
 }

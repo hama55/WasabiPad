@@ -18,6 +18,7 @@ export const IPC_COMMANDS = {
   cleanupUnusedImages: "cleanup_unused_images",
   revealInExplorer: "reveal_in_explorer",
   openInOtherApp: "open_in_other_app",
+  runExternalCommand: "run_external_command",
   edit: "edit",
   editMany: "edit_many",
   undo: "undo",

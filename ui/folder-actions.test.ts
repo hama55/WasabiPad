@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "./api";
 import { showError } from "./dialogs";
 import { initialSession } from "./session";
+import { initSettings } from "./settings";
+import { addRegisteredCommand, commandsForPath } from "./registered-commands";
 import {
   FolderActions,
   isImagePath,
@@ -14,9 +16,16 @@ import {
 import type { MemoSpec } from "./document-controller";
 
 vi.mock("./dialogs", () => ({ showError: vi.fn(async () => {}) }));
+vi.mock("./api", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./api")>(),
+  loadSettings: vi.fn(async () => "{}"),
+  updateSetting: vi.fn(async () => {}),
+  runExternalCommand: vi.fn(async () => {}),
+}));
 vi.mock("./prompt", async (importOriginal) => ({
   ...await importOriginal<typeof import("./prompt")>(),
   confirmMessage: vi.fn(async () => true),
+  promptFields: vi.fn(async () => null),
 }));
 import { confirmMessage, promptFields } from "./prompt";
 
@@ -63,7 +72,13 @@ function fixture() {
 }
 
 describe("FolderActions", () => {
-  beforeEach(() => document.body.replaceChildren());
+  beforeEach(async () => {
+    document.body.replaceChildren();
+    await initSettings();
+    vi.mocked(api.runExternalCommand).mockClear();
+    vi.mocked(promptFields).mockReset();
+    vi.mocked(promptFields).mockResolvedValue(null);
+  });
 
   it("右クリック項目を操作別に区切り、新規ウィンドウで開ける", () => {
     const { actions, dropdown, ports } = fixture();
@@ -74,6 +89,7 @@ describe("FolderActions", () => {
       "新規タブで開く",
       "新規ウィンドウで開く",
       "アプリで開く",
+      "コマンドを登録...",
       "アドレスバーに設定",
       "新規メモ作成...",
       "名前を変更...",
@@ -98,6 +114,63 @@ describe("FolderActions", () => {
     actions.showContextMenu(0, 0, { relPath: "memo.txt", isDir: false });
     expect([...dropdown.querySelectorAll(".dd-label")].map((label) => label.textContent)).not.toContain("CSVビュー");
     expect([...dropdown.querySelectorAll(".dd-label")].map((label) => label.textContent)).not.toContain("Markdownビュー");
+  });
+
+  it("拡張子別の登録コマンドを表示して実行できる", async () => {
+    addRegisteredCommand({ extension: ".html", label: "Chrome", prefix: "cmd.exe /D /C", command: "chrome {file}" });
+    const { actions, dropdown } = fixture();
+    actions.showContextMenu(0, 0, { relPath: "index.html", isDir: false });
+
+    const registered = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "登録コマンド ▸");
+    registered!.click();
+    const commandItem = dropdown.querySelector<HTMLElement>(".dd-submenu .dd-item")!;
+    expect([...commandItem.querySelectorAll<HTMLButtonElement>(".dd-trailing")].map((button) => button.textContent))
+      .toEqual(["⚙", "×"]);
+    commandItem.click();
+
+    await vi.waitFor(() => expect(api.runExternalCommand).toHaveBeenCalledWith(
+      'cmd.exe /D /C chrome "C:\\work\\index.html"',
+      "C:\\work\\index.html",
+    ));
+  });
+
+  it("登録時は選択ファイルの拡張子をコマンドへ紐付ける", async () => {
+    vi.mocked(promptFields).mockResolvedValueOnce(["Chrome", "", "chrome {file}"]);
+    const { actions, dropdown } = fixture();
+    actions.showContextMenu(0, 0, { relPath: "index.HTML", isDir: false });
+
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "コマンドを登録...")!.click();
+
+    expect(vi.mocked(promptFields).mock.calls[0][1][1]).toMatchObject({
+      label: "プレフィックス（空欄可。例: cmd.exe /D /C）",
+      value: "cmd.exe /D /C",
+    });
+
+    await vi.waitFor(() => expect(commandsForPath("index.html")).toEqual([
+      { extension: ".html", label: "Chrome", prefix: "", command: "chrome {file}" },
+    ]));
+  });
+
+  it("登録コマンドを歯車から編集し、×から削除できる", async () => {
+    addRegisteredCommand({ extension: ".html", label: "Chrome", prefix: "", command: "chrome {file}" });
+    const { actions, dropdown } = fixture();
+    actions.showContextMenu(0, 0, { relPath: "index.html", isDir: false });
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "登録コマンド ▸")!.click();
+
+    vi.mocked(promptFields).mockResolvedValueOnce(["Chrome Dev", "cmd.exe /D /C", "chrome --incognito {file}"]);
+    dropdown.querySelectorAll<HTMLButtonElement>(".dd-submenu .dd-trailing")[0].click();
+    await vi.waitFor(() => expect(commandsForPath("index.html")).toEqual([
+      { extension: ".html", label: "Chrome Dev", prefix: "cmd.exe /D /C", command: "chrome --incognito {file}" },
+    ]));
+
+    actions.showContextMenu(0, 0, { relPath: "index.html", isDir: false });
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "登録コマンド ▸")!.click();
+    dropdown.querySelectorAll<HTMLButtonElement>(".dd-submenu .dd-trailing")[1].click();
+    expect(commandsForPath("index.html")).toEqual([]);
   });
 
   it("ファイルのExplorerメニューはその絶対パスを渡す", async () => {

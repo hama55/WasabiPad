@@ -14,9 +14,17 @@ export interface Settings {
   fontSize: number;
   startupPath: string | null;
   registeredStrings: string[];
+  registeredCommands: RegisteredCommand[];
   // null は「未設定」。既定値は ui/workspace-search-options.ts だけが持つ
   workspaceSearchOptions: WorkspaceSearchOptions | null;
   openTabs: StoredTabs;
+}
+
+export interface RegisteredCommand {
+  extension: string;
+  label: string;
+  prefix: string;
+  command: string;
 }
 
 const DEFAULTS: Settings = {
@@ -25,6 +33,7 @@ const DEFAULTS: Settings = {
   fontSize: DEFAULT_EDITOR_CONFIG.fontSize,
   startupPath: null,
   registeredStrings: [],
+  registeredCommands: [],
   workspaceSearchOptions: null,
   openTabs: { tabs: [], activeId: null },
 };
@@ -56,12 +65,32 @@ export function parseSettings(text: string): Settings {
     registeredStrings: Array.isArray(value.registeredStrings)
       ? value.registeredStrings.filter((item): item is string => typeof item === "string" && item.length > 0)
       : [],
+    registeredCommands: Array.isArray(value.registeredCommands)
+      ? value.registeredCommands
+        .filter(isRegisteredCommand)
+        .map((item) => ({
+          extension: item.extension.trim().toLowerCase(),
+          label: item.label.trim(),
+          prefix: typeof item.prefix === "string" ? item.prefix.trim() : "",
+          command: item.command.trim(),
+        }))
+      : [],
     workspaceSearchOptions:
       typeof value.workspaceSearchOptions === "object" && value.workspaceSearchOptions !== null
         ? value.workspaceSearchOptions
         : null,
     openTabs: isStoredTabs(value.openTabs) ? value.openTabs : DEFAULTS.openTabs,
   };
+}
+
+function isRegisteredCommand(value: unknown): value is RegisteredCommand {
+  if (typeof value !== "object" || value === null) return false;
+  const command = value as Partial<RegisteredCommand>;
+  return typeof command.extension === "string"
+    && typeof command.label === "string"
+    && command.label.trim().length > 0
+    && typeof command.command === "string"
+    && command.command.trim().length > 0;
 }
 
 export async function initSettings(): Promise<void> {

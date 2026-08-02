@@ -118,6 +118,8 @@ export const revealInExplorer = (path: string, isDir: boolean) =>
 
 export const openInOtherApp = (path: string) =>
   invoke<void>(IPC_COMMANDS.openInOtherApp, { path });
+export const runExternalCommand = (command: string, path: string) =>
+  invoke<void>(IPC_COMMANDS.runExternalCommand, { command, path });
 
 // 範囲[start,end)を削除して text を挿入する統一プリミティブ
 // Tauri は Rust の snake_case 引数名を camelCase に変換して受け取るため、

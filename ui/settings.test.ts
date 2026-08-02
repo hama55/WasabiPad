@@ -29,6 +29,19 @@ describe("settings", () => {
     expect(settings.registeredStrings).toEqual(["ok"]);
   });
 
+  it("登録コマンドは有効な文字列項目だけ復元する", () => {
+    const settings = parseSettings(JSON.stringify({
+      registeredCommands: [
+        { extension: ".HTML", label: " Chrome ", command: " C:\\chrome.exe {file} " },
+        { extension: ".txt", label: "", prefix: "ignored", command: "ignored" },
+        { extension: ".md", label: "Markdown", prefix: "", command: 42 },
+      ],
+    }));
+    expect(settings.registeredCommands).toEqual([
+      { extension: ".html", label: "Chrome", prefix: "", command: "C:\\chrome.exe {file}" },
+    ]);
+  });
+
   it("インデント幅はUIと同じ候補だけ復元する", () => {
     expect(parseSettings(JSON.stringify({ indentSize: 4 })).indentSize).toBe(4);
     expect(parseSettings(JSON.stringify({ indentSize: 3 })).indentSize).toBe(8);

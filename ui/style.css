@@ -466,7 +466,8 @@ body {
 .dd-menu .dd-item.fav-drop-after { box-shadow: inset 0 -2px var(--accent); }
 .dd-menu .dd-key { color: var(--fg-dim); }
 .dd-menu .dd-item:hover .dd-key { color: #ffffffaa; }
-.dd-menu .dd-trailing { margin: -3px -7px -3px auto; width: 22px; border: 0; border-radius: 3px; background: none; color: var(--fg-dim); font: inherit; font-size: 16px; line-height: 20px; }
+.dd-menu .dd-trailing-actions { display: flex; gap: 2px; margin: -3px -7px -3px auto; }
+.dd-menu .dd-trailing { margin: 0; width: 22px; border: 0; border-radius: 3px; background: none; color: var(--fg-dim); font: inherit; font-size: 16px; line-height: 20px; }
 .dd-menu .dd-trailing:hover { background: color-mix(in srgb, currentColor 16%, transparent); color: inherit; }
 .dd-menu .dd-sep { height: 1px; background: var(--border-strong); margin: 4px 6px; }
 

@@ -196,6 +196,11 @@ fn open_in_other_app(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn run_external_command(command: String, path: String) -> Result<(), String> {
+    system::run_external_command(command, path)
+}
+
+#[tauri::command]
 fn edit(
     start: PosC,
     end: PosC,
@@ -469,6 +474,7 @@ fn main() {
             read_archive_asset,
             reveal_in_explorer,
             open_in_other_app,
+            run_external_command,
             edit,
             edit_many,
             undo,

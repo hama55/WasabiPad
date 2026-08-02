@@ -21,6 +21,17 @@
 .pf-row input:focus, .pf-row select:focus { border-color: var(--bg-status); }
 .pf-row input[aria-invalid="true"] { border-color: #f48771; }
 .pf-error { min-height: 15px; color: #f48771; font-size: 11px; }
+.pf-preview-row { display: flex; flex-direction: column; gap: 3px; margin-top: 2px; }
+.pf-preview-row label { font-size: 12px; color: var(--fg-dim); }
+.pf-preview-value {
+  background: var(--bg-editor); color: var(--fg-dim); border: 1px solid var(--border);
+  border-radius: 4px; padding: 5px 8px; width: 100%; box-sizing: border-box;
+  min-height: 42px; resize: vertical; font-size: 12px; font-family: monospace;
+  white-space: pre-wrap; overflow-wrap: anywhere; outline: none;
+}
+.pf-preview-value:focus {
+  border-color: var(--bg-status);
+}
 .pf-btns { display: flex; justify-content: flex-end; gap: 6px; margin-top: 12px; }
 .pf-btns button {
   background: var(--bg-editor); border: 1px solid var(--border-strong); border-radius: 4px;

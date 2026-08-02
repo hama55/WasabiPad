@@ -1,6 +1,13 @@
 // 入力・確認のモーダル。重ね方は ui/modal.ts が持ち、ここは中身と返す値だけを決める。
 import { openModal } from "./modal";
 
+export interface PromptFieldsOptions {
+  preview?: {
+    label: string;
+    render: (values: string[]) => string;
+  };
+}
+
 export function promptFields(
   title: string,
   fields: {
@@ -9,7 +16,8 @@ export function promptFields(
     type?: "password";
     options?: { label: string; value: string }[];
     validate?: (value: string, values: string[]) => string | null;
-  }[]
+  }[],
+  options: PromptFieldsOptions = {},
 ): Promise<string[] | null> {
   return new Promise((resolve) => {
     const { box, close } = openModal({
@@ -52,6 +60,22 @@ export function promptFields(
       return input;
     });
 
+    const preview = options.preview;
+    let previewValue: HTMLTextAreaElement | null = null;
+    if (preview) {
+      const row = document.createElement("div");
+      row.className = "pf-preview-row";
+      const label = document.createElement("label");
+      label.textContent = preview.label;
+      previewValue = document.createElement("textarea");
+      previewValue.className = "pf-preview-value";
+      previewValue.readOnly = true;
+      previewValue.rows = 2;
+      previewValue.wrap = "soft";
+      row.append(label, previewValue);
+      box.appendChild(row);
+    }
+
     const btns = document.createElement("div");
     btns.className = "pf-btns";
     const cancelBtn = document.createElement("button");
@@ -69,6 +93,7 @@ export function promptFields(
     };
     const validate = () => {
       const values = inputs.map((input) => input.value);
+      if (previewValue && preview) previewValue.value = preview.render(values);
       let valid = true;
       fields.forEach((field, index) => {
         const message = field.validate?.(values[index], values) ?? null;

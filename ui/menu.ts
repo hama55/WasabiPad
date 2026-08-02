@@ -1,11 +1,12 @@
 // 共有ドロップダウンメニュー (タイトルバーのメニュー・お気に入りグループ・右クリックで使用)
 type MenuAction = (event?: MouseEvent) => void | Promise<unknown>;
+type MenuTrailingAction = { label: string; title: string; action: () => void | Promise<unknown> };
 
 interface MenuItemBase {
   label: string;
   iconClass?: string;
   key?: string; // ショートカット表示
-  trailing?: { label: string; title: string; action: () => void | Promise<unknown> };
+  trailing?: MenuTrailingAction | MenuTrailingAction[];
   sep?: boolean; // trueならこの項目の前に区切り線
   favPath?: string; // お気に入りツリー上の位置。並べ替えD&Dの掴み手/落とし先になる
   onContextMenu?: (x: number, y: number) => void;
@@ -94,19 +95,26 @@ function renderItems(state: MenuState, el: HTMLElement, items: MenuItem[]) {
       k.textContent = item.key;
       div.appendChild(k);
     }
-    const trailingAction = item.trailing;
-    if (trailingAction) {
-      const trailing = document.createElement("button");
-      trailing.className = "dd-trailing";
-      trailing.textContent = trailingAction.label;
-      trailing.title = trailingAction.title;
-      trailing.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        hideMenu();
-        invokeMenuCallback(trailingAction.action);
-      });
-      div.appendChild(trailing);
+    const trailingActions = item.trailing
+      ? Array.isArray(item.trailing) ? item.trailing : [item.trailing]
+      : [];
+    if (trailingActions.length) {
+      const trailingGroup = document.createElement("span");
+      trailingGroup.className = "dd-trailing-actions";
+      for (const trailingAction of trailingActions) {
+        const trailing = document.createElement("button");
+        trailing.className = "dd-trailing";
+        trailing.textContent = trailingAction.label;
+        trailing.title = trailingAction.title;
+        trailing.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          hideMenu();
+          invokeMenuCallback(trailingAction.action);
+        });
+        trailingGroup.appendChild(trailing);
+      }
+      div.appendChild(trailingGroup);
     }
     div.addEventListener("click", (e) => {
       e.stopPropagation();
