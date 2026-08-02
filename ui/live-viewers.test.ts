@@ -101,4 +101,25 @@ describe("LiveViewers", () => {
     expect(updateViewer).toHaveBeenCalledOnce();
     vi.useRealTimers();
   });
+
+  it("予期しない更新失敗も未処理Promiseにせずエラー通知へ渡す", async () => {
+    vi.useFakeTimers();
+    const onError = vi.fn(async () => {});
+    const viewers = new LiveViewers({
+      openViewer: async () => "viewer-1",
+      updateViewer: async () => true,
+      wholeRange: async () => ({ start: { line: 0, col: 0 }, end: { line: 0, col: 0 } }),
+      textInRange: async () => "text",
+      onError,
+    });
+    await viewers.open("csv", null, { start: { line: 0, col: 0 }, end: { line: 0, col: 0 } });
+    vi.spyOn(viewers as unknown as { refresh: () => Promise<void> }, "refresh")
+      .mockRejectedValueOnce(new Error("unexpected"));
+
+    viewers.scheduleRefresh();
+    await vi.advanceTimersByTimeAsync(120);
+
+    expect(onError).toHaveBeenCalledWith(expect.any(Error));
+    vi.useRealTimers();
+  });
 });

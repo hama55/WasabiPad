@@ -40,6 +40,7 @@ import {
   setSetting,
 } from "./settings";
 import { THEME_STORAGE_KEY } from "./theme";
+import { searchResultGoto } from "./search-results";
 
 const win = getCurrentWindow();
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -286,14 +287,12 @@ const sidebar = new Sidebar(sidebarEl, {
     if (!isPasswordCancelled(error)) await showError("フォルダを展開できませんでした", error);
   },
   onSearch: (pat, options, searchId) => api.workspaceSearch(pat, options, searchId),
-  onCancel: () => api.workspaceSearchCancel(),
+  onCancel: (searchId) => api.workspaceSearchCancel(searchId),
   onError: (error) => showError("フォルダを検索できませんでした", error),
   onOptionsChange: saveSearchOptions,
   onOpen: async (result, newTab) => {
     if (newTab) {
-      // ファイル名一致の line/col は本文の位置ではない (どちらも 0) ので飛ばさない
-      const goto = result.is_filename ? undefined : { line: result.line, col: result.col };
-      await openInNewTab(result.rel_path, goto);
+      await openInNewTab(result.rel_path, searchResultGoto(result));
       return;
     }
     if (!(await doc.confirmDiscard())) return;

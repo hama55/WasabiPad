@@ -232,6 +232,128 @@ describe("VirtualEditor", () => {
     expect(events.cursor).toEqual([2, 3]);
   });
 
+  it("goTo も対象行をメモビューの中央へ置く", async () => {
+    const { editor, host } = mount(Array.from({ length: 40 }, (_, i) => `line ${i}`).join("\n"));
+    const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
+    Object.defineProperty(scroll, "clientHeight", { configurable: true, value: 100 });
+    editor.open(40, false);
+
+    editor.goTo(20, 0);
+
+    expect(editor.captureViewState().topLine).toBe(18);
+    expect(scroll.scrollTop).toBe(360);
+  });
+
+  it("検索結果の範囲選択は対象行をメモビューの中央へ置く", async () => {
+    const { editor, host } = mount(Array.from({ length: 40 }, (_, i) => `line ${i}`).join("\n"));
+    const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
+    Object.defineProperty(scroll, "clientHeight", { configurable: true, value: 100 });
+    editor.open(40, false);
+
+    await editor.selectRange(20, 0, 4);
+
+    expect(editor.captureViewState().topLine).toBe(18);
+    expect(scroll.scrollTop).toBe(360);
+  });
+
+  it.each([
+    ["次へ", true],
+    ["前へ", false],
+  ])("本文検索の%s結果は対象行をメモビューの中央へ置く", async (_label, forward) => {
+    const { editor, doc, host } = mount(Array.from({ length: 40 }, (_, i) => `line ${i}`).join("\n"));
+    const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
+    Object.defineProperty(scroll, "clientHeight", { configurable: true, value: 100 });
+    editor.open(40, false);
+    await settle();
+
+    const result = { start: { line: 20, col: 0 }, end: { line: 20, col: 7 } };
+    if (forward) doc.client.findStep = async () => ({ kind: "Found", ...result });
+    else doc.client.find = async () => result;
+
+    editor.openSearch();
+    const findIn = host.querySelector<HTMLInputElement>(".ve-find-in")!;
+    findIn.value = "line 20";
+    findIn.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "Enter",
+      shiftKey: !forward,
+      bubbles: true,
+    }));
+    await settle();
+
+    expect(editor.captureViewState().topLine).toBe(18);
+    expect(scroll.scrollTop).toBe(360);
+  });
+
+  it("文書切替中に保留された本文検索結果を新しい文書へ適用しない", async () => {
+    const { editor, doc, host } = mount(Array.from({ length: 40 }, (_, i) => `old ${i}`).join("\n"));
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    doc.client.findStep = async () => {
+      await blocked;
+      return { kind: "Found", start: { line: 20, col: 0 }, end: { line: 20, col: 5 } };
+    };
+    const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
+    Object.defineProperty(scroll, "clientHeight", { configurable: true, value: 100 });
+    editor.open(40, false);
+    editor.openSearch();
+    const findIn = host.querySelector<HTMLInputElement>(".ve-find-in")!;
+    findIn.value = "old 20";
+    findIn.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await settle(1);
+    editor.open(1, false);
+    release();
+
+    await settle();
+
+    expect(editor.captureViewState().caret).toEqual({ line: 0, col: 0 });
+    expect(editor.captureViewState().topLine).toBe(0);
+  });
+
+  it("本文検索に失敗した後、連続置換が直前の一致を再利用しない", async () => {
+    const { editor, doc, host } = mount("needle");
+    let failed = false;
+    doc.client.findStep = async () => {
+      if (failed) throw new Error("find failed");
+      return { kind: "Found", start: { line: 0, col: 0 }, end: { line: 0, col: 6 } };
+    };
+    editor.open(1, false);
+    await settle();
+
+    editor.openSearch();
+    const findIn = host.querySelector<HTMLInputElement>(".ve-find-in")!;
+    findIn.value = "needle";
+    findIn.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await settle();
+
+    failed = true;
+    findIn.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await settle();
+    host.querySelector<HTMLInputElement>(".ve-rep-in")!.value = "changed";
+    host.querySelector<HTMLButtonElement>(".ve-rep-next")!.click();
+    await settle();
+
+    expect(doc.calls.filter((call) => call.startsWith("edit(")).length).toBe(0);
+  });
+
+  it("文書切替中に保留された古い検索結果を新しい文書へ適用しない", async () => {
+    const { editor, doc } = mount(Array.from({ length: 40 }, (_, i) => `old ${i}`).join("\n"));
+    const originalLines = doc.client.lines;
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    doc.client.lines = async (...args) => {
+      await blocked;
+      return originalLines(...args);
+    };
+
+    editor.open(40, false);
+    const selecting = editor.selectRange(20, 0, 3);
+    editor.open(1, false);
+    release();
+    await selecting;
+
+    expect(editor.captureViewState().caret).toEqual({ line: 0, col: 0 });
+  });
+
   it("スクロール直後のIME入力位置を表示領域内へ維持する", async () => {
     const { editor, host, input } = mount(Array.from({ length: 40 }, (_, i) => `line ${i}`).join("\n"));
     editor.open(40, false);

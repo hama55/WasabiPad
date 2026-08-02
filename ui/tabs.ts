@@ -118,8 +118,29 @@ export class TabManager {
   async open(path: string, goto?: Pos) {
     const existing = this.tabs.find((tab) => tab.path?.toLocaleLowerCase("en-US") === path.toLocaleLowerCase("en-US"));
     if (existing) {
-      existing.goto = goto;
-      await this.activate(existing.id);
+      if (goto) existing.goto = goto;
+      else delete existing.goto;
+      const wasActive = existing.id === this.activeId;
+      let activated: boolean;
+      try {
+        activated = await this.activate(existing.id);
+      } catch (error) {
+        delete existing.goto;
+        throw error;
+      }
+      if (!activated) {
+        delete existing.goto;
+        return;
+      }
+      // activate() は既にactiveなtabでは即時終了するため、その経路だけは
+      // loadActive()に任せず、要求した飛び先をここで消費する。
+      if (wasActive && this.activeId === existing.id && goto) {
+        try {
+          this.doc.goTo(goto);
+        } finally {
+          delete existing.goto;
+        }
+      }
       return;
     }
     await this.addAndActivate(this.link(path, goto));

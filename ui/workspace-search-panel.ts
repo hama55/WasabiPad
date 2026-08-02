@@ -1,6 +1,6 @@
 import type { WorkspaceSearchOptions, WorkspaceSearchOutcome, WorkspaceSearchResult } from "./api";
 import type { ContextTarget } from "./sidebar";
-import { groupResults, highlightedPreview, sortResults, type ResultGroup } from "./search-results";
+import { groupResults, highlightedPreview, searchResultGoto, sortResults, type ResultGroup } from "./search-results";
 import { openSearchSettings } from "./search-settings-dialog";
 import {
   clampSearchOptions,
@@ -20,7 +20,7 @@ export interface WorkspaceSearchPorts {
     options: WorkspaceSearchOptions,
     searchId: number
   ) => Promise<WorkspaceSearchOutcome>;
-  onCancel: () => void | Promise<void>;
+  onCancel: (searchId: number) => void | Promise<void>;
   onError: (error: unknown) => Promise<void>;
   // 一致の範囲は result.highlights が持つ。パターンを渡さないのは、
   // 正規表現や大小の畳み込みで「当たった長さ」がパターンの長さと一致しないため。
@@ -72,6 +72,7 @@ export class WorkspaceSearchPanel {
   private searchGen = 0;
   private searchTimer: number | undefined;
   private running: Promise<WorkspaceSearchOutcome> | null = null; // 走行中の検索
+  private runningSearchId: number | null = null;
   private ports: WorkspaceSearchPorts;
 
   constructor(options: WorkspaceSearchOptions, ports: WorkspaceSearchPorts) {
@@ -235,8 +236,10 @@ export class WorkspaceSearchPanel {
   }
 
   private cancelRunningSearch() {
+    const searchId = this.runningSearchId;
+    if (searchId === null) return;
     try {
-      void Promise.resolve(this.ports.onCancel()).catch((error) => {
+      void Promise.resolve(this.ports.onCancel(searchId)).catch((error) => {
         console.error("検索の中止に失敗しました", error);
       });
     } catch (error) {
@@ -290,16 +293,15 @@ export class WorkspaceSearchPanel {
     return this.state.collapsed.has(relPath) !== this.state.collapseByDefault;
   }
 
-  // 検索は同時に1本だけ。走っているものが畳まれるのを待ってから始める。
-  // 要求を捨てて「終わったら再キュー」に頼ると、中止が間に合わなかったぶんだけ
-  // 引き直しが遅れる (条件を変えたのに古い結果を見せられる時間ができる)。
+  // 新しい検索を開始すると backend 側が前の走査をキャンセルする。
+  // 古い Promise の完了を待つと、キャンセル失敗時に新しい条件まで永久に待たされる。
   private async run(gen: number, pat: string, options: WorkspaceSearchOptions) {
-    while (this.running) await this.running.catch(() => {});
     if (gen !== this.searchGen) return; // 待っている間にまた条件が変わった
     let run: Promise<WorkspaceSearchOutcome> | null = null;
     try {
       run = this.ports.onSearch(pat, options, gen);
       this.running = run;
+      this.runningSearchId = gen;
       const outcome = await run;
       if (gen === this.searchGen) this.setOutcome(outcome);
     } catch (error) {
@@ -311,7 +313,10 @@ export class WorkspaceSearchPanel {
         console.error("検索エラーを表示できませんでした", reportError);
       }
     } finally {
-      if (this.running === run) this.running = null;
+      if (this.running === run) {
+        this.running = null;
+        this.runningSearchId = null;
+      }
     }
   }
 
@@ -471,8 +476,7 @@ export class WorkspaceSearchPanel {
       this.ports.onContextMenu(e.clientX, e.clientY, {
         relPath: match.rel_path,
         isDir: false,
-        // ファイル名一致の line/col は本文の位置ではない (どちらも 0)。飛び先を持たせない
-        goto: match.is_filename ? undefined : { line: match.line, col: match.col },
+        goto: searchResultGoto(match),
       });
     });
   }

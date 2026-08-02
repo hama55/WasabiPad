@@ -212,6 +212,7 @@ export class DocumentController {
         // 本文の読込は成功しているため、一覧の再展開失敗で選択を取り消さない。
         await this.reportError("一覧の選択状態を更新できませんでした", error);
       }
+      if (request !== this.loadRequest) return false;
       return true;
     } catch (error) {
       if (request === this.loadRequest && !this.services.isPasswordCancelled(error)) {

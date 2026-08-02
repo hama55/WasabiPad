@@ -69,11 +69,22 @@ export class LiveViewers {
     const generation = this.generation;
     this.timer = window.setTimeout(() => {
       this.timer = undefined;
-      void this.refresh(generation).catch(() => {
+      void this.refresh(generation).catch((error) => {
         // 個別ビューの更新失敗は refresh 内で隔離する。ここは予期しない
         // コレクション/実装エラーが未処理Promiseになるのを防ぐ境界。
+        this.reportUnexpectedRefreshError(error);
       });
     }, DEBOUNCE_MS);
+  }
+
+  private reportUnexpectedRefreshError(error: unknown) {
+    if (!this.ports.onError) {
+      console.error("プレビュー更新で予期しないエラーが発生しました", error);
+      return;
+    }
+    void Promise.resolve()
+      .then(() => this.ports.onError!(error))
+      .catch((reportError) => console.error("プレビュー更新エラーを表示できませんでした", reportError));
   }
 
   private async refresh(generation: number) {

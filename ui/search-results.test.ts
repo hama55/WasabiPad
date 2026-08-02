@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
 
-import { groupResults, highlightedPreview, sortResults } from "./search-results";
+import { groupResults, highlightedPreview, searchResultGoto, sortResults } from "./search-results";
 import type { WorkspaceSearchResult } from "./api";
 
 const hit = (
@@ -42,6 +42,13 @@ describe("groupResults", () => {
   it("パスが飛び飛びなら別の見出しにする (backend の並び順を信用しない)", () => {
     const groups = groupResults([hit("a.txt", 0), hit("b.txt", 0), hit("a.txt", 5)]);
     expect(groups.map((group) => group.relPath)).toEqual(["a.txt", "b.txt", "a.txt"]);
+  });
+});
+
+describe("searchResultGoto", () => {
+  it("本文一致だけを本文位置へ変換し、ファイル名一致は飛ばさない", () => {
+    expect(searchResultGoto(hit("memo.md", 4))).toEqual({ line: 4, col: 0 });
+    expect(searchResultGoto(hit("memo.md", 0, true))).toBeUndefined();
   });
 });
 

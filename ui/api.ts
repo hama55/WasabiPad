@@ -94,7 +94,8 @@ export const onWorkspaceSearchBatch = (handler: (batch: WorkspaceSearchBatch) =>
   listen<WorkspaceSearchBatch>(EVENT_NAMES.workspaceSearchBatch, (event) => handler(event.payload));
 
 // 進行中の検索を打ち切る (無制限指定で走り出した検索から抜ける手段)
-export const workspaceSearchCancel = () => invoke<void>(IPC_COMMANDS.workspaceSearchCancel);
+export const workspaceSearchCancel = (searchId: number) =>
+  invoke<void>(IPC_COMMANDS.workspaceSearchCancel, { searchId });
 
 // フォルダ内に空の新規ファイルを作り、その場で開く (dir はフォルダルートからの相対パス)
 export const createNote = (dir: string | null, name: string) =>

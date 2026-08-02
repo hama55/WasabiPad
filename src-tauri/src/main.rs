@@ -15,7 +15,7 @@ use instance::{
 };
 use state::{DocState, State};
 use std::collections::HashMap;
-use std::sync::{atomic::AtomicBool, Arc, Mutex};
+use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
 use viewer::ViewerStore;
 use wasabipad_core::{
@@ -155,8 +155,11 @@ async fn workspace_search(
 }
 
 #[tauri::command]
-fn workspace_search_cancel(cancel: tauri::State<'_, search::SearchCancel>) -> Result<(), String> {
-    search::workspace_search_cancel(cancel)
+fn workspace_search_cancel(
+    search_id: u32,
+    cancel: tauri::State<'_, search::SearchCancel>,
+) -> Result<(), String> {
+    search::workspace_search_cancel(search_id, cancel)
 }
 
 #[tauri::command]
@@ -446,9 +449,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(Mutex::new(DocState(Doc::empty())))
         .manage(ViewerStore(Mutex::new(HashMap::new())))
-        .manage(search::SearchCancel(Mutex::new(Arc::new(AtomicBool::new(
-            false,
-        )))))
+        .manage(search::SearchCancel(Mutex::new(None)))
         .manage(instance_server)
         .setup(|app| {
             app.state::<InstanceServer>().start(app.handle());

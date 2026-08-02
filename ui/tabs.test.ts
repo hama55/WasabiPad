@@ -149,6 +149,41 @@ describe("TabManager", () => {
     expect(manager.state.activeId).toBe("b");
   });
 
+  it("active tabを検索結果の飛び先付きで開いたら、その場で位置を適用する", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init(stored, null, null);
+
+    await manager.open("C:\\work\\a.txt", { line: 8, col: 3 });
+
+    expect(doc.goTo).toHaveBeenCalledWith({ line: 8, col: 3 });
+    expect(manager.state.tabs[0].goto).toBeUndefined();
+  });
+
+  it("active tabの飛び先適用に失敗しても、消費済みの要求を残さない", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init(stored, null, null);
+    vi.mocked(doc.goTo).mockImplementationOnce(() => { throw new Error("invalid position"); });
+
+    await expect(manager.open("C:\\work\\a.txt", { line: 8, col: 3 })).rejects.toThrow("invalid position");
+
+    expect(manager.state.tabs[0].goto).toBeUndefined();
+  });
+
+  it("未保存確認で既存tabへの移動を取り消したら飛び先を残さない", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init(stored, null, null);
+    vi.mocked(doc.confirmDiscard).mockResolvedValue(false);
+
+    await manager.open("C:\\work\\b.txt", { line: 8, col: 3 });
+
+    vi.mocked(doc.confirmDiscard).mockResolvedValue(true);
+    await manager.activate("b");
+    expect(doc.goTo).not.toHaveBeenCalledWith({ line: 8, col: 3 });
+  });
+
   it("移動先の読込失敗時は元active tabへ戻し、壊れた状態を保存しない", async () => {
     const { doc, host } = fixture();
     const changes: StoredTabs[] = [];

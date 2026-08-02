@@ -68,6 +68,7 @@ export class VirtualEditor {
   private findBar: FindBar;
 
   private lineCount = 1;
+  private documentGeneration = 0;
   private readOnly = false;
   private metrics: ViewportMetrics;
   private lineCache: LineCache;
@@ -86,6 +87,7 @@ export class VirtualEditor {
   private wrapHeights = new WrapHeightMap(1, 1);
   private wrapMeasureWidth = -1;
   private localRowTops = new Map<number, number>();
+  private pendingCenterLine: number | null = null;
   private viewTop = 0; // 直近 render() 時点の scroll.scrollTop
   private viewTopLine = 0; // 直近 render() 時点で viewTop に対応する行番号
   // scaleMode 専用: 現在の仮想的な先頭行 (小数)。scrollTop からの逆算に頼らない権威値。
@@ -257,6 +259,7 @@ export class VirtualEditor {
       const nextTopLine = wasAtBottom ? this.maxTopLine() : topLine;
       if (this.wrap) this.setWrapAnchor(nextTopLine, nextTopLine === topLine ? intraLinePx : 0);
       else this.setTopLine(nextTopLine);
+      if (this.pendingCenterLine !== null) this.centerLine(this.pendingCenterLine);
       this.syncImeAnchorAfterLayout();
       this.schedule();
     }).observe(this.scroll);
@@ -265,6 +268,9 @@ export class VirtualEditor {
   // ---- 文書ロード ----
   // keepViewers: 同じファイルを読み直しただけの場合。開いているビューを閉じずに新内容へ差し替える
   open(lineCount: number, readOnly: boolean, keepViewers = false) {
+    this.documentGeneration++;
+    this.findGen++;
+    this.lastFindMatch = null;
     if (keepViewers) this.liveViewers.scheduleRefresh();
     else this.liveViewers.clear();
     this.lineCount = Math.max(1, lineCount);
@@ -274,6 +280,7 @@ export class VirtualEditor {
     this.lineCache.clear();
     
     this.maxWidth = 0;
+    this.pendingCenterLine = null;
     this.sel.reset();
     this.secondaryCaretEls.forEach((caret) => caret.remove());
     this.secondaryCaretEls = [];
@@ -355,18 +362,20 @@ export class VirtualEditor {
   goTo(line: number, col: number) {
     const pos = { line: Math.max(0, Math.min(this.lineCount - 1, line)), col: Math.max(0, col) };
     this.moveTo(pos, false);
+    this.centerLine(pos.line);
+    this.render();
     this.focus();
   }
 
   async selectRange(line: number, startCol: number, endCol: number) {
     const targetLine = Math.max(0, Math.min(this.lineCount - 1, line));
+    const generation = this.documentGeneration;
     await this.lineCache.line(targetLine);
-    this.sel.anchor = { line: targetLine, col: Math.max(0, startCol) };
-    this.moveTo({ line: targetLine, col: Math.max(startCol, endCol) }, true);
-    // 文書切替直後は初回moveTo時に対象行DOMがまだ無い。実本文の描画後に
-    // 再配置し、フォルダ検索結果も縦横とも表示領域内へ入れる。
-    this.ensureVisible();
-    this.render();
+    if (generation !== this.documentGeneration) return;
+    this.selectAndCenter(
+      { line: targetLine, col: Math.max(0, startCol) },
+      { line: targetLine, col: Math.max(startCol, endCol) },
+    );
     this.focus();
   }
 
@@ -453,6 +462,36 @@ export class VirtualEditor {
     this.scroll.scrollTop = this.wrap
       ? this.wrapAnchorToPx(this.topLineF, 0)
       : this.lineToPx(this.topLineF);
+  }
+
+  private centerLine(line: number) {
+    const viewportHeight = this.scroll.clientHeight;
+    if (viewportHeight <= 0) {
+      this.pendingCenterLine = line;
+      return;
+    }
+    this.pendingCenterLine = null;
+    if (this.wrap) {
+      const targetHeight = this.wrappedLineHeight(line);
+      const maxOffset = Math.max(0, this.wrapHeights.totalHeight() - viewportHeight);
+      const targetOffset = this.wrapHeights.offsetOf(line) - (viewportHeight - targetHeight) / 2;
+      const offset = Math.max(0, Math.min(maxOffset, targetOffset));
+      const anchor = this.wrapHeights.anchorAt(offset);
+      this.setWrapAnchor(anchor.line, anchor.intraLinePx);
+      return;
+    }
+    const visibleRows = Math.max(1, viewportHeight / this.metrics.lineHeight);
+    this.setTopLine(line - (visibleRows - 1) / 2);
+  }
+
+  private selectAndCenter(start: Pos, end: Pos) {
+    this.sel.anchor = start;
+    this.moveTo(end, true);
+    // moveTo() の描画後に横方向の可視性を確定し、行高を反映した中央配置を
+    // 最後に行う。フォルダ検索と本文検索の結果を同じ規則へ通す。
+    this.ensureVisible();
+    this.centerLine(start.line);
+    this.render();
   }
 
   private setWrapAnchor(line: number, intraLinePx: number) {
@@ -1829,15 +1868,16 @@ export class VirtualEditor {
   private static readonly REPLACE_WARN_THRESHOLD = 5_000;
 
   private async doFind(pat: string, forward: boolean, matchCase: boolean): Promise<boolean> {
+    const myGen = ++this.findGen;
+    this.lastFindMatch = null;
     const p = unescapePattern(pat);
     if (!p) return false;
-    const myGen = ++this.findGen;
     const from = forward ? this.sel.norm()[1] : this.sel.norm()[0];
     if (!forward) {
       const r = await this.doc.find(p, from, false, matchCase);
-      if (myGen !== this.findGen || !r) { this.lastFindMatch = null; return false; }
-      this.sel.anchor = r.start;
-      this.moveTo(r.end, true);
+      if (myGen !== this.findGen) return false;
+      if (!r) { this.lastFindMatch = null; return false; }
+      this.selectAndCenter(r.start, r.end);
       this.lastFindMatch = { start: r.start, end: r.end, pat: p, matchCase };
       return true;
     }
@@ -1847,8 +1887,7 @@ export class VirtualEditor {
       if (myGen !== this.findGen) return false; // 検索バーが閉じられた/新しい検索が始まった
       if (outcome.kind === "Found") {
         this.findBar.setProgress("");
-        this.sel.anchor = outcome.start;
-        this.moveTo(outcome.end, true);
+        this.selectAndCenter(outcome.start, outcome.end);
         this.lastFindMatch = { start: outcome.start, end: outcome.end, pat: p, matchCase };
         return true;
       }
