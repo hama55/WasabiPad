@@ -534,6 +534,9 @@ tabs = new TabManager($("tabs"), doc, {
   },
   onError: (error) => reportBackgroundError("タブを操作できませんでした", error),
   onDetach: (request) => launchNewWindow(request),
+}, {
+  promptFields,
+  runExternalCommand: api.runExternalCommand,
 });
 const storedTabs = secondaryInstance ? { tabs: [], activeId: null } : getSetting("openTabs");
 try {

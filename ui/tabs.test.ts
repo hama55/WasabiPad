@@ -3,6 +3,20 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "./api";
 import { TabManager, type StoredTabs, type TabDocumentPort } from "./tabs";
 import { initialSession } from "./session";
+import { initSettings } from "./settings";
+import { commandsForPath } from "./registered-commands";
+import type { RegisteredCommandMenuPorts } from "./registered-command-menu";
+
+vi.mock("./api", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./api")>(),
+  loadSettings: vi.fn(async () => "{}"),
+  updateSetting: vi.fn(async () => {}),
+}));
+
+const registeredCommandPorts = {
+  promptFields: vi.fn(async () => null as string[] | null),
+  runExternalCommand: vi.fn(async () => {}),
+} satisfies RegisteredCommandMenuPorts;
 
 function fixture() {
   const session = initialSession();
@@ -57,11 +71,17 @@ function dragOnto(from: HTMLElement, to: HTMLElement, ratio: number) {
 }
 
 describe("TabManager", () => {
-  beforeEach(() => document.body.replaceChildren(document.createElement("div")));
+  beforeEach(async () => {
+    document.body.replaceChildren(document.createElement("div"));
+    await initSettings();
+    registeredCommandPorts.promptFields.mockReset();
+    registeredCommandPorts.promptFields.mockResolvedValue(null);
+    registeredCommandPorts.runExternalCommand.mockReset();
+  });
 
   it("起動時はactive tabのリンクだけを開く", async () => {
     const { doc, host } = fixture();
-    const manager = new TabManager(host, doc, { onChange: () => {} });
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
     await manager.init(stored, null, null);
 
     expect(doc.openPath).toHaveBeenCalledTimes(1);
@@ -87,7 +107,7 @@ describe("TabManager", () => {
       }],
       activeId: "folder",
     };
-    const manager = new TabManager(host, doc, { onChange: () => {} });
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
 
     await manager.init(folderTabs, null, null);
 
@@ -111,7 +131,7 @@ describe("TabManager", () => {
       }],
       activeId: "folder",
     };
-    const manager = new TabManager(host, doc, { onChange: () => {} });
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
 
     await expect(manager.init(folderTabs, null, null)).resolves.toBeUndefined();
     expect(doc.openPath).toHaveBeenCalledWith("C:\\work", false);
@@ -120,7 +140,7 @@ describe("TabManager", () => {
 
   it("tab移動前に未保存確認を通し、移動先のリンクを読み込む", async () => {
     const { doc, host } = fixture();
-    const manager = new TabManager(host, doc, { onChange: () => {} });
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
     await manager.init(stored, null, null);
     await manager.activate("b");
 
@@ -132,7 +152,7 @@ describe("TabManager", () => {
   it("移動先の読込失敗時は元active tabへ戻し、壊れた状態を保存しない", async () => {
     const { doc, host } = fixture();
     const changes: StoredTabs[] = [];
-    const manager = new TabManager(host, doc, { onChange: (state) => changes.push(state) });
+    const manager = new TabManager(host, doc, { onChange: (state) => changes.push(state) }, registeredCommandPorts);
     await manager.init(stored, null, null);
     changes.length = 0;
     vi.mocked(doc.openPath).mockRejectedValueOnce(new Error("load failed"));
@@ -146,7 +166,7 @@ describe("TabManager", () => {
 
   it("tabごとに選択位置と表示位置を復元する", async () => {
     const { doc, host } = fixture();
-    const manager = new TabManager(host, doc, { onChange: () => {} });
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
     await manager.init(stored, null, null);
     await manager.activate("b");
     await manager.activate("a");
@@ -160,7 +180,7 @@ describe("TabManager", () => {
 
   it("保存完了時にtabが再描画されても要求したtabへ切り替える", async () => {
     const { doc, host } = fixture();
-    const manager = new TabManager(host, doc, { onChange: () => {} });
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
     await manager.init(stored, null, null);
     vi.mocked(doc.confirmDiscard).mockImplementation(async (onProceed) => {
       manager.syncActive(doc.current);
@@ -176,7 +196,7 @@ describe("TabManager", () => {
 
   it("確認処理がfalseかつdirtyのままなら切り替えない", async () => {
     const { doc, host } = fixture();
-    const manager = new TabManager(host, doc, { onChange: () => {} });
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
     await manager.init(stored, null, null);
     doc.current.dirty = true;
     vi.mocked(doc.confirmDiscard).mockResolvedValue(false);
@@ -188,7 +208,7 @@ describe("TabManager", () => {
 
   it("変更中のactive tabだけファイル名の先頭に印を付ける", async () => {
     const { doc, host } = fixture();
-    const manager = new TabManager(host, doc, { onChange: () => {} });
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
     await manager.init(stored, null, null);
 
     doc.current.dirty = true;
@@ -200,7 +220,7 @@ describe("TabManager", () => {
 
   it("保存処理へ渡した継続処理が、確定した移動先tabを開く", async () => {
     const { doc, host } = fixture();
-    const manager = new TabManager(host, doc, { onChange: () => {} });
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
     await manager.init(stored, null, null);
     let continuation: (() => void | Promise<void>) | undefined;
     vi.mocked(doc.confirmDiscard).mockImplementation((onProceed) => new Promise((resolve) => {
@@ -221,7 +241,7 @@ describe("TabManager", () => {
 
   it("tab列の末尾にある＋で新規tabを追加する", async () => {
     const { doc, host } = fixture();
-    const manager = new TabManager(host, doc, { onChange: () => {} });
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
     await manager.init(stored, null, null);
 
     host.querySelector<HTMLButtonElement>(".doc-tab-add")!.click();
@@ -232,7 +252,7 @@ describe("TabManager", () => {
 
   it("一括追加は重複を除き、active tabを切り替えない", async () => {
     const { doc, host } = fixture();
-    const manager = new TabManager(host, doc, { onChange: () => {} });
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
     await manager.init(stored, null, null);
     manager.addLinks([
       { path: "C:\\work\\a.txt", kind: "file" },
@@ -251,7 +271,7 @@ describe("TabManager", () => {
   it("タブをドラッグして並べ替え、直後のclickでは切り替えない", async () => {
     const { doc, host } = fixture();
     const changes: StoredTabs[] = [];
-    const manager = new TabManager(host, doc, { onChange: (state) => changes.push(state) });
+    const manager = new TabManager(host, doc, { onChange: (state) => changes.push(state) }, registeredCommandPorts);
     await manager.init(stored, null, null);
     const [a, b] = host.querySelectorAll<HTMLElement>(".doc-tab");
 
@@ -267,7 +287,7 @@ describe("TabManager", () => {
   it("ウィンドウの外へドラッグすると新規ウィンドウへ移す", async () => {
     const { doc, host } = fixture();
     const onDetach = vi.fn(async () => true);
-    const manager = new TabManager(host, doc, { onChange: () => {}, onDetach });
+    const manager = new TabManager(host, doc, { onChange: () => {}, onDetach }, registeredCommandPorts);
     await manager.init(stored, null, null);
     const a = host.querySelector<HTMLElement>(".doc-tab")!;
     document.elementFromPoint = () => null;
@@ -295,7 +315,7 @@ describe("TabManager", () => {
   it("同じウィンドウ内のタブ領域外へのdropはキャンセルする", async () => {
     const { doc, host } = fixture();
     const onDetach = vi.fn(async () => true);
-    const manager = new TabManager(host, doc, { onChange: () => {}, onDetach });
+    const manager = new TabManager(host, doc, { onChange: () => {}, onDetach }, registeredCommandPorts);
     await manager.init(stored, null, null);
     const a = host.querySelector<HTMLElement>(".doc-tab")!;
     document.elementFromPoint = () => document.body;
@@ -311,12 +331,42 @@ describe("TabManager", () => {
     expect(manager.state.tabs.map((tab) => tab.id)).toEqual(["a", "b"]);
   });
 
+  it("ファイルタブから登録し、登録コマンドを実行できる", async () => {
+    const { doc, host } = fixture();
+    document.body.appendChild(Object.assign(document.createElement("div"), { id: "dropdown" }));
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init({
+      tabs: [{ id: "file", path: "C:\\work\\memo.txt", kind: "file", label: "memo.txt" }],
+      activeId: "file",
+    }, null, null);
+
+    registeredCommandPorts.promptFields.mockResolvedValueOnce(["メモ帳", "", "notepad {file}"]);
+    const tab = host.querySelector<HTMLElement>(".doc-tab")!;
+    tab.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+    [...document.querySelectorAll<HTMLElement>("#dropdown .dd-item")]
+      .find((item) => item.textContent === "コマンドを登録...")!.click();
+
+    await vi.waitFor(() => expect(commandsForPath("C:\\work\\memo.txt")).toEqual([
+      { extension: ".txt", label: "メモ帳", prefix: "", command: "notepad {file}" },
+    ]));
+
+    tab.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+    [...document.querySelectorAll<HTMLElement>("#dropdown .dd-item")]
+      .find((item) => item.textContent === "登録コマンド ▸")!.click();
+    document.querySelector<HTMLElement>("#dropdown .dd-submenu .dd-item")!.click();
+
+    await vi.waitFor(() => expect(registeredCommandPorts.runExternalCommand).toHaveBeenCalledWith(
+      'notepad "C:\\work\\memo.txt"',
+      "C:\\work\\memo.txt",
+    ));
+  });
+
   it("ファイルとフォルダのタブをExplorerで開く", async () => {
     const reveal = vi.spyOn(api, "revealInExplorer").mockResolvedValue();
     try {
       const { doc, host } = fixture();
       document.body.appendChild(Object.assign(document.createElement("div"), { id: "dropdown" }));
-      const manager = new TabManager(host, doc, { onChange: () => {} });
+      const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
       await manager.init({
         tabs: [
           { id: "file", path: "C:\\work\\memo.txt", kind: "file", label: "memo.txt" },
@@ -330,6 +380,8 @@ describe("TabManager", () => {
       [...document.querySelectorAll<HTMLElement>("#dropdown .dd-item")]
         .find((item) => item.textContent === "エクスプローラで開く")?.click();
       tabs[1].dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+      expect([...document.querySelectorAll<HTMLElement>("#dropdown .dd-label")].map((item) => item.textContent))
+        .not.toContain("登録コマンド ▸");
       [...document.querySelectorAll<HTMLElement>("#dropdown .dd-item")]
         .find((item) => item.textContent === "エクスプローラで開く")?.click();
 

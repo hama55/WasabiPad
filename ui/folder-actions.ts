@@ -9,16 +9,7 @@ import { basename, joinWindowsRoot, rebaseWindowsPath, relativePathFromRoot } fr
 import { VIEWER_FORMAT_LABELS } from "./format";
 import { isArchiveEntryUnder } from "./archive-path";
 import { viewerFormatForPath } from "./viewer-formats";
-import {
-  addRegisteredCommand,
-  commandLineForFile,
-  commandsForPath,
-  DEFAULT_COMMAND_PREFIX,
-  extensionOf,
-  removeRegisteredCommand,
-  updateRegisteredCommand,
-  type RegisteredCommand,
-} from "./registered-commands";
+import { createRegisteredCommandMenu } from "./registered-command-menu";
 
 export interface FolderActionsPorts {
   sidebar: Pick<Sidebar, "setEntries" | "selectByRelPath" | "refreshFolderEntries">;
@@ -134,100 +125,12 @@ export class FolderActions {
   }
 
   private registeredCommandMenu(relPath: string): MenuItem {
-    const commands = commandsForPath(relPath);
-    const register = {
-      label: "コマンドを登録...",
-      action: () => this.run("コマンドを登録できませんでした", () => this.registerCommand(relPath)),
-    } satisfies MenuItem;
-    if (commands.length === 0) return register;
-    return {
-      label: "登録コマンド",
-      sub: [
-        ...commands.map((command) => ({
-          label: command.label,
-          action: () => this.run(
-            "登録コマンドを実行できませんでした",
-            () => {
-              const path = this.toAbsolute(relPath);
-              return this.services.api.runExternalCommand(commandLineForFile(command.prefix, command.command, path), path);
-            },
-          ),
-          trailing: [
-            {
-              label: "⚙",
-              title: "このコマンドを編集",
-              action: () => this.run("登録コマンドを編集できませんでした", () => this.editCommand(command, relPath)),
-            },
-            {
-              label: "×",
-              title: "このコマンドの登録を解除",
-              action: () => removeRegisteredCommand(command),
-            },
-          ],
-        })),
-        { ...register, sep: true },
-      ],
-    };
-  }
-
-  private async registerCommand(relPath: string) {
-    const extension = extensionOf(relPath);
-    const result = await this.promptCommand(
-      "コマンドを登録",
-      extension,
-      basename(relPath),
-      DEFAULT_COMMAND_PREFIX,
-      "",
-      this.toAbsolute(relPath),
-    );
-    if (!result) return;
-    addRegisteredCommand({ extension, ...result });
-  }
-
-  private async editCommand(command: RegisteredCommand, relPath: string) {
-    const result = await this.promptCommand(
-      "登録コマンドを編集",
-      command.extension,
-      command.label,
-      command.prefix,
-      command.command,
-      this.toAbsolute(relPath),
-    );
-    if (!result) return;
-    updateRegisteredCommand(command, result);
-  }
-
-  private promptCommand(
-    title: string,
-    extension: string,
-    label: string,
-    prefix: string,
-    command: string,
-    path: string,
-  ) {
-    const extensionLabel = extension || "拡張子なし";
-    return this.services.promptFields(title, [
-      {
-        label: `表示名（${extensionLabel}用）`,
-        value: label,
-        validate: (value) => value.trim() ? null : "表示名を入力してください",
-      },
-      {
-        label: "プレフィックス（空欄可。例: cmd.exe /D /C）",
-        value: prefix,
-        validate: () => null,
-      },
-      {
-        label: "コマンド（{file}=対象ファイル、引用符不要）",
-        value: command,
-        validate: (value) => value.trim() ? null : "コマンドを入力してください",
-      },
-    ], {
-      preview: {
-        label: "実行文字列（確認用）",
-        render: (values) => commandLineForFile(values[1] ?? "", values[2] ?? "", path),
-      },
-    }).then((values) => values ? { label: values[0], prefix: values[1], command: values[2] } : null);
+    const path = this.toAbsolute(relPath);
+    return createRegisteredCommandMenu(path, {
+      promptFields: this.services.promptFields,
+      runExternalCommand: this.services.api.runExternalCommand,
+      run: (title, operation) => this.run(title, operation),
+    });
   }
 
   async createNote(relDir: string | null) {

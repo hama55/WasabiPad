@@ -4,6 +4,7 @@ import { getSetting, setSetting, type RegisteredCommand } from "./settings";
 export type { RegisteredCommand };
 
 export const DEFAULT_COMMAND_PREFIX = "cmd.exe /D /C";
+export const COMMAND_PREFIX_FIELD_LABEL = `プレフィックス（空欄可。例: ${DEFAULT_COMMAND_PREFIX}）`;
 
 export function extensionOf(path: string): string {
   const name = path.replace(/\\/g, "/").split("/").pop() ?? "";

@@ -4,6 +4,7 @@ import { cloneEditorViewState, type EditorViewState } from "./editor-view-state"
 import { basename } from "./path";
 import { showMenu, type MenuItem } from "./menu";
 import { revealInExplorer } from "./folder-actions";
+import { createRegisteredCommandMenu, type RegisteredCommandMenuPorts } from "./registered-command-menu";
 import { DRAG_THRESHOLD } from "./interaction-constants";
 export { isStoredTab, isStoredTabs, type StoredTab, type StoredTabs } from "./stored-tabs";
 import type { StoredTab, StoredTabs } from "./stored-tabs";
@@ -38,7 +39,12 @@ export class TabManager {
   private drag: { sourceId: string; ghost: HTMLElement; spot: DropSpot | null } | null = null;
   private justDragged = false;
 
-  constructor(private host: HTMLElement, private doc: TabDocumentPort, private ports: TabPorts) {
+  constructor(
+    private host: HTMLElement,
+    private doc: TabDocumentPort,
+    private ports: TabPorts,
+    private registeredCommandPorts: RegisteredCommandMenuPorts,
+  ) {
     // WebView2ではネイティブDnDがHTML5 DnDを奪うため、お気に入りバーと同じpointer方式を使う。
     this.host.addEventListener("pointerdown", this.onPointerDown);
     this.host.addEventListener("click", this.swallowClickAfterDrag, true);
@@ -355,6 +361,12 @@ export class TabManager {
         label: "エクスプローラで開く",
         action: () => this.run(() => revealInExplorer(tab.path!, tab.kind === "folder")),
       });
+      if (tab.kind === "file") {
+        items.push(createRegisteredCommandMenu(tab.path, {
+          ...this.registeredCommandPorts,
+          run: (_title, operation) => this.run(operation),
+        }));
+      }
     }
     items.push(
       { label: "閉じる", action: () => this.run(() => this.close(tab.id)) },
@@ -487,7 +499,7 @@ export class TabManager {
     this.persist();
   }
 
-  private run(operation: () => Promise<unknown>) {
+  private run(operation: () => void | Promise<unknown>) {
     void Promise.resolve()
       .then(operation)
       .catch((error) => this.reportError(error));
