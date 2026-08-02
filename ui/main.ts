@@ -208,7 +208,9 @@ window.addEventListener("storage", (event) => {
 });
 
 const addressbar = new AddressBar($("topbar"), {
-  onOpen: (path) => runBackground("開けませんでした", () => doc.openPath(path)),
+  onOpen: (path) => runBackground("開けませんでした", () => tabs.navigatePath(path)),
+  onBack: () => runBackground("戻れませんでした", () => tabs.goBack()),
+  onForward: () => runBackground("進めませんでした", () => tabs.goForward()),
   onSave: () => runBackground("保存できませんでした", () => doc.save()),
   onSaveAs: () => runBackground("名前を付けて保存できませんでした", () => doc.saveAs()),
   onNew: () => runBackground("新規ウィンドウを開けませんでした", launchNewWindow),
@@ -273,11 +275,9 @@ const sidebar = new Sidebar(sidebarEl, {
       await openInNewTab(relPath);
       return;
     }
-    if (!(await doc.confirmDiscard())) {
+    if (!(await tabs.navigateEntry(relPath))) {
       sidebar.select(doc.current.selectedRelPath);
-      return;
     }
-    await doc.selectEntry(relPath);
   },
   onContextMenu: (x, y, target) => folderActions.showContextMenu(x, y, target),
   onExpandArchive: (relPath) =>
@@ -295,8 +295,7 @@ const sidebar = new Sidebar(sidebarEl, {
       await openInNewTab(result.rel_path, searchResultGoto(result));
       return;
     }
-    if (!(await doc.confirmDiscard())) return;
-    if (!(await doc.selectEntry(result.rel_path))) return;
+    if (!(await tabs.navigateEntry(result.rel_path))) return;
     // 当たった長さは backend が返す範囲から取る。正規表現や大小の畳み込みでは
     // 入力したパターンの長さと一致しない。
     const [, length] = result.highlights[0] ?? [0, 0];
@@ -380,7 +379,7 @@ const externalWatch = new ExternalWatch($("external-banner"), {
 }, api);
 
 const favbar = new FavBar($("favbar"), {
-  onOpen: (path, newTab) => runBackground("お気に入りを開けませんでした", () => newTab ? tabs.open(path) : doc.openPath(path)),
+  onOpen: (path, newTab) => runBackground("お気に入りを開けませんでした", () => newTab ? tabs.open(path) : tabs.navigatePath(path)),
   onAddGroupToTabs: (items) => tabs.addLinks(items),
   currentFile: () => addressbar.path || null,
   onError: (error) => showError("お気に入りを移動できませんでした", error),
@@ -392,16 +391,14 @@ const folderActions = new FolderActions(doc, {
   onOpenInNewWindow: (path, goto) => runBackground("新規ウィンドウで開けませんでした", () => launchNewWindow({ path, goto: goto ?? null })),
   onOpenViewer: (relPath, format) => {
     void (async () => {
-      if (!(await doc.confirmDiscard())) return;
-      if (!(await doc.selectEntry(relPath))) return;
+      if (!(await tabs.navigateEntry(relPath))) return;
       await editor.openTextViewer(format);
     })().catch((error) => reportBackgroundError("ビューを開けませんでした", error));
   },
   onAddFavorite: (path) => runBackground("お気に入りに追加できませんでした", () => favbar.addExternal(path)),
   onSetStartupPath: (path) => setSetting("startupPath", path),
   onOpenPath: (path) => {
-    addressbar.render(path);
-    runBackground("開けませんでした", () => doc.openPath(path));
+    runBackground("開けませんでした", () => tabs.navigatePath(path));
   },
 }, {
   api,
@@ -425,7 +422,7 @@ function confirmReloadDiscardingEdits(): Promise<boolean> {
 async function pickAndOpen(directory: boolean) {
   try {
     const path = await openDialog({ directory });
-    if (typeof path === "string") await doc.openPath(path);
+    if (typeof path === "string") await tabs.navigatePath(path);
   } catch (error) {
     await reportBackgroundError("ファイルを開けませんでした", error);
   }
@@ -531,6 +528,7 @@ tabs = new TabManager($("tabs"), doc, {
   onChange: (state) => {
     if (!secondaryInstance) setSetting("openTabs", state);
   },
+  onHistoryChange: (state) => addressbar.setNavigationState(state),
   onError: (error) => reportBackgroundError("タブを操作できませんでした", error),
   onDetach: (request) => launchNewWindow(request),
 }, {

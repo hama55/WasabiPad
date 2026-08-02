@@ -6,6 +6,12 @@ import { showMenu, type MenuItem } from "./menu";
 import { revealInExplorer } from "./folder-actions";
 import { createRegisteredCommandMenu, type RegisteredCommandMenuPorts } from "./registered-command-menu";
 import { DRAG_THRESHOLD } from "./interaction-constants";
+import {
+  NavigationHistory,
+  type NavigationEntry,
+  type NavigationState,
+  sameNavigationLink,
+} from "./navigation-history";
 export { isStoredTab, isStoredTabs, type StoredTab, type StoredTabs } from "./stored-tabs";
 import type { StoredTab, StoredTabs } from "./stored-tabs";
 
@@ -25,16 +31,26 @@ interface TabPorts {
   onChange: (state: StoredTabs) => void;
   onError?: (error: unknown) => void | Promise<void>;
   onDetach?: (request: WindowRequest) => Promise<boolean>;
+  onHistoryChange?: (state: NavigationState) => void;
 }
 
 const newId = () => `tab-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 type DropSpot = { targetId: string | null; after: boolean; el?: HTMLElement };
+type NavigationRun<T> = {
+  proceeded: boolean;
+  result?: T;
+  before: StoredTabs | null;
+  previous: NavigationEntry | null;
+};
 
 export class TabManager {
   private tabs: StoredTab[] = [];
   private activeId = "";
   private transitionTarget: string | null = null;
   private loadingActive = false;
+  private navigationInProgress = false;
+  private navigationBusy = false;
+  private navigationHistory = new Map<string, NavigationHistory>();
   private pendingDrag: { sourceId: string; x: number; y: number } | null = null;
   private drag: { sourceId: string; ghost: HTMLElement; spot: DropSpot | null } | null = null;
   private justDragged = false;
@@ -68,6 +84,7 @@ export class TabManager {
     initialSelectedRelPath?: string,
     initialViewState?: EditorViewState,
   ) {
+    this.navigationHistory.clear();
     const initialTab = this.link(initialPath ?? startupPath, initialPath ? initialGoto : undefined);
     initialTab.selectedRelPath = initialSelectedRelPath;
     initialTab.viewState = initialViewState;
@@ -96,13 +113,13 @@ export class TabManager {
     if (tab.kind !== "folder" || !tab.selectedRelPath) delete tab.selectedLine;
     // 保存完了通知はタブ切替処理の途中でも届く。ここでDOMを作り直すと、
     // 選択元のクリック処理がまだ継続中なのに操作対象だけが差し替わる。
-    if (this.transitionTarget) return;
+    if (this.transitionTarget || this.navigationInProgress) return;
     this.render();
     this.persist();
   }
 
   syncCursor(line: number) {
-    if (this.transitionTarget || this.loadingActive) return;
+    if (this.transitionTarget || this.loadingActive || this.navigationInProgress) return;
     const tab = this.active();
     if (!tab || tab.kind !== "folder" || !tab.selectedRelPath) return;
     const selectedLine = Math.max(0, Math.floor(line));
@@ -163,6 +180,7 @@ export class TabManager {
   }
 
   async activate(id: string): Promise<boolean> {
+    if (this.navigationBusy) return false;
     if (id === this.activeId) return true;
     this.transitionTarget = id;
     let proceeded: boolean;
@@ -180,9 +198,34 @@ export class TabManager {
     return this.activeId === id;
   }
 
+  navigatePath(path: string): Promise<boolean> {
+    return this.runNavigationCommand(() => this.navigateCurrent(() => this.doc.openPath(path, false)));
+  }
+
+  navigateEntry(relPath: string): Promise<boolean> {
+    return this.runNavigationCommand(() =>
+      this.navigateCurrent(async () => (await this.doc.selectEntry(relPath)) === true)
+    );
+  }
+
+  goBack(): Promise<boolean> {
+    return this.runNavigationCommand(() => this.travel("back"));
+  }
+
+  goForward(): Promise<boolean> {
+    return this.runNavigationCommand(() => this.travel("forward"));
+  }
+
+  private runNavigationCommand(operation: () => Promise<boolean>): Promise<boolean> {
+    if (this.navigationBusy) return Promise.resolve(false);
+    this.navigationBusy = true;
+    return operation().finally(() => {
+      this.navigationBusy = false;
+    });
+  }
+
   private async switchTo(id: string) {
     this.rememberActiveView();
-    this.syncActive(this.doc.current);
     try {
       await this.commitTransition(async () => {
         this.activeId = id;
@@ -191,6 +234,126 @@ export class TabManager {
     } finally {
       if (this.transitionTarget === id) this.transitionTarget = null;
     }
+  }
+
+  private async navigateCurrent(operation: () => Promise<boolean>): Promise<boolean> {
+    if (!this.active()) return false;
+    const run = await this.runDocumentNavigation(async () => {
+      const succeeded = await operation();
+      if (!succeeded) return { succeeded: false, current: null };
+      this.syncActive(this.doc.current);
+      return { succeeded: true, current: this.currentNavigationEntry() };
+    });
+    const succeeded = run.result?.succeeded === true;
+    if (run.proceeded && succeeded && run.previous && run.result?.current
+      && !sameNavigationLink(run.previous, run.result.current)) {
+      this.clearActiveViewState();
+      this.historyFor(this.activeId).record(run.previous);
+      this.persist();
+      this.render();
+    }
+    return succeeded;
+  }
+
+  private async travel(direction: "back" | "forward"): Promise<boolean> {
+    const tab = this.active();
+    if (!tab) return false;
+    const history = this.historyFor(tab.id);
+    const target = history.target(direction);
+    if (!target) return false;
+
+    const run = await this.runDocumentNavigation(async () => {
+      if (!await this.loadNavigationEntry(target)) return { succeeded: false };
+      this.syncActive(this.doc.current);
+      return { succeeded: true };
+    });
+
+    if (!run.proceeded || run.result?.succeeded !== true) {
+      if (run.proceeded && run.before) await this.restoreTabs(run.before);
+      this.render();
+      return false;
+    }
+    history.complete(direction, run.previous);
+    this.render();
+    return true;
+  }
+
+  private async runDocumentNavigation<T>(
+    operation: (previous: NavigationEntry | null) => Promise<T>,
+  ): Promise<NavigationRun<T>> {
+    let before: StoredTabs | null = null;
+    let result: T | undefined;
+    let previous: NavigationEntry | null = null;
+    try {
+      const proceeded = await this.doc.confirmDiscard(async () => {
+        this.rememberActiveView();
+        before = this.state;
+        previous = this.currentNavigationEntry();
+        this.navigationInProgress = true;
+        try {
+          result = await operation(previous);
+        } finally {
+          this.navigationInProgress = false;
+        }
+      });
+      return { proceeded, result, before, previous };
+    } catch (error) {
+      if (before) await this.restoreTabs(before);
+      this.render();
+      throw error;
+    }
+  }
+
+  private async loadNavigationEntry(entry: NavigationEntry): Promise<boolean> {
+    const tab = this.active();
+    if (!tab) return false;
+    tab.path = entry.path;
+    tab.kind = entry.kind;
+    tab.label = basename(entry.path);
+    delete tab.goto;
+    delete tab.viewState;
+    if (entry.selectedRelPath) {
+      tab.selectedRelPath = entry.selectedRelPath;
+      tab.selectedLine = entry.line;
+    } else {
+      delete tab.selectedRelPath;
+      delete tab.selectedLine;
+    }
+    if (!await this.doc.openPath(entry.path, false)) return false;
+    if (entry.kind === "folder" && entry.selectedRelPath
+      && (await this.doc.selectEntry(entry.selectedRelPath)) !== true) return false;
+    this.doc.goTo({ line: entry.line, col: 0 });
+    return true;
+  }
+
+  private currentNavigationEntry(): NavigationEntry | null {
+    const tab = this.active();
+    if (!tab?.path || tab.kind === "blank") return null;
+    const line = tab.kind === "folder" && tab.selectedRelPath
+      ? tab.selectedLine ?? tab.viewState?.caret.line ?? 0
+      : tab.viewState?.caret.line ?? 0;
+    return {
+      path: tab.path,
+      kind: tab.kind,
+      selectedRelPath: tab.selectedRelPath,
+      line: Math.max(0, Math.floor(line)),
+    };
+  }
+
+  private clearActiveViewState() {
+    const tab = this.active();
+    if (!tab) return;
+    delete tab.viewState;
+    delete tab.selectedLine;
+  }
+
+  private historyFor(id: string): NavigationHistory {
+    let history = this.navigationHistory.get(id);
+    if (!history) {
+      history = new NavigationHistory();
+      this.navigationHistory.set(id, history);
+    }
+    return history;
   }
 
   async close(id: string) {
@@ -208,7 +371,6 @@ export class TabManager {
     if (id === this.activeId) {
       if (!(await this.doc.confirmDiscard())) return;
       this.rememberActiveView();
-      this.syncActive(this.doc.current);
       await this.commitTransition(async () => {
         this.tabs.splice(index, 1);
         this.activeId = this.tabs[Math.min(index, this.tabs.length - 1)].id;
@@ -224,7 +386,6 @@ export class TabManager {
   async saveForExit(): Promise<boolean> {
     if (this.doc.current.dirty && !await this.doc.save()) return false;
     this.rememberActiveView();
-    this.syncActive(this.doc.current);
     return true;
   }
 
@@ -233,7 +394,6 @@ export class TabManager {
     try {
       await this.doc.confirmDiscard(async () => {
         this.rememberActiveView();
-        this.syncActive(this.doc.current);
         await this.commitTransition(async () => {
           this.tabs.push(tab);
           this.activeId = tab.id;
@@ -250,18 +410,22 @@ export class TabManager {
     try {
       await operation();
     } catch (error) {
-      this.tabs = before.tabs;
-      this.activeId = before.activeId ?? before.tabs[0]?.id ?? "";
-      try {
-        if (this.activeId) await this.loadActive();
-      } catch (recoveryError) {
-        console.error("元のタブへ復帰できませんでした", recoveryError);
-      }
+      await this.restoreTabs(before);
       this.render();
       throw error;
     }
     this.render();
     this.persist();
+  }
+
+  private async restoreTabs(before: StoredTabs) {
+    this.tabs = before.tabs;
+    this.activeId = before.activeId ?? before.tabs[0]?.id ?? "";
+    try {
+      if (this.activeId) await this.loadActive();
+    } catch (error) {
+      console.error("元のタブへ復帰できませんでした", error);
+    }
   }
 
   private async loadActive() {
@@ -310,6 +474,7 @@ export class TabManager {
   }
 
   private rememberActiveView() {
+    this.syncActive(this.doc.current);
     const tab = this.active();
     if (!tab) return;
     const view = this.doc.captureViewState();
@@ -337,6 +502,7 @@ export class TabManager {
   }
 
   private render() {
+    this.pruneNavigationHistories();
     const buttons = this.tabs.map((tab) => {
       const button = document.createElement("button");
       button.className = "doc-tab";
@@ -373,6 +539,15 @@ export class TabManager {
     add.textContent = "+";
     add.addEventListener("click", () => this.run(() => this.newBlank()));
     this.host.replaceChildren(...buttons, add);
+    const history = this.navigationHistory.get(this.activeId);
+    this.ports.onHistoryChange?.(history?.state ?? { canGoBack: false, canGoForward: false });
+  }
+
+  private pruneNavigationHistories() {
+    const ids = new Set(this.tabs.map((tab) => tab.id));
+    for (const id of this.navigationHistory.keys()) {
+      if (!ids.has(id)) this.navigationHistory.delete(id);
+    }
   }
 
   private contextItems(tab: StoredTab): MenuItem[] {
@@ -541,7 +716,6 @@ export class TabManager {
     if (wasActive && !(await this.doc.confirmDiscard())) return;
     if (wasActive) {
       this.rememberActiveView();
-      this.syncActive(this.doc.current);
     }
     const tab = this.tabs.find((item) => item.id === id);
     if (!tab || !this.ports.onDetach || !await this.ports.onDetach({

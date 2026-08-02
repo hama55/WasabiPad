@@ -149,6 +149,169 @@ describe("TabManager", () => {
     expect(manager.state.activeId).toBe("b");
   });
 
+  it("同じtabのファイル切替を戻る/進むで移動し、キャレット行を復元する", async () => {
+    const { doc, host } = fixture();
+    const navigationStates: { canGoBack: boolean; canGoForward: boolean }[] = [];
+    const manager = new TabManager(host, doc, {
+      onChange: () => {},
+      onHistoryChange: (state) => navigationStates.push(state),
+    }, registeredCommandPorts);
+    await manager.init(stored, null, null);
+    vi.mocked(doc.captureViewState).mockReturnValueOnce({
+      anchor: { line: 4, col: 1 }, caret: { line: 4, col: 1 }, topLine: 4, wrapIntraLinePx: 0, scrollLeft: 0,
+    });
+
+    await manager.navigatePath("C:\\work\\c.txt");
+    expect(navigationStates.at(-1)).toEqual({ canGoBack: true, canGoForward: false });
+
+    vi.mocked(doc.captureViewState).mockReturnValueOnce({
+      anchor: { line: 8, col: 1 }, caret: { line: 8, col: 1 }, topLine: 8, wrapIntraLinePx: 0, scrollLeft: 0,
+    });
+    await manager.goBack();
+    expect(doc.openPath).toHaveBeenLastCalledWith("C:\\work\\a.txt", false);
+    expect(doc.goTo).toHaveBeenLastCalledWith({ line: 4, col: 0 });
+    expect(navigationStates.at(-1)).toEqual({ canGoBack: false, canGoForward: true });
+
+    await manager.goForward();
+    expect(doc.openPath).toHaveBeenLastCalledWith("C:\\work\\c.txt", false);
+    expect(doc.goTo).toHaveBeenLastCalledWith({ line: 8, col: 0 });
+    expect(navigationStates.at(-1)).toEqual({ canGoBack: true, canGoForward: false });
+  });
+
+  it("folder内の選択切替もリンクと行を履歴に保存する", async () => {
+    const { doc, host } = fixture();
+    doc.current.folderRoot = "C:\\work";
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init({
+      tabs: [{
+        id: "folder", path: "C:\\work", kind: "folder", label: "work", selectedRelPath: "a.txt",
+      }],
+      activeId: "folder",
+    }, null, null);
+    vi.mocked(doc.captureViewState).mockReturnValueOnce({
+      anchor: { line: 6, col: 0 }, caret: { line: 6, col: 0 }, topLine: 6, wrapIntraLinePx: 0, scrollLeft: 0,
+    });
+
+    await manager.navigateEntry("b.txt");
+    await manager.goBack();
+
+    expect(doc.openPath).toHaveBeenLastCalledWith("C:\\work", false);
+    expect(doc.selectEntry).toHaveBeenLastCalledWith("a.txt");
+    expect(doc.goTo).toHaveBeenLastCalledWith({ line: 6, col: 0 });
+  });
+
+  it("戻った後に別のファイルへ移動すると進む履歴を破棄する", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init(stored, null, null);
+    await manager.navigatePath("C:\\work\\c.txt");
+    await manager.goBack();
+    await manager.navigatePath("C:\\work\\d.txt");
+
+    expect(await manager.goForward()).toBe(false);
+  });
+
+  it("戻る履歴は10件まで保持する", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init(stored, null, null);
+    const paths = Array.from({ length: 12 }, (_, index) => `C:\\work\\${String.fromCharCode(99 + index)}.txt`);
+    for (const path of paths) await manager.navigatePath(path);
+
+    for (let index = 0; index < 10; index++) await manager.goBack();
+
+    expect(manager.state.tabs[0].path).toBe(paths[1]);
+    expect(await manager.goBack()).toBe(false);
+  });
+
+  it("ナビゲーション中の連打は2件目を実行しない", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init(stored, null, null);
+    let release!: (result: boolean) => void;
+    vi.mocked(doc.openPath).mockImplementationOnce((path) => new Promise((resolve) => {
+      release = (result) => {
+        doc.current.savePath = path;
+        doc.current.displayPath = path;
+        resolve(result);
+      };
+    }));
+
+    const first = manager.navigatePath("C:\\work\\c.txt");
+    expect(await manager.navigatePath("C:\\work\\d.txt")).toBe(false);
+    release(true);
+    await first;
+
+    expect(doc.openPath).not.toHaveBeenCalledWith("C:\\work\\d.txt", false);
+    expect(manager.state.tabs[0].path).toBe("C:\\work\\c.txt");
+  });
+
+  it("戻る先の読込が例外になっても現在位置と履歴を復元する", async () => {
+    const { doc, host } = fixture();
+    const navigationStates: { canGoBack: boolean; canGoForward: boolean }[] = [];
+    const manager = new TabManager(host, doc, {
+      onChange: () => {},
+      onHistoryChange: (state) => navigationStates.push(state),
+    }, registeredCommandPorts);
+    await manager.init(stored, null, null);
+    await manager.navigatePath("C:\\work\\c.txt");
+    vi.mocked(doc.openPath).mockRejectedValueOnce(new Error("history load failed"));
+
+    await expect(manager.goBack()).rejects.toThrow("history load failed");
+
+    expect(manager.state.tabs[0].path).toBe("C:\\work\\c.txt");
+    expect(navigationStates.at(-1)).toEqual({ canGoBack: true, canGoForward: false });
+    expect(doc.openPath).toHaveBeenLastCalledWith("C:\\work\\c.txt", false);
+  });
+
+  it("通常の切替がfalseで終わった場合は履歴を追加しない", async () => {
+    const { doc, host } = fixture();
+    const navigationStates: { canGoBack: boolean; canGoForward: boolean }[] = [];
+    const manager = new TabManager(host, doc, {
+      onChange: () => {},
+      onHistoryChange: (state) => navigationStates.push(state),
+    }, registeredCommandPorts);
+    await manager.init(stored, null, null);
+    vi.mocked(doc.openPath).mockResolvedValueOnce(false);
+
+    expect(await manager.navigatePath("C:\\work\\c.txt")).toBe(false);
+    expect(manager.state.tabs[0].path).toBe("C:\\work\\a.txt");
+    expect(navigationStates.at(-1)).toEqual({ canGoBack: false, canGoForward: false });
+  });
+
+  it("folder内の戻る先を選択できない場合は現在位置へ復元する", async () => {
+    const { doc, host } = fixture();
+    doc.current.folderRoot = "C:\\work";
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init({
+      tabs: [{ id: "folder", path: "C:\\work", kind: "folder", label: "work", selectedRelPath: "a.txt" }],
+      activeId: "folder",
+    }, null, null);
+    await manager.navigateEntry("b.txt");
+    vi.mocked(doc.selectEntry).mockResolvedValueOnce(false);
+
+    expect(await manager.goBack()).toBe(false);
+    expect(manager.state.tabs[0].selectedRelPath).toBe("b.txt");
+    expect(doc.selectEntry).toHaveBeenLastCalledWith("b.txt");
+  });
+
+  it("タブごとに履歴を分離し、再初期化で履歴を消去する", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init(stored, null, null);
+    await manager.navigatePath("C:\\work\\c.txt");
+    await manager.activate("b");
+
+    expect(await manager.goBack()).toBe(false);
+    await manager.navigatePath("C:\\work\\d.txt");
+    expect(await manager.goBack()).toBe(true);
+    await manager.activate("a");
+    expect(await manager.goBack()).toBe(true);
+
+    await manager.init(stored, null, null);
+    expect(await manager.goBack()).toBe(false);
+  });
+
   it("active tabを検索結果の飛び先付きで開いたら、その場で位置を適用する", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
