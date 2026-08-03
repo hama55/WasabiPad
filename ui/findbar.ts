@@ -10,18 +10,21 @@ export class FindBar {
   private onReplaceAll: (pat: string, rep: string, matchCase: boolean) => Promise<number>;
   private onReplaceNext: (pat: string, rep: string, matchCase: boolean) => Promise<boolean>;
   private onDone: () => void;
+  private onError: (message: string, error: unknown) => void | Promise<void>;
 
   constructor(
     host: HTMLElement,
     onFind: (pat: string, forward: boolean, matchCase: boolean) => Promise<boolean>,
     onReplaceAll: (pat: string, rep: string, matchCase: boolean) => Promise<number>,
     onReplaceNext: (pat: string, rep: string, matchCase: boolean) => Promise<boolean>,
-    onDone: () => void
+    onDone: () => void,
+    onError: (message: string, error: unknown) => void | Promise<void>,
   ) {
     this.onFind = onFind;
     this.onReplaceAll = onReplaceAll;
     this.onReplaceNext = onReplaceNext;
     this.onDone = onDone;
+    this.onError = onError;
 
     this.root = document.createElement("div");
     this.root.className = "ve-find";
@@ -52,7 +55,7 @@ export class FindBar {
     this.findIn.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
         e.preventDefault();
-        this.next(!e.shiftKey);
+        this.run(() => this.next(!e.shiftKey));
       } else if (e.key === "Escape") {
         e.preventDefault();
         this.close();
@@ -61,11 +64,11 @@ export class FindBar {
     this.repIn.addEventListener("keydown", (e) => {
       if (e.key === "Escape") this.close();
     });
-    this.root.querySelector(".ve-find-next")!.addEventListener("click", () => this.next(true));
-    this.root.querySelector(".ve-find-prev")!.addEventListener("click", () => this.next(false));
+    this.root.querySelector(".ve-find-next")!.addEventListener("click", () => this.run(() => this.next(true)));
+    this.root.querySelector(".ve-find-prev")!.addEventListener("click", () => this.run(() => this.next(false)));
     this.root.querySelector(".ve-find-close")!.addEventListener("click", () => this.close());
-    this.root.querySelector(".ve-rep-all")!.addEventListener("click", () => this.replaceAll());
-    this.root.querySelector(".ve-rep-next")!.addEventListener("click", () => this.replaceNext());
+    this.root.querySelector(".ve-rep-all")!.addEventListener("click", () => this.run(() => this.replaceAll()));
+    this.root.querySelector(".ve-rep-next")!.addEventListener("click", () => this.run(() => this.replaceNext()));
   }
 
   open(initial: string) {
@@ -113,5 +116,20 @@ export class FindBar {
     if (!pat) return;
     const ok = await this.onReplaceNext(pat, this.repIn.value, this.caseChk.checked);
     this.status.textContent = ok ? "" : "見つかりません";
+  }
+
+  private run(operation: () => Promise<void>) {
+    void Promise.resolve()
+      .then(operation)
+      .catch((error) => this.reportError("検索・置換を実行できませんでした", error));
+  }
+
+  private async reportError(message: string, error: unknown) {
+    this.status.textContent = "操作に失敗しました";
+    try {
+      await this.onError(message, error);
+    } catch (reportError) {
+      console.error("検索エラーを表示できませんでした", reportError);
+    }
   }
 }

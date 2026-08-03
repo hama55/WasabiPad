@@ -6,8 +6,10 @@ const read = (path) => readFileSync(resolve(root, path), "utf8");
 const backend = read("src-tauri/src/main.rs");
 const coreDoc = read("core/src/doc.rs");
 const fileio = read("core/src/fileio.rs");
+const sevenz = read("core/src/sevenz.rs");
 const frontend = read("ui/api.ts");
-const searchPanelTs = read("ui/workspace-search-panel.ts");
+const archivePath = read("ui/archive-path.ts");
+const archivePassword = read("ui/archive-password.ts");
 const folder = read("core/src/folder.rs");
 const workspaceSearch = read("core/src/workspace_search.rs");
 const generatedSearchOptions = read("ui/generated/WorkspaceSearchOptions.ts");
@@ -18,8 +20,8 @@ const generatedEncoding = read("ui/generated/Encoding.ts");
 const generatedEol = read("ui/generated/Eol.ts");
 const generatedDocKind = read("ui/generated/DocKind.ts");
 const generatedViewerFormat = read("ui/generated/ViewerFormat.ts");
+const generatedIpcCommands = read("ui/generated/IpcCommands.ts");
 const capabilities = JSON.parse(read("src-tauri/capabilities/default.json"));
-const indexHtml = read("index.html");
 
 function fail(message) {
   throw new Error(`IPC contract mismatch: ${message}`);
@@ -52,10 +54,123 @@ function blockAfter(source, marker) {
   fail(`unterminated block after ${marker}`);
 }
 
+function matchingDelimiter(source, open, opening, closing) {
+  let depth = 0;
+  let quote = null;
+  let escaped = false;
+  for (let i = open; i < source.length; i += 1) {
+    const char = source[i];
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '"') {
+      quote = char;
+      continue;
+    }
+    if (char === opening) depth += 1;
+    if (char === closing) {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  fail(`unterminated ${opening}${closing} block`);
+}
+
+function splitTopLevel(source) {
+  const parts = [];
+  let start = 0;
+  let angle = 0;
+  let round = 0;
+  let square = 0;
+  let curly = 0;
+  let quote = null;
+  let escaped = false;
+  for (let i = 0; i < source.length; i += 1) {
+    const char = source[i];
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '"') {
+      quote = char;
+      continue;
+    }
+    if (char === "<") angle += 1;
+    else if (char === ">") angle = Math.max(0, angle - 1);
+    else if (char === "(") round += 1;
+    else if (char === ")") round -= 1;
+    else if (char === "[") square += 1;
+    else if (char === "]") square -= 1;
+    else if (char === "{") curly += 1;
+    else if (char === "}") curly -= 1;
+    else if (char === "," && angle === 0 && round === 0 && square === 0 && curly === 0) {
+      parts.push(source.slice(start, i));
+      start = i + 1;
+    }
+  }
+  parts.push(source.slice(start));
+  return parts;
+}
+
+function rustCommandParameters(source, command) {
+  const marker = source.match(new RegExp(`(?:async\\s+)?fn\\s+${command}\\s*\\(`));
+  if (!marker) fail(`cannot find Rust command ${command}`);
+  const open = source.indexOf("(", marker.index);
+  const close = matchingDelimiter(source, open, "(", ")");
+  return splitTopLevel(source.slice(open + 1, close))
+    .map((parameter) => parameter.trim())
+    .filter(Boolean)
+    .map((parameter) => {
+      const separator = parameter.indexOf(":");
+      if (separator < 0) fail(`cannot parse ${command} parameter ${parameter}`);
+      return {
+        name: parameter.slice(0, separator).trim().replace(/^mut\s+/, ""),
+        type: parameter.slice(separator + 1).trim(),
+      };
+    });
+}
+
+function invokeArgumentKeys(source, command) {
+  const call = source.match(new RegExp(`invoke(?:<[^;()]+>)?\\(\\s*IPC_COMMANDS\\.${camelCase(command)}`));
+  if (!call) fail(`cannot find TypeScript invoke ${command}`);
+  let comma = call.index + call[0].length;
+  while (/\s/.test(source[comma] ?? "")) comma += 1;
+  if (source[comma] !== ",") return [];
+  let open = comma + 1;
+  while (/\s/.test(source[open] ?? "")) open += 1;
+  if (source[open] !== "{") return [];
+  const close = matchingDelimiter(source, open, "{", "}");
+  return splitTopLevel(source.slice(open + 1, close))
+    .map((property) => property.trim())
+    .filter(Boolean)
+    .map((property) => property.match(/^(?:\.\.\.)?([A-Za-z_$][\w$]*)/)?.[1])
+    .filter(Boolean);
+}
+
 function tsUnion(typeName, source = frontend) {
   const match = source.match(new RegExp(`export type ${typeName} = ([^;]+);`));
   if (!match) fail(`cannot find TypeScript union ${typeName}`);
   return names(/"([^"]+)"/g, match[1]);
+}
+
+function rustStructFields(source, structName) {
+  return names(/^\s*(?:pub\s+)?(\w+):/gm, blockAfter(source, `struct ${structName}`));
+}
+
+function generatedStructFields(typeName) {
+  const source = read(`ui/generated/${typeName}.ts`);
+  const body = source.match(new RegExp(`export type ${typeName} = \\{([\\s\\S]*?)\\};`))?.[1];
+  if (body === undefined) fail(`cannot find generated struct ${typeName}`);
+  return names(/(?:^|,)\s*(\w+)\??\s*:/g, body);
+}
+
+function camelCase(value) {
+  return value.replace(/_([a-z])/g, (_match, letter) => letter.toUpperCase());
 }
 
 const commands = names(/#\[tauri::command\]\s*\r?\n(?:async\s+)?fn\s+(\w+)/g, backend);
@@ -65,9 +180,24 @@ const handler = handlerBlock
   .split(",")
   .map((name) => name.trim())
   .filter(Boolean);
-const invokes = names(/invoke(?:<[^;()]+>)?\(\s*"([^"]+)"/g, frontend);
 assertSameSet("Tauri command registration", commands, handler);
-assertSameSet("TypeScript invoke commands", commands, invokes);
+if (!generatedIpcCommands.startsWith("// This file was generated from src-tauri/src/main.rs")) {
+  fail("IpcCommands.ts must be generated from Rust command definitions");
+}
+const generatedCommandNames = names(/^\s+\w+:\s+"([^"]+)",$/gm, generatedIpcCommands);
+const generatedCommandKeys = names(/^\s+(\w+):\s+"[^"]+",$/gm, generatedIpcCommands);
+assertSameSet("generated IPC command names", commands, generatedCommandNames);
+assertSameSet("generated IPC command keys", commands.map(camelCase), generatedCommandKeys);
+assertSameSet("TypeScript IPC command bindings", generatedCommandKeys, names(/IPC_COMMANDS\.(\w+)/g, frontend));
+
+// Tauri は Rust の引数名を camelCase のIPCキーとして受け取る。名前だけの集合を
+// 照合すると edit の caret_before/caretBefore のような実行時だけの破綻を見逃す。
+for (const command of commands) {
+  const expected = rustCommandParameters(backend, command)
+    .filter(({ type }) => !/\b(?:State|AppHandle|Window|WebviewWindow)\b/.test(type))
+    .map(({ name }) => camelCase(name));
+  assertSameSet(`${command} argument keys`, expected, invokeArgumentKeys(frontend, command));
+}
 
 const encodingBlock = blockAfter(fileio, "pub enum EncodingId");
 const encodingValues = names(/#\[serde\(rename = "([^"]+)"\)\]/g, encodingBlock);
@@ -103,44 +233,76 @@ for (const [name, source] of [
   }
 }
 
-// <select> の option は Encoding/Eol の第2の定義になりやすいため、型と一致することを検証する
-function optionValues(id) {
-  const start = indexHtml.indexOf(`id="${id}"`);
-  if (start < 0) fail(`cannot find <select id="${id}">`);
-  const end = indexHtml.indexOf("</select>", start);
-  if (end < 0) fail(`unterminated <select id="${id}">`);
-  return names(/value="([^"]+)"/g, indexHtml.slice(start, end));
-}
-assertSameSet("read encoding options", tsUnion("ReadEncoding"), optionValues("st-source-enc"));
-// 保存側の選択肢は ui/save-format.ts が Record<Encoding|Eol, string> で持つため tsc が検証する
+// 選択肢は ui/statusbar.ts が READ_ENCODINGS/INDENT_SIZES から生成する。
+// HTML に複製を置かないことで、値の追加漏れを tsc と型から検出できるようにする。
 
-// 検索の途中経過は「送る側 (core) と描く側 (ui)」で刻みと上限が噛み合う必要がある。
-// 送出が細かすぎれば IPC だけが増え、上限が描画上限を超えれば出せない分を送ることになる。
-const progressInterval = Number(
-  workspaceSearch.match(/PROGRESS_INTERVAL[^;]*from_millis\((\d+)\)/)?.[1]
-);
-const partialRenderMs = Number(searchPanelTs.match(/PARTIAL_RENDER_MS = (\d+);/)?.[1]);
-if (!progressInterval || progressInterval !== partialRenderMs) {
-  fail(`search progress interval; core=${progressInterval}, ui=${partialRenderMs}`);
-}
+// 検索途中経過の送出頻度は backend が単独で管理する。UI は届いた batch を描く。
+// 送出上限だけは DOM 上限を超えないことを検証する。
 const progressMax = Number(workspaceSearch.match(/PROGRESS_MAX: usize = ([\d_]+);/)?.[1]?.replace(/_/g, ""));
-const maxRenderedRows = Number(searchPanelTs.match(/MAX_RENDERED_ROWS = ([\d_]+);/)?.[1]?.replace(/_/g, ""));
+const maxRenderedRows = Number(read("ui/workspace-search-panel.ts").match(/MAX_RENDERED_ROWS = ([\d_]+);/)?.[1]?.replace(/_/g, ""));
 if (!progressMax || !maxRenderedRows || progressMax > maxRenderedRows) {
   fail(`search progress cap exceeds rendered rows; core=${progressMax}, ui=${maxRenderedRows}`);
 }
 
-// serde は Rust のフィールド名をそのまま線に載せるため、項目名の増減は TS 側と一致する必要がある
-// (型注釈だけでは検出できず、undefined が実行時に初めて現れるため)
-function rustFields(source, structName) {
-  return names(/^\s*pub (\w+):/gm, blockAfter(source, `pub struct ${structName}`));
-}
-function tsFields(interfaceName) {
-  return names(/^\s*(\w+)\??:/gm, blockAfter(frontend, `export interface ${interfaceName}`));
-}
+// Rust DTO から生成した型のフィールド集合を確認する。生成物のヘッダだけを確認すると、
+// 古い生成物を残したままでも通るため、追加・改名・削除の取りこぼしをここで止める。
 const wireStructs = [
+  [coreDoc, "DocInfo", "DocInfo"],
+  [coreDoc, "PosC", "Pos"],
+  [coreDoc, "EditResult", "EditResult"],
+  [coreDoc, "EditManyItem", "EditManyItem"],
+  [coreDoc, "EditManyResult", "EditManyResult"],
+  [coreDoc, "FindResult", "FindResult"],
+  [coreDoc, "FindCursor", "FindCursor"],
+  [coreDoc, "WorkspaceSearchResult", "WorkspaceSearchResult"],
+  [coreDoc, "ReplaceChunkResult", "ReplaceChunkResult"],
+  [folder, "FolderEntry", "FolderEntry"],
+  [workspaceSearch, "SearchOptions", "WorkspaceSearchOptions"],
+  [workspaceSearch, "WorkspaceSearchOutcome", "WorkspaceSearchOutcome"],
+  [backend, "ViewerPayload", "ViewerPayload"],
+  [backend, "ViewerSelection", "ViewerSelection"],
+  [backend, "EditorViewState", "EditorViewState", true],
+  [backend, "WindowRequest", "WindowRequest", true],
+  [backend, "WorkspaceSearchBatch", "WorkspaceSearchBatch"],
 ];
-for (const [source, structName, interfaceName] of wireStructs) {
-  assertSameSet(`${structName} wire fields`, rustFields(source, structName), tsFields(interfaceName));
+for (const [source, structName, typeName, renameAll] of wireStructs) {
+  const fields = rustStructFields(source, structName);
+  const wireFields = renameAll ? fields.map(camelCase) : fields;
+  assertSameSet(`${structName} generated wire fields`, wireFields, generatedStructFields(typeName));
+}
+
+// パスワード失敗は Rust のエラー文字列を UI が再試行トリガーとして読む。
+// 片方だけ改名すると、暗号化アーカイブが「ただのエラー」になり再試行できない。
+const passwordMarker = sevenz.match(/pub const PASSWORD_ERROR_MARKER: &str = "([^"]+)"/)?.[1];
+const uiPasswordMarker = archivePassword.match(/const PASSWORD_ERROR_MARKER = "([^"]+)"/)?.[1];
+if (!passwordMarker || !uiPasswordMarker || passwordMarker !== uiPasswordMarker) {
+  fail(`archive password marker; core=${passwordMarker ?? "<not found>"}, ui=${uiPasswordMarker ?? "<not found>"}`);
+}
+
+const archiveSeparator = folder.match(/pub const ARCHIVE_ENTRY_SEPARATOR: &str = "([^"]+)"/)?.[1];
+const uiArchiveSeparator = archivePath.match(/export const ARCHIVE_ENTRY_SEPARATOR = "([^"]+)"/)?.[1];
+if (!archiveSeparator || !uiArchiveSeparator || archiveSeparator !== uiArchiveSeparator) {
+  fail(`archive entry separator; core=${archiveSeparator ?? "<not found>"}, ui=${uiArchiveSeparator ?? "<not found>"}`);
+}
+
+for (const [uiName, rustName] of [
+  ["externalWindowRequest", "EVENT_EXTERNAL_WINDOW_REQUEST"],
+  ["workspaceSearchBatch", "EVENT_WORKSPACE_SEARCH_BATCH"],
+  ["viewerUpdate", "EVENT_VIEWER_UPDATE"],
+]) {
+  const rustEvent = backend.match(new RegExp(`const ${rustName}: &str = "([^"]+)"`))?.[1];
+  const uiEvent = frontend.match(new RegExp(`${uiName}: "([^"]+)"`))?.[1];
+  if (!rustEvent || !uiEvent || rustEvent !== uiEvent) {
+    fail(`event name ${uiName}; core=${rustEvent ?? "<not found>"}, ui=${uiEvent ?? "<not found>"}`);
+  }
+}
+
+const readEncodingBlock = frontend.match(/export const READ_ENCODINGS = \[([^\]]+)\]/)?.[1];
+if (!readEncodingBlock) fail("cannot find READ_ENCODINGS");
+const readEncodings = names(/"([^"]+)"/g, readEncodingBlock);
+const unsupportedReadEncodings = readEncodings.filter((encoding) => !encodingValues.includes(encoding));
+if (unsupportedReadEncodings.length) {
+  fail(`read encodings are not save encodings; unsupported=[${unsupportedReadEncodings.join(", ")}]`);
 }
 // ビューのウィンドウは動的生成のため、ラベル接頭辞が capability の許可パターンと外れると
 // 権限を失ったまま静かに開いてしまう

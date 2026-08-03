@@ -1,5 +1,6 @@
 import type { FolderEntry, Pos, WorkspaceSearchOptions, WorkspaceSearchResult } from "./api";
 import { WorkspaceSearchPanel, type WorkspaceSearchPorts } from "./workspace-search-panel";
+import { archiveEntryPath } from "./archive-path";
 
 // フォルダ/ZIP/Excelのエントリ名 ("sub/a.txt" 形式) からツリーを構築して表示。
 // 実データは backend が保持し、選択時に relPath を親へ通知するだけ。
@@ -37,7 +38,7 @@ export interface ContextTarget {
 // 検索の依頼 (onSearch / onCancel / onOpen / onOptionsChange) は
 // WorkspaceSearchPanel のもので、ここはそのまま素通しする。
 export interface SidebarPorts extends Omit<WorkspaceSearchPorts, "onViewChange" | "onContextMenu"> {
-  onSelect: (relPath: string, newWindow: boolean) => void;
+  onSelect: (relPath: string, newTab: boolean) => void | Promise<boolean | void>;
   onContextMenu: (x: number, y: number, target: ContextTarget | null) => void;
   onExpandArchive: (relPath: string) => Promise<string[]>;
   onExpandFolder: (relDir: string) => Promise<FolderEntry[]>;
@@ -50,7 +51,7 @@ export class Sidebar {
   private panel: WorkspaceSearchPanel;
   private rows: Row[] = [];
   private sel: string | null = null; // 選択中の relPath
-  private onSelect: (relPath: string, newWindow: boolean) => void;
+  private onSelect: (relPath: string, newTab: boolean) => void | Promise<boolean | void>;
   private onContextMenu: (x: number, y: number, target: ContextTarget | null) => void;
   private onExpandArchive: (relPath: string) => Promise<string[]>;
   private onExpandFolder: (relDir: string) => Promise<FolderEntry[]>;
@@ -73,6 +74,8 @@ export class Sidebar {
       onViewChange: () => this.render(),
     });
     this.tree = document.createElement("div");
+    this.tree.tabIndex = 0;
+    this.tree.addEventListener("keydown", (event) => this.onTreeKeyDown(event));
     this.host.append(this.panel.bar, this.tree);
     this.host.addEventListener("contextmenu", (e) => {
       if (e.target !== this.host && e.target !== this.tree) return; // 個々の行上は行側のリスナーに任せる
@@ -90,9 +93,10 @@ export class Sidebar {
   }
 
   // "sub/a.txt" 形式の名前一覧からディレクトリ見出し+葉の行を組み立てる。
-  // relPrefix は葉の relPath に前置する文字列 (アーカイブ内エントリの "data.zip::" 用)。
+  // relPrefix はアーカイブ内エントリの親パス。直接開いた書庫では空文字。
   private buildRows(names: string[], depth: number, relPrefix: string, leafKindOf: (name: string) => RowKind): Row[] {
     const rows: Row[] = [];
+    const relPathOf = (name: string) => archiveEntryPath(relPrefix, name);
     let prevDirs: string[] = [];
     names.forEach((name) => {
       const parts = name.split("/");
@@ -103,7 +107,7 @@ export class Sidebar {
       for (let d = common; d < dirs.length; d++) {
         rows.push({
           label: dirs[d],
-          relPath: relPrefix + dirs.slice(0, d + 1).join("/"),
+          relPath: relPathOf(dirs.slice(0, d + 1).join("/")),
           depth: depth + d,
           kind: "dir",
           expanded: false,
@@ -112,7 +116,7 @@ export class Sidebar {
       }
       rows.push({
         label: parts[parts.length - 1],
-        relPath: relPrefix + name,
+        relPath: relPathOf(name),
         depth: depth + dirs.length,
         kind: leafKindOf(name),
         expanded: false,
@@ -194,12 +198,22 @@ export class Sidebar {
   }
 
   // 新規作成/リネーム後、相対パスからそのファイル行を再選択する (無ければ何もしない)。
-  selectByRelPath(relPath: string) {
-    const row = this.rows.find((r) => r.kind !== "dir" && r.relPath === relPath);
-    if (!row) return;
-    for (const r of this.rows) {
-      if (r.kind === "dir" && relPath.startsWith(r.relPath + "/")) r.expanded = true;
+  // タブ復帰時は深い階層がまだ展開されていないため、必要な親だけ非同期で開く。
+  async selectByRelPath(relPath: string) {
+    if (this.panel.showing) return;
+    const parts = relPath.split("/");
+    for (let depth = 1; depth < parts.length; depth++) {
+      const parent = parts.slice(0, depth).join("/");
+      const row = this.rows.find((candidate) => candidate.kind === "dir" && candidate.relPath === parent);
+      if (!row) return;
+      if (!row.childrenLoaded) await this.expandFolderRow(row);
+      else if (!row.expanded) {
+        row.expanded = true;
+        this.render();
+      }
     }
+    const row = this.rows.find((candidate) => candidate.kind !== "dir" && candidate.relPath === relPath);
+    if (!row) return;
     this.sel = row.relPath;
     this.render();
   }
@@ -207,8 +221,7 @@ export class Sidebar {
   private async expandArchiveRow(r: Row) {
     if (!r.childrenLoaded) {
       const names = await this.onExpandArchive(r.relPath);
-      const prefix = r.relPath === "" ? "" : `${r.relPath}::`;
-      const children = this.buildRows(names, r.depth + 1, prefix, () => "archiveEntry");
+      const children = this.buildRows(names, r.depth + 1, r.relPath, () => "archiveEntry");
       const idx = this.rows.indexOf(r);
       this.rows.splice(idx + 1, 0, ...children);
       r.childrenLoaded = true;
@@ -246,13 +259,27 @@ export class Sidebar {
     this.tree.replaceChildren(this.panel.showing ? this.panel.renderTree() : this.folderTree());
   }
 
+  private onTreeKeyDown(event: KeyboardEvent) {
+    if (this.panel.showing || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
+    const visible = this.visible();
+    if (!visible.length) return;
+    event.preventDefault();
+    const current = this.sel === null ? -1 : visible.findIndex((index) => this.rows[index].relPath === this.sel);
+    const next = event.key === "ArrowUp"
+      ? visible[Math.max(0, current < 0 ? visible.length - 1 : current - 1)]
+      : visible[Math.min(visible.length - 1, current + 1)];
+    this.sel = this.rows[next].relPath;
+    this.render();
+    this.tree.querySelector<HTMLElement>(".fv-row.sel")?.scrollIntoView?.({ block: "nearest" });
+  }
+
   // ---- フォルダ/アーカイブのツリー ----
   private folderTree(): DocumentFragment {
     const frag = document.createDocumentFragment();
     for (const i of this.visible()) {
       const r = this.rows[i];
       const div = document.createElement("div");
-      div.className = "fv-row" + (r.kind !== "dir" && r.relPath === this.sel ? " sel" : "");
+      div.className = "fv-row" + (r.relPath === this.sel ? " sel" : "");
       div.style.paddingLeft = `${r.depth * 14 + 4}px`;
 
       const arrow = document.createElement("span");
@@ -261,9 +288,9 @@ export class Sidebar {
       div.appendChild(arrow);
       div.appendChild(document.createTextNode(r.label));
 
-      const activate = (newWindow: boolean) => {
-        if (newWindow && r.kind !== "archiveEntry") {
-          this.onSelect(r.relPath, true);
+      const activate = (newTab: boolean) => {
+        if (newTab && r.kind !== "archiveEntry") {
+          void Promise.resolve(this.onSelect(r.relPath, true)).catch((error) => this.reportTreeError(error));
           return;
         }
         if (r.kind === "dir") {
@@ -271,12 +298,23 @@ export class Sidebar {
         } else if (r.kind === "archive") {
           void this.expandArchiveRow(r).catch((error) => this.reportTreeError(error));
         } else {
+          const previous = this.sel;
           this.sel = r.relPath;
           this.render();
-          this.onSelect(r.relPath, false);
+          void Promise.resolve(this.onSelect(r.relPath, false))
+            .then((opened) => {
+              if (opened === false) {
+                this.sel = previous;
+                this.render();
+              }
+            })
+            .catch((error) => this.reportTreeError(error));
         }
       };
-      div.addEventListener("click", (e) => activate(e.ctrlKey));
+      div.addEventListener("click", (e) => {
+        this.tree.focus();
+        activate(e.ctrlKey);
+      });
       div.addEventListener("auxclick", (e) => {
         if (e.button === 1) activate(true);
       });

@@ -1,21 +1,24 @@
-import type { ReadEncoding } from "./api";
+import { READ_ENCODINGS, type ReadEncoding } from "./api";
 import type { DocumentSession } from "./session";
 import { readEncodingOf } from "./session";
 import { formatByteSize, formatCursor, formatFontFamily, formatLineCount } from "./format";
+import { DEFAULT_INDENT_SIZE, INDENT_SIZES, promptFontFamily, promptFontSize } from "./font-controls";
 import { confirmMessage, promptFields } from "./prompt";
+import { normalizeTheme, THEME_STORAGE_KEY, THEMES, type Theme } from "./theme";
 
-const THEMES = ["dark", "light"] as const;
-type Theme = (typeof THEMES)[number];
 const THEME_LABELS: Record<Theme, string> = { dark: "ダーク", light: "ライト" };
+const READ_ENCODING_LABELS: Record<ReadEncoding, string> = {
+  utf8: "UTF-8",
+  sjis: "Shift-JIS",
+  utf16le: "UTF-16LE",
+};
 
-const FONT_FAMILIES = [
-  "Consolas, \"MS Gothic\", monospace",
-  "Cascadia Mono, \"MS Gothic\", monospace",
-  "\"MS Gothic\", monospace",
-  "\"Yu Gothic UI\", sans-serif",
-  "Meiryo, sans-serif",
-  "\"BIZ UDPGothic\", sans-serif",
-];
+function option(value: string, label: string): HTMLOptionElement {
+  const element = document.createElement("option");
+  element.value = value;
+  element.textContent = label;
+  return element;
+}
 
 export interface StatusBarPorts {
   onGoTo: (line: number) => void;
@@ -24,6 +27,7 @@ export interface StatusBarPorts {
   onIndent: (size: number) => void;
   // 再読込を受け入れたら true。false なら選択を元へ戻す (成否の判断は呼び出し側に残す)
   onReadEncoding: (encoding: ReadEncoding) => Promise<boolean>;
+  onError?: (title: string, error: unknown) => void | Promise<void>;
 }
 
 // ステータスバー全体 (#statusbar) を1つの部品として閉じる。表示中の文書がどう
@@ -38,27 +42,53 @@ export class StatusBar {
   private shownReadEncoding: ReadEncoding = "utf8";
 
   constructor(private host: HTMLElement, private ports: StatusBarPorts) {
+    this.indentSelect.replaceChildren(
+      ...INDENT_SIZES.map((size) => option(String(size), `インデント: ${size}`)),
+    );
+    this.sourceEncodingSelect.replaceChildren(
+      ...READ_ENCODINGS.map((encoding) => option(encoding, READ_ENCODING_LABELS[encoding])),
+    );
     this.pick("st-theme").addEventListener("click", () => {
-      const current = (document.documentElement.getAttribute("data-theme") as Theme) ?? "dark";
-      this.applyTheme(THEMES[(THEMES.indexOf(current) + 1) % THEMES.length]);
+      this.run("テーマを変更できませんでした", () => {
+        const current = (document.documentElement.getAttribute("data-theme") as Theme) ?? "dark";
+        this.applyTheme(THEMES[(THEMES.indexOf(current) + 1) % THEMES.length]);
+      });
     });
-    this.pick("st-font").addEventListener("click", () => void this.promptFont());
-    this.pick("st-font-size").addEventListener("click", () => void this.promptFontSize());
+    this.pick("st-font").addEventListener("click", () => this.run("フォントを変更できませんでした", () => this.promptFont()));
+    this.pick("st-font-size").addEventListener("click", () => this.run("文字サイズを変更できませんでした", () => this.promptFontSize()));
     this.pick("st-wrap").addEventListener("click", () => {
-      this.wrap = !this.wrap;
-      this.pick("st-wrap").textContent = `折り返し: ${this.wrap ? "オン" : "オフ"}`;
-      this.ports.onWrap(this.wrap);
+      this.run("折り返しを変更できませんでした", () => {
+        this.wrap = !this.wrap;
+        this.pick("st-wrap").textContent = `折り返し: ${this.wrap ? "オン" : "オフ"}`;
+        this.ports.onWrap(this.wrap);
+      });
     });
     this.indentSelect.addEventListener("change", () => {
-      this.ports.onIndent(Number(this.indentSelect.value));
+      this.run("インデント幅を変更できませんでした", () => this.ports.onIndent(Number(this.indentSelect.value)));
     });
-    this.pick("st-pos").addEventListener("click", () => void this.promptGoTo());
-    this.pick("st-lines").addEventListener("click", () => void this.promptGoToLast());
-    this.sourceEncodingSelect.addEventListener("change", () => void this.requestReadEncoding());
+    this.pick("st-pos").addEventListener("click", () => this.run("指定行へ移動できませんでした", () => this.promptGoTo()));
+    this.pick("st-lines").addEventListener("click", () => this.run("最後の行へ移動できませんでした", () => this.promptGoToLast()));
+    this.sourceEncodingSelect.addEventListener("change", () => this.run("文字コードを変更できませんでした", () => this.requestReadEncoding()));
   }
 
   private pick<T extends HTMLElement>(id: string): T {
     return this.host.querySelector<T>(`#${id}`)!;
+  }
+
+  private run(title: string, operation: () => void | Promise<unknown>) {
+    try {
+      void Promise.resolve(operation()).catch((error) => this.reportError(title, error));
+    } catch (error) {
+      void this.reportError(title, error);
+    }
+  }
+
+  private async reportError(title: string, error: unknown) {
+    try {
+      await this.ports.onError?.(title, error);
+    } catch (reportError) {
+      console.error(`${title}のエラーを表示できませんでした`, reportError);
+    }
   }
 
   private get indentSelect() {
@@ -71,18 +101,18 @@ export class StatusBar {
 
   // 保存済みの配色を復元する。未保存/未知の値はダーク扱い。
   restoreTheme(saved: string | null) {
-    this.applyTheme((THEMES as readonly string[]).includes(saved ?? "") ? (saved as Theme) : "dark");
+    this.applyTheme(normalizeTheme(saved));
   }
 
   private applyTheme(theme: Theme) {
     document.documentElement.setAttribute("data-theme", theme);
     this.pick("st-theme").textContent = THEME_LABELS[theme];
-    localStorage.setItem("theme", theme);
+    localStorage.setItem(THEME_STORAGE_KEY, theme);
   }
 
   // 選択肢に無いインデント幅は既定の8へ丸め、丸めた結果を返す
   setIndent(size: number): number {
-    this.indentSelect.value = String([2, 4, 8].includes(size) ? size : 8);
+    this.indentSelect.value = String(INDENT_SIZES.includes(size as typeof INDENT_SIZES[number]) ? size : DEFAULT_INDENT_SIZE);
     return Number(this.indentSelect.value);
   }
 
@@ -119,7 +149,7 @@ export class StatusBar {
   }
 
   // ステータスバーが示すのは読込時の形式だけ。保存形式は別名保存ダイアログが持つ。
-  setFormat(session: DocumentSession) {
+  setFormat(session: Readonly<DocumentSession>) {
     const source = this.sourceEncodingSelect;
     this.shownReadEncoding = readEncodingOf(session.sourceEncoding);
     source.value = this.shownReadEncoding;
@@ -136,27 +166,13 @@ export class StatusBar {
   }
 
   private async promptFont() {
-    const options = FONT_FAMILIES.map((value) => ({
-      label: value.replace(/,.*$/, "").replaceAll('"', ""),
-      value,
-    }));
-    if (!options.some((option) => option.value === this.fontFamily)) {
-      options.unshift({ label: formatFontFamily(this.fontFamily), value: this.fontFamily });
-    }
-    const result = await promptFields("フォント", [
-      { label: "フォント", value: this.fontFamily, options },
-    ]);
-    const family = result?.[0].trim();
+    const family = await promptFontFamily(this.fontFamily);
     if (family) this.ports.onFont(family, this.fontSize);
   }
 
   private async promptFontSize() {
-    const result = await promptFields("フォントサイズ", [
-      { label: "サイズ (8〜72px)", value: String(this.fontSize) },
-    ]);
-    const size = Number(result?.[0]);
-    if (!Number.isInteger(size) || size < 8 || size > 72) return;
-    this.ports.onFont(this.fontFamily, size);
+    const size = await promptFontSize(this.fontSize);
+    if (size !== null) this.ports.onFont(this.fontFamily, size);
   }
 
   private async promptGoTo() {

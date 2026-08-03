@@ -4,9 +4,12 @@ import { listen } from "@tauri-apps/api/event";
 import Chart from "chart.js/auto";
 import MarkdownIt from "markdown-it";
 import Papa from "papaparse";
-import { takeViewerPayload, type ViewerFormat, type ViewerPayload, type ViewerSelection } from "./api";
-import { DEFAULT_EDITOR_CONFIG } from "./editor-config";
-import { VIEWER_FORMAT_LABELS, formatTitleBar } from "./format";
+import { EVENT_NAMES, readArchiveAsset, takeViewerPayload, type ViewerFormat, type ViewerPayload, type ViewerSelection } from "./api";
+import { formatFontFamily, formatTitleBar } from "./format";
+import { createViewerFormatHandlers } from "./viewer-formats";
+import { basename } from "./path";
+import { getSetting, initSettings, setSetting } from "./settings";
+import { clampFontSize, promptFontFamily, promptFontSize as promptFontSizeDialog } from "./font-controls";
 import {
   chartColumnLabel,
   chartPointRadius,
@@ -18,21 +21,30 @@ import {
   type ChartTypeId,
 } from "./chart-data";
 import { csvColumnAt, decodeDelimiter, isSingleCsvCellSelection } from "./csv-viewer";
-import { resolveAssetPath } from "./viewer-assets";
+import { resolveArchiveAssetEntry, resolveAssetPath } from "./viewer-assets";
+import { normalizeTheme, THEME_STORAGE_KEY } from "./theme";
+import { showError } from "./dialogs";
+import {
+  markdownBlockSelected,
+  markdownHighlightTargets,
+  renderRawHtml,
+  scrollMarkdownCaret,
+} from "./viewer-markdown";
+import { scrollViewerCaret } from "./viewer-scroll";
 
 const MAX_TABLE_ROWS = 10_000;
 const MAX_TABLE_COLUMNS = 200;
-const VIEWER_THEME_KEY = "viewerTheme";
 const CHART_COLORS = ["#4fc3f7", "#ffb74d", "#81c784", "#e57373", "#ba68c8", "#fff176", "#4dd0e1", "#f06292"];
 
-// 等幅フォントの定義はエディタ既定値ただ一つ。CSSは値を持たない。
-document.documentElement.style.setProperty("--font-mono", DEFAULT_EDITOR_CONFIG.fontFamily);
+await initSettings();
 
 const win = getCurrentWindow();
 const content = document.getElementById("viewer-content")!;
 const title = document.getElementById("viewer-title")!;
 const summary = document.getElementById("viewer-summary")!;
 const themeButton = document.getElementById("viewer-theme")!;
+const fontButton = document.getElementById("viewer-font")!;
+const fontSizeButton = document.getElementById("viewer-font-size")!;
 const contextMenu = document.getElementById("viewer-context-menu")!;
 const chartPanel = document.getElementById("chart-panel")!;
 const chartTitle = document.getElementById("chart-title")!;
@@ -45,14 +57,53 @@ let currentRows: string[][] = [];
 let currentText = "";
 let currentSelection: ViewerSelection | null = null;
 let currentSourcePath: string | null = null;
+let currentArchivePath: string | null = null;
+let currentArchiveEntry: string | null = null;
+let renderGeneration = 0;
+let archiveAssetUrls: string[] = [];
 let chart: Chart<"line" | "bar", (number | null)[], string> | null = null;
 let chartColumns: { x: number; y: number[]; reverseX: boolean; type: ChartTypeId } | null = null;
+let fontFamily = getSetting("fontFamily");
+let fontSize = getSetting("fontSize");
 
-function applyTheme(theme = localStorage.getItem(VIEWER_THEME_KEY)) {
-  const value = theme === "light" ? "light" : "dark";
+function scrollCsvRows(rows: HTMLElement[], selection: ViewerSelection | null) {
+  scrollViewerCaret(rows, selection, (_row, index) => ({ start: index, end: index + 1 }));
+}
+
+function applyFont(family: string, size: number, persist = true) {
+  fontFamily = family;
+  fontSize = size;
+  document.documentElement.style.setProperty("--font-mono", family);
+  document.documentElement.style.setProperty("--viewer-font-size", `${size}px`);
+  fontButton.textContent = formatFontFamily(family);
+  fontSizeButton.textContent = `${size}px`;
+  if (persist) {
+    setSetting("fontFamily", family);
+    setSetting("fontSize", size);
+  }
+}
+
+async function promptFont() {
+  const family = await promptFontFamily(fontFamily);
+  if (family) applyFont(family, fontSize);
+}
+
+async function promptFontSize() {
+  const size = await promptFontSizeDialog(fontSize);
+  if (size !== null) applyFont(fontFamily, size);
+}
+
+function onViewerWheel(event: WheelEvent) {
+  if (!event.ctrlKey) return;
+  event.preventDefault();
+  if (event.deltaY) applyFont(fontFamily, clampFontSize(fontSize + (event.deltaY < 0 ? 1 : -1)));
+}
+
+function applyTheme(theme = localStorage.getItem(THEME_STORAGE_KEY)) {
+  const value = normalizeTheme(theme);
   document.documentElement.dataset.theme = value;
   themeButton.textContent = value === "dark" ? "ダーク" : "ライト";
-  localStorage.setItem(VIEWER_THEME_KEY, value);
+  localStorage.setItem(THEME_STORAGE_KEY, value);
   if (chartColumns) renderChart();
 }
 
@@ -63,22 +114,39 @@ async function syncMaxIcon() {
   button.title = maximized ? "元に戻す" : "最大化";
 }
 
+function reportWindowError(title: string, error: unknown) {
+  void showError(title, error).catch((reportError) => {
+    console.error(`${title}のエラーを表示できませんでした`, reportError);
+  });
+}
+
+function runViewerOperation(title: string, operation: () => void | Promise<unknown>) {
+  void Promise.resolve().then(operation).catch((error) => reportWindowError(title, error));
+}
+
 function bindWindowControls() {
-  document.getElementById("win-min")!.addEventListener("click", () => { void win.minimize(); });
-  document.getElementById("win-max")!.addEventListener("click", async () => {
+  document.getElementById("win-min")!.addEventListener("click", () => runViewerOperation("ウィンドウを最小化できませんでした", () => win.minimize()));
+  document.getElementById("win-max")!.addEventListener("click", () => runViewerOperation("ウィンドウを最大化できませんでした", async () => {
     await win.toggleMaximize();
     await syncMaxIcon();
-  });
-  document.getElementById("win-close")!.addEventListener("click", () => { void win.close(); });
-  title.addEventListener("dblclick", async () => {
+  }));
+  document.getElementById("win-close")!.addEventListener("click", () => runViewerOperation("ウィンドウを閉じられませんでした", () => win.close()));
+  title.addEventListener("dblclick", () => runViewerOperation("ウィンドウを最大化できませんでした", async () => {
     await win.toggleMaximize();
     await syncMaxIcon();
-  });
-  void win.onResized(() => { void syncMaxIcon(); });
-  void syncMaxIcon();
+  }));
+  fontButton.addEventListener("click", () => runViewerOperation("フォントを変更できませんでした", promptFont));
+  fontSizeButton.addEventListener("click", () => runViewerOperation("文字サイズを変更できませんでした", promptFontSize));
+  content.addEventListener("wheel", onViewerWheel, { passive: false });
+  void win.onResized(() => {
+    void syncMaxIcon().catch((error) => reportWindowError("最大化状態を取得できませんでした", error));
+  }).catch((error) => reportWindowError("ウィンドウサイズ監視を開始できませんでした", error));
+  void syncMaxIcon().catch((error) => reportWindowError("最大化状態を取得できませんでした", error));
 }
 
 function renderTable(text: string) {
+  renderGeneration++;
+  revokeArchiveAssetUrls();
   const sourceLines = text.split(/\r?\n/);
   const parsed = Papa.parse<string[]>(text, {
     delimiter: decodeDelimiter(delimiterInput.value),
@@ -89,6 +157,7 @@ function renderTable(text: string) {
   table.className = "viewer-grid";
   const body = document.createElement("tbody");
   const fragment = document.createDocumentFragment();
+  const rows: HTMLTableRowElement[] = [];
 
   currentRows.slice(0, MAX_TABLE_ROWS).forEach((row, rowIndex) => {
     const tr = document.createElement("tr");
@@ -103,11 +172,13 @@ function renderTable(text: string) {
       tr.appendChild(cell);
     });
     tr.classList.toggle("viewer-source-selected", csvRowSelected(sourceLines[rowIndex] ?? "", rowIndex));
+    rows.push(tr);
     fragment.appendChild(tr);
   });
   body.appendChild(fragment);
   table.appendChild(body);
   content.replaceChildren(table);
+  scrollCsvRows(rows, currentSelection);
 
   const maxColumns = currentRows.reduce((max, row) => Math.max(max, row.length), 0);
   const truncated = currentRows.length > MAX_TABLE_ROWS || maxColumns > MAX_TABLE_COLUMNS;
@@ -119,24 +190,93 @@ function renderTable(text: string) {
   if (chartColumns) renderChart();
 }
 
-// 生HTMLは <img> だけ通す。他のタグは今まで通り文字列として見せる。
-const IMG_ONLY = /^<img\b[^>]*>$/i;
-const IMG_ATTRIBUTES = ["src", "alt", "title", "width", "height"];
-
-function renderRawHtml(raw: string, escape: (text: string) => string): string {
-  if (!IMG_ONLY.test(raw.trim())) return escape(raw);
-  // template の中身は不活性なので、この時点で画像取得もハンドラ実行も起きない
-  const template = document.createElement("template");
-  template.innerHTML = raw.trim();
-  const img = template.content.firstElementChild;
-  if (!(img instanceof HTMLImageElement)) return escape(raw);
-  for (const name of img.getAttributeNames()) {
-    if (!IMG_ATTRIBUTES.includes(name.toLowerCase())) img.removeAttribute(name);
-  }
-  return img.outerHTML;
+function revokeArchiveAssetUrls() {
+  archiveAssetUrls.forEach((url) => URL.revokeObjectURL(url));
+  archiveAssetUrls = [];
 }
 
-function renderMarkdown(text: string) {
+function archiveAssetMimeType(src: string): string {
+  const extension = src.split(/[?#]/, 1)[0].split(".").pop()?.toLowerCase();
+  return ({
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    gif: "image/gif",
+    webp: "image/webp",
+    bmp: "image/bmp",
+    svg: "image/svg+xml",
+  } as Record<string, string>)[extension ?? ""] ?? "application/octet-stream";
+}
+
+async function loadArchiveImages(
+  article: HTMLElement,
+  generation: number,
+  archivePath: string | null,
+  archiveEntry: string | null,
+) {
+  const images = [...article.querySelectorAll<HTMLImageElement>("img")];
+  await Promise.all(images.map(async (image) => {
+    try {
+      const src = image.getAttribute("src") ?? "";
+      const entry = resolveArchiveAssetEntry(archiveEntry, src);
+      if (archivePath && archiveEntry && entry) {
+        try {
+          const bytes = await readArchiveAsset(archivePath, entry);
+          if (generation !== renderGeneration) return;
+          const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: archiveAssetMimeType(src) }));
+          archiveAssetUrls.push(url);
+          image.src = url;
+          await waitForImageLayout(image);
+        } catch {
+          if (generation !== renderGeneration) return;
+          image.removeAttribute("src");
+          image.alt = `${image.alt || "画像"}（読み込めません）`;
+        }
+        return;
+      }
+      const resolved = resolveAssetPath(currentSourcePath, src);
+      if (resolved && generation === renderGeneration) {
+        image.src = convertFileSrc(resolved);
+        await waitForImageLayout(image);
+      }
+    } catch {
+      if (generation !== renderGeneration) return;
+      image.removeAttribute("src");
+      image.alt = `${image.alt || "画像"}（読み込めません）`;
+    }
+  }));
+}
+
+async function waitForImageLayout(image: HTMLImageElement) {
+  if (!image.getAttribute("src")) return;
+  if (!image.complete) {
+    await new Promise<void>((resolve) => {
+      let timeout: number | undefined;
+      const finish = () => {
+        window.clearTimeout(timeout);
+        image.removeEventListener("load", finish);
+        image.removeEventListener("error", finish);
+        resolve();
+      };
+      image.addEventListener("load", finish, { once: true });
+      image.addEventListener("error", finish, { once: true });
+      timeout = window.setTimeout(finish, 2000);
+      if (image.complete) finish();
+    });
+  }
+  try {
+    await image.decode?.();
+  } catch {
+    // 壊れた画像でも本文の中央スクロールは継続する。
+  }
+}
+
+async function renderMarkdown(text: string) {
+  const generation = ++renderGeneration;
+  const archivePath = currentArchivePath;
+  const archiveEntry = currentArchiveEntry;
+  const selection = currentSelection;
+  revokeArchiveAssetUrls();
   currentRows = [];
   closeChart();
   const article = document.createElement("article");
@@ -153,14 +293,12 @@ function renderMarkdown(text: string) {
     }
   });
   article.innerHTML = markdown.renderer.render(tokens, markdown.options, {});
-  article.querySelectorAll<HTMLElement>("[data-source-start]").forEach((element) => {
+  const sourceElements = [...article.querySelectorAll<HTMLElement>("[data-source-start]")];
+  const highlightTargets = markdownHighlightTargets(sourceElements);
+  highlightTargets.forEach((element) => {
     const start = Number(element.dataset.sourceStart);
     const end = Number(element.dataset.sourceEnd);
-    element.classList.toggle("viewer-source-selected", markdownBlockSelected(start, end));
-  });
-  article.querySelectorAll("img").forEach((image) => {
-    const resolved = resolveAssetPath(currentSourcePath, image.getAttribute("src") ?? "");
-    if (resolved) image.src = convertFileSrc(resolved);
+    element.classList.toggle("viewer-source-selected", markdownBlockSelected(selection, start, end));
   });
   article.querySelectorAll("a").forEach((link) => {
     link.target = "_blank";
@@ -170,18 +308,29 @@ function renderMarkdown(text: string) {
   summary.classList.remove("warning");
   summary.title = "";
   summary.textContent = `${text.length.toLocaleString()}文字`;
+  await loadArchiveImages(article, generation, archivePath, archiveEntry);
+  // 画像の高さが確定する前にスクロールすると、読込後のレイアウト変化で中央位置が崩れる。
+  if (generation === renderGeneration) scrollMarkdownCaret(highlightTargets, selection);
 }
+
+const VIEWER_HANDLERS = createViewerFormatHandlers({
+  csv: renderTable,
+  markdown: renderMarkdown,
+});
 
 function renderPayload(payload: ViewerPayload) {
   currentFormat = payload.format;
   currentText = payload.text;
   currentSelection = payload.selection;
   currentSourcePath = payload.source_path;
-  title.textContent = formatTitleBar(VIEWER_FORMAT_LABELS[payload.format]);
-  void win.setTitle(title.textContent);
-  delimiterControl.hidden = payload.format !== "csv";
-  if (payload.format === "markdown") renderMarkdown(payload.text);
-  else renderTable(payload.text);
+  currentArchivePath = payload.archive_path;
+  currentArchiveEntry = payload.archive_entry;
+  const sourceName = payload.source_path ? basename(payload.source_path) : "";
+  const handler = VIEWER_HANDLERS[payload.format];
+  title.textContent = formatTitleBar(`${sourceName ? `${sourceName} — ` : ""}${handler.label}`);
+  runViewerOperation("タイトルを更新できませんでした", () => win.setTitle(title.textContent));
+  delimiterControl.hidden = !handler.supportsDelimiter;
+  runViewerOperation("ビューを描画できませんでした", () => handler.render(payload.text));
 }
 
 function csvRowSelected(line: string, rowIndex: number) {
@@ -207,22 +356,13 @@ function csvSourceLineSelected(rowIndex: number) {
   return rowIndex >= start.line && (rowIndex < end.line || (rowIndex === end.line && end.col > 0));
 }
 
-function markdownBlockSelected(start: number, end: number) {
-  if (!currentSelection) return false;
-  const { start: selectionStart, end: selectionEnd } = currentSelection;
-  const lastSelectedLine = selectionStart.line === selectionEnd.line && selectionStart.col === selectionEnd.col
-    ? selectionEnd.line
-    : selectionEnd.line - Number(selectionEnd.col === 0);
-  return start <= lastSelectedLine && end > selectionStart.line;
-}
-
 function showContextMenu(x: number, y: number) {
   contextMenu.replaceChildren();
   const item = document.createElement("button");
   item.textContent = "グラフを作成...";
   item.addEventListener("click", () => {
     contextMenu.hidden = true;
-    openChartDialog();
+    runViewerOperation("グラフ設定を開けませんでした", openChartDialog);
   });
   contextMenu.appendChild(item);
   contextMenu.hidden = false;
@@ -331,7 +471,7 @@ function openChartDialog() {
     const type = isChartTypeId(typeSelect.value) ? typeSelect.value : DEFAULT_CHART_TYPE;
     chartColumns = { x: Number(xSelect.value), y, reverseX: reverseInput.checked, type };
     finish();
-    renderChart();
+    runViewerOperation("グラフを描画できませんでした", renderChart);
   });
 }
 
@@ -399,30 +539,39 @@ function closeChart() {
   chart?.destroy();
   chart = null;
   chartColumns = null;
+  if (currentFormat === "csv") {
+    scrollCsvRows([...content.querySelectorAll<HTMLTableRowElement>(".viewer-grid tbody > tr")], currentSelection);
+  }
 }
 
 async function start() {
   try {
     applyTheme();
-    bindWindowControls();
+bindWindowControls();
+applyFont(fontFamily, fontSize, false);
     themeButton.addEventListener("click", () => {
-      applyTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light");
+      runViewerOperation("配色を変更できませんでした", () => {
+        applyTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light");
+      });
     });
     delimiterInput.addEventListener("input", () => {
-      if (!delimiterInput.value || currentFormat !== "csv") return;
-      renderTable(currentText);
+      const handler = VIEWER_HANDLERS[currentFormat];
+      if (!delimiterInput.value || !handler.supportsDelimiter) return;
+      runViewerOperation("ビューを再描画できませんでした", () => VIEWER_HANDLERS[currentFormat].render(currentText));
     });
-    document.getElementById("chart-close")!.addEventListener("click", closeChart);
+    document.getElementById("chart-close")!.addEventListener("click", () => {
+      runViewerOperation("グラフを閉じられませんでした", closeChart);
+    });
     content.addEventListener("contextmenu", (event) => {
-      if (currentFormat === "markdown" || !(event.target as Element).closest(".viewer-grid")) return;
+      if (!VIEWER_HANDLERS[currentFormat].supportsChart || !(event.target as Element).closest(".viewer-grid")) return;
       event.preventDefault();
-      showContextMenu(event.clientX, event.clientY);
+      runViewerOperation("グラフメニューを表示できませんでした", () => showContextMenu(event.clientX, event.clientY));
     });
     document.addEventListener("mousedown", (event) => {
       if (!contextMenu.contains(event.target as Node)) contextMenu.hidden = true;
     });
-    await listen<ViewerPayload>("viewer-update", (event) => {
-      renderPayload(event.payload);
+    await listen<ViewerPayload>(EVENT_NAMES.viewerUpdate, (event) => {
+      runViewerOperation("ビューを更新できませんでした", () => renderPayload(event.payload));
     });
     renderPayload(await takeViewerPayload(win.label));
   } catch (error) {
@@ -435,7 +584,9 @@ async function start() {
 }
 
 window.addEventListener("storage", (event) => {
-  if (event.key === VIEWER_THEME_KEY) applyTheme(event.newValue);
+  if (event.key === THEME_STORAGE_KEY) {
+    runViewerOperation("配色を同期できませんでした", () => applyTheme(event.newValue));
+  }
 });
 
 void start();

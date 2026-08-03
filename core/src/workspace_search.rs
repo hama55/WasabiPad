@@ -83,7 +83,11 @@ const NAME_PREFIX: &str = "ファイル名: ";
 
 // 0 は無制限。以降の比較をすべて飽和値で書けるようにする
 fn limit(value: usize) -> usize {
-    if value == 0 { usize::MAX } else { value }
+    if value == 0 {
+        usize::MAX
+    } else {
+        value
+    }
 }
 
 // 0=自動。上限は論理コア数で、それを超える指定は意味がないので切り詰める
@@ -151,7 +155,9 @@ pub fn search_workspace(
             if cancel.load(Ordering::Relaxed) {
                 return WalkState::Quit;
             }
-            let Ok(entry) = entry else { return WalkState::Continue };
+            let Ok(entry) = entry else {
+                return WalkState::Continue;
+            };
             if !entry.file_type().is_some_and(|kind| kind.is_file()) {
                 return WalkState::Continue;
             }
@@ -167,7 +173,9 @@ pub fn search_workspace(
             if found.hits.is_empty() {
                 return WalkState::Continue;
             }
-            let mut output = results.lock().unwrap();
+            let mut output = results
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if output.hits.len() >= max_results {
                 hit_result_limit.store(true, Ordering::Relaxed);
                 return WalkState::Quit;
@@ -182,7 +190,10 @@ pub fn search_workspace(
         })
     });
 
-    let mut output = shared_results.into_inner().unwrap().hits;
+    let mut output = shared_results
+        .into_inner()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .hits;
     let truncated = shared_result_limit.load(Ordering::Relaxed) || output.len() > max_results;
     output.truncate(max_results);
     WorkspaceSearchOutcome {
@@ -213,7 +224,10 @@ impl Collected {
             return None;
         }
         let now = std::time::Instant::now();
-        if self.last_sent_at.is_some_and(|last| now.duration_since(last) < PROGRESS_INTERVAL) {
+        if self
+            .last_sent_at
+            .is_some_and(|last| now.duration_since(last) < PROGRESS_INTERVAL)
+        {
             return None;
         }
         self.last_sent_at = Some(now);
@@ -253,8 +267,13 @@ fn build_matcher(
     if !options.search_contents && !strict_names {
         return Ok(None);
     }
-    crate::search::build_matcher(pattern, options.match_case, options.use_regex, options.whole_word)
-        .map(Some)
+    crate::search::build_matcher(
+        pattern,
+        options.match_case,
+        options.use_regex,
+        options.whole_word,
+    )
+    .map(Some)
 }
 
 fn build_walk(root: &Path, options: &SearchOptions) -> Result<WalkBuilder, String> {
@@ -275,14 +294,22 @@ fn build_walk(root: &Path, options: &SearchOptions) -> Result<WalkBuilder, Strin
     }
     if !options.exclude_globs.is_empty() {
         let mut overrides = OverrideBuilder::new(root);
-        overrides.case_insensitive(true).map_err(|e| e.to_string())?;
+        overrides
+            .case_insensitive(true)
+            .map_err(|e| e.to_string())?;
         for glob in &options.exclude_globs {
             // overrides では先頭の "!" が「除外」を意味する (gitignore と逆)
-            overrides.add(&format!("!{glob}")).map_err(|e| format!("除外パターンが不正: {e}"))?;
+            overrides
+                .add(&format!("!{glob}"))
+                .map_err(|e| format!("除外パターンが不正: {e}"))?;
         }
         builder.overrides(overrides.build().map_err(|e| e.to_string())?);
     }
-    let excluded: Vec<String> = options.exclude_dirs.iter().map(|dir| dir.to_lowercase()).collect();
+    let excluded: Vec<String> = options
+        .exclude_dirs
+        .iter()
+        .map(|dir| dir.to_lowercase())
+        .collect();
     builder.filter_entry(move |entry| {
         // ルート自身は、名前がたまたま除外リストに載っていても対象から外さない
         entry.depth() == 0
@@ -309,13 +336,19 @@ struct Engine<'a> {
 impl<'a> Engine<'a> {
     fn new(matcher: Option<&'a RegexMatcher>, options: &SearchOptions, strict_names: bool) -> Self {
         Engine {
-            content: if options.search_contents { matcher } else { None },
+            content: if options.search_contents {
+                matcher
+            } else {
+                None
+            },
             name: if strict_names { matcher } else { None },
             match_names: options.search_file_names,
             match_case: options.match_case,
             exclude_binary: options.exclude_binary,
             utf8: searcher(None),
-            sjis: grep_searcher::Encoding::new("sjis").ok().map(|enc| searcher(Some(enc))),
+            sjis: grep_searcher::Encoding::new("sjis")
+                .ok()
+                .map(|enc| searcher(Some(enc))),
         }
     }
 
@@ -339,13 +372,22 @@ impl<'a> Engine<'a> {
             hits.extend(name_hit(self.name, pattern, relative, self.match_case));
         }
         let (Some(matcher), Some(file)) = (self.content, file.as_ref()) else {
-            return FileHits { hits, limited: false };
+            return FileHits {
+                hits,
+                limited: false,
+            };
         };
         let searcher = match (probe.sjis, self.sjis.as_mut()) {
             (true, Some(sjis)) => sjis,
             _ => &mut self.utf8,
         };
-        let mut collector = Collector { matcher, relative, hits: &mut hits, max_results, limited: false };
+        let mut collector = Collector {
+            matcher,
+            relative,
+            hits: &mut hits,
+            max_results,
+            limited: false,
+        };
         // 途中で読めなくなったファイルは黙って飛ばす (ここまでの一致は残す)
         let _ = searcher.search_file(matcher, file, &mut collector);
         let limited = collector.limited;
@@ -367,7 +409,10 @@ fn name_hit(
             let mut spans = Vec::new();
             let _ = matcher.find_iter(relative.as_bytes(), |at| {
                 let start = relative[..at.start()].chars().count();
-                spans.push([prefix + start, relative[at.start()..at.end()].chars().count()]);
+                spans.push([
+                    prefix + start,
+                    relative[at.start()..at.end()].chars().count(),
+                ]);
                 true
             });
             // 厳密に当てたときは当てはまりの良さに差が無い (並びはパス順に任せる)
@@ -426,7 +471,11 @@ struct Collector<'a> {
 impl Sink for Collector<'_> {
     type Error = std::io::Error;
 
-    fn matched(&mut self, _searcher: &Searcher, found: &SinkMatch<'_>) -> Result<bool, Self::Error> {
+    fn matched(
+        &mut self,
+        _searcher: &Searcher,
+        found: &SinkMatch<'_>,
+    ) -> Result<bool, Self::Error> {
         let line = found.line_number().unwrap_or(1).saturating_sub(1) as usize;
         let text = String::from_utf8_lossy(found.bytes());
         let text = text.trim_end_matches(['\n', '\r']);
@@ -442,7 +491,11 @@ impl Sink for Collector<'_> {
                 line,
                 col: text[..at.start()].chars().count(),
                 preview,
-                highlights: if shown > 0 { vec![[preview_col, shown]] } else { Vec::new() },
+                highlights: if shown > 0 {
+                    vec![[preview_col, shown]]
+                } else {
+                    Vec::new()
+                },
                 is_filename: false,
                 score: 0,
             });
@@ -463,7 +516,10 @@ fn preview_around(text: &str, byte_col: usize) -> (String, usize) {
     let skip = before.saturating_sub(PREVIEW_LEAD_CHARS);
     let head = if skip > 0 { "…" } else { "" };
     let shown: String = body.chars().skip(skip).take(PREVIEW_CHARS).collect();
-    (format!("{head}{shown}"), before - skip + head.chars().count())
+    (
+        format!("{head}{shown}"),
+        before - skip + head.chars().count(),
+    )
 }
 
 struct Probe {
@@ -473,7 +529,10 @@ struct Probe {
 
 impl Probe {
     // 中身を覗けなかったときの扱い。名前一致の機会だけは残す
-    const TEXT: Probe = Probe { binary: false, sjis: false };
+    const TEXT: Probe = Probe {
+        binary: false,
+        sjis: false,
+    };
 }
 
 // 先頭だけを覗いて、バイナリかどうかと Shift-JIS 扱いが要るかを決める。
@@ -485,7 +544,10 @@ fn probe_head(file: &mut File) -> Probe {
     let _ = file.seek(SeekFrom::Start(0)); // 通常ファイルの seek は失敗しない
     let head = &head[..read];
     if head.starts_with(&[0xFF, 0xFE]) || head.starts_with(&[0xFE, 0xFF]) {
-        return Probe { binary: false, sjis: false };
+        return Probe {
+            binary: false,
+            sjis: false,
+        };
     }
     Probe {
         binary: head.contains(&0),
@@ -522,7 +584,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("skip")).unwrap();
         std::fs::create_dir_all(root.join("sub")).unwrap();
-        std::fs::write(root.join("needle.txt"), "one needle\nno match\nneedle and needle\n").unwrap();
+        std::fs::write(
+            root.join("needle.txt"),
+            "one needle\nno match\nneedle and needle\n",
+        )
+        .unwrap();
         std::fs::write(root.join("sub/plain.txt"), "nothing here\n").unwrap();
         std::fs::write(root.join("skip/hidden.txt"), "needle\n").unwrap();
         std::fs::write(root.join("blob.pyc"), b"\x00\x01needle\x00").unwrap();
@@ -538,18 +604,25 @@ mod tests {
     }
 
     fn places(found: &super::WorkspaceSearchOutcome) -> Vec<(String, usize, usize)> {
-        found.results.iter().map(|r| (r.rel_path.clone(), r.line, r.col)).collect()
+        found
+            .results
+            .iter()
+            .map(|r| (r.rel_path.clone(), r.line, r.col))
+            .collect()
     }
 
     #[test]
     fn collects_every_match_on_a_line_and_skips_excluded_dirs() {
         let root = workspace("all");
         let found = run(&root, "needle", &options());
-        assert_eq!(places(&found), vec![
-            ("needle.txt".into(), 0, 4),
-            ("needle.txt".into(), 2, 0),
-            ("needle.txt".into(), 2, 11),
-        ]);
+        assert_eq!(
+            places(&found),
+            vec![
+                ("needle.txt".into(), 0, 4),
+                ("needle.txt".into(), 2, 0),
+                ("needle.txt".into(), 2, 11),
+            ]
+        );
         assert_eq!(found.scanned_files, 3, "skip/ 配下は列挙しない");
         assert!(!found.hit_file_limit && !found.hit_result_limit);
         assert_eq!(found.results[0].preview, "one needle");
@@ -609,7 +682,11 @@ mod tests {
     #[test]
     fn glob_excludes_and_shift_jis_contents_are_handled() {
         let root = workspace("glob");
-        std::fs::write(root.join("sjis.txt"), encoding_rs::SHIFT_JIS.encode("日本語のかんじ").0).unwrap();
+        std::fs::write(
+            root.join("sjis.txt"),
+            encoding_rs::SHIFT_JIS.encode("日本語のかんじ").0,
+        )
+        .unwrap();
         let found = run(&root, "かんじ", &options());
         assert_eq!(found.results.len(), 1, "Shift-JIS の本文も当たる");
 
@@ -631,12 +708,22 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("many.txt"), "needle\n".repeat(cap * 2)).unwrap();
         let streamed = std::sync::Mutex::new(Vec::new());
-        let found = search_workspace(&root, "needle", &options(), &AtomicBool::new(false), &|hits| {
-            streamed.lock().unwrap().extend(hits);
-        });
+        let found = search_workspace(
+            &root,
+            "needle",
+            &options(),
+            &AtomicBool::new(false),
+            &|hits| {
+                streamed.lock().unwrap().extend(hits);
+            },
+        );
         let streamed = streamed.into_inner().unwrap();
         assert_eq!(found.results.len(), cap * 2, "確定結果は打ち切らない");
-        assert_eq!(streamed.len(), cap, "1件目は待たずに送り、上限で送出を止める");
+        assert_eq!(
+            streamed.len(),
+            cap,
+            "1件目は待たずに送り、上限で送出を止める"
+        );
         let places = places(&found);
         for hit in &streamed {
             assert!(places.contains(&(hit.rel_path.clone(), hit.line, hit.col)));
@@ -670,13 +757,22 @@ mod tests {
             found.file_name_match_mode,
             super::FileNameMatchMode::Strict
         ));
-        assert!(run(&root, "eedle", &opts).results.is_empty(), "単語の一部にも当たらない");
+        assert!(
+            run(&root, "eedle", &opts).results.is_empty(),
+            "単語の一部にも当たらない"
+        );
         assert_eq!(names(&run(&root, "needle", &opts)), vec!["needle.txt"]);
 
         opts.whole_word = false;
         opts.use_regex = true;
-        assert_eq!(names(&run(&root, "need.e\\.txt", &opts)), vec!["needle.txt"]);
-        assert!(run(&root, "ndl", &opts).results.is_empty(), "正規表現としては当たらない");
+        assert_eq!(
+            names(&run(&root, "need.e\\.txt", &opts)),
+            vec!["needle.txt"]
+        );
+        assert!(
+            run(&root, "ndl", &opts).results.is_empty(),
+            "正規表現としては当たらない"
+        );
         // 壊れた正規表現は、本文を検索しなくても理由を返す
         assert!(run(&root, "need(", &opts).pattern_error.is_some());
         std::fs::remove_dir_all(root).unwrap();
@@ -692,8 +788,11 @@ mod tests {
         opts.search_contents = false;
         opts.search_file_names = true;
         let found = run(&root, "ndl", &opts);
-        let by_path: std::collections::HashMap<&str, &super::WorkspaceSearchResult> =
-            found.results.iter().map(|r| (r.rel_path.as_str(), r)).collect();
+        let by_path: std::collections::HashMap<&str, &super::WorkspaceSearchResult> = found
+            .results
+            .iter()
+            .map(|r| (r.rel_path.as_str(), r))
+            .collect();
         let short = by_path["needle.txt"];
         let long = by_path["sub/needless-extra.txt"];
         assert_eq!(found.results.len(), 2);
@@ -718,11 +817,14 @@ mod tests {
         let found = run(&root, "NEEDLE", &opts);
         let mut places = places(&found);
         places.sort();
-        assert_eq!(places, vec![
-            ("needle-file.txt".into(), 0, 0), // 名前だけの一致
-            ("sub/deep.txt".into(), 0, 2),    // "あ " は 2 文字
-            ("top.txt".into(), 1, 0),
-        ]);
+        assert_eq!(
+            places,
+            vec![
+                ("needle-file.txt".into(), 0, 0), // 名前だけの一致
+                ("sub/deep.txt".into(), 0, 2),    // "あ " は 2 文字
+                ("top.txt".into(), 1, 0),
+            ]
+        );
         let name_hit = found.results.iter().find(|r| r.is_filename).unwrap();
         assert_eq!(name_hit.preview, "ファイル名: needle-file.txt");
         std::fs::remove_dir_all(root).unwrap();

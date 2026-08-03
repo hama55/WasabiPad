@@ -7,7 +7,9 @@ const read = (path) => readFileSync(resolve(root, path), "utf8");
 const packageJson = JSON.parse(read("package.json"));
 const packageLock = JSON.parse(read("package-lock.json"));
 const tauri = JSON.parse(read("src-tauri/tauri.conf.json"));
+const appConfig = JSON.parse(read("app-config.json"));
 const vite = read("vite.config.ts");
+const uiAppConfig = read("ui/app-config.ts");
 
 const cargoVersion = workspaceVersion();
 // package-lock も sync:version が書き換える対象なので、同期漏れをここで検出する
@@ -25,9 +27,11 @@ if (versions.size !== 1) {
 }
 
 const devPort = Number(new URL(tauri.build.devUrl).port);
-const vitePort = Number(vite.match(/port:\s*(\d+)/)?.[1]);
-if (!devPort || devPort !== vitePort) {
-  throw new Error(`Development port mismatch: tauri=${devPort}, vite=${vitePort}`);
+const vitePort = vite.includes("port: DEV_PORT") && uiAppConfig.includes('from "../app-config.json"')
+  ? appConfig.devPort
+  : 0;
+if (!devPort || devPort !== appConfig.devPort || devPort !== vitePort) {
+  throw new Error(`Development port mismatch: source=${appConfig.devPort}, tauri=${devPort}, vite=${vitePort}`);
 }
 
 const devOrigin = new URL(tauri.build.devUrl).origin;
@@ -39,12 +43,12 @@ for (const origin of [devOrigin, devWebSocketOrigin]) {
   }
 }
 
-// アプリ名は tauri.conf の productName が正 (バックエンドは package_info().name しか見ない)。
-// 表示側とユーザデータの保存先が別々に名前を持つと、改名時に設定だけ旧フォルダに残る
-const appName = tauri.productName;
+// アプリ名と開発ポートは app-config.json が正。各実行環境の設定ファイルは同期生成する。
+const appName = appConfig.name;
 const copies = {
+  "tauri.conf productName": tauri.productName,
   "tauri.conf window title": tauri.app.windows[0].title,
-  "ui/format.ts APP_NAME": read("ui/format.ts").match(/APP_NAME = "([^"]+)"/)?.[1],
+  "ui/app-config source": uiAppConfig.includes('from "../app-config.json"') ? appName : undefined,
   "core/src/settings.rs config directory": read("core/src/settings.rs").match(/\.join\("([^"]+)"\)\.join\(file\)/)?.[1],
   "index.html <title>": read("index.html").match(/<title>([^<]+)<\/title>/)?.[1],
 };
@@ -56,8 +60,9 @@ if (drifted.length) {
 }
 
 const viewerTitle = read("viewer.html").match(/<title>([^<]+)<\/title>/)?.[1];
-if (viewerTitle !== `${appName} ビュー`) {
-  throw new Error(`Viewer title mismatch: expected ${appName} ビュー, received ${viewerTitle ?? "<not found>"}`);
+const expectedViewerTitle = `${appName} ${appConfig.viewerTitleSuffix}`;
+if (viewerTitle !== expectedViewerTitle) {
+  throw new Error(`Viewer title mismatch: expected ${expectedViewerTitle}, received ${viewerTitle ?? "<not found>"}`);
 }
 
 console.log(`Config OK: ${appName} version ${packageJson.version}, development port ${devPort}.`);

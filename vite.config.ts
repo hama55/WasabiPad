@@ -1,9 +1,10 @@
 import { defineConfig } from "vite";
+import { DEV_PORT } from "./ui/app-config";
 
 export default defineConfig({
   clearScreen: false,
   server: {
-    port: 5173,
+    port: DEV_PORT,
     strictPort: true,
   },
   build: {

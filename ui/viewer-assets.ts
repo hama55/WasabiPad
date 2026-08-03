@@ -16,6 +16,24 @@ export function resolveAssetPath(sourcePath: string | null, src: string): string
   return normalize(`${dir}\\${decoded}`);
 }
 
+export function resolveArchiveAssetEntry(sourceEntry: string | null, src: string): string | null {
+  if (!sourceEntry || !src) return null;
+  const decoded = decodeSrc(src).replace(/\\/g, "/");
+  if (SCHEME.test(src) || src.startsWith("//") || decoded.startsWith("/")) return null;
+  const base = sourceEntry.replace(/\\/g, "/").split("/");
+  base.pop();
+  for (const segment of decoded.split("/")) {
+    if (!segment || segment === ".") continue;
+    if (segment === "..") {
+      if (!base.length) return null;
+      base.pop();
+      continue;
+    }
+    base.push(segment);
+  }
+  return base.length ? base.join("/") : null;
+}
+
 // markdown-it は出力時に src をパーセントエンコードするため、実パスへ戻す
 function decodeSrc(src: string): string {
   try {

@@ -12,7 +12,8 @@ const tag = `v${version}`;
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 
 function run(command, args) {
-  execFileSync(command, args, { cwd: root, stdio: "inherit", shell: process.platform === "win32" });
+  // Windowsの.cmdだけshellが必要。gitまでshellへ渡すと、空白を含むcommit/tag messageが分割される。
+  execFileSync(command, args, { cwd: root, stdio: "inherit", shell: command === npm });
 }
 
 function output(command, args) {

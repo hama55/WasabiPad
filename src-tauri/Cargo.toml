@@ -11,7 +11,10 @@ wasabipad-core = { path = "../core" }
 # protocol-asset: Markdown ビューが画像を file から読むための asset プロトコル
 tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-dialog = "2"
-tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ts-rs = "12.0"
+tauri-plugin-clipboard-manager = "2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }

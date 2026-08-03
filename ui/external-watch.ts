@@ -1,4 +1,4 @@
-import * as api from "./api";
+import type * as api from "./api";
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -13,14 +13,26 @@ export interface ExternalWatchPorts {
   onIgnore: () => void;
 }
 
+export type ExternalWatchApi = Pick<typeof api, "pollExternal" | "reloadFromDisk" | "ackExternal">;
+
 // 対象文書かどうか (小ファイル=ハンドル非保持) の判定は backend が持つ。
 // 未編集なら backend が自動再読込し、dirty なら競合バナーで再読込/無視を選ばせる。
 export class ExternalWatch {
-  private polling = false;
+  private busy = false;
+  private generation = 0;
+  private pollErrorReported = false;
 
-  constructor(private banner: HTMLElement, private ports: ExternalWatchPorts) {
-    this.pick("external-reload").addEventListener("click", () => void this.reloadFromDisk());
-    this.pick("external-ignore").addEventListener("click", () => void this.ignore());
+  constructor(
+    private banner: HTMLElement,
+    private ports: ExternalWatchPorts,
+    private api: ExternalWatchApi,
+  ) {
+    this.pick("external-reload").addEventListener("click", () => {
+      void this.reloadFromDisk().catch((error) => this.reportError("再読込できませんでした", error));
+    });
+    this.pick("external-ignore").addEventListener("click", () => {
+      void this.ignore().catch((error) => this.reportError("外部変更を無視できませんでした", error));
+    });
     window.setInterval(() => void this.poll(), POLL_INTERVAL_MS);
   }
 
@@ -30,45 +42,84 @@ export class ExternalWatch {
 
   // 文書が切り替わったら競合バナーは無効
   hide() {
+    this.generation++;
     this.banner.hidden = true;
   }
 
+  private begin(): number | null {
+    if (this.busy) return null;
+    this.busy = true;
+    return ++this.generation;
+  }
+
   private async poll() {
-    if (this.polling || !this.banner.hidden || !this.ports.canPoll()) return;
-    this.polling = true;
+    if (this.busy || !this.banner.hidden) return;
+    let canPoll: boolean;
     try {
-      const check = await api.pollExternal(this.ports.isDirty());
+      canPoll = this.ports.canPoll();
+    } catch (error) {
+      await this.reportPollError(error);
+      return;
+    }
+    if (!canPoll) return;
+    const generation = this.begin();
+    if (generation === null) return;
+    try {
+      const check = await this.api.pollExternal(this.ports.isDirty());
+      if (generation !== this.generation) return;
       if (check.kind === "reloaded") {
         this.ports.onReload(check.info);
         this.ports.onNotice("外部の変更を再読込しました");
       } else if (check.kind === "conflict") {
         this.banner.hidden = false;
       }
-    } catch {
-      // 一時的に確認できなくても、次の周期で再試行する。
+      this.pollErrorReported = false;
+    } catch (error) {
+      if (generation === this.generation) {
+        this.banner.hidden = false;
+        await this.reportPollError(error);
+      }
     } finally {
-      this.polling = false;
+      this.busy = false;
     }
   }
 
   private async reloadFromDisk() {
-    this.hide();
+    const generation = this.begin();
+    if (generation === null) return;
+    this.banner.hidden = true;
     try {
-      this.ports.onReload(await api.reloadFromDisk());
+      const info = await this.api.reloadFromDisk();
+      if (generation !== this.generation) return;
+      this.ports.onReload(info);
     } catch (e) {
+      if (generation === this.generation) this.banner.hidden = false;
       await this.reportError("再読込できませんでした", e);
+    } finally {
+      this.busy = false;
     }
   }
 
   private async ignore() {
-    this.hide();
+    const generation = this.begin();
+    if (generation === null) return;
+    this.banner.hidden = true;
     try {
-      await api.ackExternal();
+      await this.api.ackExternal();
+      if (generation !== this.generation) return;
       this.ports.onIgnore();
     } catch (error) {
-      this.banner.hidden = false; // 無視できていない競合を隠したままにしない。
+      if (generation === this.generation) this.banner.hidden = false; // 無視できていない競合を隠したままにしない。
       await this.reportError("外部変更を無視できませんでした", error);
+    } finally {
+      this.busy = false;
     }
+  }
+
+  private async reportPollError(error: unknown) {
+    if (this.pollErrorReported) return;
+    this.pollErrorReported = true;
+    await this.reportError("外部変更を確認できませんでした", error);
   }
 
   private async reportError(title: string, error: unknown) {

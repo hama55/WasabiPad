@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { IPC_COMMANDS } from "./generated/IpcCommands";
 import type { EditManyItem } from "./generated/EditManyItem";
 import type { EditManyResult } from "./generated/EditManyResult";
 import type { EditResult } from "./generated/EditResult";
@@ -8,7 +9,7 @@ import type { DocInfo } from "./generated/DocInfo";
 import type { Encoding } from "./generated/Encoding";
 import type { Eol } from "./generated/Eol";
 import type { ExternalCheck } from "./generated/ExternalCheck";
-import type { OpenRequest } from "./generated/OpenRequest";
+import type { WindowRequest } from "./generated/WindowRequest";
 import type { FileNameMatchMode } from "./generated/FileNameMatchMode";
 import type { FindCursor } from "./generated/FindCursor";
 import type { FindResult } from "./generated/FindResult";
@@ -34,7 +35,7 @@ export type {
   Encoding,
   Eol,
   ExternalCheck,
-  OpenRequest,
+  WindowRequest,
   FileNameMatchMode,
   FindCursor,
   FindResult,
@@ -52,51 +53,74 @@ export type {
   WorkspaceSearchResult,
 };
 
-export type ReadEncoding = "utf8" | "sjis" | "utf16le";
+export const READ_ENCODINGS = ["utf8", "sjis", "utf16le"] as const;
+export type ReadEncoding = (typeof READ_ENCODINGS)[number];
 
-export const openPath = (path: string) => invoke<DocInfo>("open_path", { path });
-export const newDoc = () => invoke<void>("new_doc");
-export const closeDoc = () => invoke<void>("close_doc");
+export const EVENT_NAMES = {
+  externalWindowRequest: "external-window-request",
+  workspaceSearchBatch: "workspace-search-batch",
+  viewerUpdate: "viewer-update",
+} as const;
+
+export const openPath = (path: string) => invoke<DocInfo>(IPC_COMMANDS.openPath, { path });
+export const newDoc = () => invoke<void>(IPC_COMMANDS.newDoc);
+export const closeDoc = () => invoke<void>(IPC_COMMANDS.closeDoc);
 
 // 可視範囲だけ取得 (全文は決して渡らない)
 export const lines = (start: number, count: number) =>
-  invoke<string[]>("lines", { start, count });
-export const lineCharLen = (line: number) => invoke<number>("line_char_len", { line });
-export const selectEntry = (relPath: string) => invoke<DocInfo>("select_entry", { relPath });
+  invoke<string[]>(IPC_COMMANDS.lines, { start, count });
+export const lineCharLen = (line: number) => invoke<number>(IPC_COMMANDS.lineCharLen, { line });
+export const selectEntry = (relPath: string) => invoke<DocInfo>(IPC_COMMANDS.selectEntry, { relPath });
 
 // ツリーの展開ボタン用。zip/xlsx/xls の中身一覧だけを取得する (本文は読まない)。
 // relPath が空文字なら直接開いているアーカイブ自身、それ以外はフォルダ内の相対パス。
 export const listArchiveEntries = (relPath: string) =>
-  invoke<string[]>("list_archive_entries", { relPath });
+  invoke<string[]>(IPC_COMMANDS.listArchiveEntries, { relPath });
+
+// パスワード付き 7z 用。入力されたパスワードを記憶させ、失敗した操作を再試行する。
+export const setArchivePassword = (relPath: string, password: string) =>
+  invoke<void>(IPC_COMMANDS.setArchivePassword, { relPath, password });
 
 // 指定フォルダの直下だけを取得する。サブフォルダの中身は展開時まで取得しない。
 export const listFolderEntries = (relDir: string) =>
-  invoke<FolderEntry[]>("list_folder_entries", { relDir });
+  invoke<FolderEntry[]>(IPC_COMMANDS.listFolderEntries, { relDir });
 
 // searchId は打ち切った検索の取りこぼしを次の検索から締め出すための世代番号
 export const workspaceSearch = (pat: string, options: WorkspaceSearchOptions, searchId: number) =>
-  invoke<WorkspaceSearchOutcome>("workspace_search", { pat, options, searchId });
+  invoke<WorkspaceSearchOutcome>(IPC_COMMANDS.workspaceSearch, { pat, options, searchId });
 
 // 検索中の途中経過。確定を待たずに出せるものを出す (走査順で、確定後の並びとは別)
 export const onWorkspaceSearchBatch = (handler: (batch: WorkspaceSearchBatch) => void) =>
-  listen<WorkspaceSearchBatch>("workspace-search-batch", (event) => handler(event.payload));
+  listen<WorkspaceSearchBatch>(EVENT_NAMES.workspaceSearchBatch, (event) => handler(event.payload));
 
 // 進行中の検索を打ち切る (無制限指定で走り出した検索から抜ける手段)
-export const workspaceSearchCancel = () => invoke<void>("workspace_search_cancel");
+export const workspaceSearchCancel = (searchId: number) =>
+  invoke<void>(IPC_COMMANDS.workspaceSearchCancel, { searchId });
 
 // フォルダ内に空の新規ファイルを作り、その場で開く (dir はフォルダルートからの相対パス)
 export const createNote = (dir: string | null, name: string) =>
-  invoke<DocInfo>("create_note", { dir, name });
+  invoke<DocInfo>(IPC_COMMANDS.createNote, { dir, name });
 
 // サイドバー上のファイル/フォルダをリネームする (relPath はフォルダルートからの相対パス)
 export const renameEntry = (relPath: string, newName: string) =>
-  invoke<DocInfo>("rename_entry", { relPath, newName });
+  invoke<DocInfo>(IPC_COMMANDS.renameEntry, { relPath, newName });
+export const deleteEntry = (relPath: string) =>
+  invoke<DocInfo>(IPC_COMMANDS.deleteEntry, { relPath });
+
+export const savePastedImage = (bytes: number[], mimeType: string) =>
+  invoke<string>(IPC_COMMANDS.savePastedImage, { bytes, mimeType });
+export const cleanupUnusedImages = (path: string) =>
+  invoke<void>(IPC_COMMANDS.cleanupUnusedImages, { path });
+export const readArchiveAsset = (archivePath: string, entry: string) =>
+  invoke<number[]>(IPC_COMMANDS.readArchiveAsset, { archivePath, entry });
 
 export const revealInExplorer = (path: string, isDir: boolean) =>
-  invoke<void>("reveal_in_explorer", { path, isDir });
+  invoke<void>(IPC_COMMANDS.revealInExplorer, { path, isDir });
 
 export const openInOtherApp = (path: string) =>
-  invoke<void>("open_in_other_app", { path });
+  invoke<void>(IPC_COMMANDS.openInOtherApp, { path });
+export const runExternalCommand = (command: string, path: string) =>
+  invoke<void>(IPC_COMMANDS.runExternalCommand, { command, path });
 
 // 範囲[start,end)を削除して text を挿入する統一プリミティブ
 // Tauri は Rust の snake_case 引数名を camelCase に変換して受け取るため、
@@ -107,17 +131,17 @@ export const edit = (
   caretBefore: Pos,
   text: string,
   coalesce: boolean
-) => invoke<EditResult>("edit", { start, end, caretBefore, text, coalesce });
+) => invoke<EditResult>(IPC_COMMANDS.edit, { start, end, caretBefore, text, coalesce });
 
 export const editMany = (edits: EditManyItem[], caretBefore: Pos, primaryIndex: number) =>
-  invoke<EditManyResult>("edit_many", { edits, caretBefore, primaryIndex });
+  invoke<EditManyResult>(IPC_COMMANDS.editMany, { edits, caretBefore, primaryIndex });
 
-export const undo = () => invoke<EditResult | null>("undo");
-export const redo = () => invoke<EditResult | null>("redo");
+export const undo = () => invoke<EditResult | null>(IPC_COMMANDS.undo);
+export const redo = () => invoke<EditResult | null>(IPC_COMMANDS.redo);
 
 // 後方検索 (前へ / Shift+Enter) 用。単発フルスキャン
 export const find = (pat: string, from: Pos, forward: boolean, matchCase: boolean) =>
-  invoke<FindResult | null>("find", { pat, from, forward, matchCase });
+  invoke<FindResult | null>(IPC_COMMANDS.find, { pat, from, forward, matchCase });
 
 // 前方検索 (次へ) 用。1回で最大 budget 行だけ走査し、続きがあれば cursor を返す。
 // Found/NotFound になるまで cursor を渡して呼び出し側でループする。
@@ -127,43 +151,46 @@ export const findStep = (
   matchCase: boolean,
   cursor: FindCursor | undefined,
   budget: number
-) => invoke<FindOutcome>("find_step", { pat, from, matchCase, cursor: cursor ?? null, budget });
+) => invoke<FindOutcome>(IPC_COMMANDS.findStep, { pat, from, matchCase, cursor: cursor ?? null, budget });
 
 // 1回で最大 budget 件だけ置換する。done=false の間は呼び出し側でループする
 // (再開状態は backend の Doc が保持するため、追加の引数は不要)。
 export const replaceAllChunk = (pat: string, rep: string, matchCase: boolean, budget: number) =>
-  invoke<ReplaceChunkResult>("replace_all_chunk", { pat, rep, matchCase, budget });
+  invoke<ReplaceChunkResult>(IPC_COMMANDS.replaceAllChunk, { pat, rep, matchCase, budget });
 
 // 進行中の全置換を打ち切り、ここまでの変更を1つの undo エントリとして確定する
-export const replaceAllCancel = () => invoke<EditResult>("replace_all_cancel");
+export const replaceAllCancel = () => invoke<EditResult>(IPC_COMMANDS.replaceAllCancel);
 
 export const saveFile = (path: string, enc: Encoding, eol: Eol) =>
-  invoke<SaveOutcome>("save_file", { path, enc, eol });
+  invoke<SaveOutcome>(IPC_COMMANDS.saveFile, { path, enc, eol });
 export const reloadWithEncoding = (enc: ReadEncoding) =>
-  invoke<DocInfo>("reload_with_encoding", { enc });
+  invoke<DocInfo>(IPC_COMMANDS.reloadWithEncoding, { enc });
 
 // 外部変更ポーリング (小ファイルのみ backend 側が対象を判定する)
 export const pollExternal = (dirty: boolean) =>
-  invoke<ExternalCheck>("poll_external", { dirty });
-export const reloadFromDisk = () => invoke<DocInfo>("reload_from_disk");
-export const ackExternal = () => invoke<void>("ack_external");
-export const setEncoding = (enc: Encoding) => invoke<void>("set_encoding", { enc });
-export const setEol = (eol: Eol) => invoke<void>("set_eol", { eol });
+  invoke<ExternalCheck>(IPC_COMMANDS.pollExternal, { dirty });
+export const reloadFromDisk = () => invoke<DocInfo>(IPC_COMMANDS.reloadFromDisk);
+export const ackExternal = () => invoke<void>(IPC_COMMANDS.ackExternal);
+export const setEncoding = (enc: Encoding) => invoke<void>(IPC_COMMANDS.setEncoding, { enc });
+export const setEol = (eol: Eol) => invoke<void>(IPC_COMMANDS.setEol, { eol });
 
 // 設定は不透明な JSON 文字列として往復させる (構造を知るのは ui/settings.ts だけ)
-export const loadSettings = () => invoke<string>("load_settings");
-export const saveSettings = (json: string) => invoke<void>("save_settings", { json });
+export const loadSettings = () => invoke<string>(IPC_COMMANDS.loadSettings);
+export const updateSetting = (key: string, valueJson: string) =>
+  invoke<void>(IPC_COMMANDS.updateSetting, { key, valueJson });
 
-export const loadBookmarks = () => invoke<BmNode[]>("load_bookmarks");
-export const saveBookmarks = (nodes: BmNode[]) => invoke<void>("save_bookmarks", { nodes });
-export const pathIsDirectory = (path: string) => invoke<boolean>("path_is_directory", { path });
+export const loadBookmarks = () => invoke<BmNode[]>(IPC_COMMANDS.loadBookmarks);
+export const saveBookmarks = (nodes: BmNode[]) => invoke<void>(IPC_COMMANDS.saveBookmarks, { nodes });
+export const pathIsDirectory = (path: string) => invoke<boolean>(IPC_COMMANDS.pathIsDirectory, { path });
 export const nextMemoPath = (directory: string, stem: string, extension: string) =>
-  invoke<string>("next_memo_path", { directory, stem, extension });
-export const initialPath = () => invoke<string | null>("initial_path");
-// 起動時に飛ぶ位置 (検索結果を別ウィンドウで開いたとき backend が引数へ載せる)
-export const initialGoto = () => invoke<Pos | null>("initial_goto");
-export const onOpenInTab = (handler: (request: OpenRequest) => void) =>
-  listen<OpenRequest>("open-in-tab", (event) => handler(event.payload));
+  invoke<string>(IPC_COMMANDS.nextMemoPath, { directory, stem, extension });
+export const launchNewInstance = (request: WindowRequest) =>
+  invoke<void>(IPC_COMMANDS.launchNewInstance, { request });
+export const initialWindowRequest = () => invoke<WindowRequest>(IPC_COMMANDS.initialWindowRequest);
+export const onExternalWindowRequest = (handler: () => void) =>
+  listen(EVENT_NAMES.externalWindowRequest, () => handler());
+export const takePendingWindowRequests = () =>
+  invoke<WindowRequest[]>(IPC_COMMANDS.takePendingWindowRequests);
 
 // エディタが必要とする文書操作だけを切り出した口。エディタはこの型にだけ依存し、
 // 既定の実装 (下の documentClient) が Tauri の invoke を呼ぶ。
@@ -198,8 +225,8 @@ export const openViewer = (
   text: string,
   selection: ViewerSelection | null,
   sourcePath: string | null
-) => invoke<string>("open_viewer", { format, text, selection, sourcePath });
+) => invoke<string>(IPC_COMMANDS.openViewer, { format, text, selection, sourcePath });
 export const takeViewerPayload = (label: string) =>
-  invoke<ViewerPayload>("take_viewer_payload", { label });
+  invoke<ViewerPayload>(IPC_COMMANDS.takeViewerPayload, { label });
 export const updateViewer = (label: string, text: string, selection: ViewerSelection | null) =>
-  invoke<boolean>("update_viewer", { label, text, selection });
+  invoke<boolean>(IPC_COMMANDS.updateViewer, { label, text, selection });

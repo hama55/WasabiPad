@@ -4,12 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>WasabiPad</title>
+  <link rel="stylesheet" href="/ui/prompt.css" />
   <link rel="stylesheet" href="/ui/style.css" />
 </head>
 <body>
   <div id="titlebar">
     <button class="bar-toggle" id="toggle-bars" title="アドレスバーとお気に入りバーを表示/非表示" aria-label="アドレスバーとお気に入りバーを表示/非表示">☰</button>
-    <div id="tabs"></div>
+    <div id="tabs" data-tauri-drag-region></div>
     <div id="titletext" data-tauri-drag-region></div>
     <div id="wincontrols">
       <button id="win-min" title="最小化">&#xE921;</button>
@@ -21,8 +22,10 @@
     <div id="topbar">
       <button id="addressbar-save" title="保存">💾</button>
       <button id="addressbar-save-as" title="名前を付けて保存...">💾⁺</button>
-      <button id="addressbar-new" title="新規メモ">📝</button>
+      <button id="addressbar-new" title="新規ウィンドウで開く">🗔</button>
       <button id="addressbar-find" title="検索と置換">🔍</button>
+      <button id="addressbar-back" title="戻る" aria-label="戻る">&#xE72B;</button>
+      <button id="addressbar-forward" title="進む" aria-label="進む">&#xE72A;</button>
       <button id="addressbar-open" title="ファイルを選択...">📁</button>
       <div id="addressbar-shell">
         <div id="addressbar-breadcrumb" title="余白をクリックしてパスを編集"></div>
@@ -42,10 +45,11 @@
     <div id="sidebar" hidden></div>
     <div id="splitter" hidden></div>
     <button id="sidebar-toggle" title="フォルダビューを閉じる" hidden>&lt;&lt;</button>
-    <div id="editorhost"></div>
-    <div id="loading" role="status" aria-live="polite" hidden>
-      <span class="loading-spinner" aria-hidden="true"></span>
-      <span id="loading-message">読み込み中…</span>
+    <div id="editorhost">
+      <div id="loading" role="status" aria-live="polite" hidden>
+        <span class="loading-spinner" aria-hidden="true"></span>
+        <span id="loading-message">読み込み中…</span>
+      </div>
     </div>
   </div>
   <div id="statusbar">
@@ -60,17 +64,11 @@
     <button id="st-font-size" title="フォントサイズを変更"></button>
     <span class="st-sep" aria-hidden="true"></span>
     <select id="st-indent" title="タブの表示幅">
-      <option value="2">インデント: 2</option>
-      <option value="4">インデント: 4</option>
-      <option value="8">インデント: 8</option>
     </select>
     <span class="st-sep" aria-hidden="true"></span>
     <button id="st-wrap" title="折り返し切替">折り返し: オフ</button>
     <span class="st-sep" aria-hidden="true"></span>
     <select id="st-source-enc" title="読込文字コード">
-      <option value="utf8">UTF-8</option>
-      <option value="sjis">Shift-JIS</option>
-      <option value="utf16le">UTF-16LE</option>
     </select>
     <span class="st-sep" aria-hidden="true"></span>
     <span id="st-eol" title="読込改行コード"></span>

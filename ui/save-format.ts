@@ -24,10 +24,18 @@ export interface SaveFormat {
   eol: Eol;
 }
 
-export async function promptSaveFormat(current: SaveFormat): Promise<SaveFormat | null> {
-  const result = await promptFields("保存形式", [
+export function saveFormatFields(current: SaveFormat) {
+  return [
     { label: "文字コード", value: current.encoding, options: options(ENCODING_LABELS) },
     { label: "改行コード", value: current.eol, options: options(EOL_LABELS) },
-  ]);
-  return result ? { encoding: result[0] as Encoding, eol: result[1] as Eol } : null;
+  ];
+}
+
+export function saveFormatFromValues(values: string[], offset = 0): SaveFormat {
+  return { encoding: values[offset] as Encoding, eol: values[offset + 1] as Eol };
+}
+
+export async function promptSaveFormat(current: SaveFormat): Promise<SaveFormat | null> {
+  const result = await promptFields("保存形式", saveFormatFields(current));
+  return result ? saveFormatFromValues(result) : null;
 }

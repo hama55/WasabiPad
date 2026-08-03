@@ -1,6 +1,6 @@
 import type { WorkspaceSearchOptions, WorkspaceSearchOutcome, WorkspaceSearchResult } from "./api";
 import type { ContextTarget } from "./sidebar";
-import { groupResults, highlightedPreview, sortResults, type ResultGroup } from "./search-results";
+import { groupResults, highlightedPreview, searchResultGoto, sortResults, type ResultGroup } from "./search-results";
 import { openSearchSettings } from "./search-settings-dialog";
 import {
   clampSearchOptions,
@@ -20,11 +20,11 @@ export interface WorkspaceSearchPorts {
     options: WorkspaceSearchOptions,
     searchId: number
   ) => Promise<WorkspaceSearchOutcome>;
-  onCancel: () => void | Promise<void>;
+  onCancel: (searchId: number) => void | Promise<void>;
   onError: (error: unknown) => Promise<void>;
   // 一致の範囲は result.highlights が持つ。パターンを渡さないのは、
   // 正規表現や大小の畳み込みで「当たった長さ」がパターンの長さと一致しないため。
-  onOpen: (result: WorkspaceSearchResult, newWindow: boolean) => void;
+  onOpen: (result: WorkspaceSearchResult, newTab: boolean) => unknown;
   onContextMenu: (x: number, y: number, target: ContextTarget) => void;
   // 検索条件が変わった。保存先を知るのは呼び出し側 (ここは永続化を知らない)
   onOptionsChange: (options: WorkspaceSearchOptions) => void;
@@ -36,10 +36,6 @@ export interface WorkspaceSearchPorts {
 const MAX_RENDERED_ROWS = 3000;
 // これを超える結果は畳んで出す (件数が多いときにファイル一覧を先に見せるため)
 const AUTO_COLLAPSE_MATCHES = 500;
-// 検索中の再描画の間引き。backend の送出間隔 (PROGRESS_INTERVAL) と同じ刻みで、
-// これより細かく描いても届く中身が増えないため意味がない
-const PARTIAL_RENDER_MS = 100;
-
 type ToggleKey = BoolOptionKey;
 type SearchState = WorkspaceSearchOutcome | "searching" | "stopped" | null;
 type SearchViewState = {
@@ -73,10 +69,10 @@ export class WorkspaceSearchPanel {
   private options: WorkspaceSearchOptions;
   private folderRoot: string | null = null;
   private states = new Map<string, SearchViewState>();
-  private partialTimer: number | undefined;
   private searchGen = 0;
   private searchTimer: number | undefined;
   private running: Promise<WorkspaceSearchOutcome> | null = null; // 走行中の検索
+  private runningSearchId: number | null = null;
   private ports: WorkspaceSearchPorts;
 
   constructor(options: WorkspaceSearchOptions, ports: WorkspaceSearchPorts) {
@@ -217,7 +213,9 @@ export class WorkspaceSearchPanel {
       return;
     }
     this.setOutcome("searching");
-    this.searchTimer = window.setTimeout(() => void this.run(gen, pat, this.options), delay);
+    this.searchTimer = window.setTimeout(() => {
+      void this.run(gen, pat, this.options).catch((error) => this.reportUiError(error));
+    }, delay);
   }
 
   // 走査量は無制限が既定なので、待たされたら止められる必要がある
@@ -238,8 +236,10 @@ export class WorkspaceSearchPanel {
   }
 
   private cancelRunningSearch() {
+    const searchId = this.runningSearchId;
+    if (searchId === null) return;
     try {
-      void Promise.resolve(this.ports.onCancel()).catch((error) => {
+      void Promise.resolve(this.ports.onCancel(searchId)).catch((error) => {
         console.error("検索の中止に失敗しました", error);
       });
     } catch (error) {
@@ -253,12 +253,8 @@ export class WorkspaceSearchPanel {
     if (searchId !== this.searchGen || this.folderRoot === null || this.state.outcome !== "searching") return;
     this.state.partial.push(...results);
     this.autoCollapse(this.state.partial);
-    // 描画は間引く。届くたびに数千行を組み直すと走査より描画が重くなる
-    if (this.partialTimer !== undefined) return;
-    this.partialTimer = window.setTimeout(() => {
-      this.partialTimer = undefined;
-      if (this.folderRoot !== null && this.state.outcome === "searching") this.ports.onViewChange();
-    }, PARTIAL_RENDER_MS);
+    // backend が送出間隔を制限するため、ここで同じ待機を重ねない。
+    this.ports.onViewChange();
   }
 
   // 件数が多いときはファイル一覧を先に見せる (中身は必要な分だけ開く)。
@@ -272,8 +268,6 @@ export class WorkspaceSearchPanel {
   private setOutcome(outcome: SearchState) {
     this.state.outcome = outcome;
     this.searchStop.hidden = outcome !== "searching";
-    window.clearTimeout(this.partialTimer);
-    this.partialTimer = undefined;
     if (outcome !== "stopped") this.state.partial = [];
     if (outcome === null) this.summary.hidden = true;
     if (outcome === "searching") this.state.collapseTouched = false; // 新しい検索の始まり
@@ -299,16 +293,15 @@ export class WorkspaceSearchPanel {
     return this.state.collapsed.has(relPath) !== this.state.collapseByDefault;
   }
 
-  // 検索は同時に1本だけ。走っているものが畳まれるのを待ってから始める。
-  // 要求を捨てて「終わったら再キュー」に頼ると、中止が間に合わなかったぶんだけ
-  // 引き直しが遅れる (条件を変えたのに古い結果を見せられる時間ができる)。
+  // 新しい検索を開始すると backend 側が前の走査をキャンセルする。
+  // 古い Promise の完了を待つと、キャンセル失敗時に新しい条件まで永久に待たされる。
   private async run(gen: number, pat: string, options: WorkspaceSearchOptions) {
-    while (this.running) await this.running.catch(() => {});
     if (gen !== this.searchGen) return; // 待っている間にまた条件が変わった
     let run: Promise<WorkspaceSearchOutcome> | null = null;
     try {
       run = this.ports.onSearch(pat, options, gen);
       this.running = run;
+      this.runningSearchId = gen;
       const outcome = await run;
       if (gen === this.searchGen) this.setOutcome(outcome);
     } catch (error) {
@@ -320,7 +313,10 @@ export class WorkspaceSearchPanel {
         console.error("検索エラーを表示できませんでした", reportError);
       }
     } finally {
-      if (this.running === run) this.running = null;
+      if (this.running === run) {
+        this.running = null;
+        this.runningSearchId = null;
+      }
     }
   }
 
@@ -446,17 +442,33 @@ export class WorkspaceSearchPanel {
     preview.appendChild(highlightedPreview(match.preview, match.highlights));
     div.append(mark, preview);
     div.title = match.preview;
-    div.addEventListener("click", () => this.ports.onOpen(match, false));
+    div.addEventListener("click", () => this.invokeOpen(match, false));
     this.bindOpen(div, match);
     return div;
   }
 
-  // ホイールクリックと右クリックは、どちらの行でも「別 WasabiPad で開く」入口になる
+  private invokeOpen(match: WorkspaceSearchResult, newTab: boolean) {
+    try {
+      void Promise.resolve(this.ports.onOpen(match, newTab)).catch((error) => this.reportUiError(error));
+    } catch (error) {
+      void this.reportUiError(error);
+    }
+  }
+
+  private async reportUiError(error: unknown) {
+    try {
+      await this.ports.onError(error);
+    } catch (reportError) {
+      console.error("検索結果を開けませんでした", reportError);
+    }
+  }
+
+  // ホイールクリックと右クリックは、どちらの行でも「新規タブで開く」入口になる
   private bindOpen(row: HTMLElement, match: WorkspaceSearchResult) {
     row.addEventListener("auxclick", (e) => {
       if (e.button !== 1) return;
       e.preventDefault();
-      this.ports.onOpen(match, true);
+      this.invokeOpen(match, true);
     });
     row.addEventListener("contextmenu", (e) => {
       e.preventDefault();
@@ -464,8 +476,7 @@ export class WorkspaceSearchPanel {
       this.ports.onContextMenu(e.clientX, e.clientY, {
         relPath: match.rel_path,
         isDir: false,
-        // ファイル名一致の line/col は本文の位置ではない (どちらも 0)。飛び先を持たせない
-        goto: match.is_filename ? undefined : { line: match.line, col: match.col },
+        goto: searchResultGoto(match),
       });
     });
   }

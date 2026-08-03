@@ -38,12 +38,12 @@ body {
 .bar-toggle { width: 34px; border: 0; background: none; color: var(--fg); font-size: 14px; }
 .bar-toggle:hover { background: var(--hover); }
 #titletext {
-  flex: 1;
-  min-width: 24px;
+  flex: 0 0 64px;
 }
-#tabs { display: flex; align-items: stretch; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+#tabs { display: flex; flex: 1; align-items: stretch; min-width: 0; overflow: hidden; }
 .doc-tab {
-  display: flex; align-items: center; gap: 5px; min-width: 110px; max-width: 220px;
+  display: flex; flex: 1 1 0; align-items: center; gap: 5px; min-width: 0; max-width: 240px;
+  overflow: hidden; container-type: inline-size;
   padding: 0 7px; border: 0; border-right: 1px solid var(--border);
   background: var(--bg-title); color: var(--fg-dim); font: 12px var(--font-ui);
 }
@@ -58,8 +58,15 @@ body {
   font: 12px var(--font-ui); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .doc-tab-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.doc-tab-icon, .doc-tab-close { flex: none; }
 .doc-tab-close { margin-left: auto; padding: 1px 3px; border-radius: 3px; font-size: 14px; }
 .doc-tab-close:hover { background: var(--border); }
+@container (max-width: 60px) {
+  .doc-tab-icon { display: none; }
+}
+@container (max-width: 36px) {
+  .doc-tab-close { display: none; }
+}
 .doc-tab-add {
   flex: none; width: 32px; border: 0; border-right: 1px solid var(--border);
   background: var(--bg-title); color: var(--fg); font-size: 18px;
@@ -91,14 +98,16 @@ body {
 .addressbar-crumb { flex: none; max-width: 220px; overflow: hidden; text-overflow: ellipsis; border: 0; border-radius: 3px; padding: 2px 4px; background: none; color: inherit; font: inherit; cursor: default; }
 .addressbar-crumb:hover { background: var(--hover); }
 .addressbar-sep { flex: none; color: var(--fg-dim); }
-#addressbar-fav, #addressbar-open, #addressbar-save, #addressbar-save-as, #addressbar-new, #addressbar-find {
+#addressbar-fav, #addressbar-open, #addressbar-back, #addressbar-forward, #addressbar-save, #addressbar-save-as, #addressbar-new, #addressbar-find {
   flex: none; width: 26px; height: 26px;
   background: var(--bg-editor); color: var(--fg-dim);
   border: 1px solid var(--border); border-radius: 4px;
   font-size: 14px; cursor: default;
 }
 #addressbar-save-as { width: 32px; }
-#addressbar-fav:hover, #addressbar-open:hover, #addressbar-save:hover, #addressbar-save-as:hover, #addressbar-new:hover, #addressbar-find:hover { background: var(--hover); color: var(--fg); }
+#addressbar-back, #addressbar-forward { font-family: "Segoe MDL2 Assets", var(--font-ui); }
+#addressbar-fav:hover, #addressbar-open:hover, #addressbar-back:hover:not(:disabled), #addressbar-forward:hover:not(:disabled), #addressbar-save:hover, #addressbar-save-as:hover, #addressbar-new:hover, #addressbar-find:hover { background: var(--hover); color: var(--fg); }
+#addressbar-back:disabled, #addressbar-forward:disabled { opacity: 0.45; }
 
 /* ---- お気に入りバー ---- */
 #favbar {
@@ -284,7 +293,7 @@ body {
 .fv-arrow { width: 22px; text-align: center; color: var(--fg-dim); flex: none; font-size: 16px; }
 
 /* ---- 仮想スクロールエディタ ---- */
-#editorhost { flex: 1; min-width: 0; }
+#editorhost { position: relative; flex: 1; min-width: 0; }
 .ve {
   position: relative;
   background: var(--bg-editor);
@@ -358,8 +367,7 @@ body {
   position: absolute; width: 2px; height: var(--line-h);
   background: var(--caret); z-index: 3; display: none;
 }
-.ve-caret.on { display: block; animation: ve-blink 1s step-end infinite; }
-@keyframes ve-blink { 50% { opacity: 0; } }
+.ve-caret.on { display: block; }
 .ve-input {
   position: absolute; z-index: 3;
   width: 4px; height: var(--line-h); padding: 0; margin: 0; border: 0;
@@ -419,39 +427,6 @@ body {
 .ve-find-case { display: flex; align-items: center; gap: 2px; font-size: 12px; color: var(--fg-dim); }
 .ve-find-status { font-size: 12px; color: var(--fg-dim); min-width: 90px; }
 
-/* ---- 汎用入力ダイアログ (window.prompt の代替) ---- */
-.pf-overlay {
-  position: fixed; inset: 0; z-index: 2000;
-  background: #00000066;
-  display: flex; align-items: center; justify-content: center;
-}
-.pf-box {
-  background: var(--bg-side); border: 1px solid var(--border-strong); border-radius: 6px;
-  box-shadow: 0 8px 24px #000a; padding: 14px; width: 360px;
-}
-.pf-title { font-size: 13px; color: var(--fg); margin-bottom: 10px; }
-.pf-message { color: var(--fg); white-space: pre-wrap; line-height: 1.6; }
-.pf-row { display: flex; flex-direction: column; gap: 3px; margin-bottom: 8px; }
-.pf-row label { font-size: 12px; color: var(--fg-dim); }
-.pf-row input, .pf-row select {
-  background: var(--bg-editor); color: var(--fg);
-  border: 1px solid var(--border); border-radius: 4px;
-  padding: 5px 8px; font-size: 13px; font-family: var(--font-ui);
-  outline: none;
-}
-.pf-row input:focus, .pf-row select:focus { border-color: var(--bg-status); }
-.pf-row input[aria-invalid="true"] { border-color: #f48771; }
-.pf-error { min-height: 15px; color: #f48771; font-size: 11px; }
-.pf-btns { display: flex; justify-content: flex-end; gap: 6px; margin-top: 12px; }
-.pf-btns button {
-  background: var(--bg-editor); border: 1px solid var(--border-strong); border-radius: 4px;
-  color: var(--fg); font-size: 13px; padding: 5px 12px; cursor: default;
-}
-.pf-btns button:hover { background: var(--hover); }
-.pf-btns .pf-ok { background: var(--accent); border-color: var(--accent); color: #fff; }
-.pf-btns .pf-ok:hover { background: var(--bg-status); }
-.pf-btns .pf-ok:disabled { opacity: .5; pointer-events: none; }
-
 /* ---- ステータスバー ---- */
 #statusbar {
   display: flex; align-items: center; gap: 12px;
@@ -472,28 +447,30 @@ body {
 #st-theme { padding: 0 4px; }
 
 /* ---- ドロップダウンメニュー ---- */
-#dropdown {
+.dd-menu {
   position: fixed; z-index: 1000;
   background: var(--bg-side);
   border: 1px solid var(--border-strong); border-radius: 5px;
   box-shadow: 0 4px 12px #000a;
   padding: 4px; min-width: 220px;
 }
-#dropdown .dd-item {
+.dd-menu.dd-submenu { z-index: 1001; }
+.dd-menu .dd-item {
   display: flex; justify-content: space-between; gap: 24px;
   padding: 5px 10px; border-radius: 4px; font-size: 13px;
   cursor: default;
 }
-#dropdown .dd-label { display: inline-flex; align-items: center; gap: 7px; }
-#dropdown .dd-item:hover { background: var(--accent); color: #fff; }
-#dropdown .dd-item.fav-drop { outline: 1px solid var(--accent); background: var(--hover); color: var(--fg); }
-#dropdown .dd-item.fav-drop-before { box-shadow: inset 0 2px var(--accent); }
-#dropdown .dd-item.fav-drop-after { box-shadow: inset 0 -2px var(--accent); }
-#dropdown .dd-key { color: var(--fg-dim); }
-#dropdown .dd-item:hover .dd-key { color: #ffffffaa; }
-#dropdown .dd-trailing { margin: -3px -7px -3px auto; width: 22px; border: 0; border-radius: 3px; background: none; color: var(--fg-dim); font: inherit; font-size: 16px; line-height: 20px; }
-#dropdown .dd-trailing:hover { background: color-mix(in srgb, currentColor 16%, transparent); color: inherit; }
-#dropdown .dd-sep { height: 1px; background: var(--border-strong); margin: 4px 6px; }
+.dd-menu .dd-label { display: inline-flex; align-items: center; gap: 7px; }
+.dd-menu .dd-item:hover { background: var(--accent); color: #fff; }
+.dd-menu .dd-item.fav-drop { outline: 1px solid var(--accent); background: var(--hover); color: var(--fg); }
+.dd-menu .dd-item.fav-drop-before { box-shadow: inset 0 2px var(--accent); }
+.dd-menu .dd-item.fav-drop-after { box-shadow: inset 0 -2px var(--accent); }
+.dd-menu .dd-key { color: var(--fg-dim); }
+.dd-menu .dd-item:hover .dd-key { color: #ffffffaa; }
+.dd-menu .dd-trailing-actions { display: flex; gap: 2px; margin: -3px -7px -3px auto; }
+.dd-menu .dd-trailing { margin: 0; width: 22px; border: 0; border-radius: 3px; background: none; color: var(--fg-dim); font: inherit; font-size: 16px; line-height: 20px; }
+.dd-menu .dd-trailing:hover { background: color-mix(in srgb, currentColor 16%, transparent); color: inherit; }
+.dd-menu .dd-sep { height: 1px; background: var(--border-strong); margin: 4px 6px; }
 
 /* スクロールバー */
 ::-webkit-scrollbar { width: 12px; height: 12px; }

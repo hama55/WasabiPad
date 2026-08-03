@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveAssetPath } from "./viewer-assets";
+import { resolveArchiveAssetEntry, resolveAssetPath } from "./viewer-assets";
 
 const SOURCE = "C:\\work\\docs\\readme.md";
 
@@ -19,5 +19,19 @@ describe("resolveAssetPath", () => {
     expect(resolveAssetPath(SOURCE, "data:image/png;base64,AAAA")).toBeNull();
     expect(resolveAssetPath(null, "assets/shot.png")).toBeNull();
     expect(resolveAssetPath(null, "D:/pic/shot.png")).toBe("D:\\pic\\shot.png");
+  });
+});
+
+describe("resolveArchiveAssetEntry", () => {
+  it("メモエントリの親から画像エントリを解決する", () => {
+    expect(resolveArchiveAssetEntry("notes/readme.md", "image_markdown/readme/shot.png"))
+      .toBe("notes/image_markdown/readme/shot.png");
+    expect(resolveArchiveAssetEntry("notes/readme.md", "../image_markdown/readme/shot.png"))
+      .toBe("image_markdown/readme/shot.png");
+  });
+
+  it("外部URLとアーカイブ外への移動は触らない", () => {
+    expect(resolveArchiveAssetEntry("readme.md", "https://example.com/a.png")).toBeNull();
+    expect(resolveArchiveAssetEntry("readme.md", "../../a.png")).toBeNull();
   });
 });

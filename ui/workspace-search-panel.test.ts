@@ -140,7 +140,7 @@ describe("WorkspaceSearchPanel", () => {
     const opened: boolean[] = [];
     const host = mount(
       async () => outcome([hit("a.txt", 3, "needle")]),
-      (_result, newWindow) => opened.push(newWindow)
+      (_result, newTab) => opened.push(newTab)
     );
     await search(host, "needle");
 
@@ -209,6 +209,27 @@ describe("WorkspaceSearchPanel", () => {
     expect(text(host, ".ws-summary")).toContain("1 件の結果");
   });
 
+  it("取消に失敗しても新しい条件の検索を古いPromise待ちにしない", async () => {
+    vi.useFakeTimers();
+    const calls: string[] = [];
+    const host = mount(
+      (pat) => {
+        calls.push(pat);
+        return calls.length === 1
+          ? new Promise<WorkspaceSearchOutcome>(() => {})
+          : Promise.resolve(outcome([hit("a.txt", 0, "needles")]));
+      },
+      () => {},
+      async () => { throw new Error("cancel failed"); },
+    );
+
+    await search(host, "needle");
+    await search(host, "needles");
+
+    expect(calls).toEqual(["needle", "needles"]);
+    expect(text(host, ".ws-summary")).toContain("1 件の結果");
+  });
+
   it("検索の設定を何も変えずに閉じても、走査中の結果を捨てない", async () => {
     vi.useFakeTimers();
     let searchId = 0;
@@ -246,6 +267,7 @@ describe("WorkspaceSearchPanel", () => {
     host.querySelector<HTMLButtonElement>(".ws-stop")!.click();
 
     expect(onCancel).toHaveBeenCalledOnce();
+    expect(onCancel).toHaveBeenCalledWith(searchId);
     expect(host.querySelectorAll(".ws-group")).toHaveLength(1);
     expect(text(host, ".ws-summary")).toContain("検索を中止");
     expect(text(host, ".ws-empty")).toContain("検索を中止しました");

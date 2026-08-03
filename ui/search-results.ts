@@ -1,4 +1,4 @@
-import type { WorkspaceSearchOptions, WorkspaceSearchResult } from "./api";
+import type { Pos, WorkspaceSearchOptions, WorkspaceSearchResult } from "./api";
 
 // 検索結果をファイル単位のツリーへ組み直す。表示の都合しか知らない純関数として
 // 切り出し、DOM を作る Sidebar から独立してテストできるようにする。
@@ -8,6 +8,12 @@ export interface ResultGroup {
   fileName: string;
   dirPath: string; // ルートからの親フォルダ ("" ならルート直下)
   matches: WorkspaceSearchResult[];
+}
+
+// ファイル名一致は本文の位置を持たない。検索結果を開く入口が増えても、
+// 本文へ飛べる結果だけを同じ規則で判定する。
+export function searchResultGoto(result: Pick<WorkspaceSearchResult, "is_filename" | "line" | "col">): Pos | undefined {
+  return result.is_filename ? undefined : { line: result.line, col: result.col };
 }
 
 // 結果の並びはここだけが決める (途中経過も確定結果も同じ関数を通す)。

@@ -1,15 +1,17 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
+import * as api from "./api";
 import type { BmNode } from "./api";
 import { FavBar, type BookmarkStore } from "./favbar";
 
-function mount(initial: BmNode[] = []) {
+function mount(initial: BmNode[] = [], storeOverrides: Partial<BookmarkStore> = {}) {
   document.body.innerHTML = `<div id="favbar"></div><div id="dropdown" hidden></div>`;
   const saved: BmNode[][] = [];
   const store: BookmarkStore = {
     load: async () => initial,
     save: async (nodes) => { saved.push(structuredClone(nodes)); },
     isDirectory: async (path) => !path.split("/").pop()!.includes("."),
+    ...storeOverrides,
   };
   const opened: string[] = [];
   const addedGroups: { path: string; kind: "file" | "folder" }[][] = [];
@@ -20,7 +22,6 @@ function mount(initial: BmNode[] = []) {
       onAddGroupToTabs: (items) => addedGroups.push(items),
       onError: async () => {},
       currentFile: () => "C:/work/memo.txt",
-      onSetDefault: () => {},
     },
     store
   );
@@ -56,6 +57,26 @@ describe("FavBar", () => {
     await favbar.init();
     await favbar.addCurrent();
     expect(saved[0]).toEqual([{ kind: "file", name: "memo.txt", path: "C:/work/memo.txt" }]);
+  });
+
+  it("保存失敗した追加を次の成功操作へ混入させない", async () => {
+    const persisted: BmNode[][] = [];
+    const save = vi.fn()
+      .mockRejectedValueOnce(new Error("disk full"))
+      .mockImplementationOnce(async (nodes: BmNode[]) => {
+        persisted.push(structuredClone(nodes));
+      });
+    const { favbar } = mount(
+      [{ kind: "file", name: "base", path: "C:/base.txt" }],
+      { save },
+    );
+    await favbar.init();
+
+    await expect(favbar.addExternal("C:/failed.txt")).rejects.toThrow("disk full");
+    await favbar.addExternal("C:/success.txt");
+
+    expect(persisted[0].map((node) => node.name)).toEqual(["base", "success.txt"]);
+    expect(document.querySelectorAll("#favbar button")).toHaveLength(2);
   });
 
   it("ドラッグで並べ替えできる", async () => {
@@ -125,5 +146,33 @@ describe("FavBar", () => {
       { path: "C:/a.txt", kind: "file" },
       { path: "C:/src", kind: "folder" },
     ]]);
+  });
+
+  it("お気に入りのファイルとフォルダをExplorerで開き、デフォルト設定項目を表示しない", async () => {
+    const reveal = vi.spyOn(api, "revealInExplorer").mockResolvedValue();
+    try {
+      const { favbar } = mount([
+        { kind: "file", name: "memo.txt", path: "C:/memo.txt" },
+        { kind: "directory", name: "docs", path: "C:/docs" },
+      ]);
+      await favbar.init();
+      const buttons = document.querySelectorAll<HTMLButtonElement>("#favbar button");
+
+      buttons[0].dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+      expect([...document.querySelectorAll("#dropdown .dd-label")].map((label) => label.textContent))
+        .not.toContain("デフォルトに設定");
+      [...document.querySelectorAll<HTMLElement>("#dropdown .dd-item")]
+        .find((item) => item.textContent === "エクスプローラで開く")?.click();
+
+      buttons[1].dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+      [...document.querySelectorAll<HTMLElement>("#dropdown .dd-item")]
+        .find((item) => item.textContent === "エクスプローラで開く")?.click();
+      await vi.waitFor(() => expect(reveal).toHaveBeenCalledTimes(2));
+
+      expect(reveal).toHaveBeenNthCalledWith(1, "C:/memo.txt", false);
+      expect(reveal).toHaveBeenNthCalledWith(2, "C:/docs", true);
+    } finally {
+      reveal.mockRestore();
+    }
   });
 });

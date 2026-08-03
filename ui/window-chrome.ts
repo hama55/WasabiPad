@@ -11,18 +11,23 @@ export interface WindowChromePorts {
 export class WindowChrome {
   private noticeTimer: number | undefined;
 
-  constructor(private host: HTMLElement, private win: Window, private ports: WindowChromePorts) {
-    this.pick("win-min").addEventListener("click", () => void this.win.minimize());
-    this.pick("win-max").addEventListener("click", () => void this.toggleMaximize());
-    this.pick("win-close").addEventListener("click", () => void this.win.close());
-    this.pick("titletext").addEventListener("dblclick", () => void this.toggleMaximize());
+  constructor(
+    private host: HTMLElement,
+    private win: Window,
+    private ports: WindowChromePorts,
+    private notice: HTMLElement,
+  ) {
+    this.pick("win-min").addEventListener("click", () => this.run("ウィンドウを最小化できませんでした", () => this.win.minimize()));
+    this.pick("win-max").addEventListener("click", () => this.run("ウィンドウを最大化できませんでした", () => this.toggleMaximize()));
+    this.pick("win-close").addEventListener("click", () => this.run("ウィンドウを閉じられませんでした", () => this.win.close()));
+    this.pick("titletext").addEventListener("dblclick", () => this.run("ウィンドウを最大化できませんでした", () => this.toggleMaximize()));
     void this.win.onResized(() => {
       void this.syncMaxIcon().catch((error) => this.reportError("最大化状態を取得できませんでした", error));
-      ports.onGeometryChange();
+      this.run("ウィンドウ形状を同期できませんでした", ports.onGeometryChange);
     }).catch((error) => this.reportError("ウィンドウサイズ監視を開始できませんでした", error));
-    void this.win.onMoved(() => ports.onGeometryChange())
+    void this.win.onMoved(() => this.run("ウィンドウ形状を同期できませんでした", ports.onGeometryChange))
       .catch((error) => this.reportError("ウィンドウ位置監視を開始できませんでした", error));
-    void this.win.onScaleChanged(() => ports.onGeometryChange())
+    void this.win.onScaleChanged(() => this.run("ウィンドウ形状を同期できませんでした", ports.onGeometryChange))
       .catch((error) => this.reportError("表示倍率監視を開始できませんでした", error));
     void this.win.onCloseRequested(async (e) => {
       try {
@@ -53,7 +58,15 @@ export class WindowChrome {
   }
 
   setTitle(title: string) {
-    void this.win.setTitle(title);
+    this.run("タイトルを更新できませんでした", () => this.win.setTitle(title));
+  }
+
+  private run(title: string, operation: () => void | Promise<unknown>) {
+    try {
+      void Promise.resolve(operation()).catch((error) => this.reportError(title, error));
+    } catch (error) {
+      void this.reportError(title, error);
+    }
   }
 
   private async reportError(title: string, error: unknown) {
@@ -65,9 +78,8 @@ export class WindowChrome {
   }
 
   notify(text: string) {
-    const notice = this.pick("save-notice");
-    notice.textContent = text;
+    this.notice.textContent = text;
     window.clearTimeout(this.noticeTimer);
-    this.noticeTimer = window.setTimeout(() => { notice.textContent = ""; }, 2000);
+    this.noticeTimer = window.setTimeout(() => { this.notice.textContent = ""; }, 2000);
   }
 }

@@ -11,13 +11,25 @@ import { AddressBar } from "./addressbar";
 import { StatusBar } from "./statusbar";
 import { WindowChrome } from "./window-chrome";
 import { ExternalWatch } from "./external-watch";
-import { FolderActions, openInOtherApp } from "./folder-actions";
-import { DocumentController, SAVE_EXTENSIONS } from "./document-controller";
+import {
+  FolderActions,
+  isImagePath,
+  openInOtherApp,
+  revealInExplorer,
+  type FolderActionsServices,
+} from "./folder-actions";
+import {
+  DocumentController,
+  SAVE_EXTENSIONS,
+  type DocumentControllerServices,
+} from "./document-controller";
 import { showError } from "./dialogs";
-import { confirmMessage } from "./prompt";
-import { joinWindowsRoot } from "./path";
+import { confirmMessage, confirmSaveDiscard, promptFields } from "./prompt";
+import { promptSaveFormat, saveFormatFields, saveFormatFromValues } from "./save-format";
+import { isPasswordCancelled, withArchivePassword } from "./archive-password";
+import { archiveRelOf, isArchiveEntryPath } from "./archive-path";
+import { basename, joinWindowsRoot } from "./path";
 import { createCommandRegistry, globalCommandForEvent } from "./commands";
-import { DEFAULT_EDITOR_CONFIG } from "./editor-config";
 import { TabManager } from "./tabs";
 import {
   getSetting,
@@ -27,12 +39,24 @@ import {
   saveSearchOptions,
   setSetting,
 } from "./settings";
+import { THEME_STORAGE_KEY } from "./theme";
+import { searchResultGoto } from "./search-results";
 
 const win = getCurrentWindow();
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
+window.addEventListener("error", () => runBackground("画面を再表示できませんでした", () => win.show()), { once: true });
+window.addEventListener("unhandledrejection", () => runBackground("画面を再表示できませんでした", () => win.show()), { once: true });
 
 // 以降のモジュール初期化は設定値を同期的に読むため、ここで一度だけ待つ
 await initSettings();
+let windowRequest: api.WindowRequest;
+try {
+  windowRequest = await api.initialWindowRequest();
+} catch (error) {
+  await reportBackgroundError("起動引数を取得できませんでした", error);
+  windowRequest = { secondary: false, path: null, goto: null, selectedRelPath: null, viewState: null };
+}
+const secondaryInstance = windowRequest.secondary;
 
 const editorHost = $("editorhost");
 const sidebarEl = $("sidebar");
@@ -44,11 +68,27 @@ let sidebarAvailable = false;
 let sidebarCollapsed = false;
 let currentLine = 1;
 let tabs: TabManager;
+let restoringEditorFont = true;
+let imageCleanupTimer: number | undefined;
+let externalRequestChain = Promise.resolve();
 
 function setLoading(active: boolean, message = "読み込み中…") {
   loading.hidden = !active;
   loadingMessage.textContent = message;
   editorHost.setAttribute("aria-busy", String(active));
+}
+
+function scheduleImageCleanup() {
+  window.clearTimeout(imageCleanupTimer);
+  const path = doc.current.savePath;
+  if (!path) return;
+  const archiveRelPath = archiveRelOf(doc.current.selectedRelPath);
+  imageCleanupTimer = window.setTimeout(() => {
+    imageCleanupTimer = undefined;
+    if (doc.current.savePath !== path) return;
+    void withArchivePassword(archiveRelPath, () => api.cleanupUnusedImages(path))
+      .catch((error) => reportBackgroundError("不要な画像を削除できませんでした", error));
+  }, 400);
 }
 
 async function reportBackgroundError(title: string, error: unknown) {
@@ -57,6 +97,77 @@ async function reportBackgroundError(title: string, error: unknown) {
   } catch (reportError) {
     console.error(`${title}のエラーを表示できませんでした`, reportError);
   }
+}
+
+function parentPath(path: string): string | null {
+  const normalized = path.replace(/\\/g, "/");
+  const separator = normalized.lastIndexOf("/");
+  if (separator < 0) return null;
+  if (separator === 2 && /^[A-Za-z]:/.test(normalized)) return normalized.slice(0, separator + 1);
+  return normalized.slice(0, separator) || "/";
+}
+
+function memoPathForExplorer(): string | null {
+  const session = doc.current;
+  if (session.folderRoot && session.selectedRelPath && !isArchiveEntryPath(session.selectedRelPath)) {
+    return joinWindowsRoot(session.folderRoot, session.selectedRelPath);
+  }
+  return session.savePath;
+}
+
+function escapeHtmlAttribute(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+}
+
+async function openImageInViewer(relPath: string): Promise<boolean> {
+  const root = doc.current.folderRoot;
+  if (!root) return false;
+  const path = joinWindowsRoot(root, relPath);
+  const name = escapeHtmlAttribute(basename(relPath));
+  try {
+    await api.openViewer("markdown", `<img src="${name}" alt="${name}">`, null, path);
+    return true;
+  } catch (error) {
+    await showError("画像を表示できませんでした", error);
+    return false;
+  }
+}
+
+function runBackground(title: string, operation: () => void | Promise<unknown>) {
+  void Promise.resolve().then(operation).catch((error) => reportBackgroundError(title, error));
+}
+
+async function launchNewWindow(request: Partial<api.WindowRequest> = {}): Promise<boolean> {
+  try {
+    await api.launchNewInstance({
+      secondary: true,
+      path: null,
+      goto: null,
+      selectedRelPath: null,
+      viewState: null,
+      ...request,
+    });
+    return true;
+  } catch (error) {
+    await reportBackgroundError("新規ウィンドウを開けませんでした", error);
+    return false;
+  }
+}
+
+function drainExternalWindowRequests() {
+  externalRequestChain = externalRequestChain.then(async () => {
+    const requests = await api.takePendingWindowRequests();
+    for (const request of requests) {
+      if (!request.path) continue;
+      try {
+        await tabs.open(request.path, request.goto ?? undefined);
+        await win.show();
+        await win.setFocus();
+      } catch (error) {
+        await reportBackgroundError("外部からファイルを開けませんでした", error);
+      }
+    }
+  }).catch((error) => reportBackgroundError("外部からの起動要求を処理できませんでした", error));
 }
 
 function setSidebar(on: boolean, label = "") {
@@ -89,32 +200,59 @@ const statusbar = new StatusBar($("statusbar"), {
     if (doc.current.dirty && !(await confirmReloadDiscardingEdits())) return false;
     return doc.reloadWithEncoding(encoding);
   },
+  onError: showError,
 });
-statusbar.restoreTheme(localStorage.getItem("theme"));
+statusbar.restoreTheme(localStorage.getItem(THEME_STORAGE_KEY));
+window.addEventListener("storage", (event) => {
+  if (event.key === THEME_STORAGE_KEY) statusbar.restoreTheme(event.newValue);
+});
 
 const addressbar = new AddressBar($("topbar"), {
-  onOpen: (path) => void doc.openPath(path),
-  onSave: () => void doc.save(),
-  onSaveAs: () => void doc.saveAs(),
-  onNew: () => void tabs.newBlank(),
+  onOpen: (path) => runBackground("開けませんでした", () => tabs.navigatePath(path)),
+  onBack: () => runBackground("戻れませんでした", () => tabs.goBack()),
+  onForward: () => runBackground("進めませんでした", () => tabs.goForward()),
+  onSave: () => runBackground("保存できませんでした", () => doc.save()),
+  onSaveAs: () => runBackground("名前を付けて保存できませんでした", () => doc.saveAs()),
+  onNew: () => runBackground("新規ウィンドウを開けませんでした", launchNewWindow),
   onFind: () => editor.openSearch(),
-  onPick: () => void pickAndOpen(false),
-  onFavorite: () => favbar.addCurrent(),
+  onPick: () => runBackground("ファイルを開けませんでした", () => pickAndOpen(false)),
+  onFavorite: () => runBackground("お気に入りに追加できませんでした", () => favbar.addCurrent()),
 });
+
+const registeredCommandPorts = {
+  promptFields,
+  runExternalCommand: api.runExternalCommand,
+};
 
 // 部品どうしが相互に参照するため、型注釈で推論の循環を切る
 const editor: VirtualEditor = new VirtualEditor(editorHost, {
   onDocChange: (lineCount) => {
     doc.onEdit(lineCount);
     statusbar.setLineCount(lineCount);
+    scheduleImageCleanup();
   },
   onCursor: (line, col) => {
     currentLine = line;
     statusbar.setCursor(line, col);
+    tabs?.syncCursor(line - 1);
   },
-  onFontChange: (family, size) => statusbar.setFont(family, size),
-  hasExternalFile: () => doc.current.savePath !== null,
-  openExternally: () => { if (doc.current.savePath) void openInOtherApp(doc.current.savePath); },
+  onFontChange: (family, size) => {
+    statusbar.setFont(family, size);
+    if (!restoringEditorFont) {
+      setSetting("fontFamily", family);
+      setSetting("fontSize", size);
+    }
+  },
+  getExternalFilePath: () => doc.current.savePath,
+  registeredCommandPorts,
+  openExternally: () => {
+    if (doc.current.savePath) runBackground("アプリで開けませんでした", () => openInOtherApp(doc.current.savePath!));
+  },
+  revealInExplorer: () => {
+    const path = memoPathForExplorer();
+    const folder = path && parentPath(path);
+    if (folder) runBackground("エクスプローラで開けませんでした", () => revealInExplorer(folder, true));
+  },
   onError: (message, error) => showError(message, error),
   openViewer: async (format, text, selection) => {
     try {
@@ -125,39 +263,45 @@ const editor: VirtualEditor = new VirtualEditor(editorHost, {
     }
   },
   updateViewer: api.updateViewer,
+  saveImage: async (bytes, mimeType) => {
+    return withArchivePassword(
+      archiveRelOf(doc.current.selectedRelPath),
+      () => api.savePastedImage(bytes, mimeType),
+    );
+  },
 });
-editor.setFont(DEFAULT_EDITOR_CONFIG.fontFamily, DEFAULT_EDITOR_CONFIG.fontSize);
+editor.setFont(getSetting("fontFamily"), getSetting("fontSize"));
+restoringEditorFont = false;
 editor.setTabSize(statusbar.setIndent(getSetting("indentSize")));
 
 const sidebar = new Sidebar(sidebarEl, {
-  onSelect: async (relPath, newWindow) => {
-    if (newWindow) {
+  onSelect: async (relPath, newTab) => {
+    if (isImagePath(relPath) && doc.current.folderRoot) return openImageInViewer(relPath);
+    if (newTab) {
       await openInNewTab(relPath);
       return;
     }
-    if (!(await doc.confirmDiscard())) {
+    if (!(await tabs.navigateEntry(relPath))) {
       sidebar.select(doc.current.selectedRelPath);
-      return;
     }
-    await doc.selectEntry(relPath);
   },
   onContextMenu: (x, y, target) => folderActions.showContextMenu(x, y, target),
-  onExpandArchive: (relPath) => api.listArchiveEntries(relPath),
+  onExpandArchive: (relPath) =>
+    withArchivePassword(relPath, () => api.listArchiveEntries(relPath)),
   onExpandFolder: (relDir) => api.listFolderEntries(relDir),
-  onTreeError: (error) => showError("フォルダを展開できませんでした", error),
+  onTreeError: async (error) => {
+    if (!isPasswordCancelled(error)) await showError("フォルダを展開できませんでした", error);
+  },
   onSearch: (pat, options, searchId) => api.workspaceSearch(pat, options, searchId),
-  onCancel: () => api.workspaceSearchCancel(),
+  onCancel: (searchId) => api.workspaceSearchCancel(searchId),
   onError: (error) => showError("フォルダを検索できませんでした", error),
   onOptionsChange: saveSearchOptions,
-  onOpen: async (result, newWindow) => {
-    if (newWindow) {
-      // ファイル名一致の line/col は本文の位置ではない (どちらも 0) ので飛ばさない
-      const goto = result.is_filename ? undefined : { line: result.line, col: result.col };
-      await openInNewTab(result.rel_path, goto);
+  onOpen: async (result, newTab) => {
+    if (newTab) {
+      await openInNewTab(result.rel_path, searchResultGoto(result));
       return;
     }
-    if (!(await doc.confirmDiscard())) return;
-    await doc.selectEntry(result.rel_path);
+    if (!(await tabs.navigateEntry(result.rel_path))) return;
     // 当たった長さは backend が返す範囲から取る。正規表現や大小の畳み込みでは
     // 入力したパターンの長さと一致しない。
     const [, length] = result.highlights[0] ?? [0, 0];
@@ -167,7 +311,9 @@ const sidebar = new Sidebar(sidebarEl, {
 }, loadSearchOptions());
 
 // 検索の途中経過。確定を待たずに届いた分から並べる
-void api.onWorkspaceSearchBatch((batch) => sidebar.acceptSearchBatch(batch.search_id, batch.results))
+void api.onWorkspaceSearchBatch((batch) => runBackground("検索結果を画面へ反映できませんでした", () =>
+  sidebar.acceptSearchBatch(batch.search_id, batch.results)
+))
   .catch((error) => reportBackgroundError("検索結果の受信を開始できませんでした", error));
 
 // フォルダビュー由来の relPath は、独立したファイルタブ用の絶対パスへ戻す
@@ -183,13 +329,13 @@ const windowChrome = new WindowChrome($("titlebar"), win, {
       await flushSettings();
       return true;
     } catch (error) {
-      await showError("タブを保存できませんでした", error);
+      await showError("設定を保存できませんでした", error);
       return false;
     }
   },
   onGeometryChange: () => editor.syncWindowGeometry(),
   onError: showError,
-});
+}, $("save-notice"));
 
 const doc: DocumentController = new DocumentController({
   editor,
@@ -212,7 +358,17 @@ const doc: DocumentController = new DocumentController({
     });
     return path ?? null;
   },
-});
+}, {
+  api,
+  showError,
+  confirmSaveDiscard,
+  promptFields,
+  promptSaveFormat,
+  saveFormatFields,
+  saveFormatFromValues,
+  isPasswordCancelled,
+  withArchivePassword,
+} satisfies DocumentControllerServices);
 
 const externalWatch = new ExternalWatch($("external-banner"), {
   canPoll: () => doc.current.savePath !== null && loading.hidden,
@@ -225,26 +381,42 @@ const externalWatch = new ExternalWatch($("external-banner"), {
   onNotice: (text) => windowChrome.notify(text),
   onError: showError,
   onIgnore: () => editor.focus(),
-});
+}, api);
 
 const favbar = new FavBar($("favbar"), {
-  onOpen: (path, newTab) => { void (newTab ? tabs.open(path) : doc.openPath(path)); },
+  onOpen: (path, newTab) => runBackground("お気に入りを開けませんでした", () => newTab ? tabs.open(path) : tabs.navigatePath(path)),
   onAddGroupToTabs: (items) => tabs.addLinks(items),
   currentFile: () => addressbar.path || null,
-  onSetDefault: (path) => setSetting("startupPath", path),
   onError: (error) => showError("お気に入りを移動できませんでした", error),
 });
 
 const folderActions = new FolderActions(doc, {
   sidebar,
-  onOpenInNewTab: (relPath, goto) => { void openInNewTab(relPath, goto); },
-  onAddFavorite: (path) => favbar.addExternal(path),
+  onOpenInNewTab: (relPath, goto) => runBackground("新規タブで開けませんでした", () => openInNewTab(relPath, goto)),
+  onOpenInNewWindow: (path, goto) => runBackground("新規ウィンドウで開けませんでした", () => launchNewWindow({ path, goto: goto ?? null })),
+  onOpenViewer: (relPath, format) => {
+    void (async () => {
+      if (!(await tabs.navigateEntry(relPath))) return;
+      await editor.openTextViewer(format);
+    })().catch((error) => reportBackgroundError("ビューを開けませんでした", error));
+  },
+  onAddFavorite: (path) => runBackground("お気に入りに追加できませんでした", () => favbar.addExternal(path)),
   onSetStartupPath: (path) => setSetting("startupPath", path),
   onOpenPath: (path) => {
-    addressbar.render(path);
-    void doc.openPath(path);
+    runBackground("開けませんでした", () => tabs.navigatePath(path));
   },
-});
+}, {
+  api,
+  showError,
+  confirmMessage,
+  promptFields,
+  registeredCommandPorts: {
+    runExternalCommand: api.runExternalCommand,
+  },
+  getStartupPath: () => getSetting("startupPath"),
+  revealInExplorer,
+  openInOtherApp,
+} satisfies FolderActionsServices);
 
 // ---- 配線 ----
 function confirmReloadDiscardingEdits(): Promise<boolean> {
@@ -258,7 +430,7 @@ function confirmReloadDiscardingEdits(): Promise<boolean> {
 async function pickAndOpen(directory: boolean) {
   try {
     const path = await openDialog({ directory });
-    if (typeof path === "string") await doc.openPath(path);
+    if (typeof path === "string") await tabs.navigatePath(path);
   } catch (error) {
     await reportBackgroundError("ファイルを開けませんでした", error);
   }
@@ -270,7 +442,7 @@ const commands = createCommandRegistry({
   openFolder: () => { void pickAndOpen(true); },
   save: () => doc.save(),
   saveAs: () => doc.saveAs(),
-  quit: () => { void win.close(); },
+  quit: () => win.close(),
   find: () => editor.openSearch(),
 });
 
@@ -304,7 +476,7 @@ window.addEventListener("keydown", (e) => {
   const command = globalCommandForEvent(commands, e);
   if (!command) return;
   e.preventDefault();
-  void command.run();
+  runBackground(`${command.label}を実行できませんでした`, () => command.run());
 });
 
 // お気に入りバー上へのdropは登録、それ以外は従来どおり開く
@@ -324,30 +496,74 @@ void getCurrentWebview().onDragDropEvent((ev) => {
 
 // フォルダビューは他アプリによる増減を拾うため定期的に取り直す
 let folderRefreshRunning = false;
+let folderRefreshErrorReported = false;
 window.setInterval(async () => {
   if (!doc.current.folderRoot || folderRefreshRunning) return;
   folderRefreshRunning = true;
   try {
     await sidebar.refreshFolderEntries();
-  } catch {
+    folderRefreshErrorReported = false;
+  } catch (error) {
     // 一時的に列挙できなくても、次の周期で再試行する。
+    if (!folderRefreshErrorReported) {
+      folderRefreshErrorReported = true;
+      await reportBackgroundError("フォルダ一覧を更新できませんでした", error);
+    }
   } finally {
     folderRefreshRunning = false;
   }
 }, 3000);
 
 // ---- 起動 ----
-await windowChrome.syncMaxIcon();
-await favbar.init();
-const cliPath = await api.initialPath();
-const cliGoto = await api.initialGoto();
+try {
+  await windowChrome.syncMaxIcon();
+} catch (error) {
+  await reportBackgroundError("ウィンドウ状態を取得できませんでした", error);
+}
+// 以降はファイルエラーなどでユーザー操作待ちになるため、先に操作可能な画面を出す。
+try {
+  await win.show();
+} catch (error) {
+  await reportBackgroundError("ウィンドウを表示できませんでした", error);
+}
+try {
+  await favbar.init();
+} catch (error) {
+  await reportBackgroundError("お気に入りを読み込めませんでした", error);
+}
 const startupPath = getSetting("startupPath");
 tabs = new TabManager($("tabs"), doc, {
-  onChange: (state) => setSetting("openTabs", state),
+  onChange: (state) => {
+    if (!secondaryInstance) setSetting("openTabs", state);
+  },
+  onHistoryChange: (state) => addressbar.setNavigationState(state),
+  onError: (error, message = "タブを操作できませんでした") => reportBackgroundError(message, error),
+  onDetach: (request) => launchNewWindow(request),
+}, {
+  ...registeredCommandPorts,
 });
-await tabs.init(getSetting("openTabs"), cliPath, startupPath, cliGoto ?? undefined);
-void api.onOpenInTab((request) => {
-  void tabs.open(request.path, request.goto ?? undefined)
-    .catch((error) => reportBackgroundError("新規タブでファイルを開けませんでした", error));
-}).catch((error) => reportBackgroundError("新規タブ要求の受信を開始できませんでした", error));
+const storedTabs = secondaryInstance ? { tabs: [], activeId: null } : getSetting("openTabs");
+try {
+  await tabs.init(
+    storedTabs,
+    windowRequest.path,
+    secondaryInstance ? null : startupPath,
+    windowRequest.goto ?? undefined,
+    windowRequest.selectedRelPath ?? undefined,
+    windowRequest.viewState ?? undefined,
+  );
+} catch (error) {
+  await reportBackgroundError("タブを復元できませんでした", error);
+  try {
+    await tabs.init({ tabs: [], activeId: null }, null, null);
+  } catch (fallbackError) {
+    await reportBackgroundError("空の文書を開始できませんでした", fallbackError);
+  }
+}
+try {
+  await api.onExternalWindowRequest(drainExternalWindowRequests);
+  drainExternalWindowRequests();
+} catch (error) {
+  await reportBackgroundError("外部からの起動要求を受信できませんでした", error);
+}
 doc.updateTitle();

@@ -55,4 +55,71 @@ describe("LiveViewers", () => {
     expect(updateViewer).toHaveBeenCalledTimes(3);
     vi.useRealTimers();
   });
+
+  it("文書切替中に開いた旧ビューを再登録しない", async () => {
+    vi.useFakeTimers();
+    let resolveOpen!: (label: string) => void;
+    const openViewer = vi.fn(() => new Promise<string>((resolve) => { resolveOpen = resolve; }));
+    const updateViewer = vi.fn(async () => true);
+    const viewers = new LiveViewers({
+      openViewer,
+      updateViewer,
+      wholeRange: async () => ({ start: { line: 0, col: 0 }, end: { line: 0, col: 0 } }),
+      textInRange: async () => "text",
+    });
+
+    const opening = viewers.open("csv", null, { start: { line: 0, col: 0 }, end: { line: 0, col: 0 } });
+    await vi.waitFor(() => expect(openViewer).toHaveBeenCalledOnce());
+    viewers.clear();
+    resolveOpen("old-viewer");
+    await opening;
+    viewers.scheduleRefresh();
+    await vi.advanceTimersByTimeAsync(120);
+
+    expect(updateViewer).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it("文書切替後に保留中の旧ビュー更新を続けない", async () => {
+    vi.useFakeTimers();
+    let resolveUpdate!: (exists: boolean) => void;
+    const updateViewer = vi.fn(() => new Promise<boolean>((resolve) => { resolveUpdate = resolve; }));
+    const viewers = new LiveViewers({
+      openViewer: async () => "viewer-1",
+      updateViewer,
+      wholeRange: async () => ({ start: { line: 0, col: 0 }, end: { line: 0, col: 0 } }),
+      textInRange: async () => "text",
+    });
+
+    await viewers.open("csv", null, { start: { line: 0, col: 0 }, end: { line: 0, col: 0 } });
+    viewers.scheduleRefresh();
+    await vi.advanceTimersByTimeAsync(120);
+    viewers.clear();
+    resolveUpdate(true);
+    await Promise.resolve();
+
+    expect(updateViewer).toHaveBeenCalledOnce();
+    vi.useRealTimers();
+  });
+
+  it("予期しない更新失敗も未処理Promiseにせずエラー通知へ渡す", async () => {
+    vi.useFakeTimers();
+    const onError = vi.fn(async () => {});
+    const viewers = new LiveViewers({
+      openViewer: async () => "viewer-1",
+      updateViewer: async () => true,
+      wholeRange: async () => ({ start: { line: 0, col: 0 }, end: { line: 0, col: 0 } }),
+      textInRange: async () => "text",
+      onError,
+    });
+    await viewers.open("csv", null, { start: { line: 0, col: 0 }, end: { line: 0, col: 0 } });
+    vi.spyOn(viewers as unknown as { refresh: () => Promise<void> }, "refresh")
+      .mockRejectedValueOnce(new Error("unexpected"));
+
+    viewers.scheduleRefresh();
+    await vi.advanceTimersByTimeAsync(120);
+
+    expect(onError).toHaveBeenCalledWith(expect.any(Error));
+    vi.useRealTimers();
+  });
 });
