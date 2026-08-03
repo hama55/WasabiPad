@@ -67,10 +67,28 @@ pub(crate) fn open_in_other_app(path: String) -> Result<(), String> {
 }
 
 #[cfg(target_os = "windows")]
+struct ProcessHandles {
+    thread: windows_sys::Win32::Foundation::HANDLE,
+    process: windows_sys::Win32::Foundation::HANDLE,
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for ProcessHandles {
+    fn drop(&mut self) {
+        use windows_sys::Win32::Foundation::CloseHandle;
+
+        unsafe {
+            let _ = CloseHandle(self.thread);
+            let _ = CloseHandle(self.process);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
 fn spawn_command_line(command: &str) -> Result<(), String> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
+    use windows_sys::Win32::Foundation::GetLastError;
     use windows_sys::Win32::System::Threading::{
         CreateProcessW, PROCESS_INFORMATION, STARTUPINFOW,
     };
@@ -101,10 +119,10 @@ fn spawn_command_line(command: &str) -> Result<(), String> {
         return Err(std::io::Error::from_raw_os_error(error as i32).to_string());
     }
 
-    unsafe {
-        CloseHandle(process_info.hThread);
-        CloseHandle(process_info.hProcess);
-    }
+    let _handles = ProcessHandles {
+        thread: process_info.hThread,
+        process: process_info.hProcess,
+    };
     Ok(())
 }
 
@@ -127,6 +145,14 @@ pub(crate) fn run_external_command(command: String, path: String) -> Result<(), 
     {
         let _ = (command, path);
         Err("この機能はWindowsでのみ使用できます".to_string())
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    #[test]
+    fn runs_the_complete_command_line_without_adding_a_shell() {
+        super::spawn_command_line("cmd.exe /D /C exit 0").unwrap();
     }
 }
 

@@ -9,7 +9,7 @@ import { basename, joinWindowsRoot, rebaseWindowsPath, relativePathFromRoot } fr
 import { VIEWER_FORMAT_LABELS } from "./format";
 import { isArchiveEntryUnder } from "./archive-path";
 import { viewerFormatForPath } from "./viewer-formats";
-import { createRegisteredCommandMenu } from "./registered-command-menu";
+import { createRegisteredCommandMenu, type RegisteredCommandMenuPorts } from "./registered-command-menu";
 
 export interface FolderActionsPorts {
   sidebar: Pick<Sidebar, "setEntries" | "selectByRelPath" | "refreshFolderEntries">;
@@ -21,13 +21,14 @@ export interface FolderActionsPorts {
   onOpenPath: (path: string) => void;
 }
 
-export type FolderActionsApi = Pick<typeof api, "createNote" | "renameEntry" | "deleteEntry" | "runExternalCommand">;
+export type FolderActionsApi = Pick<typeof api, "createNote" | "renameEntry" | "deleteEntry">;
 
 export interface FolderActionsServices {
   api: FolderActionsApi;
   showError: typeof showError;
   confirmMessage: typeof confirmMessage;
   promptFields: typeof promptFields;
+  registeredCommandPorts: RegisteredCommandMenuPorts;
   getStartupPath: () => string | null;
   revealInExplorer: typeof revealInExplorer;
   openInOtherApp: typeof openInOtherApp;
@@ -127,8 +128,7 @@ export class FolderActions {
   private registeredCommandMenu(relPath: string): MenuItem {
     const path = this.toAbsolute(relPath);
     return createRegisteredCommandMenu(path, {
-      promptFields: this.services.promptFields,
-      runExternalCommand: this.services.api.runExternalCommand,
+      ...this.services.registeredCommandPorts,
       run: (title, operation) => this.run(title, operation),
     });
   }

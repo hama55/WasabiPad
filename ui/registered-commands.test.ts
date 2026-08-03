@@ -31,6 +31,14 @@ describe("registered commands", () => {
       .toBe("powershell.exe");
   });
 
+  it("実行ファイルはプレフィックスなしで対象ファイルを渡す", () => {
+    expect(commandLineForValue(
+      "",
+      '"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" {file}',
+      "C:\\work\\index.html",
+    )).toBe('"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" "C:\\work\\index.html"');
+  });
+
   it("同じ拡張子のコマンドだけを返し、重複登録しない", () => {
     addRegisteredCommand({ extension: ".HTML", label: "Chrome", prefix: "", command: "chrome {file}" });
     addRegisteredCommand({ extension: "html", label: "Chrome", prefix: "", command: "chrome {file}" });

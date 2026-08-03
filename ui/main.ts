@@ -411,6 +411,7 @@ const folderActions = new FolderActions(doc, {
   showError,
   confirmMessage,
   promptFields,
+  registeredCommandPorts,
   getStartupPath: () => getSetting("startupPath"),
   revealInExplorer,
   openInOtherApp,

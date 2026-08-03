@@ -13,6 +13,7 @@ import {
   type FolderActionsPorts,
   type FolderDocumentPort,
 } from "./folder-actions";
+import type { RegisteredCommandMenuPorts } from "./registered-command-menu";
 import type { MemoSpec } from "./document-controller";
 
 vi.mock("./dialogs", () => ({ showError: vi.fn(async () => {}) }));
@@ -28,6 +29,11 @@ vi.mock("./prompt", async (importOriginal) => ({
   promptFields: vi.fn(async () => null),
 }));
 import { confirmMessage, promptFields } from "./prompt";
+
+const registeredCommandPorts: RegisteredCommandMenuPorts = {
+  promptFields,
+  runExternalCommand: vi.mocked(api.runExternalCommand),
+};
 
 function fixture() {
   const dropdown = document.createElement("div");
@@ -61,6 +67,7 @@ function fixture() {
       showError,
       confirmMessage,
       promptFields,
+      registeredCommandPorts,
       getStartupPath: () => null,
       revealInExplorer,
       openInOtherApp,
@@ -76,6 +83,7 @@ describe("FolderActions", () => {
     document.body.replaceChildren();
     await initSettings();
     vi.mocked(api.runExternalCommand).mockClear();
+    vi.mocked(showError).mockClear();
     vi.mocked(promptFields).mockReset();
     vi.mocked(promptFields).mockResolvedValue(null);
   });
@@ -135,6 +143,22 @@ describe("FolderActions", () => {
     ));
   });
 
+  it("登録コマンドの実行失敗を表示する", async () => {
+    addRegisteredCommand({ extension: ".html", label: "Chrome", prefix: "", command: "chrome {file}" });
+    vi.mocked(api.runExternalCommand).mockRejectedValueOnce(new Error("command failed"));
+    const { actions, dropdown } = fixture();
+    actions.showContextMenu(0, 0, { relPath: "index.html", isDir: false });
+
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "登録コマンド ▸")!.click();
+    dropdown.querySelector<HTMLElement>(".dd-submenu .dd-item")!.click();
+
+    await vi.waitFor(() => expect(showError).toHaveBeenCalledWith(
+      "登録コマンドを実行できませんでした",
+      expect.any(Error),
+    ));
+  });
+
   it("登録時は選択ファイルの拡張子をコマンドへ紐付ける", async () => {
     vi.mocked(promptFields).mockResolvedValueOnce(["Chrome", "", "chrome {file}"]);
     const { actions, dropdown } = fixture();
@@ -144,8 +168,8 @@ describe("FolderActions", () => {
       .find((item) => item.textContent === "コマンドを登録...")!.click();
 
     expect(vi.mocked(promptFields).mock.calls[0][1][1]).toMatchObject({
-      label: "プレフィックス（空欄可。例: cmd.exe /D /C）",
-      value: "cmd.exe /D /C",
+      label: "プレフィックス（任意。必要時の例: cmd.exe /D /C）",
+      value: "",
     });
 
     await vi.waitFor(() => expect(commandsForPath("index.html")).toEqual([

@@ -1,10 +1,15 @@
 // 外部コマンドの永続化、拡張子判定、対象値の置換。
-import { getSetting, setSetting, type RegisteredCommand } from "./settings";
+import { getSetting, setSetting } from "./settings";
+import {
+  normalizeExtension,
+  normalizeRegisteredCommand,
+  type RegisteredCommand,
+} from "./registered-command-model";
 
 export type { RegisteredCommand };
 
-export const DEFAULT_COMMAND_PREFIX = "cmd.exe /D /C";
-export const COMMAND_PREFIX_FIELD_LABEL = `プレフィックス（空欄可。例: ${DEFAULT_COMMAND_PREFIX}）`;
+export const DEFAULT_COMMAND_PREFIX = "";
+export const COMMAND_PREFIX_FIELD_LABEL = "プレフィックス（任意。必要時の例: cmd.exe /D /C）";
 
 export function extensionOf(path: string): string {
   const name = path.replace(/\\/g, "/").split("/").pop() ?? "";
@@ -20,28 +25,13 @@ export function commandLineForValue(prefix: string, command: string, value: stri
 // 既存の呼び出し元との互換性を保ちながら、対象がファイルに限らないことを明示する。
 export const commandLineForFile = commandLineForValue;
 
-function normalizeExtension(extension: string): string {
-  const value = extension.trim().toLowerCase();
-  if (!value) return "";
-  return value.startsWith(".") ? value : `.${value}`;
-}
-
-function normalizeCommand(command: RegisteredCommand): RegisteredCommand {
-  return {
-    extension: normalizeExtension(command.extension),
-    label: command.label.trim(),
-    prefix: command.prefix.trim(),
-    command: command.command.trim(),
-  };
-}
-
 export function commandsForPath(path: string): RegisteredCommand[] {
   const extension = extensionOf(path);
   return getSetting("registeredCommands").filter((command) => normalizeExtension(command.extension) === extension);
 }
 
 export function addRegisteredCommand(command: RegisteredCommand): void {
-  const normalized = normalizeCommand(command);
+  const normalized = normalizeRegisteredCommand(command);
   if (!normalized.label || !normalized.command) return;
   const commands = getSetting("registeredCommands");
   if (commands.some((item) => item.extension === normalized.extension
@@ -55,7 +45,7 @@ export function updateRegisteredCommand(
   previous: RegisteredCommand,
   changes: Pick<RegisteredCommand, "label" | "prefix" | "command">,
 ): void {
-  const updated = normalizeCommand({ ...previous, ...changes });
+  const updated = normalizeRegisteredCommand({ ...previous, ...changes });
   if (!updated.label || !updated.command) return;
   const commands = getSetting("registeredCommands");
   const index = commands.indexOf(previous);
