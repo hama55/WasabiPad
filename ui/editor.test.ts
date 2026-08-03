@@ -9,15 +9,26 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
   readText: readClipboardText,
   writeText: writeClipboardText,
 }));
+const { loadSettings, updateSetting } = vi.hoisted(() => ({
+  loadSettings: vi.fn(async () => "{}"),
+  updateSetting: vi.fn(async () => {}),
+}));
+vi.mock("./api", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./api")>(),
+  loadSettings,
+  updateSetting,
+}));
 import { fakeDocument, installDomStubs, settle } from "./test-doubles";
 import { VirtualEditor, type EditorPorts } from "./editor";
+import { initSettings } from "./settings";
+import type { RegisteredCommandMenuPorts } from "./registered-command-menu";
 
 installDomStubs();
 
 function mount(
   initial: string,
   saveImage?: EditorPorts["saveImage"],
-  overrides: Partial<Pick<EditorPorts, "hasExternalFile" | "revealInExplorer">> = {},
+  overrides: Partial<Pick<EditorPorts, "revealInExplorer" | "getExternalFilePath" | "registeredCommandPorts">> = {},
 ) {
   const host = document.createElement("div");
   document.body.replaceChildren(host);
@@ -31,9 +42,13 @@ function mount(
     onDocChange: (lineCount) => { events.lineCount = lineCount; },
     onCursor: (line, col) => { events.cursor = [line, col]; },
     onFontChange: () => {},
-    hasExternalFile: overrides.hasExternalFile ?? (() => false),
+    getExternalFilePath: overrides.getExternalFilePath ?? (() => null),
     openExternally: () => {},
     revealInExplorer: overrides.revealInExplorer,
+    registeredCommandPorts: overrides.registeredCommandPorts ?? {
+      promptFields: async () => null,
+      runExternalCommand: async () => {},
+    },
     onError: async (message, error) => { events.errors.push({ message, error }); },
     openViewer: async () => null,
     updateViewer: async () => true,
@@ -51,8 +66,12 @@ function mount(
 }
 
 describe("VirtualEditor", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     document.body.replaceChildren();
+    loadSettings.mockResolvedValue("{}");
+    updateSetting.mockReset();
+    updateSetting.mockResolvedValue(undefined);
+    await initSettings();
     readClipboardText.mockReset();
     readClipboardText.mockResolvedValue("");
     writeClipboardText.mockReset();
@@ -204,7 +223,7 @@ describe("VirtualEditor", () => {
   it("保存済みメモの右クリックから格納フォルダを開く", async () => {
     const revealInExplorer = vi.fn();
     const { editor, host } = mount("memo", undefined, {
-      hasExternalFile: () => true,
+      getExternalFilePath: () => "C:\\work\\memo.txt",
       revealInExplorer,
     });
     const dropdown = document.createElement("div");
@@ -221,6 +240,61 @@ describe("VirtualEditor", () => {
     item?.click();
 
     expect(revealInExplorer).toHaveBeenCalledTimes(1);
+  });
+
+  it("メモビューの登録コマンドへ選択文字列を渡す", async () => {
+    const promptFields = vi.fn(async () => ["ブラウザ", "", "open {file}"]);
+    const runExternalCommand = vi.fn(async () => {});
+    const registeredCommandPorts: RegisteredCommandMenuPorts = { promptFields, runExternalCommand };
+    const { editor, host, events } = mount("https://example.com", undefined, {
+      getExternalFilePath: () => "C:\\work\\memo.txt",
+      registeredCommandPorts,
+    });
+    const dropdown = document.createElement("div");
+    dropdown.id = "dropdown";
+    document.body.appendChild(dropdown);
+    editor.open(1, false);
+    await editor.restoreViewState({
+      anchor: { line: 0, col: 0 },
+      caret: { line: 0, col: 19 },
+      topLine: 0,
+      wrapIntraLinePx: 0,
+      scrollLeft: 0,
+    });
+
+    const showContextMenu = () => host.querySelector<HTMLElement>(".ve-scroll")!.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, clientX: 0, clientY: 0 }),
+    );
+    showContextMenu();
+    expect([...dropdown.querySelectorAll<HTMLElement>(".dd-label")].map((item) => item.textContent))
+      .toContain("コマンドを登録...");
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "コマンドを登録...")!.click();
+
+    await vi.waitFor(() => expect(promptFields).toHaveBeenCalled());
+    const fields = (promptFields.mock.calls[0] as unknown as [string, { label: string }[]])[1];
+    expect(fields[2].label).toContain("対象文字列");
+
+    showContextMenu();
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "登録コマンド ▸")!.click();
+    const commandItem = dropdown.querySelector<HTMLElement>(".dd-submenu .dd-item");
+    commandItem?.click();
+
+    await vi.waitFor(() => expect(runExternalCommand).toHaveBeenCalledWith(
+      'open "https://example.com"',
+      "C:\\work\\memo.txt",
+    ));
+
+    runExternalCommand.mockRejectedValueOnce(new Error("command failed"));
+    showContextMenu();
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "登録コマンド ▸")!.click();
+    dropdown.querySelector<HTMLElement>(".dd-submenu .dd-item")!.click();
+    await vi.waitFor(() => expect(events.errors).toContainEqual({
+      message: "登録コマンドを実行できませんでした",
+      error: expect.any(Error),
+    }));
   });
 
   it("goTo はキャレット位置を1始まりで通知する", async () => {
@@ -242,6 +316,43 @@ describe("VirtualEditor", () => {
 
     expect(editor.captureViewState().topLine).toBe(18);
     expect(scroll.scrollTop).toBe(360);
+  });
+
+  it("表示領域の最下行で改行すると新しいキャレット行へ自動スクロールする", async () => {
+    const { editor, host, press } = mount(Array.from({ length: 40 }, (_, i) => `line ${i}`).join("\n"));
+    const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
+    Object.defineProperty(scroll, "clientHeight", { configurable: true, value: 100 });
+    editor.open(40, false);
+    await editor.restoreViewState({
+      anchor: { line: 6, col: 6 },
+      caret: { line: 6, col: 6 },
+      topLine: 2,
+      wrapIntraLinePx: 0,
+      scrollLeft: 0,
+    });
+
+    press("Enter");
+    await settle();
+
+    expect(editor.captureViewState().caret).toEqual({ line: 7, col: 0 });
+    expect(editor.captureViewState().topLine).toBe(3);
+    expect(scroll.scrollTop).toBe(60);
+  });
+
+  it("文書末尾で改行文字を連続入力しても常に入力行を表示する", async () => {
+    const { editor, host, type } = mount("start");
+    const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
+    Object.defineProperty(scroll, "clientHeight", { configurable: true, value: 100 });
+    editor.open(1, false);
+
+    for (let i = 0; i < 8; i += 1) {
+      type("\n");
+      await settle();
+    }
+
+    expect(editor.captureViewState().caret).toEqual({ line: 8, col: 0 });
+    expect(editor.captureViewState().topLine).toBe(4);
+    expect(scroll.scrollTop).toBe(80);
   });
 
   it("検索結果の範囲選択は対象行をメモビューの中央へ置く", async () => {
@@ -677,5 +788,28 @@ describe("VirtualEditor", () => {
     expect(host.querySelector(".ve-gnum.selected-line.caret-line")).not.toBeNull();
     expect(host.querySelector(".ve-line.selected-line, .ve-line.caret-line")).toBeNull();
     expect(host.querySelector(".ve-line-highlight")).toBeNull();
+  });
+
+  it("フォーカス中のキャレットは常時表示し、フォーカスを失うと隠す", async () => {
+    const { editor, host, input } = mount("line");
+    editor.open(1, false);
+    await settle();
+    Object.defineProperty(host.querySelector<HTMLElement>(".ve-scroll")!, "clientHeight", {
+      configurable: true,
+      value: 100,
+    });
+    await editor.restoreViewState({
+      anchor: { line: 0, col: 0 },
+      caret: { line: 0, col: 0 },
+      topLine: 0,
+      wrapIntraLinePx: 0,
+      scrollLeft: 0,
+    });
+    const caret = host.querySelector<HTMLElement>(".ve-caret")!;
+
+    editor.focus();
+    expect(caret.classList.contains("on")).toBe(true);
+    input.dispatchEvent(new FocusEvent("blur"));
+    expect(caret.classList.contains("on")).toBe(false);
   });
 });

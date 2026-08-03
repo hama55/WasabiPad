@@ -8,7 +8,7 @@ vi.mock("./api", () => ({
 import { initSettings } from "./settings";
 import {
   addRegisteredCommand,
-  commandLineForFile,
+  commandLineForValue,
   commandsForPath,
   extensionOf,
   removeRegisteredCommand,
@@ -25,9 +25,9 @@ describe("registered commands", () => {
   });
 
   it("プレフィックスを連結し、対象ファイルを指定した場所だけ置換する", () => {
-    expect(commandLineForFile("cmd.exe /D /C", "powershell.exe -File {file}", "C:\\work\\page.ps1"))
+    expect(commandLineForValue("cmd.exe /D /C", "powershell.exe -File {file}", "C:\\work\\page.ps1"))
       .toBe('cmd.exe /D /C powershell.exe -File "C:\\work\\page.ps1"');
-    expect(commandLineForFile("", "powershell.exe", "C:\\work\\page.ps1"))
+    expect(commandLineForValue("", "powershell.exe", "C:\\work\\page.ps1"))
       .toBe("powershell.exe");
   });
 

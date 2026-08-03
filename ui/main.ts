@@ -219,6 +219,11 @@ const addressbar = new AddressBar($("topbar"), {
   onFavorite: () => runBackground("お気に入りに追加できませんでした", () => favbar.addCurrent()),
 });
 
+const registeredCommandPorts = {
+  promptFields,
+  runExternalCommand: api.runExternalCommand,
+};
+
 // 部品どうしが相互に参照するため、型注釈で推論の循環を切る
 const editor: VirtualEditor = new VirtualEditor(editorHost, {
   onDocChange: (lineCount) => {
@@ -238,7 +243,8 @@ const editor: VirtualEditor = new VirtualEditor(editorHost, {
       setSetting("fontSize", size);
     }
   },
-  hasExternalFile: () => doc.current.savePath !== null,
+  getExternalFilePath: () => doc.current.savePath,
+  registeredCommandPorts,
   openExternally: () => {
     if (doc.current.savePath) runBackground("アプリで開けませんでした", () => openInOtherApp(doc.current.savePath!));
   },
@@ -532,8 +538,7 @@ tabs = new TabManager($("tabs"), doc, {
   onError: (error) => reportBackgroundError("タブを操作できませんでした", error),
   onDetach: (request) => launchNewWindow(request),
 }, {
-  promptFields,
-  runExternalCommand: api.runExternalCommand,
+  ...registeredCommandPorts,
 });
 const storedTabs = secondaryInstance ? { tabs: [], activeId: null } : getSetting("openTabs");
 try {

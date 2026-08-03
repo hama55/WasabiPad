@@ -66,11 +66,51 @@ pub(crate) fn open_in_other_app(path: String) -> Result<(), String> {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn spawn_command_line(command: &str) -> Result<(), String> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
+    use windows_sys::Win32::System::Threading::{
+        CreateProcessW, PROCESS_INFORMATION, STARTUPINFOW,
+    };
+
+    let mut command_line: Vec<u16> = OsStr::new(command)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut startup_info = unsafe { std::mem::zeroed::<STARTUPINFOW>() };
+    startup_info.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+    let mut process_info = unsafe { std::mem::zeroed::<PROCESS_INFORMATION>() };
+    let created = unsafe {
+        CreateProcessW(
+            std::ptr::null(),
+            command_line.as_mut_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+            0,
+            std::ptr::null(),
+            std::ptr::null(),
+            &startup_info,
+            &mut process_info,
+        )
+    };
+    if created == 0 {
+        let error = unsafe { GetLastError() };
+        return Err(std::io::Error::from_raw_os_error(error as i32).to_string());
+    }
+
+    unsafe {
+        CloseHandle(process_info.hThread);
+        CloseHandle(process_info.hProcess);
+    }
+    Ok(())
+}
+
 pub(crate) fn run_external_command(command: String, path: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        use std::os::windows::process::CommandExt;
-
         let target = PathBuf::from(path);
         if !target.is_file() {
             return Err("対象ファイルが見つかりません".to_string());
@@ -79,14 +119,9 @@ pub(crate) fn run_external_command(command: String, path: String) -> Result<(), 
         if command.is_empty() {
             return Err("コマンドが空です".to_string());
         }
-        // {file}の置換とプレフィックスの連結はUI側で済ませ、確認欄と同じ文字列を実行する。
-        std::process::Command::new("cmd.exe")
-            .args(["/D", "/C", command])
-            // 外部GUIアプリを起動するときにコンソール画面を出さない。
-            .creation_flags(0x0800_0000)
-            .spawn()
-            .map_err(|error| error.to_string())?;
-        Ok(())
+        // {file}の置換とプレフィックスの連結はUI側で済ませ、確認欄と同じ文字列をそのまま実行する。
+        // コンソールを隠さず起動するが、アプリ側は子プロセスの終了を待たずに戻る。
+        spawn_command_line(command)
     }
     #[cfg(not(target_os = "windows"))]
     {

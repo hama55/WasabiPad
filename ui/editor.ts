@@ -5,6 +5,10 @@ import { FindBar } from "./findbar";
 import { clampFontSize } from "./font-controls";
 import { DEFAULT_EDITOR_CONFIG, EditorConfig } from "./editor-config";
 import { showMenu, type MenuItem } from "./menu";
+import {
+  createRegisteredCommandMenu,
+  type RegisteredCommandMenuPorts,
+} from "./registered-command-menu";
 import { VIEWER_FORMAT_LABELS } from "./format";
 import { LineCache } from "./line-cache";
 import { LiveViewers } from "./live-viewers";
@@ -44,8 +48,9 @@ export interface EditorPorts {
   onDocChange: (lineCount: number) => void;
   onCursor: (line: number, col: number) => void;
   onFontChange: (fontFamily: string, fontSize: number) => void;
-  hasExternalFile: () => boolean;
+  getExternalFilePath: () => string | null;
   openExternally: () => void;
+  registeredCommandPorts: RegisteredCommandMenuPorts;
   revealInExplorer?: () => void;
   onError: (message: string, error: unknown) => Promise<void>;
   openViewer: (format: api.ViewerFormat, text: string, selection: api.ViewerSelection | null) => Promise<string | null>;
@@ -108,8 +113,9 @@ export class VirtualEditor {
   private onDocChange: (lineCount: number) => void;
   private onCursor: (line: number, col: number) => void;
   private onFontChange: (fontFamily: string, fontSize: number) => void;
-  private hasExternalFile: () => boolean;
+  private getExternalFilePath: () => string | null;
   private openExternally: () => void;
+  private registeredCommandPorts: RegisteredCommandMenuPorts;
   private revealInExplorer?: () => void;
   private onError: (message: string, error: unknown) => Promise<void>;
   private onPasteImage?: (bytes: number[], mimeType: string) => Promise<string>;
@@ -142,8 +148,9 @@ export class VirtualEditor {
     this.onDocChange = ports.onDocChange;
     this.onCursor = ports.onCursor;
     this.onFontChange = ports.onFontChange;
-    this.hasExternalFile = ports.hasExternalFile;
+    this.getExternalFilePath = ports.getExternalFilePath;
     this.openExternally = ports.openExternally;
+    this.registeredCommandPorts = ports.registeredCommandPorts;
     this.revealInExplorer = ports.revealInExplorer;
     this.onError = ports.onError;
     this.onPasteImage = ports.saveImage;
@@ -931,10 +938,9 @@ export class VirtualEditor {
     this.notifyCursor();
   }
 
-  private syncCaretBlink() {
+  private syncCaretVisibility() {
     const carets = [this.caretEl, ...this.secondaryCaretEls.slice(0, this.sel.secondary.length)];
     carets.forEach((caret) => caret.classList.remove("on"));
-    void this.caretEl.offsetWidth;
     if (document.activeElement === this.input) carets.forEach((caret) => caret.classList.add("on"));
   }
 
@@ -964,7 +970,7 @@ export class VirtualEditor {
     this.sel.goalX = null;
     this.ensureVisible();
     this.render();
-    this.syncCaretBlink();
+    this.syncCaretVisibility();
     this.notifyCursor();
   }
 
@@ -984,25 +990,14 @@ export class VirtualEditor {
       else if (point.y > bottom) this.scrollWrapBy(point.y - bottom);
       return;
     }
-    if (this.metrics.scaleMode) {
-      // scaleMode では scrollTop が行数に対して線形圧縮されており、caret.line を
-      // lineToPx() の実数値で直接 top/bottom 判定すると、行高・clientHeight という
-      // 「非圧縮px」の量を圧縮空間に混在させてしまい、1行の移動が数千行分の
-      // スクロールに化けてしまう。そのため行番号(整数)だけで可視判定し、
-      // 最後に lineToPx() で一度だけ scrollTop へ変換する。
-      const visibleRows = Math.max(1, Math.floor(this.scroll.clientHeight / this.metrics.lineHeight));
-      let topLine = this.topLineF;
-      if (this.sel.caret.line < topLine) topLine = this.sel.caret.line;
-      else if (this.sel.caret.line >= topLine + visibleRows) topLine = this.sel.caret.line - visibleRows + 1;
-      if (topLine !== this.topLineF) this.setTopLine(topLine);
-    } else {
-      const y = this.lineToPx(this.sel.caret.line);
-      const top = this.scroll.scrollTop;
-      const h = this.scroll.clientHeight;
-      if (y < top) this.setTopLine(this.sel.caret.line);
-      else if (y + this.metrics.lineHeight > top + h) {
-        this.setTopLine(this.pxToLine(y + this.metrics.lineHeight - h));
-      }
+    // scrollTop はブラウザや巨大文書の比例配分で丸められるため、行番号で
+    // 可視判定する。改行直後のキャレット行を座標の誤差で取りこぼさない。
+    const visibleRows = Math.max(1, Math.floor(this.scroll.clientHeight / this.metrics.lineHeight));
+    const topLine = this.metrics.scaleMode ? this.topLineF : this.pxToLine(this.scroll.scrollTop);
+    if (this.sel.caret.line < topLine) {
+      this.setTopLine(this.sel.caret.line);
+    } else if (this.sel.caret.line >= topLine + visibleRows) {
+      this.setTopLine(this.sel.caret.line - visibleRows + 1);
     }
     // 横方向: caret が見えるように
     const s = this.lineCache.peek(this.sel.caret.line) ?? "";
@@ -1508,7 +1503,7 @@ export class VirtualEditor {
     this.input.style.removeProperty("text-indent");
     this.input.style.removeProperty("--ime-indent");
     if (!committed) this.updateWidth();
-    this.syncCaretBlink();
+    this.syncCaretVisibility();
     void this.flushInput()
       .catch((error) => this.reportActionError("入力を反映できませんでした", error))
       .finally(() => overlay?.remove());
@@ -1653,7 +1648,7 @@ export class VirtualEditor {
         this.sel.multiCaretX = null;
         this.sel.goalX = null;
         this.render();
-        this.syncCaretBlink();
+        this.syncCaretVisibility();
         this.notifyCursor();
       };
       update(e);
@@ -1661,7 +1656,7 @@ export class VirtualEditor {
       const up = () => {
         window.removeEventListener("mousemove", move);
         window.removeEventListener("mouseup", up);
-        this.syncCaretBlink();
+        this.syncCaretVisibility();
       };
       window.addEventListener("mousemove", move);
       window.addEventListener("mouseup", up);
@@ -1791,6 +1786,21 @@ export class VirtualEditor {
         });
       }
     }
+    const commandPath = this.getExternalFilePath();
+    if (this.sel.hasSel() && commandPath) {
+      const [start, end] = this.sel.norm();
+      items.push({
+        ...createRegisteredCommandMenu({
+          path: commandPath,
+          value: () => this.lineCache.textInRange(start, end),
+          variableLabel: "対象文字列",
+        }, {
+          ...this.registeredCommandPorts,
+          run: (title, operation) => this.dispatch(title, operation),
+        }),
+        sep: true,
+      });
+    }
     items.push({
       label: "すべて選択",
       key: "Ctrl+A",
@@ -1805,7 +1815,7 @@ export class VirtualEditor {
         sep: index === 0,
       })),
     );
-    if (this.hasExternalFile()) {
+    if (commandPath) {
       items.push({ label: "アプリで開く", action: this.openExternally, sep: true });
       if (this.revealInExplorer) items.push({ label: "エクスプローラで開く", action: this.revealInExplorer });
     }

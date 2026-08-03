@@ -1,4 +1,4 @@
-// フォルダビューから起動する外部コマンドの永続化と拡張子判定。
+// 外部コマンドの永続化、拡張子判定、対象値の置換。
 import { getSetting, setSetting, type RegisteredCommand } from "./settings";
 
 export type { RegisteredCommand };
@@ -12,10 +12,13 @@ export function extensionOf(path: string): string {
   return dot > 0 ? name.slice(dot).toLowerCase() : "";
 }
 
-export function commandLineForFile(prefix: string, command: string, path: string): string {
-  const commandWithFile = command.trim().replaceAll("{file}", `"${path}"`);
-  return [prefix.trim(), commandWithFile].filter(Boolean).join(" ");
+export function commandLineForValue(prefix: string, command: string, value: string): string {
+  const commandWithValue = command.trim().replaceAll("{file}", `"${value}"`);
+  return [prefix.trim(), commandWithValue].filter(Boolean).join(" ");
 }
+
+// 既存の呼び出し元との互換性を保ちながら、対象がファイルに限らないことを明示する。
+export const commandLineForFile = commandLineForValue;
 
 function normalizeExtension(extension: string): string {
   const value = extension.trim().toLowerCase();

@@ -4147,6 +4147,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "ts-rs",
  "wasabipad-core",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

@@ -367,8 +367,7 @@ body {
   position: absolute; width: 2px; height: var(--line-h);
   background: var(--caret); z-index: 3; display: none;
 }
-.ve-caret.on { display: block; animation: ve-blink 1s step-end infinite; }
-@keyframes ve-blink { 50% { opacity: 0; } }
+.ve-caret.on { display: block; }
 .ve-input {
   position: absolute; z-index: 3;
   width: 4px; height: var(--line-h); padding: 0; margin: 0; border: 0;
