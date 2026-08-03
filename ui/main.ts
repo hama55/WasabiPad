@@ -325,12 +325,11 @@ async function openInNewTab(relPath: string, goto?: api.Pos) {
 const windowChrome = new WindowChrome($("titlebar"), win, {
   onCloseRequest: async () => {
     if (!await tabs.saveForExit()) return false;
-    if (secondaryInstance) return true;
     try {
       await flushSettings();
       return true;
     } catch (error) {
-      await showError("タブを保存できませんでした", error);
+      await showError("設定を保存できませんでした", error);
       return false;
     }
   },
@@ -411,7 +410,9 @@ const folderActions = new FolderActions(doc, {
   showError,
   confirmMessage,
   promptFields,
-  registeredCommandPorts,
+  registeredCommandPorts: {
+    runExternalCommand: api.runExternalCommand,
+  },
   getStartupPath: () => getSetting("startupPath"),
   revealInExplorer,
   openInOtherApp,
@@ -536,7 +537,7 @@ tabs = new TabManager($("tabs"), doc, {
     if (!secondaryInstance) setSetting("openTabs", state);
   },
   onHistoryChange: (state) => addressbar.setNavigationState(state),
-  onError: (error) => reportBackgroundError("タブを操作できませんでした", error),
+  onError: (error, message = "タブを操作できませんでした") => reportBackgroundError(message, error),
   onDetach: (request) => launchNewWindow(request),
 }, {
   ...registeredCommandPorts,

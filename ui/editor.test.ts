@@ -242,8 +242,24 @@ describe("VirtualEditor", () => {
     expect(revealInExplorer).toHaveBeenCalledTimes(1);
   });
 
+  it("メモビューの行番号を右クリックしてもコンテキストメニューを表示する", async () => {
+    const { editor, host } = mount("one\ntwo");
+    const dropdown = document.createElement("div");
+    dropdown.id = "dropdown";
+    document.body.appendChild(dropdown);
+    editor.open(2, false);
+    await settle();
+
+    host.querySelector<HTMLElement>(".ve-gutter")!.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, clientX: 0, clientY: 0 }),
+    );
+
+    expect([...dropdown.querySelectorAll<HTMLElement>(".dd-label")].map((item) => item.textContent))
+      .toContain("すべて選択");
+  });
+
   it("メモビューの登録コマンドへ選択文字列を渡す", async () => {
-    const promptFields = vi.fn(async () => ["ブラウザ", "", "open {file}"]);
+    const promptFields = vi.fn(async () => ["ブラウザ", "", "open {string}"]);
     const runExternalCommand = vi.fn(async () => {});
     const registeredCommandPorts: RegisteredCommandMenuPorts = { promptFields, runExternalCommand };
     const { editor, host, events } = mount("https://example.com", undefined, {
@@ -273,7 +289,7 @@ describe("VirtualEditor", () => {
 
     await vi.waitFor(() => expect(promptFields).toHaveBeenCalled());
     const fields = (promptFields.mock.calls[0] as unknown as [string, { label: string }[]])[1];
-    expect(fields[2].label).toContain("対象文字列");
+    expect(fields[2].label).toBe("コマンド（{string}=対象文字列、引用符不要）");
 
     showContextMenu();
     [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
@@ -293,6 +309,41 @@ describe("VirtualEditor", () => {
     dropdown.querySelector<HTMLElement>(".dd-submenu .dd-item")!.click();
     await vi.waitFor(() => expect(events.errors).toContainEqual({
       message: "登録コマンドを実行できませんでした",
+      error: expect.any(Error),
+    }));
+  });
+
+  it("メモビューの登録コマンド保存失敗を通知する", async () => {
+    const promptFields = vi.fn(async () => ["ブラウザ", "", "open {string}"]);
+    const registeredCommandPorts: RegisteredCommandMenuPorts = {
+      promptFields,
+      runExternalCommand: vi.fn(async () => {}),
+    };
+    const { editor, host, events } = mount("https://example.com", undefined, {
+      getExternalFilePath: () => "C:\\work\\memo.txt",
+      registeredCommandPorts,
+    });
+    const dropdown = document.createElement("div");
+    dropdown.id = "dropdown";
+    document.body.appendChild(dropdown);
+    editor.open(1, false);
+    await editor.restoreViewState({
+      anchor: { line: 0, col: 0 },
+      caret: { line: 0, col: 19 },
+      topLine: 0,
+      wrapIntraLinePx: 0,
+      scrollLeft: 0,
+    });
+    updateSetting.mockRejectedValueOnce(new Error("save failed"));
+
+    host.querySelector<HTMLElement>(".ve-scroll")!.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, clientX: 0, clientY: 0 }),
+    );
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "コマンドを登録...")!.click();
+
+    await vi.waitFor(() => expect(events.errors).toContainEqual({
+      message: "コマンドを登録できませんでした",
       error: expect.any(Error),
     }));
   });

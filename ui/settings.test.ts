@@ -33,12 +33,14 @@ describe("settings", () => {
     const settings = parseSettings(JSON.stringify({
       registeredCommands: [
         { extension: ".HTML", label: " Chrome ", command: " C:\\chrome.exe {file} " },
+        { extension: ".md", label: "Browser", command: " open {string} ", valueKind: "string" },
         { extension: ".txt", label: "", prefix: "ignored", command: "ignored" },
-        { extension: ".md", label: "Markdown", prefix: "", command: 42 },
+        { extension: ".js", label: "Invalid", prefix: "", command: "open", valueKind: "other" },
       ],
     }));
     expect(settings.registeredCommands).toEqual([
       { extension: ".html", label: "Chrome", prefix: "", command: "C:\\chrome.exe {file}" },
+      { extension: ".md", label: "Browser", prefix: "", command: "open {string}", valueKind: "string" },
     ]);
   });
 
@@ -95,5 +97,12 @@ describe("settings", () => {
     setSetting("indentSize", 8);
 
     await expect(flushSettings()).resolves.toBeUndefined();
+  });
+
+  it("undefinedの保存失敗もflushSettingsで通知する", async () => {
+    updateSettingMock.mockRejectedValueOnce(undefined);
+    setSetting("indentSize", 4);
+
+    await expect(flushSettings()).rejects.toBeUndefined();
   });
 });

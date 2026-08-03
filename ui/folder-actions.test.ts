@@ -167,6 +167,9 @@ describe("FolderActions", () => {
     [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
       .find((item) => item.textContent === "コマンドを登録...")!.click();
 
+    expect(vi.mocked(promptFields).mock.calls[0][1][2]).toMatchObject({
+      label: "コマンド（{file}=対象ファイル、引用符不要）",
+    });
     expect(vi.mocked(promptFields).mock.calls[0][1][1]).toMatchObject({
       label: "プレフィックス（任意。必要時の例: cmd.exe /D /C）",
       value: "",
@@ -206,6 +209,23 @@ describe("FolderActions", () => {
         .find((item) => item.textContent === "エクスプローラで開く")?.click();
 
       await vi.waitFor(() => expect(reveal).toHaveBeenCalledWith("C:\\work\\memo.txt", false));
+    } finally {
+      reveal.mockRestore();
+    }
+  });
+
+  it("Explorer起動失敗をフォルダ操作の文脈で表示する", async () => {
+    const reveal = vi.spyOn(api, "revealInExplorer").mockRejectedValueOnce(new Error("explorer failed"));
+    try {
+      const { actions, dropdown } = fixture();
+      actions.showContextMenu(0, 0, { relPath: "memo.txt", isDir: false });
+      [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+        .find((item) => item.textContent === "エクスプローラで開く")!.click();
+
+      await vi.waitFor(() => expect(showError).toHaveBeenCalledWith(
+        "エクスプローラで開けませんでした",
+        expect.any(Error),
+      ));
     } finally {
       reveal.mockRestore();
     }

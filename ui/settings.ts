@@ -105,8 +105,8 @@ export function setSetting<K extends keyof Settings>(key: K, value: Settings[K])
 
 export async function flushSettings(): Promise<void> {
   await pendingSave;
-  const error = saveErrors.values().next().value;
-  if (error !== undefined) throw error;
+  const firstError = saveErrors.values().next();
+  if (!firstError.done) throw firstError.value;
 }
 
 // 検索条件は手で編集されうるファイルに載るので、既定値で埋めてから丸める

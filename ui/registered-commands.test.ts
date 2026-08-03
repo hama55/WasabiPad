@@ -39,6 +39,22 @@ describe("registered commands", () => {
     )).toBe('"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" "C:\\work\\index.html"');
   });
 
+  it("メモビューは対象文字列用プレースホルダだけを置換する", () => {
+    expect(commandLineForValue("", "open {string}", "https://example.com", "string"))
+      .toBe('open "https://example.com"');
+    expect(commandLineForValue("", "open {file}", "https://example.com", "string"))
+      .toBe("open {file}");
+  });
+
+  it("対象値の引用符・改行・末尾バックスラッシュを保持する", () => {
+    expect(commandLineForValue("", "open {string}", "a\"b\\", "string"))
+      .toBe(String.raw`open "a\"b\\"`);
+    expect(commandLineForValue("", "open {string}", "line1\nline2", "string"))
+      .toBe('open "line1\nline2"');
+    expect(commandLineForValue("", "open {string}", "a$&b", "string"))
+      .toBe('open "a$&b"');
+  });
+
   it("同じ拡張子のコマンドだけを返し、重複登録しない", () => {
     addRegisteredCommand({ extension: ".HTML", label: "Chrome", prefix: "", command: "chrome {file}" });
     addRegisteredCommand({ extension: "html", label: "Chrome", prefix: "", command: "chrome {file}" });
@@ -49,6 +65,24 @@ describe("registered commands", () => {
     ]);
     expect(commandsForPath("page.txt")).toEqual([
       { extension: ".txt", label: "メモ帳", prefix: "", command: "notepad {file}" },
+    ]);
+  });
+
+  it("ファイル用と文字列用の登録コマンドを混同しない", () => {
+    addRegisteredCommand({ extension: ".html", label: "Chrome", prefix: "", command: "chrome {file}" });
+    addRegisteredCommand({
+      extension: ".html",
+      label: "Browser",
+      prefix: "",
+      command: "open {string}",
+      valueKind: "string",
+    });
+
+    expect(commandsForPath("page.html")).toEqual([
+      { extension: ".html", label: "Chrome", prefix: "", command: "chrome {file}" },
+    ]);
+    expect(commandsForPath("page.html", "string")).toEqual([
+      { extension: ".html", label: "Browser", prefix: "", command: "open {string}", valueKind: "string" },
     ]);
   });
 

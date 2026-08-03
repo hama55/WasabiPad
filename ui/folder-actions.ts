@@ -4,7 +4,7 @@ import { fileNameOf, type MemoSpec } from "./document-controller";
 import type { DocumentSession } from "./session";
 import { showMenu, MenuItem } from "./menu";
 import type { confirmMessage, promptFields } from "./prompt";
-import { showError } from "./dialogs";
+import type { showError } from "./dialogs";
 import { basename, joinWindowsRoot, rebaseWindowsPath, relativePathFromRoot } from "./path";
 import { VIEWER_FORMAT_LABELS } from "./format";
 import { isArchiveEntryUnder } from "./archive-path";
@@ -28,7 +28,7 @@ export interface FolderActionsServices {
   showError: typeof showError;
   confirmMessage: typeof confirmMessage;
   promptFields: typeof promptFields;
-  registeredCommandPorts: RegisteredCommandMenuPorts;
+  registeredCommandPorts: Omit<RegisteredCommandMenuPorts, "promptFields">;
   getStartupPath: () => string | null;
   revealInExplorer: typeof revealInExplorer;
   openInOtherApp: typeof openInOtherApp;
@@ -128,6 +128,7 @@ export class FolderActions {
   private registeredCommandMenu(relPath: string): MenuItem {
     const path = this.toAbsolute(relPath);
     return createRegisteredCommandMenu(path, {
+      promptFields: this.services.promptFields,
       ...this.services.registeredCommandPorts,
       run: (title, operation) => this.run(title, operation),
     });
@@ -224,25 +225,9 @@ export function isImagePath(path: string): boolean {
 }
 
 export async function revealInExplorer(path: string, isDir: boolean) {
-  try {
-    await api.revealInExplorer(path, isDir);
-  } catch (e) {
-    await reportExternalError("開けませんでした", e);
-  }
+  await api.revealInExplorer(path, isDir);
 }
 
 export async function openInOtherApp(path: string) {
-  try {
-    await api.openInOtherApp(path);
-  } catch (e) {
-    await reportExternalError("アプリで開けませんでした", e);
-  }
-}
-
-async function reportExternalError(title: string, error: unknown) {
-  try {
-    await showError(title, error);
-  } catch (reportError) {
-    console.error(`${title}のエラーを表示できませんでした`, reportError);
-  }
+  await api.openInOtherApp(path);
 }

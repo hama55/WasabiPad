@@ -29,7 +29,7 @@ export interface TabDocumentPort {
 
 interface TabPorts {
   onChange: (state: StoredTabs) => void;
-  onError?: (error: unknown) => void | Promise<void>;
+  onError?: (error: unknown, message?: string) => void | Promise<void>;
   onDetach?: (request: WindowRequest) => Promise<boolean>;
   onHistoryChange?: (state: NavigationState) => void;
 }
@@ -560,7 +560,7 @@ export class TabManager {
       if (tab.kind === "file") {
         items.push(createRegisteredCommandMenu(tab.path, {
           ...this.registeredCommandPorts,
-          run: (_title, operation) => this.run(operation),
+          run: (title, operation) => this.run(operation, title),
         }));
       }
     }
@@ -695,17 +695,17 @@ export class TabManager {
     this.persist();
   }
 
-  private run(operation: () => void | Promise<unknown>) {
+  private run(operation: () => void | Promise<unknown>, message = "タブを操作できませんでした") {
     void Promise.resolve()
       .then(operation)
-      .catch((error) => this.reportError(error));
+      .catch((error) => this.reportError(error, message));
   }
 
-  private async reportError(error: unknown) {
+  private async reportError(error: unknown, message = "タブを操作できませんでした") {
     try {
-      await this.ports.onError?.(error);
+      await this.ports.onError?.(error, message);
     } catch (reportError) {
-      console.error("タブ操作エラーを表示できませんでした", reportError);
+      console.error(`${message}のエラーを表示できませんでした`, reportError);
     }
   }
 

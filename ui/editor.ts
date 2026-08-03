@@ -21,6 +21,7 @@ import {
   registeredStringLabel,
   removeRegisteredString,
 } from "./registered-strings";
+import { flushSettings } from "./settings";
 import {
   charClass,
   charLen,
@@ -211,6 +212,7 @@ export class VirtualEditor {
     this.scroll.addEventListener("mousedown", (e) => this.onMouseDown(e));
     this.scroll.addEventListener("contextmenu", (e) => this.onContextMenu(e));
     this.gutter.addEventListener("mousedown", (e) => this.onGutterMouseDown(e));
+    this.gutter.addEventListener("contextmenu", (e) => this.onGutterContextMenu(e));
     this.input.addEventListener("keydown", (e) => this.onKeyDown(e));
     this.input.addEventListener("paste", (e) => this.onPaste(e));
     this.input.addEventListener("input", (e) => this.onInput(e as InputEvent));
@@ -1748,9 +1750,8 @@ export class VirtualEditor {
   }
 
   // ---- 右クリックメニュー ----
-  private onContextMenu(e: MouseEvent) {
+  private onContextMenu(e: MouseEvent, pos = this.posFromPoint(e.clientX, e.clientY)) {
     e.preventDefault();
-    const pos = this.posFromPoint(e.clientX, e.clientY);
     if (pos && !this.sel.contains(pos)) this.moveTo(pos, false);
     this.focus();
     const items: MenuItem[] = [];
@@ -1781,7 +1782,14 @@ export class VirtualEditor {
           sub: registered.map((text) => ({
             label: registeredStringLabel(text),
             action: () => this.dispatch("登録文字列を挿入できませんでした", () => this.insertText(text)),
-            trailing: { label: "×", title: "登録文字列を削除", action: () => removeRegisteredString(text) },
+            trailing: {
+              label: "×",
+              title: "登録文字列を削除",
+              action: () => this.dispatch("登録文字列を削除できませんでした", async () => {
+                removeRegisteredString(text);
+                await flushSettings();
+              }),
+            },
           })),
         });
       }
@@ -1793,7 +1801,7 @@ export class VirtualEditor {
         ...createRegisteredCommandMenu({
           path: commandPath,
           value: () => this.lineCache.textInRange(start, end),
-          variableLabel: "対象文字列",
+          valueKind: "string",
         }, {
           ...this.registeredCommandPorts,
           run: (title, operation) => this.dispatch(title, operation),
@@ -1822,9 +1830,14 @@ export class VirtualEditor {
     showMenu(e.clientX, e.clientY, items);
   }
 
+  private onGutterContextMenu(e: MouseEvent) {
+    this.onContextMenu(e, { line: this.lineFromGutterY(e.clientY), col: 0 });
+  }
+
   private async addSelectionAsRegisteredString() {
     const [start, end] = this.sel.norm();
     addRegisteredString(await this.lineCache.textInRange(start, end));
+    await flushSettings();
   }
 
   // ---- ガター(行番号) ----

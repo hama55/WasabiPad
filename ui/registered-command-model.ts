@@ -1,8 +1,12 @@
+export type CommandValueKind = "file" | "string";
+export const DEFAULT_COMMAND_VALUE_KIND: CommandValueKind = "file";
+
 export interface RegisteredCommand {
   extension: string;
   label: string;
   prefix: string;
   command: string;
+  valueKind?: CommandValueKind;
 }
 
 export interface RegisteredCommandInput {
@@ -10,6 +14,7 @@ export interface RegisteredCommandInput {
   label: string;
   prefix?: unknown;
   command: string;
+  valueKind?: unknown;
 }
 
 export function normalizeExtension(extension: string): string {
@@ -19,12 +24,14 @@ export function normalizeExtension(extension: string): string {
 }
 
 export function normalizeRegisteredCommand(command: RegisteredCommandInput): RegisteredCommand {
-  return {
+  const normalized: RegisteredCommand = {
     extension: normalizeExtension(command.extension),
     label: command.label.trim(),
     prefix: typeof command.prefix === "string" ? command.prefix.trim() : "",
     command: command.command.trim(),
   };
+  if (command.valueKind === "string") normalized.valueKind = "string";
+  return normalized;
 }
 
 export function isRegisteredCommand(value: unknown): value is RegisteredCommandInput {
@@ -34,5 +41,6 @@ export function isRegisteredCommand(value: unknown): value is RegisteredCommandI
     && typeof command.label === "string"
     && command.label.trim().length > 0
     && typeof command.command === "string"
-    && command.command.trim().length > 0;
+    && command.command.trim().length > 0
+    && (command.valueKind === undefined || command.valueKind === "file" || command.valueKind === "string");
 }

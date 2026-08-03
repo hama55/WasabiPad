@@ -4,7 +4,7 @@ import * as api from "./api";
 import { TabManager, type StoredTabs, type TabDocumentPort } from "./tabs";
 import { initialSession } from "./session";
 import { initSettings } from "./settings";
-import { commandsForPath } from "./registered-commands";
+import { addRegisteredCommand, commandsForPath } from "./registered-commands";
 import type { RegisteredCommandMenuPorts } from "./registered-command-menu";
 
 vi.mock("./api", async (importOriginal) => ({
@@ -556,6 +556,30 @@ describe("TabManager", () => {
     await vi.waitFor(() => expect(registeredCommandPorts.runExternalCommand).toHaveBeenCalledWith(
       'notepad "C:\\work\\memo.txt"',
       "C:\\work\\memo.txt",
+    ));
+  });
+
+  it("タブの登録コマンド失敗は専用のエラー文言を渡す", async () => {
+    addRegisteredCommand({ extension: ".txt", label: "メモ帳", prefix: "", command: "notepad {file}" });
+    registeredCommandPorts.runExternalCommand.mockRejectedValueOnce(new Error("command failed"));
+    const { doc, host } = fixture();
+    const onError = vi.fn(async () => {});
+    document.body.appendChild(Object.assign(document.createElement("div"), { id: "dropdown" }));
+    const manager = new TabManager(host, doc, { onChange: () => {}, onError }, registeredCommandPorts);
+    await manager.init({
+      tabs: [{ id: "file", path: "C:\\work\\memo.txt", kind: "file", label: "memo.txt" }],
+      activeId: "file",
+    }, null, null);
+
+    const tab = host.querySelector<HTMLElement>(".doc-tab")!;
+    tab.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+    [...document.querySelectorAll<HTMLElement>("#dropdown .dd-item")]
+      .find((item) => item.textContent === "登録コマンド ▸")!.click();
+    document.querySelector<HTMLElement>("#dropdown .dd-submenu .dd-item")!.click();
+
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledWith(
+      expect.any(Error),
+      "登録コマンドを実行できませんでした",
     ));
   });
 
