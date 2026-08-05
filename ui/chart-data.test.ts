@@ -8,14 +8,20 @@ import {
   parseChartNumber,
 } from "./chart-data";
 
-describe("CSV chart data", () => {
-  it("parses grouped and signed numbers", () => {
+describe("Feature: CSV chart data", () => {
+  // Given: `"66,421.01"`、`"+0.46%"`、`"日付"`
+  // When: `parseChartNumber`を各入力へ適用
+  // Then: `66421.01`、`0.46`、`null`
+  it("Scenario: parses grouped and signed numbers", () => {
     expect(parseChartNumber("66,421.01")).toBe(66421.01);
     expect(parseChartNumber("+0.46%")).toBe(0.46);
     expect(parseChartNumber("日付")).toBeNull();
   });
 
-  it("detects numeric columns from data rows", () => {
+  // Given: 日付・終値・メモのheaderと、終値だけ数値の2 data rows
+  // When: `numericColumnIndexes`を呼ぶ
+  // Then: `[1]`
+  it("Scenario: detects numeric columns from data rows", () => {
     expect(numericColumnIndexes([
       ["日付", "終値", "メモ"],
       ["26/07/23", "66,422.60", "上昇"],
@@ -23,18 +29,27 @@ describe("CSV chart data", () => {
     ])).toEqual([1]);
   });
 
-  it("supplies a label for an empty header", () => {
+  // Given: headersが`["日付",""]`
+  // When: index=1の`chartColumnLabel`を呼ぶ
+  // Then: `"列 2"`
+  it("Scenario: supplies a label for an empty header", () => {
     expect(chartColumnLabel(["日付", ""], 1)).toBe("列 2");
   });
 });
 
-describe("chart types", () => {
-  it("rejects unknown type ids", () => {
+describe("Feature: chart types", () => {
+  // Given: chart type idが`"bar-stacked"`と未知の`"pie"`
+  // When: `isChartTypeId`を呼ぶ
+  // Then: true、false
+  it("Scenario: rejects unknown type ids", () => {
     expect(isChartTypeId("bar-stacked")).toBe(true);
     expect(isChartTypeId("pie")).toBe(false);
   });
 
-  it("thins points on dense line charts but keeps them when only points are drawn", () => {
+  // Given: `line-point`を100/1000点、`scatter`を1000点で描画
+  // When: `chartPointRadius`を呼ぶ
+  // Then: 2、0、3
+  it("Scenario: thins points on dense line charts but keeps them when only points are drawn", () => {
     expect(chartPointRadius(CHART_TYPES["line-point"], 100)).toBe(2);
     expect(chartPointRadius(CHART_TYPES["line-point"], 1000)).toBe(0);
     expect(chartPointRadius(CHART_TYPES.scatter, 1000)).toBe(3);

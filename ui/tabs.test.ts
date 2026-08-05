@@ -70,7 +70,7 @@ function dragOnto(from: HTMLElement, to: HTMLElement, ratio: number) {
   window.dispatchEvent(at("pointerup", rect.width * ratio));
 }
 
-describe("TabManager", () => {
+describe("Feature: TabManager", () => {
   beforeEach(async () => {
     document.body.replaceChildren(document.createElement("div"));
     await initSettings();
@@ -79,7 +79,10 @@ describe("TabManager", () => {
     registeredCommandPorts.runExternalCommand.mockReset();
   });
 
-  it("起動時はactive tabのリンクだけを開く", async () => {
+  // Given: activeId=a の stored に C:\work\a.txt と C:\work\b.txt の2タブがある
+  // When: manager.init(stored, null, null) を呼ぶ
+  // Then: doc.openPath は1回だけ C:\work\a.txt と false を引数に呼ばれる
+  it("Scenario: 起動時はactive tabのリンクだけを開く", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
     await manager.init(stored, null, null);
@@ -88,7 +91,10 @@ describe("TabManager", () => {
     expect(doc.openPath).toHaveBeenCalledWith("C:\\work\\a.txt", false);
   });
 
-  it("folder tabは選択中entryを開いてから選択行を復元する", async () => {
+  // Given: activeId=folder、folderRoot が C:\work、selectedRelPath が sub\memo.txt、viewState の anchor/caret が各 line 10、topLine が8、scrollLeft が20
+  // When: manager.init(folderTabs, null, null) を呼ぶ
+  // Then: selectEntry("sub\\memo.txt") が goTo({ line: 10, col: 0 }) より先に呼ばれ、restoreViewState は呼ばれない
+  it("Scenario: folder tabは選択中entryを開いてから選択行を復元する", async () => {
     const { doc, host } = fixture();
     const folderTabs: StoredTabs = {
       tabs: [{
@@ -118,7 +124,10 @@ describe("TabManager", () => {
       .toBeLessThan(vi.mocked(doc.goTo).mock.invocationCallOrder[0]);
   });
 
-  it("folder tabの選択中entryが削除済みでも親フォルダは開く", async () => {
+  // Given: folder tab の selectedRelPath が deleted.txt で、selectEntry が Error("missing") を返す
+  // When: manager.init(folderTabs, null, null) を呼ぶ
+  // Then: 初期化は reject せず、openPath("C:\\work", false) が呼ばれ、selectedRelPath は deleted.txt のまま
+  it("Scenario: folder tabの選択中entryが削除済みでも親フォルダは開く", async () => {
     const { doc, host } = fixture();
     vi.mocked(doc.selectEntry).mockRejectedValueOnce(new Error("missing"));
     const folderTabs: StoredTabs = {
@@ -138,7 +147,10 @@ describe("TabManager", () => {
     expect(manager.state.tabs[0].selectedRelPath).toBe("deleted.txt");
   });
 
-  it("tab移動前に未保存確認を通し、移動先のリンクを読み込む", async () => {
+  // Given: activeId=a の stored があり、confirmDiscard は true を返す
+  // When: init 後に manager.activate("b") を呼ぶ
+  // Then: confirmDiscard は1回、openPath の最終呼出しは C:\work\b.txt と false、activeId は b
+  it("Scenario: tab移動前に未保存確認を通し、移動先のリンクを読み込む", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
     await manager.init(stored, null, null);
@@ -149,7 +161,10 @@ describe("TabManager", () => {
     expect(manager.state.activeId).toBe("b");
   });
 
-  it("同じtabのファイル切替を戻る/進むで移動し、キャレット行を復元する", async () => {
+  // Given: activeId=a で、最初の captureViewState が line 4、次が line 8 の状態を返す
+  // When: C:\work\c.txt へ移動し、goBack、goForward を順に呼ぶ
+  // Then: 戻る時は C:\work\a.txt と goTo({ line: 4, col: 0 })、進む時は C:\work\c.txt と goTo({ line: 8, col: 0 }) になり、履歴状態は順に {canGoBack:true,canGoForward:false}→{false,true}→{true,false}
+  it("Scenario: 同じtabのファイル切替を戻る/進むで移動し、キャレット行を復元する", async () => {
     const { doc, host } = fixture();
     const navigationStates: { canGoBack: boolean; canGoForward: boolean }[] = [];
     const manager = new TabManager(host, doc, {
@@ -178,7 +193,10 @@ describe("TabManager", () => {
     expect(navigationStates.at(-1)).toEqual({ canGoBack: true, canGoForward: false });
   });
 
-  it("folder内の選択切替もリンクと行を履歴に保存する", async () => {
+  // Given: folder tab が C:\work を開き a.txt を選択中で、captureViewState が line 6 col 0 を返す
+  // When: navigateEntry("b.txt") の後に goBack() を呼ぶ
+  // Then: C:\work を開き直し、a.txt を選択し、goTo({ line: 6, col: 0 }) を呼ぶ
+  it("Scenario: folder内の選択切替もリンクと行を履歴に保存する", async () => {
     const { doc, host } = fixture();
     doc.current.folderRoot = "C:\\work";
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
@@ -200,7 +218,10 @@ describe("TabManager", () => {
     expect(doc.goTo).toHaveBeenLastCalledWith({ line: 6, col: 0 });
   });
 
-  it("戻った後に別のファイルへ移動すると進む履歴を破棄する", async () => {
+  // Given: active tab a で c.txt へ移動してから戻る
+  // When: d.txt へ新規移動した後に goForward() を呼ぶ
+  // Then: goForward() は false を返す
+  it("Scenario: 戻った後に別のファイルへ移動すると進む履歴を破棄する", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
     await manager.init(stored, null, null);
@@ -211,7 +232,10 @@ describe("TabManager", () => {
     expect(await manager.goForward()).toBe(false);
   });
 
-  it("戻る履歴は10件まで保持する", async () => {
+  // Given: active tab a から c.txt〜n.txt の12件へ順に移動する
+  // When: goBack() を10回呼び、さらに1回呼ぶ
+  // Then: 10回後の path は C:\work\d.txt で、追加の goBack() は false
+  it("Scenario: 戻る履歴は10件まで保持する", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
     await manager.init(stored, null, null);
@@ -224,7 +248,10 @@ describe("TabManager", () => {
     expect(await manager.goBack()).toBe(false);
   });
 
-  it("ナビゲーション中の連打は2件目を実行しない", async () => {
+  // Given: c.txt への navigatePath が openPath の未解決Promiseで停止し、release が解放関数を保持する
+  // When: c.txt への移動中に d.txt への移動を呼び、release(true) で c.txt を完了させる
+  // Then: d.txt への openPath は呼ばれず、2回目の移動は false、tab path は C:\work\c.txt
+  it("Scenario: ナビゲーション中の連打は2件目を実行しない", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
     await manager.init(stored, null, null);
@@ -246,7 +273,10 @@ describe("TabManager", () => {
     expect(manager.state.tabs[0].path).toBe("C:\\work\\c.txt");
   });
 
-  it("戻る先の読込が例外になっても現在位置と履歴を復元する", async () => {
+  // Given: active tab a から c.txt へ移動し、戻り先読込の openPath が Error("history load failed") を返す
+  // When: goBack() を呼ぶ
+  // Then: 同じエラーで reject し、現在 path は c.txt、最終 openPath は C:\work\c.txt と false、履歴状態は {canGoBack:true,canGoForward:false}
+  it("Scenario: 戻る先の読込が例外になっても現在位置と履歴を復元する", async () => {
     const { doc, host } = fixture();
     const navigationStates: { canGoBack: boolean; canGoForward: boolean }[] = [];
     const manager = new TabManager(host, doc, {
@@ -264,7 +294,10 @@ describe("TabManager", () => {
     expect(doc.openPath).toHaveBeenLastCalledWith("C:\\work\\c.txt", false);
   });
 
-  it("通常の切替がfalseで終わった場合は履歴を追加しない", async () => {
+  // Given: active tab a で、次の openPath が false を返す
+  // When: C:\work\c.txt への navigatePath() を呼ぶ
+  // Then: 戻り値は false、path は C:\work\a.txt のまま、履歴状態は {canGoBack:false,canGoForward:false}
+  it("Scenario: 通常の切替がfalseで終わった場合は履歴を追加しない", async () => {
     const { doc, host } = fixture();
     const navigationStates: { canGoBack: boolean; canGoForward: boolean }[] = [];
     const manager = new TabManager(host, doc, {
@@ -279,7 +312,10 @@ describe("TabManager", () => {
     expect(navigationStates.at(-1)).toEqual({ canGoBack: false, canGoForward: false });
   });
 
-  it("folder内の戻る先を選択できない場合は現在位置へ復元する", async () => {
+  // Given: folder tab で a.txt を選択後 b.txt へ移動し、戻り時の selectEntry が false を返す
+  // When: goBack() を呼ぶ
+  // Then: 戻り値は false、selectedRelPath は b.txt のまま、selectEntry の最終引数は b.txt
+  it("Scenario: folder内の戻る先を選択できない場合は現在位置へ復元する", async () => {
     const { doc, host } = fixture();
     doc.current.folderRoot = "C:\\work";
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
@@ -295,7 +331,10 @@ describe("TabManager", () => {
     expect(doc.selectEntry).toHaveBeenLastCalledWith("b.txt");
   });
 
-  it("タブごとに履歴を分離し、再初期化で履歴を消去する", async () => {
+  // Given: a tab で c.txt へ移動後 b tab へ切り替える
+  // When: b tab で goBack→d.txt へ移動→goBack、a tab で goBack、再度 init(stored, null, null) 後に goBack を呼ぶ
+  // Then: b tab 切替直後の戻りは false、b tab の d.txt からの戻りは true、a tab の戻りは true、再初期化後は false
+  it("Scenario: タブごとに履歴を分離し、再初期化で履歴を消去する", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
     await manager.init(stored, null, null);
@@ -312,7 +351,10 @@ describe("TabManager", () => {
     expect(await manager.goBack()).toBe(false);
   });
 
-  it("active tabを検索結果の飛び先付きで開いたら、その場で位置を適用する", async () => {
+  // Given: active tab が C:\work\a.txt
+  // When: open("C:\\work\\a.txt", { line: 8, col: 3 }) を呼ぶ
+  // Then: doc.goTo({ line: 8, col: 3 }) が呼ばれ、tab の goto は undefined
+  it("Scenario: active tabを検索結果の飛び先付きで開いたら、その場で位置を適用する", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
     await manager.init(stored, null, null);
@@ -323,7 +365,10 @@ describe("TabManager", () => {
     expect(manager.state.tabs[0].goto).toBeUndefined();
   });
 
-  it("active tabの飛び先適用に失敗しても、消費済みの要求を残さない", async () => {
+  // Given: active tab が a で、doc.goTo が Error("invalid position") を投げる
+  // When: a.txt に { line: 8, col: 3 } を付けて open() を呼ぶ
+  // Then: invalid position で reject し、tab の goto は undefined
+  it("Scenario: active tabの飛び先適用に失敗しても、消費済みの要求を残さない", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
     await manager.init(stored, null, null);
@@ -334,7 +379,10 @@ describe("TabManager", () => {
     expect(manager.state.tabs[0].goto).toBeUndefined();
   });
 
-  it("未保存確認で既存tabへの移動を取り消したら飛び先を残さない", async () => {
+  // Given: b tab への未保存確認が false を返す
+  // When: b.txt へ goto={line:8,col:3} 付きで open() し、その後確認を true にして activate("b") を呼ぶ
+  // Then: doc.goTo({ line: 8, col: 3 }) は一度も呼ばれない
+  it("Scenario: 未保存確認で既存tabへの移動を取り消したら飛び先を残さない", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
     await manager.init(stored, null, null);
@@ -347,7 +395,10 @@ describe("TabManager", () => {
     expect(doc.goTo).not.toHaveBeenCalledWith({ line: 8, col: 3 });
   });
 
-  it("移動先の読込失敗時は元active tabへ戻し、壊れた状態を保存しない", async () => {
+  // Given: active tab a で、b tab の openPath が Error("load failed") を返し、変更通知配列を空にする
+  // When: activate("b") を呼ぶ
+  // Then: load failed で reject し、activeId は a、変更通知は空、最終 openPath は C:\work\a.txt と false
+  it("Scenario: 移動先の読込失敗時は元active tabへ戻し、壊れた状態を保存しない", async () => {
     const { doc, host } = fixture();
     const changes: StoredTabs[] = [];
     const manager = new TabManager(host, doc, { onChange: (state) => changes.push(state) }, registeredCommandPorts);
@@ -362,7 +413,10 @@ describe("TabManager", () => {
     expect(doc.openPath).toHaveBeenLastCalledWith("C:\\work\\a.txt", false);
   });
 
-  it("tabごとに選択位置と表示位置を復元する", async () => {
+  // Given: active tab a で b、続けて a を activate し、captureViewState の既定値が全て0
+  // When: 2回の tab 切替を完了する
+  // Then: captureViewState は2回呼ばれ、restoreViewState は topLine=0 と scrollLeft=0 を含む状態で呼ばれる
+  it("Scenario: tabごとに選択位置と表示位置を復元する", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
     await manager.init(stored, null, null);
@@ -376,7 +430,10 @@ describe("TabManager", () => {
     }));
   });
 
-  it("保存完了時にtabが再描画されても要求したtabへ切り替える", async () => {
+  // Given: activate("b") の確認処理中に syncActive(doc.current) が実行されてから onProceed が続行される
+  // When: activate("b") を呼ぶ
+  // Then: activeId は b、active な .doc-tab の title は C:\work\b.txt
+  it("Scenario: 保存完了時にtabが再描画されても要求したtabへ切り替える", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
     await manager.init(stored, null, null);
@@ -392,7 +449,10 @@ describe("TabManager", () => {
     expect(host.querySelector<HTMLButtonElement>(".doc-tab.active")?.title).toBe("C:\\work\\b.txt");
   });
 
-  it("確認処理がfalseかつdirtyのままなら切り替えない", async () => {
+  // Given: active tab a の doc.current.dirty が true で、confirmDiscard が false を返す
+  // When: activate("b") を呼ぶ
+  // Then: activeId は a のまま
+  it("Scenario: 確認処理がfalseかつdirtyのままなら切り替えない", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
     await manager.init(stored, null, null);
@@ -404,7 +464,10 @@ describe("TabManager", () => {
     expect(manager.state.activeId).toBe("a");
   });
 
-  it("変更中のactive tabだけファイル名の先頭に印を付ける", async () => {
+  // Given: active tab a の dirty を true にして syncActive(doc.current) を呼ぶ
+  // When: tab label の文字列を取得する
+  // Then: labels は ["● a.txt", "b.txt"]
+  it("Scenario: 変更中のactive tabだけファイル名の先頭に印を付ける", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
     await manager.init(stored, null, null);
@@ -416,7 +479,10 @@ describe("TabManager", () => {
     expect(labels).toEqual(["● a.txt", "b.txt"]);
   });
 
-  it("保存処理へ渡した継続処理が、確定した移動先tabを開く", async () => {
+  // Given: activate("b") の確認処理が保留され、継続関数が onProceed 実行後に true を解決する
+  // When: activate("b") を開始し、継続関数を取得して実行する
+  // Then: activeId は b、active な .doc-tab の title は C:\work\b.txt
+  it("Scenario: 保存処理へ渡した継続処理が、確定した移動先tabを開く", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
     await manager.init(stored, null, null);
@@ -437,7 +503,10 @@ describe("TabManager", () => {
     expect(host.querySelector<HTMLButtonElement>(".doc-tab.active")?.title).toBe("C:\\work\\b.txt");
   });
 
-  it("tab列の末尾にある＋で新規tabを追加する", async () => {
+  // Given: activeId=a で a.txt と b.txt の2タブがある
+  // When: 末尾の .doc-tab-add をクリックする
+  // Then: .doc-tab は3個になり、state.tabs[2].kind は blank
+  it("Scenario: tab列の末尾にある＋で新規tabを追加する", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
     await manager.init(stored, null, null);
@@ -448,7 +517,10 @@ describe("TabManager", () => {
     expect(manager.state.tabs[2].kind).toBe("blank");
   });
 
-  it("一括追加は重複を除き、active tabを切り替えない", async () => {
+  // Given: activeId=a で a.txt と b.txt があり、addLinks に a.txt(file) と src(folder) を渡す
+  // When: addLinks() を呼ぶ
+  // Then: activeId は a のまま、path は [C:\work\a.txt,C:\work\b.txt,C:\work\src]、openPath は初期化時の1回だけ
+  it("Scenario: 一括追加は重複を除き、active tabを切り替えない", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
     await manager.init(stored, null, null);
@@ -466,7 +538,10 @@ describe("TabManager", () => {
     expect(doc.openPath).toHaveBeenCalledTimes(1);
   });
 
-  it("タブをドラッグして並べ替え、直後のclickでは切り替えない", async () => {
+  // Given: activeId=a で a,b の順にタブがある
+  // When: b を a の左側へドラッグし、直後に b を click する
+  // Then: tab id は ["b","a"]、activeId は a、openPath は1回だけ、最後の変更通知も ["b","a"]
+  it("Scenario: タブをドラッグして並べ替え、直後のclickでは切り替えない", async () => {
     const { doc, host } = fixture();
     const changes: StoredTabs[] = [];
     const manager = new TabManager(host, doc, { onChange: (state) => changes.push(state) }, registeredCommandPorts);
@@ -482,7 +557,10 @@ describe("TabManager", () => {
     expect(changes.at(-1)?.tabs.map((tab) => tab.id)).toEqual(["b", "a"]);
   });
 
-  it("ウィンドウの外へドラッグすると新規ウィンドウへ移す", async () => {
+  // Given: activeId=a で、elementFromPoint が null を返し、onDetach が true を返す
+  // When: a tab を pointerdown してウィンドウ外の x=-20 へドラッグする
+  // Then: onDetach に secondary=true、path=C:\work\a.txt、goto=null、selectedRelPath=null、caret/anchor が line0 col0 の viewState を渡し、残る tab は b だけで activeId は b
+  it("Scenario: ウィンドウの外へドラッグすると新規ウィンドウへ移す", async () => {
     const { doc, host } = fixture();
     const onDetach = vi.fn(async () => true);
     const manager = new TabManager(host, doc, { onChange: () => {}, onDetach }, registeredCommandPorts);
@@ -510,7 +588,10 @@ describe("TabManager", () => {
     expect(manager.state.activeId).toBe("b");
   });
 
-  it("同じウィンドウ内のタブ領域外へのdropはキャンセルする", async () => {
+  // Given: activeId=a で、drop 判定が document.body を返す
+  // When: a tab を同じウィンドウ内のタブ領域外へドラッグする
+  // Then: onDetach は呼ばれず、tab id は ["a","b"] のまま
+  it("Scenario: 同じウィンドウ内のタブ領域外へのdropはキャンセルする", async () => {
     const { doc, host } = fixture();
     const onDetach = vi.fn(async () => true);
     const manager = new TabManager(host, doc, { onChange: () => {}, onDetach }, registeredCommandPorts);
@@ -529,7 +610,10 @@ describe("TabManager", () => {
     expect(manager.state.tabs.map((tab) => tab.id)).toEqual(["a", "b"]);
   });
 
-  it("ファイルタブから登録し、登録コマンドを実行できる", async () => {
+  // Given: C:\work\memo.txt の file tab があり、登録入力が ["メモ帳","","notepad {file}"] を返す
+  // When: コンテキストメニューから登録し、登録コマンドの submenu 項目を実行する
+  // Then: commandsForPath は extension=.txt,label=メモ帳,prefix="",command=notepad {file} を返し、runExternalCommand は `notepad "C:\work\memo.txt"` と path を渡される
+  it("Scenario: ファイルタブから登録し、登録コマンドを実行できる", async () => {
     const { doc, host } = fixture();
     document.body.appendChild(Object.assign(document.createElement("div"), { id: "dropdown" }));
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
@@ -559,7 +643,10 @@ describe("TabManager", () => {
     ));
   });
 
-  it("タブの登録コマンド失敗は専用のエラー文言を渡す", async () => {
+  // Given: .txt の登録コマンドを追加し、実行処理が Error("command failed") を返す
+  // When: memo.txt のコンテキストメニューから登録コマンドを実行する
+  // Then: onError は Error と「登録コマンドを実行できませんでした」を引数に1回呼ばれる
+  it("Scenario: タブの登録コマンド失敗は専用のエラー文言を渡す", async () => {
     addRegisteredCommand({ extension: ".txt", label: "メモ帳", prefix: "", command: "notepad {file}" });
     registeredCommandPorts.runExternalCommand.mockRejectedValueOnce(new Error("command failed"));
     const { doc, host } = fixture();
@@ -583,7 +670,10 @@ describe("TabManager", () => {
     ));
   });
 
-  it("ファイルとフォルダのタブをExplorerで開く", async () => {
+  // Given: file tab が C:\work\memo.txt、folder tab が C:\work\docs にあり、revealInExplorer を spy する
+  // When: file と folder の各コンテキストメニューで「エクスプローラで開く」を実行する
+  // Then: revealInExplorer は memo.txt に false、docs に true を渡して順に2回呼ばれ、folder メニューに「登録コマンド ▸」はない
+  it("Scenario: ファイルとフォルダのタブをExplorerで開く", async () => {
     const reveal = vi.spyOn(api, "revealInExplorer").mockResolvedValue();
     try {
       const { doc, host } = fixture();

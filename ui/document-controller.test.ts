@@ -82,8 +82,11 @@ function fakeView() {
   return { view, controller: new DocumentController(view, services()) };
 }
 
-describe("DocumentController", () => {
-  it("uses the injected document API boundary", async () => {
+describe("Feature: DocumentController", () => {
+  // Given: `openPath` mockが`info()`を返すDocumentController
+  // When: `controller.openPath("C:\\work\\memo.txt")`
+  // Then: trueを返し、mockが同じpathで呼ばれる
+  it("Scenario: uses the injected document API boundary", async () => {
     const { view } = fakeView();
     const openPath = vi.fn().mockResolvedValue(info());
     const controller = new DocumentController(view, {
@@ -95,7 +98,10 @@ describe("DocumentController", () => {
     expect(openPath).toHaveBeenCalledWith("C:\\work\\memo.txt");
   });
 
-  it("捨てた古い読込結果で後から開いた文書を上書きしない", async () => {
+  // Given: first.txtとsecond.txtのopen結果が未解決
+  // When: 両方を開き、firstの結果を先に解決してからsecondを解決
+  // Then: firstはfalse、secondはtrue、current.savePathは`C:\\work\\second.txt`
+  it("Scenario: 捨てた古い読込結果で後から開いた文書を上書きしない", async () => {
     const { controller } = fakeView();
     let resolveFirst!: (value: DocInfo) => void;
     let resolveSecond!: (value: DocInfo) => void;
@@ -114,7 +120,10 @@ describe("DocumentController", () => {
     expect(controller.current.savePath).toBe("C:\\work\\second.txt");
   });
 
-  it("reflects an opened document into every view it owns", () => {
+  // Given: `info()`がpath=`C:\\work\\memo.txt`、enc=`sjis`、line_count=42、byte_len=1234
+  // When: `applyDocInfo(info())`
+  // Then: currentとstatusbar/addressbar/editor/titleへ各値が反映され、外部変更bannerが隠れる
+  it("Scenario: reflects an opened document into every view it owns", () => {
     const { view, controller } = fakeView();
     controller.applyDocInfo(info());
 
@@ -128,7 +137,10 @@ describe("DocumentController", () => {
     expect(view.setTitle).toHaveBeenLastCalledWith(formatTitleBar("memo.txt"));
   });
 
-  it("marks the title dirty only on the first edit", () => {
+  // Given: info適用済みでtitle mockをclear
+  // When: `onEdit(43)`→`onEdit(44)`
+  // Then: lineCount=44、dirty title設定は1回だけで`● memo.txt`を含む
+  it("Scenario: marks the title dirty only on the first edit", () => {
     const { view, controller } = fakeView();
     controller.applyDocInfo(info());
     view.setTitle.mockClear();
@@ -141,7 +153,10 @@ describe("DocumentController", () => {
     expect(view.setTitle).toHaveBeenCalledWith(formatTitleBar("● memo.txt"));
   });
 
-  it("keeps a read-only document unsavable", async () => {
+  // Given: `view_only=true`の文書
+  // When: `controller.save()`
+  // Then: falseを返し、`pickSavePath`は未呼出し
+  it("Scenario: keeps a read-only document unsavable", async () => {
     const { view, controller } = fakeView();
     controller.applyDocInfo(info({ view_only: true }));
 
@@ -149,7 +164,10 @@ describe("DocumentController", () => {
     expect(view.pickSavePath).not.toHaveBeenCalled();
   });
 
-  it("continues after the file was saved even if a later view update failed", async () => {
+  // Given: 編集済み、confirmが`save`、saveFileがsaved、保存後setTitleがErrorを投げる
+  // When: `confirmDiscard(proceed)`
+  // Then: trueを返し、`proceed`を1回呼ぶ
+  it("Scenario: continues after the file was saved even if a later view update failed", async () => {
     const { view, controller } = fakeView();
     controller.applyDocInfo(info());
     controller.onEdit(42);
@@ -162,7 +180,10 @@ describe("DocumentController", () => {
     expect(proceed).toHaveBeenCalledOnce();
   });
 
-  it("上書き保存中に全面ローディングを表示しない", async () => {
+  // Given: 編集済みでsaveFileが`{kind:"saved"}`を返す
+  // When: `controller.save()`
+  // Then: trueを返し、`setLoading`は未呼出し
+  it("Scenario: 上書き保存中に全面ローディングを表示しない", async () => {
     const { view, controller } = fakeView();
     controller.applyDocInfo(info());
     controller.onEdit(42);
@@ -173,7 +194,10 @@ describe("DocumentController", () => {
     expect(view.setLoading).not.toHaveBeenCalled();
   });
 
-  it("別名保存失敗後に選択した文字コードを元文書へ持ち越さない", async () => {
+  // Given: 元文書のencoding=`sjis`/eol=`lf`、別名path選択、保存形式がutf8/crlf、saveFileが失敗
+  // When: `controller.saveAs()`
+  // Then: falseを返し、current.encoding/eolは`s​​jis`/`lf`のまま
+  it("Scenario: 別名保存失敗後に選択した文字コードを元文書へ持ち越さない", async () => {
     const { view, controller } = fakeView();
     controller.applyDocInfo(info({ enc: "sjis", eol: "lf" }));
     view.pickSavePath.mockResolvedValueOnce("C:\\readonly\\memo.txt");
@@ -188,7 +212,10 @@ describe("DocumentController", () => {
     expect(controller.current.eol).toBe("lf");
   });
 
-  it("エントリ選択失敗時は既存の選択状態を保つ", async () => {
+  // Given: selectedRelPath=`before.txt`で、`selectEntry("missing.txt")`がErrorを投げる
+  // When: `controller.selectEntry`を呼ぶ
+  // Then: false、選択状態は`before.txt`、`showError("開けませんでした", Error)`、loading=false
+  it("Scenario: エントリ選択失敗時は既存の選択状態を保つ", async () => {
     const { view, controller } = fakeView();
     controller.setSelectedRelPath("before.txt");
     vi.spyOn(api, "selectEntry").mockRejectedValueOnce(new Error("missing"));
@@ -200,8 +227,11 @@ describe("DocumentController", () => {
   });
 });
 
-describe("fileNameOf", () => {
-  it("omits the dot when no extension was chosen", () => {
+describe("Feature: fileNameOf", () => {
+  // Given: stem=`memo`でextensionが`txt`または空文字
+  // When: `fileNameOf`を呼ぶ
+  // Then: `"memo.txt"`または`"memo"`
+  it("Scenario: omits the dot when no extension was chosen", () => {
     expect(fileNameOf({ stem: "memo", extension: "txt" })).toBe("memo.txt");
     expect(fileNameOf({ stem: "memo", extension: "" })).toBe("memo");
   });

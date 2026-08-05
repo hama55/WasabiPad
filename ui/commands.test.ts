@@ -16,13 +16,19 @@ function key(key: string, shiftKey = false, defaultPrevented = false): KeyboardE
   return { key, ctrlKey: true, shiftKey, defaultPrevented } as KeyboardEvent;
 }
 
-describe("command registry", () => {
-  it("uses the same command for menu metadata and shortcuts", () => {
+describe("Feature: command registry", () => {
+  // Given: `save`/`saveAs`が成功するcommand registryとCtrl-S/Ctrl-Shift-Sイベント
+  // When: `globalCommandForEvent`を呼ぶ
+  // Then: 戻り値がそれぞれ`registry.save`、`registry.saveAs`
+  it("Scenario: uses the same command for menu metadata and shortcuts", () => {
     expect(globalCommandForEvent(registry, key("s"))).toBe(registry.save);
     expect(globalCommandForEvent(registry, key("s", true))).toBe(registry.saveAs);
   });
 
-  it("does not dispatch events already handled by the editor", () => {
+  // Given: Ctrl-Fイベントと、defaultPrevented=trueのCtrl-Sイベント
+  // When: `globalCommandForEvent`を呼ぶ
+  // Then: どちらも`undefined`
+  it("Scenario: does not dispatch events already handled by the editor", () => {
     expect(globalCommandForEvent(registry, key("f"))).toBeUndefined();
     expect(globalCommandForEvent(registry, key("s", false, true))).toBeUndefined();
   });

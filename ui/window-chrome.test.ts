@@ -37,8 +37,11 @@ function mountChrome() {
   return { host, notice, win, handlers };
 }
 
-describe("WindowChrome", () => {
-  it("native windowのresize・move・DPI変更を同じgeometry同期へ渡す", () => {
+describe("Feature: WindowChrome", () => {
+  // Given: resize/move/scale変更handlerを登録
+  // When: 3 handlerを順に呼ぶ
+  // Then: `onGeometryChange`を3回呼ぶ
+  it("Scenario: native windowのresize・move・DPI変更を同じgeometry同期へ渡す", () => {
     const { host, notice, win, handlers } = mountChrome();
     const onGeometryChange = vi.fn();
     new WindowChrome(host, win, {
@@ -54,7 +57,10 @@ describe("WindowChrome", () => {
     expect(onGeometryChange).toHaveBeenCalledTimes(3);
   });
 
-  it("titlebar外の通知要素へ保存完了を表示する", () => {
+  // Given: titlebar外の通知要素とfake timer
+  // When: `notify("保存しました")`後に2秒進める
+  // Then: 通知文を表示し、2秒後に空文字
+  it("Scenario: titlebar外の通知要素へ保存完了を表示する", () => {
     vi.useFakeTimers();
     try {
       const { host, notice, win } = mountChrome();

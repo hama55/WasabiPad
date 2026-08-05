@@ -78,7 +78,7 @@ function fixture() {
   };
 }
 
-describe("FolderActions", () => {
+describe("Feature: FolderActions", () => {
   beforeEach(async () => {
     document.body.replaceChildren();
     await initSettings();
@@ -88,7 +88,10 @@ describe("FolderActions", () => {
     vi.mocked(promptFields).mockResolvedValue(null);
   });
 
-  it("右クリック項目を操作別に区切り、新規ウィンドウで開ける", () => {
+  // Given: rootが`C:\work`、対象が`memo.txt`、gotoが`{line:499,col:8}`
+  // When: コンテキストメニュー表示後に新規ウィンドウ項目をクリック
+  // Then: 10項目・区切り2個、絶対パスとgotoを渡す
+  it("Scenario: 右クリック項目を操作別に区切り、新規ウィンドウで開ける", () => {
     const { actions, dropdown, ports } = fixture();
     const goto = { line: 499, col: 8 };
     actions.showContextMenu(0, 0, { relPath: "memo.txt", isDir: false, goto });
@@ -111,7 +114,10 @@ describe("FolderActions", () => {
     expect(ports.onOpenInNewWindow).toHaveBeenCalledWith("C:\\work\\memo.txt", goto);
   });
 
-  it("CSVとMarkdownだけに対応するビューを表示する", () => {
+  // Given: 対象が`table.CSV`と`memo.txt`
+  // When: 各コンテキストメニューを表示しCSV項目をクリック
+  // Then: CSVビュー表示・`onOpenViewer("table.CSV","csv")`、memoにはCSV/Markdownビューなし
+  it("Scenario: CSVとMarkdownだけに対応するビューを表示する", () => {
     const { actions, dropdown, ports } = fixture();
     actions.showContextMenu(0, 0, { relPath: "table.CSV", isDir: false });
 
@@ -124,7 +130,10 @@ describe("FolderActions", () => {
     expect([...dropdown.querySelectorAll(".dd-label")].map((label) => label.textContent)).not.toContain("Markdownビュー");
   });
 
-  it("拡張子別の登録コマンドを表示して実行できる", async () => {
+  // Given: `.html`用Chromeコマンドを登録済み
+  // When: `index.html`の登録コマンドを開いて実行
+  // Then: trailingが`⚙,×`、絶対パス入りコマンドを実行
+  it("Scenario: 拡張子別の登録コマンドを表示して実行できる", async () => {
     addRegisteredCommand({ extension: ".html", label: "Chrome", prefix: "cmd.exe /D /C", command: "chrome {file}" });
     const { actions, dropdown } = fixture();
     actions.showContextMenu(0, 0, { relPath: "index.html", isDir: false });
@@ -143,7 +152,10 @@ describe("FolderActions", () => {
     ));
   });
 
-  it("登録コマンドの実行失敗を表示する", async () => {
+  // Given: `.html`用コマンド実行が`command failed`でreject
+  // When: 登録コマンドをクリック
+  // Then: `showError("登録コマンドを実行できませんでした", Error)`
+  it("Scenario: 登録コマンドの実行失敗を表示する", async () => {
     addRegisteredCommand({ extension: ".html", label: "Chrome", prefix: "", command: "chrome {file}" });
     vi.mocked(api.runExternalCommand).mockRejectedValueOnce(new Error("command failed"));
     const { actions, dropdown } = fixture();
@@ -159,7 +171,10 @@ describe("FolderActions", () => {
     ));
   });
 
-  it("登録時は選択ファイルの拡張子をコマンドへ紐付ける", async () => {
+  // Given: promptが`Chrome`,``,`chrome {file}`を返す
+  // When: `index.HTML`でコマンド登録
+  // Then: 拡張子`.html`で登録、各promptラベルと空prefixを表示
+  it("Scenario: 登録時は選択ファイルの拡張子をコマンドへ紐付ける", async () => {
     vi.mocked(promptFields).mockResolvedValueOnce(["Chrome", "", "chrome {file}"]);
     const { actions, dropdown } = fixture();
     actions.showContextMenu(0, 0, { relPath: "index.HTML", isDir: false });
@@ -180,7 +195,10 @@ describe("FolderActions", () => {
     ]));
   });
 
-  it("登録コマンドを歯車から編集し、×から削除できる", async () => {
+  // Given: Chromeコマンドを登録済み
+  // When: gearで更新後、再表示して×で削除
+  // Then: Chrome Devの内容へ更新後、一覧が空になる
+  it("Scenario: 登録コマンドを歯車から編集し、×から削除できる", async () => {
     addRegisteredCommand({ extension: ".html", label: "Chrome", prefix: "", command: "chrome {file}" });
     const { actions, dropdown } = fixture();
     actions.showContextMenu(0, 0, { relPath: "index.html", isDir: false });
@@ -200,7 +218,10 @@ describe("FolderActions", () => {
     expect(commandsForPath("index.html")).toEqual([]);
   });
 
-  it("ファイルのExplorerメニューはその絶対パスを渡す", async () => {
+  // Given: Explorer起動spy、対象`memo.txt`
+  // When: Explorer項目をクリック
+  // Then: `revealInExplorer("C:\\work\\memo.txt",false)`
+  it("Scenario: ファイルのExplorerメニューはその絶対パスを渡す", async () => {
     const reveal = vi.spyOn(api, "revealInExplorer").mockResolvedValue();
     try {
       const { actions, dropdown } = fixture();
@@ -214,7 +235,10 @@ describe("FolderActions", () => {
     }
   });
 
-  it("Explorer起動失敗をフォルダ操作の文脈で表示する", async () => {
+  // Given: Explorer起動が`explorer failed`でreject
+  // When: Explorer項目をクリック
+  // Then: `showError("エクスプローラで開けませんでした", Error)`
+  it("Scenario: Explorer起動失敗をフォルダ操作の文脈で表示する", async () => {
     const reveal = vi.spyOn(api, "revealInExplorer").mockRejectedValueOnce(new Error("explorer failed"));
     try {
       const { actions, dropdown } = fixture();
@@ -231,13 +255,19 @@ describe("FolderActions", () => {
     }
   });
 
-  it("画像ファイルの拡張子を大文字小文字に関係なく判定する", () => {
+  // Given: 対象拡張子がPNG、webp、md
+  // When: `isImagePath`を呼ぶ
+  // Then: PNG/webpはtrue、mdはfalse
+  it("Scenario: 画像ファイルの拡張子を大文字小文字に関係なく判定する", () => {
     expect(isImagePath("picture.PNG")).toBe(true);
     expect(isImagePath("picture.webp")).toBe(true);
     expect(isImagePath("memo.md")).toBe(false);
   });
 
-  it("削除はその他サブメニューを経由する", async () => {
+  // Given: 対象が`memo.txt`、delete APIは成功
+  // When: その他→削除をクリック
+  // Then: `deleteEntry("memo.txt")`、確認文言表示、一覧更新
+  it("Scenario: 削除はその他サブメニューを経由する", async () => {
     const { actions, dropdown, ports } = fixture();
     vi.spyOn(api, "deleteEntry").mockResolvedValueOnce({} as api.DocInfo);
     actions.showContextMenu(0, 0, { relPath: "memo.txt", isDir: false });
@@ -257,7 +287,10 @@ describe("FolderActions", () => {
     expect(ports.sidebar.refreshFolderEntries).toHaveBeenCalled();
   });
 
-  it("作成成功後の一覧更新失敗を作成失敗として表示しない", async () => {
+  // Given: createNoteは成功、一覧更新だけ`refresh failed`でreject
+  // When: `createNote(null)`
+  // Then: 作成APIは呼ばれ、作成失敗ではなく一覧更新失敗を通知
+  it("Scenario: 作成成功後の一覧更新失敗を作成失敗として表示しない", async () => {
     const { actions, doc, ports } = fixture();
     const docInfo = {
       kind: "text",

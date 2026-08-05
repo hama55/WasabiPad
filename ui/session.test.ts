@@ -17,8 +17,11 @@ const info = (overrides: Partial<DocInfo> = {}): DocInfo => ({
   ...overrides,
 });
 
-describe("DocumentSession", () => {
-  it("defines the untitled document state once", () => {
+describe("Feature: DocumentSession", () => {
+  // Given: 初期セッションを作成する
+  // When: `initialSession()`を呼ぶ
+  // Then: 未保存・未変更、utf8/crlf、lineCount=1の状態になる
+  it("Scenario: defines the untitled document state once", () => {
     expect(initialSession()).toMatchObject({
       savePath: null,
       readOnly: false,
@@ -31,7 +34,10 @@ describe("DocumentSession", () => {
     });
   });
 
-  it("derives editable and read-only save paths from DocInfo", () => {
+  // Given: editableなDocInfoが`C:\work\memo.txt`/sjis/lf、archiveかつview_onlyのDocInfo
+  // When: `sessionFromDocInfo`と`displayName`を呼ぶ
+  // Then: 通常文書は編集可能なpath/encoding/eol、archiveはsavePath=null・readOnly=true・表示名memo.txt
+  it("Scenario: derives editable and read-only save paths from DocInfo", () => {
     const editable = sessionFromDocInfo(initialSession(), info());
     expect(editable.savePath).toBe("C:\\work\\memo.txt");
     expect(editable.folderRoot).toBe("C:\\work");
@@ -46,7 +52,10 @@ describe("DocumentSession", () => {
     expect(displayName(archive)).toBe("memo.txt");
   });
 
-  it("folds BOM into the plain read encoding", () => {
+  // Given: encodingが`utf8bom`または`sjis`
+  // When: `readEncodingOf`を呼ぶ
+  // Then: utf8bomはutf8、sjisはsjis
+  it("Scenario: folds BOM into the plain read encoding", () => {
     expect(readEncodingOf("utf8bom")).toBe("utf8");
     expect(readEncodingOf("sjis")).toBe("sjis");
   });

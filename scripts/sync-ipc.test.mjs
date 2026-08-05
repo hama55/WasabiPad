@@ -22,8 +22,11 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-describe("syncGeneratedFiles", () => {
-  it("同一生成物には触れず、古い生成物だけ削除する", async () => {
+describe("Feature: syncGeneratedFiles", () => {
+  // Given: source/targetに同一`Current.ts`とtargetだけに`Stale.ts`
+  // When: `syncGeneratedFiles`を呼ぶ
+  // Then: Currentのmtimeは不変、Staleの読み込みは失敗する
+  it("Scenario: 同一生成物には触れず、古い生成物だけ削除する", async () => {
     const { source, target } = fixture();
     const current = generated("Current");
     writeFileSync(join(source, "Current.ts"), current);

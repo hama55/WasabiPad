@@ -40,8 +40,11 @@ function dragOnto(from: HTMLElement, to: HTMLElement, ratio: number) {
   window.dispatchEvent(at("pointerup", rect.width * ratio));
 }
 
-describe("FavBar", () => {
-  it("保存も読込みも注入されたストアだけを使う", async () => {
+describe("Feature: FavBar", () => {
+  // Given: 注入ストアが`memo.txt`を返し、保存結果を記録する
+  // When: `init()`後に`addExternal("C:/work/notes/")`
+  // Then: 保存1回、kindが`file,directory`、button数2
+  it("Scenario: 保存も読込みも注入されたストアだけを使う", async () => {
     const { favbar, saved } = mount([{ kind: "file", name: "memo.txt", path: "C:/memo.txt" }]);
     await favbar.init();
     expect(document.querySelectorAll("#favbar button")).toHaveLength(1);
@@ -52,14 +55,20 @@ describe("FavBar", () => {
     expect(document.querySelectorAll("#favbar button")).toHaveLength(2);
   });
 
-  it("現在のファイルを追加すると末尾の区切りを落とす", async () => {
+  // Given: 現在ファイルが`C:/work/memo.txt`、お気に入り空
+  // When: `init()`後に`addCurrent()`
+  // Then: `{kind:"file",name:"memo.txt",path:"C:/work/memo.txt"}`を保存
+  it("Scenario: 現在のファイルを追加すると末尾の区切りを落とす", async () => {
     const { favbar, saved } = mount([]);
     await favbar.init();
     await favbar.addCurrent();
     expect(saved[0]).toEqual([{ kind: "file", name: "memo.txt", path: "C:/work/memo.txt" }]);
   });
 
-  it("保存失敗した追加を次の成功操作へ混入させない", async () => {
+  // Given: 初回saveが`disk full`で失敗し、次回saveは成功する
+  // When: 失敗追加後に`C:/success.txt`を追加
+  // Then: 保存内容は`base,success.txt`、button数2
+  it("Scenario: 保存失敗した追加を次の成功操作へ混入させない", async () => {
     const persisted: BmNode[][] = [];
     const save = vi.fn()
       .mockRejectedValueOnce(new Error("disk full"))
@@ -79,7 +88,10 @@ describe("FavBar", () => {
     expect(document.querySelectorAll("#favbar button")).toHaveLength(2);
   });
 
-  it("ドラッグで並べ替えできる", async () => {
+  // Given: お気に入りが`a`,`b`の順
+  // When: `a`を`b`の末尾へドラッグ
+  // Then: 保存順が`b,a`
+  it("Scenario: ドラッグで並べ替えできる", async () => {
     const { favbar, saved } = mount([
       { kind: "file", name: "a", path: "C:/a.txt" },
       { kind: "file", name: "b", path: "C:/b.txt" },
@@ -91,7 +103,10 @@ describe("FavBar", () => {
     expect(saved[0].map((node) => node.name)).toEqual(["b", "a"]);
   });
 
-  it("ドラッグ直後のクリックは開かない", async () => {
+  // Given: お気に入りが`a`だけ
+  // When: `a`自身へドラッグ後にクリック
+  // Then: 保存も`onOpen`も発生しない
+  it("Scenario: ドラッグ直後のクリックは開かない", async () => {
     const { favbar, saved, opened } = mount([{ kind: "file", name: "a", path: "C:/a.txt" }]);
     await favbar.init();
     const a = document.querySelector<HTMLButtonElement>("#favbar button")!;
@@ -101,7 +116,10 @@ describe("FavBar", () => {
     expect(opened).toEqual([]);
   });
 
-  it("グループの中央へ落とすと子になる", async () => {
+  // Given: 空group`g`とfile`a`がトップレベルにある
+  // When: `a`をgroup中央へドラッグ
+  // Then: `g.children`に`a`が入り、トップレベルから外れる
+  it("Scenario: グループの中央へ落とすと子になる", async () => {
     const { favbar, saved } = mount([
       { kind: "group", name: "g", children: [] },
       { kind: "file", name: "a", path: "C:/a.txt" },
@@ -115,14 +133,20 @@ describe("FavBar", () => {
     ]);
   });
 
-  it("クリックは onOpen を呼ぶ", async () => {
+  // Given: `memo.txt`がお気に入りにある
+  // When: buttonをクリック
+  // Then: `onOpen("C:/memo.txt")`
+  it("Scenario: クリックは onOpen を呼ぶ", async () => {
     const { favbar, opened } = mount([{ kind: "file", name: "memo.txt", path: "C:/memo.txt" }]);
     await favbar.init();
     document.querySelector<HTMLButtonElement>("#favbar button")!.click();
     expect(opened).toEqual(["C:/memo.txt"]);
   });
 
-  it("グループ直下の項目だけをタブへ一括追加する", async () => {
+  // Given: group直下にfile`a`とdirectory`src`、nested groupに`b`がある
+  // When: groupのコンテキストメニューから一括追加
+  // Then: `a`と`src`だけをタブ追加
+  it("Scenario: グループ直下の項目だけをタブへ一括追加する", async () => {
     const { favbar, addedGroups } = mount([{
       kind: "group",
       name: "work",
@@ -148,7 +172,10 @@ describe("FavBar", () => {
     ]]);
   });
 
-  it("お気に入りのファイルとフォルダをExplorerで開き、デフォルト設定項目を表示しない", async () => {
+  // Given: file`memo.txt`とdirectory`docs`がある
+  // When: 各Explorer項目をクリック
+  // Then: デフォルト設定項目なし、`reveal`にfile=`false`、directory=`true`
+  it("Scenario: お気に入りのファイルとフォルダをExplorerで開き、デフォルト設定項目を表示しない", async () => {
     const reveal = vi.spyOn(api, "revealInExplorer").mockResolvedValue();
     try {
       const { favbar } = mount([

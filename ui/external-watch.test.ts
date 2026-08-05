@@ -23,8 +23,11 @@ function fixture() {
   return { banner, ports };
 }
 
-describe("ExternalWatch", () => {
-  it("再読込失敗時は未解決の競合バナーを戻す", async () => {
+describe("Feature: ExternalWatch", () => {
+  // Given: bannerが表示中、reload/ignoreボタン、isDirty=true、reloadFromDiskが`Error("locked")`でreject
+  // When: reloadボタンをクリック
+  // Then: `onError`が1回呼ばれ、bannerは表示状態のまま
+  it("Scenario: 再読込失敗時は未解決の競合バナーを戻す", async () => {
     const { banner, ports } = fixture();
     vi.spyOn(api, "reloadFromDisk").mockRejectedValueOnce(new Error("locked"));
 

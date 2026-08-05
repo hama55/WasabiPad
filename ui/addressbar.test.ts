@@ -23,8 +23,11 @@ function addressBarFixture() {
   return { host, ports };
 }
 
-describe("pathSegments", () => {
-  it("makes every crumb an openable absolute path", () => {
+describe("Feature: pathSegments", () => {
+  // Given: 入力が `C:\work\notes\memo.txt`
+  // When: `pathSegments` を呼ぶ
+  // Then: `C:`→`C:\`、`work`→`C:\work`、`notes`→`C:\work\notes`、`memo.txt`→`C:\work\notes\memo.txt` の4 crumb
+  it("Scenario: makes every crumb an openable absolute path", () => {
     expect(pathSegments("C:\\work\\notes\\memo.txt")).toEqual([
       { label: "C:", path: "C:\\" },
       { label: "work", path: "C:\\work" },
@@ -33,20 +36,29 @@ describe("pathSegments", () => {
     ]);
   });
 
-  it("accepts forward slashes as separators", () => {
+  // Given: 入力が `C:/work/memo.txt`
+  // When: `pathSegments` の各 `path` を取得
+  // Then: [`C:\\`, `C:\\work`, `C:\\work\\memo.txt`]
+  it("Scenario: accepts forward slashes as separators", () => {
     expect(pathSegments("C:/work/memo.txt").map((s) => s.path)).toEqual([
       "C:\\", "C:\\work", "C:\\work\\memo.txt",
     ]);
   });
 
-  it("leaves non-drive paths as a single crumb", () => {
+  // Given: 入力が空文字と `memo.txt`
+  // When: `pathSegments` を呼ぶ
+  // Then: それぞれ `[{label:"",path:""}]`、`[{label:"memo.txt",path:"memo.txt"}]`
+  it("Scenario: leaves non-drive paths as a single crumb", () => {
     expect(pathSegments("")).toEqual([{ label: "", path: "" }]);
     expect(pathSegments("memo.txt")).toEqual([{ label: "memo.txt", path: "memo.txt" }]);
   });
 });
 
-describe("AddressBar navigation buttons", () => {
-  it("clickを通知し、履歴の有無で無効状態を切り替える", () => {
+describe("Feature: AddressBar navigation buttons", () => {
+  // Given: jsdom上のAddressBar fixtureと、戻る可・進む不可の状態
+  // When: 戻る/進むボタンをクリック
+  // Then: `onBack`は1回、`onForward`は未呼出し、disabledは戻る=false・進む=true
+  it("Scenario: clickを通知し、履歴の有無で無効状態を切り替える", () => {
     const { host, ports } = addressBarFixture();
     const addressbar = new AddressBar(host, ports);
 
@@ -60,7 +72,10 @@ describe("AddressBar navigation buttons", () => {
     expect(host.querySelector<HTMLButtonElement>("#addressbar-forward")!.disabled).toBe(true);
   });
 
-  it("マウス側面ボタンのX1/X2を戻る/進むへ割り当てる", () => {
+  // Given: 戻る/進む両方可のAddressBar
+  // When: `auxclick` button=3とbutton=4をwindowへdispatch
+  // Then: `onBack`と`onForward`が各1回呼ばれ、両イベントの`defaultPrevented`がtrue
+  it("Scenario: マウス側面ボタンのX1/X2を戻る/進むへ割り当てる", () => {
     const { host, ports } = addressBarFixture();
     new AddressBar(host, ports).setNavigationState({ canGoBack: true, canGoForward: true });
 

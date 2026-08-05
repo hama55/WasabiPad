@@ -65,7 +65,7 @@ function mount(
   return { editor, doc, events, host, input, type, press };
 }
 
-describe("VirtualEditor", () => {
+describe("Feature: VirtualEditor", () => {
   beforeEach(async () => {
     document.body.replaceChildren();
     loadSettings.mockResolvedValue("{}");
@@ -78,14 +78,20 @@ describe("VirtualEditor", () => {
     writeClipboardText.mockResolvedValue(undefined);
   });
 
-  it("注入された DocumentClient から可視行を取得する", async () => {
+  // Given: fake DocumentClient に「one\ntwo\nthree」を設定し、VirtualEditor を open(3, false) で開いている
+  // When: 初期読み込みを settle まで待つ
+  // Then: DocumentClient の呼び出しに lines(...) が1件以上含まれる
+  it("Scenario: 注入された DocumentClient から可視行を取得する", async () => {
     const { editor, doc } = mount("one\ntwo\nthree");
     editor.open(3, false);
     await settle();
     expect(doc.calls.some((call) => call.startsWith("lines("))).toBe(true);
   });
 
-  it("入力は backend の edit へ委譲され、行数変化が通知される", async () => {
+  // Given: 文書が「ab」、編集モードで開かれ、既存の .ve-line・.ve-gnum と lines(...) 呼び出し数を記録している
+  // When: 「X」を入力してから改行を入力する
+  // Then: 1回目は文書が「Xab」、既存DOMノードを維持し lines(...) 呼び出し数も不変、2回目は文書が「X\nab」かつ lineCount が2になる
+  it("Scenario: 入力は backend の edit へ委譲され、行数変化が通知される", async () => {
     const { editor, doc, events, host, type } = mount("ab");
     editor.open(1, false);
     await settle();
@@ -104,7 +110,10 @@ describe("VirtualEditor", () => {
     expect(events.lineCount).toBe(2);
   });
 
-  it("IME確定文字は backend 反映まで表示を保持する", async () => {
+  // Given: 文書が「ab」、backend の edit が gate 解放まで保留され、IME入力「漢字」を compositionstart→composing input→compositionend している
+  // When: 変換確定後に commit 処理を確認し、edit の gate を解放して settle する
+  // Then: backend反映前は .ve-ime-commit に「漢字」が表示され textarea は空、反映後は commit 要素が消え文書が「漢字ab」になる
+  it("Scenario: IME確定文字は backend 反映まで表示を保持する", async () => {
     const { editor, doc, host, input } = mount("ab");
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
@@ -129,7 +138,10 @@ describe("VirtualEditor", () => {
     expect(doc.text()).toBe("漢字ab");
   });
 
-  it("閲覧専用なら編集系の呼び出しを一切出さない", async () => {
+  // Given: 文書が「ab」、editor.open(1, true) で閲覧専用になっている
+  // When: 「X」入力、Backspace、Delete、Enter を実行する
+  // Then: 文書は「ab」のままで、edit で始まる backend 呼び出しが空配列になる
+  it("Scenario: 閲覧専用なら編集系の呼び出しを一切出さない", async () => {
     const { editor, doc, type, press } = mount("ab");
     editor.open(1, true);
     await settle();
@@ -142,7 +154,10 @@ describe("VirtualEditor", () => {
     expect(doc.calls.filter((call) => call.startsWith("edit"))).toEqual([]);
   });
 
-  it("改行時に現在行の先頭タブを引き継ぐ", async () => {
+  // Given: 文書が「\t\tmemo」、キャレットを0行目6列目に置いている
+  // When: Enter を押す
+  // Then: 文書が「\t\tmemo\n\t\t」になる
+  it("Scenario: 改行時に現在行の先頭タブを引き継ぐ", async () => {
     const { editor, doc, press } = mount("\t\tmemo");
     editor.open(1, false);
     await settle();
@@ -154,7 +169,10 @@ describe("VirtualEditor", () => {
     expect(doc.text()).toBe("\t\tmemo\n\t\t");
   });
 
-  it("複数行選択中のTabは各行の先頭へタブを挿入する", async () => {
+  // Given: 文書が「one\ntwo\nthree」、選択範囲が0行1列から1行1列までである
+  // When: Tab を押す
+  // Then: 文書が「\tone\n\ttwo\nthree」になり、editMany(2) が呼ばれる
+  it("Scenario: 複数行選択中のTabは各行の先頭へタブを挿入する", async () => {
     const { editor, doc, press } = mount("one\ntwo\nthree");
     editor.open(3, false);
     await settle();
@@ -173,7 +191,10 @@ describe("VirtualEditor", () => {
     expect(doc.calls).toContain("editMany(2)");
   });
 
-  it("キー編集失敗を通知し、次の編集queueは継続する", async () => {
+  // Given: 文書が「abc」、最初の backend edit が Error("ipc failed") で拒否される
+  // When: Enter で失敗させた後に「x」を入力する
+  // Then: 「編集を反映できませんでした」というエラーを1件通知し、後続入力の結果として文書に「x」が含まれる
+  it("Scenario: キー編集失敗を通知し、次の編集queueは継続する", async () => {
     const { doc, editor, events, press, type } = mount("abc");
     editor.open(1, false);
     await settle();
@@ -187,7 +208,10 @@ describe("VirtualEditor", () => {
     expect(events.errors[0].message).toBe("編集を反映できませんでした");
   });
 
-  it("Clipboard失敗をイベント境界で通知する", async () => {
+  // Given: 文書が「abc」、clipboard write が Error("denied") で拒否される
+  // When: Ctrl+A の後に Ctrl+C を実行する
+  // Then: 「クリップボードへコピーできませんでした」というエラーを1件通知する
+  it("Scenario: Clipboard失敗をイベント境界で通知する", async () => {
     const { editor, events, press } = mount("abc");
     editor.open(1, false);
     await settle();
@@ -201,7 +225,10 @@ describe("VirtualEditor", () => {
     expect(events.errors[0].message).toBe("クリップボードへコピーできませんでした");
   });
 
-  it("画像の貼り付けで相対リンク付きタグを挿入する", async () => {
+  // Given: 文書が「memo」、画像BlobがPNG形式でバイト列 [1,2,3]、saveImage が相対パスを返す
+  // When: その画像を clipboardData.items から paste する
+  // Then: paste が preventDefault され、saveImage([1,2,3], "image/png") が呼ばれ、文書に `<img src="image_markdown/memo/pasted-image.png" alt="貼り付け画像" width="900">` が含まれる
+  it("Scenario: 画像の貼り付けで相対リンク付きタグを挿入する", async () => {
     const saveImage = vi.fn(async () => "image_markdown/memo/pasted-image.png");
     const { editor, doc, input } = mount("memo", saveImage);
     editor.open(1, false);
@@ -220,7 +247,10 @@ describe("VirtualEditor", () => {
     expect(doc.text()).toContain("<img src=\"image_markdown/memo/pasted-image.png\" alt=\"貼り付け画像\" width=\"900\">");
   });
 
-  it("保存済みメモの右クリックから格納フォルダを開く", async () => {
+  // Given: 外部ファイルパスが「C:\work\memo.txt」、revealInExplorer がspyである
+  // When: .ve-scroll 上で contextmenu を開き「エクスプローラで開く」をクリックする
+  // Then: revealInExplorer が1回だけ呼ばれる
+  it("Scenario: 保存済みメモの右クリックから格納フォルダを開く", async () => {
     const revealInExplorer = vi.fn();
     const { editor, host } = mount("memo", undefined, {
       getExternalFilePath: () => "C:\\work\\memo.txt",
@@ -242,7 +272,10 @@ describe("VirtualEditor", () => {
     expect(revealInExplorer).toHaveBeenCalledTimes(1);
   });
 
-  it("メモビューの行番号を右クリックしてもコンテキストメニューを表示する", async () => {
+  // Given: 文書が「one\ntwo」、dropdown が存在する
+  // When: .ve-gutter 上で contextmenu を開く
+  // Then: dropdown のラベルに「すべて選択」が含まれる
+  it("Scenario: メモビューの行番号を右クリックしてもコンテキストメニューを表示する", async () => {
     const { editor, host } = mount("one\ntwo");
     const dropdown = document.createElement("div");
     dropdown.id = "dropdown";
@@ -258,7 +291,10 @@ describe("VirtualEditor", () => {
       .toContain("すべて選択");
   });
 
-  it("メモビューの登録コマンドへ選択文字列を渡す", async () => {
+  // Given: 文書が「https://example.com」、選択範囲がURL全体、promptFields が「ブラウザ」「」「open {string}」を返し、外部パスが「C:\work\memo.txt」
+  // When: 「コマンドを登録...」を選び、登録されたコマンドを選んで実行し、その後実行失敗も発生させる
+  // Then: 第3入力欄のラベルが「コマンド（{string}=対象文字列、引用符不要）」で、成功時に runExternalCommand('open "https://example.com"', 'C:\work\memo.txt') が呼ばれ、失敗時に「登録コマンドを実行できませんでした」と Error を含むイベントが通知される
+  it("Scenario: メモビューの登録コマンドへ選択文字列を渡す", async () => {
     const promptFields = vi.fn(async () => ["ブラウザ", "", "open {string}"]);
     const runExternalCommand = vi.fn(async () => {});
     const registeredCommandPorts: RegisteredCommandMenuPorts = { promptFields, runExternalCommand };
@@ -313,7 +349,10 @@ describe("VirtualEditor", () => {
     }));
   });
 
-  it("メモビューの登録コマンド保存失敗を通知する", async () => {
+  // Given: 文書が「https://example.com」、選択範囲がURL全体、updateSetting が Error("save failed") で拒否される
+  // When: contextmenu から「コマンドを登録...」をクリックする
+  // Then: 「コマンドを登録できませんでした」と Error を含むイベントが通知される
+  it("Scenario: メモビューの登録コマンド保存失敗を通知する", async () => {
     const promptFields = vi.fn(async () => ["ブラウザ", "", "open {string}"]);
     const registeredCommandPorts: RegisteredCommandMenuPorts = {
       promptFields,
@@ -348,7 +387,10 @@ describe("VirtualEditor", () => {
     }));
   });
 
-  it("goTo はキャレット位置を1始まりで通知する", async () => {
+  // Given: 文書が「one\ntwo」、編集モードで開いている
+  // When: goTo(1, 2) を実行する
+  // Then: onCursor の通知値が1始まりの [2, 3] になる
+  it("Scenario: goTo はキャレット位置を1始まりで通知する", async () => {
     const { editor, events } = mount("one\ntwo");
     editor.open(2, false);
     await settle();
@@ -357,7 +399,10 @@ describe("VirtualEditor", () => {
     expect(events.cursor).toEqual([2, 3]);
   });
 
-  it("goTo も対象行をメモビューの中央へ置く", async () => {
+  // Given: 40行の文書、scroll.clientHeight=100、editor.open(40, false) の状態
+  // When: goTo(20, 0) を実行する
+  // Then: captureViewState().topLine が18、scroll.scrollTop が360になる
+  it("Scenario: goTo も対象行をメモビューの中央へ置く", async () => {
     const { editor, host } = mount(Array.from({ length: 40 }, (_, i) => `line ${i}`).join("\n"));
     const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
     Object.defineProperty(scroll, "clientHeight", { configurable: true, value: 100 });
@@ -369,7 +414,10 @@ describe("VirtualEditor", () => {
     expect(scroll.scrollTop).toBe(360);
   });
 
-  it("表示領域の最下行で改行すると新しいキャレット行へ自動スクロールする", async () => {
+  // Given: 40行の文書、clientHeight=100、topLine=2、キャレットが6行目6列目
+  // When: Enter を押す
+  // Then: キャレットが7行目0列目、topLine が3、scrollTop が60になる
+  it("Scenario: 表示領域の最下行で改行すると新しいキャレット行へ自動スクロールする", async () => {
     const { editor, host, press } = mount(Array.from({ length: 40 }, (_, i) => `line ${i}`).join("\n"));
     const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
     Object.defineProperty(scroll, "clientHeight", { configurable: true, value: 100 });
@@ -390,7 +438,10 @@ describe("VirtualEditor", () => {
     expect(scroll.scrollTop).toBe(60);
   });
 
-  it("文書末尾で改行文字を連続入力しても常に入力行を表示する", async () => {
+  // Given: 文書が「start」、clientHeight=100、編集モードで開いている
+  // When: 改行を8回連続入力する
+  // Then: キャレットが8行目0列目、topLine が4、scrollTop が80になる
+  it("Scenario: 文書末尾で改行文字を連続入力しても常に入力行を表示する", async () => {
     const { editor, host, type } = mount("start");
     const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
     Object.defineProperty(scroll, "clientHeight", { configurable: true, value: 100 });
@@ -406,7 +457,10 @@ describe("VirtualEditor", () => {
     expect(scroll.scrollTop).toBe(80);
   });
 
-  it("検索結果の範囲選択は対象行をメモビューの中央へ置く", async () => {
+  // Given: 40行の文書、clientHeight=100、編集モードで開いている
+  // When: 20行目の0列目から4列目を selectRange する
+  // Then: topLine が18、scrollTop が360になる
+  it("Scenario: 検索結果の範囲選択は対象行をメモビューの中央へ置く", async () => {
     const { editor, host } = mount(Array.from({ length: 40 }, (_, i) => `line ${i}`).join("\n"));
     const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
     Object.defineProperty(scroll, "clientHeight", { configurable: true, value: 100 });
@@ -418,10 +472,13 @@ describe("VirtualEditor", () => {
     expect(scroll.scrollTop).toBe(360);
   });
 
+  // Given: 40行の文書、clientHeight=100、forward=true/false、検索結果が20行目0〜7列
+  // When: 検索欄に「line 20」を設定して次へ/前へを押す
+  // Then: どちらの方向でも topLine が18、scrollTop が360になる
   it.each([
     ["次へ", true],
     ["前へ", false],
-  ])("本文検索の%s結果は対象行をメモビューの中央へ置く", async (_label, forward) => {
+  ])("Scenario: 本文検索の%s結果は対象行をメモビューの中央へ置く", async (_label, forward) => {
     const { editor, doc, host } = mount(Array.from({ length: 40 }, (_, i) => `line ${i}`).join("\n"));
     const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
     Object.defineProperty(scroll, "clientHeight", { configurable: true, value: 100 });
@@ -446,7 +503,10 @@ describe("VirtualEditor", () => {
     expect(scroll.scrollTop).toBe(360);
   });
 
-  it("文書切替中に保留された本文検索結果を新しい文書へ適用しない", async () => {
+  // Given: 古い40行文書で検索結果が release まで保留され、検索結果が旧文書20行目を指している
+  // When: 旧文書を検索中に editor.open(1, false) で新文書へ切り替え、release して settle する
+  // Then: 保留されていた旧検索結果で移動せず、キャレットが0行0列、topLine が0のままになる
+  it("Scenario: 文書切替中に保留された本文検索結果を新しい文書へ適用しない", async () => {
     const { editor, doc, host } = mount(Array.from({ length: 40 }, (_, i) => `old ${i}`).join("\n"));
     let release!: () => void;
     const blocked = new Promise<void>((resolve) => { release = resolve; });
@@ -471,7 +531,10 @@ describe("VirtualEditor", () => {
     expect(editor.captureViewState().topLine).toBe(0);
   });
 
-  it("本文検索に失敗した後、連続置換が直前の一致を再利用しない", async () => {
+  // Given: 文書が「needle」、最初の検索は一致し、failed=true 後の検索は Error("find failed") で失敗する
+  // When: 1回目の検索後に2回目の検索を失敗させ、「changed」を入力して置換次へをクリックする
+  // Then: edit( で始まる呼び出しが0件で、直前の一致を使った置換を実行しない
+  it("Scenario: 本文検索に失敗した後、連続置換が直前の一致を再利用しない", async () => {
     const { editor, doc, host } = mount("needle");
     let failed = false;
     doc.client.findStep = async () => {
@@ -497,7 +560,10 @@ describe("VirtualEditor", () => {
     expect(doc.calls.filter((call) => call.startsWith("edit(")).length).toBe(0);
   });
 
-  it("文書切替中に保留された古い検索結果を新しい文書へ適用しない", async () => {
+  // Given: 古い文書の lines 読み込みが blocked で保留されている
+  // When: 20行目を selectRange している途中で editor.open(1, false) に切り替え、blocked を release する
+  // Then: 古い選択結果が新文書へ適用されず、キャレットが0行0列になる
+  it("Scenario: 文書切替中に保留された古い検索結果を新しい文書へ適用しない", async () => {
     const { editor, doc } = mount(Array.from({ length: 40 }, (_, i) => `old ${i}`).join("\n"));
     const originalLines = doc.client.lines;
     let release!: () => void;
@@ -516,7 +582,10 @@ describe("VirtualEditor", () => {
     expect(editor.captureViewState().caret).toEqual({ line: 0, col: 0 });
   });
 
-  it("スクロール直後のIME入力位置を表示領域内へ維持する", async () => {
+  // Given: 40行の文書、clientHeight=100、scrollTop=200、入力欄にフォーカスがある
+  // When: scroll イベント後に IME の compositionstart を発生させる
+  // Then: IME textarea の top が「0px」で、textarea の親要素が host になる
+  it("Scenario: スクロール直後のIME入力位置を表示領域内へ維持する", async () => {
     const { editor, host, input } = mount(Array.from({ length: 40 }, (_, i) => `line ${i}`).join("\n"));
     editor.open(40, false);
     await settle();
@@ -530,7 +599,10 @@ describe("VirtualEditor", () => {
     expect(input.parentElement).toBe(host);
   });
 
-  it("ウィンドウ復帰時にIME入力位置を再同期する", async () => {
+  // Given: 文書が「line」、入力欄の top を「-999px」に設定してフォーカスしている
+  // When: window の focus イベント後に compositionstart を発生させる
+  // Then: top が「-999px」から補正され、IME textarea の幅が4px以上になる
+  it("Scenario: ウィンドウ復帰時にIME入力位置を再同期する", async () => {
     const { editor, input } = mount("line");
     editor.open(1, false);
     await settle();
@@ -545,7 +617,10 @@ describe("VirtualEditor", () => {
     expect(Number.parseFloat(input.style.width)).toBeGreaterThanOrEqual(4);
   });
 
-  it("ウィンドウの横幅変更時にIME入力位置を再同期する", async () => {
+  // Given: 文書が「line」、入力欄の left を「-999px」に設定してフォーカスしている
+  // When: window の resize イベントを発生させる
+  // Then: input.style.left が「-999px」ではなくなる
+  it("Scenario: ウィンドウの横幅変更時にIME入力位置を再同期する", async () => {
     const { editor, input } = mount("line");
     editor.open(1, false);
     await settle();
@@ -558,7 +633,10 @@ describe("VirtualEditor", () => {
     expect(input.style.left).not.toBe("-999px");
   });
 
-  it("ウィンドウ変更後にIME用textareaを次のユーザー操作までblurする", async () => {
+  // Given: 文書が「line」、入力欄にフォーカスがあり blur をspyしている
+  // When: syncWindowGeometry() を実行して80ms待つ
+  // Then: blur が1回呼ばれ、document.activeElement が document.body になる
+  it("Scenario: ウィンドウ変更後にIME用textareaを次のユーザー操作までblurする", async () => {
     const { editor, input } = mount("line");
     editor.open(1, false);
     await settle();
@@ -572,7 +650,10 @@ describe("VirtualEditor", () => {
     expect(document.activeElement).toBe(document.body);
   });
 
-  it("ウィンドウ変更後も別UIからフォーカスを奪わない", async () => {
+  // Given: 文書が「line」、入力欄ではなく host 内の button にフォーカスがある
+  // When: syncWindowGeometry() を実行して80ms待つ
+  // Then: input.focus は呼ばれず、document.activeElement はその button のままになる
+  it("Scenario: ウィンドウ変更後も別UIからフォーカスを奪わない", async () => {
     const { editor, host, input } = mount("line");
     editor.open(1, false);
     await settle();
@@ -588,7 +669,10 @@ describe("VirtualEditor", () => {
     expect(document.activeElement).toBe(button);
   });
 
-  it("IME変換中のフォーカス再初期化は変換終了まで待つ", async () => {
+  // Given: 文書が「line」、IME composition中で入力欄にフォーカスがある
+  // When: syncWindowGeometry() 後70ms待ち、compositionend 後さらに80ms待つ
+  // Then: composition中は blur が呼ばれず、変換終了後に1回だけ blur が呼ばれ、activeElement が body になる
+  it("Scenario: IME変換中のフォーカス再初期化は変換終了まで待つ", async () => {
     const { editor, input } = mount("line");
     editor.open(1, false);
     await settle();
@@ -606,7 +690,10 @@ describe("VirtualEditor", () => {
     expect(document.activeElement).toBe(document.body);
   });
 
-  it("IMEアンカーの実矩形が領域外なら安全位置へ退避する", async () => {
+  // Given: scroll領域の矩形が左40・上20・右240・下120、host矩形が左0・上0・右300・下150、IME textarea矩形が左上(-100,-100)の領域外
+  // When: syncWindowGeometry() を実行する
+  // Then: input.style.left が「48px」、top が「20px」になる
+  it("Scenario: IMEアンカーの実矩形が領域外なら安全位置へ退避する", async () => {
     const { editor, host, input } = mount("line");
     editor.open(1, false);
     await settle();
@@ -630,7 +717,10 @@ describe("VirtualEditor", () => {
     expect(input.style.top).toBe("20px");
   });
 
-  it("IME変換中文字列の幅を表示領域内に制限する", async () => {
+  // Given: scroll.clientWidth=100、input.scrollWidth=500、IME変換中文字列が「長い変換中文字列」
+  // When: compositionstart 後に composing input を発生させる
+  // Then: input の幅が88px以下に制限され、scroll.scrollLeft が0より大きくなる
+  it("Scenario: IME変換中文字列の幅を表示領域内に制限する", async () => {
     const { editor, host, input } = mount("line");
     editor.open(1, false);
     await settle();
@@ -646,7 +736,10 @@ describe("VirtualEditor", () => {
     expect(scroll.scrollLeft).toBeGreaterThan(0);
   });
 
-  it("折り返し中のIME背景は変換中文字列の範囲だけを覆う", async () => {
+  // Given: 文書が「0123456789」、折り返し有効、0行目3列目を選択し、scroll.clientWidth=300
+  // When: IMEに「AB」を入力する
+  // Then: input の幅が100px未満、input に ime class が付き、.ve-line の本文は「0123456789」のままになる
+  it("Scenario: 折り返し中のIME背景は変換中文字列の範囲だけを覆う", async () => {
     const { editor, host, input } = mount("0123456789");
     editor.open(1, false);
     editor.setWrap(true);
@@ -663,7 +756,10 @@ describe("VirtualEditor", () => {
     expect(host.querySelector(".ve-line")?.textContent).toBe("0123456789");
   });
 
-  it("長い折り返し行の途中ではIMEを実際の編集位置へ表示する", async () => {
+  // Given: 1000文字の1論理行を折り返し、キャレットが500列目、clientHeight=100、clientWidth=300、scrollTop=900、編集位置の矩形が上940〜960px
+  // When: compositionstart を発生させる
+  // Then: input.style.top が「40px」、left が8px以上になる
+  it("Scenario: 長い折り返し行の途中ではIMEを実際の編集位置へ表示する", async () => {
     const { editor, host, input } = mount("x".repeat(1000));
     editor.open(1, false);
     editor.setWrap(true);
@@ -688,7 +784,10 @@ describe("VirtualEditor", () => {
     getClientRects.mockRestore();
   });
 
-  it("1論理行が多数行へ折り返されてもホイールで行内を移動する", async () => {
+  // Given: 1000文字の1論理行を折り返し、.ve-line の実矩形高さを2000px、scroll.clientHeight=100に設定している
+  // When: deltaY=80 の wheel イベントを発生させる
+  // Then: line.style.top - scroll.scrollTop が -80 になる
+  it("Scenario: 1論理行が多数行へ折り返されてもホイールで行内を移動する", async () => {
     const { editor, host } = mount("x".repeat(1000));
     const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
     Object.defineProperty(scroll, "clientHeight", { configurable: true, value: 100 });
@@ -711,7 +810,10 @@ describe("VirtualEditor", () => {
     lineRect.mockRestore();
   });
 
-  it("長い折り返し1行でも縦スクロールバーを表示し、つまみ位置へ移動する", async () => {
+  // Given: 1000文字の折り返し行、scroll領域100×100、.ve-line の実矩形高さ2000px
+  // When: scroll処理後に横のつまみ位置で mousedown し、scrollTop=950 へ移動して mouseup する
+  // Then: .ve-inner の高さが2000px、描画行の top - scrollTop が -950 になる
+  it("Scenario: 長い折り返し1行でも縦スクロールバーを表示し、つまみ位置へ移動する", async () => {
     const { editor, host } = mount("x".repeat(1000));
     editor.open(1, false);
     editor.setWrap(true);
@@ -753,7 +855,10 @@ describe("VirtualEditor", () => {
     lineRect.mockRestore();
   });
 
-  it("compositionendが来ないblurでもIME状態と入力を回収する", async () => {
+  // Given: 文書が「ab」、IME入力「漢字」を開始して composing input 済み
+  // When: compositionend を送らず blur する
+  // Then: input から ime class が外れ、input.value が空、文書が「漢字ab」になる
+  it("Scenario: compositionendが来ないblurでもIME状態と入力を回収する", async () => {
     const { editor, doc, input } = mount("ab");
     editor.open(1, false);
     await settle();
@@ -769,7 +874,10 @@ describe("VirtualEditor", () => {
     expect(doc.text()).toBe("漢字ab");
   });
 
-  it("横スクロールバーを本文から分離して双方向に同期する", async () => {
+  // Given: 文書が「wide line」、通常表示で本文スクロールと独立横スクロールがある
+  // When: hScroll を80へスクロールし、本文を25へスクロールした後、折り返しを有効にする
+  // Then: 本文側が80、横スクロール側が25へ双方向同期し、折り返し時は hScroll.hidden と host の hscroll-hidden が true になる
+  it("Scenario: 横スクロールバーを本文から分離して双方向に同期する", async () => {
     const { editor, host } = mount("wide line");
     editor.open(1, false);
     await settle();
@@ -789,7 +897,10 @@ describe("VirtualEditor", () => {
     expect(host.classList.contains("hscroll-hidden")).toBe(true);
   });
 
-  it("文書切替直後の範囲選択を読み込み後に横方向へ表示する", async () => {
+  // Given: 50文字の1行文書、scroll.clientWidth=100、範囲終端列×10の矩形を返す Range
+  // When: 0行目20列から30列まで selectRange する
+  // Then: scroll.scrollLeft が0より大きくなり、hScroll.scrollLeft が本文側と同値になる
+  it("Scenario: 文書切替直後の範囲選択を読み込み後に横方向へ表示する", async () => {
     const rect = vi.spyOn(Range.prototype, "getBoundingClientRect").mockImplementation(function (this: Range) {
       return {
         x: 0, y: 0, top: 0, left: 0, right: this.endOffset * 10, bottom: 20,
@@ -809,7 +920,10 @@ describe("VirtualEditor", () => {
     rect.mockRestore();
   });
 
-  it("選択位置と縦横の表示位置を復元する", async () => {
+  // Given: 40行の文書、clientHeight=100、scrollTop=200・scrollLeft=35、12行目1〜4列を選択して view state を保存している
+  // When: 文書を再openし、保存した view state を restore する
+  // Then: anchor、caret、topLine、scrollLeft が保存前の state とそれぞれ同値になる
+  it("Scenario: 選択位置と縦横の表示位置を復元する", async () => {
     const { editor, host } = mount(Array.from({ length: 40 }, (_, i) => `line ${i}`).join("\n"));
     const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
     Object.defineProperty(scroll, "clientHeight", { configurable: true, value: 100 });
@@ -831,7 +945,10 @@ describe("VirtualEditor", () => {
     expect(restored.scrollLeft).toBe(state.scrollLeft);
   });
 
-  it("キャレット行と選択行を行番号の背景だけで強調する", async () => {
+  // Given: 文書が「first\nsecond」、first の0〜5列を選択している
+  // When: 選択状態を描画する
+  // Then: 行番号に selected-line と caret-line が付き、本文行には selected-line/caret-line が付かず、.ve-line-highlight も存在しない
+  it("Scenario: キャレット行と選択行を行番号の背景だけで強調する", async () => {
     const { editor, host } = mount("first\nsecond");
     editor.open(2, false);
     await editor.selectRange(0, 0, 5);
@@ -841,7 +958,10 @@ describe("VirtualEditor", () => {
     expect(host.querySelector(".ve-line-highlight")).toBeNull();
   });
 
-  it("フォーカス中のキャレットは常時表示し、フォーカスを失うと隠す", async () => {
+  // Given: 文書が「line」、キャレットを0行0列に復元し、caret要素が存在する
+  // When: editor.focus() 後に入力欄を blur する
+  // Then: フォーカス中は caret の on class が true、blur 後は false になる
+  it("Scenario: フォーカス中のキャレットは常時表示し、フォーカスを失うと隠す", async () => {
     const { editor, host, input } = mount("line");
     editor.open(1, false);
     await settle();

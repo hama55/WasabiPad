@@ -2,8 +2,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { LiveViewers } from "./live-viewers";
 
-describe("LiveViewers", () => {
-  it("sends the editor selection relative to a selected viewer range", async () => {
+describe("Feature: LiveViewers", () => {
+  // Given: viewer範囲が2行目3列〜3行目6列、選択が2行目5列
+  // When: csv viewerを開き、選択を3行目1列へ変更して120ms待つ
+  // Then: 初回・更新ともviewer範囲基準の相対位置を渡す
+  it("Scenario: sends the editor selection relative to a selected viewer range", async () => {
     vi.useFakeTimers();
     const openViewer = vi.fn(async () => "viewer-1");
     const updateViewer = vi.fn(async () => true);
@@ -31,7 +34,10 @@ describe("LiveViewers", () => {
     vi.useRealTimers();
   });
 
-  it("一時失敗では追随を止めず、閉じたビューだけを外す", async () => {
+  // Given: updateがreject、true、falseの順に返る
+  // When: refreshを120ms間隔で3回実行
+  // Then: reject後も停止せず`updateViewer`が3回呼ばれる
+  it("Scenario: 一時失敗では追随を止めず、閉じたビューだけを外す", async () => {
     vi.useFakeTimers();
     const updateViewer = vi.fn()
       .mockRejectedValueOnce(new Error("IPC disconnected"))
@@ -56,7 +62,10 @@ describe("LiveViewers", () => {
     vi.useRealTimers();
   });
 
-  it("文書切替中に開いた旧ビューを再登録しない", async () => {
+  // Given: viewer起動Promiseが保留中
+  // When: 起動中に`clear()`し、旧viewer ID解決後refresh
+  // Then: 旧viewerへのupdateは呼ばれない
+  it("Scenario: 文書切替中に開いた旧ビューを再登録しない", async () => {
     vi.useFakeTimers();
     let resolveOpen!: (label: string) => void;
     const openViewer = vi.fn(() => new Promise<string>((resolve) => { resolveOpen = resolve; }));
@@ -80,7 +89,10 @@ describe("LiveViewers", () => {
     vi.useRealTimers();
   });
 
-  it("文書切替後に保留中の旧ビュー更新を続けない", async () => {
+  // Given: update Promiseが保留中
+  // When: refresh開始後に`clear()`してPromiseを解決
+  // Then: 旧viewerのupdate呼び出しは1回だけ
+  it("Scenario: 文書切替後に保留中の旧ビュー更新を続けない", async () => {
     vi.useFakeTimers();
     let resolveUpdate!: (exists: boolean) => void;
     const updateViewer = vi.fn(() => new Promise<boolean>((resolve) => { resolveUpdate = resolve; }));
@@ -102,7 +114,10 @@ describe("LiveViewers", () => {
     vi.useRealTimers();
   });
 
-  it("予期しない更新失敗も未処理Promiseにせずエラー通知へ渡す", async () => {
+  // Given: refreshが予期せず`unexpected`でreject
+  // When: refreshをスケジュール
+  // Then: 未処理Promiseにせず`onError(Error)`を呼ぶ
+  it("Scenario: 予期しない更新失敗も未処理Promiseにせずエラー通知へ渡す", async () => {
     vi.useFakeTimers();
     const onError = vi.fn(async () => {});
     const viewers = new LiveViewers({

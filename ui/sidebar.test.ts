@@ -24,8 +24,11 @@ function mount() {
   return { host, ports, sidebar: new Sidebar(host, ports, DEFAULT_SEARCH_OPTIONS) };
 }
 
-describe("Sidebar", () => {
-  it("フォーカス中の上下キーで可視行を選択する", () => {
+describe("Feature: Sidebar", () => {
+  // Given: `first.txt`と`second.txt`を設定し、tree要素にフォーカス
+  // When: ArrowDown、ArrowDown、ArrowUpを順に送る
+  // Then: 選択行は`first.txt`→`second.txt`→`first.txt`
+  it("Scenario: フォーカス中の上下キーで可視行を選択する", () => {
     const { host, sidebar } = mount();
     sidebar.setEntries([
       { name: "first.txt", is_dir: false, is_archive: false },

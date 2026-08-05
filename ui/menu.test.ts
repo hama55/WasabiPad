@@ -2,14 +2,17 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { showMenu } from "./menu";
 
-describe("menu", () => {
+describe("Feature: menu", () => {
   beforeEach(() => {
     const dropdown = document.createElement("div");
     dropdown.id = "dropdown";
     document.body.replaceChildren(dropdown);
   });
 
-  it("親メニューを残したままサブメニューを表示し、確定時に閉じる", () => {
+  // Given: dropdownが空、親「その他」と子「削除」がある
+  // When: 親→子の順にクリック
+  // Then: 子表示中は親を保持し、確定後にaction1回・dropdown非表示・子要素0
+  it("Scenario: 親メニューを残したままサブメニューを表示し、確定時に閉じる", () => {
     const action = vi.fn();
     const dropdown = document.getElementById("dropdown")!;
 
@@ -31,7 +34,10 @@ describe("menu", () => {
     expect(dropdown.childElementCount).toBe(0);
   });
 
-  it("深いサブメニューを別項目へ切り替えると古い子孫を破棄する", () => {
+  // Given: A→A-1、B→B-1の深いsubmenuがある
+  // When: A表示後にBへ切替
+  // Then: B-1を表示し、A-1を破棄
+  it("Scenario: 深いサブメニューを別項目へ切り替えると古い子孫を破棄する", () => {
     showMenu(0, 0, [{
       label: "親",
       sub: [
@@ -52,7 +58,10 @@ describe("menu", () => {
     expect(dropdown.textContent).not.toContain("A-1");
   });
 
-  it("コンテキストメニューの同期例外をイベントの外へ漏らさない", () => {
+  // Given: contextmenu handlerが`context menu failed`をthrowする
+  // When: contextmenuイベントをdispatch
+  // Then: dispatchはthrowせず、console.errorにメッセージとError
+  it("Scenario: コンテキストメニューの同期例外をイベントの外へ漏らさない", () => {
     const error = new Error("context menu failed");
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
     try {

@@ -5,17 +5,23 @@ import {
   selectedLineRange,
 } from "./editor-edit-plan";
 
-describe("editor edit plans", () => {
+describe("Feature: editor edit plans", () => {
+  // Given: 行頭の連続tabが `text`、`\ttext`、`\t\ttext`、` \ttext`
+  // When: `newlineWithLeadingTabs`を各入力へ適用
+  // Then: それぞれ改行後が`\n`、`\n\t`、`\n\t\t`、`\n`
   it.each([
     ["text", "\n"],
     ["\ttext", "\n\t"],
     ["\t\ttext", "\n\t\t"],
     [" \ttext", "\n"],
-  ])("先頭の連続tabだけを改行へ引き継ぐ", (line, expected) => {
+  ])("Scenario: 先頭の連続tabだけを改行へ引き継ぐ", (line, expected) => {
     expect(newlineWithLeadingTabs(line)).toBe(expected);
   });
 
-  it("終端col=0を除外し、逆向き選択を維持して複数行をindentする", () => {
+  // Given: anchor=`{line:3,col:0}`、caret=`{line:1,col:2}`の逆向き選択
+  // When: `selectedLineRange`と`planLineIndent`
+  // Then: range=`{first:1,last:2}`、edit開始行=`[1,2]`、nextAnchor=`{3,0}`、nextCaret=`{1,3}`、primaryIndex=0、anchorは不変
+  it("Scenario: 終端col=0を除外し、逆向き選択を維持して複数行をindentする", () => {
     const anchor = { line: 3, col: 0 };
     const caret = { line: 1, col: 2 };
     const plan = planLineIndent(anchor, caret)!;
@@ -28,7 +34,10 @@ describe("editor edit plans", () => {
     expect(anchor).toEqual({ line: 3, col: 0 });
   });
 
-  it("範囲選択でなければplanを作らない", () => {
+  // Given: anchorとcaretがともに`{line:1,col:2}`
+  // When: `planLineIndent`
+  // Then: `null`
+  it("Scenario: 範囲選択でなければplanを作らない", () => {
     expect(planLineIndent({ line: 1, col: 2 }, { line: 1, col: 2 })).toBeNull();
   });
 });

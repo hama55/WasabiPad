@@ -2,10 +2,13 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { promptFields } from "./prompt";
 
-describe("promptFields", () => {
+describe("Feature: promptFields", () => {
   beforeEach(() => document.body.replaceChildren());
 
-  it("プレビューを初期表示し、入力変更に追随させる", async () => {
+  // Given: 表示名PowerShell、command初期値、preview rendererを設定
+  // When: command入力を変更してOK
+  // Then: previewが追随しreadonly、結果が`PowerShell`と変更後command
+  it("Scenario: プレビューを初期表示し、入力変更に追随させる", async () => {
     const result = promptFields(
       "コマンドを編集",
       [

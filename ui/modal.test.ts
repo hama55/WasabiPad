@@ -9,10 +9,13 @@ const press = (key: string) =>
 const mouseDownOn = (target: EventTarget) =>
   target.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
 
-describe("openModal", () => {
+describe("Feature: openModal", () => {
   afterEach(() => document.body.replaceChildren());
 
-  it("Escape と背景クリックはどちらも「やめる」", () => {
+  // Given: cancel callback付きmodalを開く
+  // When: Escape、背景、modal本体でmousedown
+  // Then: Escape/背景だけcancel、callbackは2回
+  it("Scenario: Escape と背景クリックはどちらも「やめる」", () => {
     const cancels: string[] = [];
     const modal = openModal({ onCancel: () => cancels.push("cancel") });
     const overlay = document.querySelector(".pf-overlay")!;
@@ -26,7 +29,10 @@ describe("openModal", () => {
     expect(cancels).toHaveLength(2);
   });
 
-  it("Enter は受け取り先がある画面だけが拾う", () => {
+  // Given: accept付きmodalとcancelのみのmodalを順に開く
+  // When: 各modalでEnter
+  // Then: accept付きだけaccept、受け取り先なしではイベント変化なし
+  it("Scenario: Enter は受け取り先がある画面だけが拾う", () => {
     const events: string[] = [];
     const withAccept = openModal({
       onCancel: () => events.push("cancel"),
@@ -41,7 +47,10 @@ describe("openModal", () => {
     expect(events).toEqual(["accept"]);
   });
 
-  it("close の後はキーを拾わない", () => {
+  // Given: cancel callback付きmodalを開く
+  // When: `close()`後にEscape
+  // Then: overlay削除、callbackは呼ばれない
+  it("Scenario: close の後はキーを拾わない", () => {
     let cancels = 0;
     const modal = openModal({ onCancel: () => (cancels += 1) });
     modal.close();
@@ -51,7 +60,10 @@ describe("openModal", () => {
     expect(cancels, "後始末で listener も外れる").toBe(0);
   });
 
-  it("追加の見た目は box の class として渡せる", () => {
+  // Given: 追加classに`ss-box`を指定
+  // When: modalを開く
+  // Then: boxのclassが`pf-box ss-box`
+  it("Scenario: 追加の見た目は box の class として渡せる", () => {
     const modal = openModal({ onCancel: () => {} }, "ss-box");
     expect(modal.box.className).toBe("pf-box ss-box");
   });
