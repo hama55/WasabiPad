@@ -11,10 +11,10 @@ describe("Feature: アプリ境界の仕様記録", () => {
 
   // Given: TauriのExplorer起動とDocSessionの実ファイル選択は単体再現不可
   // When: メモビューのExplorerメニューを実行
-  // Then: 選択中メモの親フォルダを開く
-  it("Scenario: メモビューのExplorerメニューは選択中メモが格納されたフォルダを開く", () => {
+  // Then: 選択中メモをExplorerで選択する
+  it("Scenario: メモビューのExplorerメニューは選択中メモをExplorerで選択する", () => {
     // TauriのExplorer起動とDocSessionの実ファイル選択を同時に扱うため、単体テストでは分離できない。
-    // 仕様: フォルダビューで選択中の項目があっても、メモビューではそのファイルの親フォルダを開く。
+    // 仕様: フォルダビューで選択中の項目があっても、メモビューではその実ファイルをExplorerで選択する。
   });
 
   // Given: WindowChromeとTauriの終了許可は単体再現不可

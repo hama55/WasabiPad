@@ -51,9 +51,9 @@ export interface EditorPorts {
   onDocChange: (lineCount: number) => void;
   onCursor: (line: number, col: number) => void;
   onFontChange: (fontFamily: string, fontSize: number) => void;
-  openExternally: (path: string) => void;
+  openExternally: (path: string) => void | Promise<unknown>;
   registeredCommandPorts: RegisteredCommandMenuPorts;
-  revealInExplorer?: (path: string) => void | Promise<unknown>;
+  revealInExplorer?: (path: string, isDir: boolean) => void | Promise<unknown>;
   onError: (message: string, error: unknown) => Promise<void>;
   openViewer: (format: api.ViewerFormat, text: string, selection: api.ViewerSelection | null) => Promise<string | null>;
   updateViewer: (label: string, text: string, selection: api.ViewerSelection | null) => Promise<boolean>;
@@ -117,9 +117,9 @@ export class VirtualEditor {
   private onCursor: (line: number, col: number) => void;
   private onFontChange: (fontFamily: string, fontSize: number) => void;
   private externalFilePath: string | null = null;
-  private openExternally: (path: string) => void;
+  private openExternally: (path: string) => void | Promise<unknown>;
   private registeredCommandPorts: RegisteredCommandMenuPorts;
-  private revealInExplorer?: (path: string) => void | Promise<unknown>;
+  private revealInExplorer?: (path: string, isDir: boolean) => void | Promise<unknown>;
   private onError: (message: string, error: unknown) => Promise<void>;
   private onPasteImage?: (bytes: number[], mimeType: string) => Promise<string>;
   private liveViewers: LiveViewers;
@@ -307,6 +307,10 @@ export class VirtualEditor {
 
   setReadOnly(on: boolean) {
     this.readOnly = on;
+  }
+
+  setExternalFilePath(path: string | null) {
+    this.externalFilePath = path;
   }
 
   focus() {
@@ -1772,7 +1776,7 @@ export class VirtualEditor {
       items.push({
         label: MENU_LABELS.explorer,
         iconClass: MENU_ICON.explorer,
-        action: () => this.dispatch("エクスプローラで開けませんでした", () => this.revealInExplorer?.(commandPath)),
+        action: () => this.dispatch("エクスプローラで開けませんでした", () => this.revealInExplorer?.(commandPath, false)),
       });
     }
     if (!this.readOnly) {
@@ -1855,7 +1859,7 @@ export class VirtualEditor {
       items.push({
         label: MENU_LABELS.external,
         iconClass: MENU_ICON.external,
-        action: () => this.openExternally(commandPath),
+        action: () => this.dispatch("アプリで開けませんでした", () => this.openExternally(commandPath)),
         sep: true,
       });
     }

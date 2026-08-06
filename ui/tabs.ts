@@ -427,6 +427,7 @@ export class TabManager {
       if (this.activeId) await this.loadActive();
     } catch (error) {
       console.error("元のタブへ復帰できませんでした", error);
+      throw error;
     }
   }
 

@@ -1,8 +1,10 @@
 import type { ViewerFormat } from "./api";
+import { MENU_ICON, type MenuIconClass } from "./menu-icons";
 
 export interface ViewerFormatSpec {
   readonly id: ViewerFormat;
   readonly label: string;
+  readonly iconClass: MenuIconClass;
   readonly extensions: readonly string[];
   readonly supportsDelimiter: boolean;
   readonly supportsChart: boolean;
@@ -15,6 +17,7 @@ export const VIEWER_FORMATS: Record<ViewerFormat, ViewerFormatSpec> = {
   csv: {
     id: "csv",
     label: "CSVビュー",
+    iconClass: MENU_ICON.csv,
     extensions: [".csv"],
     supportsDelimiter: true,
     supportsChart: true,
@@ -22,6 +25,7 @@ export const VIEWER_FORMATS: Record<ViewerFormat, ViewerFormatSpec> = {
   markdown: {
     id: "markdown",
     label: "Markdownビュー",
+    iconClass: MENU_ICON.markdown,
     extensions: [".md", ".markdown"],
     supportsDelimiter: false,
     supportsChart: false,

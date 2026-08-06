@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createViewerFormatHandlers, viewerFormatForPath, viewerFormatSpec } from "./viewer-formats";
+import { MENU_ICON } from "./menu-icons";
 
 describe("Feature: viewer formats", () => {
   // Given: `report.CSV`、`notes.Markdown`、`notes.txt`を指定
@@ -17,6 +18,7 @@ describe("Feature: viewer formats", () => {
   it("Scenario: keeps format capabilities in the registry", () => {
     expect(viewerFormatSpec("csv").supportsDelimiter).toBe(true);
     expect(viewerFormatSpec("csv").supportsChart).toBe(true);
+    expect(viewerFormatSpec("csv").iconClass).toBe(MENU_ICON.csv);
     expect(viewerFormatSpec("markdown").supportsDelimiter).toBe(false);
     expect(viewerFormatSpec("markdown").supportsChart).toBe(false);
   });

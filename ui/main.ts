@@ -45,7 +45,10 @@ import { searchResultGoto } from "./search-results";
 const win = getCurrentWindow();
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 window.addEventListener("error", () => runBackground("画面を再表示できませんでした", () => win.show()), { once: true });
-window.addEventListener("unhandledrejection", () => runBackground("画面を再表示できませんでした", () => win.show()), { once: true });
+window.addEventListener("unhandledrejection", (event) => {
+  event.preventDefault();
+  void reportBackgroundError("予期しない非同期エラーが発生しました", event.reason);
+});
 
 // 以降のモジュール初期化は設定値を同期的に読むため、ここで一度だけ待つ
 await initSettings();
@@ -228,12 +231,8 @@ const editor: VirtualEditor = new VirtualEditor(editorHost, {
     }
   },
   registeredCommandPorts,
-  openExternally: (path) => {
-    runBackground("アプリで開けませんでした", () => openInOtherApp(path));
-  },
-  revealInExplorer: (path) => {
-    runBackground("エクスプローラで開けませんでした", () => revealInExplorer(path, false));
-  },
+  openExternally: (path) => openInOtherApp(path),
+  revealInExplorer: (path, isDir) => revealInExplorer(path, isDir),
   onError: (message, error) => showError(message, error),
   openViewer: async (format, text, selection) => {
     try {
@@ -368,6 +367,7 @@ const externalWatch = new ExternalWatch($("external-banner"), {
 const favbar = new FavBar($("favbar"), {
   onOpen: (path, newTab) => runBackground("お気に入りを開けませんでした", () => newTab ? tabs.open(path) : tabs.navigatePath(path)),
   onAddGroupToTabs: (items) => tabs.addLinks(items),
+  revealInExplorer,
   currentFile: () => addressbar.path || null,
   onError: (error) => showError("お気に入りを移動できませんでした", error),
 });

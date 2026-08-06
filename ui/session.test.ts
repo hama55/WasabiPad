@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DocInfo } from "./api";
-import { displayName, initialSession, readEncodingOf, sessionFromDocInfo } from "./session";
+import { displayName, externalFilePathOf, initialSession, readEncodingOf, sessionFromDocInfo } from "./session";
 
 const info = (overrides: Partial<DocInfo> = {}): DocInfo => ({
   kind: "text",
@@ -50,6 +50,17 @@ describe("Feature: DocumentSession", () => {
     expect(archive.savePath).toBeNull();
     expect(archive.readOnly).toBe(true);
     expect(displayName(archive)).toBe("memo.txt");
+  });
+
+  // Given: フォルダ自身のDocInfoと、フォルダ内で選択したファイルのDocInfo
+  // When: externalFilePathOfを呼ぶ
+  // Then: フォルダ自身はnull、選択ファイルは実パスになる
+  it("Scenario: フォルダ表示と選択ファイルのExplorer対象を区別する", () => {
+    expect(externalFilePathOf(info({ path: "C:\\work", folder_root: "C:\\work" }))).toBeNull();
+    expect(externalFilePathOf(info({
+      path: "C:\\work\\memo.txt",
+      folder_root: "C:\\work",
+    }))).toBe("C:\\work\\memo.txt");
   });
 
   // Given: encodingが`utf8bom`または`sjis`

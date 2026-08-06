@@ -1,7 +1,6 @@
 import { BmNode, loadBookmarks, pathIsDirectory, saveBookmarks } from "./api";
 import { hideMenu, showMenu, MenuItem } from "./menu";
 import { promptFields } from "./prompt";
-import { revealInExplorer } from "./folder-actions";
 import { DRAG_THRESHOLD } from "./interaction-constants";
 import { favoriteIconClass, MENU_ICON } from "./menu-icons";
 import { MENU_LABELS } from "./menu-labels";
@@ -13,6 +12,10 @@ type DropSpot = { kind: "root" } | { kind: DropKind; path: NodePath; el: HTMLEle
 
 const GROUP_OPEN_DELAY = 650;
 const DROP_CLASSES = ["fav-drop", "fav-drop-before", "fav-drop-after"];
+const FAVBAR_LABELS = {
+  addPath: "パスを追加...",
+  addGroup: "グループを追加...",
+} as const;
 
 // お気に入りの保存先。既定は backend のブックマークファイル。
 export interface BookmarkStore {
@@ -30,6 +33,7 @@ export const bookmarkStore: BookmarkStore = {
 export interface FavBarPorts {
   onOpen: (path: string, newTab: boolean) => unknown;
   onAddGroupToTabs: (items: { path: string; kind: "file" | "folder" }[]) => void;
+  revealInExplorer: (path: string, isDir: boolean) => void | Promise<unknown>;
   currentFile: () => string | null;
   onError: (error: unknown) => Promise<void>;
 }
@@ -49,6 +53,7 @@ export class FavBar {
   private menuRoot = document.getElementById("dropdown");
   private onOpen: (path: string, newTab: boolean) => void;
   private onAddGroupToTabs: FavBarPorts["onAddGroupToTabs"];
+  private revealInExplorer: FavBarPorts["revealInExplorer"];
   private currentFile: () => string | null;
   private onError: (error: unknown) => Promise<void>;
 
@@ -59,14 +64,15 @@ export class FavBar {
   ) {
     this.onOpen = ports.onOpen;
     this.onAddGroupToTabs = ports.onAddGroupToTabs;
+    this.revealInExplorer = ports.revealInExplorer;
     this.currentFile = ports.currentFile;
     this.onError = ports.onError;
     this.host.addEventListener("contextmenu", (e) => {
       if (e.target !== this.host) return;
       e.preventDefault();
       showMenu(e.clientX, e.clientY, [
-        { label: "パスを追加...", iconClass: MENU_ICON.addPath, action: () => this.runMutation(() => this.addPath()) },
-        { label: "グループを追加...", iconClass: MENU_ICON.addGroup, action: () => this.runMutation(() => this.addGroup()) },
+        { label: FAVBAR_LABELS.addPath, iconClass: MENU_ICON.addPath, action: () => this.runMutation(() => this.addPath()) },
+        { label: FAVBAR_LABELS.addGroup, iconClass: MENU_ICON.addGroup, action: () => this.runMutation(() => this.addGroup()) },
       ]);
     });
     // WebView2 のネイティブ drag-drop が HTML5 DnD を奪うため pointer で自作する
@@ -163,12 +169,13 @@ export class FavBar {
             }]
           )),
         },
-        { label: "パスを追加...", iconClass: MENU_ICON.addPath, action: () => this.runMutation(() => this.addPath(path)), sep: true },
-        { label: "グループを追加...", iconClass: MENU_ICON.addGroup, action: () => this.runMutation(() => this.addGroup(path)) }
+        { label: FAVBAR_LABELS.addPath, iconClass: MENU_ICON.addPath, action: () => this.runMutation(() => this.addPath(path)), sep: true },
+        { label: FAVBAR_LABELS.addGroup, iconClass: MENU_ICON.addGroup, action: () => this.runMutation(() => this.addGroup(path)) }
       );
     } else {
       items.push(
-        { label: MENU_LABELS.explorer, iconClass: MENU_ICON.explorer, action: () => this.runMutation(() => revealInExplorer(node.path, node.kind === "directory")) },
+        { label: MENU_LABELS.explorer, iconClass: MENU_ICON.explorer, action: () =>
+          this.runMutation(() => this.revealInExplorer(node.path, node.kind === "directory")) },
         { label: MENU_LABELS.newTab, iconClass: MENU_ICON.newTab, action: () => this.runOpen(node.path, true) },
         { label: "編集...", iconClass: MENU_ICON.rename, action: () => this.runMutation(() => this.editPath(path)), sep: true }
       );
@@ -359,7 +366,7 @@ export class FavBar {
     }
   }
 
-  private runMutation(operation: () => Promise<void>) {
+  private runMutation(operation: () => void | Promise<unknown>) {
     try {
       void Promise.resolve(operation()).catch((error) => this.reportDropError(error));
     } catch (error) {

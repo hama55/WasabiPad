@@ -1,6 +1,6 @@
 import type * as api from "./api";
 import type { DocumentSession } from "./session";
-import { initialSession, sessionFromDocInfo } from "./session";
+import { externalFilePathOf, initialSession, sessionFromDocInfo } from "./session";
 import type { promptSaveFormat, saveFormatFields, saveFormatFromValues, SaveFormat } from "./save-format";
 import type { confirmSaveDiscard, promptFields } from "./prompt";
 import type { isPasswordCancelled, withArchivePassword } from "./archive-password";
@@ -42,6 +42,7 @@ export interface DocumentControllerServices {
 
 export interface DocumentEditorPort {
   open: (lineCount: number, readOnly: boolean, keepViewers?: boolean, externalFilePath?: string | null) => void;
+  setExternalFilePath: (path: string | null) => void;
   focus: () => void;
   goTo: (line: number, col: number) => void;
   captureViewState: () => EditorViewState;
@@ -147,8 +148,7 @@ export class DocumentController {
     this.view.statusbar.setLineCount(info.line_count);
     this.view.addressbar.render(info.path);
     if (updateTree) this.showTree(info);
-    const externalFilePath = info.path && info.folder_root !== info.path ? info.path : null;
-    this.view.editor.open(info.line_count, this.session.readOnly, keepViewers, externalFilePath);
+    this.view.editor.open(info.line_count, this.session.readOnly, keepViewers, externalFilePathOf(info));
     this.view.editor.focus();
     this.updateTitle();
   }
@@ -352,6 +352,7 @@ export class DocumentController {
     this.session.sourceEol = this.session.eol;
     this.session.dirty = false;
     try {
+      this.view.editor.setExternalFilePath(path);
       this.view.addressbar.render(path);
       this.view.statusbar.setFormat(this.session);
       this.updateTitle();
@@ -444,6 +445,7 @@ export class DocumentController {
     this.session.displayPath = info.path;
     this.session.savePath = this.session.readOnly ? null : info.path;
     this.session.selectedRelPath = selectedRelPath;
+    this.view.editor.setExternalFilePath(externalFilePathOf(info));
     this.updateTitle();
   }
 

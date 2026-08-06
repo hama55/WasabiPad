@@ -52,6 +52,7 @@ function fakeView() {
   const view = {
     editor: {
       open: vi.fn(),
+      setExternalFilePath: vi.fn(),
       focus: vi.fn(),
       goTo: vi.fn(),
       captureViewState: vi.fn(() => ({
@@ -194,6 +195,19 @@ describe("Feature: DocumentController", () => {
     expect(view.editor.open).toHaveBeenCalledWith(1, false, false, null);
   });
 
+  // Given: フォルダのDocInfoがfolder_root=C:\work、選択中path=C:\work\memo.txt
+  // When: applyDocInfoへ選択ファイルのDocInfoを渡す
+  // Then: Editorへ選択ファイルの実パスを渡す
+  it("Scenario: フォルダ内で選択したファイルをEditorへ実パスで渡す", () => {
+    const { view, controller } = fakeView();
+    controller.applyDocInfo(info({
+      path: "C:\\work\\memo.txt",
+      folder_root: "C:\\work",
+    }));
+
+    expect(view.editor.open).toHaveBeenCalledWith(42, false, false, "C:\\work\\memo.txt");
+  });
+
   // Given: info適用済みでtitle mockをclear
   // When: `onEdit(43)`→`onEdit(44)`
   // Then: lineCount=44、dirty title設定は1回だけで`● memo.txt`を含む
@@ -249,6 +263,36 @@ describe("Feature: DocumentController", () => {
 
     expect(await controller.save()).toBe(true);
     expect(view.setLoading).not.toHaveBeenCalled();
+  });
+
+  // Given: C:\work\memo.txtを表示中で、別名保存先がC:\new\memo.txt
+  // When: 別名保存を成功させる
+  // Then: EditorのExplorer対象も新しい保存先へ同期する
+  it("Scenario: 別名保存後にEditorのExplorer対象を新パスへ同期する", async () => {
+    const { view, controller } = fakeView();
+    controller.applyDocInfo(info());
+    view.pickSavePath.mockResolvedValueOnce("C:\\new\\memo.txt");
+    vi.spyOn(saveFormat, "promptSaveFormat").mockResolvedValueOnce({ encoding: "utf8", eol: "lf" });
+    vi.spyOn(api, "saveFile").mockResolvedValueOnce({ kind: "saved" });
+
+    expect(await controller.saveAs()).toBe(true);
+    expect(view.editor.setExternalFilePath).toHaveBeenLastCalledWith("C:\\new\\memo.txt");
+  });
+
+  // Given: C:\work\memo.txtを表示中
+  // When: 現在の文書がrenamed.txtへ改名される
+  // Then: EditorのExplorer対象も改名後の実パスへ同期する
+  it("Scenario: リネーム後にEditorのExplorer対象を新パスへ同期する", () => {
+    const { view, controller } = fakeView();
+    controller.applyDocInfo(info());
+    view.editor.setExternalFilePath.mockClear();
+
+    controller.applyRenamed(info({
+      path: "C:\\work\\renamed.txt",
+      folder_root: "C:\\work",
+    }), "renamed.txt");
+
+    expect(view.editor.setExternalFilePath).toHaveBeenCalledWith("C:\\work\\renamed.txt");
   });
 
   // Given: 元文書のencoding=`sjis`/eol=`lf`、別名path選択、保存形式がutf8/crlf、saveFileが失敗

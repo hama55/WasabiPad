@@ -303,7 +303,45 @@ describe("Feature: VirtualEditor", () => {
     item?.click();
     await settle();
 
-    expect(revealInExplorer).toHaveBeenCalledWith("C:\\work\\memo.txt");
+    expect(revealInExplorer).toHaveBeenCalledWith("C:\\work\\memo.txt", false);
+  });
+
+  // Given: Editorへ文書Aを表示し、次に文書B、最後に無題文書を表示する
+  // When: 各表示状態でEditor本文を右クリックする
+  // Then: Explorer対象はAからBへ更新され、無題文書ではメニューから消える
+  it("Scenario: 文書切替でExplorer対象を更新し無題文書で消去する", async () => {
+    const revealInExplorer = vi.fn();
+    const { editor, host } = mount("memo", undefined, { revealInExplorer });
+    const dropdown = document.createElement("div");
+    dropdown.id = "dropdown";
+    document.body.appendChild(dropdown);
+    const openExplorer = async () => {
+      host.querySelector<HTMLElement>(".ve-scroll")!.dispatchEvent(
+        new MouseEvent("contextmenu", { bubbles: true, clientX: 0, clientY: 0 }),
+      );
+      const item = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+        .find((element) => element.textContent === "エクスプローラで開く");
+      item?.click();
+      await settle();
+    };
+
+    editor.open(1, false, false, "C:\\work\\a.txt");
+    await settle();
+    await openExplorer();
+    expect(revealInExplorer).toHaveBeenLastCalledWith("C:\\work\\a.txt", false);
+
+    editor.open(1, false, false, "C:\\work\\b.txt");
+    await settle();
+    await openExplorer();
+    expect(revealInExplorer).toHaveBeenLastCalledWith("C:\\work\\b.txt", false);
+
+    editor.open(1, false);
+    await settle();
+    host.querySelector<HTMLElement>(".ve-scroll")!.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, clientX: 0, clientY: 0 }),
+    );
+    expect([...dropdown.querySelectorAll<HTMLElement>(".dd-label")].map((item) => item.textContent))
+      .not.toContain("エクスプローラで開く");
   });
 
   // Given: 外部ファイルパスがあり、Explorer起動がError("explorer failed")で拒否される

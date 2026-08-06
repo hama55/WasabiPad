@@ -5,7 +5,11 @@ import type { BmNode } from "./api";
 import { FavBar, type BookmarkStore } from "./favbar";
 import { MENU_ICON } from "./menu-icons";
 
-function mount(initial: BmNode[] = [], storeOverrides: Partial<BookmarkStore> = {}) {
+function mount(
+  initial: BmNode[] = [],
+  storeOverrides: Partial<BookmarkStore> = {},
+  onError: (error: unknown) => Promise<void> = async () => {},
+) {
   document.body.innerHTML = `<div id="favbar"></div><div id="dropdown" hidden></div>`;
   const saved: BmNode[][] = [];
   const store: BookmarkStore = {
@@ -21,7 +25,8 @@ function mount(initial: BmNode[] = [], storeOverrides: Partial<BookmarkStore> = 
     {
       onOpen: (path) => opened.push(path),
       onAddGroupToTabs: (items) => addedGroups.push(items),
-      onError: async () => {},
+      revealInExplorer: (path, isDir) => api.revealInExplorer(path, isDir),
+      onError,
       currentFile: () => "C:/work/memo.txt",
     },
     store
@@ -229,6 +234,29 @@ describe("Feature: FavBar", () => {
 
       expect(reveal).toHaveBeenNthCalledWith(1, "C:/memo.txt", false);
       expect(reveal).toHaveBeenNthCalledWith(2, "C:/docs", true);
+    } finally {
+      reveal.mockRestore();
+    }
+  });
+
+  // Given: お気に入りのExplorer起動が Error("explorer failed") で失敗する
+  // When: ファイルのコンテキストメニューから「エクスプローラで開く」を実行する
+  // Then: onErrorへ失敗したErrorを渡す
+  it("Scenario: お気に入りのExplorer起動失敗をエラー通知する", async () => {
+    const reveal = vi.spyOn(api, "revealInExplorer").mockRejectedValueOnce(new Error("explorer failed"));
+    const onError = vi.fn(async () => {});
+    try {
+      const { favbar } = mount([
+        { kind: "file", name: "memo.txt", path: "C:/memo.txt" },
+      ], {}, onError);
+      await favbar.init();
+      document.querySelector<HTMLButtonElement>("#favbar button")!.dispatchEvent(
+        new MouseEvent("contextmenu", { bubbles: true }),
+      );
+      [...document.querySelectorAll<HTMLElement>("#dropdown .dd-item")]
+        .find((item) => item.textContent === "エクスプローラで開く")?.click();
+
+      await vi.waitFor(() => expect(onError).toHaveBeenCalledWith(expect.any(Error)));
     } finally {
       reveal.mockRestore();
     }

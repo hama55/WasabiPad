@@ -295,6 +295,20 @@ describe("Feature: TabManager", () => {
     expect(doc.openPath).toHaveBeenLastCalledWith("C:\\work\\c.txt", false);
   });
 
+  // Given: 通常遷移の読込が Error("transition failed")、復帰読込が Error("restore failed") になる
+  // When: C:\work\c.txt への navigatePath() を呼ぶ
+  // Then: 復帰処理の失敗を握り潰さず Error("restore failed") で reject する
+  it("Scenario: タブ復帰処理自身の失敗を握り潰さない", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init(stored, null, null);
+    vi.mocked(doc.openPath)
+      .mockRejectedValueOnce(new Error("transition failed"))
+      .mockRejectedValueOnce(new Error("restore failed"));
+
+    await expect(manager.navigatePath("C:\\work\\c.txt")).rejects.toThrow("restore failed");
+  });
+
   // Given: active tab a で、次の openPath が false を返す
   // When: C:\work\c.txt への navigatePath() を呼ぶ
   // Then: 戻り値は false、path は C:\work\a.txt のまま、履歴状態は {canGoBack:false,canGoForward:false}
@@ -740,6 +754,36 @@ describe("Feature: TabManager", () => {
       await vi.waitFor(() => expect(reveal).toHaveBeenCalledTimes(2));
       expect(reveal).toHaveBeenNthCalledWith(1, "C:\\work\\memo.txt", false);
       expect(reveal).toHaveBeenNthCalledWith(2, "C:\\work\\docs", true);
+    } finally {
+      reveal.mockRestore();
+    }
+  });
+
+  // Given: Explorer起動が Error("explorer failed") で失敗するファイルタブがある
+  // When: タブのコンテキストメニューから「エクスプローラで開く」を実行する
+  // Then: onErrorへErrorと標準メッセージを渡す
+  it("Scenario: タブのExplorer起動失敗をエラー通知する", async () => {
+    const reveal = vi.spyOn(api, "revealInExplorer").mockRejectedValueOnce(new Error("explorer failed"));
+    const onError = vi.fn(async () => {});
+    try {
+      const { doc, host } = fixture();
+      document.body.appendChild(Object.assign(document.createElement("div"), { id: "dropdown" }));
+      const manager = new TabManager(host, doc, { onChange: () => {}, onError }, registeredCommandPorts);
+      await manager.init({
+        tabs: [{ id: "file", path: "C:\\work\\memo.txt", kind: "file", label: "memo.txt" }],
+        activeId: "file",
+      }, null, null);
+
+      host.querySelector<HTMLElement>(".doc-tab")!.dispatchEvent(
+        new MouseEvent("contextmenu", { bubbles: true }),
+      );
+      [...document.querySelectorAll<HTMLElement>("#dropdown .dd-item")]
+        .find((item) => item.textContent === "エクスプローラで開く")?.click();
+
+      await vi.waitFor(() => expect(onError).toHaveBeenCalledWith(
+        expect.any(Error),
+        "タブを操作できませんでした",
+      ));
     } finally {
       reveal.mockRestore();
     }

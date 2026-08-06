@@ -37,11 +37,19 @@ export function initialSession(): DocumentSession {
   };
 }
 
+export function isFolderDraftInfo(info: Pick<DocInfo, "path" | "folder_root">): boolean {
+  return info.folder_root !== null && info.folder_root === info.path;
+}
+
+export function externalFilePathOf(info: Pick<DocInfo, "path" | "folder_root">): string | null {
+  return info.path && !isFolderDraftInfo(info) ? info.path : null;
+}
+
 export function sessionFromDocInfo(
   previous: Readonly<DocumentSession>,
   info: DocInfo
 ): DocumentSession {
-  const folderDraft = info.folder_root === info.path;
+  const folderDraft = isFolderDraftInfo(info);
   return {
     displayPath: info.path,
     savePath: info.view_only || folderDraft ? null : info.path,
