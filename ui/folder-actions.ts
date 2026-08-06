@@ -10,6 +10,7 @@ import { VIEWER_FORMAT_LABELS } from "./format";
 import { isArchiveEntryUnder } from "./archive-path";
 import { viewerFormatForPath } from "./viewer-formats";
 import { createRegisteredCommandMenu, type RegisteredCommandMenuPorts } from "./registered-command-menu";
+export { isImagePath } from "./image-formats";
 
 export interface FolderActionsPorts {
   sidebar: Pick<Sidebar, "setEntries" | "selectByRelPath" | "refreshFolderEntries">;
@@ -217,11 +218,6 @@ export class FolderActions {
       await this.reportError("削除は完了しましたが一覧を更新できませんでした", e);
     }
   }
-}
-
-export function isImagePath(path: string): boolean {
-  const extension = path.slice(path.lastIndexOf(".")).toLowerCase();
-  return [".apng", ".avif", ".bmp", ".gif", ".ico", ".jpeg", ".jpg", ".png", ".svg", ".webp"].includes(extension);
 }
 
 export async function revealInExplorer(path: string, isDir: boolean) {

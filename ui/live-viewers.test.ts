@@ -70,9 +70,11 @@ describe("Feature: LiveViewers", () => {
     let resolveOpen!: (label: string) => void;
     const openViewer = vi.fn(() => new Promise<string>((resolve) => { resolveOpen = resolve; }));
     const updateViewer = vi.fn(async () => true);
+    const closeViewer = vi.fn(async () => {});
     const viewers = new LiveViewers({
       openViewer,
       updateViewer,
+      closeViewer,
       wholeRange: async () => ({ start: { line: 0, col: 0 }, end: { line: 0, col: 0 } }),
       textInRange: async () => "text",
     });
@@ -86,6 +88,7 @@ describe("Feature: LiveViewers", () => {
     await vi.advanceTimersByTimeAsync(120);
 
     expect(updateViewer).not.toHaveBeenCalled();
+    expect(closeViewer).toHaveBeenCalledWith("old-viewer");
     vi.useRealTimers();
   });
 
@@ -135,6 +138,41 @@ describe("Feature: LiveViewers", () => {
     await vi.advanceTimersByTimeAsync(120);
 
     expect(onError).toHaveBeenCalledWith(expect.any(Error));
+    vi.useRealTimers();
+  });
+
+  // Feature: Live Viewer更新の直列化
+  // Scenario: 古い更新が未完了の間に新しい選択位置で更新する
+  // Given: 最初のupdateViewerが未解決
+  // When: 選択位置を変更して最初の更新を完了する
+  // Then: 最新の選択位置を使う更新を後から1回だけ実行する
+  it("Scenario: 古いプレビュー更新の完了順で新しい選択位置を失わない", async () => {
+    vi.useFakeTimers();
+    let resolveFirst!: (exists: boolean) => void;
+    const updateViewer = vi.fn()
+      .mockImplementationOnce(() => new Promise<boolean>((resolve) => { resolveFirst = resolve; }))
+      .mockResolvedValue(true);
+    const viewers = new LiveViewers({
+      openViewer: async () => "viewer-1",
+      updateViewer,
+      wholeRange: async () => ({ start: { line: 0, col: 0 }, end: { line: 0, col: 0 } }),
+      textInRange: async () => "text",
+    });
+
+    await viewers.open("csv", null, { start: { line: 0, col: 0 }, end: { line: 0, col: 0 } });
+    viewers.scheduleRefresh();
+    await vi.advanceTimersByTimeAsync(120);
+    expect(updateViewer).toHaveBeenCalledOnce();
+
+    viewers.setSelection({ start: { line: 0, col: 4 }, end: { line: 0, col: 4 } });
+    resolveFirst(true);
+    await vi.advanceTimersByTimeAsync(120);
+
+    expect(updateViewer).toHaveBeenCalledTimes(2);
+    expect(updateViewer.mock.calls[1][2]).toEqual({
+      start: { line: 0, col: 4 },
+      end: { line: 0, col: 4 },
+    });
     vi.useRealTimers();
   });
 });

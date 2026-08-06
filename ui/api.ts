@@ -230,3 +230,5 @@ export const takeViewerPayload = (label: string) =>
   invoke<ViewerPayload>(IPC_COMMANDS.takeViewerPayload, { label });
 export const updateViewer = (label: string, text: string, selection: ViewerSelection | null) =>
   invoke<boolean>(IPC_COMMANDS.updateViewer, { label, text, selection });
+export const closeViewer = (label: string) =>
+  invoke<void>(IPC_COMMANDS.closeViewer, { label });

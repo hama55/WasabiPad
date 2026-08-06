@@ -65,8 +65,16 @@ export class LineCache {
 
   // 編集で fromLine 以降の行番号がずれるため、その位置に触れるチャンクを捨てる
   invalidateFrom(fromLine: number) {
+    const invalidatedPending: number[] = [];
     for (const chunk of [...this.chunks.keys()]) {
       if (chunk * CHUNK + CHUNK > fromLine) this.chunks.delete(chunk);
+    }
+    for (const chunk of this.pending.keys()) {
+      if (chunk * CHUNK + CHUNK > fromLine) invalidatedPending.push(chunk);
+    }
+    if (invalidatedPending.length) {
+      this.generation++;
+      for (const chunk of invalidatedPending) this.pending.delete(chunk);
     }
   }
 

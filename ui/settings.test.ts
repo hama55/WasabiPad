@@ -135,4 +135,23 @@ describe("Feature: settings", () => {
 
     await expect(flushSettings()).rejects.toBeUndefined();
   });
+
+  // Feature: 設定保存のflush
+  // Scenario: flush中に新しい設定保存が追加される
+  // Given: 最初の保存が未解決
+  // When: flushSettingsを開始してから別の設定を変更する
+  // Then: 後から追加された保存も完了してからflushする
+  it("Scenario: flush中に追加された設定保存も待つ", async () => {
+    let releaseFirst!: () => void;
+    updateSettingMock.mockImplementationOnce(() => new Promise<void>((resolve) => { releaseFirst = resolve; }));
+
+    setSetting("indentSize", 4);
+    const flushing = flushSettings();
+    await vi.waitFor(() => expect(updateSettingMock).toHaveBeenCalledOnce());
+    setSetting("fontSize", 16);
+    releaseFirst();
+
+    await flushing;
+    expect(updateSettingMock).toHaveBeenCalledTimes(2);
+  });
 });

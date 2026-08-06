@@ -263,6 +263,7 @@ const editor: VirtualEditor = new VirtualEditor(editorHost, {
     }
   },
   updateViewer: api.updateViewer,
+  closeViewer: api.closeViewer,
   saveImage: async (bytes, mimeType) => {
     return withArchivePassword(
       archiveRelOf(doc.current.selectedRelPath),

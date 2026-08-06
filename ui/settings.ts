@@ -104,7 +104,11 @@ export function setSetting<K extends keyof Settings>(key: K, value: Settings[K])
 }
 
 export async function flushSettings(): Promise<void> {
-  await pendingSave;
+  for (;;) {
+    const current = pendingSave;
+    await current;
+    if (current === pendingSave) break;
+  }
   const firstError = saveErrors.values().next();
   if (!firstError.done) throw firstError.value;
 }

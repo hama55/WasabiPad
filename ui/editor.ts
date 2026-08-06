@@ -56,6 +56,7 @@ export interface EditorPorts {
   onError: (message: string, error: unknown) => Promise<void>;
   openViewer: (format: api.ViewerFormat, text: string, selection: api.ViewerSelection | null) => Promise<string | null>;
   updateViewer: (label: string, text: string, selection: api.ViewerSelection | null) => Promise<boolean>;
+  closeViewer: (label: string) => Promise<void>;
   saveImage?: (bytes: number[], mimeType: string) => Promise<string>;
 }
 
@@ -139,6 +140,7 @@ export class VirtualEditor {
     this.liveViewers = new LiveViewers({
       openViewer: ports.openViewer,
       updateViewer: ports.updateViewer,
+      closeViewer: ports.closeViewer,
       wholeRange: async () => {
         const last = this.lineCount - 1;
         return { start: { line: 0, col: 0 }, end: { line: last, col: await this.lineCache.lineLength(last) } };

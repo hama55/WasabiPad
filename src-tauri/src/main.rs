@@ -428,6 +428,15 @@ fn update_viewer(
     viewer::update_viewer(label, text, selection, app, state)
 }
 
+#[tauri::command]
+fn close_viewer(
+    label: String,
+    app: AppHandle,
+    state: tauri::State<'_, ViewerStore>,
+) -> Result<(), String> {
+    viewer::close_viewer(label, app, state)
+}
+
 fn main() {
     let initial_request = match parse_window_request(std::env::args().skip(1)) {
         Ok(request) => request,
@@ -503,6 +512,7 @@ fn main() {
             open_viewer,
             take_viewer_payload,
             update_viewer,
+            close_viewer,
         ])
         .build(tauri::generate_context!())
     {

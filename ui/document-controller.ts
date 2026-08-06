@@ -226,13 +226,14 @@ export class DocumentController {
 
   async newFile(confirm = true) {
     if (confirm && !(await this.confirmDiscard())) return;
-    ++this.loadRequest;
+    const request = ++this.loadRequest;
     try {
       await this.services.api.newDoc();
     } catch (error) {
-      await this.reportError("新規文書を作成できませんでした", error);
+      if (request === this.loadRequest) await this.reportError("新規文書を作成できませんでした", error);
       return;
     }
+    if (request !== this.loadRequest) return;
     this.session = initialSession();
     this.view.statusbar.setFormat(this.session);
     this.view.statusbar.setByteSize(null);
@@ -405,36 +406,29 @@ export class DocumentController {
     return this.view.editor.restoreViewState(state);
   }
 
-  async promptMemoSpec(): Promise<MemoSpec | null> {
-    const result = await this.services.promptFields("新規メモ作成", [
+  private memoFields() {
+    return [
       {
         label: "ファイル名",
         value: "memo",
-        validate: (value) => {
-          if (!value.trim()) return "名前を入力してください";
-          return null;
-        },
+        validate: (value: string) => value.trim() ? null : "名前を入力してください",
       },
       { label: "拡張子", value: SAVE_EXTENSIONS[0].extension, options: [
         ...SAVE_EXTENSIONS.map(({ extension }) => ({ label: `.${extension}`, value: extension })),
         { label: "拡張子なし", value: "" },
       ] },
-    ]);
+    ];
+  }
+
+  async promptMemoSpec(): Promise<MemoSpec | null> {
+    const result = await this.services.promptFields("新規メモ作成", this.memoFields());
     const stem = result?.[0].trim();
     return stem ? { stem, extension: result![1] } : null;
   }
 
   private async promptNewMemoSave(): Promise<{ memo: MemoSpec; format: SaveFormat } | null> {
     const result = await this.services.promptFields("新規メモ保存", [
-      {
-        label: "ファイル名",
-        value: "memo",
-        validate: (value) => value.trim() ? null : "名前を入力してください",
-      },
-      { label: "拡張子", value: SAVE_EXTENSIONS[0].extension, options: [
-        ...SAVE_EXTENSIONS.map(({ extension }) => ({ label: `.${extension}`, value: extension })),
-        { label: "拡張子なし", value: "" },
-      ] },
+      ...this.memoFields(),
       ...this.services.saveFormatFields(this.session),
     ]);
     const stem = result?.[0].trim();

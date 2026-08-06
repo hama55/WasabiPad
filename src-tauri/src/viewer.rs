@@ -116,3 +116,19 @@ pub(crate) fn update_viewer(
         .map_err(|e| e.to_string())?;
     Ok(true)
 }
+
+pub(crate) fn close_viewer(
+    label: String,
+    app: AppHandle,
+    state: tauri::State<'_, ViewerStore>,
+) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(&label) {
+        window.close().map_err(|error| error.to_string())?;
+    }
+    state
+        .0
+        .lock()
+        .map_err(|_| "ビューの終了処理に失敗しました".to_string())?
+        .remove(&label);
+    Ok(())
+}

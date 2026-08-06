@@ -52,6 +52,7 @@ function mount(
     onError: async (message, error) => { events.errors.push({ message, error }); },
     openViewer: async () => null,
     updateViewer: async () => true,
+    closeViewer: async () => {},
     saveImage,
   };
   const editor = new VirtualEditor(host, ports, undefined, doc.client);

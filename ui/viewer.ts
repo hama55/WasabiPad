@@ -24,6 +24,7 @@ import { csvColumnAt, decodeDelimiter, isSingleCsvCellSelection } from "./csv-vi
 import { resolveArchiveAssetEntry, resolveAssetPath } from "./viewer-assets";
 import { normalizeTheme, THEME_STORAGE_KEY } from "./theme";
 import { showError } from "./dialogs";
+import { imageMimeType } from "./image-formats";
 import {
   markdownBlockSelected,
   markdownHighlightTargets,
@@ -195,19 +196,6 @@ function revokeArchiveAssetUrls() {
   archiveAssetUrls = [];
 }
 
-function archiveAssetMimeType(src: string): string {
-  const extension = src.split(/[?#]/, 1)[0].split(".").pop()?.toLowerCase();
-  return ({
-    png: "image/png",
-    jpg: "image/jpeg",
-    jpeg: "image/jpeg",
-    gif: "image/gif",
-    webp: "image/webp",
-    bmp: "image/bmp",
-    svg: "image/svg+xml",
-  } as Record<string, string>)[extension ?? ""] ?? "application/octet-stream";
-}
-
 async function loadArchiveImages(
   article: HTMLElement,
   generation: number,
@@ -223,7 +211,7 @@ async function loadArchiveImages(
         try {
           const bytes = await readArchiveAsset(archivePath, entry);
           if (generation !== renderGeneration) return;
-          const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: archiveAssetMimeType(src) }));
+          const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: imageMimeType(src) }));
           archiveAssetUrls.push(url);
           image.src = url;
           await waitForImageLayout(image);

@@ -97,4 +97,26 @@ describe("Feature: LineCache", () => {
 
     expect(cache.peek(0)).toBe("new");
   });
+
+  // Feature: 編集中の行キャッシュ無効化
+  // Scenario: 編集対象チャンクの取得中に再取得を開始する
+  // Given: 古いlines取得が未解決
+  // When: invalidateFrom後に同じチャンクをfetchする
+  // Then: 古い取得結果で新しいキャッシュを上書きしない
+  it("Scenario: 無効化中のチャンク取得結果を新しい取得へ混入させない", async () => {
+    const doc = fakeDocument();
+    let resolveOld!: (lines: string[]) => void;
+    const oldLines = new Promise<string[]>((resolve) => { resolveOld = resolve; });
+    let call = 0;
+    doc.client.lines = async () => call++ === 0 ? oldLines : ["new"];
+    const cache = new LineCache(doc.client);
+
+    const oldFetch = cache.fetch(0);
+    cache.invalidateFrom(0);
+    await cache.fetch(0);
+    resolveOld(["old"]);
+    await oldFetch;
+
+    expect(cache.peek(0)).toBe("new");
+  });
 });

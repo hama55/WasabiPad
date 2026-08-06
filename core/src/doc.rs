@@ -1727,12 +1727,15 @@ fn image_extension(mime_type: &str) -> Option<&'static str> {
         .to_ascii_lowercase()
         .as_str()
     {
+        "image/apng" => Some("apng"),
+        "image/avif" => Some("avif"),
         "image/png" => Some("png"),
         "image/jpeg" => Some("jpg"),
         "image/gif" => Some("gif"),
         "image/webp" => Some("webp"),
         "image/bmp" => Some("bmp"),
         "image/svg+xml" => Some("svg"),
+        "image/x-icon" | "image/vnd.microsoft.icon" => Some("ico"),
         _ => None,
     }
 }
@@ -1912,6 +1915,19 @@ fn remove_empty_dir(dir: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Feature: 貼り付け画像の形式判定
+    // Scenario: UIが扱う画像MIMEを文書保存側でも拡張子へ変換する
+    // Given: APNG、AVIF、ICO、非対応形式のMIME
+    // When: image_extensionを呼ぶ
+    // Then: 対応形式だけ対応する拡張子を返し、非対応形式はNoneを返す
+    #[test]
+    fn image_mime_types_are_mapped_to_extensions() {
+        assert_eq!(image_extension("image/apng"), Some("apng"));
+        assert_eq!(image_extension("image/avif"), Some("avif"));
+        assert_eq!(image_extension("image/x-icon; charset=binary"), Some("ico"));
+        assert_eq!(image_extension("image/tiff"), None);
+    }
 
     struct FakeArchivePort;
 

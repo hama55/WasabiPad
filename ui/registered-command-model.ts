@@ -17,6 +17,10 @@ export interface RegisteredCommandInput {
   valueKind?: unknown;
 }
 
+export function commandValueKind(command: Pick<RegisteredCommand, "valueKind">): CommandValueKind {
+  return command.valueKind ?? DEFAULT_COMMAND_VALUE_KIND;
+}
+
 export function normalizeExtension(extension: string): string {
   const value = extension.trim().toLowerCase();
   if (!value) return "";

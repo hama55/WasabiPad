@@ -120,6 +120,47 @@ describe("Feature: DocumentController", () => {
     expect(controller.current.savePath).toBe("C:\\work\\second.txt");
   });
 
+  // Feature: 非同期文書操作の世代管理
+  // Scenario: 新規文書作成中に別の文書を開く
+  // Given: newDocとopenPathの結果が未解決
+  // When: newFileを開始してからopenPathを完了する
+  // Then: 古いnewFileの結果で現在の文書を上書きしない
+  it("Scenario: 新規文書作成中に開いた文書を古い結果で上書きしない", async () => {
+    let resolveNewDoc!: () => void;
+    const newDoc = vi.fn(() => new Promise<void>((resolve) => { resolveNewDoc = resolve; }));
+    const openPath = vi.fn().mockResolvedValue(info({ path: "C:\\work\\opened.txt" }));
+    const { view } = fakeView();
+    const raceController = new DocumentController(view, {
+      ...services(),
+      api: { ...api, newDoc, openPath },
+    });
+
+    const creating = raceController.newFile(false);
+    const opening = raceController.openPath("C:\\work\\opened.txt", false);
+    expect(await opening).toBe(true);
+    resolveNewDoc();
+    await creating;
+
+    expect(raceController.current.savePath).toBe("C:\\work\\opened.txt");
+  });
+
+  // Feature: 新規メモ入力
+  // Scenario: 新規メモの名前と拡張子を入力する
+  // Given: promptFieldsが名前と拡張子を返す
+  // When: promptMemoSpecを呼ぶ
+  // Then: 名前をtrimしてMemoSpecへ変換し、拡張子候補を共有する
+  it("Scenario: 新規メモの入力項目を共通定義から組み立てる", async () => {
+    const { view } = fakeView();
+    const promptFieldsMock = vi.fn(async () => [" memo ", "md"]);
+    const controller = new DocumentController(view, { ...services(), promptFields: promptFieldsMock });
+
+    await expect(controller.promptMemoSpec()).resolves.toEqual({ stem: "memo", extension: "md" });
+    expect(promptFieldsMock).toHaveBeenCalledWith("新規メモ作成", expect.arrayContaining([
+      expect.objectContaining({ label: "ファイル名", value: "memo" }),
+      expect.objectContaining({ label: "拡張子", value: "txt" }),
+    ]));
+  });
+
   // Given: `info()`がpath=`C:\\work\\memo.txt`、enc=`sjis`、line_count=42、byte_len=1234
   // When: `applyDocInfo(info())`
   // Then: currentとstatusbar/addressbar/editor/titleへ各値が反映され、外部変更bannerが隠れる

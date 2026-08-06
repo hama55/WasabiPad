@@ -13,6 +13,7 @@ export interface LiveViewerPorts {
   openViewer: (format: ViewerFormat, text: string, selection: ViewerSelection | null) => Promise<string | null>;
   // false は backend がビューの消滅を確認した場合だけ返す。
   updateViewer: (label: string, text: string, selection: ViewerSelection | null) => Promise<boolean>;
+  closeViewer?: (label: string) => Promise<void>;
   // range が null のときに映すべき全文の範囲
   wholeRange: () => Promise<{ start: Pos; end: Pos }>;
   textInRange: (start: Pos, end: Pos) => Promise<string>;
@@ -23,12 +24,18 @@ export class LiveViewers {
   private viewers = new Map<string, { format: ViewerFormat; range: TrackedRange | null; selection: ViewerSelection | null }>();
   private timer: number | undefined;
   private generation = 0;
+  private refreshVersion = 0;
+  private refreshPromise: Promise<void> | undefined;
+  private refreshRequested = false;
   private errorReported = false;
 
   constructor(private ports: LiveViewerPorts) {}
 
   clear() {
     this.generation++;
+    this.refreshVersion++;
+    this.refreshRequested = false;
+    this.refreshPromise = undefined;
     this.viewers.clear();
     window.clearTimeout(this.timer);
     this.timer = undefined;
@@ -45,18 +52,29 @@ export class LiveViewers {
     const { start, end } = range ?? (await this.ports.wholeRange());
     const viewerSelection = relativeSelection(range, selection);
     const label = await this.ports.openViewer(format, await this.ports.textInRange(start, end), viewerSelection);
-    if (label && generation === this.generation) this.viewers.set(label, { format, range, selection: viewerSelection });
+    if (!label) return;
+    if (generation === this.generation) {
+      this.viewers.set(label, { format, range, selection: viewerSelection });
+      return;
+    }
+    try {
+      await this.ports.closeViewer?.(label);
+    } catch (error) {
+      this.reportUnexpectedRefreshError(error);
+    }
   }
 
   // 編集を各ビューの追跡範囲へ反映する (範囲外の編集なら位置だけずれる)
   applyEdits(edits: EditManyItem[]) {
     if (!edits.length) return;
+    this.refreshVersion++;
     for (const viewer of this.viewers.values()) {
       if (viewer.range) viewer.range = transformTrackedRange(viewer.range, edits);
     }
   }
 
   setSelection(selection: TrackedRange) {
+    this.refreshVersion++;
     for (const viewer of this.viewers.values()) {
       viewer.selection = relativeSelection(viewer.range, selection);
     }
@@ -66,13 +84,26 @@ export class LiveViewers {
   scheduleRefresh() {
     if (!this.viewers.size) return;
     window.clearTimeout(this.timer);
+    if (this.refreshPromise) {
+      this.refreshRequested = true;
+      return;
+    }
     const generation = this.generation;
     this.timer = window.setTimeout(() => {
       this.timer = undefined;
-      void this.refresh(generation).catch((error) => {
+      const refreshPromise = this.refresh(generation, this.refreshVersion);
+      this.refreshPromise = refreshPromise;
+      void refreshPromise.catch((error) => {
         // 個別ビューの更新失敗は refresh 内で隔離する。ここは予期しない
         // コレクション/実装エラーが未処理Promiseになるのを防ぐ境界。
         this.reportUnexpectedRefreshError(error);
+      }).finally(() => {
+        if (this.refreshPromise !== refreshPromise) return;
+        this.refreshPromise = undefined;
+        if (this.refreshRequested) {
+          this.refreshRequested = false;
+          if (generation === this.generation && this.viewers.size) this.scheduleRefresh();
+        }
       });
     }, DEBOUNCE_MS);
   }
@@ -87,18 +118,19 @@ export class LiveViewers {
       .catch((reportError) => console.error("プレビュー更新エラーを表示できませんでした", reportError));
   }
 
-  private async refresh(generation: number) {
+  private async refresh(generation: number, version: number) {
     for (const [label, viewer] of [...this.viewers]) {
-      if (generation !== this.generation) return;
+      if (generation !== this.generation || version !== this.refreshVersion) return;
       try {
         const { start, end } = viewer.range ?? (await this.ports.wholeRange());
         const text = await this.ports.textInRange(start, end);
-        if (generation !== this.generation) return;
+        if (generation !== this.generation || version !== this.refreshVersion) return;
         const exists = await this.ports.updateViewer(label, text, viewer.selection);
-        if (generation !== this.generation) return;
+        if (generation !== this.generation || version !== this.refreshVersion) return;
         this.errorReported = false;
         if (!exists) this.viewers.delete(label);
       } catch (error) {
+        if (generation !== this.generation || version !== this.refreshVersion) return;
         // 一時的なIPC/文書読込み失敗で追随を永久停止しない。次の編集で再試行する。
         if (this.errorReported) continue;
         this.errorReported = true;
