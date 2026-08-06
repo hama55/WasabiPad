@@ -457,6 +457,31 @@ describe("Feature: VirtualEditor", () => {
     expect(scroll.scrollTop).toBe(80);
   });
 
+  // Feature: 編集中の垂直スクロール保持
+  // Scenario: 行途中の表示位置で文字を編集してもスクロール位置を変えない
+  // Given: 40行のメモを表示し、行頭に揃っていない位置を表示している
+  // When: 表示中の行へ文字を入力する
+  // Then: 編集前のピクセル単位の垂直スクロール位置を保持する
+  it("行途中の表示位置で編集しても垂直スクロール位置を保持する", async () => {
+    const { editor, host, type } = mount(Array.from({ length: 40 }, (_, i) => `line ${i}`).join("\n"));
+    const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
+    Object.defineProperty(scroll, "clientHeight", { configurable: true, value: 100 });
+    editor.open(40, false);
+    await editor.restoreViewState({
+      anchor: { line: 4, col: 1 },
+      caret: { line: 4, col: 1 },
+      topLine: 2,
+      wrapIntraLinePx: 0,
+      scrollLeft: 0,
+    });
+    scroll.scrollTop = 47;
+
+    type("X");
+    await settle();
+
+    expect(scroll.scrollTop).toBe(47);
+  });
+
   // Given: 40行の文書、clientHeight=100、編集モードで開いている
   // When: 20行目の0列目から4列目を selectRange する
   // Then: topLine が18、scrollTop が360になる

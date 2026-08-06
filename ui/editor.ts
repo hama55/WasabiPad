@@ -1148,9 +1148,13 @@ export class VirtualEditor {
   }
 
   private applyResult(r: api.EditResult, fromLine: number, edits: api.EditManyItem[] = []) {
-    const oldTopLine = this.wrap || this.metrics.scaleMode ? this.topLineF : this.pxToLine(this.scroll.scrollTop);
+    const oldScrollTop = this.scroll.scrollTop;
+    const oldTopLine = this.wrap || this.metrics.scaleMode ? this.topLineF : this.pxToLine(oldScrollTop);
     const oldIntraLinePx = this.wrapIntraLinePx;
-    const wasAtBottom = oldTopLine >= this.maxTopLine();
+    const oldMaxScroll = Math.max(0, this.metrics.scrollHeight - this.scroll.clientHeight);
+    const wasAtBottom = this.wrap || this.metrics.scaleMode
+      ? oldTopLine >= this.maxTopLine()
+      : oldScrollTop >= oldMaxScroll;
     const oldLineCount = this.lineCount;
     this.lineCount = Math.max(1, r.line_count);
     this.resetWrapHeights();
@@ -1159,7 +1163,12 @@ export class VirtualEditor {
     // それ以外は同じ先頭行を維持する。
     const nextTopLine = wasAtBottom ? this.maxTopLine() : oldTopLine;
     if (this.wrap) this.setWrapAnchor(nextTopLine, nextTopLine === oldTopLine ? oldIntraLinePx : 0);
-    else this.setTopLine(nextTopLine);
+    else if (this.metrics.scaleMode || wasAtBottom) this.setTopLine(nextTopLine);
+    else {
+      // 通常モードでは行途中のスクロール位置を編集前のまま保持する。
+      this.scroll.scrollTop = Math.min(oldScrollTop, Math.max(0, this.metrics.scrollHeight - this.scroll.clientHeight));
+      this.topLineF = this.pxToLine(this.scroll.scrollTop);
+    }
     const cached = oldLineCount === this.lineCount
       && edits.length === 1
       && this.lineCache.applySingleLineEdit(edits[0].start, edits[0].end, edits[0].text);
