@@ -9,7 +9,9 @@ import {
   createRegisteredCommandMenu,
   type RegisteredCommandMenuPorts,
 } from "./registered-command-menu";
-import { VIEWER_FORMAT_LABELS } from "./format";
+import { MENU_ICON } from "./menu-icons";
+import { MENU_LABELS } from "./menu-labels";
+import { viewerFormatIcon, VIEWER_FORMAT_LABELS } from "./format";
 import { LineCache } from "./line-cache";
 import { LiveViewers } from "./live-viewers";
 import { lineNumberGroups } from "./line-number";
@@ -49,10 +51,9 @@ export interface EditorPorts {
   onDocChange: (lineCount: number) => void;
   onCursor: (line: number, col: number) => void;
   onFontChange: (fontFamily: string, fontSize: number) => void;
-  getExternalFilePath: () => string | null;
-  openExternally: () => void;
+  openExternally: (path: string) => void;
   registeredCommandPorts: RegisteredCommandMenuPorts;
-  revealInExplorer?: () => void;
+  revealInExplorer?: (path: string) => void | Promise<unknown>;
   onError: (message: string, error: unknown) => Promise<void>;
   openViewer: (format: api.ViewerFormat, text: string, selection: api.ViewerSelection | null) => Promise<string | null>;
   updateViewer: (label: string, text: string, selection: api.ViewerSelection | null) => Promise<boolean>;
@@ -115,10 +116,10 @@ export class VirtualEditor {
   private onDocChange: (lineCount: number) => void;
   private onCursor: (line: number, col: number) => void;
   private onFontChange: (fontFamily: string, fontSize: number) => void;
-  private getExternalFilePath: () => string | null;
-  private openExternally: () => void;
+  private externalFilePath: string | null = null;
+  private openExternally: (path: string) => void;
   private registeredCommandPorts: RegisteredCommandMenuPorts;
-  private revealInExplorer?: () => void;
+  private revealInExplorer?: (path: string) => void | Promise<unknown>;
   private onError: (message: string, error: unknown) => Promise<void>;
   private onPasteImage?: (bytes: number[], mimeType: string) => Promise<string>;
   private liveViewers: LiveViewers;
@@ -151,7 +152,6 @@ export class VirtualEditor {
     this.onDocChange = ports.onDocChange;
     this.onCursor = ports.onCursor;
     this.onFontChange = ports.onFontChange;
-    this.getExternalFilePath = ports.getExternalFilePath;
     this.openExternally = ports.openExternally;
     this.registeredCommandPorts = ports.registeredCommandPorts;
     this.revealInExplorer = ports.revealInExplorer;
@@ -278,7 +278,8 @@ export class VirtualEditor {
 
   // ---- 文書ロード ----
   // keepViewers: 同じファイルを読み直しただけの場合。開いているビューを閉じずに新内容へ差し替える
-  open(lineCount: number, readOnly: boolean, keepViewers = false) {
+  open(lineCount: number, readOnly: boolean, keepViewers = false, externalFilePath: string | null = null) {
+    this.externalFilePath = externalFilePath;
     this.documentGeneration++;
     this.findGen++;
     this.lastFindMatch = null;
@@ -1766,30 +1767,53 @@ export class VirtualEditor {
     if (pos && !this.sel.contains(pos)) this.moveTo(pos, false);
     this.focus();
     const items: MenuItem[] = [];
+    const commandPath = this.externalFilePath;
+    if (commandPath && this.revealInExplorer) {
+      items.push({
+        label: MENU_LABELS.explorer,
+        iconClass: MENU_ICON.explorer,
+        action: () => this.dispatch("エクスプローラで開けませんでした", () => this.revealInExplorer?.(commandPath)),
+      });
+    }
     if (!this.readOnly) {
-      items.push({ label: "元に戻す", key: "Ctrl+Z", action: () =>
+      items.push({ label: "元に戻す", iconClass: MENU_ICON.undo, key: "Ctrl+Z", action: () =>
         this.dispatch("編集を反映できませんでした", () => this.doUndo(false)) });
-      items.push({ label: "やり直し", key: "Ctrl+Y", action: () =>
+      items.push({ label: "やり直し", iconClass: MENU_ICON.redo, key: "Ctrl+Y", action: () =>
         this.dispatch("編集を反映できませんでした", () => this.doUndo(true)) });
-      items.push({ label: "切り取り", key: "Ctrl+X", action: () =>
+      items.push({ label: "切り取り", iconClass: MENU_ICON.cut, key: "Ctrl+X", action: () =>
         this.dispatch("切り取りできませんでした", () => this.copy(true)), sep: true });
     }
-    items.push({ label: "コピー", key: "Ctrl+C", action: () =>
+    items.push({ label: "コピー", iconClass: MENU_ICON.copy, key: "Ctrl+C", action: () =>
       this.dispatch("クリップボードへコピーできませんでした", () => this.copy(false)), sep: this.readOnly });
     if (!this.readOnly) {
-      items.push({ label: "貼り付け", key: "Ctrl+V", action: () =>
+      items.push({ label: "貼り付け", iconClass: MENU_ICON.paste, key: "Ctrl+V", action: () =>
         this.dispatch("クリップボードから貼り付けできませんでした", () => this.paste()) });
-      items.push({ label: "削除", action: () => {
+      items.push({ label: MENU_LABELS.delete, iconClass: MENU_ICON.delete, action: () => {
         if (this.sel.hasSel()) this.dispatch("編集を反映できませんでした", () => this.deleteSel());
       } });
-      if (this.sel.hasSel()) items.push({
+    }
+    items.push({
+      label: "すべて選択",
+      iconClass: MENU_ICON.selectAll,
+      key: "Ctrl+A",
+      action: () => this.dispatch("全選択できませんでした", () => this.selectAll()),
+    });
+    let customStarted = false;
+    const addCustomItem = (item: MenuItem) => {
+      items.push(customStarted ? item : { ...item, sep: true });
+      customStarted = true;
+    };
+    if (!this.readOnly) {
+      if (this.sel.hasSel()) addCustomItem({
         label: "選択範囲を登録文字列に追加",
+        iconClass: MENU_ICON.registeredString,
         action: () => this.dispatch("登録文字列に追加できませんでした", () => this.addSelectionAsRegisteredString()),
       });
       const registered = loadRegisteredStrings();
       if (registered.length) {
-        items.push({
+        addCustomItem({
           label: "登録文字列",
+          iconClass: MENU_ICON.registeredString,
           sub: registered.map((text) => ({
             label: registeredStringLabel(text),
             action: () => this.dispatch("登録文字列を挿入できませんでした", () => this.insertText(text)),
@@ -1805,10 +1829,9 @@ export class VirtualEditor {
         });
       }
     }
-    const commandPath = this.getExternalFilePath();
     if (this.sel.hasSel() && commandPath) {
       const [start, end] = this.sel.norm();
-      items.push({
+      addCustomItem({
         ...createRegisteredCommandMenu({
           path: commandPath,
           value: () => this.lineCache.textInRange(start, end),
@@ -1817,26 +1840,24 @@ export class VirtualEditor {
           ...this.registeredCommandPorts,
           run: (title, operation) => this.dispatch(title, operation),
         }),
-        sep: true,
       });
     }
-    items.push({
-      label: "すべて選択",
-      key: "Ctrl+A",
-      action: () => this.dispatch("全選択できませんでした", () => this.selectAll()),
-      sep: true,
-    });
     const viewerFormats = Object.entries(VIEWER_FORMAT_LABELS) as [api.ViewerFormat, string][];
     items.push(
       ...viewerFormats.map(([format, label], index) => ({
         label,
+        iconClass: viewerFormatIcon(format),
         action: () => this.dispatch("ビューを開けませんでした", () => this.openTextViewer(format)),
         sep: index === 0,
       })),
     );
     if (commandPath) {
-      items.push({ label: "アプリで開く", action: this.openExternally, sep: true });
-      if (this.revealInExplorer) items.push({ label: "エクスプローラで開く", action: this.revealInExplorer });
+      items.push({
+        label: MENU_LABELS.external,
+        iconClass: MENU_ICON.external,
+        action: () => this.openExternally(commandPath),
+        sep: true,
+      });
     }
     showMenu(e.clientX, e.clientY, items);
   }

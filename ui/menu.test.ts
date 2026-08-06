@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { showMenu } from "./menu";
+import { MENU_ICON } from "./menu-icons";
 
 describe("Feature: menu", () => {
   beforeEach(() => {
@@ -32,6 +33,20 @@ describe("Feature: menu", () => {
     expect(action).toHaveBeenCalledOnce();
     expect(dropdown.hidden).toBe(true);
     expect(dropdown.childElementCount).toBe(0);
+  });
+
+  // Given: Explorerアイコンを指定したメニュー項目がある
+  // When: 共有メニューを表示する
+  // Then: アイコン要素がラベルの先頭に装飾用として生成される
+  it("Scenario: MenuItemのアイコンを装飾要素として描画する", () => {
+    showMenu(0, 0, [{ label: "エクスプローラで開く", iconClass: MENU_ICON.explorer, action: vi.fn() }]);
+
+    const label = document.querySelector<HTMLElement>(".dd-label")!;
+    const icon = label.firstElementChild as HTMLElement;
+    expect(icon.classList.contains("menu-icon")).toBe(true);
+    expect(icon.classList.contains(MENU_ICON.explorer)).toBe(true);
+    expect(icon.getAttribute("aria-hidden")).toBe("true");
+    expect(label.textContent).toBe("エクスプローラで開く");
   });
 
   // Given: A→A-1、B→B-1の深いsubmenuがある

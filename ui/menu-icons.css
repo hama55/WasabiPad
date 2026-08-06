@@ -1,0 +1,91 @@
+.menu-icon {
+  position: relative;
+  display: inline-block;
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  color: currentColor;
+  font: 14px/16px "Segoe UI Symbol", "Segoe UI", sans-serif;
+  text-align: center;
+}
+
+.menu-icon::before,
+.menu-icon::after {
+  position: absolute;
+  display: block;
+  box-sizing: border-box;
+}
+
+.menu-icon-explorer::before {
+  content: "";
+  left: 1px;
+  top: 4px;
+  width: 13px;
+  height: 9px;
+  border: 1.5px solid currentColor;
+  border-radius: 1px;
+}
+.menu-icon-explorer::after { content: "↗"; right: -2px; bottom: -4px; font-size: 12px; line-height: 12px; }
+
+.menu-icon-undo::before { content: "↶"; }
+.menu-icon-redo::before { content: "↷"; }
+.menu-icon-cut::before { content: "✂"; }
+.menu-icon-copy::before { content: "⧉"; }
+.menu-icon-paste::before { content: "▣"; }
+.menu-icon-registered-string::before { content: "❝"; }
+.menu-icon-select-all::before { content: "☷"; }
+.menu-icon-csv::before { content: "▤"; }
+.menu-icon-markdown::before { content: "▧"; }
+.menu-icon-external::before { content: "↗"; }
+.menu-icon-command::before { content: ">_"; font-family: Consolas, monospace; font-size: 11px; }
+.menu-icon-address::before { content: "⌖"; }
+.menu-icon-rename::before { content: "✎"; }
+.menu-icon-favorite::before { content: "☆"; }
+.menu-icon-more::before { content: "…"; }
+.menu-icon-add-group-tabs::before { content: "▱"; }
+.menu-icon-add-group-tabs::after { content: "+"; right: -1px; bottom: -3px; font-size: 11px; line-height: 11px; }
+.menu-icon-add-path::before { content: "↗"; }
+.menu-icon-add-path::after { content: "+"; right: -1px; bottom: -3px; font-size: 11px; line-height: 11px; }
+.menu-icon-add-group::before { content: "⊕"; }
+.menu-icon-move::before { content: "⇅"; }
+.menu-icon-close::before { content: "×"; font-size: 17px; }
+.menu-icon-close-others::before { content: "×"; font-size: 17px; }
+.menu-icon-close-others::after { content: "≡"; right: -2px; bottom: -3px; font-size: 10px; line-height: 10px; }
+.menu-icon-close-right::before { content: "×"; font-size: 17px; }
+.menu-icon-close-right::after { content: "→"; right: -3px; bottom: -3px; font-size: 10px; line-height: 10px; }
+.menu-icon-close-saved::before { content: "×"; font-size: 17px; }
+.menu-icon-close-saved::after { content: "▣"; right: -2px; bottom: -3px; font-size: 9px; line-height: 9px; }
+.menu-icon-chart::before { content: "▥"; }
+
+.menu-icon-new-tab::before { content: "▱"; font-size: 15px; }
+.menu-icon-new-window::before { content: "□"; font-size: 16px; }
+.menu-icon-new-memo::before { content: "▤"; font-size: 15px; }
+.menu-icon-new-tab::after,
+.menu-icon-new-window::after,
+.menu-icon-new-memo::after {
+  content: "+";
+  right: -1px;
+  bottom: -3px;
+  font-size: 11px;
+  line-height: 11px;
+}
+
+.menu-icon-delete::before {
+  content: "";
+  left: 4px;
+  top: 4px;
+  width: 8px;
+  height: 10px;
+  border: 1.5px solid currentColor;
+  border-top: 0;
+  border-radius: 0 0 2px 2px;
+}
+.menu-icon-delete::after {
+  content: "";
+  left: 3px;
+  top: 2px;
+  width: 10px;
+  height: 2px;
+  border-top: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+}

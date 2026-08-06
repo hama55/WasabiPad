@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import * as api from "./api";
 import type { BmNode } from "./api";
 import { FavBar, type BookmarkStore } from "./favbar";
+import { MENU_ICON } from "./menu-icons";
 
 function mount(initial: BmNode[] = [], storeOverrides: Partial<BookmarkStore> = {}) {
   document.body.innerHTML = `<div id="favbar"></div><div id="dropdown" hidden></div>`;
@@ -162,6 +163,21 @@ describe("Feature: FavBar", () => {
     document.querySelector<HTMLButtonElement>("#favbar button")!.dispatchEvent(
       new MouseEvent("contextmenu", { bubbles: true })
     );
+    expect([...document.querySelectorAll("#dropdown .dd-label")].map((label) => label.textContent))
+      .toEqual(["直下の項目をタブに一括追加", "パスを追加...", "グループを追加...", "移動 ▸", "削除"]);
+    expect(document.querySelectorAll("#dropdown .dd-sep")).toHaveLength(3);
+    const groupIcons = [
+      ["直下の項目をタブに一括追加", MENU_ICON.addGroupTabs],
+      ["パスを追加...", MENU_ICON.addPath],
+      ["グループを追加...", MENU_ICON.addGroup],
+      ["移動 ▸", MENU_ICON.move],
+      ["削除", MENU_ICON.delete],
+    ] as const;
+    for (const [label, icon] of groupIcons) {
+      const menuItem = [...document.querySelectorAll<HTMLElement>("#dropdown .dd-item")]
+        .find((element) => element.textContent === label);
+      expect(menuItem?.querySelector(`.${icon}`), label).not.toBeNull();
+    }
     const item = [...document.querySelectorAll<HTMLElement>("#dropdown > div")]
       .find((element) => element.textContent === "直下の項目をタブに一括追加")!;
     item.click();
@@ -186,6 +202,21 @@ describe("Feature: FavBar", () => {
       const buttons = document.querySelectorAll<HTMLButtonElement>("#favbar button");
 
       buttons[0].dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+      expect([...document.querySelectorAll("#dropdown .dd-label")].map((label) => label.textContent))
+        .toEqual(["エクスプローラで開く", "新規タブで開く", "編集...", "移動 ▸", "削除"]);
+      expect(document.querySelectorAll("#dropdown .dd-sep")).toHaveLength(2);
+      const itemIcons = [
+        ["エクスプローラで開く", MENU_ICON.explorer],
+        ["新規タブで開く", MENU_ICON.newTab],
+        ["編集...", MENU_ICON.rename],
+        ["移動 ▸", MENU_ICON.move],
+        ["削除", MENU_ICON.delete],
+      ] as const;
+      for (const [label, icon] of itemIcons) {
+        const menuItem = [...document.querySelectorAll<HTMLElement>("#dropdown .dd-item")]
+          .find((element) => element.textContent === label);
+        expect(menuItem?.querySelector(`.${icon}`), label).not.toBeNull();
+      }
       expect([...document.querySelectorAll("#dropdown .dd-label")].map((label) => label.textContent))
         .not.toContain("デフォルトに設定");
       [...document.querySelectorAll<HTMLElement>("#dropdown .dd-item")]

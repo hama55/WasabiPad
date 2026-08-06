@@ -6,6 +6,7 @@ import { initialSession } from "./session";
 import { initSettings } from "./settings";
 import { addRegisteredCommand, commandsForPath } from "./registered-commands";
 import type { RegisteredCommandMenuPorts } from "./registered-command-menu";
+import { MENU_ICON } from "./menu-icons";
 
 vi.mock("./api", async (importOriginal) => ({
   ...await importOriginal<typeof import("./api")>(),
@@ -689,11 +690,50 @@ describe("Feature: TabManager", () => {
 
       const tabs = host.querySelectorAll<HTMLElement>(".doc-tab");
       tabs[0].dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+      expect([...document.querySelectorAll<HTMLElement>("#dropdown .dd-label")].map((item) => item.textContent)).toEqual([
+        "エクスプローラで開く",
+        "コマンドを登録...",
+        "閉じる",
+        "ほかのタブを閉じる",
+        "右側のタブを閉じる",
+        "保存済みのタブを閉じる",
+      ]);
+      const fileTabIcons = [
+        ["エクスプローラで開く", MENU_ICON.explorer],
+        ["コマンドを登録...", MENU_ICON.command],
+        ["閉じる", MENU_ICON.close],
+        ["ほかのタブを閉じる", MENU_ICON.closeOthers],
+        ["右側のタブを閉じる", MENU_ICON.closeRight],
+        ["保存済みのタブを閉じる", MENU_ICON.closeSaved],
+      ] as const;
+      for (const [label, icon] of fileTabIcons) {
+        const menuItem = [...document.querySelectorAll<HTMLElement>("#dropdown .dd-item")]
+          .find((element) => element.textContent === label);
+        expect(menuItem?.querySelector(`.${icon}`), label).not.toBeNull();
+      }
       [...document.querySelectorAll<HTMLElement>("#dropdown .dd-item")]
         .find((item) => item.textContent === "エクスプローラで開く")?.click();
       tabs[1].dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
       expect([...document.querySelectorAll<HTMLElement>("#dropdown .dd-label")].map((item) => item.textContent))
-        .not.toContain("登録コマンド ▸");
+        .toEqual([
+          "エクスプローラで開く",
+          "閉じる",
+          "ほかのタブを閉じる",
+          "右側のタブを閉じる",
+          "保存済みのタブを閉じる",
+        ]);
+      const folderTabIcons = [
+        ["エクスプローラで開く", MENU_ICON.explorer],
+        ["閉じる", MENU_ICON.close],
+        ["ほかのタブを閉じる", MENU_ICON.closeOthers],
+        ["右側のタブを閉じる", MENU_ICON.closeRight],
+        ["保存済みのタブを閉じる", MENU_ICON.closeSaved],
+      ] as const;
+      for (const [label, icon] of folderTabIcons) {
+        const menuItem = [...document.querySelectorAll<HTMLElement>("#dropdown .dd-item")]
+          .find((element) => element.textContent === label);
+        expect(menuItem?.querySelector(`.${icon}`), label).not.toBeNull();
+      }
       [...document.querySelectorAll<HTMLElement>("#dropdown .dd-item")]
         .find((item) => item.textContent === "エクスプローラで開く")?.click();
 
@@ -702,6 +742,40 @@ describe("Feature: TabManager", () => {
       expect(reveal).toHaveBeenNthCalledWith(2, "C:\\work\\docs", true);
     } finally {
       reveal.mockRestore();
+    }
+  });
+
+  // Given: パスを持たない無題タブが1つある
+  // When: 無題タブのコンテキストメニューを表示する
+  // Then: Explorerは表示せず、タブを閉じる操作だけを末尾グループとして並べる
+  it("Scenario: 無題タブではExplorerを表示せず閉じる操作を並べる", async () => {
+    const { doc, host } = fixture();
+    document.body.appendChild(Object.assign(document.createElement("div"), { id: "dropdown" }));
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init({
+      tabs: [{ id: "blank", path: null, kind: "blank", label: "無題" }],
+      activeId: "blank",
+    }, null, null);
+
+    host.querySelector<HTMLElement>(".doc-tab")!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+
+    expect([...document.querySelectorAll<HTMLElement>("#dropdown .dd-label")].map((item) => item.textContent)).toEqual([
+      "閉じる",
+      "ほかのタブを閉じる",
+      "右側のタブを閉じる",
+      "保存済みのタブを閉じる",
+    ]);
+    expect(document.querySelectorAll("#dropdown .dd-sep")).toHaveLength(0);
+    const blankTabIcons = [
+      ["閉じる", MENU_ICON.close],
+      ["ほかのタブを閉じる", MENU_ICON.closeOthers],
+      ["右側のタブを閉じる", MENU_ICON.closeRight],
+      ["保存済みのタブを閉じる", MENU_ICON.closeSaved],
+    ] as const;
+    for (const [label, icon] of blankTabIcons) {
+      const menuItem = [...document.querySelectorAll<HTMLElement>("#dropdown .dd-item")]
+        .find((element) => element.textContent === label);
+      expect(menuItem?.querySelector(`.${icon}`), label).not.toBeNull();
     }
   });
 });

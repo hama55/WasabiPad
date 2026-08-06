@@ -6,6 +6,8 @@ import { showMenu, type MenuItem } from "./menu";
 import { revealInExplorer } from "./folder-actions";
 import { createRegisteredCommandMenu, type RegisteredCommandMenuPorts } from "./registered-command-menu";
 import { DRAG_THRESHOLD } from "./interaction-constants";
+import { MENU_ICON } from "./menu-icons";
+import { MENU_LABELS } from "./menu-labels";
 import {
   NavigationHistory,
   type NavigationEntry,
@@ -554,7 +556,8 @@ export class TabManager {
     const items: MenuItem[] = [];
     if (tab.path) {
       items.push({
-        label: "エクスプローラで開く",
+        label: MENU_LABELS.explorer,
+        iconClass: MENU_ICON.explorer,
         action: () => this.run(() => revealInExplorer(tab.path!, tab.kind === "folder")),
       });
       if (tab.kind === "file") {
@@ -565,10 +568,10 @@ export class TabManager {
       }
     }
     items.push(
-      { label: "閉じる", action: () => this.run(() => this.close(tab.id)) },
-      { label: "ほかのタブを閉じる", action: () => this.run(() => this.keepOnly(tab.id)), sep: true },
-      { label: "右側のタブを閉じる", action: () => this.run(() => this.closeRight(tab.id)) },
-      { label: "保存済みのタブを閉じる", action: () => this.run(() => this.closeSaved(tab.id)) },
+      { label: "閉じる", iconClass: MENU_ICON.close, action: () => this.run(() => this.close(tab.id)), sep: Boolean(tab.path) },
+      { label: "ほかのタブを閉じる", iconClass: MENU_ICON.closeOthers, action: () => this.run(() => this.keepOnly(tab.id)) },
+      { label: "右側のタブを閉じる", iconClass: MENU_ICON.closeRight, action: () => this.run(() => this.closeRight(tab.id)) },
+      { label: "保存済みのタブを閉じる", iconClass: MENU_ICON.closeSaved, action: () => this.run(() => this.closeSaved(tab.id)) },
     );
     return items;
   }

@@ -17,6 +17,7 @@ import {
 } from "./registered-command-menu";
 import { commandsForPath } from "./registered-commands";
 import { initSettings } from "./settings";
+import { MENU_ICON } from "./menu-icons";
 
 describe("Feature: shared registered-command context menu", () => {
   beforeEach(async () => {
@@ -52,6 +53,7 @@ describe("Feature: shared registered-command context menu", () => {
     const dropdown = document.getElementById("dropdown")!;
 
     showMenu(0, 0, [createRegisteredCommandMenu(target, services)]);
+    expect(dropdown.querySelector(`.dd-item .${MENU_ICON.command}`)).not.toBeNull();
     [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
       .find((item) => item.textContent === "コマンドを登録...")!.click();
     await vi.waitFor(() => expect(commandsForPath(target.path, "string")).toHaveLength(1));

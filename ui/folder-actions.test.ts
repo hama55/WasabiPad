@@ -15,6 +15,7 @@ import {
 } from "./folder-actions";
 import type { RegisteredCommandMenuPorts } from "./registered-command-menu";
 import type { MemoSpec } from "./document-controller";
+import { MENU_ICON } from "./menu-icons";
 
 vi.mock("./dialogs", () => ({ showError: vi.fn(async () => {}) }));
 vi.mock("./api", async (importOriginal) => ({
@@ -90,27 +91,45 @@ describe("Feature: FolderActions", () => {
 
   // Given: rootが`C:\work`、対象が`memo.txt`、gotoが`{line:499,col:8}`
   // When: コンテキストメニュー表示後に新規ウィンドウ項目をクリック
-  // Then: 10項目・区切り2個、絶対パスとgotoを渡す
+  // Then: 10項目・区切り3個、Explorerが先頭で、絶対パスとgotoを渡す
   it("Scenario: 右クリック項目を操作別に区切り、新規ウィンドウで開ける", () => {
     const { actions, dropdown, ports } = fixture();
     const goto = { line: 499, col: 8 };
     actions.showContextMenu(0, 0, { relPath: "memo.txt", isDir: false, goto });
 
     expect([...dropdown.querySelectorAll(".dd-label")].map((label) => label.textContent)).toEqual([
+      "エクスプローラで開く",
       "新規タブで開く",
       "新規ウィンドウで開く",
       "アプリで開く",
       "コマンドを登録...",
       "アドレスバーに設定",
+      "お気に入りに追加",
       "新規メモ作成...",
       "名前を変更...",
       "その他 ▸",
-      "お気に入りに追加",
-      "エクスプローラで開く",
     ]);
-    expect(dropdown.querySelectorAll(".dd-sep")).toHaveLength(2);
+    expect(dropdown.querySelectorAll(".dd-sep")).toHaveLength(3);
+    const expectedIcons = [
+      ["エクスプローラで開く", MENU_ICON.explorer],
+      ["新規タブで開く", MENU_ICON.newTab],
+      ["新規ウィンドウで開く", MENU_ICON.newWindow],
+      ["アプリで開く", MENU_ICON.external],
+      ["コマンドを登録...", MENU_ICON.command],
+      ["アドレスバーに設定", MENU_ICON.address],
+      ["お気に入りに追加", MENU_ICON.favorite],
+      ["新規メモ作成...", MENU_ICON.newMemo],
+      ["名前を変更...", MENU_ICON.rename],
+      ["その他 ▸", MENU_ICON.more],
+    ] as const;
+    for (const [label, icon] of expectedIcons) {
+      const item = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+        .find((element) => element.textContent === label);
+      expect(item?.querySelector(`.${icon}`), label).not.toBeNull();
+    }
 
-    dropdown.querySelectorAll<HTMLElement>(".dd-item")[1].click();
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "新規ウィンドウで開く")!.click();
     expect(ports.onOpenInNewWindow).toHaveBeenCalledWith("C:\\work\\memo.txt", goto);
   });
 
@@ -122,12 +141,46 @@ describe("Feature: FolderActions", () => {
     actions.showContextMenu(0, 0, { relPath: "table.CSV", isDir: false });
 
     expect([...dropdown.querySelectorAll(".dd-label")].map((label) => label.textContent)).toContain("CSVビュー");
-    dropdown.querySelectorAll<HTMLElement>(".dd-item")[2].click();
+    expect(dropdown.querySelector(`.dd-item .${MENU_ICON.csv}`)).not.toBeNull();
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "CSVビュー")!.click();
     expect(ports.onOpenViewer).toHaveBeenCalledWith("table.CSV", "csv");
 
     actions.showContextMenu(0, 0, { relPath: "memo.txt", isDir: false });
     expect([...dropdown.querySelectorAll(".dd-label")].map((label) => label.textContent)).not.toContain("CSVビュー");
     expect([...dropdown.querySelectorAll(".dd-label")].map((label) => label.textContent)).not.toContain("Markdownビュー");
+  });
+
+  // Given: rootが`C:\work`で対象がない
+  // When: フォルダ空白部のコンテキストメニューを表示する
+  // Then: Explorerが先頭にあり、新規作成とお気に入り追加が残り、rootをフォルダとして開く
+  it("Scenario: 対象なしのフォルダメニューでもExplorerを先頭にする", async () => {
+    const reveal = vi.spyOn(api, "revealInExplorer").mockResolvedValue();
+    try {
+      const { actions, dropdown } = fixture();
+      actions.showContextMenu(0, 0, null);
+
+      expect([...dropdown.querySelectorAll(".dd-label")].map((label) => label.textContent)).toEqual([
+        "エクスプローラで開く",
+        "新規メモ作成...",
+        "お気に入りに追加",
+      ]);
+      expect(dropdown.querySelectorAll(".dd-sep")).toHaveLength(2);
+      for (const [label, icon] of [
+        ["エクスプローラで開く", MENU_ICON.explorer],
+        ["新規メモ作成...", MENU_ICON.newMemo],
+        ["お気に入りに追加", MENU_ICON.favorite],
+      ] as const) {
+        const item = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+          .find((element) => element.textContent === label);
+        expect(item?.querySelector(`.${icon}`), label).not.toBeNull();
+      }
+      dropdown.querySelector<HTMLElement>(".dd-item:first-child")!.click();
+
+      await vi.waitFor(() => expect(reveal).toHaveBeenCalledWith("C:\\work", true));
+    } finally {
+      reveal.mockRestore();
+    }
   });
 
   // Given: `.html`用Chromeコマンドを登録済み
@@ -276,6 +329,7 @@ describe("Feature: FolderActions", () => {
       .find((item) => item.textContent?.includes("その他"));
     other!.click();
     expect(dropdown.querySelector<HTMLElement>(".dd-submenu .dd-item")?.textContent).toBe("削除");
+    expect(dropdown.querySelector<HTMLElement>(`.dd-submenu .${MENU_ICON.delete}`)).not.toBeNull();
     dropdown.querySelector<HTMLElement>(".dd-submenu .dd-item")!.click();
     await vi.waitFor(() => expect(api.deleteEntry).toHaveBeenCalledWith("memo.txt"));
 

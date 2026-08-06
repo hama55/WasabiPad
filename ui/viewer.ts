@@ -32,6 +32,7 @@ import {
   scrollMarkdownCaret,
 } from "./viewer-markdown";
 import { scrollViewerCaret } from "./viewer-scroll";
+import { createViewerChartMenuItem } from "./viewer-context-menu";
 
 const MAX_TABLE_ROWS = 10_000;
 const MAX_TABLE_COLUMNS = 200;
@@ -346,9 +347,7 @@ function csvSourceLineSelected(rowIndex: number) {
 
 function showContextMenu(x: number, y: number) {
   contextMenu.replaceChildren();
-  const item = document.createElement("button");
-  item.textContent = "グラフを作成...";
-  item.addEventListener("click", () => {
+  const item = createViewerChartMenuItem(() => {
     contextMenu.hidden = true;
     runViewerOperation("グラフ設定を開けませんでした", openChartDialog);
   });

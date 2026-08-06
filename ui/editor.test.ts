@@ -22,13 +22,14 @@ import { fakeDocument, installDomStubs, settle } from "./test-doubles";
 import { VirtualEditor, type EditorPorts } from "./editor";
 import { initSettings } from "./settings";
 import type { RegisteredCommandMenuPorts } from "./registered-command-menu";
+import { MENU_ICON } from "./menu-icons";
 
 installDomStubs();
 
 function mount(
   initial: string,
   saveImage?: EditorPorts["saveImage"],
-  overrides: Partial<Pick<EditorPorts, "revealInExplorer" | "getExternalFilePath" | "registeredCommandPorts">> = {},
+  overrides: Partial<Pick<EditorPorts, "revealInExplorer" | "registeredCommandPorts">> = {},
 ) {
   const host = document.createElement("div");
   document.body.replaceChildren(host);
@@ -42,7 +43,6 @@ function mount(
     onDocChange: (lineCount) => { events.lineCount = lineCount; },
     onCursor: (line, col) => { events.cursor = [line, col]; },
     onFontChange: () => {},
-    getExternalFilePath: overrides.getExternalFilePath ?? (() => null),
     openExternally: () => {},
     revealInExplorer: overrides.revealInExplorer,
     registeredCommandPorts: overrides.registeredCommandPorts ?? {
@@ -250,32 +250,131 @@ describe("Feature: VirtualEditor", () => {
 
   // Given: 外部ファイルパスが「C:\work\memo.txt」、revealInExplorer がspyである
   // When: .ve-scroll 上で contextmenu を開き「エクスプローラで開く」をクリックする
-  // Then: revealInExplorer が1回だけ呼ばれる
-  it("Scenario: 保存済みメモの右クリックから格納フォルダを開く", async () => {
+  // Then: revealInExplorer が実ファイルのパスで1回だけ呼ばれる
+  it("Scenario: 保存済みメモの右クリックから実ファイルをExplorerで開く", async () => {
     const revealInExplorer = vi.fn();
     const { editor, host } = mount("memo", undefined, {
-      getExternalFilePath: () => "C:\\work\\memo.txt",
       revealInExplorer,
     });
     const dropdown = document.createElement("div");
     dropdown.id = "dropdown";
     document.body.appendChild(dropdown);
-    editor.open(1, false);
+    editor.open(1, false, false, "C:\\work\\memo.txt");
     await settle();
 
     host.querySelector<HTMLElement>(".ve-scroll")!.dispatchEvent(
       new MouseEvent("contextmenu", { bubbles: true, clientX: 0, clientY: 0 }),
     );
+    expect([...dropdown.querySelectorAll<HTMLElement>(".dd-label")].map((element) => element.textContent)).toEqual([
+      "エクスプローラで開く",
+      "元に戻す",
+      "やり直し",
+      "切り取り",
+      "コピー",
+      "貼り付け",
+      "削除",
+      "すべて選択",
+      "CSVビュー",
+      "Markdownビュー",
+      "アプリで開く",
+    ]);
+    expect(dropdown.querySelector<HTMLElement>(".dd-label")?.textContent).toBe("エクスプローラで開く");
+    const editorIcons = [
+      ["エクスプローラで開く", MENU_ICON.explorer],
+      ["元に戻す", MENU_ICON.undo],
+      ["やり直し", MENU_ICON.redo],
+      ["切り取り", MENU_ICON.cut],
+      ["コピー", MENU_ICON.copy],
+      ["貼り付け", MENU_ICON.paste],
+      ["削除", MENU_ICON.delete],
+      ["すべて選択", MENU_ICON.selectAll],
+      ["CSVビュー", MENU_ICON.csv],
+      ["Markdownビュー", MENU_ICON.markdown],
+      ["アプリで開く", MENU_ICON.external],
+    ] as const;
+    for (const [label, icon] of editorIcons) {
+      const menuItem = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+        .find((element) => element.textContent === label);
+      expect(menuItem?.querySelector(`.${icon}`), label).not.toBeNull();
+    }
+    expect(dropdown.querySelectorAll(".dd-sep")).toHaveLength(3);
     const item = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
       .find((element) => element.textContent === "エクスプローラで開く");
     item?.click();
+    await settle();
 
-    expect(revealInExplorer).toHaveBeenCalledTimes(1);
+    expect(revealInExplorer).toHaveBeenCalledWith("C:\\work\\memo.txt");
+  });
+
+  // Given: 外部ファイルパスがあり、Explorer起動がError("explorer failed")で拒否される
+  // When: 保存済みメモの右クリックから「エクスプローラで開く」をクリックする
+  // Then: エディタのエラー境界から「エクスプローラで開けませんでした」を通知する
+  it("Scenario: 保存済みメモのExplorer起動失敗を通知する", async () => {
+    const revealInExplorer = vi.fn().mockRejectedValue(new Error("explorer failed"));
+    const { editor, host, events } = mount("memo", undefined, {
+      revealInExplorer,
+    });
+    const dropdown = document.createElement("div");
+    dropdown.id = "dropdown";
+    document.body.appendChild(dropdown);
+    editor.open(1, false, false, "C:\\work\\memo.txt");
+    await settle();
+
+    host.querySelector<HTMLElement>(".ve-scroll")!.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, clientX: 0, clientY: 0 }),
+    );
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((element) => element.textContent === "エクスプローラで開く")!.click();
+
+    await vi.waitFor(() => expect(events.errors).toContainEqual({
+      message: "エクスプローラで開けませんでした",
+      error: expect.any(Error),
+    }));
+  });
+
+  // Given: 外部ファイルパスがあり、文書を閲覧専用で開いている
+  // When: .ve-scroll 上でコンテキストメニューを開く
+  // Then: 編集項目と登録系項目を出さず、Explorerを先頭に維持する
+  it("Scenario: 閲覧専用メモの右クリック項目を編集なしで並べる", async () => {
+    const { editor, host } = mount("memo", undefined, {
+      revealInExplorer: vi.fn(),
+    });
+    const dropdown = document.createElement("div");
+    dropdown.id = "dropdown";
+    document.body.appendChild(dropdown);
+    editor.open(1, true, false, "C:\\work\\memo.txt");
+    await settle();
+
+    host.querySelector<HTMLElement>(".ve-scroll")!.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, clientX: 0, clientY: 0 }),
+    );
+
+    expect([...dropdown.querySelectorAll<HTMLElement>(".dd-label")].map((item) => item.textContent)).toEqual([
+      "エクスプローラで開く",
+      "コピー",
+      "すべて選択",
+      "CSVビュー",
+      "Markdownビュー",
+      "アプリで開く",
+    ]);
+    expect(dropdown.querySelectorAll(".dd-sep")).toHaveLength(3);
+    for (const [label, icon] of [
+      ["エクスプローラで開く", MENU_ICON.explorer],
+      ["コピー", MENU_ICON.copy],
+      ["すべて選択", MENU_ICON.selectAll],
+      ["CSVビュー", MENU_ICON.csv],
+      ["Markdownビュー", MENU_ICON.markdown],
+      ["アプリで開く", MENU_ICON.external],
+    ] as const) {
+      const item = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+        .find((element) => element.textContent === label);
+      expect(item?.querySelector(`.${icon}`), label).not.toBeNull();
+    }
   });
 
   // Given: 文書が「one\ntwo」、dropdown が存在する
   // When: .ve-gutter 上で contextmenu を開く
-  // Then: dropdown のラベルに「すべて選択」が含まれる
+  // Then: dropdown のラベルに「すべて選択」が含まれ、Explorerは含まれない
   it("Scenario: メモビューの行番号を右クリックしてもコンテキストメニューを表示する", async () => {
     const { editor, host } = mount("one\ntwo");
     const dropdown = document.createElement("div");
@@ -290,6 +389,8 @@ describe("Feature: VirtualEditor", () => {
 
     expect([...dropdown.querySelectorAll<HTMLElement>(".dd-label")].map((item) => item.textContent))
       .toContain("すべて選択");
+    expect([...dropdown.querySelectorAll<HTMLElement>(".dd-label")].map((item) => item.textContent))
+      .not.toContain("エクスプローラで開く");
   });
 
   // Given: 文書が「https://example.com」、選択範囲がURL全体、promptFields が「ブラウザ」「」「open {string}」を返し、外部パスが「C:\work\memo.txt」
@@ -300,13 +401,13 @@ describe("Feature: VirtualEditor", () => {
     const runExternalCommand = vi.fn(async () => {});
     const registeredCommandPorts: RegisteredCommandMenuPorts = { promptFields, runExternalCommand };
     const { editor, host, events } = mount("https://example.com", undefined, {
-      getExternalFilePath: () => "C:\\work\\memo.txt",
+      revealInExplorer: vi.fn(),
       registeredCommandPorts,
     });
     const dropdown = document.createElement("div");
     dropdown.id = "dropdown";
     document.body.appendChild(dropdown);
-    editor.open(1, false);
+    editor.open(1, false, false, "C:\\work\\memo.txt");
     await editor.restoreViewState({
       anchor: { line: 0, col: 0 },
       caret: { line: 0, col: 19 },
@@ -319,8 +420,30 @@ describe("Feature: VirtualEditor", () => {
       new MouseEvent("contextmenu", { bubbles: true, clientX: 0, clientY: 0 }),
     );
     showContextMenu();
-    expect([...dropdown.querySelectorAll<HTMLElement>(".dd-label")].map((item) => item.textContent))
-      .toContain("コマンドを登録...");
+    expect([...dropdown.querySelectorAll<HTMLElement>(".dd-label")].map((item) => item.textContent)).toEqual([
+      "エクスプローラで開く",
+      "元に戻す",
+      "やり直し",
+      "切り取り",
+      "コピー",
+      "貼り付け",
+      "削除",
+      "すべて選択",
+      "選択範囲を登録文字列に追加",
+      "コマンドを登録...",
+      "CSVビュー",
+      "Markdownビュー",
+      "アプリで開く",
+    ]);
+    for (const [label, icon] of [
+      ["エクスプローラで開く", MENU_ICON.explorer],
+      ["選択範囲を登録文字列に追加", MENU_ICON.registeredString],
+      ["コマンドを登録...", MENU_ICON.command],
+    ] as const) {
+      const item = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+        .find((element) => element.textContent === label);
+      expect(item?.querySelector(`.${icon}`), label).not.toBeNull();
+    }
     [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
       .find((item) => item.textContent === "コマンドを登録...")!.click();
 
@@ -360,13 +483,12 @@ describe("Feature: VirtualEditor", () => {
       runExternalCommand: vi.fn(async () => {}),
     };
     const { editor, host, events } = mount("https://example.com", undefined, {
-      getExternalFilePath: () => "C:\\work\\memo.txt",
       registeredCommandPorts,
     });
     const dropdown = document.createElement("div");
     dropdown.id = "dropdown";
     document.body.appendChild(dropdown);
-    editor.open(1, false);
+    editor.open(1, false, false, "C:\\work\\memo.txt");
     await editor.restoreViewState({
       anchor: { line: 0, col: 0 },
       caret: { line: 0, col: 19 },

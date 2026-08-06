@@ -27,7 +27,7 @@ import { showError } from "./dialogs";
 import { confirmMessage, confirmSaveDiscard, promptFields } from "./prompt";
 import { promptSaveFormat, saveFormatFields, saveFormatFromValues } from "./save-format";
 import { isPasswordCancelled, withArchivePassword } from "./archive-password";
-import { archiveRelOf, isArchiveEntryPath } from "./archive-path";
+import { archiveRelOf } from "./archive-path";
 import { basename, joinWindowsRoot } from "./path";
 import { createCommandRegistry, globalCommandForEvent } from "./commands";
 import { TabManager } from "./tabs";
@@ -97,22 +97,6 @@ async function reportBackgroundError(title: string, error: unknown) {
   } catch (reportError) {
     console.error(`${title}のエラーを表示できませんでした`, reportError);
   }
-}
-
-function parentPath(path: string): string | null {
-  const normalized = path.replace(/\\/g, "/");
-  const separator = normalized.lastIndexOf("/");
-  if (separator < 0) return null;
-  if (separator === 2 && /^[A-Za-z]:/.test(normalized)) return normalized.slice(0, separator + 1);
-  return normalized.slice(0, separator) || "/";
-}
-
-function memoPathForExplorer(): string | null {
-  const session = doc.current;
-  if (session.folderRoot && session.selectedRelPath && !isArchiveEntryPath(session.selectedRelPath)) {
-    return joinWindowsRoot(session.folderRoot, session.selectedRelPath);
-  }
-  return session.savePath;
 }
 
 function escapeHtmlAttribute(value: string): string {
@@ -243,15 +227,12 @@ const editor: VirtualEditor = new VirtualEditor(editorHost, {
       setSetting("fontSize", size);
     }
   },
-  getExternalFilePath: () => doc.current.savePath,
   registeredCommandPorts,
-  openExternally: () => {
-    if (doc.current.savePath) runBackground("アプリで開けませんでした", () => openInOtherApp(doc.current.savePath!));
+  openExternally: (path) => {
+    runBackground("アプリで開けませんでした", () => openInOtherApp(path));
   },
-  revealInExplorer: () => {
-    const path = memoPathForExplorer();
-    const folder = path && parentPath(path);
-    if (folder) runBackground("エクスプローラで開けませんでした", () => revealInExplorer(folder, true));
+  revealInExplorer: (path) => {
+    runBackground("エクスプローラで開けませんでした", () => revealInExplorer(path, false));
   },
   onError: (message, error) => showError(message, error),
   openViewer: async (format, text, selection) => {

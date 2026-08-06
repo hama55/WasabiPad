@@ -41,7 +41,7 @@ export interface DocumentControllerServices {
 }
 
 export interface DocumentEditorPort {
-  open: (lineCount: number, readOnly: boolean, keepViewers?: boolean) => void;
+  open: (lineCount: number, readOnly: boolean, keepViewers?: boolean, externalFilePath?: string | null) => void;
   focus: () => void;
   goTo: (line: number, col: number) => void;
   captureViewState: () => EditorViewState;
@@ -147,7 +147,8 @@ export class DocumentController {
     this.view.statusbar.setLineCount(info.line_count);
     this.view.addressbar.render(info.path);
     if (updateTree) this.showTree(info);
-    this.view.editor.open(info.line_count, this.session.readOnly, keepViewers);
+    const externalFilePath = info.path && info.folder_root !== info.path ? info.path : null;
+    this.view.editor.open(info.line_count, this.session.readOnly, keepViewers, externalFilePath);
     this.view.editor.focus();
     this.updateTitle();
   }

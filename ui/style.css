@@ -1,4 +1,5 @@
 @import "./theme.css";
+@import "./menu-icons.css";
 
 /* 共通パレットは theme.css。ここはメモ本体だけで使う変数。 */
 :root, :root[data-theme="dark"] {

@@ -1,10 +1,12 @@
 // 共有ドロップダウンメニュー (タイトルバーのメニュー・お気に入りグループ・右クリックで使用)
+import { createMenuIcon, type MenuItemIconClass } from "./menu-icons";
+
 type MenuAction = (event?: MouseEvent) => void | Promise<unknown>;
 type MenuTrailingAction = { label: string; title: string; action: () => void | Promise<unknown> };
 
 interface MenuItemBase {
   label: string;
-  iconClass?: string;
+  iconClass?: MenuItemIconClass;
   key?: string; // ショートカット表示
   trailing?: MenuTrailingAction | MenuTrailingAction[];
   sep?: boolean; // trueならこの項目の前に区切り線
@@ -83,9 +85,7 @@ function renderItems(state: MenuState, el: HTMLElement, items: MenuItem[]) {
     const label = document.createElement("span");
     label.className = "dd-label";
     if (item.iconClass) {
-      const icon = document.createElement("span");
-      icon.className = item.iconClass;
-      label.append(icon);
+      label.append(createMenuIcon(item.iconClass));
     }
     label.append(document.createTextNode(hasSubmenu(item) ? `${item.label} ▸` : item.label));
     div.appendChild(label);

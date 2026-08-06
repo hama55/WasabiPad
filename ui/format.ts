@@ -3,6 +3,7 @@ import type { DocumentSession } from "./session";
 import { displayName } from "./session";
 import { APP_NAME } from "./app-config";
 import { VIEWER_FORMATS } from "./viewer-formats";
+import { MENU_ICON, type MenuIconClass } from "./menu-icons";
 export { APP_NAME };
 
 // ウィンドウタイトルの体裁はここだけで決める (メモ本体・ビューで共通)。
@@ -10,6 +11,13 @@ export { APP_NAME };
 export const VIEWER_FORMAT_LABELS: Record<ViewerFormat, string> = Object.fromEntries(
   Object.values(VIEWER_FORMATS).map((spec) => [spec.id, spec.label]),
 ) as Record<ViewerFormat, string>;
+
+const VIEWER_FORMAT_ICONS: Record<ViewerFormat, MenuIconClass> = {
+  csv: MENU_ICON.csv,
+  markdown: MENU_ICON.markdown,
+};
+
+export const viewerFormatIcon = (format: ViewerFormat) => VIEWER_FORMAT_ICONS[format];
 
 export function formatByteSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;

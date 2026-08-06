@@ -6,10 +6,12 @@ import { showMenu, MenuItem } from "./menu";
 import type { confirmMessage, promptFields } from "./prompt";
 import type { showError } from "./dialogs";
 import { basename, joinWindowsRoot, rebaseWindowsPath, relativePathFromRoot } from "./path";
-import { VIEWER_FORMAT_LABELS } from "./format";
+import { viewerFormatIcon, VIEWER_FORMAT_LABELS } from "./format";
 import { isArchiveEntryUnder } from "./archive-path";
 import { viewerFormatForPath } from "./viewer-formats";
 import { createRegisteredCommandMenu, type RegisteredCommandMenuPorts } from "./registered-command-menu";
+import { MENU_ICON } from "./menu-icons";
+import { MENU_LABELS } from "./menu-labels";
 export { isImagePath } from "./image-formats";
 
 export interface FolderActionsPorts {
@@ -78,14 +80,23 @@ export class FolderActions {
   showContextMenu(x: number, y: number, target: ContextTarget | null) {
     const root = this.root;
     if (!root) return; // アーカイブ閲覧中はファイル操作の対象がない
+    const revealPath = target ? this.toAbsolute(target.relPath) : root;
+    const revealIsDir = target ? target.isDir : true;
     const items: MenuItem[] = [];
+    items.push({
+      label: MENU_LABELS.explorer,
+      iconClass: MENU_ICON.explorer,
+      action: () => this.run("エクスプローラで開けませんでした", () => this.services.revealInExplorer(revealPath, revealIsDir)),
+    });
     if (target) {
       items.push({
-        label: "新規タブで開く",
+        label: MENU_LABELS.newTab,
+        iconClass: MENU_ICON.newTab,
         action: () => this.ports.onOpenInNewTab(target.relPath, target.goto),
       });
       items.push({
         label: "新規ウィンドウで開く",
+        iconClass: MENU_ICON.newWindow,
         action: () => this.ports.onOpenInNewWindow(this.toAbsolute(target.relPath), target.goto),
       });
       if (!target.isDir) {
@@ -93,36 +104,54 @@ export class FolderActions {
         if (viewerFormat) {
           items.push({
             label: VIEWER_FORMAT_LABELS[viewerFormat],
+            iconClass: viewerFormatIcon(viewerFormat),
             action: () => this.ports.onOpenViewer(target.relPath, viewerFormat),
           });
         }
         items.push({
-          label: "アプリで開く",
+          label: MENU_LABELS.external,
+          iconClass: MENU_ICON.external,
           action: () => this.run("アプリで開けませんでした", () => this.services.openInOtherApp(this.toAbsolute(target.relPath))),
         });
         items.push(this.registeredCommandMenu(target.relPath));
       }
-      items.push({ label: "アドレスバーに設定", action: () => this.ports.onOpenPath(this.toAbsolute(target.relPath)) });
-    }
-    items.push({
-      label: "新規メモ作成...",
-      action: () => this.run("新規メモを作成できませんでした", () => this.createNote(target?.isDir ? target.relPath : null)),
-      sep: items.length > 0,
-    });
-    if (target) {
-      items.push({ label: "名前を変更...", action: () => this.run("名前を変更できませんでした", () => this.rename(target.relPath)) });
       items.push({
-        label: "その他",
-        sub: [{ label: "削除", action: () => this.run("削除できませんでした", () => this.delete(target)) }],
+        label: "アドレスバーに設定",
+        iconClass: MENU_ICON.address,
+        action: () => this.ports.onOpenPath(this.toAbsolute(target.relPath)),
       });
     }
-    const revealPath = target ? this.toAbsolute(target.relPath) : root;
-    const revealIsDir = target ? target.isDir : true;
-    items.push({ label: "お気に入りに追加", action: () => this.ports.onAddFavorite(revealPath), sep: true });
+    const favoriteItem: MenuItem = {
+      label: "お気に入りに追加",
+      iconClass: MENU_ICON.favorite,
+      action: () => this.ports.onAddFavorite(revealPath),
+      sep: true,
+    };
+    if (target) items.push(favoriteItem);
     items.push({
-      label: "エクスプローラで開く",
-      action: () => this.run("エクスプローラで開けませんでした", () => this.services.revealInExplorer(revealPath, revealIsDir)),
+      label: "新規メモ作成...",
+      iconClass: MENU_ICON.newMemo,
+      action: () => this.run("新規メモを作成できませんでした", () => this.createNote(target?.isDir ? target.relPath : null)),
+      sep: true,
     });
+    if (target) {
+      items.push({
+        label: "名前を変更...",
+        iconClass: MENU_ICON.rename,
+        action: () => this.run("名前を変更できませんでした", () => this.rename(target.relPath)),
+      });
+      items.push({
+        label: "その他",
+        iconClass: MENU_ICON.more,
+        sep: true,
+        sub: [{
+          label: MENU_LABELS.delete,
+          iconClass: MENU_ICON.delete,
+          action: () => this.run("削除できませんでした", () => this.delete(target)),
+        }],
+      });
+    }
+    if (!target) items.push(favoriteItem);
     showMenu(x, y, items);
   }
 

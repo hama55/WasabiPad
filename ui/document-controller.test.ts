@@ -174,8 +174,24 @@ describe("Feature: DocumentController", () => {
     expect(view.statusbar.setByteSize).toHaveBeenCalledWith(1234, false);
     expect(view.statusbar.setLineCount).toHaveBeenCalledWith(42);
     expect(view.addressbar.render).toHaveBeenCalledWith("C:\\work\\memo.txt");
-    expect(view.editor.open).toHaveBeenCalledWith(42, false, false);
+    expect(view.editor.open).toHaveBeenCalledWith(42, false, false, "C:\\work\\memo.txt");
     expect(view.setTitle).toHaveBeenLastCalledWith(formatTitleBar("memo.txt"));
+  });
+
+  // Given: フォルダのDocInfoがpath=\`C:\\work\`、folder_rootも\`C:\\work\`
+  // When: \`applyDocInfo\`へフォルダのDocInfoを渡す
+  // Then: Editorへフォルダをファイルとして渡さず、外部ファイルパスをnullにする
+  it("Scenario: 空のフォルダ表示をExplorerのファイル対象にしない", () => {
+    const { view, controller } = fakeView();
+    controller.applyDocInfo(info({
+      path: "C:\\work",
+      folder_root: "C:\\work",
+      line_count: 1,
+      folder_entries: [],
+    }));
+
+    expect(controller.current.savePath).toBeNull();
+    expect(view.editor.open).toHaveBeenCalledWith(1, false, false, null);
   });
 
   // Given: info適用済みでtitle mockをclear

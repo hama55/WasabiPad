@@ -2,6 +2,7 @@
 import type * as api from "./api";
 import { basename } from "./path";
 import type { MenuItem } from "./menu";
+import { MENU_ICON } from "./menu-icons";
 import type { promptFields } from "./prompt";
 import {
   addRegisteredCommand,
@@ -122,6 +123,7 @@ export function createRegisteredCommandMenu(
   const commands = commandsForPath(target.path, commandValueKind(target));
   const register: MenuItem = {
     label: "コマンドを登録...",
+    iconClass: MENU_ICON.command,
     action: () => services.run(
       "コマンドを登録できませんでした",
       () => registerCommand(services, target),
@@ -130,6 +132,7 @@ export function createRegisteredCommandMenu(
   if (commands.length === 0) return register;
   return {
     label: "登録コマンド",
+    iconClass: MENU_ICON.command,
     sub: [
       ...commands.map((command) => ({
         label: command.label,

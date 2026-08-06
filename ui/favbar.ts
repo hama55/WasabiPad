@@ -3,6 +3,8 @@ import { hideMenu, showMenu, MenuItem } from "./menu";
 import { promptFields } from "./prompt";
 import { revealInExplorer } from "./folder-actions";
 import { DRAG_THRESHOLD } from "./interaction-constants";
+import { favoriteIconClass, MENU_ICON } from "./menu-icons";
+import { MENU_LABELS } from "./menu-labels";
 
 type NodePath = number[];
 type DropKind = "before" | "inside" | "after";
@@ -63,8 +65,8 @@ export class FavBar {
       if (e.target !== this.host) return;
       e.preventDefault();
       showMenu(e.clientX, e.clientY, [
-        { label: "パスを追加...", action: () => this.runMutation(() => this.addPath()) },
-        { label: "グループを追加...", action: () => this.runMutation(() => this.addGroup()) },
+        { label: "パスを追加...", iconClass: MENU_ICON.addPath, action: () => this.runMutation(() => this.addPath()) },
+        { label: "グループを追加...", iconClass: MENU_ICON.addGroup, action: () => this.runMutation(() => this.addGroup()) },
       ]);
     });
     // WebView2 のネイティブ drag-drop が HTML5 DnD を奪うため pointer で自作する
@@ -119,7 +121,7 @@ export class FavBar {
 
   private icon(kind: BmNode["kind"]): HTMLElement {
     const icon = document.createElement("span");
-    icon.className = `fav-icon fav-icon-${kind}`;
+    icon.className = favoriteIconClass(kind);
     return icon;
   }
 
@@ -128,7 +130,7 @@ export class FavBar {
       const path = [...parent, index];
       const common = {
         favPath: path.join("."),
-        iconClass: `fav-icon fav-icon-${child.kind}`,
+        iconClass: favoriteIconClass(child.kind),
       };
       const onContextMenu = (x: number, y: number) => showMenu(x, y, this.contextItems(child, path));
       return child.kind === "group"
@@ -153,6 +155,7 @@ export class FavBar {
       items.push(
         {
           label: "直下の項目をタブに一括追加",
+          iconClass: MENU_ICON.addGroupTabs,
           action: () => this.onAddGroupToTabs(node.children.flatMap((child) =>
             child.kind === "group" ? [] : [{
               path: child.path,
@@ -160,19 +163,19 @@ export class FavBar {
             }]
           )),
         },
-        { label: "パスを追加...", action: () => this.runMutation(() => this.addPath(path)), sep: true },
-        { label: "グループを追加...", action: () => this.runMutation(() => this.addGroup(path)) }
+        { label: "パスを追加...", iconClass: MENU_ICON.addPath, action: () => this.runMutation(() => this.addPath(path)), sep: true },
+        { label: "グループを追加...", iconClass: MENU_ICON.addGroup, action: () => this.runMutation(() => this.addGroup(path)) }
       );
     } else {
       items.push(
-        { label: "新規タブで開く", action: () => this.runOpen(node.path, true) },
-        { label: "エクスプローラで開く", action: () => this.runMutation(() => revealInExplorer(node.path, node.kind === "directory")), sep: true },
-        { label: "編集...", action: () => this.runMutation(() => this.editPath(path)) }
+        { label: MENU_LABELS.explorer, iconClass: MENU_ICON.explorer, action: () => this.runMutation(() => revealInExplorer(node.path, node.kind === "directory")) },
+        { label: MENU_LABELS.newTab, iconClass: MENU_ICON.newTab, action: () => this.runOpen(node.path, true) },
+        { label: "編集...", iconClass: MENU_ICON.rename, action: () => this.runMutation(() => this.editPath(path)), sep: true }
       );
     }
     items.push(
-      { label: "移動", sub: this.moveDestinations(path), sep: true },
-      { label: "削除", action: () => this.runMutation(() => this.remove(path)) }
+      { label: "移動", iconClass: MENU_ICON.move, sub: this.moveDestinations(path), sep: node.kind === "group" },
+      { label: MENU_LABELS.delete, iconClass: MENU_ICON.delete, action: () => this.runMutation(() => this.remove(path)), sep: true }
     );
     return items;
   }
