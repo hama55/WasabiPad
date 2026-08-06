@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { AddressBar, pathSegments } from "./addressbar";
 
@@ -70,6 +71,7 @@ describe("Feature: AddressBar navigation buttons", () => {
     expect(ports.onForward).not.toHaveBeenCalled();
     expect(host.querySelector<HTMLButtonElement>("#addressbar-back")!.disabled).toBe(false);
     expect(host.querySelector<HTMLButtonElement>("#addressbar-forward")!.disabled).toBe(true);
+    addressbar.setNavigationState({ canGoBack: false, canGoForward: false });
   });
 
   // Given: 戻る/進む両方可のAddressBar
@@ -77,7 +79,8 @@ describe("Feature: AddressBar navigation buttons", () => {
   // Then: `onBack`と`onForward`が各1回呼ばれ、両イベントの`defaultPrevented`がtrue
   it("Scenario: マウス側面ボタンのX1/X2を戻る/進むへ割り当てる", () => {
     const { host, ports } = addressBarFixture();
-    new AddressBar(host, ports).setNavigationState({ canGoBack: true, canGoForward: true });
+    const addressbar = new AddressBar(host, ports);
+    addressbar.setNavigationState({ canGoBack: true, canGoForward: true });
 
     const backEvent = new MouseEvent("auxclick", { button: 3, bubbles: true, cancelable: true });
     const forwardEvent = new MouseEvent("auxclick", { button: 4, bubbles: true, cancelable: true });
@@ -88,5 +91,47 @@ describe("Feature: AddressBar navigation buttons", () => {
     expect(ports.onForward).toHaveBeenCalledTimes(1);
     expect(backEvent.defaultPrevented).toBe(true);
     expect(forwardEvent.defaultPrevented).toBe(true);
+    addressbar.setNavigationState({ canGoBack: false, canGoForward: false });
+  });
+
+  // Given: 履歴が空で戻る/進むの両方が無効なAddressBar
+  // When: X1/X2のauxclickをwindowへdispatchする
+  // Then: どちらの操作も奪わず、onBack/onForwardは呼ばれない
+  it("Scenario: 履歴がないマウス側面ボタンはブラウザへの既定操作を妨げない", () => {
+    const { host, ports } = addressBarFixture();
+    new AddressBar(host, ports).setNavigationState({ canGoBack: false, canGoForward: false });
+
+    const backEvent = new MouseEvent("auxclick", { button: 3, bubbles: true, cancelable: true });
+    const forwardEvent = new MouseEvent("auxclick", { button: 4, bubbles: true, cancelable: true });
+    window.dispatchEvent(backEvent);
+    window.dispatchEvent(forwardEvent);
+
+    expect(ports.onBack).not.toHaveBeenCalled();
+    expect(ports.onForward).not.toHaveBeenCalled();
+    expect(backEvent.defaultPrevented).toBe(false);
+    expect(forwardEvent.defaultPrevented).toBe(false);
+  });
+});
+
+describe("Feature: AddressBar navigation button presentation", () => {
+  // Given: アプリ本体のtopbarをDOMとして読み込む
+  // When: フォルダ選択ボタンとの並び順と戻る/進むボタンの文字を確認する
+  // Then: 戻る→進むがフォルダ選択の左隣に連続して配置され、矢印文字ではなくSegoe MDL2のアイコンコードを使う
+  it("Scenario: 戻る/進むをアイコンとしてフォルダ選択の左側に表示する", () => {
+    const html = readFileSync("index.html", "utf8");
+    const page = new DOMParser().parseFromString(html, "text/html");
+    const topbar = page.querySelector("#topbar")!;
+    const buttons = [...topbar.querySelectorAll<HTMLButtonElement>("button")];
+    const ids = buttons.map((button) => button.id);
+    const backIndex = ids.indexOf("addressbar-back");
+    const forwardIndex = ids.indexOf("addressbar-forward");
+    const openIndex = ids.indexOf("addressbar-open");
+
+    expect(forwardIndex).toBe(backIndex + 1);
+    expect(forwardIndex).toBe(openIndex - 1);
+    expect(buttons[backIndex].textContent).toBe("\uE72B");
+    expect(buttons[forwardIndex].textContent).toBe("\uE72A");
+    expect(buttons[backIndex].textContent).not.toBe("←");
+    expect(buttons[forwardIndex].textContent).not.toBe("→");
   });
 });

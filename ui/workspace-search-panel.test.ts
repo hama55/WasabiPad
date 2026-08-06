@@ -165,6 +165,21 @@ describe("Feature: WorkspaceSearchPanel", () => {
     expect(opened).toEqual([false, true]);
   });
 
+  // Given: a.txt の本文一致が20行目0列目に1件あり、onOpen が受け取った結果を記録する
+  // When: 検索結果の本文行を通常クリックする
+  // Then: onOpen は newTab=false と、行/列を含む元の検索結果を渡す
+  it("Scenario: 本文一致のクリックは該当行を失わずメモビューへ開く依頼を出す", async () => {
+    vi.useFakeTimers();
+    const result = hit("a.txt", 19, "needle");
+    const onOpen = vi.fn();
+    const host = mount(async () => outcome([result]), onOpen);
+    await search(host, "needle");
+
+    host.querySelector<HTMLElement>(".ws-match")!.click();
+
+    expect(onOpen).toHaveBeenCalledWith(result, false);
+  });
+
   // Given: a.txt の結果があり、hit_file_limit=true と hit_result_limit=true
   // When: needle を検索する
   // Then: warning は ["最大ファイル数で列挙を打ち切った","最大結果数で検索を打ち切った"]

@@ -161,10 +161,10 @@ describe("Feature: TabManager", () => {
     expect(manager.state.activeId).toBe("b");
   });
 
-  // Given: activeId=a で、最初の captureViewState が line 4、次が line 8 の状態を返す
-  // When: C:\work\c.txt へ移動し、goBack、goForward を順に呼ぶ
-  // Then: 戻る時は C:\work\a.txt と goTo({ line: 4, col: 0 })、進む時は C:\work\c.txt と goTo({ line: 8, col: 0 }) になり、履歴状態は順に {canGoBack:true,canGoForward:false}→{false,true}→{true,false}
-  it("Scenario: 同じtabのファイル切替を戻る/進むで移動し、キャレット行を復元する", async () => {
+  // Given: activeId=a で、最初のcaptureViewStateがline4、次がline8を返す
+  // When: 編集のUndo/Redoではなく、C:\work\c.txtへ移動してから履歴のgoBack→goForwardを呼ぶ
+  // Then: 戻る/進むはそれぞれopenPathとgoToでリンク・キャレット行を復元し、履歴状態も逆方向へ切り替わる
+  it("Scenario: Undo/Redoではなく同じtabの移動履歴でファイルとキャレット行を戻す", async () => {
     const { doc, host } = fixture();
     const navigationStates: { canGoBack: boolean; canGoForward: boolean }[] = [];
     const manager = new TabManager(host, doc, {
@@ -331,10 +331,10 @@ describe("Feature: TabManager", () => {
     expect(doc.selectEntry).toHaveBeenLastCalledWith("b.txt");
   });
 
-  // Given: a tab で c.txt へ移動後 b tab へ切り替える
-  // When: b tab で goBack→d.txt へ移動→goBack、a tab で goBack、再度 init(stored, null, null) 後に goBack を呼ぶ
-  // Then: b tab 切替直後の戻りは false、b tab の d.txt からの戻りは true、a tab の戻りは true、再初期化後は false
-  it("Scenario: タブごとに履歴を分離し、再初期化で履歴を消去する", async () => {
+  // Given: a tabでc.txtへ移動後、b tabへ切り替える
+  // When: b tabでgoBack→d.txtへ移動→goBack、a tabでgoBackし、再起動相当のinit(stored, null, null)後にgoBackを呼ぶ
+  // Then: 履歴はタブ間で混ざらず、再起動相当の初期化後は戻る対象が残らない
+  it("Scenario: タブごとに移動履歴を分離し、再起動相当の初期化で履歴を消去する", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
     await manager.init(stored, null, null);

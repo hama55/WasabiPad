@@ -415,11 +415,11 @@ describe("Feature: VirtualEditor", () => {
     expect(scroll.scrollTop).toBe(360);
   });
 
-  // Given: 40行の文書、clientHeight=100、topLine=2、キャレットが6行目6列目
-  // When: Enter を押す
-  // Then: キャレットが7行目0列目、topLine が3、scrollTop が60になる
-  it("Scenario: 表示領域の最下行で改行すると新しいキャレット行へ自動スクロールする", async () => {
-    const { editor, host, press } = mount(Array.from({ length: 40 }, (_, i) => `line ${i}`).join("\n"));
+  // Given: 40行の文書、clientHeight=100、topLine=2、キャレットが表示領域の最下行である6行目6列目
+  // When: Enter で7行目を作り、その行へ「continued」を続けて入力する
+  // Then: 入力内容が文書へ反映され、キャレット行7が表示され続けるため topLine=3、scrollTop=60になる
+  it("Scenario: 表示領域の最下行で改行して続けて入力しても新しいキャレット行を表示する", async () => {
+    const { editor, doc, host, press, type } = mount(Array.from({ length: 40 }, (_, i) => `line ${i}`).join("\n"));
     const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
     Object.defineProperty(scroll, "clientHeight", { configurable: true, value: 100 });
     editor.open(40, false);
@@ -433,8 +433,11 @@ describe("Feature: VirtualEditor", () => {
 
     press("Enter");
     await settle();
+    type("continued");
+    await settle();
 
-    expect(editor.captureViewState().caret).toEqual({ line: 7, col: 0 });
+    expect(editor.captureViewState().caret).toEqual({ line: 7, col: 9 });
+    expect(doc.text()).toContain("continued\nline 7");
     expect(editor.captureViewState().topLine).toBe(3);
     expect(scroll.scrollTop).toBe(60);
   });
