@@ -122,6 +122,38 @@ describe("Feature: FavBar", () => {
     expect(opened).toEqual([]);
   });
 
+  // Given: お気に入りのドラッグ中でゴースト要素が表示されている
+  // When: OSから pointercancel を受け取る
+  // Then: ドラッグ状態、ゴースト、windowイベントを後始末する
+  it("Scenario: pointercancel時にドラッグを後始末する", async () => {
+    const { favbar } = mount([{ kind: "file", name: "a", path: "C:/a.txt" }]);
+    await favbar.init();
+    const a = document.querySelector<HTMLButtonElement>("#favbar button")!;
+    a.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 0, clientY: 0 }));
+    window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 20, clientY: 0 }));
+    expect(document.querySelector(".fav-ghost")).not.toBeNull();
+
+    window.dispatchEvent(new Event("pointercancel"));
+
+    expect(document.querySelector(".fav-ghost")).toBeNull();
+  });
+
+  // Given: お気に入りのドラッグ中でゴースト要素が表示されている
+  // When: ウィンドウのblurを受け取る
+  // Then: ドラッグ状態とゴーストを後始末する
+  it("Scenario: window blur時にドラッグを後始末する", async () => {
+    const { favbar } = mount([{ kind: "file", name: "a", path: "C:/a.txt" }]);
+    await favbar.init();
+    const a = document.querySelector<HTMLButtonElement>("#favbar button")!;
+    a.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 0, clientY: 0 }));
+    window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 20, clientY: 0 }));
+    expect(document.querySelector(".fav-ghost")).not.toBeNull();
+
+    window.dispatchEvent(new Event("blur"));
+
+    expect(document.querySelector(".fav-ghost")).toBeNull();
+  });
+
   // Given: 空group`g`とfile`a`がトップレベルにある
   // When: `a`をgroup中央へドラッグ
   // Then: `g.children`に`a`が入り、トップレベルから外れる

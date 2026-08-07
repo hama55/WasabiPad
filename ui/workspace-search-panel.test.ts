@@ -48,7 +48,8 @@ describe("Feature: WorkspaceSearchPanel", () => {
     onSearch: WorkspaceSearchPorts["onSearch"] = async () => outcome([]),
     onOpen: WorkspaceSearchPorts["onOpen"] = () => {},
     onCancel: WorkspaceSearchPorts["onCancel"] = () => {},
-    onError: WorkspaceSearchPorts["onError"] = async () => {}
+    onError: WorkspaceSearchPorts["onError"] = async () => {},
+    onCancelError: WorkspaceSearchPorts["onCancelError"] = undefined,
   ) {
     const host = document.createElement("div");
     document.body.appendChild(host);
@@ -56,6 +57,7 @@ describe("Feature: WorkspaceSearchPanel", () => {
     const panel = (mounted = new WorkspaceSearchPanel({ ...DEFAULT_SEARCH_OPTIONS }, {
       onSearch,
       onCancel,
+      onCancelError,
       onError,
       onOpen,
       onContextMenu: () => {},
@@ -155,7 +157,7 @@ describe("Feature: WorkspaceSearchPanel", () => {
     const opened: boolean[] = [];
     const host = mount(
       async () => outcome([hit("a.txt", 3, "needle")]),
-      (_result, newTab) => opened.push(newTab)
+      (_result, newTab) => { opened.push(newTab); }
     );
     await search(host, "needle");
 
@@ -192,12 +194,89 @@ describe("Feature: WorkspaceSearchPanel", () => {
     await search(host, "needle");
 
     host.querySelectorAll<HTMLElement>(".ws-match")[0].click();
+    await Promise.resolve();
     expect(host.querySelectorAll<HTMLElement>(".ws-match")[0].classList.contains("sel")).toBe(true);
 
     host.querySelectorAll<HTMLElement>(".ws-match")[1].click();
+    await Promise.resolve();
     const matches = host.querySelectorAll<HTMLElement>(".ws-match");
     expect(matches[0].classList.contains("sel")).toBe(false);
     expect(matches[1].classList.contains("sel")).toBe(true);
+  });
+
+  // Given: a.txt の開く処理だけが保留され、b.txt はすぐ成功する
+  // When: a.txt、続けて b.txt を開き、最後に a.txt の処理を解決する
+  // Then: 遅れて完了した古い処理で b.txt の選択色を巻き戻さない
+  it("Scenario: 古い検索結果の遅延完了で選択状態を巻き戻さない", async () => {
+    vi.useFakeTimers();
+    let releaseA!: (opened: boolean) => void;
+    const onOpen: WorkspaceSearchPorts["onOpen"] = (result) => result.rel_path === "a.txt"
+      ? new Promise<boolean>((resolve) => { releaseA = resolve; })
+      : Promise.resolve(true);
+    const host = mount(async () => outcome([
+      hit("a.txt", 0, "a needle"),
+      hit("b.txt", 0, "b needle"),
+    ]), onOpen);
+    await search(host, "needle");
+
+    host.querySelectorAll<HTMLElement>(".ws-match")[0].click();
+    host.querySelectorAll<HTMLElement>(".ws-match")[1].click();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(host.querySelector(".ws-match.sel")?.textContent).toContain("b needle");
+
+    releaseA(true);
+    await Promise.resolve();
+    expect(host.querySelector(".ws-match.sel")?.textContent).toContain("b needle");
+  });
+
+  // Given: a.txt の検索結果があり、開く処理が false を返す
+  // When: 検索結果を開く
+  // Then: 開けなかった行は選択済み色にならない
+  it("Scenario: 開けなかった検索結果を選択済みにしない", async () => {
+    vi.useFakeTimers();
+    const onOpen = vi.fn(async () => false);
+    const host = mount(async () => outcome([hit("a.txt", 0, "needle")]), onOpen);
+    await search(host, "needle");
+
+    host.querySelector<HTMLElement>(".ws-match")!.click();
+    await Promise.resolve();
+
+    expect(host.querySelector(".ws-match.sel")).toBeNull();
+  });
+
+  // Given: a.txt の検索結果があり、開く処理が reject する
+  // When: 検索結果を開く
+  // Then: 選択済み色を付けず、onErrorへ失敗を渡す
+  it("Scenario: 検索結果を開く処理の例外を通知する", async () => {
+    vi.useFakeTimers();
+    const error = new Error("open failed");
+    const onOpen = vi.fn(async () => { throw error; });
+    const onError = vi.fn(async () => {});
+    const host = mount(async () => outcome([hit("a.txt", 0, "needle")]), onOpen, () => {}, onError);
+    await search(host, "needle");
+
+    host.querySelector<HTMLElement>(".ws-match")!.click();
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledWith(error));
+
+    expect(host.querySelector(".ws-match.sel")).toBeNull();
+  });
+
+  // Given: needle の a.txt 結果を選択済みにしている
+  // When: 新しい検索語 needles で検索し直す
+  // Then: 前の検索結果の選択済み色を残さない
+  it("Scenario: 新しい検索条件では前の選択状態を破棄する", async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    const host = mount(async () => outcome([hit(calls++ === 0 ? "a.txt" : "b.txt", 0, "needle")]));
+    await search(host, "needle");
+    host.querySelector<HTMLElement>(".ws-match")!.click();
+    await Promise.resolve();
+    expect(host.querySelector(".ws-match.sel")).not.toBeNull();
+
+    await search(host, "needles");
+
+    expect(host.querySelector(".ws-match.sel")).toBeNull();
   });
 
   // Given: a.txt の結果があり、hit_file_limit=true と hit_result_limit=true
@@ -398,16 +477,16 @@ describe("Feature: WorkspaceSearchPanel", () => {
 
   // Given: 未完了検索に a.txt の表示済み結果があり、onCancel が同期的に Error("cancel IPC failed") を投げる
   // When: 停止ボタンをクリックする
-  // Then: onCancel と console.error は各1回、group は1個のまま、empty に「検索を中止しました」が表示される
+  // Then: onCancelErrorへ失敗を渡し、group は1個のまま、empty に「検索を中止しました」が表示される
   it("Scenario: 中止通知が同期失敗しても、表示済みの結果を保持する", async () => {
     vi.useFakeTimers();
-    const report = vi.spyOn(console, "error").mockImplementation(() => {});
     let searchId = 0;
     const onCancel = vi.fn(() => { throw new Error("cancel IPC failed"); });
+    const onCancelError = vi.fn(async () => {});
     const host = mount((_pat, _options, id) => {
       searchId = id;
       return new Promise<WorkspaceSearchOutcome>(() => {});
-    }, () => {}, onCancel);
+    }, () => {}, onCancel, async () => {}, onCancelError);
     await search(host, "needle");
     mounted.acceptBatch(searchId, [hit("a.txt", 0, "needle")]);
     await vi.advanceTimersByTimeAsync(100);
@@ -415,7 +494,7 @@ describe("Feature: WorkspaceSearchPanel", () => {
     host.querySelector<HTMLButtonElement>(".ws-stop")!.click();
 
     expect(onCancel).toHaveBeenCalledOnce();
-    expect(report).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(onCancelError).toHaveBeenCalledWith(expect.any(Error)));
     expect(host.querySelectorAll(".ws-group")).toHaveLength(1);
     expect(text(host, ".ws-empty")).toContain("検索を中止しました");
   });

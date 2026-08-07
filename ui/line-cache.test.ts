@@ -53,6 +53,43 @@ describe("Feature: LineCache", () => {
     await expect(second).resolves.toBe("line1");
   });
 
+  // Given: chunk0の取得中にcache.clear()が呼ばれ、次世代の取得は`["new"]`を返す
+  // When: clear前から待っていたline(0)とclear後のline(0)を解決する
+  // Then: 待機中の呼び出しも空文字や旧文書ではなく`"new"`を返す
+  it("Scenario: 世代切替中の行取得を新しいキャッシュへ再試行する", async () => {
+    const doc = fakeDocument();
+    let resolveOld!: (lines: string[]) => void;
+    const oldLines = new Promise<string[]>((resolve) => { resolveOld = resolve; });
+    let calls = 0;
+    doc.client.lines = async () => calls++ === 0 ? oldLines : ["new"];
+    const cache = new LineCache(doc.client);
+
+    const waiting = cache.line(0);
+    await Promise.resolve();
+    cache.clear();
+    await expect(cache.line(0)).resolves.toBe("new");
+
+    resolveOld(["old"]);
+    await expect(waiting).resolves.toBe("new");
+  });
+
+  // Given: 初回のlines取得だけが Error("temporary") で失敗する
+  // When: line(0)を失敗後にもう一度取得する
+  // Then: pendingが残らず、2回目は`"retry"`を返す
+  it("Scenario: 取得失敗後は同じチャンクを再試行できる", async () => {
+    const doc = fakeDocument();
+    let calls = 0;
+    doc.client.lines = async () => {
+      if (calls++ === 0) throw new Error("temporary");
+      return ["retry"];
+    };
+    const cache = new LineCache(doc.client);
+
+    await expect(cache.line(0)).rejects.toThrow("temporary");
+    await expect(cache.line(0)).resolves.toBe("retry");
+    expect(calls).toBe(2);
+  });
+
   // Given: 3×CHUNK行の文書でchunk0/chunk2をfetch
   // When: `invalidateFrom(CHUNK*2+1)`
   // Then: chunk0は残り、chunk2は破棄

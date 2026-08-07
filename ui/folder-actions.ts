@@ -1,5 +1,6 @@
 import * as api from "./api";
-import type { ContextTarget, Sidebar } from "./sidebar";
+import type { Sidebar } from "./sidebar";
+import type { ContextTarget } from "./context-target";
 import { fileNameOf, type MemoSpec } from "./document-controller";
 import type { DocumentSession } from "./session";
 import { showMenu, MenuItem } from "./menu";

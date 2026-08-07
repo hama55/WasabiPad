@@ -246,7 +246,9 @@ export class FavBar {
     origin!.setPointerCapture?.(e.pointerId);
     window.addEventListener("pointermove", this.onPointerMove);
     window.addEventListener("pointerup", this.onPointerUp);
+    window.addEventListener("pointercancel", this.onPointerCancel);
     window.addEventListener("keydown", this.onDragKey);
+    window.addEventListener("blur", this.onWindowBlur);
   };
 
   private onPointerMove = (e: PointerEvent) => {
@@ -265,6 +267,14 @@ export class FavBar {
     this.justDragged = true;
     hideMenu();
     void this.applyDrop(drag.source, drag.spot).catch((error) => this.reportDropError(error));
+  };
+
+  private onPointerCancel = () => {
+    this.endDrag();
+  };
+
+  private onWindowBlur = () => {
+    this.endDrag();
   };
 
   private onDragKey = (e: KeyboardEvent) => {
@@ -342,7 +352,9 @@ export class FavBar {
   private endDrag() {
     window.removeEventListener("pointermove", this.onPointerMove);
     window.removeEventListener("pointerup", this.onPointerUp);
+    window.removeEventListener("pointercancel", this.onPointerCancel);
     window.removeEventListener("keydown", this.onDragKey);
+    window.removeEventListener("blur", this.onWindowBlur);
     this.pending = null;
     if (!this.drag) return;
     window.clearTimeout(this.drag.openTimer);

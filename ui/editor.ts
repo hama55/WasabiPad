@@ -333,12 +333,14 @@ export class VirtualEditor {
   }
 
   async restoreViewState(state: EditorViewState) {
+    const generation = this.documentGeneration;
     const anchorLine = Math.max(0, Math.min(this.lineCount - 1, state.anchor.line));
     const caretLine = Math.max(0, Math.min(this.lineCount - 1, state.caret.line));
     const [anchorText, caretText] = await Promise.all([
       this.lineCache.line(anchorLine),
       this.lineCache.line(caretLine),
     ]);
+    if (generation !== this.documentGeneration) return;
     this.sel.anchor = {
       line: anchorLine,
       col: Math.max(0, Math.min(charLen(anchorText), state.anchor.col)),
@@ -353,6 +355,7 @@ export class VirtualEditor {
     if (this.wrap) this.setWrapAnchor(topLine, Math.max(0, state.wrapIntraLinePx));
     else this.setTopLine(topLine);
     await this.lineCache.line(Math.floor(topLine));
+    if (generation !== this.documentGeneration) return;
     this.render();
     this.setHorizontalScroll(Math.max(0, state.scrollLeft));
     this.notifyCursor();

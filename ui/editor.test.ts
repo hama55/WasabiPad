@@ -1203,6 +1203,33 @@ describe("Feature: VirtualEditor", () => {
     expect(restored.scrollLeft).toBe(state.scrollLeft);
   });
 
+  // Given: 旧文書の行取得を保留したまま view state の復元を開始する
+  // When: 復元完了前に別文書を open してから旧取得を解決する
+  // Then: 旧文書の選択位置を新文書へ適用しない
+  it("Scenario: 文書切替中の古い表示状態を新文書へ復元しない", async () => {
+    const { editor, doc } = mount("old");
+    let release!: (lines: string[]) => void;
+    const oldLines = new Promise<string[]>((resolve) => { release = resolve; });
+    let calls = 0;
+    doc.client.lines = async () => calls++ === 0 ? oldLines : ["new"];
+
+    editor.open(1, false);
+    await Promise.resolve();
+    const restoring = editor.restoreViewState({
+      anchor: { line: 0, col: 2 },
+      caret: { line: 0, col: 3 },
+      topLine: 0,
+      wrapIntraLinePx: 0,
+      scrollLeft: 24,
+    });
+    editor.open(1, false);
+    release(["old"]);
+    await restoring;
+
+    expect(editor.captureViewState().anchor).toEqual({ line: 0, col: 0 });
+    expect(editor.captureViewState().caret).toEqual({ line: 0, col: 0 });
+  });
+
   // Given: 文書が「first\nsecond」、first の0〜5列を選択している
   // When: 選択状態を描画する
   // Then: 行番号に selected-line と caret-line が付き、本文行には selected-line/caret-line が付かず、.ve-line-highlight も存在しない

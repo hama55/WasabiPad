@@ -1,5 +1,5 @@
 import type { WorkspaceSearchOptions, WorkspaceSearchOutcome, WorkspaceSearchResult } from "./api";
-import type { ContextTarget } from "./sidebar";
+import type { ContextTarget } from "./context-target";
 import { groupResults, highlightedPreview, searchResultGoto, sortResults, type ResultGroup } from "./search-results";
 import { openSearchSettings } from "./search-settings-dialog";
 import {
@@ -21,10 +21,11 @@ export interface WorkspaceSearchPorts {
     searchId: number
   ) => Promise<WorkspaceSearchOutcome>;
   onCancel: (searchId: number) => void | Promise<void>;
+  onCancelError?: (error: unknown) => void | Promise<void>;
   onError: (error: unknown) => Promise<void>;
   // 一致の範囲は result.highlights が持つ。パターンを渡さないのは、
   // 正規表現や大小の畳み込みで「当たった長さ」がパターンの長さと一致しないため。
-  onOpen: (result: WorkspaceSearchResult, newTab: boolean) => unknown;
+  onOpen: (result: WorkspaceSearchResult, newTab: boolean) => void | boolean | Promise<void | boolean>;
   onContextMenu: (x: number, y: number, target: ContextTarget) => void;
   // 検索条件が変わった。保存先を知るのは呼び出し側 (ここは永続化を知らない)
   onOptionsChange: (options: WorkspaceSearchOptions) => void;
@@ -74,6 +75,7 @@ export class WorkspaceSearchPanel {
   private searchTimer: number | undefined;
   private running: Promise<WorkspaceSearchOutcome> | null = null; // 走行中の検索
   private runningSearchId: number | null = null;
+  private openRequest = 0;
   private ports: WorkspaceSearchPorts;
 
   constructor(options: WorkspaceSearchOptions, ports: WorkspaceSearchPorts) {
@@ -100,6 +102,7 @@ export class WorkspaceSearchPanel {
 
   setFolderRoot(folderRoot: string | null) {
     if (folderRoot === this.folderRoot) return;
+    this.openRequest++;
     if (this.folderRoot && this.state.outcome === "searching") this.stop();
     else {
       this.searchGen++;
@@ -211,6 +214,7 @@ export class WorkspaceSearchPanel {
     const pat = this.searchInput.value;
     this.state.pattern = pat;
     this.state.selected = null;
+    this.openRequest++;
     const gen = ++this.searchGen;
     window.clearTimeout(this.searchTimer);
     // 条件が1つでも変われば最初から引き直す (前回の結果は再利用しない)。
@@ -239,9 +243,11 @@ export class WorkspaceSearchPanel {
 
   private clear(focus = true) {
     this.stop();
+    this.openRequest++;
     this.setOutcome(null);
     this.searchInput.value = "";
     this.state.pattern = "";
+    this.state.selected = null;
     if (focus) this.searchInput.focus();
   }
 
@@ -250,10 +256,19 @@ export class WorkspaceSearchPanel {
     if (searchId === null) return;
     try {
       void Promise.resolve(this.ports.onCancel(searchId)).catch((error) => {
-        console.error("検索の中止に失敗しました", error);
+        void this.reportCancelError(error);
       });
     } catch (error) {
-      console.error("検索の中止に失敗しました", error);
+      void this.reportCancelError(error);
+    }
+  }
+
+  private async reportCancelError(error: unknown) {
+    try {
+      if (this.ports.onCancelError) await this.ports.onCancelError(error);
+      else await this.ports.onError(error);
+    } catch (reportError) {
+      console.error("検索中止エラーを表示できませんでした", reportError);
     }
   }
 
@@ -458,10 +473,16 @@ export class WorkspaceSearchPanel {
   }
 
   private invokeOpen(match: WorkspaceSearchResult, newTab: boolean) {
-    this.state.selected = searchResultKey(match);
-    this.ports.onViewChange();
+    const request = ++this.openRequest;
+    const key = searchResultKey(match);
     try {
-      void Promise.resolve(this.ports.onOpen(match, newTab)).catch((error) => this.reportUiError(error));
+      void Promise.resolve(this.ports.onOpen(match, newTab))
+        .then((opened) => {
+          if (opened === false || request !== this.openRequest) return;
+          this.state.selected = key;
+          this.ports.onViewChange();
+        })
+        .catch((error) => this.reportUiError(error));
     } catch (error) {
       void this.reportUiError(error);
     }

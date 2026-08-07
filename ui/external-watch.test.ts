@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import * as api from "./api";
 import { ExternalWatch, type ExternalWatchPorts } from "./external-watch";
+
+let active: ExternalWatch | undefined;
 
 function fixture() {
   const banner = document.createElement("div");
@@ -19,11 +21,18 @@ function fixture() {
     onError: vi.fn(async () => {}),
     onIgnore: vi.fn(),
   } satisfies ExternalWatchPorts;
-  new ExternalWatch(banner, ports, api);
-  return { banner, ports };
+  const watch = (active = new ExternalWatch(banner, ports, api));
+  return { banner, ports, watch };
 }
 
 describe("Feature: ExternalWatch", () => {
+  afterEach(() => {
+    active?.dispose();
+    active = undefined;
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
   // Given: bannerが表示中、reload/ignoreボタン、isDirty=true、reloadFromDiskが`Error("locked")`でreject
   // When: reloadボタンをクリック
   // Then: `onError`が1回呼ばれ、bannerは表示状態のまま
@@ -35,5 +44,20 @@ describe("Feature: ExternalWatch", () => {
     await vi.waitFor(() => expect(ports.onError).toHaveBeenCalledOnce());
 
     expect(banner.hidden).toBe(false);
+  });
+
+  // Given: 外部変更監視が作成され、定期ポーリングのintervalが登録されている
+  // When: dispose()してから1周期分の時間を進める
+  // Then: ポーリングもボタンのイベント処理も残らない
+  it("Scenario: dispose時に外部監視の後始末をする", async () => {
+    vi.useFakeTimers();
+    const { banner, watch } = fixture();
+    const poll = vi.spyOn(api, "pollExternal");
+
+    watch.dispose();
+    await vi.advanceTimersByTimeAsync(3000);
+    banner.querySelector<HTMLButtonElement>("#external-reload")!.click();
+
+    expect(poll).not.toHaveBeenCalled();
   });
 });

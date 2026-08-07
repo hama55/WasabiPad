@@ -92,6 +92,24 @@ describe("Feature: LiveViewers", () => {
     vi.useRealTimers();
   });
 
+  // Given: viewer-1 が登録済みで closeViewer が注入されている
+  // When: 文書切替のために clear() する
+  // Then: 登録済みの外部ビューも閉じる依頼を出す
+  it("Scenario: clear時に登録済みの外部ビューを閉じる", async () => {
+    const closeViewer = vi.fn(async () => {});
+    const viewers = new LiveViewers({
+      openViewer: async () => "viewer-1",
+      updateViewer: async () => true,
+      closeViewer,
+      wholeRange: async () => ({ start: { line: 0, col: 0 }, end: { line: 0, col: 0 } }),
+      textInRange: async () => "text",
+    });
+
+    await viewers.open("csv", null, { start: { line: 0, col: 0 }, end: { line: 0, col: 0 } });
+    viewers.clear();
+    await vi.waitFor(() => expect(closeViewer).toHaveBeenCalledWith("viewer-1"));
+  });
+
   // Given: update Promiseが保留中
   // When: refresh開始後に`clear()`してPromiseを解決
   // Then: 旧viewerのupdate呼び出しは1回だけ

@@ -62,10 +62,15 @@ export class LineCache {
   }
 
   async line(index: number): Promise<string> {
-    const cached = this.peek(index);
-    if (cached !== undefined) return cached;
-    await this.fetch(LineCache.chunkOf(index));
-    return this.peek(index) ?? "";
+    const chunk = LineCache.chunkOf(index);
+    for (;;) {
+      const generation = this.generation;
+      const cached = this.peek(index);
+      if (cached !== undefined) return cached;
+      await this.fetch(chunk);
+      if (generation !== this.generation) continue;
+      return this.peek(index) ?? "";
+    }
   }
 
   async lineLength(index: number): Promise<number> {

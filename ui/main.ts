@@ -275,19 +275,21 @@ const sidebar = new Sidebar(sidebarEl, {
   },
   onSearch: (pat, options, searchId) => api.workspaceSearch(pat, options, searchId),
   onCancel: (searchId) => api.workspaceSearchCancel(searchId),
+  onCancelError: (error) => showError("検索を中止できませんでした", error),
   onError: (error) => showError("フォルダを検索できませんでした", error),
   onOptionsChange: saveSearchOptions,
   onOpen: async (result, newTab) => {
     if (newTab) {
       await openInNewTab(result.rel_path, searchResultGoto(result));
-      return;
+      return true;
     }
-    if (!(await tabs.navigateEntry(result.rel_path))) return;
+    if (!(await tabs.navigateEntry(result.rel_path))) return false;
     // 当たった長さは backend が返す範囲から取る。正規表現や大小の畳み込みでは
     // 入力したパターンの長さと一致しない。
     const [, length] = result.highlights[0] ?? [0, 0];
     if (result.is_filename) editor.goTo(result.line, result.col);
     else await editor.selectRange(result.line, result.col, result.col + length);
+    return true;
   },
 }, loadSearchOptions());
 
@@ -363,6 +365,7 @@ const externalWatch = new ExternalWatch($("external-banner"), {
   onError: showError,
   onIgnore: () => editor.focus(),
 }, api);
+window.addEventListener("beforeunload", () => externalWatch.dispose());
 
 const favbar = new FavBar($("favbar"), {
   onOpen: (path, newTab) => runBackground("お気に入りを開けませんでした", () => newTab ? tabs.open(path) : tabs.navigatePath(path)),

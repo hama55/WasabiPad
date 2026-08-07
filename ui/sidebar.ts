@@ -1,6 +1,8 @@
-import type { FolderEntry, Pos, WorkspaceSearchOptions, WorkspaceSearchResult } from "./api";
+import type { FolderEntry, WorkspaceSearchOptions, WorkspaceSearchResult } from "./api";
 import { WorkspaceSearchPanel, type WorkspaceSearchPorts } from "./workspace-search-panel";
 import { archiveEntryPath } from "./archive-path";
+import type { ContextTarget } from "./context-target";
+export type { ContextTarget } from "./context-target";
 
 // フォルダ/ZIP/Excelのエントリ名 ("sub/a.txt" 形式) からツリーを構築して表示。
 // 実データは backend が保持し、選択時に relPath を親へ通知するだけ。
@@ -28,12 +30,6 @@ const ROW_GLYPHS: Record<RowKind, [string, string]> = {
   archiveEntry: ["", ""],
 };
 
-export interface ContextTarget {
-  relPath: string;
-  isDir: boolean;
-  goto?: Pos; // 検索結果から開く場合の飛び先
-}
-
 // サイドバーが外界へ出す依頼。IPC も文書状態もここより先は知らない。
 // 検索の依頼 (onSearch / onCancel / onOpen / onOptionsChange) は
 // WorkspaceSearchPanel のもので、ここはそのまま素通しする。
@@ -51,6 +47,7 @@ export class Sidebar {
   private panel: WorkspaceSearchPanel;
   private rows: Row[] = [];
   private sel: string | null = null; // 選択中の relPath
+  private selectionRequest = 0;
   private onSelect: (relPath: string, newTab: boolean) => void | Promise<boolean | void>;
   private onContextMenu: (x: number, y: number, target: ContextTarget | null) => void;
   private onExpandArchive: (relPath: string) => Promise<string[]>;
@@ -67,6 +64,7 @@ export class Sidebar {
     this.panel = new WorkspaceSearchPanel(searchOptions, {
       onSearch: ports.onSearch,
       onCancel: ports.onCancel,
+      onCancelError: ports.onCancelError,
       onError: ports.onError,
       onOpen: ports.onOpen,
       onOptionsChange: ports.onOptionsChange,
@@ -85,6 +83,7 @@ export class Sidebar {
   }
 
   setWorkspaceSearch(folderRoot: string | null) {
+    this.selectionRequest++;
     this.panel.setFolderRoot(folderRoot);
   }
 
@@ -129,12 +128,14 @@ export class Sidebar {
 
   // フォルダの直下だけを表示する。ファイルは自動選択しない。
   setEntries(entries: FolderEntry[]) {
+    this.selectionRequest++;
     this.rows = this.folderRows(entries, 0, "");
     this.sel = null;
     this.render();
   }
 
   async refreshFolderEntries() {
+    const request = ++this.selectionRequest;
     const oldRows = this.rows;
     const oldByPath = new Map(oldRows.map((row) => [row.relPath, row]));
     const archiveChildren = new Map<string, Row[]>();
@@ -163,12 +164,15 @@ export class Sidebar {
       return groups.flat();
     };
 
-    this.rows = await rebuild(await this.onExpandFolder(""), 0, "");
+    const rows = await rebuild(await this.onExpandFolder(""), 0, "");
+    if (request !== this.selectionRequest) return;
+    this.rows = rows;
     if (this.sel && !this.rows.some((row) => row.kind !== "dir" && row.relPath === this.sel)) this.sel = null;
     this.render();
   }
 
   setArchiveEntries(names: string[]) {
+    this.selectionRequest++;
     this.rows = this.buildRows(names, 0, "", () => "archiveEntry");
     this.sel = null;
     this.render();
@@ -187,12 +191,14 @@ export class Sidebar {
 
   // 直接開いた (フォルダ非経由の) zip/xlsx/xls 自身を、展開前の単一行として表示する。
   setArchiveRoot(displayName: string) {
+    this.selectionRequest++;
     this.rows = [{ label: displayName, relPath: "", depth: 0, kind: "archive", expanded: false, childrenLoaded: false }];
     this.sel = null;
     this.render();
   }
 
   select(relPath: string) {
+    this.selectionRequest++;
     this.sel = relPath;
     this.render();
   }
@@ -200,18 +206,25 @@ export class Sidebar {
   // 新規作成/リネーム後、相対パスからそのファイル行を再選択する (無ければ何もしない)。
   // タブ復帰時は深い階層がまだ展開されていないため、必要な親だけ非同期で開く。
   async selectByRelPath(relPath: string) {
-    if (this.panel.showing) return;
+    const request = ++this.selectionRequest;
+    if (this.panel.showing) {
+      this.sel = relPath;
+      return;
+    }
     const parts = relPath.split("/");
     for (let depth = 1; depth < parts.length; depth++) {
+      if (request !== this.selectionRequest) return;
       const parent = parts.slice(0, depth).join("/");
       const row = this.rows.find((candidate) => candidate.kind === "dir" && candidate.relPath === parent);
       if (!row) return;
-      if (!row.childrenLoaded) await this.expandFolderRow(row);
+      if (!row.childrenLoaded) await this.expandFolderRow(row, request);
       else if (!row.expanded) {
+        if (request !== this.selectionRequest) return;
         row.expanded = true;
         this.render();
       }
     }
+    if (request !== this.selectionRequest) return;
     const row = this.rows.find((candidate) => candidate.kind !== "dir" && candidate.relPath === relPath);
     if (!row) return;
     this.sel = row.relPath;
@@ -230,12 +243,16 @@ export class Sidebar {
     this.render();
   }
 
-  private async expandFolderRow(r: Row) {
+  private async expandFolderRow(r: Row, request?: number) {
     if (!r.childrenLoaded) {
       const children = this.folderRows(await this.onExpandFolder(r.relPath), r.depth + 1, r.relPath);
-      this.rows.splice(this.rows.indexOf(r) + 1, 0, ...children);
+      if (request !== undefined && request !== this.selectionRequest) return;
+      const index = this.rows.indexOf(r);
+      if (index < 0) return;
+      this.rows.splice(index + 1, 0, ...children);
       r.childrenLoaded = true;
     }
+    if (request !== undefined && request !== this.selectionRequest) return;
     r.expanded = !r.expanded;
     this.render();
   }

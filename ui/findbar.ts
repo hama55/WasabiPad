@@ -11,6 +11,7 @@ export class FindBar {
   private onReplaceNext: (pat: string, rep: string, matchCase: boolean) => Promise<boolean>;
   private onDone: () => void;
   private onError: (message: string, error: unknown) => void | Promise<void>;
+  private running: Promise<void> = Promise.resolve();
 
   constructor(
     host: HTMLElement,
@@ -119,7 +120,8 @@ export class FindBar {
   }
 
   private run(operation: () => Promise<void>) {
-    void Promise.resolve()
+    this.running = this.running
+      .catch(() => {})
       .then(operation)
       .catch((error) => this.reportError("検索・置換を実行できませんでした", error));
   }

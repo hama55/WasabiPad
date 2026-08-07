@@ -32,14 +32,23 @@ export class LiveViewers {
   constructor(private ports: LiveViewerPorts) {}
 
   clear() {
+    const labels = [...this.viewers.keys()];
     this.generation++;
     this.refreshVersion++;
     this.refreshRequested = false;
     this.refreshPromise = undefined;
     this.viewers.clear();
+    for (const label of labels) this.closeViewer(label);
     window.clearTimeout(this.timer);
     this.timer = undefined;
     this.errorReported = false;
+  }
+
+  private closeViewer(label: string) {
+    if (!this.ports.closeViewer) return;
+    void Promise.resolve()
+      .then(() => this.ports.closeViewer!(label))
+      .catch((error) => this.reportUnexpectedRefreshError(error));
   }
 
   has(format: ViewerFormat) {

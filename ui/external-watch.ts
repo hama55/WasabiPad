@@ -21,19 +21,35 @@ export class ExternalWatch {
   private busy = false;
   private generation = 0;
   private pollErrorReported = false;
+  private pollTimer: number;
+  private reloadButton: HTMLButtonElement;
+  private ignoreButton: HTMLButtonElement;
 
   constructor(
     private banner: HTMLElement,
     private ports: ExternalWatchPorts,
     private api: ExternalWatchApi,
   ) {
-    this.pick("external-reload").addEventListener("click", () => {
-      void this.reloadFromDisk().catch((error) => this.reportError("再読込できませんでした", error));
-    });
-    this.pick("external-ignore").addEventListener("click", () => {
-      void this.ignore().catch((error) => this.reportError("外部変更を無視できませんでした", error));
-    });
-    window.setInterval(() => void this.poll(), POLL_INTERVAL_MS);
+    this.reloadButton = this.pick("external-reload");
+    this.ignoreButton = this.pick("external-ignore");
+    this.reloadButton.addEventListener("click", this.onReloadClick);
+    this.ignoreButton.addEventListener("click", this.onIgnoreClick);
+    this.pollTimer = window.setInterval(() => void this.poll(), POLL_INTERVAL_MS);
+  }
+
+  private onReloadClick = () => {
+    void this.reloadFromDisk().catch((error) => this.reportError("再読込できませんでした", error));
+  };
+
+  private onIgnoreClick = () => {
+    void this.ignore().catch((error) => this.reportError("外部変更を無視できませんでした", error));
+  };
+
+  dispose() {
+    this.generation++;
+    window.clearInterval(this.pollTimer);
+    this.reloadButton.removeEventListener("click", this.onReloadClick);
+    this.ignoreButton.removeEventListener("click", this.onIgnoreClick);
   }
 
   private pick<T extends HTMLElement>(id: string): T {
