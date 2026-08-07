@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { runAsyncBoundary } from "./async-boundary";
+import { reportUnhandledRejection, runAsyncBoundary } from "./async-boundary";
 
 describe("Feature: async boundary", () => {
   // Given: 同期的にErrorを投げる操作
@@ -24,5 +24,20 @@ describe("Feature: async boundary", () => {
 
     runAsyncBoundary(() => Promise.reject(error), onError);
     await vi.waitFor(() => expect(onError).toHaveBeenCalledWith(error));
+  });
+
+  // Given: cancel可能な未処理Promise拒否イベント
+  // When: reportUnhandledRejectionでエラー通知する
+  // Then: reasonを通知し、ブラウザの既定イベントを抑止しない
+  it("Scenario: 未処理Promiseの既定通知を抑止せずエラーを渡す", async () => {
+    const error = new Error("unhandled failure");
+    const event = new Event("unhandledrejection", { cancelable: true }) as PromiseRejectionEvent;
+    Object.defineProperty(event, "reason", { value: error });
+    const onError = vi.fn();
+
+    reportUnhandledRejection(event, onError);
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledWith(error));
+
+    expect(event.defaultPrevented).toBe(false);
   });
 });

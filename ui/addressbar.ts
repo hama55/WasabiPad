@@ -1,6 +1,7 @@
 // パス表示欄とその左右のボタン (#topbar) を1つの部品として閉じる。
 // パスの解釈以外の判断 (開けるか/保存するか) は持たず、すべて ports へ委ねる。
 import type { NavigationState } from "./navigation-history";
+import { isMiddleClick } from "./interaction-constants";
 
 export interface AddressBarPorts {
   onOpen: (path: string, newTab?: boolean) => void;
@@ -90,6 +91,10 @@ export class AddressBar {
     else this.ports.onForward();
   };
 
+  dispose() {
+    window.removeEventListener("auxclick", this.onMouseNavigation, true);
+  }
+
   render(path: string) {
     this.input.value = path;
     this.breadcrumb.replaceChildren(...pathSegments(path).flatMap((segment, index) => {
@@ -109,7 +114,7 @@ export class AddressBar {
         this.ports.onOpen(segment.path);
       });
       button.addEventListener("auxclick", (event) => {
-        if (event.button !== 1) return;
+        if (!isMiddleClick(event)) return;
         event.preventDefault();
         event.stopPropagation();
         this.ports.onOpen(segment.path, true);

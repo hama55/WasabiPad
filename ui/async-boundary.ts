@@ -9,6 +9,15 @@ export function runAsyncBoundary(
   }
 }
 
+export function reportUnhandledRejection(
+  event: PromiseRejectionEvent,
+  onError: (error: unknown) => void | Promise<void>,
+) {
+  runAsyncBoundary(() => onError(event.reason), (error) => {
+    console.error("未処理Promiseのエラー通知に失敗しました", error);
+  });
+}
+
 function reportError(onError: (error: unknown) => void | Promise<void>, error: unknown) {
   try {
     void Promise.resolve(onError(error)).catch((reportError) => {

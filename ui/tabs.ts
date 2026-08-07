@@ -3,9 +3,8 @@ import type { DocumentSession } from "./session";
 import { cloneEditorViewState, type EditorViewState } from "./editor-view-state";
 import { basename } from "./path";
 import { showMenu, type MenuItem } from "./menu";
-import { revealInExplorer } from "./folder-actions";
 import { createRegisteredCommandMenu, type RegisteredCommandMenuPorts } from "./registered-command-menu";
-import { DRAG_THRESHOLD } from "./interaction-constants";
+import { DRAG_THRESHOLD, isMiddleClick } from "./interaction-constants";
 import { MENU_ICON } from "./menu-icons";
 import { MENU_LABELS } from "./menu-labels";
 import {
@@ -21,7 +20,7 @@ export interface TabDocumentPort {
   readonly current: Readonly<DocumentSession>;
   confirmDiscard: (onProceed?: () => void | Promise<void>) => Promise<boolean>;
   openPath: (path: string, confirm?: boolean) => Promise<boolean>;
-  selectEntry: (relPath: string) => Promise<boolean | void>;
+  selectEntry: (relPath: string) => Promise<boolean>;
   newFile: (confirm?: boolean) => Promise<void>;
   goTo: (position: Pos) => void;
   captureViewState: () => EditorViewState;
@@ -34,6 +33,7 @@ interface TabPorts {
   onError?: (error: unknown, message?: string) => void | Promise<void>;
   onDetach?: (request: WindowRequest) => Promise<boolean>;
   onHistoryChange?: (state: NavigationState) => void;
+  revealInExplorer?: (path: string, isDir: boolean) => void | Promise<unknown>;
 }
 
 const newId = () => `tab-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -526,7 +526,7 @@ export class TabManager {
         else this.run(() => this.activate(tab.id));
       });
       button.addEventListener("auxclick", (event) => {
-        if (event.button === 1) this.run(() => this.close(tab.id));
+        if (isMiddleClick(event)) this.run(() => this.close(tab.id));
       });
       button.addEventListener("contextmenu", (event) => {
         event.preventDefault();
@@ -559,7 +559,10 @@ export class TabManager {
       items.push({
         label: MENU_LABELS.explorer,
         iconClass: MENU_ICON.explorer,
-        action: () => this.run(() => revealInExplorer(tab.path!, tab.kind === "folder")),
+        action: () => this.run(() => {
+          if (!this.ports.revealInExplorer) throw new Error("エクスプローラ連携が未接続です");
+          return this.ports.revealInExplorer(tab.path!, tab.kind === "folder");
+        }),
       });
       if (tab.kind === "file") {
         items.push(createRegisteredCommandMenu(tab.path, {

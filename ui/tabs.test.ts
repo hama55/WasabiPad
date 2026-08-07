@@ -380,6 +380,21 @@ describe("Feature: TabManager", () => {
     expect(manager.state.tabs[0].goto).toBeUndefined();
   });
 
+  // Given: a.txtとb.txtの2タブがあり、activeIdはa
+  // When: 既存のb.txtをopenする
+  // Then: タブを複製せずbをactiveにする
+  it("Scenario: 新規タブ経路でも同じパスの既存タブを再利用する", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init(stored, null, null);
+
+    await manager.open("C:\\work\\b.txt");
+
+    expect(manager.state.tabs).toHaveLength(2);
+    expect(manager.state.activeId).toBe("b");
+    expect(doc.openPath).toHaveBeenLastCalledWith("C:\\work\\b.txt", false);
+  });
+
   // Given: active tab が a で、doc.goTo が Error("invalid position") を投げる
   // When: a.txt に { line: 8, col: 3 } を付けて open() を呼ぶ
   // Then: invalid position で reject し、tab の goto は undefined
@@ -693,7 +708,10 @@ describe("Feature: TabManager", () => {
     try {
       const { doc, host } = fixture();
       document.body.appendChild(Object.assign(document.createElement("div"), { id: "dropdown" }));
-      const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+      const manager = new TabManager(host, doc, {
+        onChange: () => {},
+        revealInExplorer: api.revealInExplorer,
+      }, registeredCommandPorts);
       await manager.init({
         tabs: [
           { id: "file", path: "C:\\work\\memo.txt", kind: "file", label: "memo.txt" },
@@ -768,7 +786,11 @@ describe("Feature: TabManager", () => {
     try {
       const { doc, host } = fixture();
       document.body.appendChild(Object.assign(document.createElement("div"), { id: "dropdown" }));
-      const manager = new TabManager(host, doc, { onChange: () => {}, onError }, registeredCommandPorts);
+      const manager = new TabManager(host, doc, {
+        onChange: () => {},
+        onError,
+        revealInExplorer: api.revealInExplorer,
+      }, registeredCommandPorts);
       await manager.init({
         tabs: [{ id: "file", path: "C:\\work\\memo.txt", kind: "file", label: "memo.txt" }],
         activeId: "file",

@@ -41,13 +41,14 @@ import {
 } from "./settings";
 import { THEME_STORAGE_KEY } from "./theme";
 import { searchResultGoto } from "./search-results";
+import { runAsyncBoundary, reportUnhandledRejection } from "./async-boundary";
+import { openPath as openPathInTabs } from "./path-opener";
 
 const win = getCurrentWindow();
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 window.addEventListener("error", () => runBackground("画面を再表示できませんでした", () => win.show()), { once: true });
 window.addEventListener("unhandledrejection", (event) => {
-  event.preventDefault();
-  void reportBackgroundError("予期しない非同期エラーが発生しました", event.reason);
+  reportUnhandledRejection(event, (error) => reportBackgroundError("予期しない非同期エラーが発生しました", error));
 });
 
 // 以降のモジュール初期化は設定値を同期的に読むため、ここで一度だけ待つ
@@ -115,13 +116,13 @@ async function openImageInViewer(relPath: string): Promise<boolean> {
     await api.openViewer("markdown", `<img src="${name}" alt="${name}">`, null, path);
     return true;
   } catch (error) {
-    await showError("画像を表示できませんでした", error);
+    await reportBackgroundError("画像を表示できませんでした", error);
     return false;
   }
 }
 
 function runBackground(title: string, operation: () => void | Promise<unknown>) {
-  void Promise.resolve().then(operation).catch((error) => reportBackgroundError(title, error));
+  runAsyncBoundary(() => Promise.resolve().then(operation), (error) => reportBackgroundError(title, error));
 }
 
 async function launchNewWindow(request: Partial<api.WindowRequest> = {}): Promise<boolean> {
@@ -195,9 +196,7 @@ window.addEventListener("storage", (event) => {
 });
 
 const addressbar = new AddressBar($("topbar"), {
-  onOpen: (path, newTab) => runBackground("開けませんでした", () =>
-    newTab ? tabs.open(path) : tabs.navigatePath(path)
-  ),
+  onOpen: (path, newTab) => runBackground("開けませんでした", () => openPathInTabs(tabs, path, newTab)),
   onBack: () => runBackground("戻れませんでした", () => tabs.goBack()),
   onForward: () => runBackground("進めませんでした", () => tabs.goForward()),
   onSave: () => runBackground("保存できませんでした", () => doc.save()),
@@ -240,7 +239,7 @@ const editor: VirtualEditor = new VirtualEditor(editorHost, {
     try {
       return await api.openViewer(format, text, selection, doc.current.savePath);
     } catch (error) {
-      await showError("ビューを開けませんでした", error);
+      await reportBackgroundError("ビューを開けませんでした", error);
       return null;
     }
   },
@@ -367,10 +366,13 @@ const externalWatch = new ExternalWatch($("external-banner"), {
   onError: showError,
   onIgnore: () => editor.focus(),
 }, api);
-window.addEventListener("beforeunload", () => externalWatch.dispose());
+window.addEventListener("beforeunload", () => {
+  addressbar.dispose();
+  externalWatch.dispose();
+});
 
 const favbar = new FavBar($("favbar"), {
-  onOpen: (path, newTab) => runBackground("お気に入りを開けませんでした", () => newTab ? tabs.open(path) : tabs.navigatePath(path)),
+  onOpen: (path, newTab) => runBackground("お気に入りを開けませんでした", () => openPathInTabs(tabs, path, newTab)),
   onAddGroupToTabs: (items) => tabs.addLinks(items),
   revealInExplorer,
   currentFile: () => addressbar.path || null,
@@ -390,7 +392,7 @@ const folderActions = new FolderActions(doc, {
   onAddFavorite: (path) => runBackground("お気に入りに追加できませんでした", () => favbar.addExternal(path)),
   onSetStartupPath: (path) => setSetting("startupPath", path),
   onOpenPath: (path) => {
-    runBackground("開けませんでした", () => tabs.navigatePath(path));
+    runBackground("開けませんでした", () => openPathInTabs(tabs, path));
   },
 }, {
   api,
@@ -526,6 +528,7 @@ tabs = new TabManager($("tabs"), doc, {
   onHistoryChange: (state) => addressbar.setNavigationState(state),
   onError: (error, message = "タブを操作できませんでした") => reportBackgroundError(message, error),
   onDetach: (request) => launchNewWindow(request),
+  revealInExplorer,
 }, {
   ...registeredCommandPorts,
 });

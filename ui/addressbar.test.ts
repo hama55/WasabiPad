@@ -126,8 +126,59 @@ describe("Feature: AddressBar breadcrumbs", () => {
     const event = new MouseEvent("auxclick", { button: 1, bubbles: true, cancelable: true });
     crumb.dispatchEvent(event);
 
+    expect(ports.onOpen).toHaveBeenCalledTimes(1);
     expect(ports.onOpen).toHaveBeenCalledWith("C:\\work", true);
     expect(event.defaultPrevented).toBe(true);
+  });
+
+  // Given: `C:\\work\\memo.txt` を表示中のAddressBar
+  // When: `work` のパンくずを通常クリックする
+  // Then: 現在タブ用の開く通知だけを1回送り、既定動作は維持する
+  it("Scenario: 通常クリックしたパンくずを現在タブで開く", () => {
+    const { host, ports } = addressBarFixture();
+    const addressbar = new AddressBar(host, ports);
+    addressbar.render("C:\\work\\memo.txt");
+
+    const crumb = host.querySelectorAll<HTMLButtonElement>(".addressbar-crumb")[1];
+    const event = new MouseEvent("click", { bubbles: true, cancelable: true });
+    crumb.dispatchEvent(event);
+
+    expect(ports.onOpen).toHaveBeenCalledTimes(1);
+    expect(ports.onOpen.mock.calls).toEqual([["C:\\work"]]);
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  // Given: `C:\\work\\memo.txt` を表示中のAddressBar
+  // When: パンくずへホイールボタン以外のauxclickを送る
+  // Then: 新規タブ通知も既定動作の抑止も行わない
+  // Examples: button = 0, 2, 3, 4
+  it.each([0, 2, 3, 4])("Scenario: button=%s はホイールクリックとして扱わない", (button) => {
+    const { host, ports } = addressBarFixture();
+    const addressbar = new AddressBar(host, ports);
+    addressbar.render("C:\\work\\memo.txt");
+
+    const crumb = host.querySelectorAll<HTMLButtonElement>(".addressbar-crumb")[1];
+    const event = new MouseEvent("auxclick", { button, bubbles: true, cancelable: true });
+    crumb.dispatchEvent(event);
+
+    expect(ports.onOpen).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  // Given: 戻る操作を受け付けるAddressBar
+  // When: disposeしてからwindowへ側面ボタンを送る
+  // Then: 解除後はAddressBarが操作を奪わない
+  it("Scenario: disposeでwindowのナビゲーション監視を解除する", () => {
+    const { host, ports } = addressBarFixture();
+    const addressbar = new AddressBar(host, ports);
+    addressbar.setNavigationState({ canGoBack: true, canGoForward: false });
+    addressbar.dispose();
+
+    const event = new MouseEvent("auxclick", { button: 3, bubbles: true, cancelable: true });
+    window.dispatchEvent(event);
+
+    expect(ports.onBack).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
   });
 });
 

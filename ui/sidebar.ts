@@ -2,6 +2,7 @@ import type { FolderEntry, WorkspaceSearchOptions, WorkspaceSearchResult } from 
 import { WorkspaceSearchPanel, type WorkspaceSearchPorts } from "./workspace-search-panel";
 import { archiveEntryPath } from "./archive-path";
 import type { ContextTarget } from "./context-target";
+import { isMiddleClick } from "./interaction-constants";
 export type { ContextTarget } from "./context-target";
 
 // フォルダ/ZIP/Excelのエントリ名 ("sub/a.txt" 形式) からツリーを構築して表示。
@@ -333,7 +334,7 @@ export class Sidebar {
         activate(e.ctrlKey);
       });
       div.addEventListener("auxclick", (e) => {
-        if (e.button === 1) activate(true);
+        if (isMiddleClick(e)) activate(true);
       });
       if (r.kind !== "archiveEntry") {
         // archiveEntry はアーカイブ内の仮想エントリなので、実ファイル向けの

@@ -1,5 +1,6 @@
 import type { WorkspaceSearchOptions, WorkspaceSearchOutcome, WorkspaceSearchResult } from "./api";
 import type { ContextTarget } from "./context-target";
+import { isMiddleClick } from "./interaction-constants";
 import { groupResults, highlightedPreview, searchResultGoto, sortResults, type ResultGroup } from "./search-results";
 import { openSearchSettings } from "./search-settings-dialog";
 import {
@@ -499,7 +500,7 @@ export class WorkspaceSearchPanel {
   // ホイールクリックと右クリックは、どちらの行でも「新規タブで開く」入口になる
   private bindOpen(row: HTMLElement, match: WorkspaceSearchResult) {
     row.addEventListener("auxclick", (e) => {
-      if (e.button !== 1) return;
+      if (!isMiddleClick(e)) return;
       e.preventDefault();
       this.invokeOpen(match, true);
     });

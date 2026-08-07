@@ -1,5 +1,6 @@
 // 共有ドロップダウンメニュー (タイトルバーのメニュー・お気に入りグループ・右クリックで使用)
 import { createMenuIcon, type MenuItemIconClass } from "./menu-icons";
+import { isMiddleClick } from "./interaction-constants";
 
 type MenuAction = (event?: MouseEvent) => void | Promise<unknown>;
 type MenuTrailingAction = { label: string; title: string; action: () => void | Promise<unknown> };
@@ -126,7 +127,7 @@ function renderItems(state: MenuState, el: HTMLElement, items: MenuItem[]) {
       }
     });
     div.addEventListener("auxclick", (e) => {
-      if (e.button !== 1 || hasSubmenu(item)) return;
+      if (!isMiddleClick(e) || hasSubmenu(item)) return;
       e.preventDefault();
       e.stopPropagation();
       invokeLeaf(item, e);

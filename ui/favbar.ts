@@ -1,7 +1,7 @@
 import { BmNode, loadBookmarks, pathIsDirectory, saveBookmarks } from "./api";
 import { hideMenu, showMenu, MenuItem } from "./menu";
 import { promptFields } from "./prompt";
-import { DRAG_THRESHOLD } from "./interaction-constants";
+import { DRAG_THRESHOLD, isMiddleClick } from "./interaction-constants";
 import { favoriteIconClass, MENU_ICON } from "./menu-icons";
 import { MENU_LABELS } from "./menu-labels";
 import { runAsyncBoundary } from "./async-boundary";
@@ -32,7 +32,7 @@ export const bookmarkStore: BookmarkStore = {
 };
 
 export interface FavBarPorts {
-  onOpen: (path: string, newTab: boolean) => unknown;
+  onOpen: (path: string, newTab: boolean) => void | Promise<unknown>;
   onAddGroupToTabs: (items: { path: string; kind: "file" | "folder" }[]) => void;
   revealInExplorer: (path: string, isDir: boolean) => void | Promise<unknown>;
   currentFile: () => string | null;
@@ -52,7 +52,7 @@ export class FavBar {
   } | null = null;
   private justDragged = false;
   private menuRoot = document.getElementById("dropdown");
-  private onOpen: (path: string, newTab: boolean) => void;
+  private onOpen: (path: string, newTab: boolean) => void | Promise<unknown>;
   private onAddGroupToTabs: FavBarPorts["onAddGroupToTabs"];
   private revealInExplorer: FavBarPorts["revealInExplorer"];
   private currentFile: () => string | null;
@@ -114,7 +114,7 @@ export class FavBar {
       button.title = node.path;
       button.addEventListener("click", (e) => this.runOpen(node.path, e.ctrlKey));
       button.addEventListener("auxclick", (e) => {
-        if (e.button === 1) this.runOpen(node.path, true);
+        if (isMiddleClick(e)) this.runOpen(node.path, true);
       });
     }
 
@@ -151,7 +151,7 @@ export class FavBar {
             ...common,
             onContextMenu,
             label: child.name,
-            action: (e?: MouseEvent) => this.runOpen(child.path, Boolean(e?.ctrlKey || e?.button === 1)),
+            action: (e?: MouseEvent) => this.runOpen(child.path, Boolean(e?.ctrlKey || isMiddleClick(e))),
           };
     });
   }

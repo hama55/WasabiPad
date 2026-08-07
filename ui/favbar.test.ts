@@ -23,7 +23,7 @@ function mount(
   const favbar = new FavBar(
     document.getElementById("favbar")!,
     {
-      onOpen: (path) => opened.push(path),
+      onOpen: (path) => { opened.push(path); },
       onAddGroupToTabs: (items) => addedGroups.push(items),
       revealInExplorer: (path, isDir) => api.revealInExplorer(path, isDir),
       onError,
