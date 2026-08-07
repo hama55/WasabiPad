@@ -4,6 +4,7 @@ import { promptFields } from "./prompt";
 import { DRAG_THRESHOLD } from "./interaction-constants";
 import { favoriteIconClass, MENU_ICON } from "./menu-icons";
 import { MENU_LABELS } from "./menu-labels";
+import { runAsyncBoundary } from "./async-boundary";
 
 type NodePath = number[];
 type DropKind = "before" | "inside" | "after";
@@ -379,19 +380,11 @@ export class FavBar {
   }
 
   private runMutation(operation: () => void | Promise<unknown>) {
-    try {
-      void Promise.resolve(operation()).catch((error) => this.reportDropError(error));
-    } catch (error) {
-      void this.reportDropError(error);
-    }
+    runAsyncBoundary(operation, (error) => this.reportDropError(error));
   }
 
   private runOpen(path: string, newTab: boolean) {
-    try {
-      void Promise.resolve(this.onOpen(path, newTab)).catch((error) => this.reportDropError(error));
-    } catch (error) {
-      void this.reportDropError(error);
-    }
+    runAsyncBoundary(() => this.onOpen(path, newTab), (error) => this.reportDropError(error));
   }
 
   private async moveAdjacent(source: NodePath, target: NodePath, after: boolean) {

@@ -1,4 +1,5 @@
 import type { Window } from "@tauri-apps/api/window";
+import { runAsyncBoundary } from "./async-boundary";
 
 export interface WindowChromePorts {
   // 閉じてよければ true。false ならクローズを取り消す。
@@ -62,11 +63,7 @@ export class WindowChrome {
   }
 
   private run(title: string, operation: () => void | Promise<unknown>) {
-    try {
-      void Promise.resolve(operation()).catch((error) => this.reportError(title, error));
-    } catch (error) {
-      void this.reportError(title, error);
-    }
+    runAsyncBoundary(operation, (error) => this.reportError(title, error));
   }
 
   private async reportError(title: string, error: unknown) {

@@ -5,6 +5,7 @@ import { formatByteSize, formatCursor, formatFontFamily, formatLineCount } from 
 import { DEFAULT_INDENT_SIZE, INDENT_SIZES, promptFontFamily, promptFontSize } from "./font-controls";
 import { confirmMessage, promptFields } from "./prompt";
 import { normalizeTheme, THEME_STORAGE_KEY, THEMES, type Theme } from "./theme";
+import { runAsyncBoundary } from "./async-boundary";
 
 const THEME_LABELS: Record<Theme, string> = { dark: "ダーク", light: "ライト" };
 const READ_ENCODING_LABELS: Record<ReadEncoding, string> = {
@@ -76,11 +77,7 @@ export class StatusBar {
   }
 
   private run(title: string, operation: () => void | Promise<unknown>) {
-    try {
-      void Promise.resolve(operation()).catch((error) => this.reportError(title, error));
-    } catch (error) {
-      void this.reportError(title, error);
-    }
+    runAsyncBoundary(operation, (error) => this.reportError(title, error));
   }
 
   private async reportError(title: string, error: unknown) {

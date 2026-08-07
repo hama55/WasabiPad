@@ -13,6 +13,7 @@ import { viewerFormatForPath } from "./viewer-formats";
 import { createRegisteredCommandMenu, type RegisteredCommandMenuPorts } from "./registered-command-menu";
 import { MENU_ICON } from "./menu-icons";
 import { MENU_LABELS } from "./menu-labels";
+import { runAsyncBoundary } from "./async-boundary";
 export { isImagePath } from "./image-formats";
 
 export interface FolderActionsPorts {
@@ -63,11 +64,7 @@ export class FolderActions {
   }
 
   private run(title: string, operation: () => void | Promise<unknown>) {
-    try {
-      void Promise.resolve(operation()).catch((error) => this.reportError(title, error));
-    } catch (error) {
-      void this.reportError(title, error);
-    }
+    runAsyncBoundary(operation, (error) => this.reportError(title, error));
   }
 
   private async reportError(title: string, error: unknown) {
