@@ -42,6 +42,7 @@ type SearchViewState = {
   pattern: string;
   outcome: SearchState;
   partial: WorkspaceSearchResult[];
+  selected: string | null;
   collapseByDefault: boolean;
   collapsed: Set<string>;
   collapseTouched: boolean;
@@ -115,7 +116,15 @@ export class WorkspaceSearchPanel {
     if (!root) throw new Error("フォルダ検索の対象がありません");
     let state = this.states.get(root);
     if (!state) {
-      state = { pattern: "", outcome: null, partial: [], collapseByDefault: false, collapsed: new Set(), collapseTouched: false };
+      state = {
+        pattern: "",
+        outcome: null,
+        partial: [],
+        selected: null,
+        collapseByDefault: false,
+        collapsed: new Set(),
+        collapseTouched: false,
+      };
       this.states.set(root, state);
     }
     return state;
@@ -201,6 +210,7 @@ export class WorkspaceSearchPanel {
   private queueSearch(delay = 150) {
     const pat = this.searchInput.value;
     this.state.pattern = pat;
+    this.state.selected = null;
     const gen = ++this.searchGen;
     window.clearTimeout(this.searchTimer);
     // 条件が1つでも変われば最初から引き直す (前回の結果は再利用しない)。
@@ -433,7 +443,7 @@ export class WorkspaceSearchPanel {
 
   private matchRow(match: WorkspaceSearchResult): HTMLElement {
     const div = document.createElement("div");
-    div.className = "ws-match";
+    div.className = `ws-match${this.state.selected === searchResultKey(match) ? " sel" : ""}`;
     const mark = document.createElement("span");
     mark.className = "ws-line";
     mark.textContent = match.is_filename ? "名" : String(match.line + 1);
@@ -448,6 +458,8 @@ export class WorkspaceSearchPanel {
   }
 
   private invokeOpen(match: WorkspaceSearchResult, newTab: boolean) {
+    this.state.selected = searchResultKey(match);
+    this.ports.onViewChange();
     try {
       void Promise.resolve(this.ports.onOpen(match, newTab)).catch((error) => this.reportUiError(error));
     } catch (error) {
@@ -480,6 +492,10 @@ export class WorkspaceSearchPanel {
       });
     });
   }
+}
+
+function searchResultKey(result: Pick<WorkspaceSearchResult, "rel_path" | "line" | "col" | "is_filename">): string {
+  return `${result.rel_path}\u0000${result.line}\u0000${result.col}\u0000${result.is_filename ? "name" : "text"}`;
 }
 
 function iconButton(className: string, label: string, title: string): HTMLButtonElement {

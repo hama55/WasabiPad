@@ -180,6 +180,26 @@ describe("Feature: WorkspaceSearchPanel", () => {
     expect(onOpen).toHaveBeenCalledWith(result, false);
   });
 
+  // Given: a.txt と b.txt に各1件の検索結果がある
+  // When: a.txt の検索結果、続けて b.txt の検索結果を開く
+  // Then: 最後に開いた b.txt の行だけが選択済みの色用クラスを持つ
+  it("Scenario: 開いた検索結果を選択済みとして表示する", async () => {
+    vi.useFakeTimers();
+    const host = mount(async () => outcome([
+      hit("a.txt", 0, "needle"),
+      hit("b.txt", 0, "needle"),
+    ]));
+    await search(host, "needle");
+
+    host.querySelectorAll<HTMLElement>(".ws-match")[0].click();
+    expect(host.querySelectorAll<HTMLElement>(".ws-match")[0].classList.contains("sel")).toBe(true);
+
+    host.querySelectorAll<HTMLElement>(".ws-match")[1].click();
+    const matches = host.querySelectorAll<HTMLElement>(".ws-match");
+    expect(matches[0].classList.contains("sel")).toBe(false);
+    expect(matches[1].classList.contains("sel")).toBe(true);
+  });
+
   // Given: a.txt の結果があり、hit_file_limit=true と hit_result_limit=true
   // When: needle を検索する
   // Then: warning は ["最大ファイル数で列挙を打ち切った","最大結果数で検索を打ち切った"]

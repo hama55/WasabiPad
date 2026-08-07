@@ -29,6 +29,30 @@ describe("Feature: LineCache", () => {
     expect(cache.peek(3)).toBeUndefined();
   });
 
+  // Given: chunk0の初回取得が未完了で、同じchunkの後続取得が始まっている
+  // When: 後続のline(1)が解決するまで待つ
+  // Then: 初回取得の完了後に行を返し、未取得の空文字を返さない
+  it("Scenario: 取得中の同じチャンクを後続の行取得も待つ", async () => {
+    const doc = document20();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const originalLines = doc.client.lines;
+    doc.client.lines = async (...args) => {
+      await gate;
+      return originalLines(...args);
+    };
+    const cache = new LineCache(doc.client);
+
+    const first = cache.fetch(0);
+    const second = cache.line(1);
+    await Promise.resolve();
+    expect(cache.peek(1)).toBeUndefined();
+
+    release();
+    await first;
+    await expect(second).resolves.toBe("line1");
+  });
+
   // Given: 3×CHUNK行の文書でchunk0/chunk2をfetch
   // When: `invalidateFrom(CHUNK*2+1)`
   // Then: chunk0は残り、chunk2は破棄

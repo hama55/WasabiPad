@@ -500,13 +500,43 @@ export class VirtualEditor {
     this.setTopLine(line - (visibleRows - 1) / 2);
   }
 
+  private centerSelection(line: number) {
+    if (!this.wrap) {
+      this.centerLine(line);
+      return;
+    }
+    const viewportHeight = this.scroll.clientHeight;
+    if (viewportHeight <= 0) {
+      this.pendingCenterLine = line;
+      return;
+    }
+    this.pendingCenterLine = null;
+    const boxes = [...this.linesLayer.querySelectorAll<HTMLElement>(".ve-sel")];
+    let top = Infinity;
+    let bottom = -Infinity;
+    for (const box of boxes) {
+      const boxTop = Number.parseFloat(box.style.top);
+      const height = Number.parseFloat(box.style.height);
+      if (!Number.isFinite(boxTop) || !Number.isFinite(height)) continue;
+      top = Math.min(top, boxTop);
+      bottom = Math.max(bottom, boxTop + height);
+    }
+    if (!Number.isFinite(top) || !Number.isFinite(bottom)) {
+      this.centerLine(line);
+      return;
+    }
+    const selectionCenter = (top + bottom) / 2;
+    this.scrollWrapBy(selectionCenter - (this.viewTop + viewportHeight / 2));
+  }
+
   private selectAndCenter(start: Pos, end: Pos) {
     this.sel.anchor = start;
     this.moveTo(end, true);
     // moveTo() の描画後に横方向の可視性を確定し、行高を反映した中央配置を
     // 最後に行う。フォルダ検索と本文検索の結果を同じ規則へ通す。
     this.ensureVisible();
-    this.centerLine(start.line);
+    if (this.wrap) this.render();
+    this.centerSelection(start.line);
     this.render();
   }
 

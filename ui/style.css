@@ -210,6 +210,7 @@ body {
   white-space: nowrap; overflow: hidden; cursor: default;
 }
 .ws-group:hover, .ws-match:hover { background: var(--hover); }
+.ws-match.sel { background: var(--sel-row); }
 .ws-twisty { width: 12px; flex: none; color: var(--fg-dim); text-align: center; }
 .ws-file { flex: none; color: var(--fg); }
 .ws-dir { flex: 1; min-width: 0; color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; }

@@ -1109,6 +1109,75 @@ describe("Feature: VirtualEditor", () => {
     rect.mockRestore();
   });
 
+  // Given: 初回の長大行取得が保留され、scroll.clientWidth=100、範囲終端列×10の矩形を返す Range
+  // When: 取得中に0行目700〜704列を selectRange し、行取得を完了する
+  // Then: プレースホルダーではなく実行位置を計測し、横スクロールが0より大きくなる
+  it("Scenario: 長大行の取得中に選択しても検索位置へ横スクロールする", async () => {
+    const rect = vi.spyOn(Range.prototype, "getBoundingClientRect").mockImplementation(function (this: Range) {
+      return {
+        x: 0, y: 0, top: 0, left: 0, right: this.endOffset * 10, bottom: 20,
+        width: this.endOffset * 10, height: 20, toJSON: () => ({}),
+      } as DOMRect;
+    });
+    const { editor, doc, host } = mount("x".repeat(1000));
+    const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
+    Object.defineProperty(scroll, "clientWidth", { configurable: true, value: 100 });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const originalLines = doc.client.lines;
+    doc.client.lines = async (...args) => {
+      await gate;
+      return originalLines(...args);
+    };
+
+    editor.open(1, false);
+    const selecting = editor.selectRange(0, 700, 704);
+    await settle(1);
+    release();
+    await selecting;
+
+    expect(scroll.scrollLeft).toBeGreaterThan(0);
+    rect.mockRestore();
+  });
+
+  // Given: 1論理行を折り返し、選択範囲の実矩形が上940〜960px、scroll.clientHeight=100
+  // When: 0行目700〜704列を selectRange する
+  // Then: 選択範囲の中央が表示領域の中央に配置される
+  it("Scenario: 折り返し時は検索結果の選択文字列を表示領域中央へ置く", async () => {
+    const lineRect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      const height = this.classList.contains("ve-line") ? 2000 : 0;
+      return {
+        x: 0, y: 0, left: 0, top: 0, right: 100, bottom: height,
+        width: 100, height, toJSON: () => ({}),
+      } as DOMRect;
+    });
+    const selectionRect = {
+      x: 0, y: 940, left: 0, top: 940, right: 40, bottom: 960,
+      width: 40, height: 20, toJSON: () => ({}),
+    } as DOMRect;
+    const ranges = Object.assign([selectionRect], { item: (index: number) => [selectionRect][index] ?? null });
+    const rangeRects = vi.spyOn(Range.prototype, "getClientRects").mockReturnValue(ranges as DOMRectList);
+    const { editor, host } = mount("x".repeat(1000));
+    const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
+    const inner = host.querySelector<HTMLElement>(".ve-inner")!;
+    Object.defineProperties(scroll, {
+      clientHeight: { configurable: true, value: 100 },
+      scrollHeight: { configurable: true, get: () => Number.parseFloat(inner.style.height) || 0 },
+    });
+
+    editor.open(1, false);
+    editor.setWrap(true);
+    await settle();
+    await editor.selectRange(0, 700, 704);
+
+    const selection = host.querySelector<HTMLElement>(".ve-sel")!;
+    const selectionCenter = Number.parseFloat(selection.style.top) + Number.parseFloat(selection.style.height) / 2;
+    expect(selectionCenter).toBeCloseTo(scroll.scrollTop + scroll.clientHeight / 2);
+
+    rangeRects.mockRestore();
+    lineRect.mockRestore();
+  });
+
   // Given: 40行の文書、clientHeight=100、scrollTop=200・scrollLeft=35、12行目1〜4列を選択して view state を保存している
   // When: 文書を再openし、保存した view state を restore する
   // Then: anchor、caret、topLine、scrollLeft が保存前の state とそれぞれ同値になる
