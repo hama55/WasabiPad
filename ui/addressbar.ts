@@ -3,7 +3,7 @@
 import type { NavigationState } from "./navigation-history";
 
 export interface AddressBarPorts {
-  onOpen: (path: string) => void;
+  onOpen: (path: string, newTab?: boolean) => void;
   onBack: () => void;
   onForward: () => void;
   onSave: () => void;
@@ -107,6 +107,12 @@ export class AddressBar {
       button.addEventListener("click", (event) => {
         event.stopPropagation();
         this.ports.onOpen(segment.path);
+      });
+      button.addEventListener("auxclick", (event) => {
+        if (event.button !== 1) return;
+        event.preventDefault();
+        event.stopPropagation();
+        this.ports.onOpen(segment.path, true);
       });
       items.push(button);
       return items;

@@ -195,7 +195,9 @@ window.addEventListener("storage", (event) => {
 });
 
 const addressbar = new AddressBar($("topbar"), {
-  onOpen: (path) => runBackground("開けませんでした", () => tabs.navigatePath(path)),
+  onOpen: (path, newTab) => runBackground("開けませんでした", () =>
+    newTab ? tabs.open(path) : tabs.navigatePath(path)
+  ),
   onBack: () => runBackground("戻れませんでした", () => tabs.goBack()),
   onForward: () => runBackground("進めませんでした", () => tabs.goForward()),
   onSave: () => runBackground("保存できませんでした", () => doc.save()),

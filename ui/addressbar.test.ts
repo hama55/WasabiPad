@@ -113,6 +113,24 @@ describe("Feature: AddressBar navigation buttons", () => {
   });
 });
 
+describe("Feature: AddressBar breadcrumbs", () => {
+  // Given: `C:\\work\\memo.txt` を表示中のAddressBar
+  // When: `work` のパンくずをホイールボタンでクリックする
+  // Then: 対象パスと新規タブ指定を `onOpen` に通知し、既定動作を抑止する
+  it("Scenario: ホイールクリックしたパンくずを新規タブで開く", () => {
+    const { host, ports } = addressBarFixture();
+    const addressbar = new AddressBar(host, ports);
+    addressbar.render("C:\\work\\memo.txt");
+
+    const crumb = host.querySelectorAll<HTMLButtonElement>(".addressbar-crumb")[1];
+    const event = new MouseEvent("auxclick", { button: 1, bubbles: true, cancelable: true });
+    crumb.dispatchEvent(event);
+
+    expect(ports.onOpen).toHaveBeenCalledWith("C:\\work", true);
+    expect(event.defaultPrevented).toBe(true);
+  });
+});
+
 describe("Feature: AddressBar navigation button presentation", () => {
   // Given: アプリ本体のtopbarをDOMとして読み込む
   // When: フォルダ選択ボタンとの並び順と戻る/進むボタンの文字を確認する
