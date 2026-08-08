@@ -3,11 +3,10 @@
 // テキストの取り出し方 (どの範囲が全文か) は呼び出し側から受け取る。
 import type { EditManyItem, ViewerFormat, ViewerSelection } from "./api";
 import type { Pos } from "./api";
+import { comparePos } from "./editor-math";
 import { transformTrackedRange, type TrackedRange } from "./viewer-range";
 
 const DEBOUNCE_MS = 120;
-
-const compare = (a: Pos, b: Pos) => a.line - b.line || a.col - b.col;
 
 export interface LiveViewerPorts {
   openViewer: (format: ViewerFormat, text: string, selection: ViewerSelection | null) => Promise<string | null>;
@@ -56,17 +55,24 @@ export class LiveViewers {
   }
 
   previewRange(): TrackedRange | null {
-    const range = [...this.viewers.values()].find((viewer) => viewer.range)?.range;
-    return range ? { start: { ...range.start }, end: { ...range.end } } : null;
+    const ranges = [...this.viewers.values()]
+      .map((viewer) => viewer.range)
+      .filter((range): range is TrackedRange => !!range);
+    const range = ranges[0];
+    if (!range || ranges.some((candidate) =>
+      comparePos(candidate.start, range.start) !== 0 || comparePos(candidate.end, range.end) !== 0
+    )) return null;
+    return { start: { ...range.start }, end: { ...range.end } };
   }
 
   positionInDocument(position: Pos): Pos {
     const range = this.previewRange();
     if (!range) return { ...position };
-    return {
+    const target = {
       line: range.start.line + position.line,
       col: position.line === 0 ? range.start.col + position.col : position.col,
     };
+    return comparePos(target, range.end) > 0 ? { ...range.end } : target;
   }
 
   // range=null は「全文を映す」= 以後の編集で常に最新の全文へ追随する
@@ -172,9 +178,9 @@ export class LiveViewers {
 
 function relativeSelection(range: TrackedRange | null, selection: TrackedRange): ViewerSelection | null {
   if (!range) return { start: { ...selection.start }, end: { ...selection.end } };
-  if (compare(selection.end, range.start) < 0 || compare(selection.start, range.end) > 0) return null;
-  const start = compare(selection.start, range.start) < 0 ? range.start : selection.start;
-  const end = compare(selection.end, range.end) > 0 ? range.end : selection.end;
+  if (comparePos(selection.end, range.start) < 0 || comparePos(selection.start, range.end) > 0) return null;
+  const start = comparePos(selection.start, range.start) < 0 ? range.start : selection.start;
+  const end = comparePos(selection.end, range.end) > 0 ? range.end : selection.end;
   return { start: relativePos(start, range.start), end: relativePos(end, range.start) };
 }
 

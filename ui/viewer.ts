@@ -2,7 +2,6 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import Chart from "chart.js/auto";
 import MarkdownIt from "markdown-it";
-import Papa from "papaparse";
 import { EVENT_NAMES, takeViewerPayload, type ViewerFormat, type ViewerPayload, type ViewerSelection } from "./api";
 import { formatFontFamily } from "./format";
 import { basename } from "./path";
@@ -23,10 +22,12 @@ import {
   csvCellBoundsForColumn,
   csvCellOffsetAt,
   csvColumnAt,
-  decodeDelimiter,
-  isSingleCsvCellSelection,
-  resizedCsvColumnWidth,
+  parseCsvSource,
+  csvSourceOffsetAtPosition,
+  csvSourcePositionAtOffset,
+  type CsvSourceRow,
 } from "./csv-viewer";
+import { startCsvColumnResize as bindCsvColumnResize } from "./csv-column-resize";
 import { resolveArchiveAssetEntry, resolveAssetPath } from "./viewer-assets";
 import { normalizeTheme, THEME_STORAGE_KEY } from "./theme";
 import { showError } from "./dialogs";
@@ -46,6 +47,11 @@ import { isViewerPayload } from "./viewer-payload";
 import { imageUrlFromArchive, imageUrlFromPath, revokeImageUrl } from "./viewer-image-source";
 import { createImagePreview, markImageLoadFailure } from "./viewer-image";
 import { createAsyncUnlisten } from "./async-unlisten";
+import { comparePos } from "./editor-math";
+import {
+  isCollapsedViewerSelection,
+  viewerSelectionFromDom,
+} from "./viewer-selection";
 
 const MAX_TABLE_ROWS = 10_000;
 const MAX_TABLE_COLUMNS = 200;
@@ -104,63 +110,9 @@ function scrollCsvRows(rows: HTMLElement[], selection: ViewerSelection | null) {
   scrollViewerCaret(rows, selection, (_row, index) => ({ start: index, end: index + 1 }));
 }
 
-function isCollapsedSelection(selection: ViewerSelection | null): boolean {
-  return !!selection
-    && selection.start.line === selection.end.line
-    && selection.start.col === selection.end.col;
-}
-
-function comparePositions(left: { line: number; col: number }, right: { line: number; col: number }) {
-  return left.line - right.line || left.col - right.col;
-}
-
-function textOffsetWithin(element: HTMLElement, node: Node, offset: number): number {
-  if (node === element) {
-    return [...element.childNodes].slice(0, offset)
-      .reduce((length, child) => length + (child.textContent?.length ?? 0), 0);
-  }
-  const range = document.createRange();
-  range.selectNodeContents(element);
-  range.setEnd(node, offset);
-  return range.toString().length;
-}
-
-function sourcePositionFromPoint(node: Node, offset: number, endPoint: boolean): { line: number; col: number } | null {
-  const element = node.nodeType === Node.ELEMENT_NODE
-    ? node as Element
-    : node.parentElement;
-  const cell = element?.closest<HTMLElement>("[data-source-line]");
-  if (cell) {
-    const line = Number(cell.dataset.sourceLine);
-    const valueStart = Number(cell.dataset.sourceValueStart ?? 0);
-    const valueEnd = Number(cell.dataset.sourceValueEnd ?? valueStart);
-    const cellOffset = textOffsetWithin(cell, node, offset);
-    return {
-      line,
-      col: Math.max(valueStart, Math.min(valueEnd, valueStart + cellOffset)),
-    };
-  }
-  const block = element?.closest<HTMLElement>("[data-source-start][data-source-end]");
-  if (!block) return null;
-  const line = Number(block.dataset.sourceEnd ?? block.dataset.sourceStart);
-  return { line: endPoint ? line : Number(block.dataset.sourceStart), col: 0 };
-}
-
-function viewerSelectionFromDom(): ViewerSelection | null {
-  const selection = window.getSelection();
-  if (!selection?.rangeCount || !selection.anchorNode || !selection.focusNode) return null;
-  if (!content.contains(selection.anchorNode) || !content.contains(selection.focusNode)) return null;
-  const anchor = sourcePositionFromPoint(selection.anchorNode, selection.anchorOffset, false);
-  const focus = sourcePositionFromPoint(selection.focusNode, selection.focusOffset, !selection.isCollapsed);
-  if (!anchor || !focus) return null;
-  return comparePositions(anchor, focus) <= 0
-    ? { start: anchor, end: focus }
-    : { start: focus, end: anchor };
-}
-
 function notifyParentOfSelection() {
   if (!isInlineViewer) return;
-  const selection = viewerSelectionFromDom();
+  const selection = viewerSelectionFromDom(content);
   if (!selection) return;
   postToParent({
     type: INLINE_PREVIEW_MESSAGES.SELECTION_CHANGE_MESSAGE,
@@ -168,16 +120,25 @@ function notifyParentOfSelection() {
   });
 }
 
-function appendCsvCaret(cell: HTMLElement, value: string, sourceLine: string, rowIndex: number, columnIndex: number) {
-  if (!currentSelection || !isCollapsedSelection(currentSelection)
-    || currentSelection.start.line !== rowIndex
-    || csvColumnAt(sourceLine, currentSelection.start.col, delimiterInput.value) !== columnIndex) {
+function appendCsvCaret(cell: HTMLElement, value: string, sourceRow: CsvSourceRow, columnIndex: number) {
+  const rowEnd = csvSourcePositionAtOffset(sourceRow.text, sourceRow.line, sourceRow.text.length);
+  const position = currentSelection?.start;
+  const positionInRow = position
+    && comparePos(position, { line: sourceRow.line, col: 0 }) >= 0
+    && comparePos(position, rowEnd) <= 0;
+  if (!currentSelection || !isCollapsedViewerSelection(currentSelection)
+    || !positionInRow) {
+    cell.textContent = value;
+    return;
+  }
+  const sourceOffset = csvSourceOffsetAtPosition(sourceRow.text, sourceRow.line, currentSelection.start);
+  if (csvColumnAt(sourceRow.text, sourceOffset, delimiterInput.value) !== columnIndex) {
     cell.textContent = value;
     return;
   }
   const offset = Math.max(0, Math.min(value.length, csvCellOffsetAt(
-    sourceLine,
-    currentSelection.start.col,
+    sourceRow.text,
+    sourceOffset,
     delimiterInput.value,
   )));
   const caret = document.createElement("span");
@@ -217,8 +178,6 @@ function startCsvColumnResize(
   columnIndex: number,
 ) {
   if (event.button !== 0) return;
-  event.preventDefault();
-  event.stopPropagation();
   const handle = event.currentTarget as HTMLElement;
   const header = handle.parentElement;
   if (!header) return;
@@ -230,24 +189,21 @@ function startCsvColumnResize(
       ?? cells[index + 1]?.getBoundingClientRect().width
       ?? startWidth);
   }
-  table.style.tableLayout = "fixed";
-  table.style.width = "max-content";
-  const update = (clientX: number) => {
-    const width = resizedCsvColumnWidth(startWidth, clientX - startX);
-    csvColumnWidths[columnIndex] = width;
-    columns[columnIndex].style.width = width + "px";
-  };
-  const finish = () => {
-    window.removeEventListener("pointermove", onMove);
-    window.removeEventListener("pointerup", finish);
-    window.removeEventListener("pointercancel", finish);
-    document.body.classList.remove("viewer-resizing");
-  };
-  const onMove = (move: PointerEvent) => update(move.clientX);
-  document.body.classList.add("viewer-resizing");
-  window.addEventListener("pointermove", onMove);
-  window.addEventListener("pointerup", finish, { once: true });
-  window.addEventListener("pointercancel", finish, { once: true });
+  bindCsvColumnResize(event, {
+    startWidth,
+    startX,
+    update: (width) => {
+      table.style.tableLayout = "fixed";
+      table.style.width = "max-content";
+      if (!columns[columnIndex]) return;
+      columns[columnIndex].style.width = width + "px";
+      csvColumnWidths[columnIndex] = width;
+    },
+    setResizing: (active) => {
+      document.body.classList.toggle("viewer-resizing", active);
+    },
+    onError: (error) => reportWindowError("CSV列幅を変更できませんでした", error),
+  });
 }
 
 function applyFontFamily(family: string, persist = true) {
@@ -332,31 +288,36 @@ function bindViewerControls() {
   fontSizeButton.addEventListener("click", () => runViewerOperation("文字サイズを変更できませんでした", promptFontSize));
   content.addEventListener("wheel", onViewerWheel, { passive: false });
   formatSelect.addEventListener("change", () => {
-    if (!isInlineViewer) return;
-    const format = formatSelect.value;
-    if (!isViewerFormat(format)) return;
-    postToParent({
-      type: INLINE_PREVIEW_MESSAGES.FORMAT_CHANGE_MESSAGE,
-      format,
+    runViewerOperation("表示形式を変更できませんでした", () => {
+      if (!isInlineViewer) return;
+      const format = formatSelect.value;
+      if (!isViewerFormat(format)) return;
+      postToParent({
+        type: INLINE_PREVIEW_MESSAGES.FORMAT_CHANGE_MESSAGE,
+        format,
+      });
     });
   });
   fullscreenButton.addEventListener("click", () => {
-    if (isInlineViewer) postToParent({ type: INLINE_PREVIEW_MESSAGES.FULLSCREEN_CHANGE_MESSAGE });
+    runViewerOperation("全画面表示を変更できませんでした", () => {
+      if (isInlineViewer) postToParent({ type: INLINE_PREVIEW_MESSAGES.FULLSCREEN_CHANGE_MESSAGE });
+    });
   });
-  document.addEventListener("selectionchange", notifyParentOfSelection);
-  content.addEventListener("mouseup", notifyParentOfSelection);
-  content.addEventListener("keyup", notifyParentOfSelection);
+  const notifySelection = () => runViewerOperation(
+    "プレビューの選択位置を通知できませんでした",
+    notifyParentOfSelection,
+  );
+  document.addEventListener("selectionchange", notifySelection);
+  content.addEventListener("mouseup", notifySelection);
+  content.addEventListener("keyup", notifySelection);
 }
 
 function renderTable(text: string) {
   renderGeneration++;
   revokeArchiveAssetUrls();
-  const sourceLines = text.split(/\r?\n/);
-  const parsed = Papa.parse<string[]>(text, {
-    delimiter: decodeDelimiter(delimiterInput.value),
-    skipEmptyLines: false,
-  });
-  currentRows = parsed.data;
+  const parsed = parseCsvSource(text, delimiterInput.value);
+  const sourceRows = parsed.rows;
+  currentRows = sourceRows.map((row) => row.values);
   const table = document.createElement("table");
   table.className = "viewer-grid";
   const body = document.createElement("tbody");
@@ -366,38 +327,33 @@ function renderTable(text: string) {
   const columns = createCsvColumnGroup(table, Math.min(maxColumns, MAX_TABLE_COLUMNS));
 
   currentRows.slice(0, MAX_TABLE_ROWS).forEach((row, rowIndex) => {
+    const sourceRow = sourceRows[rowIndex] ?? { values: row, text: "", line: rowIndex };
     const tr = document.createElement("tr");
-    tr.dataset.sourceLine = String(rowIndex);
+    tr.dataset.sourceLine = String(sourceRow.line);
+    tr.dataset.sourceCsv = sourceRow.text;
+    tr.dataset.delimiter = delimiterInput.value;
     const lineNumber = document.createElement(rowIndex === 0 ? "th" : "td");
     lineNumber.className = "viewer-line-number";
     lineNumber.textContent = String(rowIndex + 1);
-    lineNumber.dataset.sourceLine = String(rowIndex);
+    lineNumber.dataset.sourceLine = String(sourceRow.line);
     tr.appendChild(lineNumber);
     row.slice(0, MAX_TABLE_COLUMNS).forEach((value, columnIndex) => {
       const cell = document.createElement(rowIndex === 0 ? "th" : "td");
-      const sourceLine = sourceLines[rowIndex] ?? "";
-      const cellBounds = csvCellBoundsForColumn(sourceLine, columnIndex, delimiterInput.value);
-      cell.dataset.sourceLine = String(rowIndex);
-      cell.dataset.sourceStart = String(cellBounds.start);
-      cell.dataset.sourceEnd = String(cellBounds.end);
-      const quoted = sourceLine[cellBounds.start] === '"';
-      const valueStart = cellBounds.start + (quoted ? 1 : 0);
-      const valueEnd = Math.max(valueStart, cellBounds.end - (quoted && sourceLine[cellBounds.end - 1] === '"' ? 1 : 0));
-      cell.dataset.sourceValueStart = String(valueStart);
-      cell.dataset.sourceValueEnd = String(valueEnd);
-      appendCsvCaret(cell, value, sourceLine, rowIndex, columnIndex);
-      cell.classList.toggle("viewer-source-selected", csvCellSelected(sourceLine, rowIndex, columnIndex));
+      cell.dataset.sourceColumn = String(columnIndex);
+      appendCsvCaret(cell, value, sourceRow, columnIndex);
+      cell.classList.toggle("viewer-source-selected", csvCellSelected(sourceRow, columnIndex));
       tr.appendChild(cell);
       if (rowIndex === 0 && columns[columnIndex]) {
         const handle = document.createElement("span");
         handle.className = "viewer-column-resizer";
         handle.setAttribute("aria-hidden", "true");
         handle.addEventListener("pointerdown", (event) =>
-          startCsvColumnResize(event, table, columns, columnIndex));
+          runViewerOperation("CSV列幅の変更を開始できませんでした", () =>
+            startCsvColumnResize(event, table, columns, columnIndex)));
         cell.appendChild(handle);
       }
     });
-    tr.classList.toggle("viewer-source-selected", csvRowSelected(sourceLines[rowIndex] ?? "", rowIndex));
+    tr.classList.toggle("viewer-source-selected", csvRowSelected(sourceRow));
     rows.push(tr);
     fragment.appendChild(tr);
   });
@@ -553,6 +509,7 @@ async function renderMarkdown(text: string) {
   currentRows = [];
   closeChart();
   const article = document.createElement("article");
+  const sourceLines = text.split(/\r?\n/);
   const markdown = new MarkdownIt({ html: true, linkify: true, typographer: false });
   const rawHtml = (tokens: { content: string }[], index: number) =>
     renderRawHtml(tokens[index].content, markdown.utils.escapeHtml);
@@ -563,6 +520,7 @@ async function renderMarkdown(text: string) {
     if (token.nesting === 1 && token.map) {
       token.attrSet("data-source-start", String(token.map[0]));
       token.attrSet("data-source-end", String(token.map[1]));
+      token.attrSet("data-source-text", sourceLines.slice(token.map[0], token.map[1]).join("\n"));
     }
   });
   article.innerHTML = markdown.renderer.render(tokens, markdown.options, {});
@@ -572,8 +530,8 @@ async function renderMarkdown(text: string) {
     const start = Number(element.dataset.sourceStart);
     const end = Number(element.dataset.sourceEnd);
     const selected = markdownBlockSelected(selection, start, end);
-    element.classList.toggle("viewer-source-selected", !isCollapsedSelection(selection) && selected);
-    element.classList.toggle("viewer-caret-line", isCollapsedSelection(selection) && selected);
+    element.classList.toggle("viewer-source-selected", !isCollapsedViewerSelection(selection) && selected);
+    element.classList.toggle("viewer-caret-line", isCollapsedViewerSelection(selection) && selected);
   });
   article.querySelectorAll("a").forEach((link) => {
     link.target = "_blank";
@@ -617,26 +575,36 @@ function renderPayload(payload: ViewerPayload) {
   runViewerOperation("ビューを描画できませんでした", () => handler.render(payload.text));
 }
 
-function csvRowSelected(line: string, rowIndex: number) {
-  if (!csvSourceLineSelected(rowIndex) || !currentSelection || isCollapsedSelection(currentSelection)) return false;
-  const { start } = currentSelection;
-  if (rowIndex === start.line && isSingleCsvCellSelection(line, currentSelection, delimiterInput.value)) {
-    return false;
-  }
-  return true;
+function csvCellPositions(sourceRow: CsvSourceRow, columnIndex: number) {
+  const bounds = csvCellBoundsForColumn(sourceRow.text, columnIndex, delimiterInput.value);
+  return {
+    start: csvSourcePositionAtOffset(sourceRow.text, sourceRow.line, bounds.start),
+    end: csvSourcePositionAtOffset(sourceRow.text, sourceRow.line, bounds.end),
+  };
 }
 
-function csvCellSelected(line: string, rowIndex: number, columnIndex: number) {
-  if (!currentSelection || isCollapsedSelection(currentSelection) || !csvSourceLineSelected(rowIndex)) return false;
-  const { start, end } = currentSelection;
-  if (start.line !== end.line || start.line !== rowIndex) return true;
-  return columnIndex === csvColumnAt(line, start.col, delimiterInput.value);
+function csvCellSelected(sourceRow: CsvSourceRow, columnIndex: number) {
+  if (!currentSelection || isCollapsedViewerSelection(currentSelection)) return false;
+  const cell = csvCellPositions(sourceRow, columnIndex);
+  return comparePos(currentSelection.start, cell.end) < 0
+    && comparePos(currentSelection.end, cell.start) > 0;
 }
 
-function csvSourceLineSelected(rowIndex: number) {
-  if (!currentSelection || isCollapsedSelection(currentSelection)) return false;
-  const { start, end } = currentSelection;
-  return rowIndex >= start.line && (rowIndex < end.line || (rowIndex === end.line && end.col > 0));
+function csvRowSelected(sourceRow: CsvSourceRow) {
+  const selection = currentSelection;
+  if (!selection || isCollapsedViewerSelection(selection)) return false;
+  const rowStart = { line: sourceRow.line, col: 0 };
+  const rowEnd = csvSourcePositionAtOffset(sourceRow.text, sourceRow.line, sourceRow.text.length);
+  if (comparePos(selection.start, rowEnd) >= 0 || comparePos(selection.end, rowStart) <= 0) return false;
+
+  const selectedCells = sourceRow.values
+    .slice(0, MAX_TABLE_COLUMNS)
+    .map((_, index) => csvCellPositions(sourceRow, index))
+    .filter((cell) => comparePos(selection.start, cell.end) < 0
+      && comparePos(selection.end, cell.start) > 0);
+  return selectedCells.length !== 1
+    || comparePos(selection.start, selectedCells[0].start) < 0
+    || comparePos(selection.end, selectedCells[0].end) > 0;
 }
 
 function showContextMenu(x: number, y: number) {

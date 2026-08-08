@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   csvCellBounds,
+  csvCellBoundsForColumns,
+  csvCellSourceOffsetAtDisplayOffset,
   csvCellOffsetAt,
   csvColumnAt,
   decodeDelimiter,
   isSingleCsvCellSelection,
+  parseCsvSource,
   resizedCsvColumnWidth,
 } from "./csv-viewer";
 
@@ -44,6 +47,37 @@ describe("Feature: CSV viewer helpers", () => {
     expect(csvCellBounds('"a,b",c', 3, ",")).toEqual({ start: 0, end: 5 });
     expect(csvCellOffsetAt('"a,b",c', 3, ",")).toBe(2);
     expect(csvCellOffsetAt('"a,b",c', 1, ",")).toBe(0);
+  });
+
+  // Given: 引用符内にエスケープ引用符を含む`"a""b",c`
+  // When: 表示文字列の2文字目までをCSVソース位置へ逆変換する
+  // Then: `a"`の後ろにあるraw列4へ到達する
+  it("Scenario: escaped quote display offsets map back to raw CSV offsets", () => {
+    expect(csvCellSourceOffsetAtDisplayOffset('"a""b",c', 0, 2, ",")).toBe(4);
+    expect(csvCellSourceOffsetAtDisplayOffset('"a""b",c', 0, 3, ",")).toBe(5);
+  });
+
+  // Given: 空セル・末尾セルを含む`a,,c`
+  // When: 1行分のセル境界を1回の走査で求める
+  // Then: 区切り位置を含めず、空セルも独立した範囲になる
+  it("Scenario: one canonical scan preserves empty and trailing cells", () => {
+    expect(csvCellBoundsForColumns("a,,c", ",")).toEqual([
+      { start: 0, end: 1 },
+      { start: 2, end: 2 },
+      { start: 3, end: 4 },
+    ]);
+  });
+
+  // Given: 引用符内改行を含むCSV
+  // When: Papa Parseの論理レコードと原文範囲を同時に求める
+  // Then: 2行目は物理3行目ではなく、論理レコード開始行2として追跡される
+  it("Scenario: multiline quoted records keep their physical source line", () => {
+    const parsed = parseCsvSource('a,b\n"multi\nline",c\nd,e', ",");
+    expect(parsed.rows.map(({ values, line, text }) => ({ values, line, text }))).toEqual([
+      { values: ["a", "b"], line: 0, text: "a,b" },
+      { values: ["multi\nline", "c"], line: 1, text: '"multi\nline",c' },
+      { values: ["d", "e"], line: 3, text: "d,e" },
+    ]);
   });
 
   // Given: 列幅48pxのCSV列

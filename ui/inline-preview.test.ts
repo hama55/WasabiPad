@@ -211,6 +211,26 @@ describe("Feature: inline preview", () => {
     });
   });
 
+  // Given: iframeから負の行番号を含む選択通知が届く
+  // When: selection-changeメッセージを処理する
+  // Then: 不正な座標はエディタ同期ポートへ渡さない
+  it("Scenario: ignores invalid preview selections", () => {
+    const onSelectionChange = vi.fn();
+    const { host } = mount(undefined, undefined, undefined, undefined, onSelectionChange);
+    const frame = host.querySelector("iframe")!;
+
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: window.location.origin,
+      data: {
+        type: INLINE_PREVIEW_MESSAGES.SELECTION_CHANGE_MESSAGE,
+        selection: { start: { line: -1, col: 0 }, end: { line: 0, col: 1 } },
+      },
+    }));
+
+    expect(onSelectionChange).not.toHaveBeenCalled();
+  });
+
   // Given: iframeが準備完了している
   // When: 親から全画面状態を設定する
   // Then: タイトルバーへ全画面状態を送る
@@ -245,6 +265,27 @@ describe("Feature: inline preview", () => {
       source: frame.contentWindow,
       origin: window.location.origin,
       data: { type: INLINE_PREVIEW_MESSAGES.FORMAT_CHANGE_MESSAGE, format: "csv" },
+    }));
+
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledWith(expect.any(Error)));
+  });
+
+  // Given: 親の選択位置同期ポートが例外を投げる
+  // When: iframeから正しい選択通知を受け取る
+  // Then: messageイベントから例外を漏らさずエラーポートへ通知する
+  it("Scenario: reports preview selection callback failures", async () => {
+    const onError = vi.fn();
+    const onSelectionChange = vi.fn(() => { throw new Error("selection failed"); });
+    const { host } = mount(undefined, undefined, onError, undefined, onSelectionChange);
+    const frame = host.querySelector("iframe")!;
+
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: window.location.origin,
+      data: {
+        type: INLINE_PREVIEW_MESSAGES.SELECTION_CHANGE_MESSAGE,
+        selection: { start: { line: 0, col: 0 }, end: { line: 0, col: 1 } },
+      },
     }));
 
     await vi.waitFor(() => expect(onError).toHaveBeenCalledWith(expect.any(Error)));

@@ -29,6 +29,7 @@ describe("Feature: LiveViewers", () => {
       start: { line: 2, col: 3 }, end: { line: 3, col: 6 },
     });
     expect(viewers.positionInDocument({ line: 0, col: 2 })).toEqual({ line: 2, col: 5 });
+    expect(viewers.positionInDocument({ line: 9, col: 99 })).toEqual({ line: 3, col: 6 });
 
     viewers.setSelection({ start: { line: 3, col: 1 }, end: { line: 3, col: 1 } });
     await vi.advanceTimersByTimeAsync(120);
@@ -36,6 +37,31 @@ describe("Feature: LiveViewers", () => {
       start: { line: 1, col: 1 }, end: { line: 1, col: 1 },
     });
     vi.useRealTimers();
+  });
+
+  // Given: 異なる原文範囲を持つ2つのviewerが登録されている
+  // When: previewRangeと逆同期位置を問い合わせる
+  // Then: 送信元を特定できないため、曖昧な範囲を採用しない
+  it("Scenario: avoids ambiguous reverse mapping across different viewer ranges", async () => {
+    const openViewer = vi.fn()
+      .mockResolvedValueOnce("viewer-1")
+      .mockResolvedValueOnce("viewer-2");
+    const viewers = new LiveViewers({
+      openViewer,
+      updateViewer: async () => true,
+      wholeRange: async () => ({ start: { line: 0, col: 0 }, end: { line: 9, col: 0 } }),
+      textInRange: async () => "text",
+    });
+
+    await viewers.open("csv", { start: { line: 1, col: 0 }, end: { line: 2, col: 0 } }, {
+      start: { line: 1, col: 0 }, end: { line: 1, col: 0 },
+    });
+    await viewers.open("markdown", { start: { line: 4, col: 0 }, end: { line: 5, col: 0 } }, {
+      start: { line: 4, col: 0 }, end: { line: 4, col: 0 },
+    });
+
+    expect(viewers.previewRange()).toBeNull();
+    expect(viewers.positionInDocument({ line: 0, col: 2 })).toEqual({ line: 0, col: 2 });
   });
 
   // Given: updateがreject、true、falseの順に返る

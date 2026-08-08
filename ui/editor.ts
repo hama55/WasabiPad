@@ -48,9 +48,8 @@ const OVERSCAN = 8;
 export type { EditorViewState } from "./editor-view-state";
 
 function isPreviewLine(line: number, range: { start: Pos; end: Pos } | null): boolean {
-  if (!range || (range.start.line === range.end.line && range.start.col === range.end.col)) return false;
-  return line >= range.start.line
-    && (line < range.end.line || (line === range.end.line && range.end.col > 0));
+  const selected = range ? selectedLineRange(range.start, range.end) : null;
+  return !!selected && line >= selected.first && line <= selected.last;
 }
 
 export interface EditorPorts {
@@ -400,13 +399,8 @@ export class VirtualEditor {
     if (generation !== this.documentGeneration) return;
     const pos = { line, col: Math.max(0, Math.min(charLen(text), target.col)) };
     this.sel.reset(pos);
-    this.render();
     this.centerLine(line);
     this.render();
-    if (this.wrap) {
-      this.centerLine(line);
-      this.render();
-    }
     if (!this.wrap) {
       const lineEl = this.lineElem(line);
       if (lineEl) {

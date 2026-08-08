@@ -1330,7 +1330,9 @@ describe("Feature: VirtualEditor", () => {
       start: { line: 0, col: 0 },
       end: { line: 1, col: 5 },
     });
-    expect(host.querySelectorAll(".ve-preview-mark:not([hidden])")).toHaveLength(2);
+    const marks = [...host.querySelectorAll<HTMLElement>(".ve-preview-mark")];
+    expect(marks.filter((mark) => !mark.hidden).map((mark) => mark.textContent)).toEqual(["P", "P"]);
+    expect(marks.filter((mark) => mark.hidden)).toHaveLength(1);
   });
 
   // Given: プレビューが開いている
@@ -1354,5 +1356,39 @@ describe("Feature: VirtualEditor", () => {
 
     expect(editor.captureViewState().caret).toEqual({ line: 2, col: 2 });
     expect(host.querySelector(".ve-caret.on")).not.toBeNull();
+  });
+
+  // Given: 40行の文書、clientHeight=100・clientWidth=100、Range幅は列×10
+  // When: プレビューから20行目12列を受け取る
+  // Then: キャレット行を縦横とも表示領域の中央へ移動する
+  it("Scenario: centers both scroll axes for a preview position", async () => {
+    const rect = vi.spyOn(Range.prototype, "getBoundingClientRect").mockImplementation(function (this: Range) {
+      return {
+        x: 0, y: 0, top: 0, left: 0, right: this.endOffset * 10, bottom: 20,
+        width: this.endOffset * 10, height: 20, toJSON: () => ({}),
+      } as DOMRect;
+    });
+    const { editor, host } = mount(
+      Array.from({ length: 40 }, (_, i) => `line ${i} ${"x".repeat(20)}`).join("\n"),
+      undefined,
+      { openViewer: vi.fn(async () => "preview") },
+    );
+    const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
+    Object.defineProperties(scroll, {
+      clientHeight: { configurable: true, value: 100 },
+      clientWidth: { configurable: true, value: 100 },
+    });
+    editor.open(40, false);
+    await settle();
+    await editor.openTextViewer("markdown");
+    await editor.goToPreview({
+      start: { line: 20, col: 12 },
+      end: { line: 20, col: 12 },
+    });
+
+    expect(editor.captureViewState().topLine).toBe(18);
+    expect(scroll.scrollTop).toBe(360);
+    expect(scroll.scrollLeft).toBeGreaterThan(0);
+    rect.mockRestore();
   });
 });
