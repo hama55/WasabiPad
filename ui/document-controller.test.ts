@@ -77,6 +77,7 @@ function fakeView() {
     setLoading: vi.fn(),
     setTitle: vi.fn(),
     notify: vi.fn(),
+    onDocumentChange: vi.fn(),
     hideExternalBanner: vi.fn(),
     pickSavePath: vi.fn(async (): Promise<string | null> => null),
   } satisfies DocumentView;
@@ -176,6 +177,7 @@ describe("Feature: DocumentController", () => {
     expect(view.statusbar.setLineCount).toHaveBeenCalledWith(42);
     expect(view.addressbar.render).toHaveBeenCalledWith("C:\\work\\memo.txt");
     expect(view.editor.open).toHaveBeenCalledWith(42, false, false, "C:\\work\\memo.txt");
+    expect(view.onDocumentChange).toHaveBeenCalledWith(expect.objectContaining({ savePath: "C:\\work\\memo.txt" }), false);
     expect(view.setTitle).toHaveBeenLastCalledWith(formatTitleBar("memo.txt"));
   });
 

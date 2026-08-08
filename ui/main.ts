@@ -1,5 +1,6 @@
 // アプリの組み立て場所。ここでは部品の生成と配線だけを行い、
 // 文書の状態は DocumentController、画面の状態は各部品が持つ。
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
@@ -43,6 +44,9 @@ import { THEME_STORAGE_KEY } from "./theme";
 import { searchResultGoto } from "./search-results";
 import { runAsyncBoundary, reportUnhandledRejection } from "./async-boundary";
 import { openPath as openPathInTabs } from "./path-opener";
+import { InlinePreview } from "./inline-preview";
+import { viewerFormatForPath } from "./viewer-formats";
+import type { DocumentSession } from "./session";
 
 const win = getCurrentWindow();
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -63,13 +67,18 @@ try {
 const secondaryInstance = windowRequest.secondary;
 
 const editorHost = $("editorhost");
+const mainEl = $("main");
 const sidebarEl = $("sidebar");
 const splitter = $("splitter");
+const previewEl = $("preview");
+const previewToggle = $<HTMLButtonElement>("preview-toggle");
 const loading = $("loading");
 const loadingMessage = $("loading-message");
 
 let sidebarAvailable = false;
 let sidebarCollapsed = false;
+let previewAvailable = false;
+let previewCollapsed = false;
 let currentLine = 1;
 let tabs: TabManager;
 let restoringEditorFont = true;
@@ -107,18 +116,10 @@ function escapeHtmlAttribute(value: string): string {
   return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
 }
 
-async function openImageInViewer(relPath: string): Promise<boolean> {
-  const root = doc.current.folderRoot;
-  if (!root) return false;
-  const path = joinWindowsRoot(root, relPath);
-  const name = escapeHtmlAttribute(basename(relPath));
-  try {
-    await api.openViewer("markdown", `<img src="${name}" alt="${name}">`, null, path);
-    return true;
-  } catch (error) {
-    await reportBackgroundError("画像を表示できませんでした", error);
-    return false;
-  }
+function imagePreviewMarkdown(path: string): string {
+  const name = escapeHtmlAttribute(basename(path));
+  const src = escapeHtmlAttribute(convertFileSrc(path));
+  return `<p>${name}</p><img src="${src}" alt="${name}">`;
 }
 
 function runBackground(title: string, operation: () => void | Promise<unknown>) {
@@ -175,10 +176,58 @@ function updateSidebarVisibility() {
   toggle.style.left = shown ? `${Math.max(4, sidebarEl.getBoundingClientRect().width - 32)}px` : "4px";
 }
 
+function updatePreviewVisibility() {
+  const shown = previewAvailable && !previewCollapsed;
+  previewEl.hidden = !shown;
+  previewToggle.hidden = !previewAvailable;
+  previewToggle.textContent = shown ? ">>" : "<<";
+  previewToggle.title = shown ? "プレビューを閉じる" : "プレビューを開く";
+  const mainRect = mainEl.getBoundingClientRect();
+  const left = shown
+    ? previewEl.getBoundingClientRect().left - mainRect.left - 32
+    : mainEl.clientWidth - previewToggle.offsetWidth - 4;
+  previewToggle.style.left = `${Math.max(4, left)}px`;
+}
+
+const inlinePreview = new InlinePreview(previewEl, {
+  onAvailabilityChange: (available) => {
+    previewAvailable = available;
+    if (!available) statusbar.setPreviewFormat(null);
+    if (available) previewCollapsed = false;
+    updatePreviewVisibility();
+  },
+  onFormatChange: (format) => runBackground("ビューを切り替えられませんでした", () => editor.openTextViewer(format)),
+});
+
+let previewDocumentPath: string | null = null;
+function syncPreviewDocument(session: Readonly<DocumentSession>, force = false) {
+  const path = session.selectedRelPath || session.savePath || session.displayPath;
+  inlinePreview.setSourcePath(session.savePath);
+  if (!force && path === previewDocumentPath) return;
+  previewDocumentPath = path;
+  if (isImagePath(session.displayPath)) {
+    statusbar.setPreviewFormat("markdown");
+    runBackground("画像を表示できませんでした", () =>
+      inlinePreview.open("markdown", imagePreviewMarkdown(session.displayPath), null),
+    );
+    return;
+  }
+  const format = viewerFormatForPath(path);
+  if (!format) {
+    statusbar.setPreviewFormat(null);
+    inlinePreview.clear();
+    return;
+  }
+  statusbar.setPreviewFormat(format);
+  runBackground("ビューを表示できませんでした", () => editor.openTextViewer(format));
+}
+
 // ---- 部品 ----
 const statusbar = new StatusBar($("statusbar"), {
   onGoTo: (line) => editor.goTo(line, 0),
-  onFont: (family, size) => editor.setFont(family, size),
+  onFontFamily: (family) => editor.setFont(family, getSetting("fontSize"), "family"),
+  onFontSize: (size) => editor.setFont(getSetting("fontFamily"), size, "size"),
+  onPreviewDelimiter: (delimiter) => inlinePreview.setDelimiter(delimiter),
   onWrap: (on) => editor.setWrap(on),
   onIndent: (size) => {
     setSetting("indentSize", size);
@@ -224,27 +273,24 @@ const editor: VirtualEditor = new VirtualEditor(editorHost, {
     statusbar.setCursor(line, col);
     tabs?.syncCursor(line - 1);
   },
-  onFontChange: (family, size) => {
+  onFontChange: (family, size, changed) => {
     statusbar.setFont(family, size);
+    if (changed !== "size") inlinePreview.setFontFamily(family);
     if (!restoringEditorFont) {
-      setSetting("fontFamily", family);
-      setSetting("fontSize", size);
+      if (changed !== "size") setSetting("fontFamily", family);
+      if (changed !== "family") setSetting("fontSize", size);
     }
   },
   registeredCommandPorts,
   openExternally: (path) => openInOtherApp(path),
   revealInExplorer: (path, isDir) => revealInExplorer(path, isDir),
   onError: (message, error) => showError(message, error),
-  openViewer: async (format, text, selection) => {
-    try {
-      return await api.openViewer(format, text, selection, doc.current.savePath);
-    } catch (error) {
-      await reportBackgroundError("ビューを開けませんでした", error);
-      return null;
-    }
+  openViewer: (format, text, selection) => {
+    statusbar.setPreviewFormat(format);
+    return inlinePreview.open(format, text, selection);
   },
-  updateViewer: api.updateViewer,
-  closeViewer: api.closeViewer,
+  updateViewer: (label, text, selection) => inlinePreview.update(label, text, selection),
+  closeViewer: (label) => inlinePreview.close(label),
   saveImage: async (bytes, mimeType) => {
     return withArchivePassword(
       archiveRelOf(doc.current.selectedRelPath),
@@ -258,7 +304,6 @@ editor.setTabSize(statusbar.setIndent(getSetting("indentSize")));
 
 const sidebar = new Sidebar(sidebarEl, {
   onSelect: async (relPath, newTab) => {
-    if (isImagePath(relPath) && doc.current.folderRoot) return openImageInViewer(relPath);
     if (newTab) {
       await openInNewTab(relPath);
       return;
@@ -330,7 +375,11 @@ const doc: DocumentController = new DocumentController({
   setLoading,
   setTitle: (title) => windowChrome.setTitle(title),
   notify: (text) => windowChrome.notify(text),
-  onSessionChange: (session) => tabs?.syncActive(session),
+  onDocumentChange: (session, keepViewers = false) => syncPreviewDocument(session, !keepViewers),
+  onSessionChange: (session) => {
+    tabs?.syncActive(session);
+    syncPreviewDocument(session);
+  },
   hideExternalBanner: () => externalWatch.hide(),
   pickSavePath: async (defaultPath) => {
     const path = await saveDialog({
@@ -442,6 +491,12 @@ $("sidebar-toggle").addEventListener("click", () => {
   sidebarCollapsed = !sidebarCollapsed;
   updateSidebarVisibility();
 });
+previewToggle.addEventListener("click", () => {
+  previewCollapsed = !previewCollapsed;
+  updatePreviewVisibility();
+  if (!previewCollapsed) inlinePreview.resend();
+});
+window.addEventListener("resize", updatePreviewVisibility);
 
 document.addEventListener("contextmenu", (e) => e.preventDefault());
 

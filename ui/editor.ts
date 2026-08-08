@@ -50,7 +50,7 @@ export type { EditorViewState } from "./editor-view-state";
 export interface EditorPorts {
   onDocChange: (lineCount: number) => void;
   onCursor: (line: number, col: number) => void;
-  onFontChange: (fontFamily: string, fontSize: number) => void;
+  onFontChange: (fontFamily: string, fontSize: number, changed: "family" | "size" | "both") => void;
   openExternally: (path: string) => void | Promise<unknown>;
   registeredCommandPorts: RegisteredCommandMenuPorts;
   revealInExplorer?: (path: string, isDir: boolean) => void | Promise<unknown>;
@@ -115,7 +115,7 @@ export class VirtualEditor {
 
   private onDocChange: (lineCount: number) => void;
   private onCursor: (line: number, col: number) => void;
-  private onFontChange: (fontFamily: string, fontSize: number) => void;
+  private onFontChange: (fontFamily: string, fontSize: number, changed: "family" | "size" | "both") => void;
   private externalFilePath: string | null = null;
   private openExternally: (path: string) => void | Promise<unknown>;
   private registeredCommandPorts: RegisteredCommandMenuPorts;
@@ -417,7 +417,7 @@ export class VirtualEditor {
     this.render();
   }
 
-  setFont(fontFamily: string, fontSize: number) {
+  setFont(fontFamily: string, fontSize: number, changed: "family" | "size" | "both" = "both") {
     const topLine = this.wrap || this.metrics.scaleMode ? this.topLineF : this.pxToLine(this.scroll.scrollTop);
     const wasAtBottom = topLine >= this.maxTopLine();
     this.fontFamily = fontFamily;
@@ -432,7 +432,7 @@ export class VirtualEditor {
     this.updateMetrics();
     this.setTopLine(wasAtBottom ? this.maxTopLine() : topLine);
     this.render();
-    this.onFontChange(this.fontFamily, this.fontSize);
+    this.onFontChange(this.fontFamily, this.fontSize, changed);
   }
 
   setTabSize(size: number) {
@@ -1384,9 +1384,8 @@ export class VirtualEditor {
   async openTextViewer(format: api.ViewerFormat) {
     const [selectionStart, selectionEnd] = this.sel.norm();
     const selection = { start: selectionStart, end: selectionEnd };
-    if (!this.sel.hasSel()) return this.liveViewers.open(format, null, selection);
-    const { start, end } = selection;
-    return this.liveViewers.open(format, { start: { ...start }, end: { ...end } }, selection);
+    this.liveViewers.clear();
+    return this.liveViewers.open(format, null, selection);
   }
 
   private moveSelection(target: Pos) {
@@ -1623,7 +1622,7 @@ export class VirtualEditor {
   private onWheel(e: WheelEvent) {
     if (e.ctrlKey) {
       e.preventDefault();
-      if (e.deltaY) this.setFont(this.fontFamily, this.fontSize + (e.deltaY < 0 ? 1 : -1));
+      if (e.deltaY) this.setFont(this.fontFamily, this.fontSize + (e.deltaY < 0 ? 1 : -1), "size");
       return;
     }
     if (this.wrap) {

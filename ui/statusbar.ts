@@ -1,4 +1,4 @@
-import { READ_ENCODINGS, type ReadEncoding } from "./api";
+import { READ_ENCODINGS, type ReadEncoding, type ViewerFormat } from "./api";
 import type { DocumentSession } from "./session";
 import { readEncodingOf } from "./session";
 import { formatByteSize, formatCursor, formatFontFamily, formatLineCount } from "./format";
@@ -23,9 +23,11 @@ function option(value: string, label: string): HTMLOptionElement {
 
 export interface StatusBarPorts {
   onGoTo: (line: number) => void;
-  onFont: (family: string, size: number) => void;
+  onFontFamily: (family: string) => void;
+  onFontSize: (size: number) => void;
   onWrap: (on: boolean) => void;
   onIndent: (size: number) => void;
+  onPreviewDelimiter?: (delimiter: string) => void;
   // 再読込を受け入れたら true。false なら選択を元へ戻す (成否の判断は呼び出し側に残す)
   onReadEncoding: (encoding: ReadEncoding) => Promise<boolean>;
   onError?: (title: string, error: unknown) => void | Promise<void>;
@@ -49,6 +51,9 @@ export class StatusBar {
     this.sourceEncodingSelect.replaceChildren(
       ...READ_ENCODINGS.map((encoding) => option(encoding, READ_ENCODING_LABELS[encoding])),
     );
+    this.previewDelimiterInput.addEventListener("input", () => {
+      if (this.previewDelimiterInput.value) this.ports.onPreviewDelimiter?.(this.previewDelimiterInput.value);
+    });
     this.pick("st-theme").addEventListener("click", () => {
       this.run("テーマを変更できませんでした", () => {
         const current = (document.documentElement.getAttribute("data-theme") as Theme) ?? "dark";
@@ -94,6 +99,14 @@ export class StatusBar {
 
   private get sourceEncodingSelect() {
     return this.pick<HTMLSelectElement>("st-source-enc");
+  }
+
+  private get previewDelimiter() {
+    return this.pick<HTMLElement>("st-delimiter");
+  }
+
+  private get previewDelimiterInput() {
+    return this.pick<HTMLInputElement>("st-delimiter-input");
   }
 
   // 保存済みの配色を復元する。未保存/未知の値はダーク扱い。
@@ -145,6 +158,10 @@ export class StatusBar {
     return this.pick("st-mode").textContent ?? "";
   }
 
+  setPreviewFormat(format: ViewerFormat | null) {
+    this.previewDelimiter.hidden = format !== "csv";
+  }
+
   // ステータスバーが示すのは読込時の形式だけ。保存形式は別名保存ダイアログが持つ。
   setFormat(session: Readonly<DocumentSession>) {
     const source = this.sourceEncodingSelect;
@@ -164,12 +181,12 @@ export class StatusBar {
 
   private async promptFont() {
     const family = await promptFontFamily(this.fontFamily);
-    if (family) this.ports.onFont(family, this.fontSize);
+    if (family) this.ports.onFontFamily(family);
   }
 
   private async promptFontSize() {
     const size = await promptFontSize(this.fontSize);
-    if (size !== null) this.ports.onFont(this.fontFamily, size);
+    if (size !== null) this.ports.onFontSize(size);
   }
 
   private async promptGoTo() {

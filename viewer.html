@@ -10,7 +10,13 @@
 <body>
   <div id="titlebar">
     <div id="viewer-title-spacer"></div>
-    <div id="viewer-title" data-tauri-drag-region>読込み中…</div>
+    <div id="viewer-title" data-tauri-drag-region>
+      <span id="viewer-title-text">読込み中…</span>
+      <select id="viewer-format" aria-label="表示形式">
+        <option value="markdown">Markdown</option>
+        <option value="csv">CSV</option>
+      </select>
+    </div>
     <div id="wincontrols">
       <button id="win-min" title="最小化">&#xE921;</button>
       <button id="win-max" title="最大化">&#xE922;</button>

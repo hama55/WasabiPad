@@ -51,9 +51,14 @@
         <span id="loading-message">読み込み中…</span>
       </div>
     </div>
+    <div id="preview" hidden>
+      <iframe title="プレビュー"></iframe>
+    </div>
+    <button id="preview-toggle" title="プレビューを閉じる" hidden>&gt;&gt;</button>
   </div>
   <div id="statusbar">
     <span id="st-mode"></span>
+    <label id="st-delimiter" hidden title="CSV区切り文字">区切り <input id="st-delimiter-input" value="," aria-label="CSV区切り文字" /></label>
     <button id="st-pos" title="指定行へ移動">1行 1列</button>
     <span class="st-sep" aria-hidden="true"></span>
     <span id="st-size"></span>

@@ -5,9 +5,8 @@ import Chart from "chart.js/auto";
 import MarkdownIt from "markdown-it";
 import Papa from "papaparse";
 import { EVENT_NAMES, readArchiveAsset, takeViewerPayload, type ViewerFormat, type ViewerPayload, type ViewerSelection } from "./api";
-import { formatFontFamily, formatTitleBar } from "./format";
+import { formatFontFamily } from "./format";
 import { createViewerFormatHandlers } from "./viewer-formats";
-import { basename } from "./path";
 import { getSetting, initSettings, setSetting } from "./settings";
 import { clampFontSize, promptFontFamily, promptFontSize as promptFontSizeDialog } from "./font-controls";
 import {
@@ -35,6 +34,7 @@ import {
 } from "./viewer-markdown";
 import { scrollViewerCaret } from "./viewer-scroll";
 import { createViewerChartMenuItem } from "./viewer-context-menu";
+import { INLINE_PREVIEW_MESSAGES } from "./inline-preview";
 
 const MAX_TABLE_ROWS = 10_000;
 const MAX_TABLE_COLUMNS = 200;
@@ -42,9 +42,11 @@ const CHART_COLORS = ["#4fc3f7", "#ffb74d", "#81c784", "#e57373", "#ba68c8", "#f
 
 await initSettings();
 
-const win = getCurrentWindow();
+const isInlineViewer = new URLSearchParams(window.location.search).get("inline") === "1";
+const win = isInlineViewer ? null : getCurrentWindow();
 const content = document.getElementById("viewer-content")!;
-const title = document.getElementById("viewer-title")!;
+const title = document.getElementById("viewer-title-text")!;
+const formatSelect = document.getElementById("viewer-format") as HTMLSelectElement;
 const summary = document.getElementById("viewer-summary")!;
 const themeButton = document.getElementById("viewer-theme")!;
 const fontButton = document.getElementById("viewer-font")!;
@@ -68,7 +70,7 @@ let archiveAssetUrls: string[] = [];
 let chart: Chart<"line" | "bar", (number | null)[], string> | null = null;
 let chartColumns: { x: number; y: number[]; reverseX: boolean; type: ChartTypeId } | null = null;
 let fontFamily = getSetting("fontFamily");
-let fontSize = getSetting("fontSize");
+let fontSize = getSetting("previewFontSize");
 
 function scrollCsvRows(rows: HTMLElement[], selection: ViewerSelection | null) {
   scrollViewerCaret(rows, selection, (_row, index) => ({ start: index, end: index + 1 }));
@@ -83,8 +85,15 @@ function applyFont(family: string, size: number, persist = true) {
   fontSizeButton.textContent = `${size}px`;
   if (persist) {
     setSetting("fontFamily", family);
-    setSetting("fontSize", size);
+    setSetting("previewFontSize", size);
   }
+}
+
+function applyFontFamily(family: string, persist = true) {
+  fontFamily = family;
+  document.documentElement.style.setProperty("--font-mono", family);
+  fontButton.textContent = formatFontFamily(family);
+  if (persist) setSetting("fontFamily", family);
 }
 
 async function promptFont() {
@@ -123,6 +132,15 @@ function bindViewerControls() {
   fontButton.addEventListener("click", () => runViewerOperation("フォントを変更できませんでした", promptFont));
   fontSizeButton.addEventListener("click", () => runViewerOperation("文字サイズを変更できませんでした", promptFontSize));
   content.addEventListener("wheel", onViewerWheel, { passive: false });
+  formatSelect.addEventListener("change", () => {
+    if (!isInlineViewer) return;
+    const format = formatSelect.value;
+    if (format !== "markdown" && format !== "csv") return;
+    window.parent.postMessage({
+      type: INLINE_PREVIEW_MESSAGES.FORMAT_CHANGE_MESSAGE,
+      format,
+    }, "*");
+  });
 }
 
 function renderTable(text: string) {
@@ -293,10 +311,10 @@ function renderPayload(payload: ViewerPayload) {
   currentSourcePath = payload.source_path;
   currentArchivePath = payload.archive_path;
   currentArchiveEntry = payload.archive_entry;
-  const sourceName = payload.source_path ? basename(payload.source_path) : "";
   const handler = VIEWER_HANDLERS[payload.format];
-  title.textContent = formatTitleBar(`${sourceName ? `${sourceName} — ` : ""}${handler.label}`);
-  runViewerOperation("タイトルを更新できませんでした", () => win.setTitle(title.textContent));
+  formatSelect.value = payload.format;
+  title.textContent = payload.format === "markdown" ? "Markdown" : "CSV";
+  if (!isInlineViewer) runViewerOperation("タイトルを更新できませんでした", () => win!.setTitle(title.textContent));
   delimiterControl.hidden = !handler.supportsDelimiter;
   runViewerOperation("ビューを描画できませんでした", () => handler.render(payload.text));
 }
@@ -512,8 +530,9 @@ function closeChart() {
 
 async function start() {
   try {
+    if (isInlineViewer) document.body.classList.add("inline-viewer");
     applyTheme();
-    new WindowControls(document.body, win, title, { onError: reportWindowError });
+    if (!isInlineViewer) new WindowControls(document.body, win!, title, { onError: reportWindowError });
     bindViewerControls();
     applyFont(fontFamily, fontSize, false);
     themeButton.addEventListener("click", () => {
@@ -537,12 +556,34 @@ async function start() {
     document.addEventListener("mousedown", (event) => {
       if (!contextMenu.contains(event.target as Node)) contextMenu.hidden = true;
     });
-    await listen<ViewerPayload>(EVENT_NAMES.viewerUpdate, (event) => {
-      runViewerOperation("ビューを更新できませんでした", () => renderPayload(event.payload));
-    });
-    renderPayload(await takeViewerPayload(win.label));
+    if (isInlineViewer) {
+      window.addEventListener("message", (event) => {
+        if (event.source !== window.parent) return;
+        if (event.data?.type === INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE) {
+          runViewerOperation("ビューを更新できませんでした", () => renderPayload(event.data.payload as ViewerPayload));
+          return;
+        }
+        if (event.data?.type === INLINE_PREVIEW_MESSAGES.DELIMITER_MESSAGE) {
+          if (typeof event.data.delimiter !== "string") return;
+          delimiterInput.value = event.data.delimiter;
+          if (!delimiterInput.value || !VIEWER_HANDLERS[currentFormat].supportsDelimiter) return;
+          runViewerOperation("ビューを再描画できませんでした", () => VIEWER_HANDLERS[currentFormat].render(currentText));
+          return;
+        }
+        if (event.data?.type === INLINE_PREVIEW_MESSAGES.FONT_MESSAGE) {
+          if (typeof event.data.family !== "string") return;
+          applyFontFamily(event.data.family, false);
+        }
+      });
+      window.parent.postMessage({ type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE }, "*");
+    } else {
+      await listen<ViewerPayload>(EVENT_NAMES.viewerUpdate, (event) => {
+        runViewerOperation("ビューを更新できませんでした", () => renderPayload(event.payload));
+      });
+      renderPayload(await takeViewerPayload(win!.label));
+    }
   } catch (error) {
-    title.textContent = formatTitleBar("表示できませんでした");
+    title.textContent = "表示できませんでした";
     const message = document.createElement("p");
     message.className = "viewer-error";
     message.textContent = String(error);

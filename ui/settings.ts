@@ -15,6 +15,7 @@ export interface Settings {
   indentSize: number;
   fontFamily: string;
   fontSize: number;
+  previewFontSize: number;
   startupPath: string | null;
   registeredStrings: string[];
   registeredCommands: RegisteredCommand[];
@@ -27,6 +28,7 @@ const DEFAULTS: Settings = {
   indentSize: DEFAULT_INDENT_SIZE,
   fontFamily: DEFAULT_EDITOR_CONFIG.fontFamily,
   fontSize: DEFAULT_EDITOR_CONFIG.fontSize,
+  previewFontSize: DEFAULT_EDITOR_CONFIG.fontSize,
   startupPath: null,
   registeredStrings: [],
   registeredCommands: [],
@@ -57,6 +59,9 @@ export function parseSettings(text: string): Settings {
     fontSize: isValidFontSize(value.fontSize)
       ? value.fontSize
       : DEFAULTS.fontSize,
+    previewFontSize: isValidFontSize(value.previewFontSize)
+      ? value.previewFontSize
+      : isValidFontSize(value.fontSize) ? value.fontSize : DEFAULTS.previewFontSize,
     startupPath: typeof value.startupPath === "string" ? value.startupPath : null,
     registeredStrings: Array.isArray(value.registeredStrings)
       ? value.registeredStrings.filter((item): item is string => typeof item === "string" && item.length > 0)

@@ -68,10 +68,21 @@ describe("Feature: settings", () => {
     const saved = parseSettings(JSON.stringify({ fontFamily: "Meiryo, sans-serif", fontSize: 16 }));
     expect(saved.fontFamily).toBe("Meiryo, sans-serif");
     expect(saved.fontSize).toBe(16);
+    expect(saved.previewFontSize).toBe(16);
 
     const invalid = parseSettings(JSON.stringify({ fontFamily: "", fontSize: 12.5 }));
     expect(invalid.fontFamily).toBe('Consolas, "MS Gothic", monospace');
     expect(invalid.fontSize).toBe(14);
+    expect(invalid.previewFontSize).toBe(14);
+  });
+
+  // Given: エディタ用サイズ16とプレビュー用サイズ20を保存
+  // When: `parseSettings`を呼ぶ
+  // Then: それぞれのサイズを独立して復元する
+  it("Scenario: エディタとプレビューの文字サイズを別々に復元する", () => {
+    const saved = parseSettings(JSON.stringify({ fontSize: 16, previewFontSize: 20 }));
+    expect(saved.fontSize).toBe(16);
+    expect(saved.previewFontSize).toBe(20);
   });
 
   // Given: `workspaceSearchOptions`未設定または`{ max_files: 5 }`

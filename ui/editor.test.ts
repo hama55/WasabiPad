@@ -37,12 +37,13 @@ function mount(
   const events = {
     lineCount: 0,
     cursor: [0, 0] as [number, number],
+    fontChanges: [] as { family: string; size: number; changed: "family" | "size" | "both" }[],
     errors: [] as { message: string; error: unknown }[],
   };
   const ports: EditorPorts = {
     onDocChange: (lineCount) => { events.lineCount = lineCount; },
     onCursor: (line, col) => { events.cursor = [line, col]; },
-    onFontChange: () => {},
+    onFontChange: (family, size, changed) => { events.fontChanges.push({ family, size, changed }); },
     openExternally: () => {},
     revealInExplorer: overrides.revealInExplorer,
     registeredCommandPorts: overrides.registeredCommandPorts ?? {
@@ -87,6 +88,21 @@ describe("Feature: VirtualEditor", () => {
     editor.open(3, false);
     await settle();
     expect(doc.calls.some((call) => call.startsWith("lines("))).toBe(true);
+  });
+
+  // Given: 文書をエディタで表示している
+  // When: エディタ上で Ctrl+ホイールを操作する
+  // Then: フォントサイズ変更として通知し、フォントファミリー変更とは通知しない
+  it("Scenario: エディタのCtrl+ホイールはサイズ変更だけを通知する", async () => {
+    const { editor, host, events } = mount("line");
+    editor.open(1, false);
+    await settle();
+
+    host.querySelector<HTMLElement>(".ve-scroll")!.dispatchEvent(
+      new WheelEvent("wheel", { deltaY: -1, ctrlKey: true }),
+    );
+
+    expect(events.fontChanges.at(-1)?.changed).toBe("size");
   });
 
   // Given: 文書が「ab」、編集モードで開かれ、既存の .ve-line・.ve-gnum と lines(...) 呼び出し数を記録している

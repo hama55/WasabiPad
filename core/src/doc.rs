@@ -20,6 +20,16 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+fn is_image_path(path: &Path) -> bool {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some(ext) => matches!(
+            ext.to_ascii_lowercase().as_str(),
+            "apng" | "avif" | "bmp" | "gif" | "ico" | "jpeg" | "jpg" | "png" | "svg" | "webp"
+        ),
+        None => false,
+    }
+}
+
 pub struct Doc {
     buf: TextBuffer,
     undo: UndoStack,
@@ -111,12 +121,12 @@ impl DocumentSource {
 
     fn is_view_only(&self) -> bool {
         matches!(
-            self.target,
+            &self.target,
             Target::Archive {
                 editable_entry: None,
                 ..
             }
-        )
+        ) || matches!(&self.target, Target::File { path, .. } if is_image_path(path))
     }
 
     // フォルダ閲覧中は kind を Text のままにする (ツリーは folder_entries が組み立てるため)。
@@ -440,8 +450,13 @@ impl Doc {
         } else {
             DocumentSource::file(path.to_path_buf(), o.source_file, o.stamp)
         };
+        let buf = if is_image_path(path) {
+            TextBuffer::from_text(&format!("(バイナリ: {} bytes)", o.byte_len))
+        } else {
+            o.buf
+        };
         Ok(Doc {
-            buf: o.buf,
+            buf,
             undo: UndoStack::new(),
             enc: o.enc,
             eol: o.eol,
@@ -470,8 +485,13 @@ impl Doc {
             root: self.source.folder_root().map(Path::to_path_buf),
             ..DocumentSource::file(path.clone(), o.source_file, o.stamp)
         };
+        let buf = if is_image_path(&path) {
+            TextBuffer::from_text(&format!("(バイナリ: {} bytes)", o.byte_len))
+        } else {
+            o.buf
+        };
         let replacement = Doc {
-            buf: o.buf,
+            buf,
             undo: UndoStack::new(),
             enc: o.enc,
             eol: o.eol,
@@ -2623,6 +2643,29 @@ mod tests {
         );
 
         drop(d); // 選択中ファイルの排他を解放してからfixtureを削除
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    // Feature: 画像ファイルを右側プレビューへ渡すための簡易エディタ表示
+    // Scenario: 画像ファイルを開く
+    // Given: PNG形式のファイルがある
+    // When: そのファイルを文書として開く
+    // Then: バイナリサイズを表示し、編集不可になる
+    #[test]
+    fn image_file_shows_binary_description_and_is_view_only() {
+        let root = std::env::temp_dir().join(format!("wasabipad_image_doc_{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("picture.PNG");
+        let bytes = [0x89, b'P', b'N', b'G', 0x0d, 0x0a];
+        std::fs::write(&path, bytes).unwrap();
+
+        let mut d = Doc::open(&path).unwrap();
+        let info = d.info(path.to_string_lossy().into_owned());
+        assert!(info.view_only);
+        assert_eq!(d.lines(0, 1), vec!["(バイナリ: 6 bytes)".to_string()]);
+        assert!(d.edit(p(0, 0), p(0, 0), p(0, 0), "X", false).is_none());
+
+        drop(d);
         std::fs::remove_dir_all(&root).unwrap();
     }
 

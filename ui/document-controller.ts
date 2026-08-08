@@ -78,6 +78,7 @@ export interface DocumentView {
   setLoading: (active: boolean, message?: string) => void;
   setTitle: (title: string) => void;
   notify: (text: string) => void;
+  onDocumentChange?: (session: Readonly<DocumentSession>, keepViewers?: boolean) => void;
   onSessionChange?: (session: Readonly<DocumentSession>) => void;
   hideExternalBanner: () => void;
   // ファイル保存先を選ばせる (OS のダイアログ)
@@ -150,6 +151,7 @@ export class DocumentController {
     if (updateTree) this.showTree(info);
     this.view.editor.open(info.line_count, this.session.readOnly, keepViewers, externalFilePathOf(info));
     this.view.editor.focus();
+    this.view.onDocumentChange?.(this.session, keepViewers);
     this.updateTitle();
   }
 
@@ -244,6 +246,7 @@ export class DocumentController {
     this.view.sidebar.setWorkspaceSearch(null);
     this.view.editor.open(1, false);
     this.view.editor.focus();
+    this.view.onDocumentChange?.(this.session);
     this.updateTitle();
   }
 
