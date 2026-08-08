@@ -1,5 +1,7 @@
 import type { ViewerSelection } from "./api";
 
+export const CSV_MIN_COLUMN_WIDTH = 48;
+
 export function decodeDelimiter(value: string) {
   return value === "\\t" ? "\t" : value;
 }
@@ -18,6 +20,58 @@ export function csvColumnAt(line: string, column: number, delimiterValue: string
     }
   }
   return cell;
+}
+
+export interface CsvCellBounds {
+  start: number;
+  end: number;
+}
+
+export function csvCellBounds(line: string, column: number, delimiterValue: string): CsvCellBounds {
+  return csvCellBoundsForColumn(line, csvColumnAt(line, column, delimiterValue), delimiterValue);
+}
+
+export function csvCellBoundsForColumn(line: string, target: number, delimiterValue: string): CsvCellBounds {
+  const delimiter = decodeDelimiter(delimiterValue);
+  let cell = 0;
+  let start = 0;
+  let quoted = false;
+  for (let index = 0; index < line.length; index++) {
+    if (line[index] === '"') {
+      if (quoted && line[index + 1] === '"') index++;
+      else quoted = !quoted;
+    } else if (!quoted && line.startsWith(delimiter, index)) {
+      if (cell === target) return { start, end: index };
+      cell++;
+      start = index + delimiter.length;
+      index += delimiter.length - 1;
+    }
+  }
+  return { start, end: line.length };
+}
+
+export function csvCellOffsetAt(line: string, column: number, delimiterValue: string): number {
+  const bounds = csvCellBounds(line, column, delimiterValue);
+  const limit = Math.max(bounds.start, Math.min(bounds.end, column));
+  let offset = 0;
+  let quoted = false;
+  for (let index = bounds.start; index < limit; index++) {
+    if (line[index] === '"') {
+      if (quoted && line[index + 1] === '"') {
+        offset++;
+        index++;
+      } else {
+        quoted = !quoted;
+      }
+    } else {
+      offset++;
+    }
+  }
+  return offset;
+}
+
+export function resizedCsvColumnWidth(startWidth: number, deltaX: number): number {
+  return Math.max(CSV_MIN_COLUMN_WIDTH, Math.round(startWidth + deltaX));
 }
 
 export function isSingleCsvCellSelection(

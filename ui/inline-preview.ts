@@ -1,6 +1,7 @@
 import type { ViewerFormat, ViewerPayload, ViewerSelection } from "./api";
 import { runAsyncBoundary } from "./async-boundary";
 import { isViewerFormat } from "./viewer-formats";
+import { isViewerSelection } from "./viewer-payload";
 import { INLINE_PREVIEW_MESSAGES } from "./inline-preview-protocol";
 
 const {
@@ -19,6 +20,7 @@ export interface InlinePreviewPorts {
   onFormatChange?: (format: ViewerFormat) => void;
   onFontFamilyChange?: (family: string) => void;
   onFullscreenChange?: () => void | Promise<void>;
+  onSelectionChange?: (selection: ViewerSelection) => void | Promise<void>;
   onError?: (error: unknown) => void | Promise<void>;
 }
 
@@ -64,6 +66,11 @@ export class InlinePreview {
       }
       if (event.data?.type === FULLSCREEN_CHANGE_MESSAGE) {
         this.notifyPort(() => this.ports.onFullscreenChange?.());
+        return;
+      }
+      if (event.data?.type === INLINE_PREVIEW_MESSAGES.SELECTION_CHANGE_MESSAGE) {
+        if (!isViewerSelection(event.data.selection)) return;
+        this.notifyPort(() => this.ports.onSelectionChange?.(event.data.selection));
       }
     });
   }

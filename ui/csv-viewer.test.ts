@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { csvColumnAt, decodeDelimiter, isSingleCsvCellSelection } from "./csv-viewer";
+import {
+  csvCellBounds,
+  csvCellOffsetAt,
+  csvColumnAt,
+  decodeDelimiter,
+  isSingleCsvCellSelection,
+  resizedCsvColumnWidth,
+} from "./csv-viewer";
 
 describe("Feature: CSV viewer helpers", () => {
   // Given: delimiter入力が`"\\t"`と`","`
@@ -29,5 +36,21 @@ describe("Feature: CSV viewer helpers", () => {
       start: { line: 0, col: 0 },
       end: { line: 0, col: 2 },
     }, "\\t")).toBe(false);
+  });
+  // Given: "a,b",cのCSV行とセル内のソース位置
+  // When: 対応するセル範囲と表示文字列上のキャレット位置を求める
+  // Then: 引用符を除いたセル内位置として返る
+  it("Scenario: quoted CSV cell positions ignore syntax quotes", () => {
+    expect(csvCellBounds('"a,b",c', 3, ",")).toEqual({ start: 0, end: 5 });
+    expect(csvCellOffsetAt('"a,b",c', 3, ",")).toBe(2);
+    expect(csvCellOffsetAt('"a,b",c', 1, ",")).toBe(0);
+  });
+
+  // Given: 列幅48pxのCSV列
+  // When: 列幅を左右へドラッグする
+  // Then: 最小幅を下回らず、整数pxで反映する
+  it("Scenario: column resize keeps the minimum width", () => {
+    expect(resizedCsvColumnWidth(80, 23.4)).toBe(103);
+    expect(resizedCsvColumnWidth(80, -50)).toBe(48);
   });
 });

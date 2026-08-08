@@ -210,6 +210,8 @@ const inlinePreview = new InlinePreview(previewEl, {
   },
   onFormatChange: (format) => runBackground("ビューを切り替えられませんでした", () => editor.openTextViewer(format)),
   onFontFamilyChange: (family) => editor.setFont(family, getSetting("fontSize"), "family"),
+  onSelectionChange: (selection) =>
+    runBackground("エディタの位置を同期できませんでした", () => editor.goToPreview(selection)),
   onFullscreenChange: () => {
     previewFullscreen = !previewFullscreen;
     if (previewFullscreen) previewCollapsed = false;

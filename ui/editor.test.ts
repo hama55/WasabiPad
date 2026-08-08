@@ -1307,4 +1307,52 @@ describe("Feature: VirtualEditor", () => {
     input.dispatchEvent(new FocusEvent("blur"));
     expect(caret.classList.contains("on")).toBe(false);
   });
+
+  // Given: 3行の本文で2行目から3行目までを選択している
+  // When: CSVビューを開く
+  // Then: 選択範囲だけを本文として渡し、行番号にPを表示する
+  it("Scenario: opens a selected range as the preview source", async () => {
+    const openViewer = vi.fn(async () => "inline-viewer");
+    const { editor, host } = mount("one\ntwo\nthree", undefined, { openViewer });
+    editor.open(3, false);
+    await settle();
+    await editor.restoreViewState({
+      anchor: { line: 1, col: 0 },
+      caret: { line: 2, col: 5 },
+      topLine: 0,
+      wrapIntraLinePx: 0,
+      scrollLeft: 0,
+    });
+
+    await editor.openTextViewer("csv");
+
+    expect(openViewer).toHaveBeenCalledWith("csv", "two\nthree", {
+      start: { line: 0, col: 0 },
+      end: { line: 1, col: 5 },
+    });
+    expect(host.querySelectorAll(".ve-preview-mark:not([hidden])")).toHaveLength(2);
+  });
+
+  // Given: プレビューが開いている
+  // When: プレビューから文書位置を受け取る
+  // Then: エディタのキャレットをその位置へ移し、中央表示処理を通す
+  it("Scenario: moves the editor caret from a preview position", async () => {
+    const openViewer = vi.fn(async () => "inline-viewer");
+    const { editor, host } = mount("zero\none\ntwo", undefined, { openViewer });
+    const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
+    Object.defineProperties(scroll, {
+      clientHeight: { configurable: true, value: 100 },
+      clientWidth: { configurable: true, value: 100 },
+    });
+    editor.open(3, false);
+    await settle();
+    await editor.openTextViewer("markdown");
+    await editor.goToPreview({
+      start: { line: 2, col: 1 },
+      end: { line: 2, col: 2 },
+    });
+
+    expect(editor.captureViewState().caret).toEqual({ line: 2, col: 2 });
+    expect(host.querySelector(".ve-caret.on")).not.toBeNull();
+  });
 });

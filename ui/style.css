@@ -360,6 +360,10 @@ body.preview-resizing * { cursor: ew-resize !important; user-select: none !impor
   text-align: right; user-select: none; box-sizing: border-box;
 }
 .ve-gnum-separator { margin-left: 2px; }
+.ve-preview-mark {
+  position: absolute; left: 4px; color: var(--accent); font-weight: 600;
+}
+.ve-preview-mark[hidden] { display: none; }
 .ve-gnum.selected-line {
   background: color-mix(in srgb, var(--accent) 18%, transparent);
 }

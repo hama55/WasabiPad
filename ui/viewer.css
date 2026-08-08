@@ -79,6 +79,15 @@ main { position: relative; flex: 1; min-height: 0; }
   position: sticky; top: 0; z-index: 1;
   background: var(--bg-side); color: var(--fg);
 }
+.viewer-grid th { overflow: visible; }
+.viewer-column-resizer {
+  position: absolute; top: 0; right: 0; bottom: 0; width: 8px;
+  cursor: col-resize; user-select: none;
+}
+.viewer-caret {
+  display: inline-block; width: 2px; height: 1.2em;
+  margin: 0 -1px; background: var(--accent); vertical-align: text-bottom;
+}
 .viewer-grid .viewer-line-number {
   position: sticky; left: 0; z-index: 2;
   min-width: 44px; text-align: right; color: var(--fg-dim);
@@ -96,6 +105,17 @@ main { position: relative; flex: 1; min-height: 0; }
   color: var(--source-selected-fg);
   outline: 1px solid var(--accent);
   outline-offset: -1px;
+}
+
+.viewer-caret-line {
+  border-left: 2px solid var(--accent);
+  padding-left: 8px;
+}
+
+body.viewer-resizing,
+body.viewer-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
 }
 
 article { max-width: 900px; margin: 0 auto; padding: 24px 36px 64px; line-height: 1.65; font: var(--viewer-font-size) var(--font-mono); }

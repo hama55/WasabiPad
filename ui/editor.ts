@@ -47,6 +47,12 @@ import {
 const OVERSCAN = 8;
 export type { EditorViewState } from "./editor-view-state";
 
+function isPreviewLine(line: number, range: { start: Pos; end: Pos } | null): boolean {
+  if (!range || (range.start.line === range.end.line && range.start.col === range.end.col)) return false;
+  return line >= range.start.line
+    && (line < range.end.line || (line === range.end.line && range.end.col > 0));
+}
+
 export interface EditorPorts {
   onDocChange: (lineCount: number) => void;
   onCursor: (line: number, col: number) => void;
@@ -386,6 +392,33 @@ export class VirtualEditor {
     this.focus();
   }
 
+  async goToPreview(selection: api.ViewerSelection) {
+    const generation = this.documentGeneration;
+    const target = this.liveViewers.positionInDocument(selection.end);
+    const line = Math.max(0, Math.min(this.lineCount - 1, target.line));
+    const text = await this.lineCache.line(line);
+    if (generation !== this.documentGeneration) return;
+    const pos = { line, col: Math.max(0, Math.min(charLen(text), target.col)) };
+    this.sel.reset(pos);
+    this.render();
+    this.centerLine(line);
+    this.render();
+    if (this.wrap) {
+      this.centerLine(line);
+      this.render();
+    }
+    if (!this.wrap) {
+      const lineEl = this.lineElem(line);
+      if (lineEl) {
+        const x = this.colToX(lineEl, text, pos.col);
+        this.setHorizontalScroll(x - this.scroll.clientWidth / 2);
+      }
+    }
+    this.render();
+    this.notifyCursor();
+    this.focus();
+  }
+
   async selectRange(line: number, startCol: number, endCol: number) {
     const targetLine = Math.max(0, Math.min(this.lineCount - 1, line));
     const generation = this.documentGeneration;
@@ -657,7 +690,7 @@ export class VirtualEditor {
     this.renderVisibleLines(first, last);
     this.layoutVisibleLines(first, last, topLine, top);
 
-    this.renderGutter(first, last, top, selectedLines, caretLines);
+    this.renderGutter(first, last, top, selectedLines, caretLines, this.liveViewers.previewRange());
 
     // 新しい可視行DOMを基準にRangeを測定する。旧DOMを測るとスクロール後に欠落する。
     const selectionFrag = document.createDocumentFragment();
@@ -699,6 +732,7 @@ export class VirtualEditor {
     top: number,
     selectedLines: { first: number; last: number } | null,
     caretLines: Set<number>,
+    previewRange: { start: Pos; end: Pos } | null,
   ) {
     let rows = [...this.gutter.querySelectorAll<HTMLElement>(":scope > .ve-gnum")];
     const canReuse = rows.length === last - first
@@ -708,6 +742,10 @@ export class VirtualEditor {
       for (let i = first; i < last; i++) {
         const row = el("div", "ve-gnum");
         row.dataset.line = String(i);
+        const previewMark = el("span", "ve-preview-mark");
+        previewMark.textContent = "P";
+        previewMark.setAttribute("aria-hidden", "true");
+        row.appendChild(previewMark);
         const groups = lineNumberGroups(i + 1);
         row.append(document.createTextNode(groups[0]));
         for (const group of groups.slice(1)) {
@@ -722,6 +760,8 @@ export class VirtualEditor {
     }
     rows.forEach((row, index) => {
       const line = first + index;
+      const previewMark = row.querySelector<HTMLElement>(".ve-preview-mark");
+      if (previewMark) previewMark.hidden = !isPreviewLine(line, previewRange);
       row.style.top = `${this.rowTop(line) - top}px`;
       row.classList.toggle(
         "selected-line",
@@ -800,7 +840,8 @@ export class VirtualEditor {
     context.font = style.font;
     const groups = lineNumberGroups(this.lineCount);
     const numberWidth = context.measureText(groups.join("")).width + (groups.length - 1) * 2;
-    const w = Math.max(this.gutterWidth, Math.ceil(numberWidth + 24));
+    const previewExtra = this.liveViewers.previewRange() ? 14 : 0;
+    const w = Math.max(this.gutterWidth, Math.ceil(numberWidth + 24 + previewExtra));
     this.scroll.parentElement!.style.setProperty("--gutter-w", `${w}px`);
   }
 
@@ -1384,8 +1425,13 @@ export class VirtualEditor {
   async openTextViewer(format: api.ViewerFormat) {
     const [selectionStart, selectionEnd] = this.sel.norm();
     const selection = { start: selectionStart, end: selectionEnd };
+    const range = this.sel.hasSel()
+      ? { start: { ...selectionStart }, end: { ...selectionEnd } }
+      : null;
     this.liveViewers.clear();
-    return this.liveViewers.open(format, null, selection);
+    const opened = await this.liveViewers.open(format, range, selection);
+    this.render();
+    return opened;
   }
 
   private moveSelection(target: Pos) {

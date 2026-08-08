@@ -25,6 +25,10 @@ describe("Feature: LiveViewers", () => {
     expect(openViewer).toHaveBeenCalledWith("csv", "first\nsecond", {
       start: { line: 0, col: 2 }, end: { line: 0, col: 2 },
     });
+    expect(viewers.previewRange()).toEqual({
+      start: { line: 2, col: 3 }, end: { line: 3, col: 6 },
+    });
+    expect(viewers.positionInDocument({ line: 0, col: 2 })).toEqual({ line: 2, col: 5 });
 
     viewers.setSelection({ start: { line: 3, col: 1 }, end: { line: 3, col: 1 } });
     await vi.advanceTimersByTimeAsync(120);

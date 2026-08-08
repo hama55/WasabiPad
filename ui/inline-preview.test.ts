@@ -8,6 +8,8 @@ function mount(
   onFontFamilyChange?: (family: string) => void,
   onError?: (error: unknown) => void | Promise<void>,
   onFullscreenChange?: () => void | Promise<void>,
+  onSelectionChange?: (selection: { start: { line: number; col: number }; end: { line: number; col: number } }) =>
+    void | Promise<void>,
 ) {
   const host = document.createElement("div");
   host.appendChild(document.createElement("iframe"));
@@ -18,6 +20,7 @@ function mount(
     onFormatChange,
     onFontFamilyChange,
     onFullscreenChange,
+    onSelectionChange,
     onError,
   });
   return { host, preview, onAvailabilityChange };
@@ -183,6 +186,29 @@ describe("Feature: inline preview", () => {
     }));
 
     expect(onFullscreenChange).toHaveBeenCalledOnce();
+  });
+
+  // Given: プレビュー内でテキスト選択位置が通知される
+  // When: 正しい形式の選択位置を受け取る
+  // Then: エディタ同期用ポートへそのまま渡す
+  it("Scenario: forwards a preview selection change", () => {
+    const onSelectionChange = vi.fn();
+    const { host } = mount(undefined, undefined, undefined, undefined, onSelectionChange);
+    const frame = host.querySelector("iframe")!;
+
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: window.location.origin,
+      data: {
+        type: INLINE_PREVIEW_MESSAGES.SELECTION_CHANGE_MESSAGE,
+        selection: { start: { line: 2, col: 3 }, end: { line: 2, col: 5 } },
+      },
+    }));
+
+    expect(onSelectionChange).toHaveBeenCalledWith({
+      start: { line: 2, col: 3 },
+      end: { line: 2, col: 5 },
+    });
   });
 
   // Given: iframeが準備完了している

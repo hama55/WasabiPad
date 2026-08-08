@@ -55,6 +55,20 @@ export class LiveViewers {
     return [...this.viewers.values()].some((viewer) => viewer.format === format);
   }
 
+  previewRange(): TrackedRange | null {
+    const range = [...this.viewers.values()].find((viewer) => viewer.range)?.range;
+    return range ? { start: { ...range.start }, end: { ...range.end } } : null;
+  }
+
+  positionInDocument(position: Pos): Pos {
+    const range = this.previewRange();
+    if (!range) return { ...position };
+    return {
+      line: range.start.line + position.line,
+      col: position.line === 0 ? range.start.col + position.col : position.col,
+    };
+  }
+
   // range=null は「全文を映す」= 以後の編集で常に最新の全文へ追随する
   async open(format: ViewerFormat, range: TrackedRange | null, selection: TrackedRange) {
     const generation = this.generation;
