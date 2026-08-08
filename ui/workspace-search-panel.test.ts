@@ -530,9 +530,12 @@ describe("Feature: WorkspaceSearchPanel", () => {
     await vi.advanceTimersByTimeAsync(100);
     expect(host.querySelectorAll(".ws-match")).toHaveLength(2);
 
-    mounted.toggleAllGroups();
+    mounted.collapseAllGroups();
     expect(host.querySelectorAll(".ws-match")).toHaveLength(0);
     expect(host.querySelectorAll(".ws-group")).toHaveLength(2);
+
+    mounted.collapseAllGroups();
+    expect(host.querySelectorAll(".ws-match")).toHaveLength(0);
 
     // 続きが届いても畳んだままにする (押した直後に開き直されない)
     mounted.acceptBatch(searchId, [hit("c.txt", 0, "needle")]);

@@ -62,6 +62,8 @@ describe("Feature: shared registered-command context menu", () => {
     showMenu(0, 0, [createRegisteredCommandMenu(target, services)]);
     [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
       .find((item) => item.textContent === "登録コマンド ▸")!.click();
+    expect([...dropdown.querySelectorAll<HTMLElement>(".dd-submenu .dd-item")]
+      .every((item) => item.querySelector(".menu-icon, .fav-icon"))).toBe(true);
     dropdown.querySelector<HTMLElement>(".dd-submenu .dd-item")!.click();
 
     await vi.waitFor(() => expect(runExternalCommand).toHaveBeenCalledWith(

@@ -136,6 +136,7 @@ export function createRegisteredCommandMenu(
     sub: [
       ...commands.map((command) => ({
         label: command.label,
+        iconClass: MENU_ICON.command,
         action: () => services.run(
           "登録コマンドを実行できませんでした",
           async () => services.runExternalCommand(

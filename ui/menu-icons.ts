@@ -16,6 +16,7 @@ export const MENU_ICON = {
   command: "menu-icon-command",
   address: "menu-icon-address",
   newMemo: "menu-icon-new-memo",
+  expandFolder: "menu-icon-expand-folder",
   rename: "menu-icon-rename",
   favorite: "menu-icon-favorite",
   more: "menu-icon-more",

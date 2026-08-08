@@ -139,6 +139,30 @@ describe("Feature: Sidebar", () => {
     ]);
   });
 
+  // Given: dir の直下に data.zip があり、アーカイブ内に folder/file.txt がある
+  // When: dir の全展開を依頼する
+  // Then: 実フォルダAPIとアーカイブAPIだけを使い、アーカイブ内の仮想フォルダまで展開する
+  it("Scenario: 全展開時もアーカイブ内の仮想フォルダを実フォルダとして扱わない", async () => {
+    const { host, ports, sidebar } = mount();
+    ports.onExpandFolder.mockResolvedValue([
+      { name: "data.zip", is_dir: false, is_archive: true },
+    ]);
+    ports.onExpandArchive.mockResolvedValue(["folder/file.txt"]);
+    sidebar.setEntries([{ name: "dir", is_dir: true, is_archive: false }]);
+
+    await sidebar.expandAllFolder("dir");
+
+    expect(ports.onExpandFolder.mock.calls.map(([relDir]) => relDir)).toEqual(["dir"]);
+    expect(ports.onExpandArchive).toHaveBeenCalledWith("dir/data.zip");
+    expect(ports.onExpandFolder).not.toHaveBeenCalledWith("dir/data.zip::folder");
+    expect([...host.querySelectorAll<HTMLElement>(".fv-row")].map((row) => row.textContent)).toEqual([
+      "🗂️dir",
+      "⌄data.zip",
+      "🗂️folder",
+      "file.txt",
+    ]);
+  });
+
   // Given: dir が閉じた状態のフォルダツリーを表示する
   // When: 上部の共通ボタンを押す
   // Then: ボタンは全展開せず、フォルダ一覧取得も開始しない
@@ -146,10 +170,30 @@ describe("Feature: Sidebar", () => {
     const { host, ports, sidebar } = mount();
     sidebar.setEntries([{ name: "dir", is_dir: true, is_archive: false }]);
 
-    host.querySelector<HTMLButtonElement>(".fv-fold")!.click();
+    const fold = host.querySelector<HTMLButtonElement>(".fv-fold")!;
+    expect(fold.getAttribute("aria-label")).toBe("すべて折りたたむ");
+    fold.click();
 
     expect(ports.onExpandFolder).not.toHaveBeenCalled();
     expect(host.querySelectorAll(".fv-row")).toHaveLength(1);
+  });
+
+  // Given: 共通ボタンの再描画が`render failed`でthrowする
+  // When: 上部の共通ボタンを押す
+  // Then: 同期例外を画面イベントの外へ漏らさずツリーエラーへ通知する
+  it("Scenario: 共通ボタンの同期失敗をツリーエラーとして通知する", async () => {
+    const { host, ports, sidebar } = mount();
+    sidebar.setEntries([{ name: "dir", is_dir: true, is_archive: false }]);
+    const error = new Error("render failed");
+    const render = vi.spyOn(sidebar as unknown as { render: () => void }, "render")
+      .mockImplementation(() => { throw error; });
+
+    try {
+      host.querySelector<HTMLButtonElement>(".fv-fold")!.click();
+      await vi.waitFor(() => expect(ports.onTreeError).toHaveBeenCalledWith(error));
+    } finally {
+      render.mockRestore();
+    }
   });
 
   // Given: 検索結果ツリーを表示中に a.txt を開いたことを通常ツリーの状態へ記録する

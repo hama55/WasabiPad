@@ -191,6 +191,7 @@ export class FavBar {
   private moveDestinations(source: NodePath): MenuItem[] {
     const items: MenuItem[] = [{
       label: "お気に入りバー",
+      iconClass: MENU_ICON.move,
       action: () => this.runMutation(() => this.moveTo(source, null)),
     }];
     const visit = (nodes: BmNode[], parent: NodePath, names: string[]) => {
@@ -202,6 +203,7 @@ export class FavBar {
         const groupNames = [...names, node.name];
         items.push({
           label: groupNames.join(" / "),
+          iconClass: MENU_ICON.move,
           action: () => this.runMutation(() => this.moveTo(source, path)),
         });
         visit(node.children, path, groupNames);

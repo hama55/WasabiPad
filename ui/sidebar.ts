@@ -3,6 +3,8 @@ import { WorkspaceSearchPanel, type WorkspaceSearchPorts } from "./workspace-sea
 import { archiveEntryPath } from "./archive-path";
 import type { ContextTarget } from "./context-target";
 import { isMiddleClick } from "./interaction-constants";
+import { iconButton } from "./icon-button";
+import { runAsyncBoundary } from "./async-boundary";
 export type { ContextTarget } from "./context-target";
 
 // フォルダ/ZIP/Excelのエントリ名 ("sub/a.txt" 形式) からツリーを構築して表示。
@@ -80,8 +82,10 @@ export class Sidebar {
     const toolbar = document.createElement("div");
     toolbar.className = "fv-toolbar";
     const fold = iconButton("fv-fold", "⊟", "すべて折りたたむ");
-    fold.setAttribute("aria-label", "すべて折りたたむ");
-    fold.addEventListener("click", () => this.collapseAll());
+    fold.addEventListener("click", () => runAsyncBoundary(
+      () => this.collapseAll(),
+      (error) => this.reportTreeError(error),
+    ));
     toolbar.append(fold);
     this.host.append(toolbar, this.panel.bar, this.tree);
     this.host.addEventListener("contextmenu", (e) => {
@@ -292,7 +296,7 @@ export class Sidebar {
 
   private collapseAll() {
     if (this.panel.showing) {
-      this.panel.toggleAllGroups();
+      this.panel.collapseAllGroups();
       return;
     }
     this.selectionRequest++;
@@ -404,15 +408,6 @@ export class Sidebar {
       console.error("ツリー展開エラーを表示できませんでした", reportError);
     }
   }
-}
-
-function iconButton(className: string, label: string, title: string): HTMLButtonElement {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = className;
-  button.textContent = label;
-  button.title = title;
-  return button;
 }
 
 function isExpandable(row: Row): boolean {

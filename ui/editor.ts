@@ -1853,6 +1853,7 @@ export class VirtualEditor {
           iconClass: MENU_ICON.registeredString,
           sub: registered.map((text) => ({
             label: registeredStringLabel(text),
+            iconClass: MENU_ICON.registeredString,
             action: () => this.dispatch("登録文字列を挿入できませんでした", () => this.insertText(text)),
             trailing: {
               label: "×",

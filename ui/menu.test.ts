@@ -19,7 +19,8 @@ describe("Feature: menu", () => {
 
     showMenu(0, 0, [{
       label: "その他",
-      sub: [{ label: "削除", action }],
+      iconClass: MENU_ICON.more,
+      sub: [{ label: "削除", iconClass: MENU_ICON.delete, action }],
     }]);
 
     dropdown.querySelector<HTMLElement>(".dd-item")!.click();
@@ -55,9 +56,10 @@ describe("Feature: menu", () => {
   it("Scenario: 深いサブメニューを別項目へ切り替えると古い子孫を破棄する", () => {
     showMenu(0, 0, [{
       label: "親",
+      iconClass: MENU_ICON.more,
       sub: [
-        { label: "A", sub: [{ label: "A-1", action: vi.fn() }] },
-        { label: "B", sub: [{ label: "B-1", action: vi.fn() }] },
+        { label: "A", iconClass: MENU_ICON.more, sub: [{ label: "A-1", iconClass: MENU_ICON.delete, action: vi.fn() }] },
+        { label: "B", iconClass: MENU_ICON.more, sub: [{ label: "B-1", iconClass: MENU_ICON.delete, action: vi.fn() }] },
       ],
     }]);
     const dropdown = document.getElementById("dropdown")!;
@@ -82,6 +84,7 @@ describe("Feature: menu", () => {
     try {
       showMenu(0, 0, [{
         label: "項目",
+        iconClass: MENU_ICON.more,
         action: vi.fn(),
         onContextMenu: () => { throw error; },
       }]);

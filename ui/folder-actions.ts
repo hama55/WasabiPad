@@ -1,5 +1,4 @@
 import * as api from "./api";
-import type { Sidebar } from "./sidebar";
 import type { ContextTarget } from "./context-target";
 import { fileNameOf, type MemoSpec } from "./document-controller";
 import type { DocumentSession } from "./session";
@@ -17,13 +16,20 @@ import { runAsyncBoundary } from "./async-boundary";
 export { isImagePath } from "./image-formats";
 
 export interface FolderActionsPorts {
-  sidebar: Pick<Sidebar, "setEntries" | "selectByRelPath" | "refreshFolderEntries" | "expandAllFolder">;
+  sidebar: FolderActionsSidebarPort;
   onOpenInNewTab: (relPath: string, goto?: api.Pos) => void;
   onOpenInNewWindow: (path: string, goto?: api.Pos) => void;
   onOpenViewer: (relPath: string, format: api.ViewerFormat) => void;
   onAddFavorite: (path: string) => void;
   onSetStartupPath: (path: string) => void;
   onOpenPath: (path: string) => void;
+}
+
+export interface FolderActionsSidebarPort {
+  setEntries: (entries: api.FolderEntry[]) => void;
+  selectByRelPath: (relPath: string) => void | Promise<void>;
+  refreshFolderEntries: () => void | Promise<void>;
+  expandAllFolder: (relDir: string) => void | Promise<void>;
 }
 
 export type FolderActionsApi = Pick<typeof api, "createNote" | "renameEntry" | "deleteEntry">;
@@ -93,14 +99,15 @@ export class FolderActions {
         action: () => this.ports.onOpenInNewTab(target.relPath, target.goto),
       });
       items.push({
-        label: "新規ウィンドウで開く",
+        label: MENU_LABELS.newWindow,
         iconClass: MENU_ICON.newWindow,
         action: () => this.ports.onOpenInNewWindow(this.toAbsolute(target.relPath), target.goto),
       });
       if (target.isDir) {
         items.push({
-          label: "フォルダを全展開",
-          action: () => this.run("フォルダを全展開できませんでした", () => this.ports.sidebar.expandAllFolder(target.relPath)),
+          label: MENU_LABELS.expandFolder,
+          iconClass: MENU_ICON.expandFolder,
+          action: () => this.run(`${MENU_LABELS.expandFolder}できませんでした`, () => this.ports.sidebar.expandAllFolder(target.relPath)),
         });
       }
       if (!target.isDir) {
@@ -120,32 +127,32 @@ export class FolderActions {
         items.push(this.registeredCommandMenu(target.relPath));
       }
       items.push({
-        label: "アドレスバーに設定",
+        label: MENU_LABELS.address,
         iconClass: MENU_ICON.address,
         action: () => this.ports.onOpenPath(this.toAbsolute(target.relPath)),
       });
     }
     const favoriteItem: MenuItem = {
-      label: "お気に入りに追加",
+      label: MENU_LABELS.favorite,
       iconClass: MENU_ICON.favorite,
       action: () => this.ports.onAddFavorite(revealPath),
       sep: true,
     };
     if (target) items.push(favoriteItem);
     items.push({
-      label: "新規メモ作成...",
+      label: MENU_LABELS.newMemo,
       iconClass: MENU_ICON.newMemo,
       action: () => this.run("新規メモを作成できませんでした", () => this.createNote(target?.isDir ? target.relPath : null)),
       sep: true,
     });
     if (target) {
       items.push({
-        label: "名前を変更...",
+        label: MENU_LABELS.rename,
         iconClass: MENU_ICON.rename,
         action: () => this.run("名前を変更できませんでした", () => this.rename(target.relPath)),
       });
       items.push({
-        label: "その他",
+        label: MENU_LABELS.more,
         iconClass: MENU_ICON.more,
         sep: true,
         sub: [{

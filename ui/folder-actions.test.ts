@@ -147,10 +147,47 @@ describe("Feature: FolderActions", () => {
     const item = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
       .find((element) => element.textContent === "フォルダを全展開");
     expect(item?.textContent).toBe("フォルダを全展開");
+    expect(item?.querySelector(`.${MENU_ICON.expandFolder}`)).not.toBeNull();
     if (!item) return;
     item.click();
 
     expect(expandAllFolder).toHaveBeenCalledWith("docs");
+  });
+
+  // Given: フォルダ全展開の取得が`expand failed`でrejectする
+  // When: フォルダの右クリックメニューから「フォルダを全展開」をクリックする
+  // Then: フォルダ操作の失敗として`showError`へ通知する
+  it("Scenario: フォルダ全展開の失敗を表示する", async () => {
+    const error = new Error("expand failed");
+    const { actions, dropdown, expandAllFolder } = fixture();
+    expandAllFolder.mockRejectedValueOnce(error);
+    actions.showContextMenu(0, 0, { relPath: "docs", isDir: true });
+
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "フォルダを全展開")!.click();
+
+    await vi.waitFor(() => expect(showError).toHaveBeenCalledWith(
+      "フォルダを全展開できませんでした",
+      error,
+    ));
+  });
+
+  // Given: ファイル、フォルダ、空白部の右クリックメニューを表示する
+  // When: 各メニューの表示項目を調べる
+  // Then: すべての項目にメニューアイコンが付いている
+  it("Scenario: 右クリックメニューの全項目にアイコンを表示する", () => {
+    const { actions, dropdown } = fixture();
+    for (const target of [
+      { relPath: "memo.txt", isDir: false },
+      { relPath: "docs", isDir: true },
+      null,
+    ] as const) {
+      actions.showContextMenu(0, 0, target);
+      const missing = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+        .filter((item) => !item.querySelector(".menu-icon, .fav-icon"))
+        .map((item) => item.textContent);
+      expect(missing, target?.relPath ?? "空白部").toEqual([]);
+    }
   });
 
   // Given: 対象が`table.CSV`と`memo.txt`

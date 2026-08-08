@@ -1,6 +1,7 @@
 import type { WorkspaceSearchOptions, WorkspaceSearchOutcome, WorkspaceSearchResult } from "./api";
 import type { ContextTarget } from "./context-target";
 import { isMiddleClick } from "./interaction-constants";
+import { iconButton } from "./icon-button";
 import { groupResults, highlightedPreview, searchResultGoto, sortResults, type ResultGroup } from "./search-results";
 import { openSearchSettings } from "./search-settings-dialog";
 import {
@@ -299,7 +300,7 @@ export class WorkspaceSearchPanel {
     this.ports.onViewChange();
   }
 
-  toggleAllGroups() {
+  collapseAllGroups() {
     if (!this.shownResults().length) return;
     this.state.collapseTouched = true;
     this.state.collapseByDefault = true;
@@ -516,15 +517,6 @@ export class WorkspaceSearchPanel {
 
 function searchResultKey(result: Pick<WorkspaceSearchResult, "rel_path" | "line" | "col" | "is_filename">): string {
   return `${result.rel_path}\u0000${result.line}\u0000${result.col}\u0000${result.is_filename ? "name" : "text"}`;
-}
-
-function iconButton(className: string, label: string, title: string): HTMLButtonElement {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = className;
-  button.textContent = label;
-  button.title = title;
-  return button;
 }
 
 function searchingRow(stopped: boolean): HTMLElement {
