@@ -2,12 +2,16 @@
 import { describe, expect, it, vi } from "vitest";
 import { InlinePreview, INLINE_PREVIEW_MESSAGES } from "./inline-preview";
 
-function mount(onFormatChange?: (format: "markdown" | "csv") => void) {
+function mount(
+  onFormatChange?: (format: "markdown" | "csv") => void,
+  onFontFamilyChange?: (family: string) => void,
+  onError?: (error: unknown) => void | Promise<void>,
+) {
   const host = document.createElement("div");
   host.appendChild(document.createElement("iframe"));
   document.body.appendChild(host);
   const onAvailabilityChange = vi.fn();
-  const preview = new InlinePreview(host, { onAvailabilityChange, onFormatChange });
+  const preview = new InlinePreview(host, { onAvailabilityChange, onFormatChange, onFontFamilyChange, onError });
   return { host, preview, onAvailabilityChange };
 }
 
@@ -51,9 +55,126 @@ describe("Feature: inline preview", () => {
 
     window.dispatchEvent(new MessageEvent("message", {
       source: frame.contentWindow,
+      origin: window.location.origin,
       data: { type: INLINE_PREVIEW_MESSAGES.FORMAT_CHANGE_MESSAGE, format: "csv" },
     }));
 
     expect(onFormatChange).toHaveBeenCalledWith("csv");
+  });
+
+  // Given: 右側プレビューが表示形式の選択を持つ
+  // When: 未登録の形式を選択した通知を親へ送る
+  // Then: 親側の形式切替処理を呼ばない
+  it("Scenario: ignores an unregistered preview format", () => {
+    const onFormatChange = vi.fn();
+    const { host } = mount(onFormatChange);
+    const frame = host.querySelector("iframe")!;
+
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.FORMAT_CHANGE_MESSAGE, format: "html" },
+    }));
+
+    expect(onFormatChange).not.toHaveBeenCalled();
+  });
+
+  // Given: 同じiframeのsourceでもoriginが異なる通知
+  // When: CSV形式切替を通知する
+  // Then: 親の形式切替ポートへ渡さない
+  it("Scenario: ignores preview messages from another origin", () => {
+    const onFormatChange = vi.fn();
+    const { host } = mount(onFormatChange);
+    const frame = host.querySelector("iframe")!;
+
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: "https://untrusted.example",
+      data: { type: INLINE_PREVIEW_MESSAGES.FORMAT_CHANGE_MESSAGE, format: "csv" },
+    }));
+
+    expect(onFormatChange).not.toHaveBeenCalled();
+  });
+
+  // Given: エディタがプレビューのフォントファミリーを設定する前にビューを開いている
+  // When: iframeの準備完了通知を受け取る
+  // Then: 保留していたフォントファミリーをプレビューへ送る
+  it("Scenario: sends a queued font family after the iframe is ready", async () => {
+    const { host, preview } = mount();
+    const frame = host.querySelector("iframe")!;
+    const postMessage = vi.spyOn(frame.contentWindow!, "postMessage");
+    await preview.open("markdown", "# memo", null);
+    preview.setFontFamily("Meiryo, sans-serif");
+
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
+    }));
+
+    expect(postMessage).toHaveBeenCalledWith({
+      type: INLINE_PREVIEW_MESSAGES.FONT_MESSAGE,
+      family: "Meiryo, sans-serif",
+    }, window.location.origin);
+  });
+
+  // Given: アーカイブ内Markdownの本文と、画像解決に必要なアーカイブ情報を設定している
+  // When: プレビューを開いてiframeの準備完了通知を受け取る
+  // Then: アーカイブパスとエントリ名をビューへ渡す
+  it("Scenario: forwards archive context with the preview payload", async () => {
+    const { host, preview } = mount();
+    const frame = host.querySelector("iframe")!;
+    const postMessage = vi.spyOn(frame.contentWindow!, "postMessage");
+    preview.setSourcePath("C:\\work\\data.zip", "C:\\work\\data.zip", "docs/readme.md");
+    await preview.open("markdown", "![shot](image.png)", null);
+
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
+    }));
+
+    expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE,
+      payload: expect.objectContaining({
+        archive_path: "C:\\work\\data.zip",
+        archive_entry: "docs/readme.md",
+      }),
+    }), window.location.origin);
+  });
+
+  // Given: インラインプレビューがフォント変更を通知する
+  // When: フォントファミリー変更メッセージを受け取る
+  // Then: 親の共通設定更新ポートへ値を渡す
+  it("Scenario: forwards a preview font family change to the parent", () => {
+    const onFontFamilyChange = vi.fn();
+    const { host } = mount(undefined, onFontFamilyChange);
+    const frame = host.querySelector("iframe")!;
+
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.FONT_CHANGE_MESSAGE, family: "Meiryo, sans-serif" },
+    }));
+
+    expect(onFontFamilyChange).toHaveBeenCalledWith("Meiryo, sans-serif");
+  });
+
+  // Given: 親への形式切替ポートが例外を投げる
+  // When: iframeから形式切替通知を受け取る
+  // Then: messageイベントから例外を漏らさずエラーポートへ通知する
+  it("Scenario: reports preview message callback failures", async () => {
+    const onError = vi.fn();
+    const onFormatChange = vi.fn(() => { throw new Error("format failed"); });
+    const { host } = mount(onFormatChange, undefined, onError);
+    const frame = host.querySelector("iframe")!;
+
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.FORMAT_CHANGE_MESSAGE, format: "csv" },
+    }));
+
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledWith(expect.any(Error)));
   });
 });

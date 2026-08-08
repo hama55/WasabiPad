@@ -6,7 +6,7 @@ import MarkdownIt from "markdown-it";
 import Papa from "papaparse";
 import { EVENT_NAMES, readArchiveAsset, takeViewerPayload, type ViewerFormat, type ViewerPayload, type ViewerSelection } from "./api";
 import { formatFontFamily } from "./format";
-import { createViewerFormatHandlers } from "./viewer-formats";
+import { createViewerFormatHandlers, isViewerFormat, VIEWER_FORMATS } from "./viewer-formats";
 import { getSetting, initSettings, setSetting } from "./settings";
 import { clampFontSize, promptFontFamily, promptFontSize as promptFontSizeDialog } from "./font-controls";
 import {
@@ -35,6 +35,7 @@ import {
 import { scrollViewerCaret } from "./viewer-scroll";
 import { createViewerChartMenuItem } from "./viewer-context-menu";
 import { INLINE_PREVIEW_MESSAGES } from "./inline-preview";
+import { isViewerPayload } from "./viewer-payload";
 
 const MAX_TABLE_ROWS = 10_000;
 const MAX_TABLE_COLUMNS = 200;
@@ -72,44 +73,65 @@ let chartColumns: { x: number; y: number[]; reverseX: boolean; type: ChartTypeId
 let fontFamily = getSetting("fontFamily");
 let fontSize = getSetting("previewFontSize");
 
-function scrollCsvRows(rows: HTMLElement[], selection: ViewerSelection | null) {
-  scrollViewerCaret(rows, selection, (_row, index) => ({ start: index, end: index + 1 }));
+function postToParent(message: unknown) {
+  window.parent.postMessage(message, window.location.origin);
 }
 
-function applyFont(family: string, size: number, persist = true) {
-  fontFamily = family;
-  fontSize = size;
-  document.documentElement.style.setProperty("--font-mono", family);
-  document.documentElement.style.setProperty("--viewer-font-size", `${size}px`);
-  fontButton.textContent = formatFontFamily(family);
-  fontSizeButton.textContent = `${size}px`;
-  if (persist) {
-    setSetting("fontFamily", family);
-    setSetting("previewFontSize", size);
-  }
+function populateFormatSelect() {
+  formatSelect.replaceChildren(...Object.values(VIEWER_FORMATS).map((spec) => {
+    const option = document.createElement("option");
+    option.value = spec.id;
+    option.textContent = spec.title;
+    return option;
+  }));
+}
+
+function scrollCsvRows(rows: HTMLElement[], selection: ViewerSelection | null) {
+  scrollViewerCaret(rows, selection, (_row, index) => ({ start: index, end: index + 1 }));
 }
 
 function applyFontFamily(family: string, persist = true) {
   fontFamily = family;
   document.documentElement.style.setProperty("--font-mono", family);
   fontButton.textContent = formatFontFamily(family);
-  if (persist) setSetting("fontFamily", family);
+  if (persist) {
+    if (isInlineViewer) {
+      postToParent({
+        type: INLINE_PREVIEW_MESSAGES.FONT_CHANGE_MESSAGE,
+        family,
+      });
+    } else {
+      setSetting("fontFamily", family);
+    }
+  }
+}
+
+function applyFontSize(size: number, persist = true) {
+  fontSize = size;
+  document.documentElement.style.setProperty("--viewer-font-size", `${size}px`);
+  fontSizeButton.textContent = `${size}px`;
+  if (persist) setSetting("previewFontSize", size);
+}
+
+function applyFont(family: string, size: number, persist = true) {
+  applyFontFamily(family, persist);
+  applyFontSize(size, persist);
 }
 
 async function promptFont() {
   const family = await promptFontFamily(fontFamily);
-  if (family) applyFont(family, fontSize);
+  if (family) applyFontFamily(family);
 }
 
 async function promptFontSize() {
   const size = await promptFontSizeDialog(fontSize);
-  if (size !== null) applyFont(fontFamily, size);
+  if (size !== null) applyFontSize(size);
 }
 
 function onViewerWheel(event: WheelEvent) {
   if (!event.ctrlKey) return;
   event.preventDefault();
-  if (event.deltaY) applyFont(fontFamily, clampFontSize(fontSize + (event.deltaY < 0 ? 1 : -1)));
+  if (event.deltaY) applyFontSize(clampFontSize(fontSize + (event.deltaY < 0 ? 1 : -1)));
 }
 
 function applyTheme(theme = localStorage.getItem(THEME_STORAGE_KEY)) {
@@ -135,11 +157,11 @@ function bindViewerControls() {
   formatSelect.addEventListener("change", () => {
     if (!isInlineViewer) return;
     const format = formatSelect.value;
-    if (format !== "markdown" && format !== "csv") return;
-    window.parent.postMessage({
+    if (!isViewerFormat(format)) return;
+    postToParent({
       type: INLINE_PREVIEW_MESSAGES.FORMAT_CHANGE_MESSAGE,
       format,
-    }, "*");
+    });
   });
 }
 
@@ -305,6 +327,7 @@ const VIEWER_HANDLERS = createViewerFormatHandlers({
 });
 
 function renderPayload(payload: ViewerPayload) {
+  if (!isViewerPayload(payload)) throw new Error("ビューのデータが不正です");
   currentFormat = payload.format;
   currentText = payload.text;
   currentSelection = payload.selection;
@@ -313,7 +336,8 @@ function renderPayload(payload: ViewerPayload) {
   currentArchiveEntry = payload.archive_entry;
   const handler = VIEWER_HANDLERS[payload.format];
   formatSelect.value = payload.format;
-  title.textContent = payload.format === "markdown" ? "Markdown" : "CSV";
+  title.textContent = VIEWER_FORMATS[payload.format].title;
+  document.title = title.textContent;
   if (!isInlineViewer) runViewerOperation("タイトルを更新できませんでした", () => win!.setTitle(title.textContent));
   delimiterControl.hidden = !handler.supportsDelimiter;
   runViewerOperation("ビューを描画できませんでした", () => handler.render(payload.text));
@@ -533,6 +557,7 @@ async function start() {
     if (isInlineViewer) document.body.classList.add("inline-viewer");
     applyTheme();
     if (!isInlineViewer) new WindowControls(document.body, win!, title, { onError: reportWindowError });
+    populateFormatSelect();
     bindViewerControls();
     applyFont(fontFamily, fontSize, false);
     themeButton.addEventListener("click", () => {
@@ -558,9 +583,10 @@ async function start() {
     });
     if (isInlineViewer) {
       window.addEventListener("message", (event) => {
-        if (event.source !== window.parent) return;
+        if (event.source !== window.parent || event.origin !== window.location.origin) return;
         if (event.data?.type === INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE) {
-          runViewerOperation("ビューを更新できませんでした", () => renderPayload(event.data.payload as ViewerPayload));
+          if (!isViewerPayload(event.data.payload)) return;
+          runViewerOperation("ビューを更新できませんでした", () => renderPayload(event.data.payload));
           return;
         }
         if (event.data?.type === INLINE_PREVIEW_MESSAGES.DELIMITER_MESSAGE) {
@@ -573,9 +599,10 @@ async function start() {
         if (event.data?.type === INLINE_PREVIEW_MESSAGES.FONT_MESSAGE) {
           if (typeof event.data.family !== "string") return;
           applyFontFamily(event.data.family, false);
+          return;
         }
       });
-      window.parent.postMessage({ type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE }, "*");
+      postToParent({ type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE });
     } else {
       await listen<ViewerPayload>(EVENT_NAMES.viewerUpdate, (event) => {
         runViewerOperation("ビューを更新できませんでした", () => renderPayload(event.payload));

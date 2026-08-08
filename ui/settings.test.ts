@@ -85,6 +85,17 @@ describe("Feature: settings", () => {
     expect(saved.previewFontSize).toBe(20);
   });
 
+  // Given: プレビュー用文字サイズを20へ変更する
+  // When: 設定保存をflushする
+  // Then: エディタ用`fontSize`とは別のキーへ保存する
+  it("Scenario: プレビュー文字サイズは専用キーへ保存する", async () => {
+    setSetting("previewFontSize", 20);
+
+    await flushSettings();
+
+    expect(updateSettingMock).toHaveBeenCalledWith("previewFontSize", "20");
+  });
+
   // Given: `workspaceSearchOptions`未設定または`{ max_files: 5 }`
   // When: `parseSettings`を呼ぶ
   // Then: 未設定は`null`、設定済みは同じオブジェクトを返す

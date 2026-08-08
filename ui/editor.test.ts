@@ -29,7 +29,7 @@ installDomStubs();
 function mount(
   initial: string,
   saveImage?: EditorPorts["saveImage"],
-  overrides: Partial<Pick<EditorPorts, "revealInExplorer" | "registeredCommandPorts">> = {},
+  overrides: Partial<Pick<EditorPorts, "revealInExplorer" | "registeredCommandPorts" | "openViewer">> = {},
 ) {
   const host = document.createElement("div");
   document.body.replaceChildren(host);
@@ -51,7 +51,7 @@ function mount(
       runExternalCommand: async () => {},
     },
     onError: async (message, error) => { events.errors.push({ message, error }); },
-    openViewer: async () => null,
+    openViewer: overrides.openViewer ?? (async () => null),
     updateViewer: async () => true,
     closeViewer: async () => {},
     saveImage,
@@ -103,6 +103,24 @@ describe("Feature: VirtualEditor", () => {
     );
 
     expect(events.fontChanges.at(-1)?.changed).toBe("size");
+  });
+
+  // Given: 2行の文書を表示し、1行目の1文字を選択している
+  // When: Markdownビューを開く
+  // Then: 全文を渡しつつ、選択範囲だけは元の位置で通知する
+  it("Scenario: エディタから開くプレビューは全文を映す", async () => {
+    const openViewer = vi.fn(async () => "inline-viewer");
+    const { editor } = mount("one\ntwo", undefined, { openViewer });
+    editor.open(2, false);
+    await settle();
+    await editor.selectRange(0, 1, 1);
+
+    await editor.openTextViewer("markdown");
+
+    expect(openViewer).toHaveBeenCalledWith("markdown", "one\ntwo", {
+      start: { line: 0, col: 1 },
+      end: { line: 0, col: 1 },
+    });
   });
 
   // Given: 文書が「ab」、編集モードで開かれ、既存の .ve-line・.ve-gnum と lines(...) 呼び出し数を記録している

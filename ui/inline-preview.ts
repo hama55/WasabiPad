@@ -1,14 +1,19 @@
 import type { ViewerFormat, ViewerPayload, ViewerSelection } from "./api";
+import { runAsyncBoundary } from "./async-boundary";
+import { isViewerFormat } from "./viewer-formats";
 
 const READY_MESSAGE = "wasabipad-viewer-ready";
 const PAYLOAD_MESSAGE = "wasabipad-viewer-payload";
 const FORMAT_CHANGE_MESSAGE = "wasabipad-viewer-format-change";
 const DELIMITER_MESSAGE = "wasabipad-viewer-delimiter";
 const FONT_MESSAGE = "wasabipad-viewer-font";
+const FONT_CHANGE_MESSAGE = "wasabipad-viewer-font-change";
 
 export interface InlinePreviewPorts {
   onAvailabilityChange?: (available: boolean) => void;
   onFormatChange?: (format: ViewerFormat) => void;
+  onFontFamilyChange?: (family: string) => void;
+  onError?: (error: unknown) => void | Promise<void>;
 }
 
 export class InlinePreview {
@@ -18,7 +23,10 @@ export class InlinePreview {
   private nextLabel = 0;
   private ready = false;
   private sourcePath: string | null = null;
+  private archivePath: string | null = null;
+  private archiveEntry: string | null = null;
   private delimiter = ",";
+  private fontFamily: string | null = null;
 
   constructor(
     private host: HTMLElement,
@@ -29,20 +37,30 @@ export class InlinePreview {
     this.frame.title = "プレビュー";
     this.frame.src = new URL("/viewer.html?inline=1", window.location.href).toString();
     window.addEventListener("message", (event) => {
-      if (event.source !== this.frame.contentWindow) return;
+      if (event.source !== this.frame.contentWindow || event.origin !== window.location.origin) return;
       if (event.data?.type === READY_MESSAGE) {
         this.ready = true;
         this.send();
         return;
       }
-      if (event.data?.type !== FORMAT_CHANGE_MESSAGE) return;
-      const format = event.data.format;
-      if (format === "markdown" || format === "csv") this.ports.onFormatChange?.(format);
+      if (event.data?.type === FORMAT_CHANGE_MESSAGE) {
+        if (isViewerFormat(event.data.format)) {
+          this.notifyPort(() => this.ports.onFormatChange?.(event.data.format));
+        }
+        return;
+      }
+      if (event.data?.type === FONT_CHANGE_MESSAGE) {
+        if (typeof event.data.family === "string" && event.data.family.trim()) {
+          this.notifyPort(() => this.ports.onFontFamilyChange?.(event.data.family));
+        }
+      }
     });
   }
 
-  setSourcePath(path: string | null) {
+  setSourcePath(path: string | null, archivePath: string | null = null, archiveEntry: string | null = null) {
     this.sourcePath = path;
+    this.archivePath = archivePath;
+    this.archiveEntry = archiveEntry;
   }
 
   setDelimiter(delimiter: string) {
@@ -51,18 +69,15 @@ export class InlinePreview {
   }
 
   setFontFamily(family: string) {
-    if (!this.ready) return;
-    this.frame.contentWindow?.postMessage({
-      type: FONT_MESSAGE,
-      family,
-    }, "*");
+    this.fontFamily = family;
+    this.sendFontFamily();
   }
 
   async open(format: ViewerFormat, text: string, selection: ViewerSelection | null): Promise<string> {
     this.label = `inline-preview-${++this.nextLabel}`;
     this.payload = this.createPayload(format, text, selection);
     this.host.hidden = false;
-    this.ports.onAvailabilityChange?.(true);
+    this.notifyPort(() => this.ports.onAvailabilityChange?.(true));
     this.send();
     return this.label;
   }
@@ -79,12 +94,12 @@ export class InlinePreview {
     this.payload = null;
     this.label = "";
     this.host.hidden = true;
-    this.ports.onAvailabilityChange?.(false);
+    this.notifyPort(() => this.ports.onAvailabilityChange?.(false));
   }
 
   clear() {
     if (!this.label) return;
-    void this.close(this.label);
+    void this.close(this.label).catch((error) => this.reportPortError(error));
   }
 
   resend() {
@@ -101,18 +116,38 @@ export class InlinePreview {
       text,
       selection,
       source_path: this.sourcePath,
-      archive_path: null,
-      archive_entry: null,
+      archive_path: this.archivePath,
+      archive_entry: this.archiveEntry,
     };
   }
 
   private send() {
     if (!this.ready || !this.payload) return;
-    this.frame.contentWindow?.postMessage({ type: PAYLOAD_MESSAGE, payload: this.payload }, "*");
+    this.frame.contentWindow?.postMessage({ type: PAYLOAD_MESSAGE, payload: this.payload }, window.location.origin);
     this.frame.contentWindow?.postMessage({
       type: DELIMITER_MESSAGE,
       delimiter: this.delimiter,
-    }, "*");
+    }, window.location.origin);
+    this.sendFontFamily();
+  }
+
+  private sendFontFamily() {
+    if (!this.ready || !this.fontFamily) return;
+    this.frame.contentWindow?.postMessage({
+      type: FONT_MESSAGE,
+      family: this.fontFamily,
+    }, window.location.origin);
+  }
+
+  private notifyPort(operation: () => void | Promise<unknown>) {
+    runAsyncBoundary(operation, (error) => this.reportPortError(error));
+  }
+
+  private reportPortError(error: unknown) {
+    if (this.ports.onError) {
+      return this.ports.onError(error);
+    }
+    console.error("プレビュー通知の処理に失敗しました", error);
   }
 }
 
@@ -122,4 +157,5 @@ export const INLINE_PREVIEW_MESSAGES = {
   FORMAT_CHANGE_MESSAGE,
   DELIMITER_MESSAGE,
   FONT_MESSAGE,
+  FONT_CHANGE_MESSAGE,
 } as const;

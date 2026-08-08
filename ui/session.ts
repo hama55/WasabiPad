@@ -1,4 +1,5 @@
 import type { DocInfo, Encoding, Eol, ReadEncoding } from "./api";
+import { splitArchiveEntryPath } from "./archive-path";
 import { basename } from "./path";
 
 // BOM の有無は読込時に自動判定される (指定して読み直す対象ではない) ため、
@@ -19,6 +20,8 @@ export interface DocumentSession {
   sourceEol: Eol;
   lineCount: number;
   selectedRelPath: string;
+  archivePath: string | null;
+  archiveEntry: string | null;
 }
 
 export function initialSession(): DocumentSession {
@@ -34,6 +37,8 @@ export function initialSession(): DocumentSession {
     sourceEol: "crlf",
     lineCount: 1,
     selectedRelPath: "",
+    archivePath: null,
+    archiveEntry: null,
   };
 }
 
@@ -50,6 +55,12 @@ export function sessionFromDocInfo(
   info: DocInfo
 ): DocumentSession {
   const folderDraft = isFolderDraftInfo(info);
+  const archiveEntryPath = splitArchiveEntryPath(previous.selectedRelPath);
+  const archivePath = archiveEntryPath
+    ? info.path
+    : info.kind === "archive" && previous.selectedRelPath ? info.path : null;
+  const archiveEntry = archiveEntryPath?.entryName
+    ?? (archivePath ? previous.selectedRelPath : null);
   return {
     displayPath: info.path,
     savePath: info.view_only || folderDraft ? null : info.path,
@@ -62,6 +73,8 @@ export function sessionFromDocInfo(
     sourceEol: info.eol,
     lineCount: info.line_count,
     selectedRelPath: previous.selectedRelPath,
+    archivePath,
+    archiveEntry,
   };
 }
 

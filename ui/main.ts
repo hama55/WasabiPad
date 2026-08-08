@@ -197,29 +197,43 @@ const inlinePreview = new InlinePreview(previewEl, {
     updatePreviewVisibility();
   },
   onFormatChange: (format) => runBackground("ビューを切り替えられませんでした", () => editor.openTextViewer(format)),
+  onFontFamilyChange: (family) => editor.setFont(family, getSetting("fontSize"), "family"),
+  onError: (error) => reportBackgroundError("プレビュー通知を処理できませんでした", error),
 });
 
 let previewDocumentPath: string | null = null;
+function runPreviewBackground(path: string, title: string, operation: () => void | Promise<unknown>) {
+  previewDocumentPath = path;
+  runBackground(title, async () => {
+    try {
+      await operation();
+    } catch (error) {
+      if (previewDocumentPath === path) previewDocumentPath = null;
+      throw error;
+    }
+  });
+}
+
 function syncPreviewDocument(session: Readonly<DocumentSession>, force = false) {
   const path = session.selectedRelPath || session.savePath || session.displayPath;
-  inlinePreview.setSourcePath(session.savePath);
-  if (!force && path === previewDocumentPath) return;
-  previewDocumentPath = path;
+  inlinePreview.setSourcePath(session.savePath, session.archivePath, session.archiveEntry);
+  if (!force && path === previewDocumentPath && !isImagePath(session.displayPath)) return;
   if (isImagePath(session.displayPath)) {
     statusbar.setPreviewFormat("markdown");
-    runBackground("画像を表示できませんでした", () =>
+    runPreviewBackground(path, "画像を表示できませんでした", () =>
       inlinePreview.open("markdown", imagePreviewMarkdown(session.displayPath), null),
     );
     return;
   }
   const format = viewerFormatForPath(path);
   if (!format) {
+    previewDocumentPath = path;
     statusbar.setPreviewFormat(null);
     inlinePreview.clear();
     return;
   }
   statusbar.setPreviewFormat(format);
-  runBackground("ビューを表示できませんでした", () => editor.openTextViewer(format));
+  runPreviewBackground(path, "ビューを表示できませんでした", () => editor.openTextViewer(format));
 }
 
 // ---- 部品 ----

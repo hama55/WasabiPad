@@ -281,6 +281,39 @@ describe("Feature: DocumentController", () => {
     expect(view.editor.setExternalFilePath).toHaveBeenLastCalledWith("C:\\new\\memo.txt");
   });
 
+  // Given: アーカイブ内エントリを表示中で、別名保存先が通常ファイル
+  // When: 別名保存を成功させる
+  // Then: 新しい通常ファイルへ移った後はアーカイブ選択状態を残さない
+  it("Scenario: アーカイブ内エントリの別名保存でプレビュー対象を通常ファイルへ切り替える", async () => {
+    const { view, controller } = fakeView();
+    controller.setSelectedRelPath("docs/readme.md");
+    controller.applyDocInfo(info({ path: "C:\\work\\data.zip", folder_root: null, kind: "archive" }));
+    view.pickSavePath.mockResolvedValueOnce("C:\\new\\readme.md");
+    vi.spyOn(saveFormat, "promptSaveFormat").mockResolvedValueOnce({ encoding: "utf8", eol: "lf" });
+    vi.spyOn(api, "saveFile").mockResolvedValueOnce({ kind: "saved" });
+
+    expect(await controller.saveAs()).toBe(true);
+    expect(controller.current.selectedRelPath).toBe("");
+    expect(controller.current.archivePath).toBeNull();
+    expect(controller.current.archiveEntry).toBeNull();
+  });
+
+  // Given: 編集可能なアーカイブ内エントリを表示している
+  // When: 同じアーカイブへ上書き保存する
+  // Then: アーカイブのプレビュー文脈を保持する
+  it("Scenario: アーカイブ内エントリの上書き保存では文脈を保持する", async () => {
+    const { view, controller } = fakeView();
+    controller.setSelectedRelPath("docs/readme.md");
+    controller.applyDocInfo(info({ path: "C:\\work\\data.zip", folder_root: null, kind: "archive" }));
+    controller.onEdit(4);
+    vi.spyOn(api, "saveFile").mockResolvedValueOnce({ kind: "saved" });
+
+    expect(await controller.save()).toBe(true);
+    expect(controller.current.archivePath).toBe("C:\\work\\data.zip");
+    expect(controller.current.archiveEntry).toBe("docs/readme.md");
+    expect(view.editor.setExternalFilePath).toHaveBeenCalledWith("C:\\work\\data.zip");
+  });
+
   // Given: C:\work\memo.txtを表示中
   // When: 現在の文書がrenamed.txtへ改名される
   // Then: EditorのExplorer対象も改名後の実パスへ同期する

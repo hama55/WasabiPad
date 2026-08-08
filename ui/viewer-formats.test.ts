@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createViewerFormatHandlers, viewerFormatForPath, viewerFormatSpec } from "./viewer-formats";
+import { createViewerFormatHandlers, isViewerFormat, viewerFormatForPath, viewerFormatSpec } from "./viewer-formats";
 import { MENU_ICON } from "./menu-icons";
 
 describe("Feature: viewer formats", () => {
@@ -23,6 +23,16 @@ describe("Feature: viewer formats", () => {
     expect(viewerFormatSpec("markdown").supportsChart).toBe(false);
   });
 
+  // Given: 形式レジストリに登録済みの`csv`/`markdown`と未登録の`html`
+  // When: `isViewerFormat`を呼ぶ
+  // Then: 登録済みだけをビュー形式として受け入れる
+  it("Scenario: validates preview formats through the registry", () => {
+    expect(isViewerFormat("csv")).toBe(true);
+    expect(isViewerFormat("markdown")).toBe(true);
+    expect(isViewerFormat("html")).toBe(false);
+    expect(isViewerFormat(null)).toBe(false);
+  });
+
   // Given: csv/markdown用のrenderer mockを登録
   // When: `createViewerFormatHandlers`を呼ぶ
   // Then: csvの`render`はmock、markdownのlabelは`Markdownビュー`
@@ -33,5 +43,7 @@ describe("Feature: viewer formats", () => {
 
     expect(handlers.csv.render).toBe(csvRenderer);
     expect(handlers.markdown.label).toBe("Markdownビュー");
+    expect(handlers.csv.title).toBe("CSV");
+    expect(handlers.markdown.title).toBe("Markdown");
   });
 });

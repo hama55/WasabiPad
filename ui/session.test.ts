@@ -52,6 +52,25 @@ describe("Feature: DocumentSession", () => {
     expect(displayName(archive)).toBe("memo.txt");
   });
 
+  // Given: フォルダ内アーカイブの`data.zip::docs/readme.md`と直接開いたアーカイブの`docs/readme.md`
+  // When: `sessionFromDocInfo`を呼ぶ
+  // Then: プレビューが使う実アーカイブパスとエントリ名を復元する
+  it("Scenario: keeps archive context for preview assets", () => {
+    const folderEntry = sessionFromDocInfo(
+      { ...initialSession(), selectedRelPath: "data.zip::docs/readme.md" },
+      info({ path: "C:\\work\\data.zip" }),
+    );
+    expect(folderEntry.archivePath).toBe("C:\\work\\data.zip");
+    expect(folderEntry.archiveEntry).toBe("docs/readme.md");
+
+    const directEntry = sessionFromDocInfo(
+      { ...initialSession(), selectedRelPath: "docs/readme.md" },
+      info({ kind: "archive", path: "C:\\work\\data.zip", folder_root: null }),
+    );
+    expect(directEntry.archivePath).toBe("C:\\work\\data.zip");
+    expect(directEntry.archiveEntry).toBe("docs/readme.md");
+  });
+
   // Given: フォルダ自身のDocInfoと、フォルダ内で選択したファイルのDocInfo
   // When: externalFilePathOfを呼ぶ
   // Then: フォルダ自身はnull、選択ファイルは実パスになる

@@ -6,6 +6,7 @@ import { DEFAULT_INDENT_SIZE, INDENT_SIZES, promptFontFamily, promptFontSize } f
 import { confirmMessage, promptFields } from "./prompt";
 import { normalizeTheme, THEME_STORAGE_KEY, THEMES, type Theme } from "./theme";
 import { runAsyncBoundary } from "./async-boundary";
+import { viewerFormatSpec } from "./viewer-formats";
 
 const THEME_LABELS: Record<Theme, string> = { dark: "ダーク", light: "ライト" };
 const READ_ENCODING_LABELS: Record<ReadEncoding, string> = {
@@ -52,7 +53,10 @@ export class StatusBar {
       ...READ_ENCODINGS.map((encoding) => option(encoding, READ_ENCODING_LABELS[encoding])),
     );
     this.previewDelimiterInput.addEventListener("input", () => {
-      if (this.previewDelimiterInput.value) this.ports.onPreviewDelimiter?.(this.previewDelimiterInput.value);
+      this.run("CSV区切り文字を変更できませんでした", () => {
+        if (!this.previewDelimiterInput.value) return;
+        return this.ports.onPreviewDelimiter?.(this.previewDelimiterInput.value);
+      });
     });
     this.pick("st-theme").addEventListener("click", () => {
       this.run("テーマを変更できませんでした", () => {
@@ -159,7 +163,7 @@ export class StatusBar {
   }
 
   setPreviewFormat(format: ViewerFormat | null) {
-    this.previewDelimiter.hidden = format !== "csv";
+    this.previewDelimiter.hidden = format === null || !viewerFormatSpec(format).supportsDelimiter;
   }
 
   // ステータスバーが示すのは読込時の形式だけ。保存形式は別名保存ダイアログが持つ。

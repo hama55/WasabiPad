@@ -59,8 +59,11 @@ export class LiveViewers {
   async open(format: ViewerFormat, range: TrackedRange | null, selection: TrackedRange) {
     const generation = this.generation;
     const { start, end } = range ?? (await this.ports.wholeRange());
+    if (generation !== this.generation) return;
     const viewerSelection = relativeSelection(range, selection);
-    const label = await this.ports.openViewer(format, await this.ports.textInRange(start, end), viewerSelection);
+    const text = await this.ports.textInRange(start, end);
+    if (generation !== this.generation) return;
+    const label = await this.ports.openViewer(format, text, viewerSelection);
     if (!label) return;
     if (generation === this.generation) {
       this.viewers.set(label, { format, range, selection: viewerSelection });
