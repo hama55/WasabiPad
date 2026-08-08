@@ -36,6 +36,7 @@
 .menu-icon-select-all::before { content: "☷"; }
 .menu-icon-csv::before { content: "▤"; }
 .menu-icon-markdown::before { content: "▧"; }
+.menu-icon-image::before { content: "▨"; }
 .menu-icon-external::before { content: "↗"; }
 .menu-icon-command::before { content: ">_"; font-family: Consolas, monospace; font-size: 11px; }
 .menu-icon-address::before { content: "⌖"; }

@@ -310,6 +310,7 @@ describe("Feature: VirtualEditor", () => {
       "すべて選択",
       "CSVビュー",
       "Markdownビュー",
+      "Imageビュー",
       "アプリで開く",
     ]);
     expect(dropdown.querySelector<HTMLElement>(".dd-label")?.textContent).toBe("エクスプローラで開く");
@@ -324,6 +325,7 @@ describe("Feature: VirtualEditor", () => {
       ["すべて選択", MENU_ICON.selectAll],
       ["CSVビュー", MENU_ICON.csv],
       ["Markdownビュー", MENU_ICON.markdown],
+      ["Imageビュー", MENU_ICON.image],
       ["アプリで開く", MENU_ICON.external],
     ] as const;
     for (const [label, icon] of editorIcons) {
@@ -427,6 +429,7 @@ describe("Feature: VirtualEditor", () => {
       "すべて選択",
       "CSVビュー",
       "Markdownビュー",
+      "Imageビュー",
       "アプリで開く",
     ]);
     expect(dropdown.querySelectorAll(".dd-sep")).toHaveLength(3);
@@ -436,6 +439,7 @@ describe("Feature: VirtualEditor", () => {
       ["すべて選択", MENU_ICON.selectAll],
       ["CSVビュー", MENU_ICON.csv],
       ["Markdownビュー", MENU_ICON.markdown],
+      ["Imageビュー", MENU_ICON.image],
       ["アプリで開く", MENU_ICON.external],
     ] as const) {
       const item = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
@@ -505,6 +509,7 @@ describe("Feature: VirtualEditor", () => {
       "コマンドを登録...",
       "CSVビュー",
       "Markdownビュー",
+      "Imageビュー",
       "アプリで開く",
     ]);
     for (const [label, icon] of [

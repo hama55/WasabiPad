@@ -8,11 +8,14 @@ const FORMAT_CHANGE_MESSAGE = "wasabipad-viewer-format-change";
 const DELIMITER_MESSAGE = "wasabipad-viewer-delimiter";
 const FONT_MESSAGE = "wasabipad-viewer-font";
 const FONT_CHANGE_MESSAGE = "wasabipad-viewer-font-change";
+const FULLSCREEN_CHANGE_MESSAGE = "wasabipad-viewer-fullscreen-change";
+const FULLSCREEN_STATE_MESSAGE = "wasabipad-viewer-fullscreen-state";
 
 export interface InlinePreviewPorts {
   onAvailabilityChange?: (available: boolean) => void;
   onFormatChange?: (format: ViewerFormat) => void;
   onFontFamilyChange?: (family: string) => void;
+  onFullscreenChange?: () => void | Promise<void>;
   onError?: (error: unknown) => void | Promise<void>;
 }
 
@@ -27,6 +30,7 @@ export class InlinePreview {
   private archiveEntry: string | null = null;
   private delimiter = ",";
   private fontFamily: string | null = null;
+  private fullscreen = false;
 
   constructor(
     private host: HTMLElement,
@@ -53,6 +57,10 @@ export class InlinePreview {
         if (typeof event.data.family === "string" && event.data.family.trim()) {
           this.notifyPort(() => this.ports.onFontFamilyChange?.(event.data.family));
         }
+        return;
+      }
+      if (event.data?.type === FULLSCREEN_CHANGE_MESSAGE) {
+        this.notifyPort(() => this.ports.onFullscreenChange?.());
       }
     });
   }
@@ -71,6 +79,11 @@ export class InlinePreview {
   setFontFamily(family: string) {
     this.fontFamily = family;
     this.sendFontFamily();
+  }
+
+  setFullscreen(fullscreen: boolean) {
+    this.fullscreen = fullscreen;
+    this.send();
   }
 
   async open(format: ViewerFormat, text: string, selection: ViewerSelection | null): Promise<string> {
@@ -122,7 +135,12 @@ export class InlinePreview {
   }
 
   private send() {
-    if (!this.ready || !this.payload) return;
+    if (!this.ready) return;
+    this.frame.contentWindow?.postMessage({
+      type: FULLSCREEN_STATE_MESSAGE,
+      fullscreen: this.fullscreen,
+    }, window.location.origin);
+    if (!this.payload) return;
     this.frame.contentWindow?.postMessage({ type: PAYLOAD_MESSAGE, payload: this.payload }, window.location.origin);
     this.frame.contentWindow?.postMessage({
       type: DELIMITER_MESSAGE,
@@ -158,4 +176,6 @@ export const INLINE_PREVIEW_MESSAGES = {
   DELIMITER_MESSAGE,
   FONT_MESSAGE,
   FONT_CHANGE_MESSAGE,
+  FULLSCREEN_CHANGE_MESSAGE,
+  FULLSCREEN_STATE_MESSAGE,
 } as const;

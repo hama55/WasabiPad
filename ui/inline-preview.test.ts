@@ -1,17 +1,25 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
+import type { ViewerFormat } from "./api";
 import { InlinePreview, INLINE_PREVIEW_MESSAGES } from "./inline-preview";
 
 function mount(
-  onFormatChange?: (format: "markdown" | "csv") => void,
+  onFormatChange?: (format: ViewerFormat) => void,
   onFontFamilyChange?: (family: string) => void,
   onError?: (error: unknown) => void | Promise<void>,
+  onFullscreenChange?: () => void | Promise<void>,
 ) {
   const host = document.createElement("div");
   host.appendChild(document.createElement("iframe"));
   document.body.appendChild(host);
   const onAvailabilityChange = vi.fn();
-  const preview = new InlinePreview(host, { onAvailabilityChange, onFormatChange, onFontFamilyChange, onError });
+  const preview = new InlinePreview(host, {
+    onAvailabilityChange,
+    onFormatChange,
+    onFontFamilyChange,
+    onFullscreenChange,
+    onError,
+  });
   return { host, preview, onAvailabilityChange };
 }
 
@@ -158,6 +166,44 @@ describe("Feature: inline preview", () => {
     }));
 
     expect(onFontFamilyChange).toHaveBeenCalledWith("Meiryo, sans-serif");
+  });
+
+  // Given: 右側プレビューのタイトルバーに全画面ボタンがある
+  // When: 全画面切替通知を受け取る
+  // Then: 親の全画面切替ポートへ渡す
+  it("Scenario: forwards a preview fullscreen change", () => {
+    const onFullscreenChange = vi.fn();
+    const { host } = mount(undefined, undefined, undefined, onFullscreenChange);
+    const frame = host.querySelector("iframe")!;
+
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.FULLSCREEN_CHANGE_MESSAGE },
+    }));
+
+    expect(onFullscreenChange).toHaveBeenCalledOnce();
+  });
+
+  // Given: iframeが準備完了している
+  // When: 親から全画面状態を設定する
+  // Then: タイトルバーへ全画面状態を送る
+  it("Scenario: sends the preview fullscreen state to the viewer", () => {
+    const { host, preview } = mount();
+    const frame = host.querySelector("iframe")!;
+    const postMessage = vi.spyOn(frame.contentWindow!, "postMessage");
+
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
+    }));
+    preview.setFullscreen(true);
+
+    expect(postMessage).toHaveBeenCalledWith({
+      type: INLINE_PREVIEW_MESSAGES.FULLSCREEN_STATE_MESSAGE,
+      fullscreen: true,
+    }, window.location.origin);
   });
 
   // Given: 親への形式切替ポートが例外を投げる

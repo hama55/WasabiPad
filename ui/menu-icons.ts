@@ -10,6 +10,7 @@ export const MENU_ICON = {
   selectAll: "menu-icon-select-all",
   csv: "menu-icon-csv",
   markdown: "menu-icon-markdown",
+  image: "menu-icon-image",
   external: "menu-icon-external",
   newTab: "menu-icon-new-tab",
   newWindow: "menu-icon-new-window",

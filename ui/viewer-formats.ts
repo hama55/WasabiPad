@@ -1,4 +1,5 @@
 import type { ViewerFormat } from "./api";
+import { IMAGE_MIME_TYPES } from "./image-formats";
 import { MENU_ICON, type MenuIconClass } from "./menu-icons";
 
 export interface ViewerFormatSpec {
@@ -30,6 +31,15 @@ export const VIEWER_FORMATS: Record<ViewerFormat, ViewerFormatSpec> = {
     title: "Markdown",
     iconClass: MENU_ICON.markdown,
     extensions: [".md", ".markdown"],
+    supportsDelimiter: false,
+    supportsChart: false,
+  },
+  image: {
+    id: "image",
+    label: "Imageビュー",
+    title: "Image",
+    iconClass: MENU_ICON.image,
+    extensions: Object.keys(IMAGE_MIME_TYPES).map((extension) => `.${extension}`),
     supportsDelimiter: false,
     supportsChart: false,
   },

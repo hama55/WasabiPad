@@ -1,6 +1,5 @@
 // アプリの組み立て場所。ここでは部品の生成と配線だけを行い、
 // 文書の状態は DocumentController、画面の状態は各部品が持つ。
-import { convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
@@ -29,7 +28,7 @@ import { confirmMessage, confirmSaveDiscard, promptFields } from "./prompt";
 import { promptSaveFormat, saveFormatFields, saveFormatFromValues } from "./save-format";
 import { isPasswordCancelled, withArchivePassword } from "./archive-password";
 import { archiveRelOf } from "./archive-path";
-import { basename, joinWindowsRoot } from "./path";
+import { joinWindowsRoot } from "./path";
 import { createCommandRegistry, globalCommandForEvent } from "./commands";
 import { TabManager } from "./tabs";
 import {
@@ -47,6 +46,12 @@ import { openPath as openPathInTabs } from "./path-opener";
 import { InlinePreview } from "./inline-preview";
 import { viewerFormatForPath } from "./viewer-formats";
 import type { DocumentSession } from "./session";
+import {
+  isPreviewFullscreen,
+  isPreviewShown,
+  isPreviewSplitterShown,
+} from "./preview-layout";
+import { bindPreviewResize } from "./preview-resize";
 
 const win = getCurrentWindow();
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -70,15 +75,19 @@ const editorHost = $("editorhost");
 const mainEl = $("main");
 const sidebarEl = $("sidebar");
 const splitter = $("splitter");
+const previewSplitter = $("preview-splitter");
 const previewEl = $("preview");
 const previewToggle = $<HTMLButtonElement>("preview-toggle");
 const loading = $("loading");
 const loadingMessage = $("loading-message");
+const CHEVRON_LEFT = "\uE76B";
+const CHEVRON_RIGHT = "\uE76C";
 
 let sidebarAvailable = false;
 let sidebarCollapsed = false;
 let previewAvailable = false;
 let previewCollapsed = false;
+let previewFullscreen = false;
 let currentLine = 1;
 let tabs: TabManager;
 let restoringEditorFont = true;
@@ -110,16 +119,6 @@ async function reportBackgroundError(title: string, error: unknown) {
   } catch (reportError) {
     console.error(`${title}のエラーを表示できませんでした`, reportError);
   }
-}
-
-function escapeHtmlAttribute(value: string): string {
-  return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
-}
-
-function imagePreviewMarkdown(path: string): string {
-  const name = escapeHtmlAttribute(basename(path));
-  const src = escapeHtmlAttribute(convertFileSrc(path));
-  return `<p>${name}</p><img src="${src}" alt="${name}">`;
 }
 
 function runBackground(title: string, operation: () => void | Promise<unknown>) {
@@ -171,20 +170,27 @@ function updateSidebarVisibility() {
   splitter.hidden = !shown;
   const toggle = $<HTMLButtonElement>("sidebar-toggle");
   toggle.hidden = !sidebarAvailable;
-  toggle.textContent = shown ? "<<" : ">>";
+  toggle.textContent = shown ? CHEVRON_LEFT : CHEVRON_RIGHT;
   toggle.title = shown ? "フォルダビューを閉じる" : "フォルダビューを開く";
+  toggle.setAttribute("aria-label", toggle.title);
   toggle.style.left = shown ? `${Math.max(4, sidebarEl.getBoundingClientRect().width - 32)}px` : "4px";
 }
 
 function updatePreviewVisibility() {
-  const shown = previewAvailable && !previewCollapsed;
+  const state = { available: previewAvailable, collapsed: previewCollapsed, fullscreen: previewFullscreen };
+  const shown = isPreviewShown(state);
+  const fullscreen = isPreviewFullscreen(state);
   previewEl.hidden = !shown;
+  previewSplitter.hidden = !isPreviewSplitterShown(state);
+  mainEl.classList.toggle("preview-fullscreen", fullscreen);
+  inlinePreview.setFullscreen(fullscreen);
   previewToggle.hidden = !previewAvailable;
-  previewToggle.textContent = shown ? ">>" : "<<";
+  previewToggle.textContent = shown ? CHEVRON_RIGHT : CHEVRON_LEFT;
   previewToggle.title = shown ? "プレビューを閉じる" : "プレビューを開く";
+  previewToggle.setAttribute("aria-label", previewToggle.title);
   const mainRect = mainEl.getBoundingClientRect();
   const left = shown
-    ? previewEl.getBoundingClientRect().left - mainRect.left - 32
+    ? previewEl.getBoundingClientRect().left - mainRect.left
     : mainEl.clientWidth - previewToggle.offsetWidth - 4;
   previewToggle.style.left = `${Math.max(4, left)}px`;
 }
@@ -192,12 +198,18 @@ function updatePreviewVisibility() {
 const inlinePreview = new InlinePreview(previewEl, {
   onAvailabilityChange: (available) => {
     previewAvailable = available;
+    if (!available) previewFullscreen = false;
     if (!available) statusbar.setPreviewFormat(null);
     if (available) previewCollapsed = false;
     updatePreviewVisibility();
   },
   onFormatChange: (format) => runBackground("ビューを切り替えられませんでした", () => editor.openTextViewer(format)),
   onFontFamilyChange: (family) => editor.setFont(family, getSetting("fontSize"), "family"),
+  onFullscreenChange: () => {
+    previewFullscreen = !previewFullscreen;
+    if (previewFullscreen) previewCollapsed = false;
+    updatePreviewVisibility();
+  },
   onError: (error) => reportBackgroundError("プレビュー通知を処理できませんでした", error),
 });
 
@@ -216,15 +228,9 @@ function runPreviewBackground(path: string, title: string, operation: () => void
 
 function syncPreviewDocument(session: Readonly<DocumentSession>, force = false) {
   const path = session.selectedRelPath || session.savePath || session.displayPath;
-  inlinePreview.setSourcePath(session.savePath, session.archivePath, session.archiveEntry);
+  const sourcePath = session.savePath ?? (isImagePath(session.displayPath) ? session.displayPath : null);
+  inlinePreview.setSourcePath(sourcePath, session.archivePath, session.archiveEntry);
   if (!force && path === previewDocumentPath && !isImagePath(session.displayPath)) return;
-  if (isImagePath(session.displayPath)) {
-    statusbar.setPreviewFormat("markdown");
-    runPreviewBackground(path, "画像を表示できませんでした", () =>
-      inlinePreview.open("markdown", imagePreviewMarkdown(session.displayPath), null),
-    );
-    return;
-  }
   const format = viewerFormatForPath(path);
   if (!format) {
     previewDocumentPath = path;
@@ -507,6 +513,7 @@ $("sidebar-toggle").addEventListener("click", () => {
 });
 previewToggle.addEventListener("click", () => {
   previewCollapsed = !previewCollapsed;
+  if (previewCollapsed) previewFullscreen = false;
   updatePreviewVisibility();
   if (!previewCollapsed) inlinePreview.resend();
 });
@@ -527,6 +534,17 @@ splitter.addEventListener("mousedown", (e) => {
   };
   window.addEventListener("mousemove", move);
   window.addEventListener("mouseup", up);
+});
+
+// プレビュー幅のドラッグ変更
+bindPreviewResize(previewSplitter, {
+  mainRight: () => mainEl.getBoundingClientRect().right,
+  setWidth: (width) => {
+    previewEl.style.width = `${width}px`;
+    updatePreviewVisibility();
+  },
+  onStart: () => document.body.classList.add("preview-resizing"),
+  onStop: () => document.body.classList.remove("preview-resizing"),
 });
 
 // グローバルショートカット (ファイル操作のみ。編集系はエディタが処理)

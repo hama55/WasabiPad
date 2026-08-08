@@ -190,10 +190,10 @@ describe("Feature: FolderActions", () => {
     }
   });
 
-  // Given: 対象が`table.CSV`と`memo.txt`
-  // When: 各コンテキストメニューを表示しCSV項目をクリック
-  // Then: CSVビュー表示・`onOpenViewer("table.CSV","csv")`、memoにはCSV/Markdownビューなし
-  it("Scenario: CSVとMarkdownだけに対応するビューを表示する", () => {
+  // Given: 対象が`table.CSV`、`photo.PNG`、`memo.txt`
+  // When: 各コンテキストメニューを表示し対応ビュー項目をクリック
+  // Then: CSV/Imageビューは対応形式を渡し、memoにはビューを表示しない
+  it("Scenario: CSVとImageの対応ファイルにビューを表示する", () => {
     const { actions, dropdown, ports } = fixture();
     actions.showContextMenu(0, 0, { relPath: "table.CSV", isDir: false });
 
@@ -203,9 +203,17 @@ describe("Feature: FolderActions", () => {
       .find((item) => item.textContent === "CSVビュー")!.click();
     expect(ports.onOpenViewer).toHaveBeenCalledWith("table.CSV", "csv");
 
+    actions.showContextMenu(0, 0, { relPath: "photo.PNG", isDir: false });
+    expect([...dropdown.querySelectorAll(".dd-label")].map((label) => label.textContent)).toContain("Imageビュー");
+    expect(dropdown.querySelector(`.dd-item .${MENU_ICON.image}`)).not.toBeNull();
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "Imageビュー")!.click();
+    expect(ports.onOpenViewer).toHaveBeenCalledWith("photo.PNG", "image");
+
     actions.showContextMenu(0, 0, { relPath: "memo.txt", isDir: false });
     expect([...dropdown.querySelectorAll(".dd-label")].map((label) => label.textContent)).not.toContain("CSVビュー");
     expect([...dropdown.querySelectorAll(".dd-label")].map((label) => label.textContent)).not.toContain("Markdownビュー");
+    expect([...dropdown.querySelectorAll(".dd-label")].map((label) => label.textContent)).not.toContain("Imageビュー");
   });
 
   // Given: rootが`C:\work`で対象がない

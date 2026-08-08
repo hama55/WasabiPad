@@ -71,6 +71,8 @@ enum ViewerFormat {
     Csv,
     #[serde(rename = "markdown")]
     Markdown,
+    #[serde(rename = "image")]
+    Image,
 }
 
 #[derive(Clone, serde::Serialize, ts_rs::TS)]

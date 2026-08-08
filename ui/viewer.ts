@@ -6,6 +6,7 @@ import MarkdownIt from "markdown-it";
 import Papa from "papaparse";
 import { EVENT_NAMES, readArchiveAsset, takeViewerPayload, type ViewerFormat, type ViewerPayload, type ViewerSelection } from "./api";
 import { formatFontFamily } from "./format";
+import { basename } from "./path";
 import { createViewerFormatHandlers, isViewerFormat, VIEWER_FORMATS } from "./viewer-formats";
 import { getSetting, initSettings, setSetting } from "./settings";
 import { clampFontSize, promptFontFamily, promptFontSize as promptFontSizeDialog } from "./font-controls";
@@ -36,6 +37,7 @@ import { scrollViewerCaret } from "./viewer-scroll";
 import { createViewerChartMenuItem } from "./viewer-context-menu";
 import { INLINE_PREVIEW_MESSAGES } from "./inline-preview";
 import { isViewerPayload } from "./viewer-payload";
+import { createImagePreview } from "./viewer-image";
 
 const MAX_TABLE_ROWS = 10_000;
 const MAX_TABLE_COLUMNS = 200;
@@ -48,6 +50,7 @@ const win = isInlineViewer ? null : getCurrentWindow();
 const content = document.getElementById("viewer-content")!;
 const title = document.getElementById("viewer-title-text")!;
 const formatSelect = document.getElementById("viewer-format") as HTMLSelectElement;
+const fullscreenButton = document.getElementById("viewer-fullscreen") as HTMLButtonElement;
 const summary = document.getElementById("viewer-summary")!;
 const themeButton = document.getElementById("viewer-theme")!;
 const fontButton = document.getElementById("viewer-font")!;
@@ -118,6 +121,12 @@ function applyFont(family: string, size: number, persist = true) {
   applyFontSize(size, persist);
 }
 
+function setFullscreenButton(fullscreen: boolean) {
+  fullscreenButton.textContent = fullscreen ? "↙" : "⛶";
+  fullscreenButton.title = fullscreen ? "元の表示に戻す" : "プレビューを全画面表示";
+  fullscreenButton.setAttribute("aria-pressed", String(fullscreen));
+}
+
 async function promptFont() {
   const family = await promptFontFamily(fontFamily);
   if (family) applyFontFamily(family);
@@ -162,6 +171,9 @@ function bindViewerControls() {
       type: INLINE_PREVIEW_MESSAGES.FORMAT_CHANGE_MESSAGE,
       format,
     });
+  });
+  fullscreenButton.addEventListener("click", () => {
+    if (isInlineViewer) postToParent({ type: INLINE_PREVIEW_MESSAGES.FULLSCREEN_CHANGE_MESSAGE });
   });
 }
 
@@ -279,6 +291,43 @@ async function waitForImageLayout(image: HTMLImageElement) {
   }
 }
 
+async function renderImage(_text: string) {
+  const generation = ++renderGeneration;
+  const sourcePath = currentSourcePath;
+  const archivePath = currentArchivePath;
+  const archiveEntry = currentArchiveEntry;
+  revokeArchiveAssetUrls();
+  currentRows = [];
+  closeChart();
+
+  const name = basename(archiveEntry ?? sourcePath ?? "image");
+  const { wrapper, image } = createImagePreview(name);
+  content.replaceChildren(wrapper);
+  summary.classList.remove("warning");
+  summary.title = "";
+  summary.textContent = name;
+
+  try {
+    if (archivePath && archiveEntry) {
+      const bytes = await readArchiveAsset(archivePath, archiveEntry);
+      if (generation !== renderGeneration) return;
+      const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: imageMimeType(archiveEntry) }));
+      archiveAssetUrls.push(url);
+      image.src = url;
+    } else if (sourcePath && generation === renderGeneration) {
+      image.src = convertFileSrc(sourcePath);
+    } else {
+      image.alt = `${name}（読み込めません）`;
+      return;
+    }
+    await waitForImageLayout(image);
+  } catch {
+    if (generation !== renderGeneration) return;
+    image.removeAttribute("src");
+    image.alt = `${name}（読み込めません）`;
+  }
+}
+
 async function renderMarkdown(text: string) {
   const generation = ++renderGeneration;
   const archivePath = currentArchivePath;
@@ -324,6 +373,7 @@ async function renderMarkdown(text: string) {
 const VIEWER_HANDLERS = createViewerFormatHandlers({
   csv: renderTable,
   markdown: renderMarkdown,
+  image: renderImage,
 });
 
 function renderPayload(payload: ViewerPayload) {
@@ -599,6 +649,11 @@ async function start() {
         if (event.data?.type === INLINE_PREVIEW_MESSAGES.FONT_MESSAGE) {
           if (typeof event.data.family !== "string") return;
           applyFontFamily(event.data.family, false);
+          return;
+        }
+        if (event.data?.type === INLINE_PREVIEW_MESSAGES.FULLSCREEN_STATE_MESSAGE) {
+          if (typeof event.data.fullscreen !== "boolean") return;
+          setFullscreenButton(event.data.fullscreen);
           return;
         }
       });
