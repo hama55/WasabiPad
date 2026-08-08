@@ -31,7 +31,6 @@ import {
   clampImeAnchor,
   comparePos as cmp,
   findProgressPercent,
-  positionAfterDeletion,
   u16ToChar,
   unescapePattern,
   WrapHeightMap,
@@ -76,6 +75,7 @@ export class VirtualEditor {
   private inner: HTMLElement;
   private linesLayer: HTMLElement; // 行/選択ハイライトの描画専用コンテナ
   private caretEl: HTMLElement;
+  private dragCaretEl: HTMLElement;
   private secondaryCaretEls: HTMLElement[] = [];
   private input: HTMLTextAreaElement;
   private findBar: FindBar;
@@ -112,6 +112,8 @@ export class VirtualEditor {
   private scrollbarDragging = false; // ネイティブscrollTopを入力として扱う間だけtrue
 
   private sel = new Selection();
+  private dragCaret: Pos | null = null;
+  private ctrlDown = false;
   private composing = false;
   private chain: Promise<unknown> = Promise.resolve();
   private findGen = 0; // 検索ループの世代。closeやEnter連打で古いループを打ち切るため
@@ -182,6 +184,7 @@ export class VirtualEditor {
     this.inner = el("div", "ve-inner");
     this.linesLayer = el("div", "ve-lines");
     this.caretEl = el("div", "ve-caret");
+    this.dragCaretEl = el("div", "ve-caret ve-drag-caret");
     this.input = document.createElement("textarea");
     this.input.className = "ve-input";
     this.input.spellcheck = false;
@@ -191,6 +194,7 @@ export class VirtualEditor {
     // caretEl は一度だけ挿入し、以後 render() では linesLayer の中身だけ差し替える。
     this.inner.appendChild(this.linesLayer);
     this.inner.appendChild(this.caretEl);
+    this.inner.appendChild(this.dragCaretEl);
     this.scroll.appendChild(this.inner);
     this.hScroll.appendChild(this.hScrollSpacer);
     this.host.appendChild(this.gutter);
@@ -256,6 +260,15 @@ export class VirtualEditor {
       this.scrollbarDragging = false;
       this.schedule();
     });
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "Control") this.ctrlDown = true;
+    });
+    window.addEventListener("keyup", (e) => {
+      if (e.key === "Control") this.ctrlDown = false;
+    });
+    window.addEventListener("blur", () => {
+      this.ctrlDown = false;
+    });
     window.addEventListener("focus", () => this.syncImeAnchorAfterLayout());
     window.addEventListener("resize", () => this.syncWindowGeometry());
     document.addEventListener("visibilitychange", () => {
@@ -284,6 +297,7 @@ export class VirtualEditor {
   // ---- 文書ロード ----
   // keepViewers: 同じファイルを読み直しただけの場合。開いているビューを閉じずに新内容へ差し替える
   open(lineCount: number, readOnly: boolean, keepViewers = false, externalFilePath: string | null = null) {
+    this.clearDragCaret();
     this.externalFilePath = externalFilePath;
     this.documentGeneration++;
     this.findGen++;
@@ -870,7 +884,7 @@ export class VirtualEditor {
       this.placeSecondaryCarets();
       return;
     }
-    this.caretEl.classList.toggle("on", document.activeElement === this.input);
+    this.caretEl.classList.toggle("on", document.activeElement === this.input && this.dragCaret === null);
     const x = point?.x ?? (lineEl ? this.colToX(lineEl, s, this.sel.caret.col) : this.paddingLeft);
     this.caretEl.style.top = `${caretY}px`;
     this.caretEl.style.left = `${x}px`;
@@ -886,6 +900,35 @@ export class VirtualEditor {
       this.input.style.removeProperty("text-indent");
       this.input.style.removeProperty("--ime-indent");
     }
+  }
+
+  private placeDragCaret() {
+    if (!this.dragCaret) {
+      this.dragCaretEl.classList.remove("on");
+      return;
+    }
+    const line = this.lineElem(this.dragCaret.line);
+    if (!line) {
+      this.dragCaretEl.classList.remove("on");
+      return;
+    }
+    const text = this.lineCache.peek(this.dragCaret.line) ?? "";
+    const point = this.wrap ? this.wrapPoint(line, text, this.dragCaret.col) : null;
+    this.dragCaretEl.style.top = `${point?.y ?? this.rowTop(this.dragCaret.line)}px`;
+    this.dragCaretEl.style.left = `${point?.x ?? this.colToX(line, text, this.dragCaret.col)}px`;
+    this.dragCaretEl.classList.add("on");
+  }
+
+  private showDragCaret(pos: Pos) {
+    this.dragCaret = { ...pos };
+    this.placeCaret();
+    this.placeDragCaret();
+  }
+
+  private clearDragCaret() {
+    this.dragCaret = null;
+    this.dragCaretEl.classList.remove("on");
+    this.syncCaretVisibility();
   }
 
   private placeInputAt(contentX: number, contentY: number) {
@@ -905,6 +948,7 @@ export class VirtualEditor {
 
   private syncImeAnchor() {
     this.placeCaret();
+    this.placeDragCaret();
     if (this.composing) this.resizeImeInput();
     this.keepImeAnchorInsideViewport();
     // WebView2がnative IMEへ渡すcaret矩形を、現在のlayoutで確定させる。
@@ -1018,7 +1062,9 @@ export class VirtualEditor {
   private syncCaretVisibility() {
     const carets = [this.caretEl, ...this.secondaryCaretEls.slice(0, this.sel.secondary.length)];
     carets.forEach((caret) => caret.classList.remove("on"));
-    if (document.activeElement === this.input) carets.forEach((caret) => caret.classList.add("on"));
+    if (document.activeElement === this.input && this.dragCaret === null) {
+      carets.forEach((caret) => caret.classList.add("on"));
+    }
   }
 
   private async addCaretVert(delta: -1 | 1) {
@@ -1381,9 +1427,7 @@ export class VirtualEditor {
       this.applyResult(r, 0);
       this.sel.secondary = [];
       this.sel.multiCaretX = null;
-      this.ensureVisible();
-      this.render();
-      this.notifyCursor();
+      await this.renderAfterEdit();
     });
   }
 
@@ -1428,19 +1472,30 @@ export class VirtualEditor {
     return opened;
   }
 
-  private moveSelection(target: Pos) {
-    if (this.readOnly) return;
-    const [s, e] = this.sel.norm();
-    if (cmp(target, s) >= 0 && cmp(target, e) <= 0) return;
-    void this.run(async () => {
-      const text = await this.lineCache.textInRange(s, e);
-      const drop = cmp(target, e) > 0 ? positionAfterDeletion(s, e, target) : target;
-      const deleted = await this.doc.edit(s, e, e, "", false);
-      this.applyResult(deleted, s.line, [{ start: s, end: e, text: "" }]);
-      const inserted = await this.doc.edit(drop, drop, drop, text, false);
-      this.applyResult(inserted, drop.line, [{ start: drop, end: drop, text }]);
+  private moveSelection(start: Pos, end: Pos, target: Pos, copy: boolean) {
+    if (this.readOnly) return Promise.resolve();
+    if (cmp(target, start) >= 0 && cmp(target, end) <= 0) return Promise.resolve();
+    return this.run(async () => {
+      const text = await this.lineCache.textInRange(start, end);
+      if (copy) {
+        const result = await this.doc.edit(target, target, target, text, false);
+        this.applyResult(result, target.line, [{ start: target, end: target, text }]);
+      } else {
+        // editMany は開始位置の降順で適用されるため、target は削除前の座標を渡す。
+        // 削除と挿入を同じ UndoEntry にまとめ、Undo 1回で移動全体を戻せるようにする。
+        const edits = [
+          { start, end, text: "" },
+          { start: target, end: target, text },
+        ];
+        const result = await this.doc.editMany(edits, target, 1);
+        this.applyResult(
+          { caret: result.carets[1] ?? target, line_count: result.line_count },
+          Math.min(start.line, target.line),
+          edits,
+        );
+      }
       await this.renderAfterEdit();
-    }).catch((error) => this.reportActionError("選択範囲を移動できませんでした", error));
+    });
   }
 
   private async paste() {
@@ -1757,21 +1812,42 @@ export class VirtualEditor {
       if (cmp(pos, s) >= 0 && cmp(pos, end) < 0) {
         const startX = e.clientX;
         const startY = e.clientY;
+        const originalAnchor = { ...this.sel.anchor };
+        const originalCaret = { ...this.sel.caret };
+        let copy = this.isCtrlPressed(e);
         let dragging = false;
-        const moveSelection = (ev: MouseEvent) => {
-          if (Math.abs(ev.clientX - startX) > 3 || Math.abs(ev.clientY - startY) > 3) dragging = true;
+        let drop: Pos | null = null;
+        const updateSelectionDrag = (ev: MouseEvent) => {
+          if (!dragging && (Math.abs(ev.clientX - startX) > 3 || Math.abs(ev.clientY - startY) > 3)) {
+            dragging = true;
+          }
+          if (!dragging) return;
+          const next = this.posFromPoint(ev.clientX, ev.clientY);
+          if (!next) return;
+          drop = next;
+          copy = this.isCtrlPressed(ev);
+          this.showDragCaret(next);
         };
         const upSelection = (ev: MouseEvent) => {
-          window.removeEventListener("mousemove", moveSelection);
+          updateSelectionDrag(ev);
+          window.removeEventListener("mousemove", updateSelectionDrag);
           window.removeEventListener("mouseup", upSelection);
-          if (dragging) {
-            const drop = this.posFromPoint(ev.clientX, ev.clientY);
-            if (drop) this.moveSelection(drop);
+          this.clearDragCaret();
+          if (dragging && drop) {
+            if (cmp(drop, s) >= 0 && cmp(drop, end) <= 0) {
+              this.sel.anchor = originalAnchor;
+              this.sel.caret = originalCaret;
+              this.render();
+              this.notifyCursor();
+              return;
+            }
+            void this.moveSelection(s, end, drop, copy)
+              .catch((error) => this.reportActionError("選択範囲を移動またはコピーできませんでした", error));
           } else {
             this.moveTo(pos, false);
           }
         };
-        window.addEventListener("mousemove", moveSelection);
+        window.addEventListener("mousemove", updateSelectionDrag);
         window.addEventListener("mouseup", upSelection);
         return;
       }
@@ -1796,6 +1872,10 @@ export class VirtualEditor {
     };
     window.addEventListener("mousemove", move);
     window.addEventListener("mouseup", up);
+  }
+
+  private isCtrlPressed(e: MouseEvent): boolean {
+    return e.ctrlKey || e.getModifierState("Control") || this.ctrlDown;
   }
 
   private posFromPoint(cx: number, cy: number): Pos | null {

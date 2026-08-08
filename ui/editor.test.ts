@@ -67,6 +67,40 @@ function mount(
   return { editor, doc, events, host, input, type, press };
 }
 
+function installMouseLayout(host: HTMLElement) {
+  const dropdown = document.createElement("div");
+  dropdown.id = "dropdown";
+  document.body.appendChild(dropdown);
+  const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
+  Object.defineProperties(scroll, {
+    clientHeight: { configurable: true, value: 100 },
+    clientWidth: { configurable: true, value: 300 },
+  });
+  const scrollRect = vi.spyOn(scroll, "getBoundingClientRect").mockReturnValue({
+    x: 0, y: 0, top: 0, left: 0, right: 300, bottom: 100, width: 300, height: 100,
+    toJSON: () => ({}),
+  } as DOMRect);
+  const lineRects = [...host.querySelectorAll<HTMLElement>(".ve-line")].map((line) =>
+    vi.spyOn(line, "getBoundingClientRect").mockReturnValue({
+      x: 0, y: Number(line.dataset.line) * 20, top: Number(line.dataset.line) * 20,
+      left: 0, right: 300, bottom: Number(line.dataset.line) * 20 + 20,
+      width: 300, height: 20, toJSON: () => ({}),
+    } as DOMRect));
+  const rangeRect = vi.spyOn(Range.prototype, "getBoundingClientRect").mockImplementation(function (this: Range) {
+    const width = this.endOffset * 10;
+    return { x: 0, y: 0, top: 0, left: 0, right: width, bottom: 20, width, height: 20, toJSON: () => ({}) } as DOMRect;
+  });
+  return {
+    scroll,
+    restore: () => {
+      scrollRect.mockRestore();
+      lineRects.forEach((rect) => rect.mockRestore());
+      rangeRect.mockRestore();
+      dropdown.remove();
+    },
+  };
+}
+
 describe("Feature: VirtualEditor", () => {
   beforeEach(async () => {
     document.body.replaceChildren();
@@ -224,6 +258,80 @@ describe("Feature: VirtualEditor", () => {
 
     expect(doc.text()).toBe("\tone\n\ttwo\nthree");
     expect(doc.calls).toContain("editMany(2)");
+  });
+
+  // Given: 文書が「abcDEFghi」、選択範囲が「DEF」
+  // When: Ctrlなしで選択範囲を末尾へドラッグし、Undoを1回実行する
+  // Then: ドラッグ中はドロップ位置に専用キャレットが表示され、移動はeditMany(2)の1操作で行われ、Undo 1回で元に戻る
+  it("Scenario: 選択範囲の移動はドロップ位置を示しUndo一回で戻る", async () => {
+    const { editor, doc, host, input, press } = mount("abcDEFghi");
+    editor.open(1, false);
+    await settle();
+    const layout = installMouseLayout(host);
+    await editor.selectRange(0, 3, 6);
+    const scroll = layout.scroll;
+
+    scroll.dispatchEvent(new MouseEvent("mousedown", {
+      bubbles: true, button: 0, clientX: 48, clientY: 10,
+    }));
+    window.dispatchEvent(new MouseEvent("mousemove", {
+      bubbles: true, clientX: 98, clientY: 10,
+    }));
+
+    expect(host.querySelector(".ve-drag-caret.on")).not.toBeNull();
+    expect(host.querySelector<HTMLElement>(".ve-drag-caret")?.style.left).toBe("98px");
+
+    window.dispatchEvent(new MouseEvent("mouseup", {
+      bubbles: true, clientX: 98, clientY: 10,
+    }));
+    await settle();
+
+    expect(doc.text()).toBe("abcghiDEF");
+    expect(doc.calls).toContain("editMany(2)");
+    expect(doc.calls.filter((call) => call.startsWith("edit(")).length).toBe(0);
+    expect(editor.captureViewState().caret).toEqual({ line: 0, col: 9 });
+
+    input.focus();
+    press("z", { ctrlKey: true });
+    await settle();
+    expect(doc.text()).toBe("abcDEFghi");
+    press("z", { ctrlKey: true });
+    await settle();
+    expect(doc.text()).toBe("abcDEFghi");
+
+    layout.restore();
+  });
+
+  // Given: 文書が「abcDEFghi」、選択範囲が「DEF」
+  // When: Ctrlを押しながら選択範囲を末尾へドラッグする
+  // Then: 元の文字列を残したまま末尾へコピーし、挿入1回として扱う
+  it("Scenario: Ctrl付き選択範囲ドラッグはコピーになる", async () => {
+    const { editor, doc, host, input } = mount("abcDEFghi");
+    editor.open(1, false);
+    await settle();
+    const layout = installMouseLayout(host);
+    await editor.selectRange(0, 3, 6);
+    const scroll = layout.scroll;
+
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Control", bubbles: true }));
+    scroll.dispatchEvent(new MouseEvent("mousedown", {
+      bubbles: true, button: 0, clientX: 48, clientY: 10,
+    }));
+    window.dispatchEvent(new MouseEvent("mousemove", {
+      bubbles: true, clientX: 98, clientY: 10,
+    }));
+    window.dispatchEvent(new MouseEvent("mouseup", {
+      bubbles: true, clientX: 98, clientY: 10,
+    }));
+    input.dispatchEvent(new KeyboardEvent("keyup", { key: "Control", bubbles: true }));
+    await settle();
+
+    expect(doc.text()).toBe("abcDEFghiDEF");
+    expect(doc.calls).toContain('edit(0:9,0:9,"DEF")');
+    expect(doc.calls).not.toContain("editMany(2)");
+    expect(editor.captureViewState().caret).toEqual({ line: 0, col: 12 });
+
+    layout.restore();
   });
 
   // Given: 文書が「abc」、最初の backend edit が Error("ipc failed") で拒否される

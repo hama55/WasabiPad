@@ -408,6 +408,7 @@ body.preview-resizing * { cursor: ew-resize !important; user-select: none !impor
   position: absolute; width: 2px; height: var(--line-h);
   background: var(--caret); z-index: 3; display: none;
 }
+.ve-drag-caret { background: var(--accent); }
 .ve-caret.on { display: block; }
 .ve-input {
   position: absolute; z-index: 3;
