@@ -24,6 +24,8 @@ import { csvColumnAt, decodeDelimiter, isSingleCsvCellSelection } from "./csv-vi
 import { resolveArchiveAssetEntry, resolveAssetPath } from "./viewer-assets";
 import { normalizeTheme, THEME_STORAGE_KEY } from "./theme";
 import { showError } from "./dialogs";
+import { WindowControls } from "./window-controls";
+import { reportWindowOperationError, runWindowOperation } from "./window-operation";
 import { imageMimeType } from "./image-formats";
 import {
   markdownBlockSelected,
@@ -109,41 +111,18 @@ function applyTheme(theme = localStorage.getItem(THEME_STORAGE_KEY)) {
   if (chartColumns) renderChart();
 }
 
-async function syncMaxIcon() {
-  const maximized = await win.isMaximized();
-  const button = document.getElementById("win-max")!;
-  button.textContent = String.fromCharCode(maximized ? 0xe923 : 0xe922);
-  button.title = maximized ? "元に戻す" : "最大化";
-}
-
 function reportWindowError(title: string, error: unknown) {
-  void showError(title, error).catch((reportError) => {
-    console.error(`${title}のエラーを表示できませんでした`, reportError);
-  });
+  void reportWindowOperationError(showError, title, error);
 }
 
 function runViewerOperation(title: string, operation: () => void | Promise<unknown>) {
-  void Promise.resolve().then(operation).catch((error) => reportWindowError(title, error));
+  runWindowOperation(showError, title, operation);
 }
 
-function bindWindowControls() {
-  document.getElementById("win-min")!.addEventListener("click", () => runViewerOperation("ウィンドウを最小化できませんでした", () => win.minimize()));
-  document.getElementById("win-max")!.addEventListener("click", () => runViewerOperation("ウィンドウを最大化できませんでした", async () => {
-    await win.toggleMaximize();
-    await syncMaxIcon();
-  }));
-  document.getElementById("win-close")!.addEventListener("click", () => runViewerOperation("ウィンドウを閉じられませんでした", () => win.close()));
-  title.addEventListener("dblclick", () => runViewerOperation("ウィンドウを最大化できませんでした", async () => {
-    await win.toggleMaximize();
-    await syncMaxIcon();
-  }));
+function bindViewerControls() {
   fontButton.addEventListener("click", () => runViewerOperation("フォントを変更できませんでした", promptFont));
   fontSizeButton.addEventListener("click", () => runViewerOperation("文字サイズを変更できませんでした", promptFontSize));
   content.addEventListener("wheel", onViewerWheel, { passive: false });
-  void win.onResized(() => {
-    void syncMaxIcon().catch((error) => reportWindowError("最大化状態を取得できませんでした", error));
-  }).catch((error) => reportWindowError("ウィンドウサイズ監視を開始できませんでした", error));
-  void syncMaxIcon().catch((error) => reportWindowError("最大化状態を取得できませんでした", error));
 }
 
 function renderTable(text: string) {
@@ -534,8 +513,9 @@ function closeChart() {
 async function start() {
   try {
     applyTheme();
-bindWindowControls();
-applyFont(fontFamily, fontSize, false);
+    new WindowControls(document.body, win, title, { onError: reportWindowError });
+    bindViewerControls();
+    applyFont(fontFamily, fontSize, false);
     themeButton.addEventListener("click", () => {
       runViewerOperation("配色を変更できませんでした", () => {
         applyTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light");
