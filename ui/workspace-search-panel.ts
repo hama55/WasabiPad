@@ -151,11 +151,9 @@ export class WorkspaceSearchPanel {
     refresh.addEventListener("click", () => this.queueSearch(0));
     const clear = iconButton("ws-clear", "✕", "検索をクリア");
     clear.addEventListener("click", () => this.clear());
-    const fold = iconButton("ws-fold", "⊟", "すべて折りたたむ / 展開");
-    fold.addEventListener("click", () => this.toggleAllGroups());
     const settings = iconButton("ws-settings", "⚙", "検索の設定");
     settings.addEventListener("click", () => this.openSettings());
-    header.append(title, scope, stop, refresh, clear, fold, settings);
+    header.append(title, scope, stop, refresh, clear, settings);
     return header;
   }
 
@@ -301,10 +299,10 @@ export class WorkspaceSearchPanel {
     this.ports.onViewChange();
   }
 
-  private toggleAllGroups() {
+  toggleAllGroups() {
     if (!this.shownResults().length) return;
     this.state.collapseTouched = true;
-    this.state.collapseByDefault = !this.state.collapseByDefault;
+    this.state.collapseByDefault = true;
     this.state.collapsed.clear();
     this.ports.onViewChange();
   }

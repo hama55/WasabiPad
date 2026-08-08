@@ -171,10 +171,22 @@ body {
   background: var(--bg-side); color: var(--fg-dim); font: 12px var(--font-ui);
 }
 #sidebar-toggle:hover { background: var(--hover); color: var(--fg); }
+/* ---- フォルダツリー共通操作 ---- */
+.fv-toolbar {
+  position: sticky; top: -4px; z-index: 2;
+  display: flex; justify-content: flex-end; gap: 2px;
+  min-height: 24px; box-sizing: border-box;
+  padding: 0 4px 4px; background: var(--bg-side);
+}
+.fv-toolbar button {
+  border: 0; background: none; color: var(--fg-dim); padding: 0 3px;
+  font-size: 14px; line-height: 20px; cursor: default;
+}
+.fv-toolbar button:hover { background: var(--hover); color: var(--fg); }
 /* ---- フォルダ検索バー ---- */
 /* 結果が長くなるため、入力欄と件数は上端へ貼り付けたままにする */
 .ws-search {
-  position: sticky; top: -4px; z-index: 1;
+  position: sticky; top: 20px; z-index: 1;
   padding: 4px; background: var(--bg-side);
 }
 .ws-search[hidden] { display: none; }

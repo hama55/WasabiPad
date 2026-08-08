@@ -530,7 +530,7 @@ describe("Feature: WorkspaceSearchPanel", () => {
     await vi.advanceTimersByTimeAsync(100);
     expect(host.querySelectorAll(".ws-match")).toHaveLength(2);
 
-    host.querySelector<HTMLButtonElement>(".ws-fold")!.click();
+    mounted.toggleAllGroups();
     expect(host.querySelectorAll(".ws-match")).toHaveLength(0);
     expect(host.querySelectorAll(".ws-group")).toHaveLength(2);
 

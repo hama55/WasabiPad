@@ -17,7 +17,7 @@ import { runAsyncBoundary } from "./async-boundary";
 export { isImagePath } from "./image-formats";
 
 export interface FolderActionsPorts {
-  sidebar: Pick<Sidebar, "setEntries" | "selectByRelPath" | "refreshFolderEntries">;
+  sidebar: Pick<Sidebar, "setEntries" | "selectByRelPath" | "refreshFolderEntries" | "expandAllFolder">;
   onOpenInNewTab: (relPath: string, goto?: api.Pos) => void;
   onOpenInNewWindow: (path: string, goto?: api.Pos) => void;
   onOpenViewer: (relPath: string, format: api.ViewerFormat) => void;
@@ -97,6 +97,12 @@ export class FolderActions {
         iconClass: MENU_ICON.newWindow,
         action: () => this.ports.onOpenInNewWindow(this.toAbsolute(target.relPath), target.goto),
       });
+      if (target.isDir) {
+        items.push({
+          label: "フォルダを全展開",
+          action: () => this.run("フォルダを全展開できませんでした", () => this.ports.sidebar.expandAllFolder(target.relPath)),
+        });
+      }
       if (!target.isDir) {
         const viewerFormat = viewerFormatForPath(target.relPath);
         if (viewerFormat) {

@@ -13,8 +13,8 @@ function mount(onSearch: SidebarPorts["onSearch"] = vi.fn(async () => ({
   const ports = {
     onSelect: vi.fn(),
     onContextMenu: vi.fn(),
-    onExpandArchive: vi.fn(async () => []),
-    onExpandFolder: vi.fn(async (): Promise<FolderEntry[]> => []),
+    onExpandArchive: vi.fn(async (_relPath: string): Promise<string[]> => []),
+    onExpandFolder: vi.fn(async (_relDir: string): Promise<FolderEntry[]> => []),
     onTreeError: vi.fn(async () => {}),
     onSearch,
     onCancel: vi.fn(),
@@ -73,6 +73,83 @@ describe("Feature: Sidebar", () => {
 
     expect(host.querySelector(".fv-row.sel")).toBeNull();
     expect(host.querySelector(".fv-row")?.textContent).toContain("other.txt");
+  });
+
+  // Given: dir と、その配下に nested を持つフォルダツリーを開いて表示する
+  // When: 共通操作のボタンを押す
+  // Then: ルート直下だけの表示へ戻り、閉じたフォルダの取得は開始しない
+  it("Scenario: 共通の折りたたみボタンがフォルダツリー全体を畳む", async () => {
+    const { host, ports, sidebar } = mount();
+    ports.onExpandFolder.mockImplementation(async (relDir) => relDir === "dir"
+      ? [{ name: "nested", is_dir: true, is_archive: false }]
+      : []);
+    sidebar.setEntries([{ name: "dir", is_dir: true, is_archive: false }]);
+
+    host.querySelector<HTMLElement>(".fv-row")!.click();
+    await vi.waitFor(() => expect(host.querySelectorAll(".fv-row")).toHaveLength(2));
+    expect(host.querySelectorAll(".fv-row")[1].textContent).toContain("nested");
+    expect(host.querySelector(".fv-row .fv-arrow")?.textContent).toBe("🗂️");
+
+    host.querySelector<HTMLButtonElement>(".fv-fold")!.click();
+    expect(host.querySelectorAll(".fv-row")).toHaveLength(1);
+    expect(host.querySelector(".fv-row .fv-arrow")?.textContent).toBe("📁");
+  });
+
+  // Given: data.zip の一覧に folder/file.txt があり、archive内のfolder行が作られる
+  // When: アーカイブ行、続けてarchive内のfolder行を開く
+  // Then: archive内の仮想フォルダはAPIへ渡さず、エラーなく子行を表示する
+  it("Scenario: アーカイブ内の仮想フォルダを実フォルダとして展開しない", async () => {
+    const { host, ports, sidebar } = mount();
+    ports.onExpandArchive.mockResolvedValue(["folder/file.txt"]);
+    sidebar.setEntries([{ name: "data.zip", is_dir: false, is_archive: true }]);
+
+    host.querySelector<HTMLElement>(".fv-row")!.click();
+    await vi.waitFor(() => expect(host.querySelectorAll(".fv-row")).toHaveLength(2));
+    host.querySelectorAll<HTMLElement>(".fv-row")[1].click();
+
+    expect(ports.onExpandFolder).not.toHaveBeenCalled();
+    expect(ports.onTreeError).not.toHaveBeenCalled();
+    expect(host.querySelectorAll(".fv-row")[1].textContent).toContain("folder");
+    expect(host.querySelectorAll(".fv-row")[2].textContent).toContain("file.txt");
+  });
+
+  // Given: dir と、その配下に nested/deep.txt を持つフォルダツリーを表示する
+  // When: dir の全展開を依頼する
+  // Then: dir 以下だけを再帰取得して全階層を表示する
+  it("Scenario: 指定フォルダと配下を全展開する", async () => {
+    const { host, ports, sidebar } = mount();
+    ports.onExpandFolder.mockImplementation(async (relDir) => {
+      if (relDir === "dir") return [{ name: "nested", is_dir: true, is_archive: false }];
+      if (relDir === "dir/nested") return [{ name: "deep.txt", is_dir: false, is_archive: false }];
+      return [{ name: "outside.txt", is_dir: false, is_archive: false }];
+    });
+    sidebar.setEntries([
+      { name: "dir", is_dir: true, is_archive: false },
+      { name: "other", is_dir: true, is_archive: false },
+    ]);
+
+    await sidebar.expandAllFolder("dir");
+
+    expect(ports.onExpandFolder.mock.calls.map(([relDir]) => relDir)).toEqual(["dir", "dir/nested"]);
+    expect([...host.querySelectorAll<HTMLElement>(".fv-row")].map((row) => row.textContent)).toEqual([
+      "🗂️dir",
+      "🗂️nested",
+      "📄deep.txt",
+      "📁other",
+    ]);
+  });
+
+  // Given: dir が閉じた状態のフォルダツリーを表示する
+  // When: 上部の共通ボタンを押す
+  // Then: ボタンは全展開せず、フォルダ一覧取得も開始しない
+  it("Scenario: 共通ボタンは全折りたたみだけを実行する", () => {
+    const { host, ports, sidebar } = mount();
+    sidebar.setEntries([{ name: "dir", is_dir: true, is_archive: false }]);
+
+    host.querySelector<HTMLButtonElement>(".fv-fold")!.click();
+
+    expect(ports.onExpandFolder).not.toHaveBeenCalled();
+    expect(host.querySelectorAll(".fv-row")).toHaveLength(1);
   });
 
   // Given: 検索結果ツリーを表示中に a.txt を開いたことを通常ツリーの状態へ記録する

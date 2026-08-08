@@ -10,12 +10,13 @@ export type { ContextTarget } from "./context-target";
 // 検索の窓と結果は WorkspaceSearchPanel が持ち、ここは置き場を貸すだけ。
 //
 // zip/xlsx/xls は "archive" 種別の葉として表示し、中身は展開ボタンを押すまで取得しない。
-// 展開後に挿入される内部エントリ行は "archiveEntry" (相対パスは "アーカイブのrelPath::エントリ名")。
-type RowKind = "dir" | "file" | "archive" | "archiveEntry";
+// 展開後に挿入される内部フォルダ行は "archiveDir"、葉は "archiveEntry"
+// (相対パスは "アーカイブのrelPath::エントリ名")。
+type RowKind = "dir" | "file" | "archive" | "archiveDir" | "archiveEntry";
 
 interface Row {
   label: string;
-  relPath: string; // フォルダルートからの相対パス ("sub" や "sub/a.txt")、archiveEntry は "data.zip::Sheet1" 形式
+  relPath: string; // フォルダルートからの相対パス ("sub" や "sub/a.txt")、archive内は "data.zip::Sheet1" 形式
   depth: number;
   kind: RowKind;
   expanded: boolean;
@@ -27,6 +28,7 @@ interface Row {
 const ROW_GLYPHS: Record<RowKind, [string, string]> = {
   dir: ["📁", "🗂️"],
   archive: ["›", "⌄"],
+  archiveDir: ["📁", "🗂️"],
   file: ["📄", "📄"],
   archiveEntry: ["", ""],
 };
@@ -75,7 +77,13 @@ export class Sidebar {
     this.tree = document.createElement("div");
     this.tree.tabIndex = 0;
     this.tree.addEventListener("keydown", (event) => this.onTreeKeyDown(event));
-    this.host.append(this.panel.bar, this.tree);
+    const toolbar = document.createElement("div");
+    toolbar.className = "fv-toolbar";
+    const fold = iconButton("fv-fold", "⊟", "すべて折りたたむ");
+    fold.setAttribute("aria-label", "すべて折りたたむ");
+    fold.addEventListener("click", () => this.collapseAll());
+    toolbar.append(fold);
+    this.host.append(toolbar, this.panel.bar, this.tree);
     this.host.addEventListener("contextmenu", (e) => {
       if (e.target !== this.host && e.target !== this.tree) return; // 個々の行上は行側のリスナーに任せる
       e.preventDefault();
@@ -109,9 +117,9 @@ export class Sidebar {
           label: dirs[d],
           relPath: relPathOf(dirs.slice(0, d + 1).join("/")),
           depth: depth + d,
-          kind: "dir",
+          kind: "archiveDir",
           expanded: false,
-          childrenLoaded: false,
+          childrenLoaded: true,
         });
       }
       rows.push({
@@ -204,6 +212,28 @@ export class Sidebar {
     this.render();
   }
 
+  async expandAllFolder(relDir: string) {
+    if (this.panel.showing) return;
+    const row = this.rows.find((candidate) => candidate.kind === "dir" && candidate.relPath === relDir);
+    if (!row) return;
+    const request = ++this.selectionRequest;
+    const start = this.rows.indexOf(row);
+    try {
+      for (let i = start; i < this.rows.length; i++) {
+        const current = this.rows[i];
+        if (current !== row && current.depth <= row.depth) break;
+        if (!isExpandable(current)) continue;
+        if (!await this.ensureChildrenLoaded(current, request)) return;
+        if (request !== this.selectionRequest) return;
+        current.expanded = true;
+      }
+      if (request === this.selectionRequest) this.render();
+    } catch (error) {
+      if (request === this.selectionRequest) this.render();
+      throw error;
+    }
+  }
+
   // 新規作成/リネーム後、相対パスからそのファイル行を再選択する (無ければ何もしない)。
   // タブ復帰時は深い階層がまだ展開されていないため、必要な親だけ非同期で開く。
   async selectByRelPath(relPath: string) {
@@ -233,28 +263,42 @@ export class Sidebar {
   }
 
   private async expandArchiveRow(r: Row) {
-    if (!r.childrenLoaded) {
-      const names = await this.onExpandArchive(r.relPath);
-      const children = this.buildRows(names, r.depth + 1, r.relPath, () => "archiveEntry");
-      const idx = this.rows.indexOf(r);
-      this.rows.splice(idx + 1, 0, ...children);
-      r.childrenLoaded = true;
-    }
+    const request = this.selectionRequest;
+    if (!await this.ensureChildrenLoaded(r, request)) return;
     r.expanded = !r.expanded;
     this.render();
   }
 
-  private async expandFolderRow(r: Row, request?: number) {
-    if (!r.childrenLoaded) {
-      const children = this.folderRows(await this.onExpandFolder(r.relPath), r.depth + 1, r.relPath);
-      if (request !== undefined && request !== this.selectionRequest) return;
-      const index = this.rows.indexOf(r);
-      if (index < 0) return;
-      this.rows.splice(index + 1, 0, ...children);
-      r.childrenLoaded = true;
-    }
-    if (request !== undefined && request !== this.selectionRequest) return;
+  private async expandFolderRow(r: Row, request = this.selectionRequest) {
+    if (!await this.ensureChildrenLoaded(r, request)) return;
     r.expanded = !r.expanded;
+    this.render();
+  }
+
+  private async ensureChildrenLoaded(r: Row, request: number): Promise<boolean> {
+    if (r.childrenLoaded) return request === this.selectionRequest;
+    const children = r.kind === "dir"
+      ? this.folderRows(await this.onExpandFolder(r.relPath), r.depth + 1, r.relPath)
+      : r.kind === "archive"
+        ? this.buildRows(await this.onExpandArchive(r.relPath), r.depth + 1, r.relPath, () => "archiveEntry")
+        : [];
+    if (request !== this.selectionRequest) return false;
+    const index = this.rows.indexOf(r);
+    if (index < 0) return false;
+    this.rows.splice(index + 1, 0, ...children);
+    r.childrenLoaded = true;
+    return true;
+  }
+
+  private collapseAll() {
+    if (this.panel.showing) {
+      this.panel.toggleAllGroups();
+      return;
+    }
+    this.selectionRequest++;
+    this.rows.forEach((row) => {
+      if (isExpandable(row)) row.expanded = false;
+    });
     this.render();
   }
 
@@ -267,7 +311,7 @@ export class Sidebar {
         hideDeeper = -1;
       }
       out.push(i);
-      if ((r.kind === "dir" || r.kind === "archive") && !r.expanded) hideDeeper = r.depth;
+      if (isExpandable(r) && !r.expanded) hideDeeper = r.depth;
     });
     return out;
   }
@@ -307,7 +351,7 @@ export class Sidebar {
       div.appendChild(document.createTextNode(r.label));
 
       const activate = (newTab: boolean) => {
-        if (newTab && r.kind !== "archiveEntry") {
+        if (newTab && r.kind !== "archiveEntry" && r.kind !== "archiveDir") {
           void Promise.resolve(this.onSelect(r.relPath, true)).catch((error) => this.reportTreeError(error));
           return;
         }
@@ -315,6 +359,9 @@ export class Sidebar {
           void this.expandFolderRow(r).catch((error) => this.reportTreeError(error));
         } else if (r.kind === "archive") {
           void this.expandArchiveRow(r).catch((error) => this.reportTreeError(error));
+        } else if (r.kind === "archiveDir") {
+          r.expanded = !r.expanded;
+          this.render();
         } else {
           const previous = this.sel;
           this.sel = r.relPath;
@@ -336,8 +383,8 @@ export class Sidebar {
       div.addEventListener("auxclick", (e) => {
         if (isMiddleClick(e)) activate(true);
       });
-      if (r.kind !== "archiveEntry") {
-        // archiveEntry はアーカイブ内の仮想エントリなので、実ファイル向けの
+      if (r.kind !== "archiveEntry" && r.kind !== "archiveDir") {
+        // archiveEntry/archiveDir はアーカイブ内の仮想エントリなので、実ファイル向けの
         // 名前変更/エクスプローラ表示メニューの対象にしない
         div.addEventListener("contextmenu", (e) => {
           e.preventDefault();
@@ -357,4 +404,17 @@ export class Sidebar {
       console.error("ツリー展開エラーを表示できませんでした", reportError);
     }
   }
+}
+
+function iconButton(className: string, label: string, title: string): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = className;
+  button.textContent = label;
+  button.title = title;
+  return button;
+}
+
+function isExpandable(row: Row): boolean {
+  return row.kind === "dir" || row.kind === "archive" || row.kind === "archiveDir";
 }

@@ -42,6 +42,7 @@ function fixture() {
   document.body.replaceChildren(dropdown);
   const session = initialSession();
   session.folderRoot = "C:\\work";
+  const expandAllFolder = vi.fn();
   const doc = {
     current: session,
     promptMemoSpec: vi.fn(async (): Promise<MemoSpec | null> => null),
@@ -49,12 +50,14 @@ function fixture() {
     applyDocInfo: vi.fn(),
     applyRenamed: vi.fn(),
   } satisfies FolderDocumentPort;
+  const sidebar = {
+    setEntries: vi.fn(),
+    selectByRelPath: vi.fn(),
+    refreshFolderEntries: vi.fn(async () => {}),
+    expandAllFolder,
+  };
   const ports = {
-    sidebar: {
-      setEntries: vi.fn(),
-      selectByRelPath: vi.fn(),
-      refreshFolderEntries: vi.fn(async () => {}),
-    },
+    sidebar,
     onOpenInNewTab: vi.fn(),
     onOpenInNewWindow: vi.fn(),
     onOpenViewer: vi.fn(),
@@ -76,6 +79,7 @@ function fixture() {
     doc,
     dropdown,
     ports,
+    expandAllFolder,
   };
 }
 
@@ -131,6 +135,22 @@ describe("Feature: FolderActions", () => {
     [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
       .find((item) => item.textContent === "新規ウィンドウで開く")!.click();
     expect(ports.onOpenInNewWindow).toHaveBeenCalledWith("C:\\work\\memo.txt", goto);
+  });
+
+  // Given: rootが`C:\\work`、対象が`docs`フォルダ
+  // When: フォルダの右クリックメニューから「フォルダを全展開」を選ぶ
+  // Then: 対象の相対パスでフォルダ全展開を依頼する
+  it("Scenario: フォルダメニューから対象フォルダを全展開する", () => {
+    const { actions, dropdown, expandAllFolder } = fixture();
+    actions.showContextMenu(0, 0, { relPath: "docs", isDir: true });
+
+    const item = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((element) => element.textContent === "フォルダを全展開");
+    expect(item?.textContent).toBe("フォルダを全展開");
+    if (!item) return;
+    item.click();
+
+    expect(expandAllFolder).toHaveBeenCalledWith("docs");
   });
 
   // Given: 対象が`table.CSV`と`memo.txt`
