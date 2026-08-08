@@ -13,6 +13,7 @@ import { createRegisteredCommandMenu, type RegisteredCommandMenuPorts } from "./
 import { MENU_ICON } from "./menu-icons";
 import { MENU_LABELS } from "./menu-labels";
 import { runAsyncBoundary } from "./async-boundary";
+import { reportErrorSafely } from "./report-error";
 export { isImagePath } from "./image-formats";
 
 export interface FolderActionsPorts {
@@ -74,11 +75,7 @@ export class FolderActions {
   }
 
   private async reportError(title: string, error: unknown) {
-    try {
-      await this.services.showError(title, error);
-    } catch (reportError) {
-      console.error(`${title}のエラーを表示できませんでした`, reportError);
-    }
+    await reportErrorSafely(this.services.showError, title, error);
   }
 
   showContextMenu(x: number, y: number, target: ContextTarget | null) {

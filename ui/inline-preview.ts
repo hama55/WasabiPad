@@ -1,15 +1,18 @@
 import type { ViewerFormat, ViewerPayload, ViewerSelection } from "./api";
 import { runAsyncBoundary } from "./async-boundary";
 import { isViewerFormat } from "./viewer-formats";
+import { INLINE_PREVIEW_MESSAGES } from "./inline-preview-protocol";
 
-const READY_MESSAGE = "wasabipad-viewer-ready";
-const PAYLOAD_MESSAGE = "wasabipad-viewer-payload";
-const FORMAT_CHANGE_MESSAGE = "wasabipad-viewer-format-change";
-const DELIMITER_MESSAGE = "wasabipad-viewer-delimiter";
-const FONT_MESSAGE = "wasabipad-viewer-font";
-const FONT_CHANGE_MESSAGE = "wasabipad-viewer-font-change";
-const FULLSCREEN_CHANGE_MESSAGE = "wasabipad-viewer-fullscreen-change";
-const FULLSCREEN_STATE_MESSAGE = "wasabipad-viewer-fullscreen-state";
+const {
+  READY_MESSAGE,
+  PAYLOAD_MESSAGE,
+  FORMAT_CHANGE_MESSAGE,
+  DELIMITER_MESSAGE,
+  FONT_MESSAGE,
+  FONT_CHANGE_MESSAGE,
+  FULLSCREEN_CHANGE_MESSAGE,
+  FULLSCREEN_STATE_MESSAGE,
+} = INLINE_PREVIEW_MESSAGES;
 
 export interface InlinePreviewPorts {
   onAvailabilityChange?: (available: boolean) => void;
@@ -169,13 +172,4 @@ export class InlinePreview {
   }
 }
 
-export const INLINE_PREVIEW_MESSAGES = {
-  READY_MESSAGE,
-  PAYLOAD_MESSAGE,
-  FORMAT_CHANGE_MESSAGE,
-  DELIMITER_MESSAGE,
-  FONT_MESSAGE,
-  FONT_CHANGE_MESSAGE,
-  FULLSCREEN_CHANGE_MESSAGE,
-  FULLSCREEN_STATE_MESSAGE,
-} as const;
+export { INLINE_PREVIEW_MESSAGES } from "./inline-preview-protocol";

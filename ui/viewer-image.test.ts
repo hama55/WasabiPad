@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { createImagePreview } from "./viewer-image";
+import { createImagePreview, markImageLoadFailure } from "./viewer-image";
 
 describe("Feature: Image viewer", () => {
   // Given: 画像ファイル名`photo.png`
@@ -13,5 +13,18 @@ describe("Feature: Image viewer", () => {
     expect(wrapper.querySelector("img")).toBe(image);
     expect(image.className).toBe("viewer-image");
     expect(image.alt).toBe("photo.png");
+  });
+
+  // Given: 画像読込に失敗した画像要素がある
+  // When: 読込失敗状態を表示する
+  // Then: srcを外し、代替テキストへ失敗状態を反映する
+  it("Scenario: marks an image load failure", () => {
+    const { image } = createImagePreview("photo.png");
+    image.src = "asset://photo.png";
+
+    markImageLoadFailure(image);
+
+    expect(image.getAttribute("src")).toBeNull();
+    expect(image.alt).toBe("photo.png（読み込めません）");
   });
 });

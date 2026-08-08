@@ -14,6 +14,10 @@ function mountChrome() {
   const notice = document.createElement("span");
   notice.id = "save-notice";
   const handlers: Record<string, () => void> = {};
+  const unlistenResized = vi.fn();
+  const unlistenMoved = vi.fn();
+  const unlistenScaleChanged = vi.fn();
+  const unlistenCloseRequested = vi.fn();
   const win = {
     minimize: vi.fn(),
     close: vi.fn(),
@@ -22,19 +26,19 @@ function mountChrome() {
     setTitle: vi.fn(),
     onResized: vi.fn(async (handler: () => void) => {
       handlers.resized = handler;
-      return () => {};
+      return unlistenResized;
     }),
     onMoved: vi.fn(async (handler: () => void) => {
       handlers.moved = handler;
-      return () => {};
+      return unlistenMoved;
     }),
     onScaleChanged: vi.fn(async (handler: () => void) => {
       handlers.scale = handler;
-      return () => {};
+      return unlistenScaleChanged;
     }),
-    onCloseRequested: vi.fn(async () => () => {}),
+    onCloseRequested: vi.fn(async () => unlistenCloseRequested),
   } as unknown as Window;
-  return { host, notice, win, handlers };
+  return { host, notice, win, handlers, unlistenResized, unlistenMoved, unlistenScaleChanged, unlistenCloseRequested };
 }
 
 describe("Feature: WindowChrome", () => {
@@ -78,5 +82,25 @@ describe("Feature: WindowChrome", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // Given: native listenerを登録したwindow chrome
+  // When: chromeを破棄する
+  // Then: geometryとwindow controlsのlistenerを解除する
+  it("Scenario: dispose unregisters all native listeners", async () => {
+    const fixture = mountChrome();
+    const chrome = new WindowChrome(fixture.host, fixture.win, {
+      onCloseRequest: async () => true,
+      onGeometryChange: vi.fn(),
+      onError: async () => {},
+    }, fixture.notice);
+
+    chrome.dispose();
+    await vi.waitFor(() => {
+      expect(fixture.unlistenResized).toHaveBeenCalledTimes(2);
+      expect(fixture.unlistenMoved).toHaveBeenCalledOnce();
+      expect(fixture.unlistenScaleChanged).toHaveBeenCalledOnce();
+      expect(fixture.unlistenCloseRequested).toHaveBeenCalledOnce();
+    });
   });
 });

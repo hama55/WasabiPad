@@ -7,6 +7,7 @@ import { confirmMessage, promptFields } from "./prompt";
 import { normalizeTheme, THEME_STORAGE_KEY, THEMES, type Theme } from "./theme";
 import { runAsyncBoundary } from "./async-boundary";
 import { viewerFormatSpec } from "./viewer-formats";
+import { reportErrorSafely } from "./report-error";
 
 const THEME_LABELS: Record<Theme, string> = { dark: "ダーク", light: "ライト" };
 const READ_ENCODING_LABELS: Record<ReadEncoding, string> = {
@@ -90,11 +91,7 @@ export class StatusBar {
   }
 
   private async reportError(title: string, error: unknown) {
-    try {
-      await this.ports.onError?.(title, error);
-    } catch (reportError) {
-      console.error(`${title}のエラーを表示できませんでした`, reportError);
-    }
+    await reportErrorSafely(this.ports.onError, title, error);
   }
 
   private get indentSelect() {

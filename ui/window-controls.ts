@@ -1,5 +1,6 @@
 import type { Window } from "@tauri-apps/api/window";
 import { reportWindowOperationError, runWindowOperation, type WindowErrorHandler } from "./window-operation";
+import { createAsyncUnlisten, type AsyncUnlisten } from "./async-unlisten";
 
 export interface WindowControlsPorts {
   onError: WindowErrorHandler;
@@ -8,6 +9,9 @@ export interface WindowControlsPorts {
 }
 
 export class WindowControls {
+  private unlistenResized: AsyncUnlisten = createAsyncUnlisten();
+  private unlistenCloseRequested: AsyncUnlisten = createAsyncUnlisten();
+
   constructor(
     private host: HTMLElement,
     private win: Window,
@@ -20,6 +24,8 @@ export class WindowControls {
     this.titleElement.addEventListener("dblclick", () => this.run("ウィンドウを最大化できませんでした", () => this.toggleMaximize()));
     void this.win.onResized(() => {
       void this.syncMaxIcon().catch((error) => reportWindowOperationError(this.ports.onError, "最大化状態を取得できませんでした", error));
+    }).then((unlisten) => {
+      this.unlistenResized.set(unlisten);
     }).catch((error) => reportWindowOperationError(this.ports.onError, "ウィンドウサイズ監視を開始できませんでした", error));
     if (this.ports.onCloseRequest) {
       void this.win.onCloseRequested(async (event) => {
@@ -30,9 +36,16 @@ export class WindowControls {
           event.preventDefault();
           await reportWindowOperationError(this.ports.onError, "終了処理に失敗しました", error);
         }
+      }).then((unlisten) => {
+        this.unlistenCloseRequested.set(unlisten);
       }).catch((error) => reportWindowOperationError(this.ports.onError, "終了確認を開始できませんでした", error));
     }
     void this.syncMaxIcon().catch((error) => reportWindowOperationError(this.ports.onError, "最大化状態を取得できませんでした", error));
+  }
+
+  dispose() {
+    this.unlistenResized.dispose();
+    this.unlistenCloseRequested.dispose();
   }
 
   private pick<T extends HTMLElement>(id: string): T {

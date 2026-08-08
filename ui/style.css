@@ -173,7 +173,7 @@ body {
 }
 #sidebar-toggle:hover { background: var(--hover); color: var(--fg); }
 #preview {
-  width: 38%; min-width: 260px; flex: none;
+  width: 38%; min-width: var(--preview-min-width); flex: none;
   background: var(--bg-editor); border-left: 1px solid var(--border-strong);
 }
 #main.preview-fullscreen #preview { width: auto !important; flex: 1; }

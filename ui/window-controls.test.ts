@@ -15,6 +15,8 @@ function mountControls(onCloseRequest?: () => Promise<boolean>) {
   `;
   let resizedHandler: (() => void) | undefined;
   let closeHandler: ((event: CloseEvent) => void | Promise<void>) | undefined;
+  const unlistenResized = vi.fn();
+  const unlistenCloseRequested = vi.fn();
   const win = {
     minimize: vi.fn(),
     close: vi.fn(),
@@ -22,11 +24,11 @@ function mountControls(onCloseRequest?: () => Promise<boolean>) {
     isMaximized: vi.fn(async () => false),
     onResized: vi.fn(async (handler: () => void) => {
       resizedHandler = handler;
-      return () => {};
+      return unlistenResized;
     }),
     onCloseRequested: vi.fn(async (handler: (event: CloseEvent) => void | Promise<void>) => {
       closeHandler = handler;
-      return () => {};
+      return unlistenCloseRequested;
     }),
   } as unknown as Window;
   const onError = vi.fn();
@@ -34,7 +36,7 @@ function mountControls(onCloseRequest?: () => Promise<boolean>) {
     onError,
     onCloseRequest,
   });
-  return { host, win, onError, controls, resizedHandler, getCloseHandler: () => closeHandler };
+  return { host, win, onError, controls, resizedHandler, unlistenResized, unlistenCloseRequested, getCloseHandler: () => closeHandler };
 }
 
 describe("Feature: WindowControls", () => {
@@ -97,5 +99,18 @@ describe("Feature: WindowControls", () => {
 
     expect(preventDefault).toHaveBeenCalledOnce();
     expect(onError).toHaveBeenCalledWith("終了処理に失敗しました", error);
+  });
+
+  // Given: native listenerを登録したwindow controls
+  // When: controlsを破棄する
+  // Then: 登録済みlistenerを解除する
+  it("Scenario: dispose unregisters native listeners", async () => {
+    const { controls, unlistenResized, unlistenCloseRequested } = mountControls(async () => true);
+
+    controls.dispose();
+    await vi.waitFor(() => {
+      expect(unlistenResized).toHaveBeenCalledOnce();
+      expect(unlistenCloseRequested).toHaveBeenCalledOnce();
+    });
   });
 });

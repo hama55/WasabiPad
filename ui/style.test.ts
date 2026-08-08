@@ -15,3 +15,16 @@ describe("Feature: editor caret style", () => {
     expect(style).toMatch(/\.ve-input\s*\{[^}]*caret-color:\s*transparent;/s);
   });
 });
+
+describe("Feature: pane toggle placement", () => {
+  // Given: pane toggleのCSSを読み込む
+  // When: フォルダビューとプレビューの開閉ボタン位置を検査する
+  // Then: 両方とも下端ではなく上端に配置され、プレビュー最小幅はCSS変数を使う
+  it("Scenario: anchors pane controls to the titlebar edges", () => {
+    expect(style).toMatch(/#sidebar-toggle\s*\{[^}]*top:\s*4px;/s);
+    expect(style).toMatch(/#preview-toggle\s*\{[^}]*top:\s*4px;/s);
+    expect(style).not.toMatch(/#sidebar-toggle\s*\{[^}]*bottom:/s);
+    expect(style).not.toMatch(/#preview-toggle\s*\{[^}]*bottom:/s);
+    expect(style).toMatch(/#preview\s*\{[^}]*min-width:\s*var\(--preview-min-width\);/s);
+  });
+});

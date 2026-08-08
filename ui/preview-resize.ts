@@ -1,6 +1,7 @@
 import { previewWidthFromPointer } from "./preview-layout";
 
 export interface PreviewResizePorts {
+  mainLeft?: () => number;
   mainRight: () => number;
   setWidth: (width: number) => void;
   onStart?: () => void;
@@ -12,12 +13,19 @@ export function bindPreviewResize(splitter: HTMLElement, ports: PreviewResizePor
 
   function stop() {
     if (pointerId === null) return;
+    const activePointerId = pointerId;
     pointerId = null;
     window.removeEventListener("pointermove", move);
-    window.removeEventListener("pointerup", stop);
-    window.removeEventListener("pointercancel", stop);
+    window.removeEventListener("pointerup", stopPointer);
+    window.removeEventListener("pointercancel", stopPointer);
     window.removeEventListener("blur", stop);
+    if (splitter.hasPointerCapture?.(activePointerId)) splitter.releasePointerCapture?.(activePointerId);
     ports.onStop?.();
+  }
+
+  function stopPointer(event: PointerEvent) {
+    if (pointerId !== event.pointerId) return;
+    stop();
   }
 
   function move(event: PointerEvent) {
@@ -26,7 +34,7 @@ export function bindPreviewResize(splitter: HTMLElement, ports: PreviewResizePor
       stop();
       return;
     }
-    ports.setWidth(previewWidthFromPointer(ports.mainRight(), event.clientX));
+    ports.setWidth(previewWidthFromPointer(ports.mainRight(), event.clientX, ports.mainLeft?.() ?? 0));
   }
 
   function start(event: PointerEvent) {
@@ -36,8 +44,8 @@ export function bindPreviewResize(splitter: HTMLElement, ports: PreviewResizePor
     splitter.setPointerCapture?.(event.pointerId);
     ports.onStart?.();
     window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", stop);
-    window.addEventListener("pointercancel", stop);
+    window.addEventListener("pointerup", stopPointer);
+    window.addEventListener("pointercancel", stopPointer);
     window.addEventListener("blur", stop);
   }
 

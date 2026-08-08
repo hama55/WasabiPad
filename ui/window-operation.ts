@@ -1,4 +1,5 @@
 import { runAsyncBoundary } from "./async-boundary";
+import { reportErrorSafely } from "./report-error";
 
 export type WindowErrorHandler = (title: string, error: unknown) => void | Promise<void>;
 
@@ -15,9 +16,5 @@ export async function reportWindowOperationError(
   title: string,
   error: unknown,
 ) {
-  try {
-    await onError(title, error);
-  } catch (reportError) {
-    console.error(`${title}のエラーを表示できませんでした`, reportError);
-  }
+  await reportErrorSafely(onError, title, error);
 }

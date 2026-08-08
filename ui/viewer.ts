@@ -1,10 +1,9 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import Chart from "chart.js/auto";
 import MarkdownIt from "markdown-it";
 import Papa from "papaparse";
-import { EVENT_NAMES, readArchiveAsset, takeViewerPayload, type ViewerFormat, type ViewerPayload, type ViewerSelection } from "./api";
+import { EVENT_NAMES, takeViewerPayload, type ViewerFormat, type ViewerPayload, type ViewerSelection } from "./api";
 import { formatFontFamily } from "./format";
 import { basename } from "./path";
 import { createViewerFormatHandlers, isViewerFormat, VIEWER_FORMATS } from "./viewer-formats";
@@ -35,9 +34,11 @@ import {
 } from "./viewer-markdown";
 import { scrollViewerCaret } from "./viewer-scroll";
 import { createViewerChartMenuItem } from "./viewer-context-menu";
-import { INLINE_PREVIEW_MESSAGES } from "./inline-preview";
+import { INLINE_PREVIEW_MESSAGES } from "./inline-preview-protocol";
 import { isViewerPayload } from "./viewer-payload";
-import { createImagePreview } from "./viewer-image";
+import { imageUrlFromArchive, imageUrlFromPath, revokeImageUrl } from "./viewer-image-source";
+import { createImagePreview, markImageLoadFailure } from "./viewer-image";
+import { createAsyncUnlisten } from "./async-unlisten";
 
 const MAX_TABLE_ROWS = 10_000;
 const MAX_TABLE_COLUMNS = 200;
@@ -75,6 +76,8 @@ let chart: Chart<"line" | "bar", (number | null)[], string> | null = null;
 let chartColumns: { x: number; y: number[]; reverseX: boolean; type: ChartTypeId } | null = null;
 let fontFamily = getSetting("fontFamily");
 let fontSize = getSetting("previewFontSize");
+const viewerUpdateListener = createAsyncUnlisten();
+let windowControls: WindowControls | null = null;
 
 function postToParent(message: unknown) {
   window.parent.postMessage(message, window.location.origin);
@@ -123,8 +126,18 @@ function applyFont(family: string, size: number, persist = true) {
 
 function setFullscreenButton(fullscreen: boolean) {
   fullscreenButton.textContent = fullscreen ? "↙" : "⛶";
-  fullscreenButton.title = fullscreen ? "元の表示に戻す" : "プレビューを全画面表示";
+  const label = fullscreen ? "元の表示に戻す" : "プレビューを全画面表示";
+  fullscreenButton.title = label;
+  fullscreenButton.setAttribute("aria-label", label);
   fullscreenButton.setAttribute("aria-pressed", String(fullscreen));
+}
+
+function disposeViewer() {
+  viewerUpdateListener.dispose();
+  windowControls?.dispose();
+  windowControls = null;
+  revokeArchiveAssetUrls();
+  closeChart();
 }
 
 async function promptFont() {
@@ -160,6 +173,7 @@ function runViewerOperation(title: string, operation: () => void | Promise<unkno
 }
 
 function bindViewerControls() {
+  setFullscreenButton(false);
   fontButton.addEventListener("click", () => runViewerOperation("フォントを変更できませんでした", promptFont));
   fontSizeButton.addEventListener("click", () => runViewerOperation("文字サイズを変更できませんでした", promptFontSize));
   content.addEventListener("wheel", onViewerWheel, { passive: false });
@@ -224,8 +238,22 @@ function renderTable(text: string) {
 }
 
 function revokeArchiveAssetUrls() {
-  archiveAssetUrls.forEach((url) => URL.revokeObjectURL(url));
+  archiveAssetUrls.forEach((url) => revokeImageUrl(url));
   archiveAssetUrls = [];
+}
+
+function retainArchiveAssetUrl(url: string, generation: number): boolean {
+  if (generation !== renderGeneration) {
+    revokeImageUrl(url);
+    return false;
+  }
+  archiveAssetUrls.push(url);
+  return true;
+}
+
+function releaseArchiveAssetUrl(url: string) {
+  archiveAssetUrls = archiveAssetUrls.filter((current) => current !== url);
+  revokeImageUrl(url);
 }
 
 async function loadArchiveImages(
@@ -236,33 +264,35 @@ async function loadArchiveImages(
 ) {
   const images = [...article.querySelectorAll<HTMLImageElement>("img")];
   await Promise.all(images.map(async (image) => {
+    let archiveUrl: string | null = null;
+    let keepArchiveUrl = false;
     try {
       const src = image.getAttribute("src") ?? "";
       const entry = resolveArchiveAssetEntry(archiveEntry, src);
       if (archivePath && archiveEntry && entry) {
-        try {
-          const bytes = await readArchiveAsset(archivePath, entry);
-          if (generation !== renderGeneration) return;
-          const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: imageMimeType(src) }));
-          archiveAssetUrls.push(url);
-          image.src = url;
-          await waitForImageLayout(image);
-        } catch {
-          if (generation !== renderGeneration) return;
-          image.removeAttribute("src");
-          image.alt = `${image.alt || "画像"}（読み込めません）`;
+        archiveUrl = await imageUrlFromArchive(archivePath, entry, imageMimeType(src));
+        if (!retainArchiveAssetUrl(archiveUrl, generation)) {
+          archiveUrl = null;
+          return;
         }
+        image.src = archiveUrl;
+        await waitForImageLayout(image);
+        keepArchiveUrl = true;
         return;
       }
       const resolved = resolveAssetPath(currentSourcePath, src);
       if (resolved && generation === renderGeneration) {
-        image.src = convertFileSrc(resolved);
+        image.src = imageUrlFromPath(resolved);
         await waitForImageLayout(image);
       }
-    } catch {
+    } catch (error) {
       if (generation !== renderGeneration) return;
-      image.removeAttribute("src");
-      image.alt = `${image.alt || "画像"}（読み込めません）`;
+      markImageLoadFailure(image);
+      throw error;
+    } finally {
+      if (archiveUrl && (!keepArchiveUrl || generation !== renderGeneration)) {
+        releaseArchiveAssetUrl(archiveUrl);
+      }
     }
   }));
 }
@@ -307,24 +337,32 @@ async function renderImage(_text: string) {
   summary.title = "";
   summary.textContent = name;
 
+  let archiveUrl: string | null = null;
+  let keepArchiveUrl = false;
   try {
     if (archivePath && archiveEntry) {
-      const bytes = await readArchiveAsset(archivePath, archiveEntry);
-      if (generation !== renderGeneration) return;
-      const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: imageMimeType(archiveEntry) }));
-      archiveAssetUrls.push(url);
-      image.src = url;
+      archiveUrl = await imageUrlFromArchive(archivePath, archiveEntry, imageMimeType(archiveEntry));
+      if (!retainArchiveAssetUrl(archiveUrl, generation)) {
+        archiveUrl = null;
+        return;
+      }
+      image.src = archiveUrl;
     } else if (sourcePath && generation === renderGeneration) {
-      image.src = convertFileSrc(sourcePath);
+      image.src = imageUrlFromPath(sourcePath);
     } else {
-      image.alt = `${name}（読み込めません）`;
+      markImageLoadFailure(image, name);
       return;
     }
     await waitForImageLayout(image);
-  } catch {
+    keepArchiveUrl = true;
+  } catch (error) {
     if (generation !== renderGeneration) return;
-    image.removeAttribute("src");
-    image.alt = `${name}（読み込めません）`;
+    markImageLoadFailure(image, name);
+    throw error;
+  } finally {
+    if (archiveUrl && (!keepArchiveUrl || generation !== renderGeneration)) {
+      releaseArchiveAssetUrl(archiveUrl);
+    }
   }
 }
 
@@ -606,7 +644,7 @@ async function start() {
   try {
     if (isInlineViewer) document.body.classList.add("inline-viewer");
     applyTheme();
-    if (!isInlineViewer) new WindowControls(document.body, win!, title, { onError: reportWindowError });
+    if (!isInlineViewer) windowControls = new WindowControls(document.body, win!, title, { onError: reportWindowError });
     populateFormatSelect();
     bindViewerControls();
     applyFont(fontFamily, fontSize, false);
@@ -659,12 +697,13 @@ async function start() {
       });
       postToParent({ type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE });
     } else {
-      await listen<ViewerPayload>(EVENT_NAMES.viewerUpdate, (event) => {
+      viewerUpdateListener.set(await listen<ViewerPayload>(EVENT_NAMES.viewerUpdate, (event) => {
         runViewerOperation("ビューを更新できませんでした", () => renderPayload(event.payload));
-      });
+      }));
       renderPayload(await takeViewerPayload(win!.label));
     }
   } catch (error) {
+    disposeViewer();
     title.textContent = "表示できませんでした";
     const message = document.createElement("p");
     message.className = "viewer-error";
@@ -673,6 +712,7 @@ async function start() {
   }
 }
 
+window.addEventListener("beforeunload", disposeViewer, { once: true });
 window.addEventListener("storage", (event) => {
   if (event.key === THEME_STORAGE_KEY) {
     runViewerOperation("配色を同期できませんでした", () => applyTheme(event.newValue));

@@ -7,3 +7,8 @@ export function createImagePreview(label: string): { wrapper: HTMLDivElement; im
   wrapper.appendChild(image);
   return { wrapper, image };
 }
+
+export function markImageLoadFailure(image: HTMLImageElement, label = image.alt || "画像") {
+  image.removeAttribute("src");
+  image.alt = `${label}（読み込めません）`;
+}

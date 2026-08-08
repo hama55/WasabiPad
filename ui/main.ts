@@ -50,8 +50,14 @@ import {
   isPreviewFullscreen,
   isPreviewShown,
   isPreviewSplitterShown,
+  PREVIEW_MIN_WIDTH,
 } from "./preview-layout";
 import { bindPreviewResize } from "./preview-resize";
+import { paneToggleView, previewToggleLeft, sidebarToggleLeft } from "./pane-toggle";
+import { reportErrorSafely } from "./report-error";
+import { processExternalWindowRequests } from "./external-window-request";
+import { canCloseWindow } from "./close-request";
+import { createAsyncUnlisten } from "./async-unlisten";
 
 const win = getCurrentWindow();
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -80,8 +86,7 @@ const previewEl = $("preview");
 const previewToggle = $<HTMLButtonElement>("preview-toggle");
 const loading = $("loading");
 const loadingMessage = $("loading-message");
-const CHEVRON_LEFT = "\uE76B";
-const CHEVRON_RIGHT = "\uE76C";
+mainEl.style.setProperty("--preview-min-width", `${PREVIEW_MIN_WIDTH}px`);
 
 let sidebarAvailable = false;
 let sidebarCollapsed = false;
@@ -93,6 +98,9 @@ let tabs: TabManager;
 let restoringEditorFont = true;
 let imageCleanupTimer: number | undefined;
 let externalRequestChain = Promise.resolve();
+const workspaceSearchListener = createAsyncUnlisten();
+const externalWindowListener = createAsyncUnlisten();
+const dragDropListener = createAsyncUnlisten();
 
 function setLoading(active: boolean, message = "読み込み中…") {
   loading.hidden = !active;
@@ -114,11 +122,7 @@ function scheduleImageCleanup() {
 }
 
 async function reportBackgroundError(title: string, error: unknown) {
-  try {
-    await showError(title, error);
-  } catch (reportError) {
-    console.error(`${title}のエラーを表示できませんでした`, reportError);
-  }
+  await reportErrorSafely(showError, title, error);
 }
 
 function runBackground(title: string, operation: () => void | Promise<unknown>) {
@@ -145,16 +149,12 @@ async function launchNewWindow(request: Partial<api.WindowRequest> = {}): Promis
 function drainExternalWindowRequests() {
   externalRequestChain = externalRequestChain.then(async () => {
     const requests = await api.takePendingWindowRequests();
-    for (const request of requests) {
-      if (!request.path) continue;
-      try {
-        await tabs.open(request.path, request.goto ?? undefined);
-        await win.show();
-        await win.setFocus();
-      } catch (error) {
-        await reportBackgroundError("外部からファイルを開けませんでした", error);
-      }
-    }
+    await processExternalWindowRequests(requests, {
+      open: (path, goto) => tabs.open(path, goto),
+      show: () => win.show(),
+      focus: () => win.setFocus(),
+      onError: (error) => reportBackgroundError("外部からファイルを開けませんでした", error),
+    });
   }).catch((error) => reportBackgroundError("外部からの起動要求を処理できませんでした", error));
 }
 
@@ -169,11 +169,12 @@ function updateSidebarVisibility() {
   sidebarEl.hidden = !shown;
   splitter.hidden = !shown;
   const toggle = $<HTMLButtonElement>("sidebar-toggle");
+  const view = paneToggleView("sidebar", shown);
   toggle.hidden = !sidebarAvailable;
-  toggle.textContent = shown ? CHEVRON_LEFT : CHEVRON_RIGHT;
-  toggle.title = shown ? "フォルダビューを閉じる" : "フォルダビューを開く";
+  toggle.textContent = view.icon;
+  toggle.title = view.title;
   toggle.setAttribute("aria-label", toggle.title);
-  toggle.style.left = shown ? `${Math.max(4, sidebarEl.getBoundingClientRect().width - 32)}px` : "4px";
+  toggle.style.left = `${sidebarToggleLeft(shown, sidebarEl.getBoundingClientRect().width)}px`;
 }
 
 function updatePreviewVisibility() {
@@ -184,15 +185,19 @@ function updatePreviewVisibility() {
   previewSplitter.hidden = !isPreviewSplitterShown(state);
   mainEl.classList.toggle("preview-fullscreen", fullscreen);
   inlinePreview.setFullscreen(fullscreen);
+  const view = paneToggleView("preview", shown);
   previewToggle.hidden = !previewAvailable;
-  previewToggle.textContent = shown ? CHEVRON_RIGHT : CHEVRON_LEFT;
-  previewToggle.title = shown ? "プレビューを閉じる" : "プレビューを開く";
+  previewToggle.textContent = view.icon;
+  previewToggle.title = view.title;
   previewToggle.setAttribute("aria-label", previewToggle.title);
   const mainRect = mainEl.getBoundingClientRect();
-  const left = shown
-    ? previewEl.getBoundingClientRect().left - mainRect.left
-    : mainEl.clientWidth - previewToggle.offsetWidth - 4;
-  previewToggle.style.left = `${Math.max(4, left)}px`;
+  previewToggle.style.left = `${previewToggleLeft(
+    shown,
+    mainRect.left,
+    previewEl.getBoundingClientRect().left,
+    mainEl.clientWidth,
+    previewToggle.offsetWidth,
+  )}px`;
 }
 
 const inlinePreview = new InlinePreview(previewEl, {
@@ -363,6 +368,7 @@ const sidebar = new Sidebar(sidebarEl, {
 void api.onWorkspaceSearchBatch((batch) => runBackground("検索結果を画面へ反映できませんでした", () =>
   sidebar.acceptSearchBatch(batch.search_id, batch.results)
 ))
+  .then((unlisten) => workspaceSearchListener.set(unlisten))
   .catch((error) => reportBackgroundError("検索結果の受信を開始できませんでした", error));
 
 // フォルダビュー由来の relPath は、独立したファイルタブ用の絶対パスへ戻す
@@ -372,16 +378,11 @@ async function openInNewTab(relPath: string, goto?: api.Pos) {
 }
 
 const windowChrome = new WindowChrome($("titlebar"), win, {
-  onCloseRequest: async () => {
-    if (!await tabs.saveForExit()) return false;
-    try {
-      await flushSettings();
-      return true;
-    } catch (error) {
-      await showError("設定を保存できませんでした", error);
-      return false;
-    }
-  },
+  onCloseRequest: () => canCloseWindow({
+    saveForExit: () => tabs.saveForExit(),
+    flushSettings,
+    onSettingsError: (error) => showError("設定を保存できませんでした", error),
+  }),
   onGeometryChange: () => editor.syncWindowGeometry(),
   onError: showError,
 }, $("save-notice"));
@@ -436,6 +437,10 @@ const externalWatch = new ExternalWatch($("external-banner"), {
   onIgnore: () => editor.focus(),
 }, api);
 window.addEventListener("beforeunload", () => {
+  workspaceSearchListener.dispose();
+  externalWindowListener.dispose();
+  dragDropListener.dispose();
+  windowChrome.dispose();
   addressbar.dispose();
   externalWatch.dispose();
 });
@@ -538,6 +543,7 @@ splitter.addEventListener("mousedown", (e) => {
 
 // プレビュー幅のドラッグ変更
 bindPreviewResize(previewSplitter, {
+  mainLeft: () => mainEl.getBoundingClientRect().left,
   mainRight: () => mainEl.getBoundingClientRect().right,
   setWidth: (width) => {
     previewEl.style.width = `${width}px`;
@@ -568,7 +574,8 @@ void getCurrentWebview().onDragDropEvent((ev) => {
     void tabs.open(ev.payload.paths[0])
       .catch((error) => reportBackgroundError("ドロップしたファイルを開けませんでした", error));
   }
-}).catch((error) => reportBackgroundError("ファイルのドロップを受信できませんでした", error));
+}).then((unlisten) => dragDropListener.set(unlisten))
+  .catch((error) => reportBackgroundError("ファイルのドロップを受信できませんでした", error));
 
 // フォルダビューは他アプリによる増減を拾うため定期的に取り直す
 let folderRefreshRunning = false;
@@ -638,7 +645,8 @@ try {
   }
 }
 try {
-  await api.onExternalWindowRequest(drainExternalWindowRequests);
+  const unlisten = await api.onExternalWindowRequest(drainExternalWindowRequests);
+  externalWindowListener.set(unlisten);
   drainExternalWindowRequests();
 } catch (error) {
   await reportBackgroundError("外部からの起動要求を受信できませんでした", error);

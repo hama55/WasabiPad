@@ -9,6 +9,7 @@ import type { showError } from "./dialogs";
 import { formatWindowTitle } from "./format";
 import { basename, relativePathWithinRoot } from "./path";
 import type { EditorViewState } from "./editor-view-state";
+import { reportErrorSafely } from "./report-error";
 
 // 保存ダイアログのフィルタと新規メモの拡張子候補で共有する
 export const SAVE_EXTENSIONS = [
@@ -132,11 +133,7 @@ export class DocumentController {
   }
 
   private async reportError(title: string, error: unknown) {
-    try {
-      await this.services.showError(title, error);
-    } catch (reportError) {
-      console.error(`${title}のエラーを表示できませんでした`, reportError);
-    }
+    await reportErrorSafely(this.services.showError, title, error);
   }
 
   // アーカイブ選択後/フォルダのエントリ切替後で共通の状態反映。
