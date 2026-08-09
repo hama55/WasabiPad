@@ -347,6 +347,38 @@ describe("Feature: VirtualEditor", () => {
     layout.restore();
   });
 
+  // Given: 矩形コピーのクリップボード書き込みが失敗する
+  // When: 同じ文字列を通常の貼り付けとして受け取る
+  // Then: 失敗した古い矩形メタデータを使わず通常編集する
+  it("Scenario: 矩形コピー失敗後は古い矩形メタデータを使わない", async () => {
+    const { editor, doc, host, press } = mount("abcd\nABCD\nwxyz");
+    editor.open(3, false);
+    await settle();
+    const layout = installMouseLayout(host);
+    const scroll = layout.scroll;
+    scroll.dispatchEvent(new MouseEvent("mousedown", {
+      bubbles: true, button: 0, clientX: 18, clientY: 10, altKey: true,
+    }));
+    window.dispatchEvent(new MouseEvent("mousemove", {
+      bubbles: true, clientX: 38, clientY: 30, altKey: true,
+    }));
+    window.dispatchEvent(new MouseEvent("mouseup", {
+      bubbles: true, clientX: 38, clientY: 30, altKey: true,
+    }));
+
+    writeClipboardText.mockRejectedValueOnce(new Error("clipboard unavailable"));
+    press("c", { ctrlKey: true });
+    await settle();
+    readClipboardText.mockResolvedValue("bc\nBC");
+    editor.goTo(2, 1);
+    press("v", { ctrlKey: true });
+    await settle();
+
+    expect(doc.calls.some((call) => call.startsWith('edit(2:1,2:1,"bc'))).toBe(true);
+    expect(doc.calls).not.toContain("editMany(2)");
+    layout.restore();
+  });
+
   // Given: 「bc」「BC」を矩形切り取りし、クリップボードに矩形文字列がある
   // When: 2行目1列へCtrl+Vする
   // Then: 元の矩形を削除した後、同じ列位置へ矩形貼り付けする

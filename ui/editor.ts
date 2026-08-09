@@ -1392,6 +1392,7 @@ export class VirtualEditor {
     const text = block
       ? await this.blockText()
       : await this.lineCache.textInRange(...this.sel.norm());
+    this.rectangularClipboard = null;
     await writeClipboardText(text);
     this.rectangularClipboard = block ? { text, rows: text.split("\n") } : null;
     if (cut && !this.readOnly) await this.deleteSel();
@@ -1460,11 +1461,13 @@ export class VirtualEditor {
       return;
     }
     const text = normalizeClipboardText(event.clipboardData?.getData("text/plain") ?? "");
-    if (this.rectangularClipboard?.text !== text) return;
+    const rectangular = this.rectangularClipboard;
+    if (rectangular?.text !== text) return;
+    const rows = [...rectangular.rows];
     event.preventDefault();
     this.dispatch(
       "矩形を貼り付けできませんでした",
-      () => this.mutation.pasteBlock(this.rectangularClipboard!.rows),
+      () => this.mutation.pasteBlock(rows),
     );
   }
 
