@@ -6,6 +6,7 @@ export interface PromptFieldsOptions {
     label: string;
     render: (values: string[]) => string;
   };
+  onChangeError?: (error: unknown) => void | Promise<void>;
 }
 
 export interface PromptField {
@@ -27,6 +28,8 @@ export function promptFields(
   options: PromptFieldsOptions = {},
 ): Promise<string[] | null> {
   return new Promise((resolve) => {
+    let closed = false;
+    let pendingChanges = 0;
     const { box, close } = openModal({
       onCancel: () => finish(null),
       onAccept: () => submit(),
@@ -95,8 +98,23 @@ export function promptFields(
     box.appendChild(btns);
 
     const finish = (result: string[] | null) => {
+      if (closed) return;
+      closed = true;
       close();
       resolve(result);
+    };
+    const reportChangeError = (error: unknown) => {
+      if (!options.onChangeError) {
+        console.error("入力変更処理に失敗しました", error);
+        return;
+      }
+      try {
+        void Promise.resolve(options.onChangeError(error)).catch((reportError) => {
+          console.error("入力変更処理のエラー通知に失敗しました", reportError);
+        });
+      } catch (reportError) {
+        console.error("入力変更処理のエラー通知に失敗しました", reportError);
+      }
     };
     const validate = () => {
       const values = inputs.map((input) => input.value);
@@ -108,11 +126,11 @@ export function promptFields(
         inputs[index].setAttribute("aria-invalid", String(Boolean(message)));
         valid &&= !message;
       });
-      okBtn.disabled = !valid;
+      okBtn.disabled = !valid || pendingChanges > 0;
       return valid;
     };
     const submit = () => {
-      if (validate()) finish(inputs.map((i) => i.value));
+      if (validate() && pendingChanges === 0) finish(inputs.map((i) => i.value));
     };
 
     cancelBtn.addEventListener("click", () => finish(null));
@@ -124,12 +142,29 @@ export function promptFields(
         const onChange = fields[index].onChange;
         if (!onChange) return;
         const setValue = (targetIndex: number, value: string) => {
+          if (closed) return;
           const target = inputs[targetIndex];
           if (!target) return;
           target.value = value;
           validate();
         };
-        void onChange(input.value, inputs.map((item) => item.value), setValue);
+        let result: void | Promise<void>;
+        try {
+          result = onChange(input.value, inputs.map((item) => item.value), setValue);
+        } catch (error) {
+          reportChangeError(error);
+          return;
+        }
+        if (!result) return;
+        pendingChanges += 1;
+        validate();
+        void Promise.resolve(result)
+          .catch((error) => reportChangeError(error))
+          .finally(() => {
+            pendingChanges -= 1;
+            if (!closed) validate();
+          })
+          .catch((error) => console.error("入力変更処理の後始末に失敗しました", error));
       });
     });
 

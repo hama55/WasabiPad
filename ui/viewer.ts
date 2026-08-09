@@ -183,11 +183,28 @@ function setFullscreenButton(fullscreen: boolean) {
 }
 
 function disposeViewer() {
-  viewerUpdateListener.dispose();
-  windowControls?.dispose();
-  windowControls = null;
-  revokeArchiveAssetUrls();
-  chartController.clear();
+  try {
+    viewerUpdateListener.dispose();
+  } catch (error) {
+    console.error("ビュー更新の購読解除に失敗しました", error);
+  }
+  try {
+    windowControls?.dispose();
+  } catch (error) {
+    console.error("ウィンドウ操作の後始末に失敗しました", error);
+  } finally {
+    windowControls = null;
+  }
+  try {
+    revokeArchiveAssetUrls();
+  } catch (error) {
+    console.error("画像URLの後始末に失敗しました", error);
+  }
+  try {
+    chartController.clear();
+  } catch (error) {
+    console.error("グラフの後始末に失敗しました", error);
+  }
 }
 
 async function promptFont() {
@@ -579,4 +596,6 @@ window.addEventListener("storage", (event) => {
   }
 });
 
-void start();
+void start().catch((error) => {
+  console.error("ビューの起動処理に失敗しました", error);
+});

@@ -59,11 +59,23 @@ export function openViewerDelimiterDialog(options: ViewerDelimiterDialogOptions)
   overlay.appendChild(dialog);
   document.body.appendChild(overlay);
 
-  const finish = () => overlay.remove();
+  let closed = false;
+  const onKey = (event: KeyboardEvent) => {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    finish();
+  };
+  const finish = () => {
+    if (closed) return;
+    closed = true;
+    window.removeEventListener("keydown", onKey, true);
+    overlay.remove();
+  };
   cancel.addEventListener("click", finish);
   overlay.addEventListener("mousedown", (event) => {
     if (event.target === overlay) finish();
   });
+  window.addEventListener("keydown", onKey, true);
   apply.addEventListener("click", () => {
     const value = preset.value === CUSTOM_DELIMITER_VALUE ? customInput.value : preset.value;
     if (!value) {

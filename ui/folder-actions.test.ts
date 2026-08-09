@@ -14,7 +14,7 @@ import {
   type FolderDocumentPort,
 } from "./folder-actions";
 import type { RegisteredCommandMenuPorts } from "./registered-command-menu";
-import type { MemoSpec } from "./document-controller";
+import type { MemoSpec } from "./memo-name";
 import { MENU_ICON } from "./menu-icons";
 
 vi.mock("./dialogs", () => ({ showError: vi.fn(async () => {}) }));
@@ -435,6 +435,23 @@ describe("Feature: FolderActions", () => {
       "メモは作成されましたが一覧を更新できませんでした",
       expect.any(Error),
     );
+  });
+
+  // Feature: 新規メモ名ダイアログのエラー境界
+  // Scenario: 初期候補の取得に失敗しても作成APIを呼ばない
+  // Given: promptMemoSpecがError("candidate failed")でrejectする
+  // When: ルート直下で`createNote(null)`を実行する
+  // Then: 新規メモ作成失敗を通知し、ファイル作成へ進まない
+  it("Scenario: 新規メモの候補取得失敗を通知する", async () => {
+    const { actions, doc } = fixture();
+    const error = new Error("candidate failed");
+    const createNote = vi.spyOn(api, "createNote").mockClear();
+    doc.promptMemoSpec.mockRejectedValueOnce(error);
+
+    await actions.createNote(null);
+
+    expect(showError).toHaveBeenCalledWith("新規メモを作成できませんでした", error);
+    expect(createNote).not.toHaveBeenCalled();
   });
 
   // Feature: フォルダ内の新規メモ採番

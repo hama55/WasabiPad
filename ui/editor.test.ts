@@ -307,6 +307,26 @@ describe("Feature: VirtualEditor", () => {
     layout.restore();
   });
 
+  // Feature: エディタ範囲外クリックのキャレット補正
+  // Scenario: 複数行文書の本文下をクリックする
+  // Given: 「one\ntwo」を表示し、本文の2行より下をクリックする
+  // When: エディタの範囲外でマウス選択を開始する
+  // Then: 最終行「two」の末尾へキャレットを置く
+  it("Scenario: 複数行の行外クリックは最終行末尾へキャレットを置く", async () => {
+    const { editor, host } = mount("one\ntwo");
+    editor.open(2, false);
+    await settle();
+    const layout = installMouseLayout(host);
+    editor.setWrap(true);
+
+    layout.scroll.dispatchEvent(new MouseEvent("mousedown", {
+      bubbles: true, button: 0, clientX: 48, clientY: 90,
+    }));
+
+    expect(editor.captureViewState().caret).toEqual({ line: 1, col: 3 });
+    layout.restore();
+  });
+
   // Given: Alt+D&Dで0〜2行目の1〜3列を矩形選択している
   // When: Deleteを押す
   // Then: すべての行の矩形部分が削除される
@@ -1157,7 +1177,7 @@ describe("Feature: VirtualEditor", () => {
   // When: Enterを10回連続入力する
   // Then: 11行分のスクロール範囲を作り、末尾行を表示しながら直前の行も描画する
   it("Scenario: 新規メモでEnterを連打しても行数とスクロール範囲が増える", async () => {
-    const { editor, host, press } = mount("");
+    const { editor, doc, host, press } = mount("");
     const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
     const inner = host.querySelector<HTMLElement>(".ve-inner")!;
     Object.defineProperty(scroll, "clientHeight", { configurable: true, value: 100 });
@@ -1170,6 +1190,7 @@ describe("Feature: VirtualEditor", () => {
     }
 
     expect(editor.captureViewState().caret).toEqual({ line: 10, col: 0 });
+    expect(doc.text()).toBe("\n".repeat(10));
     expect(inner.style.height).toBe("220px");
     expect(scroll.scrollTop).toBe(120);
     expect(host.querySelectorAll<HTMLElement>(".ve-gnum")).toHaveLength(11);

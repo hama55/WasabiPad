@@ -20,6 +20,21 @@ describe("Feature: CSV区切り文字ダイアログ", () => {
     expect(document.querySelector(".viewer-dialog-overlay")).toBeNull();
   });
 
+  // Feature: CSV区切り文字ダイアログのキャンセル
+  // Scenario: Escapeでダイアログを閉じる
+  // Given: 区切り文字ダイアログが表示されている
+  // When: Escapeキーを押す
+  // Then: 適用せずにダイアログを閉じる
+  it("Scenario: Escapeで区切り文字ダイアログを閉じる", () => {
+    const onApply = vi.fn();
+    openViewerDelimiterDialog({ value: ",", onApply });
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+
+    expect(onApply).not.toHaveBeenCalled();
+    expect(document.querySelector(".viewer-dialog-overlay")).toBeNull();
+  });
+
   // Given: その他プリセットで区切り文字が空
   // When: 適用する
   // Then: エラー表示を残し、適用コールバックを呼ばない

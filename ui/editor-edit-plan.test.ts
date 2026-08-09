@@ -34,6 +34,18 @@ describe("Feature: editor edit plans", () => {
     expect(anchor).toEqual({ line: 3, col: 0 });
   });
 
+  // Feature: 行indent後の選択位置補正
+  // Scenario: 選択終端が行途中にある
+  // Given: anchor=`{line:0,col:0}`、caret=`{line:1,col:1}`の選択
+  // When: `planLineIndent`を評価する
+  // Then: indent後のcaret列だけを1増やす
+  it("Scenario: 行途中の選択終端はindent分だけ列を進める", () => {
+    const plan = planLineIndent({ line: 0, col: 0 }, { line: 1, col: 1 })!;
+
+    expect(plan.nextAnchor).toEqual({ line: 0, col: 0 });
+    expect(plan.nextCaret).toEqual({ line: 1, col: 2 });
+  });
+
   // Given: 選択範囲が行頭を含まない
   // When: `selectedLineRange`と`planLineIndent`を評価する
   // Then: 行単位indentの対象外になる

@@ -44,6 +44,21 @@ describe("Feature: Chart viewer drawing boundary", () => {
     expect(document.querySelectorAll(".chart-column-grid input")).toHaveLength(2);
   });
 
+  // Feature: グラフ設定ダイアログのキャンセル
+  // Scenario: Escapeでダイアログを閉じる
+  // Given: グラフ設定ダイアログが表示されている
+  // When: Escapeキーを押す
+  // Then: グラフ描画せずにダイアログを閉じる
+  it("Scenario: Escapeでグラフ設定ダイアログを閉じる", () => {
+    const { controller, run } = createController();
+    controller.openDialog();
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+
+    expect(run).not.toHaveBeenCalled();
+    expect(document.querySelector(".viewer-dialog-overlay")).toBeNull();
+  });
+
   // Given: X軸以外のY軸が選択されていないグラフ設定
   // When: 作成ボタンを押す
   // Then: 描画処理を実行せず入力エラーを表示する

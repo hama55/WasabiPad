@@ -3,10 +3,10 @@ import * as api from "./api";
 import type { DocInfo } from "./api";
 import {
   DocumentController,
-  fileNameOf,
   type DocumentControllerServices,
   type DocumentView,
 } from "./document-controller";
+import { fileNameOf } from "./memo-name";
 import { formatTitleBar } from "./format";
 import { isPasswordCancelled, withArchivePassword } from "./archive-password";
 import { confirmSaveDiscard, promptFields } from "./prompt";
@@ -153,14 +153,17 @@ describe("Feature: DocumentController", () => {
   // Then: 名前をtrimしてMemoSpecへ変換し、拡張子候補を共有する
   it("Scenario: 新規メモの入力項目を共通定義から組み立てる", async () => {
     const { view } = fakeView();
-    const promptFieldsMock = vi.fn(async () => [" memo ", "md"]);
+    const promptFieldsMock = vi.fn(async (..._args: Parameters<typeof promptFields>) => [" memo ", "md"]);
     const controller = new DocumentController(view, { ...services(), promptFields: promptFieldsMock });
 
     await expect(controller.promptMemoSpec()).resolves.toEqual({ stem: "memo", extension: "md" });
-    expect(promptFieldsMock).toHaveBeenCalledWith("新規メモ作成", expect.arrayContaining([
+    expect(promptFieldsMock).toHaveBeenCalledOnce();
+    expect(promptFieldsMock.mock.calls[0][0]).toBe("新規メモ作成");
+    expect(promptFieldsMock.mock.calls[0][1]).toEqual(expect.arrayContaining([
       expect.objectContaining({ label: "ファイル名", value: "memo" }),
       expect.objectContaining({ label: "拡張子", value: "txt" }),
     ]));
+    expect(promptFieldsMock.mock.calls[0][2]).toEqual({});
   });
 
   // Feature: 新規メモ名の初期採番
@@ -214,6 +217,37 @@ describe("Feature: DocumentController", () => {
     expect(await controller.saveAs()).toBe(true);
     expect(nextMemoPath).toHaveBeenCalledTimes(1);
     expect(api.saveFile).toHaveBeenCalledWith("C:\\work\\memo1.txt", "utf8", "crlf");
+  });
+
+  // Feature: 保存用新規メモの拡張子変更
+  // Scenario: 保存ダイアログで拡張子を変更した候補名をそのまま保存する
+  // Given: 初期候補`memo1.txt`と、変更後候補`memo.md`が返る
+  // When: フォルダ内の無題文書で拡張子を`md`へ変更して保存する
+  // Then: `memo.md`へ保存し、採番を2回だけ行う
+  it("Scenario: 保存ダイアログの拡張子変更を保存先へ反映する", async () => {
+    const { view } = fakeView();
+    const nextMemoPath = vi.spyOn(api, "nextMemoPath")
+      .mockResolvedValueOnce("C:\\work\\memo1.txt")
+      .mockResolvedValueOnce("C:\\work\\memo.md");
+    vi.spyOn(api, "saveFile").mockResolvedValueOnce({ kind: "saved" });
+    vi.spyOn(api, "listFolderEntries").mockResolvedValueOnce([]);
+    const promptFieldsMock = vi.fn(async (
+      _title: string,
+      fields: Parameters<typeof promptFields>[1],
+    ) => {
+      const setValue = (index: number, value: string) => { fields[index].value = value; };
+      await fields[1].onChange?.("md", ["memo1", "md"], setValue);
+      expect(fields[0].value).toBe("memo");
+      return ["memo", "md", "utf8", "crlf"];
+    });
+    const controller = new DocumentController(view, { ...services(), promptFields: promptFieldsMock });
+    controller.applyDocInfo(info({ path: "C:\\work", folder_root: "C:\\work", folder_entries: [] }));
+    nextMemoPath.mockClear();
+
+    expect(await controller.saveAs()).toBe(true);
+
+    expect(nextMemoPath).toHaveBeenCalledTimes(2);
+    expect(api.saveFile).toHaveBeenCalledWith("C:\\work\\memo.md", "utf8", "crlf");
   });
 
   // Given: `info()`がpath=`C:\\work\\memo.txt`、enc=`sjis`、line_count=42、byte_len=1234

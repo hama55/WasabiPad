@@ -133,11 +133,23 @@ export class ViewerChartController {
     overlay.appendChild(dialog);
     document.body.appendChild(overlay);
 
-    const finish = () => overlay.remove();
+    let closed = false;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      finish();
+    };
+    const finish = () => {
+      if (closed) return;
+      closed = true;
+      window.removeEventListener("keydown", onKey, true);
+      overlay.remove();
+    };
     cancel.addEventListener("click", finish);
     overlay.addEventListener("mousedown", (event) => {
       if (event.target === overlay) finish();
     });
+    window.addEventListener("keydown", onKey, true);
     create.addEventListener("click", () => {
       const y = checks.filter((check) => check.checked).map((check) => Number(check.value));
       if (!y.length) {

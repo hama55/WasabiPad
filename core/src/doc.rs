@@ -39,6 +39,17 @@ fn is_delete_target_affected(
     Ok(current == canonical_target || current.starts_with(canonical_target))
 }
 
+fn create_empty_file(path: &Path) -> io::Result<()> {
+    match std::fs::OpenOptions::new().write(true).create_new(true).open(path) {
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "同名のファイルが既にあります",
+        )),
+        Err(error) => Err(error),
+    }
+}
+
 enum ArchiveCommandOutcome {
     Reopened,
     ReopenFailed(io::Error),
@@ -660,13 +671,7 @@ impl Doc {
             _ => root.clone(),
         };
         let path = dir.join(name);
-        if path.exists() {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "同名のファイルが既にあります",
-            ));
-        }
-        std::fs::write(&path, b"")?;
+        create_empty_file(&path)?;
         let mut d = match Doc::open_file(&path, Arc::clone(&self.archive_port)) {
             Ok(doc) => doc,
             Err(error) => {
@@ -676,7 +681,13 @@ impl Doc {
         };
         d.source.root = Some(root);
         let path_str = path.to_string_lossy().into_owned();
-        let info = d.info(path_str)?;
+        let info = match d.info(path_str) {
+            Ok(info) => info,
+            Err(error) => {
+                let _ = std::fs::remove_file(&path);
+                return Err(error);
+            }
+        };
         *self = d;
         Ok(info)
     }
@@ -1940,6 +1951,27 @@ mod tests {
         };
         d.edit(p(0, 0), p(0, 0), p(0, 0), "X", false).unwrap();
         assert_eq!(d.lines(0, 1), vec!["Xabc"]);
+    }
+
+    // Feature: 新規メモの排他的作成
+    // Scenario: 候補確認と作成の間に同名ファイルが現れても上書きしない
+    // Given: 同じパスへ空ファイルが先に作られている
+    // When: 排他的な空ファイル作成をもう一度実行する
+    // Then: AlreadyExistsを返し、既存ファイルを変更しない
+    #[test]
+    fn create_empty_file_does_not_overwrite_a_racing_file() {
+        let path = std::env::temp_dir().join(format!(
+            "wasabipad_create_new_{}_memo.txt",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        create_empty_file(&path).unwrap();
+
+        let error = create_empty_file(&path).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&path).unwrap(), Vec::<u8>::new());
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

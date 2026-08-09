@@ -290,4 +290,32 @@ describe("Feature: inline preview", () => {
 
     await vi.waitFor(() => expect(onError).toHaveBeenCalledWith(expect.any(Error)));
   });
+
+  // Feature: プレビューエラー通知の境界
+  // Scenario: エラー通知ポート自身がrejectする
+  // Given: 形式変更ポートとエラー通知ポートがともに失敗する
+  // When: iframeから形式切替通知を受け取る
+  // Then: 二次エラーをconsoleへ出し、未処理rejectを発生させない
+  it("Scenario: エラー通知ポートの失敗も吸収する", async () => {
+    const onError = vi.fn(async () => { throw new Error("report failed"); });
+    const onFormatChange = vi.fn(() => { throw new Error("format failed"); });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { host } = mount(onFormatChange, undefined, onError);
+      const frame = host.querySelector("iframe")!;
+
+      window.dispatchEvent(new MessageEvent("message", {
+        source: frame.contentWindow,
+        origin: window.location.origin,
+        data: { type: INLINE_PREVIEW_MESSAGES.FORMAT_CHANGE_MESSAGE, format: "csv" },
+      }));
+
+      await vi.waitFor(() => expect(consoleError).toHaveBeenCalledWith(
+        "プレビュー通知のエラー表示に失敗しました",
+        expect.any(Error),
+      ));
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
 });

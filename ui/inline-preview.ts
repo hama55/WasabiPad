@@ -130,7 +130,8 @@ export class InlinePreview {
 
   clear() {
     if (!this.label) return;
-    void this.close(this.label).catch((error) => this.reportPortError(error));
+    const label = this.label;
+    runAsyncBoundary(() => this.close(label), (error) => this.reportPortError(error));
   }
 
   resend() {
@@ -180,10 +181,17 @@ export class InlinePreview {
   }
 
   private reportPortError(error: unknown) {
-    if (this.ports.onError) {
-      return this.ports.onError(error);
+    if (!this.ports.onError) {
+      console.error("プレビュー通知の処理に失敗しました", error);
+      return;
     }
-    console.error("プレビュー通知の処理に失敗しました", error);
+    try {
+      void Promise.resolve(this.ports.onError(error)).catch((reportError) => {
+        console.error("プレビュー通知のエラー表示に失敗しました", reportError);
+      });
+    } catch (reportError) {
+      console.error("プレビュー通知のエラー表示に失敗しました", reportError);
+    }
   }
 }
 

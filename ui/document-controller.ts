@@ -2,7 +2,7 @@ import type * as api from "./api";
 import type { DocumentSession } from "./session";
 import { externalFilePathOf, initialSession, sessionFromDocInfo } from "./session";
 import type { promptSaveFormat, saveFormatFields, saveFormatFromValues, SaveFormat } from "./save-format";
-import type { confirmSaveDiscard, promptFields } from "./prompt";
+import type { confirmSaveDiscard, promptFields, PromptField, PromptFieldsOptions } from "./prompt";
 import type { isPasswordCancelled, withArchivePassword } from "./archive-password";
 import { archiveRelOf } from "./archive-path";
 import type { showError } from "./dialogs";
@@ -10,6 +10,7 @@ import { formatWindowTitle } from "./format";
 import { basename, joinWindowsRoot, relativePathWithinRoot } from "./path";
 import type { EditorViewState } from "./editor-view-state";
 import { reportErrorSafely } from "./report-error";
+import { fileNameOf, memoStemOf, type MemoSpec } from "./memo-name";
 
 // 保存ダイアログのフィルタと新規メモの拡張子候補で共有する
 export const SAVE_EXTENSIONS = [
@@ -18,10 +19,8 @@ export const SAVE_EXTENSIONS = [
   { name: "ログ", extension: "log" },
 ] as const;
 
-export interface MemoSpec {
-  stem: string;
-  extension: string;
-}
+const DEFAULT_MEMO_STEM = "memo";
+const DEFAULT_MEMO_EXTENSION = SAVE_EXTENSIONS[0].extension;
 
 export type DocumentControllerApi = Pick<
   typeof api,
@@ -272,7 +271,7 @@ export class DocumentController {
   async saveAs(): Promise<boolean> {
     try {
       if (this.session.folderRoot && !this.session.savePath && !this.session.selectedRelPath) {
-        return this.saveFolderDraft();
+        return await this.saveFolderDraft();
       }
       let defaultPath = this.session.savePath ?? "";
       let newMemoFormat: SaveFormat | undefined;
@@ -428,7 +427,7 @@ export class DocumentController {
       },
       {
         label: "拡張子",
-        value: SAVE_EXTENSIONS[0].extension,
+        value: DEFAULT_MEMO_EXTENSION,
         options: [
           ...SAVE_EXTENSIONS.map(({ extension }) => ({ label: `.${extension}`, value: extension })),
           { label: "拡張子なし", value: "" },
@@ -440,10 +439,10 @@ export class DocumentController {
         ) => {
           const current = ++request;
           try {
-            const path = await this.services.api.nextMemoPath(directory, "memo", extension);
+            const path = await this.services.api.nextMemoPath(directory, DEFAULT_MEMO_STEM, extension);
             if (current === request) setValue(0, memoStemOf(path, extension));
-          } catch {
-            // 拡張子変更時の候補取得に失敗しても、入力中の値は保持する。
+          } catch (error) {
+            if (current === request) throw error;
           }
         } : undefined,
       },
@@ -451,26 +450,41 @@ export class DocumentController {
   }
 
   private async initialMemoStem(directory: string | null, extension: string): Promise<string> {
-    if (!directory) return "memo";
-    const path = await this.services.api.nextMemoPath(directory, "memo", extension);
+    if (!directory) return DEFAULT_MEMO_STEM;
+    const path = await this.services.api.nextMemoPath(directory, DEFAULT_MEMO_STEM, extension);
     return memoStemOf(path, extension);
   }
 
+  private memoPromptOptions(directory: string | null): PromptFieldsOptions {
+    return directory
+      ? { onChangeError: (error) => this.reportError("ファイル名を決められませんでした", error) }
+      : {};
+  }
+
+  private async promptMemoValues(
+    title: string,
+    directory: string | null,
+    extraFields: PromptField[] = [],
+  ): Promise<string[] | null> {
+    const stem = await this.initialMemoStem(directory, DEFAULT_MEMO_EXTENSION);
+    return this.services.promptFields(title, [
+      ...this.memoFields(directory, stem),
+      ...extraFields,
+    ], this.memoPromptOptions(directory));
+  }
+
   async promptMemoSpec(directory: string | null = null): Promise<MemoSpec | null> {
-    const extension = SAVE_EXTENSIONS[0].extension;
-    const stem = await this.initialMemoStem(directory, extension);
-    const result = await this.services.promptFields("新規メモ作成", this.memoFields(directory, stem));
+    const result = await this.promptMemoValues("新規メモ作成", directory);
     const enteredStem = result?.[0].trim();
     return enteredStem ? { stem: enteredStem, extension: result![1] } : null;
   }
 
   private async promptNewMemoSave(directory: string | null = null): Promise<{ memo: MemoSpec; format: SaveFormat } | null> {
-    const extension = SAVE_EXTENSIONS[0].extension;
-    const stem = await this.initialMemoStem(directory, extension);
-    const result = await this.services.promptFields("新規メモ保存", [
-      ...this.memoFields(directory, stem),
-      ...this.services.saveFormatFields(this.session),
-    ]);
+    const result = await this.promptMemoValues(
+      "新規メモ保存",
+      directory,
+      this.services.saveFormatFields(this.session),
+    );
     const enteredStem = result?.[0].trim();
     return enteredStem
       ? { memo: { stem: enteredStem, extension: result![1] }, format: this.services.saveFormatFromValues(result!, 2) }
@@ -490,14 +504,4 @@ export class DocumentController {
   setSelectedRelPath(relPath: string) {
     this.session.selectedRelPath = relPath;
   }
-}
-
-export function fileNameOf(spec: MemoSpec): string {
-  return `${spec.stem}${spec.extension ? `.${spec.extension}` : ""}`;
-}
-
-function memoStemOf(path: string, extension: string): string {
-  const name = basename(path);
-  const suffix = extension ? `.${extension}` : "";
-  return suffix && name.endsWith(suffix) ? name.slice(0, -suffix.length) : name;
 }

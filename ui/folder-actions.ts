@@ -1,6 +1,6 @@
 import * as api from "./api";
 import type { ContextTarget } from "./context-target";
-import { fileNameOf, type MemoSpec } from "./document-controller";
+import { fileNameOf, type MemoSpec } from "./memo-name";
 import type { DocumentSession } from "./session";
 import { showMenu, MenuItem } from "./menu";
 import type { confirmMessage, promptFields } from "./prompt";
@@ -48,7 +48,7 @@ export interface FolderActionsServices {
 
 export interface FolderDocumentPort {
   readonly current: Readonly<DocumentSession>;
-  promptMemoSpec: (directory?: string | null) => Promise<MemoSpec | null>;
+  promptMemoSpec: (directory: string) => Promise<MemoSpec | null>;
   setSelectedRelPath: (relPath: string) => void;
   applyDocInfo: (info: api.DocInfo, keepViewers?: boolean, updateTree?: boolean) => void;
   applyRenamed: (info: api.DocInfo, selectedRelPath: string) => void;
@@ -173,8 +173,19 @@ export class FolderActions {
   }
 
   async createNote(relDir: string | null) {
-    const directory = relDir ? this.toAbsolute(relDir) : this.root!;
-    const spec = await this.doc.promptMemoSpec(directory);
+    const root = this.root;
+    if (!root) {
+      await this.reportError("新規メモを作成できませんでした", new Error("フォルダを開いていません"));
+      return;
+    }
+    const directory = relDir ? joinWindowsRoot(root, relDir) : root;
+    let spec: MemoSpec | null;
+    try {
+      spec = await this.doc.promptMemoSpec(directory);
+    } catch (e) {
+      await this.reportError("新規メモを作成できませんでした", e);
+      return;
+    }
     if (!spec) return;
     const name = fileNameOf(spec);
     let info: api.DocInfo;
@@ -185,8 +196,13 @@ export class FolderActions {
       return;
     }
     const relPath = relDir ? `${relDir}/${name}` : name;
-    this.doc.setSelectedRelPath(relPath);
-    this.doc.applyDocInfo(info);
+    try {
+      this.doc.setSelectedRelPath(relPath);
+      this.doc.applyDocInfo(info);
+    } catch (e) {
+      await this.reportError("メモは作成されましたが画面を更新できませんでした", e);
+      return;
+    }
     try {
       await this.ports.sidebar.refreshFolderEntries();
       await this.ports.sidebar.selectByRelPath(relPath);
