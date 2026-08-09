@@ -68,7 +68,7 @@ window.addEventListener("unhandledrejection", (event) => {
 });
 
 // 以降のモジュール初期化は設定値を同期的に読むため、ここで一度だけ待つ
-await initSettings();
+await initSettings((error) => reportBackgroundError("設定を読み込めませんでした", error));
 let windowRequest: api.WindowRequest;
 try {
   windowRequest = await api.initialWindowRequest();

@@ -1,23 +1,11 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
-import Chart from "chart.js/auto";
-import MarkdownIt from "markdown-it";
 import { EVENT_NAMES, takeViewerPayload, type ViewerFormat, type ViewerPayload, type ViewerSelection } from "./api";
 import { formatFontFamily } from "./format";
 import { basename } from "./path";
 import { createViewerFormatHandlers, isViewerFormat, VIEWER_FORMATS } from "./viewer-formats";
 import { getSetting, initSettings, setSetting } from "./settings";
 import { clampFontSize, promptFontFamily, promptFontSize as promptFontSizeDialog } from "./font-controls";
-import {
-  chartColumnLabel,
-  chartPointRadius,
-  CHART_TYPES,
-  DEFAULT_CHART_TYPE,
-  isChartTypeId,
-  numericColumnIndexes,
-  parseChartNumber,
-  type ChartTypeId,
-} from "./chart-data";
 import {
   csvColumnAt,
   csvSourceOffsetAtPosition,
@@ -31,10 +19,6 @@ import { WindowControls } from "./window-controls";
 import { reportWindowOperationError, runWindowOperation } from "./window-operation";
 import { imageMimeType } from "./image-formats";
 import {
-  markdownBlockSelected,
-  markdownHighlightTargets,
-  placeMarkdownCaret,
-  renderRawHtml,
   scrollMarkdownCaret,
 } from "./viewer-markdown";
 import { scrollViewerCaret, scrollViewerCell } from "./viewer-scroll";
@@ -51,7 +35,6 @@ import { createImagePreview, markImageLoadFailure } from "./viewer-image";
 import { createAsyncUnlisten } from "./async-unlisten";
 import { comparePos } from "./editor-math";
 import {
-  isCollapsedViewerSelection,
   viewerSelectionFromDom,
 } from "./viewer-selection";
 import { createViewerFormatButtons, syncViewerFormatButtons } from "./viewer-format-buttons";
@@ -61,10 +44,10 @@ import {
   MAX_TABLE_ROWS,
   renderCsvTable,
 } from "./viewer-csv-table";
+import { ViewerChartController } from "./viewer-chart";
+import { renderMarkdownDocument } from "./viewer-markdown-renderer";
 
-const CHART_COLORS = ["#4fc3f7", "#ffb74d", "#81c784", "#e57373", "#ba68c8", "#fff176", "#4dd0e1", "#f06292"];
-
-await initSettings();
+await initSettings((error) => showError("設定を読み込めませんでした", error));
 
 const isInlineViewer = new URLSearchParams(window.location.search).get("inline") === "1";
 const win = isInlineViewer ? null : getCurrentWindow();
@@ -93,8 +76,6 @@ let currentArchivePath: string | null = null;
 let currentArchiveEntry: string | null = null;
 let renderGeneration = 0;
 const archiveAssetTracker = new ViewerAssetTracker(revokeImageUrl);
-let chart: Chart<"line" | "bar", (number | null)[], string> | null = null;
-let chartColumns: { x: number; y: number[]; reverseX: boolean; type: ChartTypeId } | null = null;
 let csvColumnWidths: number[] = [];
 let fontFamily = getSetting("fontFamily");
 let fontSize = getSetting("previewFontSize");
@@ -206,7 +187,7 @@ function disposeViewer() {
   windowControls?.dispose();
   windowControls = null;
   revokeArchiveAssetUrls();
-  closeChart();
+  chartController.clear();
 }
 
 async function promptFont() {
@@ -230,7 +211,7 @@ function applyTheme(theme = localStorage.getItem(THEME_STORAGE_KEY)) {
   document.documentElement.dataset.theme = value;
   themeButton.textContent = value === "dark" ? "ダーク" : "ライト";
   localStorage.setItem(THEME_STORAGE_KEY, value);
-  if (chartColumns) renderChart();
+  chartController.refresh();
 }
 
 function reportWindowError(title: string, error: unknown) {
@@ -240,6 +221,19 @@ function reportWindowError(title: string, error: unknown) {
 function runViewerOperation(title: string, operation: () => void | Promise<unknown>) {
   runWindowOperation(showError, title, operation);
 }
+
+const chartController = new ViewerChartController({
+  panel: chartPanel,
+  title: chartTitle,
+  canvas: chartCanvas,
+  content,
+  run: (operation) => runViewerOperation("グラフを描画できませんでした", operation),
+  onClose: () => {
+    if (currentFormat === "csv") {
+      scrollCsvRows([...content.querySelectorAll<HTMLTableRowElement>(".viewer-grid tbody > tr")], currentSelection);
+    }
+  },
+});
 
 function bindViewerControls() {
   setFullscreenButton(false);
@@ -274,6 +268,7 @@ function renderTable(text: string) {
     ),
   });
   currentRows = rendered.values;
+  chartController.setRows(currentRows);
   content.replaceChildren(rendered.table);
   scrollCsvRows(rendered.rows, currentSelection);
 
@@ -283,7 +278,7 @@ function renderTable(text: string) {
   summary.textContent = `${currentRows.length.toLocaleString()}行 × ${rendered.maxColumns.toLocaleString()}列${
     truncated ? "（表示上限を超えた部分は省略）" : ""
   }`;
-  if (chartColumns) renderChart();
+  chartController.refresh();
 }
 
 function revokeArchiveAssetUrls() {
@@ -370,7 +365,7 @@ async function renderImage(_text: string) {
   const archiveEntry = currentArchiveEntry;
   revokeArchiveAssetUrls();
   currentRows = [];
-  closeChart();
+  chartController.clear();
 
   const name = basename(archiveEntry ?? sourcePath ?? "image");
   const { wrapper, image } = createImagePreview(name);
@@ -415,37 +410,8 @@ async function renderMarkdown(text: string) {
   const selection = currentSelection;
   revokeArchiveAssetUrls();
   currentRows = [];
-  closeChart();
-  const article = document.createElement("article");
-  const sourceLines = text.split(/\r?\n/);
-  const markdown = new MarkdownIt({ html: true, linkify: true, typographer: false });
-  const rawHtml = (tokens: { content: string }[], index: number) =>
-    renderRawHtml(tokens[index].content, markdown.utils.escapeHtml);
-  markdown.renderer.rules.html_block = rawHtml;
-  markdown.renderer.rules.html_inline = rawHtml;
-  const tokens = markdown.parse(text, {});
-  tokens.forEach((token) => {
-    if (token.nesting === 1 && token.map) {
-      token.attrSet("data-source-start", String(token.map[0]));
-      token.attrSet("data-source-end", String(token.map[1]));
-      token.attrSet("data-source-text", sourceLines.slice(token.map[0], token.map[1]).join("\n"));
-    }
-  });
-  article.innerHTML = markdown.renderer.render(tokens, markdown.options, {});
-  const sourceElements = [...article.querySelectorAll<HTMLElement>("[data-source-start]")];
-  const highlightTargets = markdownHighlightTargets(sourceElements);
-  highlightTargets.forEach((element) => {
-    const start = Number(element.dataset.sourceStart);
-    const end = Number(element.dataset.sourceEnd);
-    const selected = markdownBlockSelected(selection, start, end);
-    element.classList.toggle("viewer-source-selected", !isCollapsedViewerSelection(selection) && selected);
-    element.classList.toggle("viewer-caret-line", isCollapsedViewerSelection(selection) && selected);
-  });
-  placeMarkdownCaret(highlightTargets, selection);
-  article.querySelectorAll("a").forEach((link) => {
-    link.target = "_blank";
-    link.rel = "noreferrer";
-  });
+  chartController.clear();
+  const { article, highlightTargets } = renderMarkdownDocument(text, selection);
   content.replaceChildren(article);
   summary.classList.remove("warning");
   summary.title = "";
@@ -509,7 +475,7 @@ function showContextMenu(x: number, y: number) {
     }));
     contextMenu.appendChild(createViewerChartMenuItem(() => {
       contextMenu.hidden = true;
-      runViewerOperation("グラフ設定を開けませんでした", openChartDialog);
+      runViewerOperation("グラフ設定を開けませんでした", () => chartController.openDialog());
     }));
   }
   contextMenu.hidden = false;
@@ -518,177 +484,6 @@ function showContextMenu(x: number, y: number) {
   const rect = contextMenu.getBoundingClientRect();
   contextMenu.style.left = `${Math.min(x, window.innerWidth - rect.width - 4)}px`;
   contextMenu.style.top = `${Math.min(y, window.innerHeight - rect.height - 4)}px`;
-}
-
-function openChartDialog() {
-  if (currentRows.length < 2) return;
-  const headers = currentRows[0];
-  const width = currentRows.reduce((max, row) => Math.max(max, row.length), 0);
-  const overlay = document.createElement("div");
-  overlay.className = "viewer-dialog-overlay";
-  const dialog = document.createElement("div");
-  dialog.className = "viewer-dialog";
-  const heading = document.createElement("h2");
-  heading.textContent = "グラフ作成";
-
-  const typeLabel = document.createElement("label");
-  typeLabel.textContent = "グラフの種類";
-  const typeSelect = document.createElement("select");
-  Object.entries(CHART_TYPES).forEach(([id, spec]) => {
-    const option = document.createElement("option");
-    option.value = id;
-    option.textContent = spec.label;
-    typeSelect.appendChild(option);
-  });
-  typeSelect.value = chartColumns?.type ?? DEFAULT_CHART_TYPE;
-  typeLabel.appendChild(typeSelect);
-
-  const xLabel = document.createElement("label");
-  xLabel.textContent = "X軸";
-  const xSelect = document.createElement("select");
-  Array.from({ length: width }, (_, index) => {
-    const option = document.createElement("option");
-    option.value = String(index);
-    option.textContent = chartColumnLabel(headers, index);
-    xSelect.appendChild(option);
-  });
-  xSelect.value = String(chartColumns?.x ?? 0);
-  xLabel.appendChild(xSelect);
-
-  const reverseLabel = document.createElement("label");
-  reverseLabel.className = "chart-reverse-option";
-  const reverseInput = document.createElement("input");
-  reverseInput.type = "checkbox";
-  reverseInput.checked = chartColumns?.reverseX ?? false;
-  reverseLabel.append(reverseInput, document.createTextNode("X軸を反転"));
-
-  const yTitle = document.createElement("div");
-  yTitle.className = "viewer-dialog-label";
-  yTitle.textContent = "Y軸";
-  const yGrid = document.createElement("div");
-  yGrid.className = "chart-column-grid";
-  const numeric = numericColumnIndexes(currentRows);
-  const defaultY = chartColumns?.y ?? numeric.filter((index) => index !== Number(xSelect.value)).slice(0, 1);
-  const checks = Array.from({ length: width }, (_, index) => {
-    const label = document.createElement("label");
-    const input = document.createElement("input");
-    input.type = "checkbox";
-    input.value = String(index);
-    input.checked = defaultY.includes(index);
-    label.append(input, document.createTextNode(chartColumnLabel(headers, index)));
-    yGrid.appendChild(label);
-    return input;
-  });
-  const error = document.createElement("div");
-  error.className = "viewer-dialog-error";
-
-  const updateChecks = () => {
-    const x = Number(xSelect.value);
-    checks.forEach((check, index) => {
-      check.disabled = index === x;
-      if (check.disabled) check.checked = false;
-    });
-  };
-  xSelect.addEventListener("change", updateChecks);
-  updateChecks();
-
-  const buttons = document.createElement("div");
-  buttons.className = "viewer-dialog-buttons";
-  const cancel = document.createElement("button");
-  cancel.textContent = "キャンセル";
-  const create = document.createElement("button");
-  create.className = "primary";
-  create.textContent = "作成";
-  buttons.append(cancel, create);
-  dialog.append(heading, typeLabel, xLabel, reverseLabel, yTitle, yGrid, error, buttons);
-  overlay.appendChild(dialog);
-  document.body.appendChild(overlay);
-
-  const finish = () => overlay.remove();
-  cancel.addEventListener("click", finish);
-  overlay.addEventListener("mousedown", (event) => {
-    if (event.target === overlay) finish();
-  });
-  create.addEventListener("click", () => {
-    const y = checks.filter((check) => check.checked).map((check) => Number(check.value));
-    if (!y.length) {
-      error.textContent = "Y軸を1列以上選択してください";
-      return;
-    }
-    const type = isChartTypeId(typeSelect.value) ? typeSelect.value : DEFAULT_CHART_TYPE;
-    chartColumns = { x: Number(xSelect.value), y, reverseX: reverseInput.checked, type };
-    finish();
-    runViewerOperation("グラフを描画できませんでした", renderChart);
-  });
-}
-
-function renderChart() {
-  if (!chartColumns || currentRows.length < 2) return;
-  const headers = currentRows[0];
-  const rows = currentRows.slice(1);
-  if (chartColumns.reverseX) rows.reverse();
-  const style = getComputedStyle(document.documentElement);
-  const foreground = style.getPropertyValue("--fg").trim();
-  const grid = style.getPropertyValue("--border-strong").trim();
-  const hidden = new Map<number, boolean>();
-  chart?.data.datasets.forEach((dataset) => {
-    const column = Number((dataset as typeof dataset & { columnIndex?: number }).columnIndex);
-    hidden.set(column, !chart!.isDatasetVisible(chart!.data.datasets.indexOf(dataset)));
-  });
-
-  const spec = CHART_TYPES[chartColumns.type];
-  const datasets = chartColumns.y.map((column, index) => {
-    const color = CHART_COLORS[index % CHART_COLORS.length];
-    return {
-      label: chartColumnLabel(headers, column),
-      data: rows.map((row) => parseChartNumber(row[column] ?? "")),
-      borderColor: color,
-      // 面グラフは重ねて見るため半透明にする (それ以外は棒/点の塗りとして不透明のまま)
-      backgroundColor: spec.fill ? `${color}55` : color,
-      pointRadius: chartPointRadius(spec, rows.length),
-      borderWidth: 2,
-      spanGaps: false,
-      showLine: spec.showLine,
-      stepped: spec.stepped ?? false,
-      fill: spec.fill ?? false,
-      columnIndex: column,
-      hidden: hidden.get(column) ?? false,
-    };
-  });
-  const labels = rows.map((row) => row[chartColumns!.x] ?? "");
-
-  chart?.destroy();
-  chart = new Chart(chartCanvas, {
-    type: spec.base,
-    data: { labels, datasets },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      animation: false,
-      interaction: { mode: "index", intersect: false },
-      plugins: {
-        legend: { labels: { color: foreground } },
-      },
-      scales: {
-        x: { stacked: spec.stacked ?? false, ticks: { color: foreground }, grid: { color: grid } },
-        y: { stacked: spec.stacked ?? false, ticks: { color: foreground }, grid: { color: grid } },
-      },
-    },
-  });
-  chartTitle.textContent = `${spec.label}: ${chartColumnLabel(headers, chartColumns.x)} × ${chartColumns.y.map((column) => chartColumnLabel(headers, column)).join(", ")}`;
-  content.hidden = true;
-  chartPanel.hidden = false;
-}
-
-function closeChart() {
-  chartPanel.hidden = true;
-  content.hidden = false;
-  chart?.destroy();
-  chart = null;
-  chartColumns = null;
-  if (currentFormat === "csv") {
-    scrollCsvRows([...content.querySelectorAll<HTMLTableRowElement>(".viewer-grid tbody > tr")], currentSelection);
-  }
 }
 
 async function start() {
@@ -724,7 +519,7 @@ async function start() {
       runViewerOperation("ビューを再描画できませんでした", () => VIEWER_HANDLERS[currentFormat].render(currentText));
     });
     document.getElementById("chart-close")!.addEventListener("click", () => {
-      runViewerOperation("グラフを閉じられませんでした", closeChart);
+      runViewerOperation("グラフを閉じられませんでした", () => chartController.close());
     });
     content.addEventListener("contextmenu", (event) => {
       if (currentFormat !== "csv" || !(event.target as Element).closest(".viewer-grid")) return;

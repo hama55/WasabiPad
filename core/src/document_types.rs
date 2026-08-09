@@ -104,6 +104,7 @@ pub enum ExternalCheck {
 #[ts(export)]
 pub enum SaveOutcome {
     Saved,
+    SavedWithWarning { warning: String },
     Conflict { saved_to: String },
 }
 

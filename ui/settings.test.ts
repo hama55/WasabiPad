@@ -1,15 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { updateSettingMock } = vi.hoisted(() => ({ updateSettingMock: vi.fn(async () => {}) }));
+const { loadSettingsMock, updateSettingMock } = vi.hoisted(() => ({
+  loadSettingsMock: vi.fn(async () => "{}"),
+  updateSettingMock: vi.fn(async () => {}),
+}));
 vi.mock("./api", () => ({
-  loadSettings: async () => "{}",
+  loadSettings: loadSettingsMock,
   updateSetting: updateSettingMock,
 }));
 
-import { flushSettings, initSettings, parseSettings, setSetting } from "./settings";
+import { flushSettings, getSetting, initSettings, parseSettings, parseSettingsResult, setSetting } from "./settings";
 
 describe("Feature: settings", () => {
   beforeEach(async () => {
+    loadSettingsMock.mockReset();
+    loadSettingsMock.mockResolvedValue("{}");
     updateSettingMock.mockReset();
     updateSettingMock.mockResolvedValue(undefined);
     await initSettings();
@@ -21,6 +26,22 @@ describe("Feature: settings", () => {
   it("Scenario: 壊れたJSONは既定値として扱う", () => {
     expect(parseSettings("{ not json").indentSize).toBe(8);
     expect(parseSettings("[]").registeredStrings).toEqual([]);
+    expect(parseSettingsResult("[]").corrupted).toBe(true);
+  });
+
+  // Given: 設定ファイルがJSONとして壊れている
+  // When: 起動時の設定初期化を行う
+  // Then: 既定値へ戻し、破損を警告する
+  it("Scenario: 起動時の設定JSON破損を警告する", async () => {
+    loadSettingsMock.mockResolvedValueOnce("{ not json");
+    const warning = vi.fn();
+
+    await initSettings(warning);
+
+    expect(getSetting("indentSize")).toBe(8);
+    expect(warning).toHaveBeenCalledWith(expect.objectContaining({
+      message: "設定JSONが壊れているため、既定値を使用しました",
+    }));
   });
 
   // Given: `indentSize:"4"`、`startupPath`、不正要素を含む`registeredStrings`を保存

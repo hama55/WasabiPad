@@ -345,6 +345,7 @@ export class DocumentController {
       );
       return false;
     }
+    const saveWarning = outcome.kind === "savedwithwarning" ? outcome.warning : null;
     this.session.encoding = format.encoding;
     this.session.eol = format.eol;
     this.session.savePath = path;
@@ -365,6 +366,9 @@ export class DocumentController {
       this.view.notify("保存しました");
     } catch (error) {
       await this.reportError("保存後の画面更新に失敗しました", error);
+    }
+    if (saveWarning) {
+      await this.reportError("保存後の再読込に失敗しました", saveWarning);
     }
     if (folderDraftRoot) await this.revealSavedDraft(folderDraftRoot, path);
     return true;

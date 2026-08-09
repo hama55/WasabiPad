@@ -267,6 +267,24 @@ describe("Feature: DocumentController", () => {
     expect(view.setLoading).not.toHaveBeenCalled();
   });
 
+  // Given: 保存結果が「保存済みだが再読込警告」を返す
+  // When: `controller.save()`を呼ぶ
+  // Then: dirtyを解除して保存成功とし、警告だけを通知する
+  it("Scenario: 保存後の再読込失敗を保存失敗と混同しない", async () => {
+    const { controller } = fakeView();
+    controller.applyDocInfo(info());
+    controller.onEdit(42);
+    vi.mocked(showError).mockClear();
+    vi.spyOn(api, "saveFile").mockResolvedValueOnce({
+        kind: "savedwithwarning",
+      warning: "再読込できませんでした",
+    });
+
+    expect(await controller.save()).toBe(true);
+    expect(controller.current.dirty).toBe(false);
+    expect(showError).toHaveBeenCalledWith("保存後の再読込に失敗しました", "再読込できませんでした");
+  });
+
   // Given: C:\work\memo.txtを表示中で、別名保存先がC:\new\memo.txt
   // When: 別名保存を成功させる
   // Then: EditorのExplorer対象も新しい保存先へ同期する

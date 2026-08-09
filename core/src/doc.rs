@@ -39,6 +39,11 @@ fn is_delete_target_affected(
     Ok(current == canonical_target || current.starts_with(canonical_target))
 }
 
+enum ArchiveCommandOutcome {
+    Reopened,
+    ReopenFailed(io::Error),
+}
+
 pub struct Doc {
     buf: TextBuffer,
     undo: UndoStack,
@@ -875,7 +880,7 @@ impl Doc {
             .archive_port
             .preserves_header_encryption(archive, &password)?;
         let archive_port = Arc::clone(&self.archive_port);
-        self.run_archive_command(archive, move || {
+        let archive_result = self.run_archive_command(archive, move || {
             archive_port.update(
                 archive,
                 &entry,
@@ -884,6 +889,9 @@ impl Doc {
                 header_encrypted,
             )
         })?;
+        if let ArchiveCommandOutcome::ReopenFailed(error) = archive_result {
+            return Err(error);
+        }
         Ok(relative_src)
     }
 
@@ -964,12 +972,20 @@ impl Doc {
             return Ok(());
         }
         let archive_port = Arc::clone(&self.archive_port);
-        self.run_archive_command(archive, move || {
+        let archive_result = self.run_archive_command(archive, move || {
             archive_port.delete(archive, &stale, &password)
-        })
+        })?;
+        if let ArchiveCommandOutcome::ReopenFailed(error) = archive_result {
+            return Err(error);
+        }
+        Ok(())
     }
 
-    fn run_archive_command<F>(&mut self, archive: &Path, operation: F) -> io::Result<()>
+    fn run_archive_command<F>(
+        &mut self,
+        archive: &Path,
+        operation: F,
+    ) -> io::Result<ArchiveCommandOutcome>
     where
         F: FnOnce() -> io::Result<()>,
     {
@@ -1013,7 +1029,7 @@ impl Doc {
                     entries,
                     editable_entry,
                 };
-                command_result
+                command_result.map(|()| ArchiveCommandOutcome::Reopened)
             }
             Err(reopen_error) => {
                 self.source.target = Target::Archive {
@@ -1022,10 +1038,9 @@ impl Doc {
                     entries,
                     editable_entry,
                 };
-                if command_result.is_err() {
-                    command_result
-                } else {
-                    Err(reopen_error)
+                match command_result {
+                    Ok(()) => Ok(ArchiveCommandOutcome::ReopenFailed(reopen_error)),
+                    Err(error) => Err(error),
                 }
             }
         }
@@ -1258,15 +1273,32 @@ impl Doc {
             Ok(opened) => opened,
             Err(error) => {
                 self.buf = old_buf;
-                if same_target {
-                    self.source.set_source_file(old_source_file);
-                }
-                return Err(error);
+                self.enc = enc;
+                self.eol = eol;
+                let stamp = match fileio::stamp(path) {
+                    Ok(stamp) => Some(stamp),
+                    Err(stamp_error) => {
+                        eprintln!("保存後の変更検知情報を取得できませんでした: {stamp_error}");
+                        None
+                    }
+                };
+                self.byte_len = std::fs::metadata(path)
+                    .map(|metadata| metadata.len())
+                    .unwrap_or(self.byte_len);
+                self.source = DocumentSource {
+                    root: workspace_root,
+                    ..DocumentSource::file(path.to_path_buf(), None, stamp)
+                };
+                self.undo.break_coalescing();
+                return Ok(SaveOutcome::SavedWithWarning {
+                    warning: format!("保存後の文書再読込に失敗しました: {error}"),
+                });
             }
         };
         self.buf = o.buf;
         self.enc = enc;
         self.eol = eol;
+        self.byte_len = o.byte_len;
         self.source = DocumentSource {
             root: workspace_root,
             ..DocumentSource::file(path.to_path_buf(), o.source_file, o.stamp)
@@ -1301,7 +1333,7 @@ impl Doc {
             .commit(&entry_file)
             .map_err(fileio::SaveCommitError::into_error)?;
         let archive_port = Arc::clone(&self.archive_port);
-        self.run_archive_command(archive, move || {
+        let archive_result = self.run_archive_command(archive, move || {
             archive_port.update(
                 archive,
                 entry,
@@ -1313,7 +1345,12 @@ impl Doc {
         self.enc = enc;
         self.eol = eol;
         self.undo.break_coalescing();
-        Ok(SaveOutcome::Saved)
+        match archive_result {
+            ArchiveCommandOutcome::Reopened => Ok(SaveOutcome::Saved),
+            ArchiveCommandOutcome::ReopenFailed(error) => Ok(SaveOutcome::SavedWithWarning {
+                warning: format!("保存後のアーカイブ再取得に失敗しました: {error}"),
+            }),
+        }
     }
 
     pub fn set_enc(&mut self, enc: Encoding) {
@@ -2029,7 +2066,9 @@ mod tests {
             .unwrap()
         {
             SaveOutcome::Conflict { saved_to } => PathBuf::from(saved_to),
-            SaveOutcome::Saved => panic!("外部変更があるときは本体を上書きしないはず"),
+            SaveOutcome::Saved | SaveOutcome::SavedWithWarning { .. } => {
+                panic!("外部変更があるときは本体を上書きしないはず")
+            }
         };
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
