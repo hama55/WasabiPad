@@ -1,4 +1,6 @@
-export const ARCHIVE_ENTRY_SEPARATOR = "::";
+import { ARCHIVE_ENTRY_SEPARATOR } from "./generated/Protocol";
+
+export { ARCHIVE_ENTRY_SEPARATOR } from "./generated/Protocol";
 
 export interface ArchiveEntryPath {
   archiveRelPath: string;

@@ -1,15 +1,6 @@
-export const IMAGE_MIME_TYPES = {
-  apng: "image/apng",
-  avif: "image/avif",
-  bmp: "image/bmp",
-  gif: "image/gif",
-  ico: "image/x-icon",
-  jpeg: "image/jpeg",
-  jpg: "image/jpeg",
-  png: "image/png",
-  svg: "image/svg+xml",
-  webp: "image/webp",
-} as const;
+import { IMAGE_MIME_TYPES } from "./generated/Protocol";
+
+export { IMAGE_MIME_TYPES } from "./generated/Protocol";
 
 export type ImageExtension = keyof typeof IMAGE_MIME_TYPES;
 

@@ -6,29 +6,27 @@
 // 変換は to_byte / to_char が担う (グラフェムは非対応 = ネイティブ版と同じ割り切り)。
 use crate::archive_port::{self, ArchivePort};
 use crate::buffer::{Pos, TextBuffer};
-use crate::fileio::{self, Encoding, EncodingId, Eol, FileStamp};
+use crate::document_source::{is_image_path, DocumentSource, SourceKind, Target};
+use crate::document_assets::{
+    archive_entry_parent, archive_entry_stem, archive_join, cleanup_image_dir,
+    next_archive_image_name, referenced_image_files, remove_empty_dir,
+    valid_archive_entry_path,
+};
+use crate::editing::{self, ByteEdit};
+pub use crate::document_types::{
+    DocInfo, DocKind, EditManyItem, EditManyResult, EditResult, ExternalCheck, FindCursor,
+    FindOutcome, FindResult, PosC, ReplaceChunkResult, SaveOutcome, WorkspaceSearchResult,
+};
+use crate::fileio::{self, Encoding, Eol};
 use crate::filename::next_available_path;
 use crate::folder::join_relative;
 pub use crate::folder::FolderEntry;
-use crate::search::{find_backward, find_chunk, ChunkStep};
-use crate::undo::{Edit, UndoEntry, UndoStack};
-use crate::ziptext::Entry;
-use serde::Serialize;
-use std::collections::{HashMap, HashSet};
-use std::fs::File;
+use crate::search_replace::{self, FindStep};
+use crate::undo::UndoStack;
+use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-
-fn is_image_path(path: &Path) -> bool {
-    match path.extension().and_then(|ext| ext.to_str()) {
-        Some(ext) => matches!(
-            ext.to_ascii_lowercase().as_str(),
-            "apng" | "avif" | "bmp" | "gif" | "ico" | "jpeg" | "jpg" | "png" | "svg" | "webp"
-        ),
-        None => false,
-    }
-}
 
 pub struct Doc {
     buf: TextBuffer,
@@ -36,7 +34,7 @@ pub struct Doc {
     enc: Encoding,
     eol: Eol,
     source: DocumentSource,
-    replace_progress: Option<ReplaceProgress>, // 全置換のチャンク間進行状態
+    replace_progress: Option<search_replace::ReplaceProgress>, // 全置換のチャンク間進行状態
     byte_len: u64,                             // ステータスバー表示用。開いた実体のバイト数
     // 7z のパスワードをアーカイブ絶対パス単位でメモリ保持する (ディスクへは残さない)。
     // 同じフォルダ内の複数の 7z を行き来しても都度入力し直さずに済む。
@@ -44,259 +42,13 @@ pub struct Doc {
     archive_port: Arc<dyn ArchivePort>,
 }
 
-#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug, ts_rs::TS)]
-#[serde(rename_all = "lowercase")]
-#[ts(export)]
-pub enum DocKind {
-    Text,
-    Archive,
-}
-
-// 開いている実体。フォルダ閲覧中かどうか (root) とは直交する軸として持つ。
-// 以前は Folder 変種が File/Archive の中身を丸ごと再掲していたため、
-// 全アクセサが同じ形を2回ずつ match する必要があった。
-enum Target {
-    None,
-    File {
-        path: PathBuf,
-        source_file: Option<File>,
-        stamp: Option<FileStamp>, // ハンドル非保持 (=外部編集可) の場合の変更検知用
-    },
-    Archive {
-        path: PathBuf,
-        // 書庫更新直後の再openに失敗しても、パスと編集中の本文は保持する。
-        source_file: Option<File>,
-        entries: Option<Vec<Entry>>,
-        // 7z.exe 経由で書き戻せる表示中エントリ名。7z/zip のテキストだけが対象。
-        editable_entry: Option<String>,
-    },
-}
-
-// root=Some ならフォルダ閲覧中。target はその中で選択中の実体 (未選択なら None)。
-struct DocumentSource {
-    root: Option<PathBuf>,
-    target: Target,
-}
-
-impl DocumentSource {
-    fn untitled() -> Self {
-        Self {
-            root: None,
-            target: Target::None,
+impl From<SourceKind> for DocKind {
+    fn from(kind: SourceKind) -> Self {
+        match kind {
+            SourceKind::Text => Self::Text,
+            SourceKind::Archive => Self::Archive,
         }
     }
-
-    fn file(path: PathBuf, source_file: Option<File>, stamp: Option<FileStamp>) -> Self {
-        Self {
-            root: None,
-            target: Target::File {
-                path,
-                source_file,
-                stamp,
-            },
-        }
-    }
-
-    // 通常ファイルとして編集して保存できるパス。アーカイブ内エントリは None。
-    fn path(&self) -> Option<&Path> {
-        match &self.target {
-            Target::File { path, .. } => Some(path),
-            _ => None,
-        }
-    }
-
-    fn folder_root(&self) -> Option<&Path> {
-        self.root.as_deref()
-    }
-
-    fn entries(&self) -> Option<&[Entry]> {
-        match &self.target {
-            Target::Archive {
-                entries: Some(entries),
-                ..
-            } => Some(entries),
-            _ => None,
-        }
-    }
-
-    fn is_view_only(&self) -> bool {
-        matches!(
-            &self.target,
-            Target::Archive {
-                editable_entry: None,
-                ..
-            }
-        ) || matches!(&self.target, Target::File { path, .. } if is_image_path(path))
-    }
-
-    // フォルダ閲覧中は kind を Text のままにする (ツリーは folder_entries が組み立てるため)。
-    fn kind(&self) -> DocKind {
-        if self.root.is_none() && matches!(self.target, Target::Archive { .. }) {
-            DocKind::Archive
-        } else {
-            DocKind::Text
-        }
-    }
-
-    fn display_path(&self) -> Option<&Path> {
-        match &self.target {
-            Target::File { path, .. } | Target::Archive { path, .. } => Some(path),
-            Target::None => None,
-        }
-    }
-
-    fn set_source_file(&mut self, source: Option<File>) {
-        if let Target::File { source_file, .. } = &mut self.target {
-            *source_file = source;
-        }
-    }
-
-    fn take_source_file(&mut self) -> Option<File> {
-        match &mut self.target {
-            Target::File { source_file, .. } => source_file.take(),
-            _ => None,
-        }
-    }
-
-    fn stamp(&self) -> Option<FileStamp> {
-        match &self.target {
-            Target::File { stamp, .. } => *stamp,
-            _ => None,
-        }
-    }
-
-    fn set_stamp(&mut self, new: Option<FileStamp>) {
-        if let Target::File { stamp, .. } = &mut self.target {
-            *stamp = new;
-        }
-    }
-}
-
-#[derive(Serialize, ts_rs::TS)]
-#[ts(export)]
-pub struct DocInfo {
-    pub kind: DocKind,
-    pub line_count: usize,
-    pub enc: EncodingId,
-    pub eol: Eol,
-    pub path: String,
-    pub entries: Option<Vec<String>>, // 非編集アーカイブのエントリ名
-    pub folder_entries: Option<Vec<FolderEntry>>, // フォルダ直下の子 (サブフォルダ含む、再帰しない)
-    pub folder_root: Option<String>,  // フォルダ閲覧中のルート絶対パス
-    pub view_only: bool,
-    pub byte_len: u64,
-    pub is_huge: bool,
-}
-
-// char 単位の位置 (フロントと共有)
-#[derive(Serialize, serde::Deserialize, Clone, Copy, ts_rs::TS)]
-#[ts(export, rename = "Pos")]
-pub struct PosC {
-    pub line: usize,
-    pub col: usize,
-}
-
-#[derive(Serialize, ts_rs::TS)]
-#[ts(export)]
-pub struct EditResult {
-    pub caret: PosC,
-    pub line_count: usize,
-}
-
-#[derive(serde::Deserialize, ts_rs::TS)]
-#[ts(export)]
-pub struct EditManyItem {
-    pub start: PosC,
-    pub end: PosC,
-    pub text: String,
-}
-
-#[derive(Serialize, ts_rs::TS)]
-#[ts(export)]
-pub struct EditManyResult {
-    pub carets: Vec<PosC>,
-    pub line_count: usize,
-}
-
-#[derive(Serialize, ts_rs::TS)]
-#[ts(export)]
-pub struct FindResult {
-    pub start: PosC,
-    pub end: PosC,
-}
-
-// Clone は途中経過の送出用 (確定した結果を残したまま、送る分だけ複製する)
-#[derive(Serialize, Clone, ts_rs::TS)]
-#[ts(export)]
-pub struct WorkspaceSearchResult {
-    pub rel_path: String,
-    pub line: usize,
-    pub col: usize,
-    pub preview: String,
-    // preview 上の一致範囲 [開始char, 長さ]。正規表現でもファジーでも
-    // フロントが検索し直せないため、当てた側が位置を持って渡す。
-    pub highlights: Vec<[usize; 2]>,
-    pub is_filename: bool,
-    // ファジー一致の当てはまりの良さ (本文一致は 0)。並べ替えに要るので線に載せる。
-    // 途中経過を確定結果と同じ順で出すには、フロント側も同じ鍵で並べる必要がある。
-    pub score: i32,
-}
-
-// チャンク分割検索の再開カーソル。1回の呼び出しで budget 行だけ走査し、
-// 続きがあればこれを次回呼び出しにそのまま渡す (巨大ファイルで全件不一致になっても
-// Mutex を長時間握り続けないようにするため)。
-#[derive(Serialize, serde::Deserialize, Clone, Copy, ts_rs::TS)]
-#[ts(export)]
-pub struct FindCursor {
-    pub wrapped: bool,
-    pub line: usize,
-}
-
-#[derive(Serialize, ts_rs::TS)]
-#[serde(tag = "kind")]
-#[ts(export)]
-pub enum FindOutcome {
-    Found { start: PosC, end: PosC },
-    More { cursor: FindCursor },
-    NotFound,
-}
-
-// 外部変更ポーリングの結果。Reloaded は未編集文書を自動で読み直した場合。
-#[derive(Serialize, ts_rs::TS)]
-#[serde(tag = "kind", rename_all = "lowercase")]
-#[ts(export)]
-pub enum ExternalCheck {
-    Unchanged,
-    Reloaded { info: DocInfo },
-    Conflict,
-}
-
-// 保存の結果。Conflict は保存先が外部で変更されていたため本体を上書きせず、
-// 編集内容を退避ファイルへ保存した場合。
-#[derive(Serialize, Debug, ts_rs::TS)]
-#[serde(tag = "kind", rename_all = "lowercase")]
-#[ts(export)]
-pub enum SaveOutcome {
-    Saved,
-    Conflict { saved_to: String },
-}
-
-#[derive(Serialize, ts_rs::TS)]
-#[ts(export)]
-pub struct ReplaceChunkResult {
-    pub done: bool,
-    pub count: usize, // この置換セッションでの累計置換数
-    pub caret: PosC,
-    pub line_count: usize,
-}
-
-// 全置換の進行状態 (チャンク間で Doc に保持し、完了時に1つの UndoEntry へまとめる)
-#[derive(Default)]
-struct ReplaceProgress {
-    edits: Vec<Edit>,
-    pos: Pos,
-    find_cursor: Option<FindCursor>,
-    count: usize,
 }
 
 impl Doc {
@@ -568,7 +320,7 @@ impl Doc {
             // フォルダ閲覧中はどの子ファイル (アーカイブ内エントリ含む) を表示していても
             // "text" 扱い (folder_entries 側でツリーを組み立てる)。folder_root が無い場合のみ、
             // 直接開いたアーカイブ (またはその1エントリ表示中) を "archive" とする。
-            kind: self.source.kind(),
+            kind: self.source.kind().into(),
             line_count: self.buf.line_count(),
             enc: self.enc.into(),
             eol: self.eol,
@@ -1017,7 +769,7 @@ impl Doc {
                 "画像データが空です",
             ));
         }
-        let extension = image_extension(mime_type).ok_or_else(|| {
+        let extension = crate::protocol::image_extension_for_mime(mime_type).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "対応していない画像形式です")
         })?;
         if let Target::Archive {
@@ -1269,37 +1021,7 @@ impl Doc {
         let s = self.to_byte(start);
         let e = self.to_byte(end);
         let cb = self.to_byte(caret_before);
-        let mut edits = Vec::new();
-        let mut pos = s;
-        if s < e {
-            let removed = self.buf.delete(s, e);
-            edits.push(Edit::Delete {
-                start: s,
-                text: removed,
-            });
-            pos = s;
-        }
-        let after = if !text.is_empty() {
-            let end2 = self.buf.insert(pos, text);
-            edits.push(Edit::Insert {
-                pos,
-                text: text.to_string(),
-            });
-            end2
-        } else {
-            pos
-        };
-        if !edits.is_empty() {
-            // 連続1文字入力のみ coalesce (選択削除を伴わないとき)
-            self.undo.push(
-                UndoEntry {
-                    edits,
-                    caret_before: cb,
-                    caret_after: after,
-                },
-                coalesce && s == e,
-            );
-        }
+        let after = editing::apply_edit(&mut self.buf, &mut self.undo, s, e, cb, text, coalesce);
         Some(EditResult {
             caret: self.to_char(after),
             line_count: self.buf.line_count(),
@@ -1322,71 +1044,29 @@ impl Doc {
             });
         }
         let cb = self.to_byte(caret_before);
-        let mut indexed: Vec<_> = items.into_iter().enumerate().collect();
-        indexed.sort_by(|(_, a), (_, b)| {
-            b.start
-                .line
-                .cmp(&a.start.line)
-                .then_with(|| b.start.col.cmp(&a.start.col))
-        });
-        let mut edits = Vec::new();
-        let mut carets: Vec<Option<Pos>> = vec![None; indexed.len()];
-        for (index, item) in indexed {
-            let start = self.to_byte(item.start);
-            let end = self.to_byte(item.end);
-            if start < end {
-                let removed = self.buf.delete(start, end);
-                edits.push(Edit::Delete {
-                    start,
-                    text: removed,
-                });
-            }
-            let after = if item.text.is_empty() {
-                start
-            } else {
-                let after = self.buf.insert(start, &item.text);
-                edits.push(Edit::Insert {
-                    pos: start,
-                    text: item.text,
-                });
-                after
-            };
-            for caret in carets.iter_mut().flatten() {
-                if caret.line > end.line {
-                    caret.line = after.line + (caret.line - end.line);
-                } else if caret.line == end.line && *caret >= end {
-                    caret.line = after.line;
-                    caret.col = after.col + (caret.col - end.col);
-                }
-            }
-            carets[index] = Some(after);
-        }
-        let carets: Vec<Pos> = carets
+        let byte_items = items
             .into_iter()
-            .map(|caret| caret.unwrap_or(cb))
+            .enumerate()
+            .map(|(index, item)| ByteEdit {
+                index,
+                start: self.to_byte(item.start),
+                end: self.to_byte(item.end),
+                text: item.text,
+            })
             .collect();
-        if !edits.is_empty() {
-            let caret_after = carets.get(primary_index).copied().unwrap_or(cb);
-            self.undo.push(
-                UndoEntry {
-                    edits,
-                    caret_before: cb,
-                    caret_after,
-                },
-                false,
-            );
-        }
+        let result = editing::apply_edit_many(&mut self.buf, &mut self.undo, byte_items, cb, primary_index);
         Some(EditManyResult {
-            carets: carets
+            carets: result
+                .carets
                 .into_iter()
                 .map(|caret| self.to_char(caret))
                 .collect(),
-            line_count: self.buf.line_count(),
+            line_count: result.line_count,
         })
     }
 
     pub fn undo(&mut self) -> Option<EditResult> {
-        let (caret, _touched) = self.undo.undo(&mut self.buf)?;
+        let caret = editing::undo(&mut self.buf, &mut self.undo)?;
         Some(EditResult {
             caret: self.to_char(caret),
             line_count: self.buf.line_count(),
@@ -1394,7 +1074,7 @@ impl Doc {
     }
 
     pub fn redo(&mut self) -> Option<EditResult> {
-        let (caret, _touched) = self.undo.redo(&mut self.buf)?;
+        let caret = editing::redo(&mut self.buf, &mut self.undo)?;
         Some(EditResult {
             caret: self.to_char(caret),
             line_count: self.buf.line_count(),
@@ -1410,17 +1090,8 @@ impl Doc {
         forward: bool,
         match_case: bool,
     ) -> Option<FindResult> {
-        if pat.is_empty() {
-            return None;
-        }
-        if forward {
-            return match self.find_step(pat, from, match_case, None, usize::MAX) {
-                FindOutcome::Found { start, end } => Some(FindResult { start, end }),
-                _ => None,
-            };
-        }
         let start = self.to_byte(from);
-        let (s, e) = find_backward(&self.buf, pat, start, match_case, true)?;
+        let (s, e) = search_replace::find(&self.buf, pat, start, forward, match_case)?;
         Some(FindResult {
             start: self.to_char(s),
             end: self.to_char(e),
@@ -1440,21 +1111,14 @@ impl Doc {
         cursor: Option<FindCursor>,
         budget: usize,
     ) -> FindOutcome {
-        if pat.is_empty() {
-            return FindOutcome::NotFound;
-        }
         let start = self.to_byte(from);
-        let cur = cursor.unwrap_or(FindCursor {
-            wrapped: false,
-            line: start.line,
-        });
-        match find_chunk(&self.buf, pat, start, match_case, cur, budget, true) {
-            ChunkStep::Found(s, e) => FindOutcome::Found {
+        match search_replace::find_step(&self.buf, pat, start, match_case, cursor, budget) {
+            FindStep::Found(s, e) => FindOutcome::Found {
                 start: self.to_char(s),
                 end: self.to_char(e),
             },
-            ChunkStep::More(c) => FindOutcome::More { cursor: c },
-            ChunkStep::NotFound => FindOutcome::NotFound,
+            FindStep::More(cursor) => FindOutcome::More { cursor },
+            FindStep::NotFound => FindOutcome::NotFound,
         }
     }
 
@@ -1476,108 +1140,32 @@ impl Doc {
                 line_count: self.buf.line_count(),
             };
         }
-        const SCAN_BUDGET: usize = 20_000;
-        let mut prog = self.replace_progress.take().unwrap_or_default();
-        let mut replaced = 0;
-        loop {
-            if replaced >= budget.max(1) {
-                let result = ReplaceChunkResult {
-                    done: false,
-                    count: prog.count,
-                    caret: self.to_char(prog.pos),
-                    line_count: self.buf.line_count(),
-                };
-                self.replace_progress = Some(prog);
-                return result;
-            }
-            let cur = prog.find_cursor.unwrap_or(FindCursor {
-                wrapped: false,
-                line: prog.pos.line,
-            });
-            match find_chunk(
-                &self.buf,
-                pat,
-                prog.pos,
-                match_case,
-                cur,
-                SCAN_BUDGET,
-                false,
-            ) {
-                ChunkStep::Found(s, e) => {
-                    prog.find_cursor = None;
-                    let removed = self.buf.delete(s, e);
-                    prog.edits.push(Edit::Delete {
-                        start: s,
-                        text: removed,
-                    });
-                    let end = self.buf.insert(s, rep);
-                    prog.edits.push(Edit::Insert {
-                        pos: s,
-                        text: rep.to_string(),
-                    });
-                    prog.pos = end;
-                    prog.count += 1;
-                    replaced += 1;
-                }
-                ChunkStep::More(c) => {
-                    prog.find_cursor = Some(c);
-                    let result = ReplaceChunkResult {
-                        done: false,
-                        count: prog.count,
-                        caret: self.to_char(prog.pos),
-                        line_count: self.buf.line_count(),
-                    };
-                    self.replace_progress = Some(prog);
-                    return result;
-                }
-                ChunkStep::NotFound => {
-                    let caret = self.to_char(prog.pos);
-                    let line_count = self.buf.line_count();
-                    let count = prog.count;
-                    if count > 0 {
-                        self.undo.push(
-                            UndoEntry {
-                                edits: prog.edits,
-                                caret_before: Pos::default(),
-                                caret_after: prog.pos,
-                            },
-                            false,
-                        );
-                    }
-                    self.replace_progress = None;
-                    return ReplaceChunkResult {
-                        done: true,
-                        count,
-                        caret,
-                        line_count,
-                    };
-                }
-            }
+        let result = search_replace::replace_all_chunk(
+            &mut self.buf,
+            &mut self.undo,
+            &mut self.replace_progress,
+            pat,
+            rep,
+            match_case,
+            budget,
+        );
+        ReplaceChunkResult {
+            done: result.done,
+            count: result.count,
+            caret: self.to_char(result.caret),
+            line_count: self.buf.line_count(),
         }
     }
 
     // 進行中の全置換を打ち切り、ここまでの変更を1つの UndoEntry としてコミットする
     // (ユーザーがヒット数超過の確認ダイアログでキャンセルした場合など)。
     pub fn replace_all_cancel(&mut self) -> EditResult {
-        if let Some(prog) = self.replace_progress.take() {
-            let caret = self.to_char(prog.pos);
-            if prog.count > 0 {
-                self.undo.push(
-                    UndoEntry {
-                        edits: prog.edits,
-                        caret_before: Pos::default(),
-                        caret_after: prog.pos,
-                    },
-                    false,
-                );
-            }
-            return EditResult {
-                caret,
-                line_count: self.buf.line_count(),
-            };
-        }
+        let caret = search_replace::replace_all_cancel(
+            &mut self.undo,
+            &mut self.replace_progress,
+        );
         EditResult {
-            caret: self.to_char(Pos::default()),
+            caret: self.to_char(caret),
             line_count: self.buf.line_count(),
         }
     }
@@ -1738,203 +1326,12 @@ impl Doc {
     }
 }
 
-fn image_extension(mime_type: &str) -> Option<&'static str> {
-    match mime_type
-        .split(';')
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "image/apng" => Some("apng"),
-        "image/avif" => Some("avif"),
-        "image/png" => Some("png"),
-        "image/jpeg" => Some("jpg"),
-        "image/gif" => Some("gif"),
-        "image/webp" => Some("webp"),
-        "image/bmp" => Some("bmp"),
-        "image/svg+xml" => Some("svg"),
-        "image/x-icon" | "image/vnd.microsoft.icon" => Some("ico"),
-        _ => None,
-    }
-}
-
-fn archive_entry_parent(entry: &str) -> &str {
-    entry
-        .rsplit_once('/')
-        .map(|(parent, _)| parent)
-        .unwrap_or("")
-}
-
-fn archive_entry_stem(entry: &str) -> Option<&str> {
-    let name = entry.rsplit('/').next()?;
-    let stem = name.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(name);
-    (!stem.is_empty()).then_some(stem)
-}
-
-fn archive_join(parent: &str, child: &str) -> String {
-    if parent.is_empty() {
-        child.to_string()
-    } else {
-        format!("{parent}/{child}")
-    }
-}
-
-fn valid_archive_entry_path(entry: &str) -> bool {
-    !entry.is_empty()
-        && !entry.starts_with('/')
-        && !entry.starts_with('\\')
-        && !entry.split(['/', '\\']).any(|part| part == "..")
-}
-
-fn next_archive_image_name(
-    entries: &[String],
-    directory: &str,
-    extension: &str,
-) -> io::Result<String> {
-    let prefix = format!("{}/", directory.replace('\\', "/").to_lowercase());
-    for index in 1..=10_000usize {
-        let stem = if index == 1 {
-            "pasted-image".to_string()
-        } else {
-            format!("pasted-image-{index}")
-        };
-        let name = format!("{stem}.{extension}");
-        let full = format!("{prefix}{}", name.to_lowercase());
-        if !entries
-            .iter()
-            .any(|entry| entry.replace('\\', "/").to_lowercase() == full)
-        {
-            return Ok(name);
-        }
-    }
-    Err(io::Error::new(
-        io::ErrorKind::AlreadyExists,
-        "画像ファイル名を決められません",
-    ))
-}
-
-fn referenced_image_files(buf: &TextBuffer) -> HashSet<String> {
-    let mut referenced = HashSet::new();
-    for line in 0..buf.line_count() {
-        let text = buf.line(line);
-        let lower = text.to_ascii_lowercase();
-        let mut from = 0;
-        while let Some(relative) = lower[from..].find("<img") {
-            let start = from + relative;
-            let Some(end_relative) = lower[start..].find('>') else {
-                break;
-            };
-            let end = start + end_relative;
-            if let Some(src) = image_src_in_tag(&text[start..=end]) {
-                if let Some(name) = image_name_from_src(&src) {
-                    referenced.insert(name);
-                }
-            }
-            from = end + 1;
-        }
-    }
-    referenced
-}
-
-fn image_src_in_tag(tag: &str) -> Option<String> {
-    let lower = tag.to_ascii_lowercase();
-    let mut from = 0;
-    while let Some(relative) = lower[from..].find("src") {
-        let start = from + relative;
-        let before_ok = start == 0 || !lower.as_bytes()[start - 1].is_ascii_alphanumeric();
-        let after = start + 3;
-        let after_ok = after == lower.len()
-            || lower.as_bytes()[after].is_ascii_whitespace()
-            || lower.as_bytes()[after] == b'=';
-        if before_ok && after_ok {
-            let mut equal = after;
-            while equal < lower.len() && lower.as_bytes()[equal].is_ascii_whitespace() {
-                equal += 1;
-            }
-            if equal < lower.len() && lower.as_bytes()[equal] == b'=' {
-                let mut value = equal + 1;
-                while value < tag.len() && tag.as_bytes()[value].is_ascii_whitespace() {
-                    value += 1;
-                }
-                if value < tag.len() && matches!(tag.as_bytes()[value], b'"' | b'\'') {
-                    let quote = tag.as_bytes()[value];
-                    let begin = value + 1;
-                    let end = tag.as_bytes()[begin..]
-                        .iter()
-                        .position(|byte| *byte == quote)?;
-                    return Some(tag[begin..begin + end].to_string());
-                }
-                let value_end = tag[value..]
-                    .find(char::is_whitespace)
-                    .map(|end| value + end)
-                    .unwrap_or(tag.len());
-                return Some(tag[value..value_end].trim_end_matches('/').to_string());
-            }
-        }
-        from = after;
-    }
-    None
-}
-
-fn image_name_from_src(src: &str) -> Option<String> {
-    let parts: Vec<String> = src
-        .replace('\\', "/")
-        .split('/')
-        .map(|part| part.to_lowercase())
-        .collect();
-    match parts.as_slice() {
-        [root, name] if root == "image" && valid_image_path_part(name) => {
-            Some(format!("image/{name}"))
-        }
-        [root, memo, name]
-            if root == "image_markdown"
-                && valid_image_path_part(memo)
-                && valid_image_path_part(name) =>
-        {
-            Some(format!("image_markdown/{memo}/{name}"))
-        }
-        _ => None,
-    }
-}
-
-fn valid_image_path_part(value: &str) -> bool {
-    !value.is_empty() && value != "." && value != ".."
-}
-
-fn cleanup_image_dir(dir: &Path, prefix: &str, referenced: &HashSet<String>) -> io::Result<()> {
-    if !dir.is_dir() {
-        return Ok(());
-    }
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        if !entry.file_type()?.is_file() {
-            continue;
-        }
-        let name = entry.file_name().to_string_lossy().to_lowercase();
-        if !referenced.contains(&format!("{prefix}/{name}")) {
-            std::fs::remove_file(entry.path())?;
-        }
-    }
-    remove_empty_dir(dir)
-}
-
-fn remove_empty_dir(dir: &Path) -> io::Result<()> {
-    if !dir.is_dir() {
-        return Ok(());
-    }
-    if std::fs::read_dir(dir)?.next().is_none() {
-        let _ = std::fs::remove_dir(dir);
-    }
-    Ok(())
-}
-
 // ---- 検索 ----
 // 単一行に収まるパターンの1行内マッチ判定
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::File;
 
     // Feature: 貼り付け画像の形式判定
     // Scenario: UIが扱う画像MIMEを文書保存側でも拡張子へ変換する
@@ -1943,10 +1340,10 @@ mod tests {
     // Then: 対応形式だけ対応する拡張子を返し、非対応形式はNoneを返す
     #[test]
     fn image_mime_types_are_mapped_to_extensions() {
-        assert_eq!(image_extension("image/apng"), Some("apng"));
-        assert_eq!(image_extension("image/avif"), Some("avif"));
-        assert_eq!(image_extension("image/x-icon; charset=binary"), Some("ico"));
-        assert_eq!(image_extension("image/tiff"), None);
+        assert_eq!(crate::protocol::image_extension_for_mime("image/apng"), Some("apng"));
+        assert_eq!(crate::protocol::image_extension_for_mime("image/avif"), Some("avif"));
+        assert_eq!(crate::protocol::image_extension_for_mime("image/x-icon; charset=binary"), Some("ico"));
+        assert_eq!(crate::protocol::image_extension_for_mime("image/tiff"), None);
     }
 
     struct FakeArchivePort;
@@ -2485,7 +1882,7 @@ mod tests {
     fn document_source_derives_kind_and_editability() {
         let untitled = DocumentSource::untitled();
         assert!(!untitled.is_view_only());
-        assert_eq!(untitled.kind(), DocKind::Text);
+        assert_eq!(untitled.kind(), SourceKind::Text);
         assert_eq!(untitled.folder_root(), None);
 
         let file = DocumentSource::file(PathBuf::from("memo.txt"), None, None);
@@ -2498,7 +1895,7 @@ mod tests {
             ..DocumentSource::untitled()
         };
         assert!(!folder.is_view_only());
-        assert_eq!(folder.kind(), DocKind::Text);
+        assert_eq!(folder.kind(), SourceKind::Text);
         assert_eq!(folder.folder_root(), Some(Path::new("workspace")));
         assert_eq!(folder.path(), None, "未選択のフォルダは保存先を持たない");
     }

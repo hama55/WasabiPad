@@ -13,6 +13,7 @@ import { MENU_ICON } from "./menu-icons";
 import { MENU_LABELS } from "./menu-labels";
 import { viewerFormatIcon, VIEWER_FORMAT_LABELS } from "./format";
 import { LineCache } from "./line-cache";
+import { EditorMutationController } from "./editor-mutation";
 import { LiveViewers } from "./live-viewers";
 import { lineNumberGroups } from "./line-number";
 import { Selection } from "./selection";
@@ -37,11 +38,7 @@ import {
   wordBounds,
 } from "./editor-math";
 import type { EditorViewState } from "./editor-view-state";
-import {
-  newlineWithLeadingTabs,
-  planLineIndent,
-  selectedLineRange,
-} from "./editor-edit-plan";
+import { selectedLineRange } from "./editor-edit-plan";
 
 const OVERSCAN = 8;
 export type { EditorViewState } from "./editor-view-state";
@@ -116,7 +113,7 @@ export class VirtualEditor {
   private dragCleanup: (() => void) | null = null;
   private ctrlDown = false;
   private composing = false;
-  private chain: Promise<unknown> = Promise.resolve();
+  private mutation: EditorMutationController;
   private findGen = 0; // 検索ループの世代。closeやEnter連打で古いループを打ち切るため
   private lastFindMatch: { start: Pos; end: Pos; pat: string; matchCase: boolean } | null = null; // 連続置換が対象にしてよい直前の一致
   private busy = false; // 全置換チャンク実行中は入力を無効化 (レジューム状態の破損防止)
@@ -156,6 +153,15 @@ export class VirtualEditor {
       },
       textInRange: (start, end) => this.lineCache.textInRange(start, end),
       onError: (error) => this.reportActionError("プレビューを更新できませんでした", error),
+    });
+    this.mutation = new EditorMutationController({
+      doc: this.doc,
+      selection: this.sel,
+      lineCache: this.lineCache,
+      lineCount: () => this.lineCount,
+      isReadOnly: () => this.readOnly,
+      applyResult: (result, fromLine, edits) => this.applyResult(result, fromLine, edits),
+      renderAfterEdit: () => this.renderAfterEdit(),
     });
     this.onDocChange = ports.onDocChange;
     this.onCursor = ports.onCursor;
@@ -1264,12 +1270,6 @@ export class VirtualEditor {
   }
 
   // ---- 編集 (backend へ委譲・順序保証) ----
-  private run<T>(fn: () => Promise<T>): Promise<T> {
-    const p = this.chain.then(fn);
-    this.chain = p.catch(() => {});
-    return p;
-  }
-
   private applyResult(r: api.EditResult, fromLine: number, edits: api.EditManyItem[] = []) {
     const oldScrollTop = this.scroll.scrollTop;
     const oldTopLine = this.wrap || this.metrics.scaleMode ? this.topLineF : this.pxToLine(oldScrollTop);
@@ -1321,117 +1321,13 @@ export class VirtualEditor {
     this.notifyCursor();
   }
 
-  private insertText(text: string): Promise<void> {
-    if (this.readOnly) return Promise.resolve();
-    if (this.sel.secondary.length) {
-      return this.run(async () => {
-        this.sel.multiCaretX = null;
-        const carets = this.sel.all();
-        const edits = carets.map((pos) => ({ start: pos, end: pos, text }));
-        const fromLine = Math.min(...carets.map((pos) => pos.line));
-        const r = await this.doc.editMany(edits, this.sel.caret, 0);
-        this.applyResult({ caret: r.carets[0], line_count: r.line_count }, fromLine, edits);
-        this.sel.caret = r.carets[0];
-        this.sel.anchor = this.sel.caret;
-        this.sel.secondary = r.carets.slice(1);
-        await this.renderAfterEdit();
-      });
-    }
-    return this.run(async () => {
-      const [s, e] = this.sel.norm();
-      const coalesce = !this.sel.hasSel() && text.length === 1 && text !== "\n";
-      const r = await this.doc.edit(s, e, this.sel.caret, text, coalesce);
-      this.applyResult(r, s.line, [{ start: s, end: e, text }]);
-      await this.renderAfterEdit();
-    });
-  }
-
-  private insertNewlineWithIndent(): Promise<void> {
-    if (this.readOnly) return Promise.resolve();
-    if (this.sel.secondary.length) return this.insertText("\n");
-    return this.run(async () => {
-      const [s, e] = this.sel.norm();
-      const line = await this.lineCache.line(s.line);
-      const text = newlineWithLeadingTabs(line);
-      const r = await this.doc.edit(s, e, this.sel.caret, text, false);
-      this.applyResult(r, s.line, [{ start: s, end: e, text }]);
-      await this.renderAfterEdit();
-    });
-  }
-
-  private indentSelection(): Promise<void> {
-    const plan = planLineIndent(this.sel.anchor, this.sel.caret);
-    if (!plan) return this.insertText("\t");
-    if (this.readOnly) return Promise.resolve();
-    return this.run(async () => {
-      const caret = { ...this.sel.caret };
-      const r = await this.doc.editMany(
-        plan.edits,
-        caret,
-        plan.primaryIndex,
-      );
-      this.applyResult({ caret: plan.nextCaret, line_count: r.line_count }, plan.fromLine, plan.edits);
-      this.sel.anchor = plan.nextAnchor;
-      this.sel.caret = plan.nextCaret;
-      await this.renderAfterEdit();
-    });
-  }
-
-  private deleteSel(): Promise<void> {
-    return this.run(async () => {
-      const [s, e] = this.sel.norm();
-      const r = await this.doc.edit(s, e, this.sel.caret, "", false);
-      this.applyResult(r, s.line, [{ start: s, end: e, text: "" }]);
-      await this.renderAfterEdit();
-    });
-  }
-
-  private backspace(): Promise<void> {
-    if (this.readOnly) return Promise.resolve();
-    if (this.sel.hasSel()) {
-      return this.deleteSel();
-    }
-    return this.run(async () => {
-      const c = this.sel.caret;
-      let s: Pos;
-      if (c.col > 0) s = { line: c.line, col: c.col - 1 };
-      else if (c.line > 0) s = { line: c.line - 1, col: await this.lineCache.lineLength(c.line - 1) };
-      else return;
-      const r = await this.doc.edit(s, c, c, "", false);
-      this.applyResult(r, s.line, [{ start: s, end: c, text: "" }]);
-      await this.renderAfterEdit();
-    });
-  }
-
-  private deleteForward(): Promise<void> {
-    if (this.readOnly) return Promise.resolve();
-    if (this.sel.hasSel()) {
-      return this.deleteSel();
-    }
-    return this.run(async () => {
-      const c = this.sel.caret;
-      const len = await this.lineCache.lineLength(c.line);
-      let e: Pos;
-      if (c.col < len) e = { line: c.line, col: c.col + 1 };
-      else if (c.line + 1 < this.lineCount) e = { line: c.line + 1, col: 0 };
-      else return;
-      const r = await this.doc.edit(c, e, c, "", false);
-      this.applyResult(r, c.line, [{ start: c, end: e, text: "" }]);
-      await this.renderAfterEdit();
-    });
-  }
-
-  private doUndo(redo: boolean): Promise<void> {
-    if (this.readOnly) return Promise.resolve();
-    return this.run(async () => {
-      const r = redo ? await this.doc.redo() : await this.doc.undo();
-      if (!r) return;
-      this.applyResult(r, 0);
-      this.sel.secondary = [];
-      this.sel.multiCaretX = null;
-      await this.renderAfterEdit();
-    });
-  }
+  private insertText(text: string): Promise<void> { return this.mutation.insertText(text); }
+  private insertNewlineWithIndent(): Promise<void> { return this.mutation.insertNewlineWithIndent(); }
+  private indentSelection(): Promise<void> { return this.mutation.indentSelection(); }
+  private deleteSel(): Promise<void> { return this.mutation.deleteSel(); }
+  private backspace(): Promise<void> { return this.mutation.backspace(); }
+  private deleteForward(): Promise<void> { return this.mutation.deleteForward(); }
+  private doUndo(redo: boolean): Promise<void> { return this.mutation.undo(redo); }
 
   private async copy(cut: boolean) {
     if (!this.sel.hasSel()) return;
@@ -1475,31 +1371,7 @@ export class VirtualEditor {
   }
 
   private moveSelection(start: Pos, end: Pos, target: Pos, copy: boolean) {
-    if (this.readOnly) return Promise.resolve();
-    if (cmp(target, start) >= 0 && cmp(target, end) <= 0) return Promise.resolve();
-    return this.run(async () => {
-      const text = await this.lineCache.textInRange(start, end);
-      let result: api.EditResult;
-      let edits: api.EditManyItem[];
-      let fromLine: number;
-      if (copy) {
-        edits = [{ start: target, end: target, text }];
-        result = await this.doc.edit(target, target, target, text, false);
-        fromLine = target.line;
-      } else {
-        // editMany は開始位置の降順で適用されるため、target は削除前の座標を渡す。
-        // 削除と挿入を同じ UndoEntry にまとめ、Undo 1回で移動全体を戻せるようにする。
-        edits = [
-          { start, end, text: "" },
-          { start: target, end: target, text },
-        ];
-        const many = await this.doc.editMany(edits, target, 1);
-        result = { caret: many.carets[1] ?? target, line_count: many.line_count };
-        fromLine = Math.min(start.line, target.line);
-      }
-      this.applyResult(result, fromLine, edits);
-      await this.renderAfterEdit();
-    });
+    return this.mutation.moveSelection(start, end, target, copy);
   }
 
   private async paste() {

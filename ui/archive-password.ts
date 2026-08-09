@@ -3,8 +3,9 @@
 // 入力ダイアログ → set_archive_password → 元の操作をやり直す、を合うまで繰り返す。
 import * as api from "./api";
 import { promptFields } from "./prompt";
+import { PASSWORD_ERROR_MARKER } from "./generated/Protocol";
 
-export const PASSWORD_ERROR_MARKER = "7z-password";
+export { PASSWORD_ERROR_MARKER } from "./generated/Protocol";
 
 // 入力ダイアログをキャンセルした印。呼び出し側はエラー表示せず静かに中断する。
 export class PasswordCancelled extends Error {}

@@ -4,7 +4,7 @@ use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 
 // フォルダ相対パスとアーカイブ内エントリを結ぶUI共有表現。
-pub const ARCHIVE_ENTRY_SEPARATOR: &str = "::";
+pub const ARCHIVE_ENTRY_SEPARATOR: &str = crate::protocol::ARCHIVE_ENTRY_SEPARATOR;
 
 // ツリー1回の展開で返す上限。巨大ディレクトリでも列挙時間を一定に抑える。
 const MAX_ENTRIES: usize = 2000;

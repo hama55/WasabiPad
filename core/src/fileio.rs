@@ -4,6 +4,7 @@
 // (外部変更は FileStamp の比較で検知する)。保存はストリーム書き。
 use crate::buffer::{Store, TextBuffer};
 use crate::hugebuf::HugeBuf;
+use crate::protocol;
 use encoding_rs::SHIFT_JIS;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -24,10 +25,10 @@ pub enum Encoding {
 impl Encoding {
     pub fn label(&self) -> &'static str {
         match self {
-            Encoding::Utf8 { bom: false } => "UTF-8",
-            Encoding::Utf8 { bom: true } => "UTF-8 (BOM)",
-            Encoding::ShiftJis => "Shift-JIS",
-            Encoding::Utf16Le => "UTF-16LE",
+            Encoding::Utf8 { bom: false } => protocol::encoding_label("utf8"),
+            Encoding::Utf8 { bom: true } => protocol::encoding_label("utf8bom"),
+            Encoding::ShiftJis => protocol::encoding_label("sjis"),
+            Encoding::Utf16Le => protocol::encoding_label("utf16le"),
         }
     }
 }
@@ -78,8 +79,8 @@ pub enum Eol {
 impl Eol {
     pub fn label(&self) -> &'static str {
         match self {
-            Eol::Crlf => "CRLF",
-            Eol::Lf => "LF",
+            Eol::Crlf => protocol::eol_label("crlf"),
+            Eol::Lf => protocol::eol_label("lf"),
         }
     }
     pub fn as_str(&self) -> &'static str {

@@ -4,12 +4,12 @@ import { resolve } from "node:path";
 const root = resolve(import.meta.dirname, "..");
 const read = (path) => readFileSync(resolve(root, path), "utf8");
 const backend = read("src-tauri/src/main.rs");
-const coreDoc = read("core/src/doc.rs");
+const documentTypes = read("core/src/document_types.rs");
 const fileio = read("core/src/fileio.rs");
-const sevenz = read("core/src/sevenz.rs");
+const protocol = JSON.parse(read("shared/protocol.json"));
+const generatedProtocol = read("ui/generated/Protocol.ts");
+const rustProtocol = read("core/src/protocol.rs");
 const frontend = read("ui/api.ts");
-const archivePath = read("ui/archive-path.ts");
-const archivePassword = read("ui/archive-password.ts");
 const folder = read("core/src/folder.rs");
 const workspaceSearch = read("core/src/workspace_search.rs");
 const generatedSearchOptions = read("ui/generated/WorkspaceSearchOptions.ts");
@@ -207,7 +207,7 @@ const eolVariants = names(/^\s*(\w+),\s*$/gm, blockAfter(fileio, "pub enum Eol")
   .map((name) => name.toLowerCase());
 assertSameSet("EOL wire values", eolVariants, tsUnion("Eol", generatedEol));
 
-const docKinds = names(/^\s*(\w+),\s*$/gm, blockAfter(coreDoc, "pub enum DocKind"))
+const docKinds = names(/^\s*(\w+),\s*$/gm, blockAfter(documentTypes, "pub enum DocKind"))
   .map((name) => name.toLowerCase());
 assertSameSet("document kind wire values", docKinds, tsUnion("DocKind", generatedDocKind));
 
@@ -247,15 +247,15 @@ if (!progressMax || !maxRenderedRows || progressMax > maxRenderedRows) {
 // Rust DTO から生成した型のフィールド集合を確認する。生成物のヘッダだけを確認すると、
 // 古い生成物を残したままでも通るため、追加・改名・削除の取りこぼしをここで止める。
 const wireStructs = [
-  [coreDoc, "DocInfo", "DocInfo"],
-  [coreDoc, "PosC", "Pos"],
-  [coreDoc, "EditResult", "EditResult"],
-  [coreDoc, "EditManyItem", "EditManyItem"],
-  [coreDoc, "EditManyResult", "EditManyResult"],
-  [coreDoc, "FindResult", "FindResult"],
-  [coreDoc, "FindCursor", "FindCursor"],
-  [coreDoc, "WorkspaceSearchResult", "WorkspaceSearchResult"],
-  [coreDoc, "ReplaceChunkResult", "ReplaceChunkResult"],
+  [documentTypes, "DocInfo", "DocInfo"],
+  [documentTypes, "PosC", "Pos"],
+  [documentTypes, "EditResult", "EditResult"],
+  [documentTypes, "EditManyItem", "EditManyItem"],
+  [documentTypes, "EditManyResult", "EditManyResult"],
+  [documentTypes, "FindResult", "FindResult"],
+  [documentTypes, "FindCursor", "FindCursor"],
+  [documentTypes, "WorkspaceSearchResult", "WorkspaceSearchResult"],
+  [documentTypes, "ReplaceChunkResult", "ReplaceChunkResult"],
   [folder, "FolderEntry", "FolderEntry"],
   [workspaceSearch, "SearchOptions", "WorkspaceSearchOptions"],
   [workspaceSearch, "WorkspaceSearchOutcome", "WorkspaceSearchOutcome"],
@@ -271,18 +271,32 @@ for (const [source, structName, typeName, renameAll] of wireStructs) {
   assertSameSet(`${structName} generated wire fields`, wireFields, generatedStructFields(typeName));
 }
 
-// パスワード失敗は Rust のエラー文字列を UI が再試行トリガーとして読む。
-// 片方だけ改名すると、暗号化アーカイブが「ただのエラー」になり再試行できない。
-const passwordMarker = sevenz.match(/pub const PASSWORD_ERROR_MARKER: &str = "([^"]+)"/)?.[1];
-const uiPasswordMarker = archivePassword.match(/const PASSWORD_ERROR_MARKER = "([^"]+)"/)?.[1];
-if (!passwordMarker || !uiPasswordMarker || passwordMarker !== uiPasswordMarker) {
-  fail(`archive password marker; core=${passwordMarker ?? "<not found>"}, ui=${uiPasswordMarker ?? "<not found>"}`);
+// 機械プロトコルは shared/protocol.json から生成され、Rust/TypeScript双方が同じ値を使う。
+const generatedProtocolValue = (source, name, pattern) => source.match(pattern)?.[1];
+const protocolValues = [
+  ["archive entry separator", protocol.archiveEntrySeparator,
+    generatedProtocolValue(generatedProtocol, "ARCHIVE_ENTRY_SEPARATOR", /export const ARCHIVE_ENTRY_SEPARATOR = "([^"]+)"/),
+    generatedProtocolValue(rustProtocol, "ARCHIVE_ENTRY_SEPARATOR", /ARCHIVE_ENTRY_SEPARATOR: &str = "([^"]+)"/)],
+  ["archive password marker", protocol.passwordErrorMarker,
+    generatedProtocolValue(generatedProtocol, "PASSWORD_ERROR_MARKER", /export const PASSWORD_ERROR_MARKER = "([^"]+)"/),
+    generatedProtocolValue(rustProtocol, "PASSWORD_ERROR_MARKER", /PASSWORD_ERROR_MARKER: &str = "([^"]+)"/)],
+];
+for (const [label, expected, ...actuals] of protocolValues) {
+  if (!expected || actuals.some((actual) => actual !== expected)) {
+    fail(`${label}; expected=${expected ?? "<not found>"}, actual=[${actuals.join(", ")}]`);
+  }
 }
-
-const archiveSeparator = folder.match(/pub const ARCHIVE_ENTRY_SEPARATOR: &str = "([^"]+)"/)?.[1];
-const uiArchiveSeparator = archivePath.match(/export const ARCHIVE_ENTRY_SEPARATOR = "([^"]+)"/)?.[1];
-if (!archiveSeparator || !uiArchiveSeparator || archiveSeparator !== uiArchiveSeparator) {
-  fail(`archive entry separator; core=${archiveSeparator ?? "<not found>"}, ui=${uiArchiveSeparator ?? "<not found>"}`);
+for (const [label, labels] of [
+  ["encoding", protocol.encodingLabels],
+  ["EOL", protocol.eolLabels],
+]) {
+  for (const [key, expected] of Object.entries(labels)) {
+    const uiValue = generatedProtocol.match(new RegExp(`\\"${key}\\": \\"([^\\"]+)\\"`))?.[1];
+    const rustValue = rustProtocol.match(new RegExp(`\\"${key}\\" => \\"([^\\"]+)\\"`))?.[1];
+    if (uiValue !== expected || rustValue !== expected) {
+      fail(`${label} label ${key}; expected=${expected}, ui=${uiValue ?? "<not found>"}, rust=${rustValue ?? "<not found>"}`);
+    }
+  }
 }
 
 for (const [uiName, rustName] of [

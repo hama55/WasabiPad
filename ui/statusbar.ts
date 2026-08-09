@@ -8,14 +8,9 @@ import { normalizeTheme, THEME_STORAGE_KEY, THEMES, type Theme } from "./theme";
 import { runAsyncBoundary } from "./async-boundary";
 import { viewerFormatSpec } from "./viewer-formats";
 import { reportErrorSafely } from "./report-error";
+import { ENCODING_LABELS } from "./generated/Protocol";
 
 const THEME_LABELS: Record<Theme, string> = { dark: "ダーク", light: "ライト" };
-const READ_ENCODING_LABELS: Record<ReadEncoding, string> = {
-  utf8: "UTF-8",
-  sjis: "Shift-JIS",
-  utf16le: "UTF-16LE",
-};
-
 function option(value: string, label: string): HTMLOptionElement {
   const element = document.createElement("option");
   element.value = value;
@@ -51,7 +46,7 @@ export class StatusBar {
       ...INDENT_SIZES.map((size) => option(String(size), `インデント: ${size}`)),
     );
     this.sourceEncodingSelect.replaceChildren(
-      ...READ_ENCODINGS.map((encoding) => option(encoding, READ_ENCODING_LABELS[encoding])),
+      ...READ_ENCODINGS.map((encoding) => option(encoding, ENCODING_LABELS[encoding])),
     );
     this.previewDelimiterInput.addEventListener("input", () => {
       this.run("CSV区切り文字を変更できませんでした", () => {
