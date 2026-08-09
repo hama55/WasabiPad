@@ -41,6 +41,13 @@ import type { EditorViewState } from "./editor-view-state";
 import { selectedLineRange } from "./editor-edit-plan";
 
 const OVERSCAN = 8;
+type RectangularClipboard = { text: string; rows: string[] };
+let rectangularClipboard: RectangularClipboard | null = null;
+
+function normalizeClipboardText(text: string): string {
+  return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
+
 export type { EditorViewState } from "./editor-view-state";
 
 function isPreviewLine(line: number, range: { start: Pos; end: Pos } | null): boolean {
@@ -377,6 +384,7 @@ export class VirtualEditor {
       col: Math.max(0, Math.min(charLen(caretText), state.caret.col)),
     };
     this.sel.secondary = [];
+    this.sel.block = null;
     this.sel.goalX = null;
     const topLine = Math.max(0, Math.min(this.maxTopLine(), state.topLine));
     if (this.wrap) this.setWrapAnchor(topLine, Math.max(0, state.wrapIntraLinePx));
@@ -702,7 +710,7 @@ export class VirtualEditor {
       this.sel.anchor.col === 0 && this.sel.caret.col === 0 && this.sel.caret.line > this.sel.anchor.line;
     const curLine = wholeLineSelectEnd ? this.sel.caret.line - 1 : this.sel.caret.line;
     const caretLines = new Set([curLine, ...this.sel.secondary.map((caret) => caret.line)]);
-    const selectedLines = selectedLineRange(this.sel.anchor, this.sel.caret);
+    const selectedLines = this.sel.blockBounds() ?? selectedLineRange(this.sel.anchor, this.sel.caret);
     this.renderVisibleLines(first, last);
     this.layoutVisibleLines(first, last, topLine, top);
 
@@ -1006,6 +1014,40 @@ export class VirtualEditor {
   }
 
   private appendSelection(frag: DocumentFragment, first: number, last: number) {
+    const block = this.sel.blockBounds();
+    if (block) {
+      for (let i = Math.max(first, block.first); i < Math.min(last, block.last + 1); i++) {
+        const str = this.lineCache.peek(i) ?? "";
+        const lineEl = this.lineElem(i);
+        const c0 = Math.min(block.left, charLen(str));
+        const c1 = Math.min(block.right, charLen(str));
+        if (this.wrap) {
+          const node = lineEl?.firstChild;
+          if (!node) continue;
+          const inner = this.inner.getBoundingClientRect();
+          const range = document.createRange();
+          range.setStart(node, charToU16(str, c0));
+          range.setEnd(node, charToU16(str, c1));
+          for (const rect of range.getClientRects()) {
+            const box = el("div", "ve-sel");
+            box.style.top = `${rect.top - inner.top}px`;
+            box.style.left = `${rect.left - inner.left}px`;
+            box.style.width = `${Math.max(2, rect.width)}px`;
+            box.style.height = `${rect.height}px`;
+            frag.insertBefore(box, frag.firstChild);
+          }
+        } else {
+          const x0 = lineEl ? this.colToX(lineEl, str, c0) : this.paddingLeft;
+          const x1 = lineEl ? this.colToX(lineEl, str, c1) : this.paddingLeft;
+          const box = el("div", "ve-sel");
+          box.style.top = `${this.rowTop(i)}px`;
+          box.style.left = `${x0}px`;
+          box.style.width = `${Math.max(2, x1 - x0)}px`;
+          frag.insertBefore(box, frag.firstChild);
+        }
+      }
+      return;
+    }
     if (cmp(this.sel.anchor, this.sel.caret) === 0) return;
     const [s, e] = cmp(this.sel.anchor, this.sel.caret) < 0 ? [this.sel.anchor, this.sel.caret] : [this.sel.caret, this.sel.anchor];
     if (this.wrap) {
@@ -1057,6 +1099,7 @@ export class VirtualEditor {
   private moveTo(pos: Pos, extend: boolean, keepGoal = false, keepSecondary = false) {
     if (!keepSecondary) {
       this.sel.secondary = [];
+      this.sel.block = null;
       this.sel.multiCaretX = null;
     }
     this.sel.caret = pos;
@@ -1252,8 +1295,21 @@ export class VirtualEditor {
   }
 
   // ---- 選択 ----
+  private async blockText(): Promise<string> {
+    const block = this.sel.blockBounds();
+    if (!block) return "";
+    const parts: string[] = [];
+    for (let line = block.first; line <= block.last; line += 1) {
+      const value = await this.lineCache.line(line);
+      const start = Math.min(block.left, charLen(value));
+      const end = Math.min(block.right, charLen(value));
+      parts.push([...value].slice(start, end).join(""));
+    }
+    return parts.join("\n");
+  }
+
   private selectionText(): string {
-    if (!this.sel.hasSel()) return "";
+    if (!this.sel.hasSel() || this.sel.blockBounds()) return "";
     const [s, e] = this.sel.norm();
     if (s.line === e.line) {
       const str = this.lineCache.peek(s.line) ?? "";
@@ -1299,6 +1355,8 @@ export class VirtualEditor {
     this.liveViewers.applyEdits(edits);
     this.sel.caret = r.caret;
     this.sel.anchor = r.caret;
+    this.sel.secondary = [];
+    this.sel.block = null;
     this.sel.goalX = null;
     this.onDocChange(this.lineCount);
     this.liveViewers.scheduleRefresh();
@@ -1331,9 +1389,12 @@ export class VirtualEditor {
 
   private async copy(cut: boolean) {
     if (!this.sel.hasSel()) return;
-    const [s, e] = this.sel.norm();
-    const text = await this.lineCache.textInRange(s, e);
+    const block = this.sel.blockBounds();
+    const text = block
+      ? await this.blockText()
+      : await this.lineCache.textInRange(...this.sel.norm());
     await writeClipboardText(text);
+    rectangularClipboard = block ? { text, rows: text.split("\n") } : null;
     if (cut && !this.readOnly) await this.deleteSel();
   }
 
@@ -1381,7 +1442,11 @@ export class VirtualEditor {
       await this.insertImage(image.bytes, image.mimeType);
       return;
     }
-    const text = (await readClipboardText()).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    const text = normalizeClipboardText(await readClipboardText());
+    if (rectangularClipboard?.text === text) {
+      await this.mutation.pasteBlock(rectangularClipboard.rows);
+      return;
+    }
     if (text) await this.insertText(text);
   }
 
@@ -1390,9 +1455,18 @@ export class VirtualEditor {
     const item = [...(event.clipboardData?.items ?? [])]
       .find((candidate) => candidate.type.toLowerCase().startsWith("image/"));
     const file = item?.getAsFile();
-    if (!file) return;
+    if (file) {
+      event.preventDefault();
+      this.dispatch("クリップボードから画像を貼り付けできませんでした", () => this.insertImageBlob(file));
+      return;
+    }
+    const text = normalizeClipboardText(event.clipboardData?.getData("text/plain") ?? "");
+    if (rectangularClipboard?.text !== text) return;
     event.preventDefault();
-    this.dispatch("クリップボードから画像を貼り付けできませんでした", () => this.insertImageBlob(file));
+    this.dispatch(
+      "矩形を貼り付けできませんでした",
+      () => this.mutation.pasteBlock(rectangularClipboard!.rows),
+    );
   }
 
   private async readClipboardImage(): Promise<{ bytes: number[]; mimeType: string } | null> {
@@ -1647,25 +1721,45 @@ export class VirtualEditor {
     e.preventDefault();
     this.focus();
     if (e.altKey) {
-      const base = this.sel.all();
-      const startLine = pos.line;
+      const base = this.sel.all().map((item) => ({ ...item }));
+      const origin = { ...pos };
+      const baseLines = [...new Set(base.map((item) => item.line))];
+      const existingColumn = baseLines.length > 1
+        && base.every((item) => item.col === base[0].col);
+      const baseColumn = existingColumn ? base[0].col : origin.col;
       const update = (ev: MouseEvent) => {
         const end = this.posFromPoint(ev.clientX, ev.clientY);
         if (!end) return;
-        const lo = Math.min(startLine, end.line);
-        const hi = Math.max(startLine, end.line);
-        const added: Pos[] = [];
-        for (let line = lo; line <= hi; line++) {
-          const text = this.lineCache.peek(line);
-          if (text !== undefined) added.push(this.posFromLineAndX(line, ev.clientX, text));
+        const blockLines = existingColumn
+          ? [...baseLines, origin.line, end.line]
+          : [origin.line, end.line];
+        const first = Math.min(...blockLines);
+        const last = Math.max(...blockLines);
+        if (baseColumn !== end.col) {
+          this.sel.block = {
+            anchor: { line: first, col: baseColumn },
+            caret: { line: last, col: end.col },
+          };
+          this.sel.anchor = this.sel.block.anchor;
+          this.sel.caret = this.sel.block.caret;
+          this.sel.secondary = [];
+        } else {
+          const lo = Math.min(origin.line, end.line);
+          const hi = Math.max(origin.line, end.line);
+          const added: Pos[] = [];
+          for (let line = lo; line <= hi; line++) {
+            const text = this.lineCache.peek(line);
+            if (text !== undefined) added.push(this.posFromLineAndX(line, ev.clientX, text));
+          }
+          const primary = added.find((item) => item.line === end.line) ?? origin;
+          const unique = [...base, ...added].filter(
+            (item, index, items) => items.findIndex((candidate) => cmp(candidate, item) === 0) === index
+          );
+          this.sel.block = null;
+          this.sel.caret = primary;
+          this.sel.anchor = primary;
+          this.sel.secondary = unique.filter((item) => cmp(item, primary) !== 0);
         }
-        const primary = added.find((item) => item.line === end.line) ?? pos;
-        const unique = [...base, ...added].filter(
-          (item, index, items) => items.findIndex((candidate) => cmp(candidate, item) === 0) === index
-        );
-        this.sel.caret = primary;
-        this.sel.anchor = primary;
-        this.sel.secondary = unique.filter((item) => cmp(item, primary) !== 0);
         this.sel.multiCaretX = null;
         this.sel.goalX = null;
         this.render();
@@ -1895,7 +1989,7 @@ export class VirtualEditor {
       addCustomItem({
         ...createRegisteredCommandMenu({
           path: commandPath,
-          value: () => this.lineCache.textInRange(start, end),
+          value: () => this.sel.blockBounds() ? this.blockText() : this.lineCache.textInRange(start, end),
           valueKind: "string",
         }, {
           ...this.registeredCommandPorts,

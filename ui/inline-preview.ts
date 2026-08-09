@@ -18,6 +18,7 @@ const {
 export interface InlinePreviewPorts {
   onAvailabilityChange?: (available: boolean) => void;
   onFormatChange?: (format: ViewerFormat) => void;
+  onDelimiterChange?: (delimiter: string) => void;
   onFontFamilyChange?: (family: string) => void;
   onFullscreenChange?: () => void | Promise<void>;
   onSelectionChange?: (selection: ViewerSelection) => void | Promise<void>;
@@ -55,6 +56,12 @@ export class InlinePreview {
       if (event.data?.type === FORMAT_CHANGE_MESSAGE) {
         if (isViewerFormat(event.data.format)) {
           this.notifyPort(() => this.ports.onFormatChange?.(event.data.format));
+        }
+        return;
+      }
+      if (event.data?.type === INLINE_PREVIEW_MESSAGES.DELIMITER_CHANGE_MESSAGE) {
+        if (typeof event.data.delimiter === "string" && event.data.delimiter) {
+          this.notifyPort(() => this.ports.onDelimiterChange?.(event.data.delimiter));
         }
         return;
       }

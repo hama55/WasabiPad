@@ -18,20 +18,31 @@ describe("Feature: editor edit plans", () => {
     expect(newlineWithLeadingTabs(line)).toBe(expected);
   });
 
-  // Given: anchor=`{line:3,col:0}`、caret=`{line:1,col:2}`の逆向き選択
+  // Given: anchor=`{line:3,col:0}`、caret=`{line:1,col:0}`の逆向き選択
   // When: `selectedLineRange`と`planLineIndent`
   // Then: range=`{first:1,last:2}`、edit開始行=`[1,2]`、nextAnchor=`{3,0}`、nextCaret=`{1,3}`、primaryIndex=0、anchorは不変
   it("Scenario: 終端col=0を除外し、逆向き選択を維持して複数行をindentする", () => {
     const anchor = { line: 3, col: 0 };
-    const caret = { line: 1, col: 2 };
+    const caret = { line: 1, col: 0 };
     const plan = planLineIndent(anchor, caret)!;
 
     expect(selectedLineRange(anchor, caret)).toEqual({ first: 1, last: 2 });
     expect(plan.edits.map((edit) => edit.start.line)).toEqual([1, 2]);
     expect(plan.nextAnchor).toEqual({ line: 3, col: 0 });
-    expect(plan.nextCaret).toEqual({ line: 1, col: 3 });
+    expect(plan.nextCaret).toEqual({ line: 1, col: 1 });
     expect(plan.primaryIndex).toBe(0);
     expect(anchor).toEqual({ line: 3, col: 0 });
+  });
+
+  // Given: 選択範囲が行頭を含まない
+  // When: `selectedLineRange`と`planLineIndent`を評価する
+  // Then: 行単位indentの対象外になる
+  it("Scenario: 行頭を含まない選択ではTab用の行indent計画を作らない", () => {
+    const anchor = { line: 0, col: 1 };
+    const caret = { line: 1, col: 1 };
+
+    expect(selectedLineRange(anchor, caret)).toBeNull();
+    expect(planLineIndent(anchor, caret)).toBeNull();
   });
 
   // Given: anchorとcaretがともに`{line:1,col:2}`

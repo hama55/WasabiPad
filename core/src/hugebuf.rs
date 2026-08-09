@@ -82,15 +82,29 @@ fn decode_bytes(enc: Encoding, mut b: &[u8]) -> String {
 impl HugeBuf {
     // UTF-16 (行分割が byte 単位でできない) は None → 通常読込へフォールバック
     pub fn open(file: File) -> io::Result<Option<(HugeBuf, Encoding, Eol)>> {
-        Self::open_with_encoding(file, None)
+        Self::open_with_encoding(file, None, None)
     }
 
     pub fn open_as(file: File, enc: Encoding) -> io::Result<Option<(HugeBuf, Encoding, Eol)>> {
-        Self::open_with_encoding(file, Some(enc))
+        Self::open_with_encoding(file, Some(enc), None)
     }
 
-    fn open_with_encoding(mut file: File, forced: Option<Encoding>) -> io::Result<Option<(HugeBuf, Encoding, Eol)>> {
+    pub fn open_with_progress(
+        file: File,
+        progress: Option<&mut crate::fileio::LoadProgress<'_>>,
+    ) -> io::Result<Option<(HugeBuf, Encoding, Eol)>> {
+        Self::open_with_encoding(file, None, progress)
+    }
+
+    pub fn open_with_encoding(
+        mut file: File,
+        forced: Option<Encoding>,
+        mut progress: Option<&mut crate::fileio::LoadProgress<'_>>,
+    ) -> io::Result<Option<(HugeBuf, Encoding, Eol)>> {
         let len = file.metadata()?.len();
+        if let Some(report) = progress.as_deref_mut() {
+            report(0, len);
+        }
         file.seek(SeekFrom::Start(0))?;
         // 先頭 1MB でエンコーディング/EOL 判定
         let head_len = len.min(1024 * 1024) as usize;
@@ -115,6 +129,7 @@ impl HugeBuf {
         let mut nlines: usize = 1; // 行0 は開始済み
         let mut buf = vec![0u8; 4 * 1024 * 1024];
         let mut offset: u64 = 0;
+        let mut last_percent = 0u8;
         loop {
             let n = file.read(&mut buf)?;
             if n == 0 {
@@ -127,6 +142,16 @@ impl HugeBuf {
                 nlines += 1;
             }
             offset += n as u64;
+            if let Some(report) = progress.as_deref_mut() {
+                let percent = ((offset.saturating_mul(100) / len).min(99)) as u8;
+                if percent > last_percent {
+                    last_percent = percent;
+                    report(offset, len);
+                }
+            }
+        }
+        if let Some(report) = progress.as_deref_mut() {
+            report(len, len);
         }
         drop(buf);
         let total = nlines;

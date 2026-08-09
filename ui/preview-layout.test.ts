@@ -27,6 +27,7 @@ describe("Feature: preview layout", () => {
   // Then: メイン領域全体を超えず1100pxになる
   it("Scenario: プレビュー幅にメイン領域の最大値を設ける", () => {
     expect(previewWidthFromPointer(1200, 0, 100)).toBe(1100);
+    expect(previewWidthFromPointer(1200, 0, 220)).toBe(980);
   });
 
   // Given: プレビューの可用/開閉/全画面状態を指定

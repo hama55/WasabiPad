@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   markdownBlockSelected,
   markdownHighlightTargets,
+  placeMarkdownCaret,
   renderRawHtml,
   scrollMarkdownCaret,
 } from "./viewer-markdown";
@@ -67,6 +68,24 @@ describe("Feature: Markdown viewer specifications", () => {
 
     expect(markdownBlockSelected(selection, 3, 4)).toBe(true);
     expect(markdownBlockSelected(selection, 4, 5)).toBe(false);
+  });
+
+  // Given: ソース `# hello` に対応する見出しDOMと4列目のキャレット
+  // When: `placeMarkdownCaret`を呼ぶ
+  // Then: 見出しの先頭ではなく`he`の直後へキャレットを挿入する
+  it("Scenario: Markdownキャレットを選択位置へ表示する", () => {
+    const heading = document.createElement("h1");
+    heading.dataset.sourceStart = "0";
+    heading.dataset.sourceEnd = "1";
+    heading.dataset.sourceText = "# hello";
+    heading.textContent = "hello";
+
+    placeMarkdownCaret([heading], {
+      start: { line: 0, col: 4 },
+      end: { line: 0, col: 4 },
+    });
+
+    expect(heading.innerHTML).toBe("he<span class=\"viewer-markdown-caret\" aria-hidden=\"true\"></span>llo");
   });
 
   // Given: source範囲`4..6`の要素と4行目のキャレット

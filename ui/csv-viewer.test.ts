@@ -5,6 +5,7 @@ import {
   csvCellSourceOffsetAtDisplayOffset,
   csvCellOffsetAt,
   csvColumnAt,
+  CSV_LINE_NUMBER_WIDTH,
   decodeDelimiter,
   isSingleCsvCellSelection,
   parseCsvSource,
@@ -86,5 +87,12 @@ describe("Feature: CSV viewer helpers", () => {
   it("Scenario: column resize keeps the minimum width", () => {
     expect(resizedCsvColumnWidth(80, 23.4)).toBe(103);
     expect(resizedCsvColumnWidth(80, -50)).toBe(48);
+  });
+
+  // Given: CSV/TSV表示の行番号列
+  // When: 共通の列幅定数を参照する
+  // Then: delimiterに関係なく同じ幅を使う
+  it("Scenario: 行番号列の幅をCSVとTSVで共通化する", () => {
+    expect(CSV_LINE_NUMBER_WIDTH).toBe(64);
   });
 });

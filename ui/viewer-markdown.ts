@@ -36,6 +36,69 @@ export function markdownBlockSelected(selection: ViewerSelection | null, start: 
   return start <= lastSelectedLine && end > selectionStart.line;
 }
 
+function markdownTargetForLine(sourceElements: HTMLElement[], line: number): HTMLElement | undefined {
+  return sourceElements.find((element) => {
+    const start = Number(element.dataset.sourceStart);
+    const end = Number(element.dataset.sourceEnd);
+    return start <= line && line < end;
+  });
+}
+
+function renderedPrefixForSource(source: string, sourceOffset: number, rendered: string): string {
+  const renderedChars = [...rendered];
+  let renderedIndex = 0;
+  for (const char of [...source.slice(0, sourceOffset)]) {
+    if (renderedChars[renderedIndex] === char) {
+      renderedIndex += 1;
+      continue;
+    }
+    const next = renderedChars.indexOf(char, renderedIndex);
+    if (next >= 0) renderedIndex = next + 1;
+  }
+  return renderedChars.slice(0, renderedIndex).join("");
+}
+
+export function placeMarkdownCaret(
+  sourceElements: HTMLElement[],
+  selection: ViewerSelection | null,
+): HTMLElement | null {
+  sourceElements.forEach((element) => {
+    element.querySelectorAll(".viewer-markdown-caret").forEach((caret) => caret.remove());
+  });
+  if (!selection || !(
+    selection.start.line === selection.end.line && selection.start.col === selection.end.col
+  )) return null;
+  const target = markdownTargetForLine(sourceElements, selection.start.line);
+  if (!target) return null;
+  const sourceStart = Number(target.dataset.sourceStart);
+  const source = target.dataset.sourceText ?? "";
+  const lines = source.split("\n");
+  const relativeLine = Math.max(0, Math.min(lines.length - 1, selection.start.line - sourceStart));
+  const column = Math.max(0, Math.min([...lines[relativeLine]].length, selection.start.col));
+  const sourceOffset = lines
+    .slice(0, relativeLine)
+    .reduce((total, line) => total + line.length + 1, 0)
+    + [...lines[relativeLine]].slice(0, column).join("").length;
+  const renderedPrefix = renderedPrefixForSource(source, sourceOffset, target.textContent ?? "");
+  const caret = document.createElement("span");
+  caret.className = "viewer-markdown-caret";
+  caret.setAttribute("aria-hidden", "true");
+  const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT);
+  let remaining = renderedPrefix.length;
+  let node: Node | null;
+  while ((node = walker.nextNode())) {
+    const text = node.textContent ?? "";
+    if (remaining <= text.length) {
+      const after = (node as Text).splitText(remaining);
+      node.parentNode?.insertBefore(caret, after);
+      return caret;
+    }
+    remaining -= text.length;
+  }
+  target.appendChild(caret);
+  return caret;
+}
+
 export function scrollMarkdownCaret(sourceElements: HTMLElement[], selection: ViewerSelection | null) {
   scrollViewerCaret(sourceElements, selection, (element) => ({
     start: Number(element.dataset.sourceStart),

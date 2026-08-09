@@ -59,8 +59,15 @@ export type ReadEncoding = (typeof READ_ENCODINGS)[number];
 export const EVENT_NAMES = {
   externalWindowRequest: "external-window-request",
   workspaceSearchBatch: "workspace-search-batch",
+  documentLoadProgress: "document-load-progress",
   viewerUpdate: "viewer-update",
 } as const;
+
+export interface DocumentLoadProgress {
+  loaded: number;
+  total: number;
+  percent: number;
+}
 
 export const openPath = (path: string) => invoke<DocInfo>(IPC_COMMANDS.openPath, { path });
 export const newDoc = () => invoke<void>(IPC_COMMANDS.newDoc);
@@ -92,6 +99,9 @@ export const workspaceSearch = (pat: string, options: WorkspaceSearchOptions, se
 // 検索中の途中経過。確定を待たずに出せるものを出す (走査順で、確定後の並びとは別)
 export const onWorkspaceSearchBatch = (handler: (batch: WorkspaceSearchBatch) => void) =>
   listen<WorkspaceSearchBatch>(EVENT_NAMES.workspaceSearchBatch, (event) => handler(event.payload));
+
+export const onDocumentLoadProgress = (handler: (progress: DocumentLoadProgress) => void) =>
+  listen<DocumentLoadProgress>(EVENT_NAMES.documentLoadProgress, (event) => handler(event.payload));
 
 // 進行中の検索を打ち切る (無制限指定で走り出した検索から抜ける手段)
 export const workspaceSearchCancel = (searchId: number) =>

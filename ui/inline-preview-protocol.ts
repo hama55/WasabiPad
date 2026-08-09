@@ -3,6 +3,7 @@ export const INLINE_PREVIEW_MESSAGES = {
   PAYLOAD_MESSAGE: "wasabipad-viewer-payload",
   FORMAT_CHANGE_MESSAGE: "wasabipad-viewer-format-change",
   DELIMITER_MESSAGE: "wasabipad-viewer-delimiter",
+  DELIMITER_CHANGE_MESSAGE: "wasabipad-viewer-delimiter-change",
   FONT_MESSAGE: "wasabipad-viewer-font",
   FONT_CHANGE_MESSAGE: "wasabipad-viewer-font-change",
   FULLSCREEN_CHANGE_MESSAGE: "wasabipad-viewer-fullscreen-change",

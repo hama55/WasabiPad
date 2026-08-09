@@ -1,6 +1,6 @@
 import * as api from "./api";
 import type { Pos } from "./api";
-import { comparePos as cmp } from "./editor-math";
+import { charLen, comparePos as cmp } from "./editor-math";
 import {
   newlineWithLeadingTabs,
   planLineIndent,
@@ -30,9 +30,81 @@ export class EditorMutationController {
     return promise;
   }
 
+  private async blockEdits(text: string): Promise<api.EditManyItem[]> {
+    const block = this.ports.selection.blockBounds();
+    if (!block) return [];
+    const edits: api.EditManyItem[] = [];
+    for (let line = block.first; line <= block.last; line += 1) {
+      const value = await this.ports.lineCache.line(line);
+      const start = Math.min(block.left, charLen(value));
+      const end = Math.min(block.right, charLen(value));
+      if (text || start < end) {
+        edits.push({
+          start: { line, col: start },
+          end: { line, col: end },
+          text,
+        });
+      }
+    }
+    return edits;
+  }
+
+  private async blockPasteEdits(rows: string[]): Promise<api.EditManyItem[]> {
+    const selection = this.ports.selection;
+    const block = selection.blockBounds();
+    const firstLine = block?.first ?? selection.caret.line;
+    const left = block?.left ?? selection.caret.col;
+    const edits: api.EditManyItem[] = [];
+    for (let index = 0; index < rows.length; index += 1) {
+      const line = firstLine + index;
+      if (line >= this.ports.lineCount()) break;
+      const value = await this.ports.lineCache.line(line);
+      const start = Math.min(left, charLen(value));
+      const end = block && index <= block.last - block.first
+        ? Math.min(block.right, charLen(value))
+        : start;
+      if (rows[index] || start < end) {
+        edits.push({ start: { line, col: start }, end: { line, col: end }, text: rows[index] });
+      }
+    }
+    return edits;
+  }
+
+  private async applyBlockEdits(
+    edits: api.EditManyItem[],
+    fromLine: number,
+    preferredPrimaryIndex?: number,
+  ): Promise<void> {
+    const selection = this.ports.selection;
+    if (!edits.length) {
+      selection.block = null;
+      selection.anchor = selection.caret;
+      await this.ports.renderAfterEdit();
+      return;
+    }
+    const primaryIndex = preferredPrimaryIndex ?? Math.max(
+      0,
+      edits.findIndex((edit) => edit.start.line === selection.caret.line),
+    );
+    const result = await this.ports.doc.editMany(edits, selection.caret, primaryIndex);
+    const caret = result.carets[primaryIndex] ?? selection.caret;
+    this.ports.applyResult({ caret, line_count: result.line_count }, fromLine, edits);
+    selection.block = null;
+    selection.secondary = [];
+    selection.anchor = caret;
+    selection.caret = caret;
+    await this.ports.renderAfterEdit();
+  }
+
   insertText(text: string): Promise<void> {
     if (this.ports.isReadOnly()) return Promise.resolve();
     const selection = this.ports.selection;
+    if (selection.blockBounds()) {
+      return this.run(async () => {
+        const edits = await this.blockEdits(text);
+        await this.applyBlockEdits(edits, edits[0]?.start.line ?? selection.caret.line);
+      });
+    }
     if (selection.secondary.length) {
       return this.run(async () => {
         selection.multiCaretX = null;
@@ -57,6 +129,23 @@ export class EditorMutationController {
       const result = await this.ports.doc.edit(start, end, selection.caret, text, coalesce);
       this.ports.applyResult(result, start.line, [{ start, end, text }]);
       await this.ports.renderAfterEdit();
+    });
+  }
+
+  pasteBlock(rows: string[]): Promise<void> {
+    if (this.ports.isReadOnly() || !rows.length) return Promise.resolve();
+    const selection = this.ports.selection;
+    if (!selection.blockBounds() && (selection.secondary.length || selection.hasSel())) {
+      return this.insertText(rows.join("\n"));
+    }
+    return this.run(async () => {
+      const edits = await this.blockPasteEdits(rows);
+      const block = selection.blockBounds();
+      await this.applyBlockEdits(
+        edits,
+        edits[0]?.start.line ?? selection.caret.line,
+        block ? undefined : Math.max(0, edits.length - 1),
+      );
     });
   }
 
@@ -100,6 +189,12 @@ export class EditorMutationController {
 
   deleteSel(): Promise<void> {
     if (this.ports.isReadOnly()) return Promise.resolve();
+    if (this.ports.selection.blockBounds()) {
+      return this.run(async () => {
+        const edits = await this.blockEdits("");
+        await this.applyBlockEdits(edits, edits[0]?.start.line ?? this.ports.selection.caret.line);
+      });
+    }
     return this.run(async () => {
       const [start, end] = this.ports.selection.norm();
       const result = await this.ports.doc.edit(
@@ -158,6 +253,7 @@ export class EditorMutationController {
       if (!result) return;
       this.ports.applyResult(result, 0);
       this.ports.selection.secondary = [];
+      this.ports.selection.block = null;
       this.ports.selection.multiCaretX = null;
       await this.ports.renderAfterEdit();
     });

@@ -14,6 +14,7 @@ const before = (left: Pos, right: Pos) =>
 export function selectedLineRange(anchor: Pos, caret: Pos): { first: number; last: number } | null {
   if (anchor.line === caret.line && anchor.col === caret.col) return null;
   const [start, end] = before(anchor, caret) ? [anchor, caret] : [caret, anchor];
+  if (start.col !== 0) return null;
   const last = end.line - Number(end.col === 0);
   return last < start.line ? null : { first: start.line, last };
 }

@@ -240,8 +240,8 @@ describe("Feature: VirtualEditor", () => {
 
   // Given: 文書が「one\ntwo\nthree」、選択範囲が0行1列から1行1列までである
   // When: Tab を押す
-  // Then: 文書が「\tone\n\ttwo\nthree」になり、editMany(2) が呼ばれる
-  it("Scenario: 複数行選択中のTabは各行の先頭へタブを挿入する", async () => {
+  // Then: 選択文字列がタブで置換され、行単位indentは発生しない
+  it("Scenario: 行頭を含まない選択中のTabは選択文字列を置換する", async () => {
     const { editor, doc, press } = mount("one\ntwo\nthree");
     editor.open(3, false);
     await settle();
@@ -256,8 +256,126 @@ describe("Feature: VirtualEditor", () => {
     press("Tab");
     await settle();
 
+    expect(doc.text()).toBe("o\two\nthree");
+    expect(doc.calls).not.toContain("editMany(2)");
+  });
+
+  // Given: 文書が「one\ntwo\nthree」、選択範囲が行頭を含む0行0列から1行1列までである
+  // When: Tab を押す
+  // Then: 選択された各行の先頭へタブを挿入する
+  it("Scenario: 行頭を含む複数行選択中のTabは各行の先頭へタブを挿入する", async () => {
+    const { editor, doc, press } = mount("one\ntwo\nthree");
+    editor.open(3, false);
+    await settle();
+    await editor.restoreViewState({
+      anchor: { line: 0, col: 0 },
+      caret: { line: 1, col: 1 },
+      topLine: 0,
+      wrapIntraLinePx: 0,
+      scrollLeft: 0,
+    });
+
+    press("Tab");
+    await settle();
+
     expect(doc.text()).toBe("\tone\n\ttwo\nthree");
     expect(doc.calls).toContain("editMany(2)");
+  });
+
+  // Given: Alt+D&Dで0〜2行目の1〜3列を矩形選択している
+  // When: Deleteを押す
+  // Then: すべての行の矩形部分が削除される
+  it("Scenario: 複数行複数列の矩形選択をDeleteできる", async () => {
+    const { editor, doc, host, press } = mount("abcd\nABCD\nwxyz");
+    editor.open(3, false);
+    await settle();
+    const layout = installMouseLayout(host);
+    const scroll = layout.scroll;
+
+    scroll.dispatchEvent(new MouseEvent("mousedown", {
+      bubbles: true, button: 0, clientX: 18, clientY: 10, altKey: true,
+    }));
+    window.dispatchEvent(new MouseEvent("mousemove", {
+      bubbles: true, clientX: 38, clientY: 50, altKey: true,
+    }));
+    window.dispatchEvent(new MouseEvent("mouseup", {
+      bubbles: true, clientX: 38, clientY: 50, altKey: true,
+    }));
+
+    press("Delete");
+    await settle();
+
+    expect(doc.text()).toBe("ad\nAD\nwz");
+    expect(doc.calls).toContain("editMany(3)");
+    layout.restore();
+  });
+
+  // Given: 「bc」「BC」を矩形コピーし、クリップボードに同じ矩形文字列がある
+  // When: 2行目1列へCtrl+Vする
+  // Then: 同じ列位置へ2行分を矩形貼り付けする
+  it("Scenario: 矩形コピーを同じ列位置へ矩形貼り付けできる", async () => {
+    const saveImage = vi.fn(async () => "unused");
+    const { editor, doc, host, input, press } = mount("abcd\nABCD\nwxyz\n----", saveImage);
+    editor.open(4, false);
+    await settle();
+    const layout = installMouseLayout(host);
+    const scroll = layout.scroll;
+    scroll.dispatchEvent(new MouseEvent("mousedown", {
+      bubbles: true, button: 0, clientX: 18, clientY: 10, altKey: true,
+    }));
+    window.dispatchEvent(new MouseEvent("mousemove", {
+      bubbles: true, clientX: 38, clientY: 30, altKey: true,
+    }));
+    window.dispatchEvent(new MouseEvent("mouseup", {
+      bubbles: true, clientX: 38, clientY: 30, altKey: true,
+    }));
+
+    press("c", { ctrlKey: true });
+    await settle();
+    expect(writeClipboardText).toHaveBeenLastCalledWith("bc\nBC");
+    editor.goTo(2, 1);
+    const pasteEvent = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(pasteEvent, "clipboardData", {
+      value: { items: [], getData: () => "bc\nBC" },
+    });
+    input.dispatchEvent(pasteEvent);
+    await settle();
+
+    expect(pasteEvent.defaultPrevented).toBe(true);
+    expect(doc.text()).toBe("abcd\nABCD\nwbcxyz\n-BC---");
+    expect(doc.calls).toContain("editMany(2)");
+    layout.restore();
+  });
+
+  // Given: 「bc」「BC」を矩形切り取りし、クリップボードに矩形文字列がある
+  // When: 2行目1列へCtrl+Vする
+  // Then: 元の矩形を削除した後、同じ列位置へ矩形貼り付けする
+  it("Scenario: 矩形切り取りを矩形貼り付けできる", async () => {
+    const { editor, doc, host, press } = mount("abcd\nABCD\nwxyz\n----");
+    editor.open(4, false);
+    await settle();
+    const layout = installMouseLayout(host);
+    const scroll = layout.scroll;
+    scroll.dispatchEvent(new MouseEvent("mousedown", {
+      bubbles: true, button: 0, clientX: 18, clientY: 10, altKey: true,
+    }));
+    window.dispatchEvent(new MouseEvent("mousemove", {
+      bubbles: true, clientX: 38, clientY: 30, altKey: true,
+    }));
+    window.dispatchEvent(new MouseEvent("mouseup", {
+      bubbles: true, clientX: 38, clientY: 30, altKey: true,
+    }));
+
+    press("x", { ctrlKey: true });
+    await settle();
+    expect(doc.text()).toBe("ad\nAD\nwxyz\n----");
+    readClipboardText.mockResolvedValue("bc\nBC");
+    editor.goTo(2, 1);
+    press("v", { ctrlKey: true });
+    await settle();
+
+    expect(doc.text()).toBe("ad\nAD\nwbcxyz\n-BC---");
+    layout.restore();
   });
 
   // Given: 文書が「abcDEFghi」、選択範囲が「DEF」

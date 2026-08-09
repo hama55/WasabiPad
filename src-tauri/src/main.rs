@@ -96,8 +96,8 @@ struct ViewerSelection {
 }
 
 #[tauri::command]
-fn open_path(path: String, state: State) -> Result<DocInfo, String> {
-    document::open_path(path, state)
+fn open_path(path: String, state: State, app: AppHandle) -> Result<DocInfo, String> {
+    document::open_path(path, state, app)
 }
 
 #[tauri::command]

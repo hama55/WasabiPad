@@ -6,3 +6,10 @@ export function createViewerChartMenuItem(onClick: () => void): HTMLButtonElemen
   item.addEventListener("click", onClick);
   return item;
 }
+
+export function createViewerDelimiterMenuItem(onClick: () => void): HTMLButtonElement {
+  const item = document.createElement("button");
+  item.append(createMenuIcon(MENU_ICON.csv), document.createTextNode("区切り文字を変更..."));
+  item.addEventListener("click", onClick);
+  return item;
+}

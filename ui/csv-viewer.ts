@@ -2,6 +2,7 @@ import type { ViewerSelection } from "./api";
 import Papa from "papaparse";
 
 export const CSV_MIN_COLUMN_WIDTH = 48;
+export const CSV_LINE_NUMBER_WIDTH = 64;
 
 export function decodeDelimiter(value: string) {
   return value === "\\t" ? "\t" : value;

@@ -126,6 +126,13 @@ impl Doc {
     // 見る。ファイルを選択する (select_entry) までメモビューには何も表示しない。
     // ZIP/.xls/単一ファイルは open_file へ委譲。
     pub fn open(path: &Path) -> io::Result<Doc> {
+        Self::open_with_progress(path, None)
+    }
+
+    pub fn open_with_progress(
+        path: &Path,
+        mut progress: Option<&mut fileio::LoadProgress<'_>>,
+    ) -> io::Result<Doc> {
         let archive_port = archive_port::system();
         if path.is_dir() {
             let _ = archive_port.cleanup_stale_workspaces(path);
@@ -136,7 +143,7 @@ impl Doc {
             };
             return Ok(doc);
         }
-        Doc::open_file(path, archive_port)
+        Doc::open_file_with_progress(path, archive_port, progress.as_deref_mut())
     }
 
     // 指定ディレクトリ (rel_dir が空文字ならルート) の直下だけを列挙する。
@@ -157,6 +164,14 @@ impl Doc {
     // ツリーの展開ボタン (list_archive_entries) が押されて初めてエントリ名を、
     // エントリ選択 (select_entry) で初めてその1エントリの本文を読む。
     fn open_file(path: &Path, archive_port: Arc<dyn ArchivePort>) -> io::Result<Doc> {
+        Self::open_file_with_progress(path, archive_port, None)
+    }
+
+    fn open_file_with_progress(
+        path: &Path,
+        archive_port: Arc<dyn ArchivePort>,
+        mut progress: Option<&mut fileio::LoadProgress<'_>>,
+    ) -> io::Result<Doc> {
         if archive_port.supports_path(path) {
             if let Some(parent) = path.parent() {
                 let _ = archive_port.cleanup_stale_workspaces(parent);
@@ -188,7 +203,11 @@ impl Doc {
             }
         }
 
-        let o = fileio::open_buffer(path)?;
+        let o = if let Some(progress) = progress.as_deref_mut() {
+            fileio::open_buffer_with_progress(path, progress)?
+        } else {
+            fileio::open_buffer(path)?
+        };
         let source = if let Some(entries) = o.entries {
             DocumentSource {
                 root: None,

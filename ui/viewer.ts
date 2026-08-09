@@ -22,6 +22,7 @@ import {
   csvCellBoundsForColumn,
   csvCellOffsetAt,
   csvColumnAt,
+  CSV_LINE_NUMBER_WIDTH,
   parseCsvSource,
   csvSourceOffsetAtPosition,
   csvSourcePositionAtOffset,
@@ -37,11 +38,18 @@ import { imageMimeType } from "./image-formats";
 import {
   markdownBlockSelected,
   markdownHighlightTargets,
+  placeMarkdownCaret,
   renderRawHtml,
   scrollMarkdownCaret,
 } from "./viewer-markdown";
-import { scrollViewerCaret } from "./viewer-scroll";
+import { scrollViewerCaret, scrollViewerCell } from "./viewer-scroll";
 import { createViewerChartMenuItem } from "./viewer-context-menu";
+import { createViewerDelimiterMenuItem } from "./viewer-context-menu";
+import {
+  CSV_DELIMITER_OPTIONS,
+  CUSTOM_DELIMITER_VALUE,
+  delimiterPresetFor,
+} from "./viewer-delimiter";
 import { INLINE_PREVIEW_MESSAGES } from "./inline-preview-protocol";
 import { isViewerPayload } from "./viewer-payload";
 import { imageUrlFromArchive, imageUrlFromPath, revokeImageUrl } from "./viewer-image-source";
@@ -100,6 +108,17 @@ function postToParent(message: unknown) {
 
 function scrollCsvRows(rows: HTMLElement[], selection: ViewerSelection | null) {
   scrollViewerCaret(rows, selection, (_row, index) => ({ start: index, end: index + 1 }));
+  scrollViewerCell(rows, selection, (row, current) => {
+    const sourceLine = Number(row.dataset.sourceLine);
+    const sourceText = row.dataset.sourceCsv ?? "";
+    if (!Number.isFinite(sourceLine)) return null;
+    const rowStart = { line: sourceLine, col: 0 };
+    const rowEnd = csvSourcePositionAtOffset(sourceText, sourceLine, sourceText.length);
+    if (comparePos(current.end, rowStart) < 0 || comparePos(current.end, rowEnd) > 0) return null;
+    const sourceOffset = csvSourceOffsetAtPosition(sourceText, sourceLine, current.end);
+    const column = csvColumnAt(sourceText, sourceOffset, row.dataset.delimiter ?? delimiterInput.value);
+    return row.querySelector<HTMLElement>(`[data-source-column="${column}"]`);
+  });
 }
 
 function notifyParentOfSelection() {
@@ -147,6 +166,7 @@ function createCsvColumnGroup(table: HTMLTableElement, columnCount: number): HTM
   const group = document.createElement("colgroup");
   const lineNumber = document.createElement("col");
   lineNumber.className = "viewer-line-number-column";
+  lineNumber.style.width = `${CSV_LINE_NUMBER_WIDTH}px`;
   group.appendChild(lineNumber);
   const columns = Array.from({ length: columnCount }, (_, index) => {
     const column = document.createElement("col");
@@ -514,6 +534,7 @@ async function renderMarkdown(text: string) {
     element.classList.toggle("viewer-source-selected", !isCollapsedViewerSelection(selection) && selected);
     element.classList.toggle("viewer-caret-line", isCollapsedViewerSelection(selection) && selected);
   });
+  placeMarkdownCaret(highlightTargets, selection);
   article.querySelectorAll("a").forEach((link) => {
     link.target = "_blank";
     link.rel = "noreferrer";
@@ -588,13 +609,91 @@ function csvRowSelected(sourceRow: CsvSourceRow) {
     || comparePos(selection.end, selectedCells[0].end) > 0;
 }
 
+function openDelimiterDialog() {
+  const overlay = document.createElement("div");
+  overlay.className = "viewer-dialog-overlay";
+  const dialog = document.createElement("div");
+  dialog.className = "viewer-dialog";
+  const heading = document.createElement("h2");
+  heading.textContent = "区切り文字を変更";
+
+  const presetLabel = document.createElement("label");
+  presetLabel.textContent = "プリセット";
+  const preset = document.createElement("select");
+  CSV_DELIMITER_OPTIONS.forEach((option) => {
+    const item = document.createElement("option");
+    item.value = option.value;
+    item.textContent = option.label;
+    preset.appendChild(item);
+  });
+  const customOption = document.createElement("option");
+  customOption.value = CUSTOM_DELIMITER_VALUE;
+  customOption.textContent = "その他";
+  preset.appendChild(customOption);
+  preset.value = delimiterPresetFor(delimiterInput.value);
+  presetLabel.appendChild(preset);
+
+  const customLabel = document.createElement("label");
+  customLabel.textContent = "その他の区切り文字";
+  const customInput = document.createElement("input");
+  customInput.value = delimiterInput.value;
+  customInput.setAttribute("aria-label", "その他の区切り文字");
+  customLabel.appendChild(customInput);
+  const syncCustomVisibility = () => {
+    customLabel.hidden = preset.value !== CUSTOM_DELIMITER_VALUE;
+  };
+  preset.addEventListener("change", syncCustomVisibility);
+  syncCustomVisibility();
+
+  const error = document.createElement("div");
+  error.className = "viewer-dialog-error";
+  const buttons = document.createElement("div");
+  buttons.className = "viewer-dialog-buttons";
+  const cancel = document.createElement("button");
+  cancel.textContent = "キャンセル";
+  const apply = document.createElement("button");
+  apply.className = "primary";
+  apply.textContent = "適用";
+  buttons.append(cancel, apply);
+  dialog.append(heading, presetLabel, customLabel, error, buttons);
+  overlay.appendChild(dialog);
+  document.body.appendChild(overlay);
+
+  const finish = () => overlay.remove();
+  cancel.addEventListener("click", finish);
+  overlay.addEventListener("mousedown", (event) => {
+    if (event.target === overlay) finish();
+  });
+  apply.addEventListener("click", () => {
+    const value = preset.value === CUSTOM_DELIMITER_VALUE ? customInput.value : preset.value;
+    if (!value) {
+      error.textContent = "区切り文字を入力してください";
+      return;
+    }
+    delimiterInput.value = value;
+    finish();
+    if (isInlineViewer) {
+      postToParent({
+        type: INLINE_PREVIEW_MESSAGES.DELIMITER_CHANGE_MESSAGE,
+        delimiter: value,
+      });
+    }
+    runViewerOperation("ビューを再描画できませんでした", () => VIEWER_HANDLERS[currentFormat].render(currentText));
+  });
+}
+
 function showContextMenu(x: number, y: number) {
   contextMenu.replaceChildren();
-  const item = createViewerChartMenuItem(() => {
-    contextMenu.hidden = true;
-    runViewerOperation("グラフ設定を開けませんでした", openChartDialog);
-  });
-  contextMenu.appendChild(item);
+  if (currentFormat === "csv") {
+    contextMenu.appendChild(createViewerDelimiterMenuItem(() => {
+      contextMenu.hidden = true;
+      runViewerOperation("区切り文字設定を開けませんでした", openDelimiterDialog);
+    }));
+    contextMenu.appendChild(createViewerChartMenuItem(() => {
+      contextMenu.hidden = true;
+      runViewerOperation("グラフ設定を開けませんでした", openChartDialog);
+    }));
+  }
   contextMenu.hidden = false;
   contextMenu.style.left = "0";
   contextMenu.style.top = "0";
@@ -798,13 +897,19 @@ async function start() {
     delimiterInput.addEventListener("input", () => {
       const handler = VIEWER_HANDLERS[currentFormat];
       if (!delimiterInput.value || !handler.supportsDelimiter) return;
+      if (isInlineViewer) {
+        postToParent({
+          type: INLINE_PREVIEW_MESSAGES.DELIMITER_CHANGE_MESSAGE,
+          delimiter: delimiterInput.value,
+        });
+      }
       runViewerOperation("ビューを再描画できませんでした", () => VIEWER_HANDLERS[currentFormat].render(currentText));
     });
     document.getElementById("chart-close")!.addEventListener("click", () => {
       runViewerOperation("グラフを閉じられませんでした", closeChart);
     });
     content.addEventListener("contextmenu", (event) => {
-      if (!VIEWER_HANDLERS[currentFormat].supportsChart || !(event.target as Element).closest(".viewer-grid")) return;
+      if (currentFormat !== "csv" || !(event.target as Element).closest(".viewer-grid")) return;
       event.preventDefault();
       runViewerOperation("グラフメニューを表示できませんでした", () => showContextMenu(event.clientX, event.clientY));
     });

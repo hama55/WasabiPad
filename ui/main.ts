@@ -99,6 +99,7 @@ let restoringEditorFont = true;
 let imageCleanupTimer: number | undefined;
 let externalRequestChain = Promise.resolve();
 const workspaceSearchListener = createAsyncUnlisten();
+const documentLoadListener = createAsyncUnlisten();
 const externalWindowListener = createAsyncUnlisten();
 const dragDropListener = createAsyncUnlisten();
 
@@ -209,6 +210,7 @@ const inlinePreview = new InlinePreview(previewEl, {
     updatePreviewVisibility();
   },
   onFormatChange: (format) => runBackground("ビューを切り替えられませんでした", () => editor.openTextViewer(format)),
+  onDelimiterChange: (delimiter) => inlinePreview.setDelimiter(delimiter),
   onFontFamilyChange: (family) => editor.setFont(family, getSetting("fontSize"), "family"),
   onSelectionChange: (selection) =>
     runBackground("エディタの位置を同期できませんでした", () => editor.goToPreview(selection)),
@@ -372,6 +374,13 @@ void api.onWorkspaceSearchBatch((batch) => runBackground("検索結果を画面�
   .catch((error) => reportBackgroundError("検索結果の受信を開始できませんでした", error));
 
 // フォルダビュー由来の relPath は、独立したファイルタブ用の絶対パスへ戻す
+void api.onDocumentLoadProgress((progress) => {
+  if (loading.hidden) return;
+  setLoading(true, `読み込み中… ${Math.max(0, Math.min(100, Math.round(progress.percent)))}%`);
+})
+  .then((unlisten) => documentLoadListener.set(unlisten))
+  .catch((error) => reportBackgroundError("読み込み進捗の受信を開始できませんでした", error));
+
 async function openInNewTab(relPath: string, goto?: api.Pos) {
   const root = doc.current.folderRoot;
   if (root) await tabs.open(joinWindowsRoot(root, relPath), goto);
@@ -438,6 +447,7 @@ const externalWatch = new ExternalWatch($("external-banner"), {
 }, api);
 window.addEventListener("beforeunload", () => {
   workspaceSearchListener.dispose();
+  documentLoadListener.dispose();
   externalWindowListener.dispose();
   dragDropListener.dispose();
   windowChrome.dispose();
@@ -543,7 +553,7 @@ splitter.addEventListener("mousedown", (e) => {
 
 // プレビュー幅のドラッグ変更
 bindPreviewResize(previewSplitter, {
-  mainLeft: () => mainEl.getBoundingClientRect().left,
+  mainLeft: () => editorHost.getBoundingClientRect().left,
   mainRight: () => mainEl.getBoundingClientRect().right,
   setWidth: (width) => {
     previewEl.style.width = `${width}px`;

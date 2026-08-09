@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
-import { scrollViewerCaret } from "./viewer-scroll";
+import { scrollViewerCaret, scrollViewerCell } from "./viewer-scroll";
 
 describe("Feature: viewer caret scrolling", () => {
   // Given: 3行のうち終端行2が選択範囲`2:0..2:4`
@@ -37,5 +37,23 @@ describe("Feature: viewer caret scrolling", () => {
 
     expect(beforeScroll).not.toHaveBeenCalled();
     expect(afterScroll).toHaveBeenCalledWith({ block: "center", inline: "nearest" });
+  });
+
+  // Given: 選択位置に対応する行のセル
+  // When: `scrollViewerCell`を呼ぶ
+  // Then: セルを縦横とも中央へスクロールする
+  it("Scenario: 選択セルをCSVビューの中央へスクロールする", () => {
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    const scrollIntoView = vi.fn();
+    cell.scrollIntoView = scrollIntoView;
+    row.appendChild(cell);
+
+    scrollViewerCell([row], {
+      start: { line: 4, col: 12 },
+      end: { line: 4, col: 15 },
+    }, () => cell);
+
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: "center", inline: "center" });
   });
 });

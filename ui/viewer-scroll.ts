@@ -22,6 +22,20 @@ export function scrollViewerCaret(
   target?.element.scrollIntoView?.({ block: "center", inline: "nearest" });
 }
 
+export function scrollViewerCell(
+  elements: HTMLElement[],
+  selection: ViewerSelection | null,
+  cellOf: (element: HTMLElement, selection: ViewerSelection) => HTMLElement | null,
+) {
+  if (!selection) return;
+  for (const element of elements) {
+    const cell = cellOf(element, selection);
+    if (!cell) continue;
+    cell.scrollIntoView?.({ block: "center", inline: "center" });
+    return;
+  }
+}
+
 function lineDistance(range: ViewerLineRange, line: number): number {
   if (!Number.isFinite(range.start) || !Number.isFinite(range.end) || range.end <= range.start) return Infinity;
   return line < range.start ? range.start - line : line >= range.end ? line - range.end + 1 : 0;

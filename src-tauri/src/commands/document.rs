@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use tauri::{AppHandle, Emitter};
 
 use wasabipad_core::{
     Doc, DocInfo, EditManyItem, EditManyResult, EditResult, EncodingId, Eol, ExternalCheck,
@@ -7,8 +8,30 @@ use wasabipad_core::{
 
 use crate::state::{with_doc, State};
 
-pub(crate) fn open_path(path: String, state: State) -> Result<DocInfo, String> {
-    let d = Doc::open(&PathBuf::from(&path)).map_err(|e| e.to_string())?;
+const EVENT_DOCUMENT_LOAD_PROGRESS: &str = "document-load-progress";
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DocumentLoadProgress {
+    loaded: u64,
+    total: u64,
+    percent: u8,
+}
+
+pub(crate) fn open_path(path: String, state: State, app: AppHandle) -> Result<DocInfo, String> {
+    let mut report = |loaded: u64, total: u64| {
+        let percent = if total == 0 {
+            100
+        } else {
+            loaded.saturating_mul(100).saturating_div(total).min(100) as u8
+        };
+        let _ = app.emit(
+            EVENT_DOCUMENT_LOAD_PROGRESS,
+            DocumentLoadProgress { loaded, total, percent },
+        );
+    };
+    let d = Doc::open_with_progress(&PathBuf::from(&path), Some(&mut report))
+        .map_err(|e| e.to_string())?;
     // フォルダを開いた場合 d.path は先頭の実ファイルを指す (フォルダ自体は保存先を持たない)
     let info_path = d
         .path()
