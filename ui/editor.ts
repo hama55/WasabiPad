@@ -113,6 +113,7 @@ export class VirtualEditor {
 
   private sel = new Selection();
   private dragCaret: Pos | null = null;
+  private dragCleanup: (() => void) | null = null;
   private ctrlDown = false;
   private composing = false;
   private chain: Promise<unknown> = Promise.resolve();
@@ -297,6 +298,7 @@ export class VirtualEditor {
   // ---- 文書ロード ----
   // keepViewers: 同じファイルを読み直しただけの場合。開いているビューを閉じずに新内容へ差し替える
   open(lineCount: number, readOnly: boolean, keepViewers = false, externalFilePath: string | null = null) {
+    this.dragCleanup?.();
     this.clearDragCaret();
     this.externalFilePath = externalFilePath;
     this.documentGeneration++;
@@ -1477,23 +1479,25 @@ export class VirtualEditor {
     if (cmp(target, start) >= 0 && cmp(target, end) <= 0) return Promise.resolve();
     return this.run(async () => {
       const text = await this.lineCache.textInRange(start, end);
+      let result: api.EditResult;
+      let edits: api.EditManyItem[];
+      let fromLine: number;
       if (copy) {
-        const result = await this.doc.edit(target, target, target, text, false);
-        this.applyResult(result, target.line, [{ start: target, end: target, text }]);
+        edits = [{ start: target, end: target, text }];
+        result = await this.doc.edit(target, target, target, text, false);
+        fromLine = target.line;
       } else {
         // editMany は開始位置の降順で適用されるため、target は削除前の座標を渡す。
         // 削除と挿入を同じ UndoEntry にまとめ、Undo 1回で移動全体を戻せるようにする。
-        const edits = [
+        edits = [
           { start, end, text: "" },
           { start: target, end: target, text },
         ];
-        const result = await this.doc.editMany(edits, target, 1);
-        this.applyResult(
-          { caret: result.carets[1] ?? target, line_count: result.line_count },
-          Math.min(start.line, target.line),
-          edits,
-        );
+        const many = await this.doc.editMany(edits, target, 1);
+        result = { caret: many.carets[1] ?? target, line_count: many.line_count };
+        fromLine = Math.min(start.line, target.line);
       }
+      this.applyResult(result, fromLine, edits);
       await this.renderAfterEdit();
     });
   }
@@ -1798,13 +1802,22 @@ export class VirtualEditor {
       };
       update(e);
       const move = (ev: MouseEvent) => update(ev);
-      const up = () => {
+      const cleanup = () => {
         window.removeEventListener("mousemove", move);
         window.removeEventListener("mouseup", up);
+        window.removeEventListener("blur", cancel);
+      };
+      const cancel = () => {
+        cleanup();
+        this.syncCaretVisibility();
+      };
+      const up = () => {
+        cleanup();
         this.syncCaretVisibility();
       };
       window.addEventListener("mousemove", move);
       window.addEventListener("mouseup", up);
+      window.addEventListener("blur", cancel);
       return;
     }
     if (!this.readOnly && this.sel.hasSel()) {
@@ -1828,27 +1841,42 @@ export class VirtualEditor {
           copy = this.isCtrlPressed(ev);
           this.showDragCaret(next);
         };
-        const upSelection = (ev: MouseEvent) => {
-          updateSelectionDrag(ev);
+        const cleanupSelectionDrag = () => {
           window.removeEventListener("mousemove", updateSelectionDrag);
           window.removeEventListener("mouseup", upSelection);
+          window.removeEventListener("blur", cancelSelectionDrag);
+          if (this.dragCleanup === cleanupSelectionDrag) this.dragCleanup = null;
           this.clearDragCaret();
-          if (dragging && drop) {
-            if (cmp(drop, s) >= 0 && cmp(drop, end) <= 0) {
-              this.sel.anchor = originalAnchor;
-              this.sel.caret = originalCaret;
-              this.render();
-              this.notifyCursor();
-              return;
+        };
+        const cancelSelectionDrag = () => {
+          cleanupSelectionDrag();
+        };
+        const upSelection = (ev: MouseEvent) => {
+          try {
+            updateSelectionDrag(ev);
+            if (dragging && drop) {
+              if (cmp(drop, s) >= 0 && cmp(drop, end) <= 0) {
+                this.sel.anchor = originalAnchor;
+                this.sel.caret = originalCaret;
+                this.render();
+                this.notifyCursor();
+                return;
+              }
+              void this.moveSelection(s, end, drop, copy)
+                .catch((error) => this.reportActionError("選択範囲を移動またはコピーできませんでした", error));
+            } else {
+              this.moveTo(pos, false);
             }
-            void this.moveSelection(s, end, drop, copy)
-              .catch((error) => this.reportActionError("選択範囲を移動またはコピーできませんでした", error));
-          } else {
-            this.moveTo(pos, false);
+          } catch (error) {
+            void this.reportActionError("選択範囲を移動またはコピーできませんでした", error);
+          } finally {
+            cleanupSelectionDrag();
           }
         };
+        this.dragCleanup = cleanupSelectionDrag;
         window.addEventListener("mousemove", updateSelectionDrag);
         window.addEventListener("mouseup", upSelection);
+        window.addEventListener("blur", cancelSelectionDrag);
         return;
       }
     }
@@ -1866,10 +1894,14 @@ export class VirtualEditor {
       const p = this.posFromPoint(ev.clientX, ev.clientY);
       if (p) this.moveTo(p, true);
     };
-    const up = () => {
+    const cleanup = () => {
       window.removeEventListener("mousemove", move);
       window.removeEventListener("mouseup", up);
+      window.removeEventListener("blur", cancel);
     };
+    const up = () => cleanup();
+    const cancel = () => cleanup();
+    window.addEventListener("blur", cancel);
     window.addEventListener("mousemove", move);
     window.addEventListener("mouseup", up);
   }
@@ -2060,16 +2092,23 @@ export class VirtualEditor {
     this.focus();
     const clicked = this.lineFromGutterY(e.clientY);
     const startLine = e.shiftKey ? this.sel.anchor.line : clicked;
-    this.selectLines(startLine, clicked);
-    const move = (ev: MouseEvent) => {
-      this.selectLines(startLine, this.lineFromGutterY(ev.clientY));
+    const update = (line: number) => {
+      this.dispatch("行選択を更新できませんでした", () => this.selectLines(startLine, line));
     };
-    const up = () => {
+    update(clicked);
+    const move = (ev: MouseEvent) => {
+      update(this.lineFromGutterY(ev.clientY));
+    };
+    const cleanup = () => {
       window.removeEventListener("mousemove", move);
       window.removeEventListener("mouseup", up);
+      window.removeEventListener("blur", cancel);
     };
+    const cancel = () => cleanup();
+    const up = () => cleanup();
     window.addEventListener("mousemove", move);
     window.addEventListener("mouseup", up);
+    window.addEventListener("blur", cancel);
   }
 
   // ---- 検索 ----

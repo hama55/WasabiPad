@@ -2353,6 +2353,30 @@ mod tests {
     }
 
     #[test]
+    fn moving_range_before_source_with_edit_many_is_one_undo_entry() {
+        // Feature: 選択範囲のD&D移動
+        // Scenario: 選択範囲を元位置より前へ移動する
+        // Given: "DEF"を削除して文書先頭へ挿入する2件の編集
+        let mut d = doc("abcDEFghi");
+        let items = vec![
+            EditManyItem { start: p(0, 3), end: p(0, 6), text: String::new() },
+            EditManyItem { start: p(0, 0), end: p(0, 0), text: "DEF".into() },
+        ];
+
+        // When: 2件をedit_manyへ渡す
+        let r = d.edit_many(items, p(0, 0), 1).unwrap();
+
+        // Then: 先頭へ移動し、Undo一回で移動全体を戻せる
+        assert_eq!(d.lines(0, 1), vec!["DEFabcghi"]);
+        assert_eq!((r.carets[1].line, r.carets[1].col), (0, 3));
+        d.undo().unwrap();
+        assert_eq!(d.lines(0, 1), vec!["abcDEFghi"]);
+        assert!(d.undo().is_none());
+        d.redo().unwrap();
+        assert_eq!(d.lines(0, 1), vec!["DEFabcghi"]);
+    }
+
+    #[test]
     fn col_is_char_index_not_byte() {
         // 全角 "あいう" の char col 2 に挿入 → byte col 6 に変換される
         let mut d = doc("あいう");

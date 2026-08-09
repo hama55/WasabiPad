@@ -295,10 +295,137 @@ describe("Feature: VirtualEditor", () => {
     press("z", { ctrlKey: true });
     await settle();
     expect(doc.text()).toBe("abcDEFghi");
+    press("y", { ctrlKey: true });
+    await settle();
+    expect(doc.text()).toBe("abcghiDEF");
+    press("z", { ctrlKey: true });
+    await settle();
+    expect(doc.text()).toBe("abcDEFghi");
     press("z", { ctrlKey: true });
     await settle();
     expect(doc.text()).toBe("abcDEFghi");
 
+    layout.restore();
+  });
+
+  // Given: 文書が「abcDEFghi」、選択範囲が「DEF」である
+  // When: Ctrlなしで選択範囲を先頭へドラッグする
+  // Then: 選択文字列が元位置から削除され、先頭へ移動し、キャレットは移動後末尾になる
+  it("Scenario: 選択範囲を元位置より前へ移動できる", async () => {
+    const { editor, doc, host } = mount("abcDEFghi");
+    editor.open(1, false);
+    await settle();
+    const layout = installMouseLayout(host);
+    await editor.selectRange(0, 3, 6);
+    const scroll = layout.scroll;
+
+    scroll.dispatchEvent(new MouseEvent("mousedown", {
+      bubbles: true, button: 0, clientX: 48, clientY: 10,
+    }));
+    window.dispatchEvent(new MouseEvent("mousemove", {
+      bubbles: true, clientX: 8, clientY: 10,
+    }));
+    window.dispatchEvent(new MouseEvent("mouseup", {
+      bubbles: true, clientX: 8, clientY: 10,
+    }));
+    await settle();
+
+    expect(doc.text()).toBe("DEFabcghi");
+    expect(editor.captureViewState().caret).toEqual({ line: 0, col: 3 });
+
+    layout.restore();
+  });
+
+  // Given: 文書が「abcDEFghi」、選択範囲が「DEF」でドラッグ中である
+  // When: ウィンドウが失焦してから、マウス移動・mouseupが届く
+  // Then: ドラッグをキャンセルし、ドロップも編集も発生しない
+  it("Scenario: 失焦した選択範囲ドラッグをキャンセルする", async () => {
+    const { editor, doc, host } = mount("abcDEFghi");
+    editor.open(1, false);
+    await settle();
+    const layout = installMouseLayout(host);
+    await editor.selectRange(0, 3, 6);
+    const scroll = layout.scroll;
+
+    scroll.dispatchEvent(new MouseEvent("mousedown", {
+      bubbles: true, button: 0, clientX: 48, clientY: 10,
+    }));
+    window.dispatchEvent(new MouseEvent("mousemove", {
+      bubbles: true, clientX: 98, clientY: 10,
+    }));
+    expect(host.querySelector(".ve-drag-caret.on")).not.toBeNull();
+
+    window.dispatchEvent(new Event("blur"));
+    expect(host.querySelector(".ve-drag-caret.on")).toBeNull();
+
+    window.dispatchEvent(new MouseEvent("mousemove", {
+      bubbles: true, clientX: 98, clientY: 10,
+    }));
+    window.dispatchEvent(new MouseEvent("mouseup", {
+      bubbles: true, clientX: 98, clientY: 10,
+    }));
+    await settle();
+
+    expect(doc.text()).toBe("abcDEFghi");
+    layout.restore();
+  });
+
+  // Given: 文書が「abcDEFghi」、選択範囲をドラッグ中でドロップキャレットが表示されている
+  // When: 文書をopenし直してから、古いドラッグのmouseupが届く
+  // Then: 古いドラッグを破棄し、文書を編集しない
+  it("Scenario: 文書切替時に古い選択範囲ドラッグを破棄する", async () => {
+    const { editor, doc, host } = mount("abcDEFghi");
+    editor.open(1, false);
+    await settle();
+    const layout = installMouseLayout(host);
+    await editor.selectRange(0, 3, 6);
+    const scroll = layout.scroll;
+
+    scroll.dispatchEvent(new MouseEvent("mousedown", {
+      bubbles: true, button: 0, clientX: 48, clientY: 10,
+    }));
+    window.dispatchEvent(new MouseEvent("mousemove", {
+      bubbles: true, clientX: 98, clientY: 10,
+    }));
+    expect(host.querySelector(".ve-drag-caret.on")).not.toBeNull();
+
+    editor.open(1, false);
+    expect(host.querySelector(".ve-drag-caret.on")).toBeNull();
+    window.dispatchEvent(new MouseEvent("mouseup", {
+      bubbles: true, clientX: 98, clientY: 10,
+    }));
+    await settle();
+
+    expect(doc.text()).toBe("abcDEFghi");
+    layout.restore();
+  });
+
+  // Given: 文書が「abcDEFghi」、選択範囲が「DEF」、移動用 backend editMany が Error("ipc failed") で拒否される
+  // When: Ctrlなしで選択範囲を末尾へドラッグする
+  // Then: エラーを通知し、ドロップキャレットを消して次の操作へ戻る
+  it("Scenario: D&D移動のIPC失敗を通知してドラッグ状態を解放する", async () => {
+    const { editor, doc, events, host } = mount("abcDEFghi");
+    editor.open(1, false);
+    await settle();
+    const layout = installMouseLayout(host);
+    await editor.selectRange(0, 3, 6);
+    vi.spyOn(doc.client, "editMany").mockRejectedValueOnce(new Error("ipc failed"));
+    const scroll = layout.scroll;
+
+    scroll.dispatchEvent(new MouseEvent("mousedown", {
+      bubbles: true, button: 0, clientX: 48, clientY: 10,
+    }));
+    window.dispatchEvent(new MouseEvent("mousemove", {
+      bubbles: true, clientX: 98, clientY: 10,
+    }));
+    window.dispatchEvent(new MouseEvent("mouseup", {
+      bubbles: true, clientX: 98, clientY: 10,
+    }));
+    await vi.waitFor(() => expect(events.errors).toHaveLength(1));
+
+    expect(events.errors[0].message).toBe("選択範囲を移動またはコピーできませんでした");
+    expect(host.querySelector(".ve-drag-caret.on")).toBeNull();
+    expect(doc.text()).toBe("abcDEFghi");
     layout.restore();
   });
 
@@ -331,6 +458,45 @@ describe("Feature: VirtualEditor", () => {
     expect(doc.calls).not.toContain("editMany(2)");
     expect(editor.captureViewState().caret).toEqual({ line: 0, col: 12 });
 
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true }));
+    await settle();
+    expect(doc.text()).toBe("abcDEFghi");
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "y", ctrlKey: true, bubbles: true }));
+    await settle();
+    expect(doc.text()).toBe("abcDEFghiDEF");
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true }));
+    await settle();
+    expect(doc.text()).toBe("abcDEFghi");
+
+    layout.restore();
+  });
+
+  // Given: 文書が「abcDEFghi」、選択範囲が「DEF」である
+  // When: キーボードイベントなしで、Ctrl付きのマウスイベントだけを末尾へ送る
+  // Then: 元の文字列を残したまま末尾へコピーし、移動用のeditManyは呼ばない
+  it("Scenario: マウスイベントのCtrl修飾だけでもコピーになる", async () => {
+    const { editor, doc, host } = mount("abcDEFghi");
+    editor.open(1, false);
+    await settle();
+    const layout = installMouseLayout(host);
+    await editor.selectRange(0, 3, 6);
+    const scroll = layout.scroll;
+
+    scroll.dispatchEvent(new MouseEvent("mousedown", {
+      bubbles: true, button: 0, clientX: 48, clientY: 10, ctrlKey: true,
+    }));
+    window.dispatchEvent(new MouseEvent("mousemove", {
+      bubbles: true, clientX: 98, clientY: 10, ctrlKey: true,
+    }));
+    window.dispatchEvent(new MouseEvent("mouseup", {
+      bubbles: true, clientX: 98, clientY: 10, ctrlKey: true,
+    }));
+    await settle();
+
+    expect(doc.text()).toBe("abcDEFghiDEF");
+    expect(doc.calls).toContain('edit(0:9,0:9,"DEF")');
+    expect(doc.calls).not.toContain("editMany(2)");
+
     layout.restore();
   });
 
@@ -349,6 +515,50 @@ describe("Feature: VirtualEditor", () => {
     await vi.waitFor(() => expect(doc.text()).toContain("x"));
 
     expect(events.errors[0].message).toBe("編集を反映できませんでした");
+  });
+
+  // Given: 10000行の文書、未取得行の行番号選択用行長取得が Error("ipc failed") で拒否される
+  // When: 行番号をクリックして行選択を開始する
+  // Then: 「行選択を更新できませんでした」というエラーを通知する
+  it("Scenario: 行選択のIPC失敗をイベント境界で通知する", async () => {
+    const { editor, doc, events, host } = mount(
+      Array.from({ length: 10000 }, (_, i) => `line ${i}`).join("\n"),
+    );
+    editor.open(10000, false);
+    await settle();
+    const lineCharLen = vi.spyOn(doc.client, "lineCharLen").mockRejectedValueOnce(new Error("ipc failed"));
+    const dropdown = document.createElement("div");
+    dropdown.id = "dropdown";
+    document.body.appendChild(dropdown);
+
+    host.querySelector<HTMLElement>(".ve-gutter")!.dispatchEvent(
+      new MouseEvent("mousedown", { bubbles: true, button: 0, clientY: 300000 }),
+    );
+    await settle();
+    expect(lineCharLen).toHaveBeenCalled();
+    await vi.waitFor(() => expect(events.errors).toHaveLength(1));
+
+    expect(events.errors[0].message).toBe("行選択を更新できませんでした");
+    window.dispatchEvent(new MouseEvent("mouseup"));
+    dropdown.remove();
+  });
+
+  // Given: 文書が「abc」、textarea からの入力用 backend edit が最初だけ Error("ipc failed") で拒否される
+  // When: textarea に「x」を入力して失敗した後、同じ入力イベントを再送する
+  // Then: 失敗直後は textarea に「x」が戻り、再試行で文書へ反映される
+  it("Scenario: textarea入力のIPC失敗時に未反映文字を保持して再試行できる", async () => {
+    const { editor, doc, events, input, type } = mount("abc");
+    editor.open(1, false);
+    await settle();
+    vi.spyOn(doc.client, "edit").mockRejectedValueOnce(new Error("ipc failed"));
+
+    type("x");
+    await vi.waitFor(() => expect(events.errors).toHaveLength(1));
+    expect(input.value).toBe("x");
+
+    input.dispatchEvent(new InputEvent("input"));
+    await vi.waitFor(() => expect(doc.text()).toBe("xabc"));
+    expect(input.value).toBe("");
   });
 
   // Given: 文書が「abc」、clipboard write が Error("denied") で拒否される

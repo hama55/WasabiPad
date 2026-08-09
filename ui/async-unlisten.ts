@@ -7,20 +7,31 @@ export function createAsyncUnlisten(): AsyncUnlisten {
   let disposed = false;
   let unlisten: (() => void) | null = null;
 
+  const safelyUnlisten = (listener: (() => void) | null) => {
+    try {
+      listener?.();
+    } catch (error) {
+      console.error("イベント購読の解除に失敗しました", error);
+    }
+  };
+
   return {
     set(next) {
       if (disposed) {
-        next();
+        safelyUnlisten(next);
         return;
       }
-      unlisten?.();
+      const previous = unlisten;
+      unlisten = null;
+      safelyUnlisten(previous);
       unlisten = next;
     },
     dispose() {
       if (disposed) return;
       disposed = true;
-      unlisten?.();
+      const current = unlisten;
       unlisten = null;
+      safelyUnlisten(current);
     },
   };
 }
