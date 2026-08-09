@@ -38,11 +38,14 @@ body {
 }
 #viewer-title-text { overflow: hidden; text-overflow: ellipsis; }
 #viewer-format {
-  display: none; max-width: 160px; padding: 2px 20px 2px 6px;
-  border: 0; border-radius: 3px; background: transparent; color: var(--fg);
-  font: 12px var(--font-ui); text-align: center;
+  display: none; align-items: center; gap: 2px; margin-left: 8px;
 }
-#viewer-format option { background: var(--bg-side); color: var(--fg); }
+#viewer-format button {
+  padding: 2px 6px; border: 0; border-radius: 3px;
+  background: transparent; color: var(--fg); font: 12px var(--font-ui); cursor: default;
+}
+#viewer-format button:hover { background: var(--hover); }
+#viewer-format button.selected { background: var(--accent); color: #fff; }
 #wincontrols { display: flex; }
 #wincontrols button {
   width: 46px; border: 0; background: none; color: var(--fg);
@@ -59,7 +62,7 @@ body {
 body.inline-viewer #viewer-title-spacer { width: 8px; }
 body.inline-viewer #wincontrols { display: none; }
 body.inline-viewer #viewer-title-text { display: none; }
-body.inline-viewer #viewer-format { display: block; }
+body.inline-viewer #viewer-format { display: flex; }
 body.inline-viewer #viewer-fullscreen { display: block; }
 
 main { position: relative; flex: 1; min-height: 0; }

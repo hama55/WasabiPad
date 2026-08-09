@@ -133,8 +133,8 @@ describe("Feature: AddressBar breadcrumbs", () => {
 
   // Given: `C:\\work\\memo.txt` を表示中のAddressBar
   // When: `work` のパンくずを通常クリックする
-  // Then: 現在タブ用の開く通知だけを1回送り、既定動作は維持する
-  it("Scenario: 通常クリックしたパンくずを現在タブで開く", () => {
+  // Then: 新規タブ用の開く通知だけを1回送り、既定動作は維持する
+  it("Scenario: 通常クリックしたパンくずを新規タブで開く", () => {
     const { host, ports } = addressBarFixture();
     const addressbar = new AddressBar(host, ports);
     addressbar.render("C:\\work\\memo.txt");
@@ -144,7 +144,7 @@ describe("Feature: AddressBar breadcrumbs", () => {
     crumb.dispatchEvent(event);
 
     expect(ports.onOpen).toHaveBeenCalledTimes(1);
-    expect(ports.onOpen.mock.calls).toEqual([["C:\\work"]]);
+    expect(ports.onOpen.mock.calls).toEqual([["C:\\work", true]]);
     expect(event.defaultPrevented).toBe(false);
   });
 

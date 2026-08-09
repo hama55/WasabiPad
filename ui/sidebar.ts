@@ -325,6 +325,23 @@ export class Sidebar {
     this.tree.replaceChildren(this.panel.showing ? this.panel.renderTree() : this.folderTree());
   }
 
+  private openFileRow(r: Row) {
+    const previous = this.sel;
+    this.sel = r.relPath;
+    this.render();
+    void Promise.resolve(this.onSelect(r.relPath, false))
+      .then((opened) => {
+        if (opened === false) {
+          this.sel = previous;
+          this.render();
+        }
+      })
+      .catch((error) => this.reportTreeError(error))
+      .finally(() => {
+        this.tree.focus();
+      });
+  }
+
   private onTreeKeyDown(event: KeyboardEvent) {
     if (this.panel.showing || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
     const visible = this.visible();
@@ -334,8 +351,12 @@ export class Sidebar {
     const next = event.key === "ArrowUp"
       ? visible[Math.max(0, current < 0 ? visible.length - 1 : current - 1)]
       : visible[Math.min(visible.length - 1, current + 1)];
-    this.sel = this.rows[next].relPath;
-    this.render();
+    const row = this.rows[next];
+    if (row.kind === "file" || row.kind === "archiveEntry") this.openFileRow(row);
+    else {
+      this.sel = row.relPath;
+      this.render();
+    }
     this.tree.querySelector<HTMLElement>(".fv-row.sel")?.scrollIntoView?.({ block: "nearest" });
   }
 
@@ -367,17 +388,7 @@ export class Sidebar {
           r.expanded = !r.expanded;
           this.render();
         } else {
-          const previous = this.sel;
-          this.sel = r.relPath;
-          this.render();
-          void Promise.resolve(this.onSelect(r.relPath, false))
-            .then((opened) => {
-              if (opened === false) {
-                this.sel = previous;
-                this.render();
-              }
-            })
-            .catch((error) => this.reportTreeError(error));
+          this.openFileRow(r);
         }
       };
       div.addEventListener("click", (e) => {

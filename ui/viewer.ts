@@ -52,6 +52,7 @@ import {
   isCollapsedViewerSelection,
   viewerSelectionFromDom,
 } from "./viewer-selection";
+import { createViewerFormatButtons, syncViewerFormatButtons } from "./viewer-format-buttons";
 
 const MAX_TABLE_ROWS = 10_000;
 const MAX_TABLE_COLUMNS = 200;
@@ -63,7 +64,7 @@ const isInlineViewer = new URLSearchParams(window.location.search).get("inline")
 const win = isInlineViewer ? null : getCurrentWindow();
 const content = document.getElementById("viewer-content")!;
 const title = document.getElementById("viewer-title-text")!;
-const formatSelect = document.getElementById("viewer-format") as HTMLSelectElement;
+const formatButtons = document.getElementById("viewer-format")!;
 const fullscreenButton = document.getElementById("viewer-fullscreen") as HTMLButtonElement;
 const summary = document.getElementById("viewer-summary")!;
 const themeButton = document.getElementById("viewer-theme")!;
@@ -95,15 +96,6 @@ let windowControls: WindowControls | null = null;
 
 function postToParent(message: unknown) {
   window.parent.postMessage(message, window.location.origin);
-}
-
-function populateFormatSelect() {
-  formatSelect.replaceChildren(...Object.values(VIEWER_FORMATS).map((spec) => {
-    const option = document.createElement("option");
-    option.value = spec.id;
-    option.textContent = spec.title;
-    return option;
-  }));
 }
 
 function scrollCsvRows(rows: HTMLElement[], selection: ViewerSelection | null) {
@@ -287,17 +279,6 @@ function bindViewerControls() {
   fontButton.addEventListener("click", () => runViewerOperation("フォントを変更できませんでした", promptFont));
   fontSizeButton.addEventListener("click", () => runViewerOperation("文字サイズを変更できませんでした", promptFontSize));
   content.addEventListener("wheel", onViewerWheel, { passive: false });
-  formatSelect.addEventListener("change", () => {
-    runViewerOperation("表示形式を変更できませんでした", () => {
-      if (!isInlineViewer) return;
-      const format = formatSelect.value;
-      if (!isViewerFormat(format)) return;
-      postToParent({
-        type: INLINE_PREVIEW_MESSAGES.FORMAT_CHANGE_MESSAGE,
-        format,
-      });
-    });
-  });
   fullscreenButton.addEventListener("click", () => {
     runViewerOperation("全画面表示を変更できませんでした", () => {
       if (isInlineViewer) postToParent({ type: INLINE_PREVIEW_MESSAGES.FULLSCREEN_CHANGE_MESSAGE });
@@ -567,7 +548,7 @@ function renderPayload(payload: ViewerPayload) {
   currentArchivePath = payload.archive_path;
   currentArchiveEntry = payload.archive_entry;
   const handler = VIEWER_HANDLERS[payload.format];
-  formatSelect.value = payload.format;
+  syncViewerFormatButtons(formatButtons, payload.format);
   title.textContent = VIEWER_FORMATS[payload.format].title;
   document.title = title.textContent;
   if (!isInlineViewer) runViewerOperation("タイトルを更新できませんでした", () => win!.setTitle(title.textContent));
@@ -798,7 +779,15 @@ async function start() {
     if (isInlineViewer) document.body.classList.add("inline-viewer");
     applyTheme();
     if (!isInlineViewer) windowControls = new WindowControls(document.body, win!, title, { onError: reportWindowError });
-    populateFormatSelect();
+    createViewerFormatButtons(formatButtons, (format) => {
+      runViewerOperation("表示形式を変更できませんでした", () => {
+        if (!isInlineViewer || !isViewerFormat(format)) return;
+        postToParent({
+          type: INLINE_PREVIEW_MESSAGES.FORMAT_CHANGE_MESSAGE,
+          format,
+        });
+      });
+    });
     bindViewerControls();
     applyFont(fontFamily, fontSize, false);
     themeButton.addEventListener("click", () => {

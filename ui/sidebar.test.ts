@@ -33,9 +33,9 @@ describe("Feature: Sidebar", () => {
 
   // Given: `first.txt`と`second.txt`を設定し、tree要素にフォーカス
   // When: ArrowDown、ArrowDown、ArrowUpを順に送る
-  // Then: 選択行は`first.txt`→`second.txt`→`first.txt`
-  it("Scenario: フォーカス中の上下キーで可視行を選択する", () => {
-    const { host, sidebar } = mount();
+  // Then: 選択行と開く通知は`first.txt`→`second.txt`→`first.txt`
+  it("Scenario: フォーカス中の上下キーでファイルを選択して開く", () => {
+    const { host, ports, sidebar } = mount();
     sidebar.setEntries([
       { name: "first.txt", is_dir: false, is_archive: false },
       { name: "second.txt", is_dir: false, is_archive: false },
@@ -50,6 +50,60 @@ describe("Feature: Sidebar", () => {
 
     tree.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
     expect(host.querySelector(".fv-row.sel")?.textContent).toContain("first.txt");
+    expect(ports.onSelect.mock.calls).toEqual([
+      ["first.txt", false],
+      ["second.txt", false],
+      ["first.txt", false],
+    ]);
+  });
+
+  // Given: 上下キーで開いたファイルの処理中にエディタへフォーカスが移る
+  // When: 自動オープンの完了を待つ
+  // Then: 次の上下キーを受け取れるようツリーへフォーカスを戻す
+  it("Scenario: 上下キーで自動オープンした後もツリーへフォーカスを戻す", async () => {
+    const { host, ports, sidebar } = mount();
+    const editorInput = document.createElement("input");
+    document.body.append(editorInput);
+    ports.onSelect.mockImplementation(() => {
+      editorInput.focus();
+    });
+    sidebar.setEntries([
+      { name: "first.txt", is_dir: false, is_archive: false },
+      { name: "second.txt", is_dir: false, is_archive: false },
+    ]);
+
+    const tree = host.querySelector<HTMLElement>("[tabindex=\"0\"]")!;
+    tree.focus();
+    tree.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    expect(document.activeElement).toBe(editorInput);
+
+    await vi.waitFor(() => expect(document.activeElement).toBe(tree));
+    tree.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    expect(ports.onSelect).toHaveBeenNthCalledWith(2, "second.txt", false);
+  });
+
+  // Given: ツリーのファイルをクリックするとエディタへフォーカスが移る
+  // When: ファイルを開き終えてからArrowDownを送る
+  // Then: ツリーがキー入力を受け取り、次のファイルを開く
+  it("Scenario: ファイルクリック後も上下キーで次のファイルを開く", async () => {
+    const { host, ports, sidebar } = mount();
+    const editorInput = document.createElement("input");
+    document.body.append(editorInput);
+    ports.onSelect.mockImplementation(() => {
+      editorInput.focus();
+    });
+    sidebar.setEntries([
+      { name: "first.txt", is_dir: false, is_archive: false },
+      { name: "second.txt", is_dir: false, is_archive: false },
+    ]);
+
+    const tree = host.querySelector<HTMLElement>("[tabindex=\"0\"]")!;
+    host.querySelector<HTMLElement>(".fv-row")!.click();
+    expect(document.activeElement).toBe(editorInput);
+    await vi.waitFor(() => expect(document.activeElement).toBe(tree));
+
+    tree.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    expect(ports.onSelect).toHaveBeenNthCalledWith(2, "second.txt", false);
   });
 
   // Given: dir/a.txt を含むツリーで、dir の展開取得が保留中

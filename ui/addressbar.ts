@@ -111,7 +111,7 @@ export class AddressBar {
       button.title = segment.path;
       button.addEventListener("click", (event) => {
         event.stopPropagation();
-        this.ports.onOpen(segment.path);
+        this.ports.onOpen(segment.path, true);
       });
       button.addEventListener("auxclick", (event) => {
         if (!isMiddleClick(event)) return;
