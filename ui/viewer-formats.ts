@@ -6,6 +6,7 @@ export interface ViewerFormatSpec {
   readonly id: ViewerFormat;
   readonly label: string;
   readonly title: string;
+  readonly previewOrder: number;
   readonly iconClass: MenuIconClass;
   readonly extensions: readonly string[];
   readonly supportsDelimiter: boolean;
@@ -20,6 +21,7 @@ export const VIEWER_FORMATS: Record<ViewerFormat, ViewerFormatSpec> = {
     id: "csv",
     label: "CSVビュー",
     title: "CSV",
+    previewOrder: 1,
     iconClass: MENU_ICON.csv,
     extensions: [".csv"],
     supportsDelimiter: true,
@@ -29,6 +31,7 @@ export const VIEWER_FORMATS: Record<ViewerFormat, ViewerFormatSpec> = {
     id: "markdown",
     label: "Markdownビュー",
     title: "Markdown",
+    previewOrder: 0,
     iconClass: MENU_ICON.markdown,
     extensions: [".md", ".markdown"],
     supportsDelimiter: false,
@@ -38,6 +41,7 @@ export const VIEWER_FORMATS: Record<ViewerFormat, ViewerFormatSpec> = {
     id: "image",
     label: "Imageビュー",
     title: "Image",
+    previewOrder: 2,
     iconClass: MENU_ICON.image,
     extensions: Object.keys(IMAGE_MIME_TYPES).map((extension) => `.${extension}`),
     supportsDelimiter: false,

@@ -1,17 +1,17 @@
 import type { ViewerFormat } from "./api";
 import { VIEWER_FORMATS } from "./viewer-formats";
 
-export const VIEWER_FORMAT_BUTTON_ORDER = ["markdown", "csv", "image"] as const satisfies readonly ViewerFormat[];
-
 export function createViewerFormatButtons(
   host: HTMLElement,
   onSelect: (format: ViewerFormat) => void,
 ) {
-  host.replaceChildren(...VIEWER_FORMAT_BUTTON_ORDER.map((format) => {
+  const specs = [...Object.values(VIEWER_FORMATS)].sort((left, right) => left.previewOrder - right.previewOrder);
+  host.replaceChildren(...specs.map((spec) => {
+    const format = spec.id;
     const button = document.createElement("button");
     button.type = "button";
     button.dataset.viewerFormat = format;
-    button.textContent = VIEWER_FORMATS[format].title;
+    button.textContent = spec.title;
     button.setAttribute("aria-pressed", "false");
     button.addEventListener("click", () => onSelect(format));
     return button;

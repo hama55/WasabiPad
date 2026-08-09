@@ -114,6 +114,20 @@ describe("Feature: AddressBar navigation buttons", () => {
 });
 
 describe("Feature: AddressBar breadcrumbs", () => {
+  // Given: `C:\\work\\memo.txt`を入力欄に入力したAddressBar
+  // When: Enterを押す
+  // Then: 入力欄のパスは現在タブ用の開く通知だけを送る
+  it("Scenario: 入力欄のEnterは現在タブで開く", () => {
+    const { host, ports } = addressBarFixture();
+    const addressbar = new AddressBar(host, ports);
+    const input = host.querySelector<HTMLInputElement>("#addressbar")!;
+    input.value = "C:\\work\\memo.txt";
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+
+    expect(ports.onOpen.mock.calls).toEqual([["C:\\work\\memo.txt"]]);
+    addressbar.dispose();
+  });
+
   // Given: `C:\\work\\memo.txt` を表示中のAddressBar
   // When: `work` のパンくずをホイールボタンでクリックする
   // Then: 対象パスと新規タブ指定を `onOpen` に通知し、既定動作を抑止する
@@ -146,6 +160,24 @@ describe("Feature: AddressBar breadcrumbs", () => {
     expect(ports.onOpen).toHaveBeenCalledTimes(1);
     expect(ports.onOpen.mock.calls).toEqual([["C:\\work", true]]);
     expect(event.defaultPrevented).toBe(false);
+  });
+
+  // Given: ドライブ直下/末尾/非ドライブ形式のパンくず
+  // When: 指定位置を通常クリックする
+  // Then: どのパスでも新規タブ指定で対象パスを通知する
+  it.each([
+    ["C:\\work\\memo.txt", 0, "C:\\"],
+    ["C:\\work\\memo.txt", 2, "C:\\work\\memo.txt"],
+    ["memo.txt", 0, "memo.txt"],
+  ] as const)("Scenario: path=%s のcrumbを新規タブで開く", (path, index, expected) => {
+    const { host, ports } = addressBarFixture();
+    const addressbar = new AddressBar(host, ports);
+    addressbar.render(path);
+
+    host.querySelectorAll<HTMLButtonElement>(".addressbar-crumb")[index].click();
+
+    expect(ports.onOpen.mock.calls).toEqual([[expected, true]]);
+    addressbar.dispose();
   });
 
   // Given: `C:\\work\\memo.txt` を表示中のAddressBar

@@ -333,11 +333,9 @@ const sidebar = new Sidebar(sidebarEl, {
   onSelect: async (relPath, newTab) => {
     if (newTab) {
       await openInNewTab(relPath);
-      return;
+      return true;
     }
-    if (!(await tabs.navigateEntry(relPath))) {
-      sidebar.select(doc.current.selectedRelPath);
-    }
+    return tabs.navigateEntry(relPath);
   },
   onContextMenu: (x, y, target) => folderActions.showContextMenu(x, y, target),
   onExpandArchive: (relPath) =>

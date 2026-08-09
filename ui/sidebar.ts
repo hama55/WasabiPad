@@ -53,6 +53,7 @@ export class Sidebar {
   private rows: Row[] = [];
   private sel: string | null = null; // 選択中の relPath
   private selectionRequest = 0;
+  private openRequest = 0;
   private onSelect: (relPath: string, newTab: boolean) => void | Promise<boolean | void>;
   private onContextMenu: (x: number, y: number, target: ContextTarget | null) => void;
   private onExpandArchive: (relPath: string) => Promise<string[]>;
@@ -97,6 +98,7 @@ export class Sidebar {
 
   setWorkspaceSearch(folderRoot: string | null) {
     this.selectionRequest++;
+    this.invalidateOpenRequests();
     this.panel.setFolderRoot(folderRoot);
   }
 
@@ -142,6 +144,7 @@ export class Sidebar {
   // フォルダの直下だけを表示する。ファイルは自動選択しない。
   setEntries(entries: FolderEntry[]) {
     this.selectionRequest++;
+    this.invalidateOpenRequests();
     this.rows = this.folderRows(entries, 0, "");
     this.sel = null;
     this.render();
@@ -149,6 +152,7 @@ export class Sidebar {
 
   async refreshFolderEntries() {
     const request = ++this.selectionRequest;
+    this.invalidateOpenRequests();
     const oldRows = this.rows;
     const oldByPath = new Map(oldRows.map((row) => [row.relPath, row]));
     const archiveChildren = new Map<string, Row[]>();
@@ -186,6 +190,7 @@ export class Sidebar {
 
   setArchiveEntries(names: string[]) {
     this.selectionRequest++;
+    this.invalidateOpenRequests();
     this.rows = this.buildRows(names, 0, "", () => "archiveEntry");
     this.sel = null;
     this.render();
@@ -205,6 +210,7 @@ export class Sidebar {
   // 直接開いた (フォルダ非経由の) zip/xlsx/xls 自身を、展開前の単一行として表示する。
   setArchiveRoot(displayName: string) {
     this.selectionRequest++;
+    this.invalidateOpenRequests();
     this.rows = [{ label: displayName, relPath: "", depth: 0, kind: "archive", expanded: false, childrenLoaded: false }];
     this.sel = null;
     this.render();
@@ -325,20 +331,58 @@ export class Sidebar {
     this.tree.replaceChildren(this.panel.showing ? this.panel.renderTree() : this.folderTree());
   }
 
+  private invalidateOpenRequests() {
+    this.openRequest++;
+  }
+
+  private requestSelection(relPath: string, newTab: boolean) {
+    try {
+      return Promise.resolve(this.onSelect(relPath, newTab));
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
+
+  private focusTree() {
+    try {
+      this.tree.focus();
+    } catch (error) {
+      void this.reportTreeError(error);
+    }
+  }
+
+  private restoreSelection(previous: string | null, current: string, request: number) {
+    if (request !== this.openRequest || this.sel !== current) return;
+    this.sel = previous;
+    try {
+      this.render();
+    } catch (error) {
+      void this.reportTreeError(error);
+    }
+  }
+
   private openFileRow(r: Row) {
     const previous = this.sel;
-    this.sel = r.relPath;
-    this.render();
-    void Promise.resolve(this.onSelect(r.relPath, false))
+    const request = ++this.openRequest;
+    try {
+      this.sel = r.relPath;
+      this.render();
+    } catch (error) {
+      this.sel = previous;
+      void this.reportTreeError(error);
+      this.focusTree();
+      return;
+    }
+    void this.requestSelection(r.relPath, false)
       .then((opened) => {
-        if (opened === false) {
-          this.sel = previous;
-          this.render();
-        }
+        if (opened === false) this.restoreSelection(previous, r.relPath, request);
       })
-      .catch((error) => this.reportTreeError(error))
+      .catch((error) => {
+        this.restoreSelection(previous, r.relPath, request);
+        return this.reportTreeError(error);
+      })
       .finally(() => {
-        this.tree.focus();
+        if (request === this.openRequest) this.focusTree();
       });
   }
 
@@ -352,10 +396,17 @@ export class Sidebar {
       ? visible[Math.max(0, current < 0 ? visible.length - 1 : current - 1)]
       : visible[Math.min(visible.length - 1, current + 1)];
     const row = this.rows[next];
+    if (row.relPath === this.sel) return;
     if (row.kind === "file" || row.kind === "archiveEntry") this.openFileRow(row);
     else {
-      this.sel = row.relPath;
-      this.render();
+      const previous = this.sel;
+      try {
+        this.sel = row.relPath;
+        this.render();
+      } catch (error) {
+        this.sel = previous;
+        void this.reportTreeError(error);
+      }
     }
     this.tree.querySelector<HTMLElement>(".fv-row.sel")?.scrollIntoView?.({ block: "nearest" });
   }
@@ -377,7 +428,7 @@ export class Sidebar {
 
       const activate = (newTab: boolean) => {
         if (newTab && r.kind !== "archiveEntry" && r.kind !== "archiveDir") {
-          void Promise.resolve(this.onSelect(r.relPath, true)).catch((error) => this.reportTreeError(error));
+          void this.requestSelection(r.relPath, true).catch((error) => this.reportTreeError(error));
           return;
         }
         if (r.kind === "dir") {
@@ -392,11 +443,19 @@ export class Sidebar {
         }
       };
       div.addEventListener("click", (e) => {
-        this.tree.focus();
-        activate(e.ctrlKey);
+        this.focusTree();
+        runAsyncBoundary(
+          () => activate(e.ctrlKey),
+          (error) => this.reportTreeError(error),
+        );
       });
       div.addEventListener("auxclick", (e) => {
-        if (isMiddleClick(e)) activate(true);
+        if (isMiddleClick(e)) {
+          runAsyncBoundary(
+            () => activate(true),
+            (error) => this.reportTreeError(error),
+          );
+        }
       });
       if (r.kind !== "archiveEntry" && r.kind !== "archiveDir") {
         // archiveEntry/archiveDir はアーカイブ内の仮想エントリなので、実ファイル向けの

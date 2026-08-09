@@ -109,15 +109,16 @@ export class AddressBar {
       button.className = "addressbar-crumb";
       button.textContent = segment.label;
       button.title = segment.path;
+      const openInNewTab = () => this.ports.onOpen(segment.path, true);
       button.addEventListener("click", (event) => {
         event.stopPropagation();
-        this.ports.onOpen(segment.path, true);
+        openInNewTab();
       });
       button.addEventListener("auxclick", (event) => {
         if (!isMiddleClick(event)) return;
         event.preventDefault();
         event.stopPropagation();
-        this.ports.onOpen(segment.path, true);
+        openInNewTab();
       });
       items.push(button);
       return items;

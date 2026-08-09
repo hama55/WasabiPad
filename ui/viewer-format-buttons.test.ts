@@ -1,26 +1,40 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
+import { VIEWER_FORMATS } from "./viewer-formats";
 import { createViewerFormatButtons, syncViewerFormatButtons } from "./viewer-format-buttons";
 
 describe("Feature: viewer format buttons", () => {
   // Given: 表示形式ボタンの置き場と3形式の選択通知
-  // When: ボタンを生成してMarkdownボタンを押す
-  // Then: Markdown→CSV→Imageの順で表示し、形式を通知する
+  // When: ボタンを生成して3形式を順に押す
+  // Then: レジストリの表示順Markdown→CSV→Imageで表示し、各形式を通知する
   it("Scenario: 表示形式をボタンの並びから選択する", () => {
     const host = document.createElement("div");
     const onSelect = vi.fn();
     createViewerFormatButtons(host, onSelect);
 
-    expect([...host.querySelectorAll("button")].map((button) => button.textContent)).toEqual([
+    const buttons = [...host.querySelectorAll<HTMLButtonElement>("button")];
+    expect(buttons.map((button) => button.textContent)).toEqual([
       "Markdown", "CSV", "Image",
     ]);
-    host.querySelector<HTMLButtonElement>("[data-viewer-format=markdown]")!.click();
-    expect(onSelect).toHaveBeenCalledWith("markdown");
+    expect(buttons.map((button) => button.type)).toEqual(["button", "button", "button"]);
+    buttons.forEach((button) => button.click());
+    expect(onSelect.mock.calls).toEqual([["markdown"], ["csv"], ["image"]]);
 
     syncViewerFormatButtons(host, "csv");
-    expect(host.querySelector<HTMLButtonElement>("[data-viewer-format=csv]")!.getAttribute("aria-pressed"))
-      .toBe("true");
-    expect(host.querySelector<HTMLButtonElement>("[data-viewer-format=markdown]")!.getAttribute("aria-pressed"))
-      .toBe("false");
+    expect(buttons[1].getAttribute("aria-pressed")).toBe("true");
+    expect(buttons[0].getAttribute("aria-pressed")).toBe("false");
+    expect([...Object.values(VIEWER_FORMATS)].sort((left, right) => left.previewOrder - right.previewOrder)
+      .map((spec) => spec.id)).toEqual(["markdown", "csv", "image"]);
+  });
+
+  // Given: viewer.htmlのタイトルバー
+  // When: 表示形式コントロールのDOMを確認する
+  // Then: selectではなくボタン用グループを持つ
+  it("Scenario: タイトルバーはプルダウンを使わない", () => {
+    const html = readFileSync("viewer.html", "utf8");
+
+    expect(html).toContain('<div id="viewer-format" role="group" aria-label="表示形式"></div>');
+    expect(html).not.toContain('<select id="viewer-format"');
   });
 });

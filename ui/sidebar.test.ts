@@ -106,6 +106,136 @@ describe("Feature: Sidebar", () => {
     expect(ports.onSelect).toHaveBeenNthCalledWith(2, "second.txt", false);
   });
 
+  // Given: 2つのファイルを表示し、先頭/末尾を選択中
+  // When: 一覧の端でさらに同じ方向へ移動する
+  // Then: 既定動作は抑止するが、同じファイルを再オープンしない
+  it("Scenario: 上下キーは一覧の端で再オープンしない", () => {
+    const { host, ports, sidebar } = mount();
+    sidebar.setEntries([
+      { name: "first.txt", is_dir: false, is_archive: false },
+      { name: "second.txt", is_dir: false, is_archive: false },
+    ]);
+    const tree = host.querySelector<HTMLElement>("[tabindex=\"0\"]")!;
+    tree.focus();
+
+    const down = new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true });
+    tree.dispatchEvent(down);
+    const up = new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true, cancelable: true });
+    tree.dispatchEvent(up);
+    const downAgain = new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true });
+    tree.dispatchEvent(downAgain);
+    const downAtEnd = new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true });
+    tree.dispatchEvent(downAtEnd);
+
+    expect([down, up, downAgain, downAtEnd].every((event) => event.defaultPrevented)).toBe(true);
+    expect(ports.onSelect.mock.calls).toEqual([
+      ["first.txt", false],
+      ["second.txt", false],
+    ]);
+  });
+
+  // Given: first.txtを開いた状態で、second.txtのオープンがfalseを返す
+  // When: ArrowDownでsecond.txtを開く
+  // Then: 失敗した行ではなくfirst.txtを選択状態へ戻す
+  it("Scenario: falseを返すファイルオープンを前の選択へ戻す", async () => {
+    const { host, ports, sidebar } = mount();
+    ports.onSelect.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    sidebar.setEntries([
+      { name: "first.txt", is_dir: false, is_archive: false },
+      { name: "second.txt", is_dir: false, is_archive: false },
+    ]);
+    const tree = host.querySelector<HTMLElement>("[tabindex=\"0\"]")!;
+    host.querySelector<HTMLElement>(".fv-row")!.click();
+    await vi.waitFor(() => expect(document.activeElement).toBe(tree));
+
+    tree.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    await vi.waitFor(() => expect(host.querySelector(".fv-row.sel")?.textContent).toContain("first.txt"));
+    expect(ports.onTreeError).not.toHaveBeenCalled();
+  });
+
+  // Given: first.txtを開いた状態で、second.txtのオープンがrejectする
+  // When: ArrowDownでsecond.txtを開く
+  // Then: 選択を戻し、ツリーエラーへ通知する
+  it("Scenario: rejectするファイルオープンを前の選択へ戻す", async () => {
+    const { host, ports, sidebar } = mount();
+    const error = new Error("open failed");
+    ports.onSelect.mockResolvedValueOnce(true).mockRejectedValueOnce(error);
+    sidebar.setEntries([
+      { name: "first.txt", is_dir: false, is_archive: false },
+      { name: "second.txt", is_dir: false, is_archive: false },
+    ]);
+    const tree = host.querySelector<HTMLElement>("[tabindex=\"0\"]")!;
+    host.querySelector<HTMLElement>(".fv-row")!.click();
+    await vi.waitFor(() => expect(document.activeElement).toBe(tree));
+
+    tree.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    await vi.waitFor(() => expect(ports.onTreeError).toHaveBeenCalledWith(error));
+    expect(host.querySelector(".fv-row.sel")?.textContent).toContain("first.txt");
+    expect(document.activeElement).toBe(tree);
+  });
+
+  // Given: first.txt/second.txtのオープンが完了待ち
+  // When: first.txtの失敗がsecond.txtの開始後に届く
+  // Then: 古い結果は新しい選択状態を上書きしない
+  it("Scenario: 非同期オープンの古い結果を最新選択へ反映しない", async () => {
+    const { host, ports, sidebar } = mount();
+    const pending = new Map<string, (opened: boolean) => void>();
+    ports.onSelect.mockImplementation((relPath: string) => new Promise<boolean>((resolve) => {
+      pending.set(relPath, resolve);
+    }));
+    sidebar.setEntries([
+      { name: "first.txt", is_dir: false, is_archive: false },
+      { name: "second.txt", is_dir: false, is_archive: false },
+    ]);
+    const tree = host.querySelector<HTMLElement>("[tabindex=\"0\"]")!;
+    tree.focus();
+    tree.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    tree.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    await vi.waitFor(() => expect(pending.has("second.txt")).toBe(true));
+
+    pending.get("first.txt")!(false);
+    await Promise.resolve();
+    expect(host.querySelector(".fv-row.sel")?.textContent).toContain("second.txt");
+
+    pending.get("second.txt")!(true);
+    await vi.waitFor(() => expect(document.activeElement).toBe(tree));
+  });
+
+  // Given: ファイル選択ポートが同期例外を投げる
+  // When: ツリーからファイルを開く
+  // Then: 例外をイベント外へ漏らさずエラー通知し、ツリーへフォーカスを戻す
+  it("Scenario: 同期throwするファイルオープンをエラー境界で処理する", async () => {
+    const { host, ports, sidebar } = mount();
+    const error = new Error("sync open failed");
+    ports.onSelect.mockImplementation(() => { throw error; });
+    sidebar.setEntries([{ name: "first.txt", is_dir: false, is_archive: false }]);
+    const tree = host.querySelector<HTMLElement>("[tabindex=\"0\"]")!;
+    tree.focus();
+    tree.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+
+    await vi.waitFor(() => expect(ports.onTreeError).toHaveBeenCalledWith(error));
+    expect(host.querySelector(".fv-row.sel")).toBeNull();
+    expect(document.activeElement).toBe(tree);
+  });
+
+  // Given: ファイル行を再描画する処理が同期例外を投げる
+  // When: ファイル行をクリックする
+  // Then: イベント外へ例外を漏らさずツリーエラーへ通知する
+  it("Scenario: ファイル行の同期描画失敗をエラー境界で処理する", async () => {
+    const { host, ports, sidebar } = mount();
+    sidebar.setEntries([{ name: "first.txt", is_dir: false, is_archive: false }]);
+    const error = new Error("row render failed");
+    const render = vi.spyOn(sidebar as unknown as { render: () => void }, "render")
+      .mockImplementation(() => { throw error; });
+
+    try {
+      host.querySelector<HTMLElement>(".fv-row")!.click();
+      await vi.waitFor(() => expect(ports.onTreeError).toHaveBeenCalledWith(error));
+    } finally {
+      render.mockRestore();
+    }
+  });
+
   // Given: dir/a.txt を含むツリーで、dir の展開取得が保留中
   // When: a.txt の選択処理中に別の一覧を設定してから取得を解決する
   // Then: 古い選択処理は新しい一覧へ選択色や古い行を混入させない
