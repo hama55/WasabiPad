@@ -32,7 +32,7 @@ export function planLineIndent(anchor: Pos, caret: Pos): LineIndentPlan | null {
   });
   const move = (pos: Pos): Pos => ({
     line: pos.line,
-    col: pos.line >= range.first && pos.line <= range.last ? pos.col + 1 : pos.col,
+    col: pos.line >= range.first && pos.line <= range.last && pos.col > 0 ? pos.col + 1 : pos.col,
   });
   return {
     edits,

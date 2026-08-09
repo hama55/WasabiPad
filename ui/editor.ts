@@ -1878,8 +1878,13 @@ export class VirtualEditor {
 
   private posFromPoint(cx: number, cy: number): Pos | null {
     if (this.wrap) {
-      const target = document.elementFromPoint(cx, cy)?.closest<HTMLElement>(".ve-line");
-      if (!target?.dataset.line) return null;
+      const target = document.elementFromPoint?.(cx, cy)?.closest<HTMLElement>(".ve-line");
+      if (!target?.dataset.line) {
+        // 行のない空白 (新規メモの本文下など) でもクリックを捨てず、文書末尾へ置く。
+        const line = this.lineCount - 1;
+        const text = this.lineCache.peek(line) ?? "";
+        return { line, col: charLen(text) };
+      }
       const line = Number(target.dataset.line);
       const point = document.caretPositionFromPoint?.(cx, cy);
       const text = this.lineCache.peek(line) ?? "";

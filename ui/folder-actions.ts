@@ -48,7 +48,7 @@ export interface FolderActionsServices {
 
 export interface FolderDocumentPort {
   readonly current: Readonly<DocumentSession>;
-  promptMemoSpec: () => Promise<MemoSpec | null>;
+  promptMemoSpec: (directory?: string | null) => Promise<MemoSpec | null>;
   setSelectedRelPath: (relPath: string) => void;
   applyDocInfo: (info: api.DocInfo, keepViewers?: boolean, updateTree?: boolean) => void;
   applyRenamed: (info: api.DocInfo, selectedRelPath: string) => void;
@@ -173,7 +173,8 @@ export class FolderActions {
   }
 
   async createNote(relDir: string | null) {
-    const spec = await this.doc.promptMemoSpec();
+    const directory = relDir ? this.toAbsolute(relDir) : this.root!;
+    const spec = await this.doc.promptMemoSpec(directory);
     if (!spec) return;
     const name = fileNameOf(spec);
     let info: api.DocInfo;

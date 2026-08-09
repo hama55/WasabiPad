@@ -280,6 +280,31 @@ describe("Feature: VirtualEditor", () => {
 
     expect(doc.text()).toBe("\tone\n\ttwo\nthree");
     expect(doc.calls).toContain("editMany(2)");
+
+    press("Tab");
+    await settle();
+
+    expect(doc.text()).toBe("\t\tone\n\t\ttwo\nthree");
+    expect(doc.calls.filter((call) => call === "editMany(2)")).toHaveLength(2);
+  });
+
+  // Given: 空の新規メモを折り返し表示し、本文の行より下の空白をクリックする
+  // When: エディタの範囲外でマウス選択を開始する
+  // Then: 選択開始位置を最終行として扱い、キャレットを表示する
+  it("Scenario: 折り返し表示の行外クリックは最終行へキャレットを置く", async () => {
+    const { editor, host } = mount("");
+    editor.open(1, false);
+    await settle();
+    const layout = installMouseLayout(host);
+    editor.setWrap(true);
+
+    layout.scroll.dispatchEvent(new MouseEvent("mousedown", {
+      bubbles: true, button: 0, clientX: 48, clientY: 90,
+    }));
+
+    expect(editor.captureViewState().caret).toEqual({ line: 0, col: 0 });
+    expect(host.querySelector(".ve-caret.on")).not.toBeNull();
+    layout.restore();
   });
 
   // Given: Alt+D&Dで0〜2行目の1〜3列を矩形選択している
@@ -1126,6 +1151,29 @@ describe("Feature: VirtualEditor", () => {
     expect(editor.captureViewState().caret).toEqual({ line: 8, col: 0 });
     expect(editor.captureViewState().topLine).toBe(4);
     expect(scroll.scrollTop).toBe(80);
+  });
+
+  // Given: 1行だけの新規メモ、clientHeight=100、編集モードで開いている
+  // When: Enterを10回連続入力する
+  // Then: 11行分のスクロール範囲を作り、末尾行を表示しながら直前の行も描画する
+  it("Scenario: 新規メモでEnterを連打しても行数とスクロール範囲が増える", async () => {
+    const { editor, host, press } = mount("");
+    const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
+    const inner = host.querySelector<HTMLElement>(".ve-inner")!;
+    Object.defineProperty(scroll, "clientHeight", { configurable: true, value: 100 });
+    editor.open(1, false);
+    await settle();
+
+    for (let i = 0; i < 10; i += 1) {
+      press("Enter");
+      await settle();
+    }
+
+    expect(editor.captureViewState().caret).toEqual({ line: 10, col: 0 });
+    expect(inner.style.height).toBe("220px");
+    expect(scroll.scrollTop).toBe(120);
+    expect(host.querySelectorAll<HTMLElement>(".ve-gnum")).toHaveLength(11);
+    expect([...host.querySelectorAll<HTMLElement>(".ve-gnum")].map((row) => row.dataset.line)).toContain("10");
   });
 
   // Feature: 編集中の垂直スクロール保持

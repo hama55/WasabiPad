@@ -8,15 +8,22 @@ export interface PromptFieldsOptions {
   };
 }
 
+export interface PromptField {
+  label: string;
+  value: string;
+  type?: "password";
+  options?: { label: string; value: string }[];
+  validate?: (value: string, values: string[]) => string | null;
+  onChange?: (
+    value: string,
+    values: string[],
+    setValue: (index: number, value: string) => void,
+  ) => void | Promise<void>;
+}
+
 export function promptFields(
   title: string,
-  fields: {
-    label: string;
-    value: string;
-    type?: "password";
-    options?: { label: string; value: string }[];
-    validate?: (value: string, values: string[]) => string | null;
-  }[],
+  fields: PromptField[],
   options: PromptFieldsOptions = {},
 ): Promise<string[] | null> {
   return new Promise((resolve) => {
@@ -110,9 +117,20 @@ export function promptFields(
 
     cancelBtn.addEventListener("click", () => finish(null));
     okBtn.addEventListener("click", submit);
-    inputs.forEach((input) => {
+    inputs.forEach((input, index) => {
       input.addEventListener("input", validate);
-      input.addEventListener("change", validate);
+      input.addEventListener("change", () => {
+        validate();
+        const onChange = fields[index].onChange;
+        if (!onChange) return;
+        const setValue = (targetIndex: number, value: string) => {
+          const target = inputs[targetIndex];
+          if (!target) return;
+          target.value = value;
+          validate();
+        };
+        void onChange(input.value, inputs.map((item) => item.value), setValue);
+      });
     });
 
     validate();

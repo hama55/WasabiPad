@@ -35,4 +35,31 @@ describe("Feature: promptFields", () => {
     document.querySelector<HTMLButtonElement>(".pf-ok")!.click();
     await expect(result).resolves.toEqual(["PowerShell", "pwsh.exe -NoProfile -File {file}"]);
   });
+
+  // Feature: 入力変更時の連動更新
+  // Scenario: 拡張子の変更でファイル名欄を更新する
+  // Given: ファイル名と拡張子の2項目、拡張子変更時にsetValueする処理
+  // When: 拡張子を`md`へ変更する
+  // Then: ファイル名欄が更新され、OK結果にも反映される
+  it("Scenario: 項目変更時に別の入力値を更新できる", async () => {
+    const result = promptFields("新規メモ", [
+      { label: "ファイル名", value: "memo1" },
+      {
+        label: "拡張子",
+        value: "txt",
+        options: [{ label: ".txt", value: "txt" }, { label: ".md", value: "md" }],
+        onChange: (value, _values, setValue) => {
+          if (value === "md") setValue(0, "memo");
+        },
+      },
+    ]);
+
+    const extension = document.querySelector<HTMLSelectElement>("select")!;
+    extension.value = "md";
+    extension.dispatchEvent(new Event("change", { bubbles: true }));
+
+    expect(document.querySelector<HTMLInputElement>("input")!.value).toBe("memo");
+    document.querySelector<HTMLButtonElement>(".pf-ok")!.click();
+    await expect(result).resolves.toEqual(["memo", "md"]);
+  });
 });

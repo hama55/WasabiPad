@@ -163,6 +163,59 @@ describe("Feature: DocumentController", () => {
     ]));
   });
 
+  // Feature: 新規メモ名の初期採番
+  // Scenario: ダイアログ表示前に空き名を確定し、拡張子変更時に再計算する
+  // Given: `memo.txt`が存在し、`nextMemoPath`が初期値`memo1.txt`と変更後`memo.md`を返す
+  // When: フォルダを指定して`promptMemoSpec`を呼ぶ
+  // Then: ダイアログ初期値は`memo1`、拡張子変更後は`memo`になる
+  it("Scenario: ダイアログ表示時に採番し拡張子変更で再計算する", async () => {
+    const { view } = fakeView();
+    const nextMemoPath = vi.spyOn(api, "nextMemoPath")
+      .mockResolvedValueOnce("C:\\work\\memo1.txt")
+      .mockResolvedValueOnce("C:\\work\\memo.md");
+    const promptFieldsMock = vi.fn(async (
+      _title: string,
+      fields: Parameters<typeof promptFields>[1],
+    ) => {
+      expect(fields[0].value).toBe("memo1");
+      const setValue = (index: number, value: string) => { fields[index].value = value; };
+      await fields[1].onChange?.("md", ["memo1", "md"], setValue);
+      expect(fields[0].value).toBe("memo");
+      return ["memo", "md"];
+    });
+    const controller = new DocumentController(view, { ...services(), promptFields: promptFieldsMock });
+
+    await expect(controller.promptMemoSpec("C:\\work")).resolves.toEqual({ stem: "memo", extension: "md" });
+    expect(nextMemoPath).toHaveBeenNthCalledWith(1, "C:\\work", "memo", "txt");
+    expect(nextMemoPath).toHaveBeenNthCalledWith(2, "C:\\work", "memo", "md");
+  });
+
+  // Feature: フォルダ内の無題メモ保存
+  // Scenario: 保存ボタンで表示する名前ダイアログに採番済み初期値を出す
+  // Given: フォルダルート`C:\\work`と既存の`memo.txt`、空き名`memo1.txt`
+  // When: 無題文書で`saveAs()`を呼ぶ
+  // Then: ダイアログ表示前に採番され、`memo1.txt`へ保存する
+  it("Scenario: 保存ボタンより前に名前を採番してダイアログへ表示する", async () => {
+    const { view } = fakeView();
+    const nextMemoPath = vi.spyOn(api, "nextMemoPath").mockResolvedValueOnce("C:\\work\\memo1.txt");
+    vi.spyOn(api, "saveFile").mockResolvedValueOnce({ kind: "saved" });
+    vi.spyOn(api, "listFolderEntries").mockResolvedValueOnce([]);
+    const promptFieldsMock = vi.fn(async (
+      _title: string,
+      fields: Parameters<typeof promptFields>[1],
+    ) => {
+      expect(fields[0].value).toBe("memo1");
+      return ["memo1", "txt", "utf8", "crlf"];
+    });
+    const controller = new DocumentController(view, { ...services(), promptFields: promptFieldsMock });
+    controller.applyDocInfo(info({ path: "C:\\work", folder_root: "C:\\work", folder_entries: [] }));
+    nextMemoPath.mockClear();
+
+    expect(await controller.saveAs()).toBe(true);
+    expect(nextMemoPath).toHaveBeenCalledTimes(1);
+    expect(api.saveFile).toHaveBeenCalledWith("C:\\work\\memo1.txt", "utf8", "crlf");
+  });
+
   // Given: `info()`がpath=`C:\\work\\memo.txt`、enc=`sjis`、line_count=42、byte_len=1234
   // When: `applyDocInfo(info())`
   // Then: currentとstatusbar/addressbar/editor/titleへ各値が反映され、外部変更bannerが隠れる

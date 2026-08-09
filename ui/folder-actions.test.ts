@@ -436,4 +436,34 @@ describe("Feature: FolderActions", () => {
       expect.any(Error),
     );
   });
+
+  // Feature: フォルダ内の新規メモ採番
+  // Scenario: 初期名が存在すると空いている連番名で作成する
+  // Given: 名前入力ダイアログが初期値`memo1`を返す
+  // When: ルート直下で`createNote(null)`を実行する
+  // Then: `createNote`へ`memo1.txt`を渡し、作成後の選択先も同じ名前にする
+  it("Scenario: 同名メモがあると1から連番を付ける", async () => {
+    const { actions, doc } = fixture();
+    const docInfo = {
+      kind: "text",
+      line_count: 1,
+      enc: "utf8",
+      eol: "crlf",
+      path: "C:\\work\\memo1.txt",
+      entries: null,
+      folder_entries: [],
+      folder_root: "C:\\work",
+      view_only: false,
+      byte_len: 0,
+      is_huge: false,
+    } satisfies api.DocInfo;
+    doc.promptMemoSpec.mockResolvedValueOnce({ stem: "memo1", extension: "txt" });
+    vi.spyOn(api, "createNote").mockResolvedValueOnce(docInfo);
+
+    await actions.createNote(null);
+
+    expect(doc.promptMemoSpec).toHaveBeenCalledWith("C:\\work");
+    expect(api.createNote).toHaveBeenCalledWith(null, "memo1.txt");
+    expect(doc.setSelectedRelPath).toHaveBeenCalledWith("memo1.txt");
+  });
 });
