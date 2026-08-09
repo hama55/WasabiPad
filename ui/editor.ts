@@ -1,6 +1,8 @@
 import * as api from "./api";
 import type { Pos } from "./api";
 import { readText as readClipboardText, writeText as writeClipboardText } from "@tauri-apps/plugin-clipboard-manager";
+import { RectangularClipboard } from "./editor-clipboard";
+import { findForward } from "./editor-find-loop";
 import { FindBar } from "./findbar";
 import { clampFontSize } from "./font-controls";
 import { DEFAULT_EDITOR_CONFIG, EditorConfig } from "./editor-config";
@@ -41,7 +43,6 @@ import type { EditorViewState } from "./editor-view-state";
 import { selectedLineRange } from "./editor-edit-plan";
 
 const OVERSCAN = 8;
-type RectangularClipboard = { text: string; rows: string[] };
 
 function normalizeClipboardText(text: string): string {
   return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
@@ -133,7 +134,7 @@ export class VirtualEditor {
   private revealInExplorer?: (path: string, isDir: boolean) => void | Promise<unknown>;
   private onError: (message: string, error: unknown) => Promise<void>;
   private onPasteImage?: (bytes: number[], mimeType: string) => Promise<string>;
-  private rectangularClipboard: RectangularClipboard | null = null;
+  private rectangularClipboard = new RectangularClipboard();
   private liveViewers: LiveViewers;
 
   constructor(
@@ -314,7 +315,7 @@ export class VirtualEditor {
     this.dragCleanup?.();
     this.clearDragCaret();
     this.externalFilePath = externalFilePath;
-    this.rectangularClipboard = null;
+    this.rectangularClipboard.clear();
     this.documentGeneration++;
     this.findGen++;
     this.lastFindMatch = null;
@@ -1392,9 +1393,9 @@ export class VirtualEditor {
     const text = block
       ? await this.blockText()
       : await this.lineCache.textInRange(...this.sel.norm());
-    this.rectangularClipboard = null;
+    this.rectangularClipboard.clear();
     await writeClipboardText(text);
-    this.rectangularClipboard = block ? { text, rows: text.split("\n") } : null;
+    if (block) this.rectangularClipboard.set(text);
     if (cut && !this.readOnly) await this.deleteSel();
   }
 
@@ -1443,8 +1444,9 @@ export class VirtualEditor {
       return;
     }
     const text = normalizeClipboardText(await readClipboardText());
-    if (this.rectangularClipboard?.text === text) {
-      await this.mutation.pasteBlock(this.rectangularClipboard.rows);
+    const rows = this.rectangularClipboard.rowsFor(text);
+    if (rows) {
+      await this.mutation.pasteBlock(rows);
       return;
     }
     if (text) await this.insertText(text);
@@ -1461,9 +1463,8 @@ export class VirtualEditor {
       return;
     }
     const text = normalizeClipboardText(event.clipboardData?.getData("text/plain") ?? "");
-    const rectangular = this.rectangularClipboard;
-    if (rectangular?.text !== text) return;
-    const rows = [...rectangular.rows];
+    const rows = this.rectangularClipboard.rowsFor(text);
+    if (!rows) return;
     event.preventDefault();
     this.dispatch(
       "矩形を貼り付けできませんでした",
@@ -2097,20 +2098,25 @@ export class VirtualEditor {
       this.lastFindMatch = { start: r.start, end: r.end, pat: p, matchCase };
       return true;
     }
-    let cursor: api.FindCursor | undefined;
-    for (;;) {
-      const outcome = await this.doc.findStep(p, from, matchCase, cursor, VirtualEditor.FIND_BUDGET);
-      if (myGen !== this.findGen) return false; // 検索バーが閉じられた/新しい検索が始まった
-      if (outcome.kind === "Found") {
-        this.findBar.setProgress("");
-        this.selectAndCenter(outcome.start, outcome.end);
-        this.lastFindMatch = { start: outcome.start, end: outcome.end, pat: p, matchCase };
-        return true;
-      }
-      if (outcome.kind === "NotFound") { this.lastFindMatch = null; return false; }
-      cursor = outcome.cursor;
-      this.findBar.setProgress(`検索中… ${findProgressPercent(cursor, from.line, this.lineCount)}%`);
+    const outcome = await findForward(
+      this.doc,
+      p,
+      from,
+      matchCase,
+      VirtualEditor.FIND_BUDGET,
+      () => myGen === this.findGen,
+      (cursor) => this.findBar.setProgress(
+        `検索中… ${findProgressPercent(cursor, from.line, this.lineCount)}%`,
+      ),
+    );
+    if (!outcome || outcome.kind !== "Found") {
+      this.lastFindMatch = null;
+      return false;
     }
+    this.findBar.setProgress("");
+    this.selectAndCenter(outcome.start, outcome.end);
+    this.lastFindMatch = { start: outcome.start, end: outcome.end, pat: p, matchCase };
+    return true;
   }
 
   // 現在の選択が直前の検索結果そのものであれば置換してから次を検索する (連続置換)。

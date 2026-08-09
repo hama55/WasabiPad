@@ -102,22 +102,22 @@ fn open_path(path: String, state: State, app: AppHandle) -> Result<DocInfo, Stri
 }
 
 #[tauri::command]
-fn new_doc(state: State) {
-    document::new_doc(state);
+fn new_doc(state: State) -> Result<(), String> {
+    document::new_doc(state)
 }
 
 #[tauri::command]
-fn close_doc(state: State) {
-    document::close_doc(state);
+fn close_doc(state: State) -> Result<(), String> {
+    document::close_doc(state)
 }
 
 #[tauri::command]
-fn lines(start: usize, count: usize, state: State) -> Vec<String> {
+fn lines(start: usize, count: usize, state: State) -> Result<Vec<String>, String> {
     document::lines(start, count, state)
 }
 
 #[tauri::command]
-fn line_char_len(line: usize, state: State) -> usize {
+fn line_char_len(line: usize, state: State) -> Result<usize, String> {
     document::line_char_len(line, state)
 }
 
@@ -229,12 +229,12 @@ fn edit_many(
 }
 
 #[tauri::command]
-fn undo(state: State) -> Option<EditResult> {
+fn undo(state: State) -> Result<Option<EditResult>, String> {
     document::undo(state)
 }
 
 #[tauri::command]
-fn redo(state: State) -> Option<EditResult> {
+fn redo(state: State) -> Result<Option<EditResult>, String> {
     document::redo(state)
 }
 
@@ -245,7 +245,7 @@ fn find(
     forward: bool,
     match_case: bool,
     state: State,
-) -> Option<FindResult> {
+) -> Result<Option<FindResult>, String> {
     document::find(pat, from, forward, match_case, state)
 }
 
@@ -257,7 +257,7 @@ fn find_step(
     cursor: Option<FindCursor>,
     budget: usize,
     state: State,
-) -> FindOutcome {
+) -> Result<FindOutcome, String> {
     document::find_step(pat, from, match_case, cursor, budget, state)
 }
 
@@ -268,12 +268,12 @@ fn replace_all_chunk(
     match_case: bool,
     budget: usize,
     state: State,
-) -> ReplaceChunkResult {
+) -> Result<ReplaceChunkResult, String> {
     document::replace_all_chunk(pat, rep, match_case, budget, state)
 }
 
 #[tauri::command]
-fn replace_all_cancel(state: State) -> EditResult {
+fn replace_all_cancel(state: State) -> Result<EditResult, String> {
     document::replace_all_cancel(state)
 }
 
@@ -285,7 +285,7 @@ fn save_file(path: String, enc: EncodingId, eol: Eol, state: State) -> Result<Sa
 // 外部変更ポーリング (フロントの定期タイマーから呼ぶ)。dirty はフロントが管理する
 // 未保存フラグ。小/巨大ファイルの区別も含め、判定はすべて core 側が持つ。
 #[tauri::command]
-fn poll_external(dirty: bool, state: State) -> ExternalCheck {
+fn poll_external(dirty: bool, state: State) -> Result<ExternalCheck, String> {
     document::poll_external(dirty, state)
 }
 
@@ -300,13 +300,13 @@ fn ack_external(state: State) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn set_encoding(enc: EncodingId, state: State) {
-    document::set_encoding(enc, state);
+fn set_encoding(enc: EncodingId, state: State) -> Result<(), String> {
+    document::set_encoding(enc, state)
 }
 
 #[tauri::command]
-fn set_eol(eol: Eol, state: State) {
-    document::set_eol(eol, state);
+fn set_eol(eol: Eol, state: State) -> Result<(), String> {
+    document::set_eol(eol, state)
 }
 
 #[tauri::command]
@@ -455,7 +455,13 @@ fn main() {
         return;
     }
 
-    let instance_server = InstanceServer::new();
+    let instance_server = match InstanceServer::new() {
+        Ok(server) => server,
+        Err(error) => {
+            eprintln!("WasabiPadのインスタンス受付を初期化できません: {error}");
+            return;
+        }
+    };
     let app = match tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())

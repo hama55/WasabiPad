@@ -19,14 +19,9 @@ import {
   type ChartTypeId,
 } from "./chart-data";
 import {
-  csvCellBoundsForColumn,
-  csvCellOffsetAt,
   csvColumnAt,
-  CSV_LINE_NUMBER_WIDTH,
-  parseCsvSource,
   csvSourceOffsetAtPosition,
   csvSourcePositionAtOffset,
-  type CsvSourceRow,
 } from "./csv-viewer";
 import { startCsvColumnResize as bindCsvColumnResize } from "./csv-column-resize";
 import { resolveArchiveAssetEntry, resolveAssetPath } from "./viewer-assets";
@@ -46,11 +41,9 @@ import { scrollViewerCaret, scrollViewerCell } from "./viewer-scroll";
 import { createViewerChartMenuItem } from "./viewer-context-menu";
 import { createViewerDelimiterMenuItem } from "./viewer-context-menu";
 import {
-  CSV_DELIMITER_OPTIONS,
-  CUSTOM_DELIMITER_VALUE,
   DEFAULT_CSV_DELIMITER,
-  delimiterPresetFor,
 } from "./viewer-delimiter";
+import { openViewerDelimiterDialog } from "./viewer-delimiter-dialog";
 import { INLINE_PREVIEW_MESSAGES } from "./inline-preview-protocol";
 import { isViewerPayload } from "./viewer-payload";
 import { imageUrlFromArchive, imageUrlFromPath, revokeImageUrl } from "./viewer-image-source";
@@ -62,9 +55,13 @@ import {
   viewerSelectionFromDom,
 } from "./viewer-selection";
 import { createViewerFormatButtons, syncViewerFormatButtons } from "./viewer-format-buttons";
+import { ViewerAssetTracker } from "./viewer-asset-tracker";
+import {
+  MAX_TABLE_COLUMNS,
+  MAX_TABLE_ROWS,
+  renderCsvTable,
+} from "./viewer-csv-table";
 
-const MAX_TABLE_ROWS = 10_000;
-const MAX_TABLE_COLUMNS = 200;
 const CHART_COLORS = ["#4fc3f7", "#ffb74d", "#81c784", "#e57373", "#ba68c8", "#fff176", "#4dd0e1", "#f06292"];
 
 await initSettings();
@@ -95,7 +92,7 @@ let currentSourcePath: string | null = null;
 let currentArchivePath: string | null = null;
 let currentArchiveEntry: string | null = null;
 let renderGeneration = 0;
-let archiveAssetUrls: string[] = [];
+const archiveAssetTracker = new ViewerAssetTracker(revokeImageUrl);
 let chart: Chart<"line" | "bar", (number | null)[], string> | null = null;
 let chartColumns: { x: number; y: number[]; reverseX: boolean; type: ChartTypeId } | null = null;
 let csvColumnWidths: number[] = [];
@@ -131,58 +128,6 @@ function notifyParentOfSelection() {
     type: INLINE_PREVIEW_MESSAGES.SELECTION_CHANGE_MESSAGE,
     selection,
   });
-}
-
-function appendCsvCaret(cell: HTMLElement, value: string, sourceRow: CsvSourceRow, columnIndex: number) {
-  const rowEnd = csvSourcePositionAtOffset(sourceRow.text, sourceRow.line, sourceRow.text.length);
-  const position = currentSelection?.start;
-  const positionInRow = position
-    && comparePos(position, { line: sourceRow.line, col: 0 }) >= 0
-    && comparePos(position, rowEnd) <= 0;
-  if (!currentSelection || !isCollapsedViewerSelection(currentSelection)
-    || !positionInRow) {
-    cell.textContent = value;
-    return;
-  }
-  const sourceOffset = csvSourceOffsetAtPosition(sourceRow.text, sourceRow.line, currentSelection.start);
-  if (csvColumnAt(sourceRow.text, sourceOffset, delimiterInput.value) !== columnIndex) {
-    cell.textContent = value;
-    return;
-  }
-  const offset = Math.max(0, Math.min(value.length, csvCellOffsetAt(
-    sourceRow.text,
-    sourceOffset,
-    delimiterInput.value,
-  )));
-  const caret = document.createElement("span");
-  caret.className = "viewer-caret";
-  caret.setAttribute("aria-hidden", "true");
-  cell.append(
-    document.createTextNode(value.slice(0, offset)),
-    caret,
-    document.createTextNode(value.slice(offset)),
-  );
-}
-
-function createCsvColumnGroup(table: HTMLTableElement, columnCount: number): HTMLTableColElement[] {
-  const group = document.createElement("colgroup");
-  const lineNumber = document.createElement("col");
-  lineNumber.className = "viewer-line-number-column";
-  lineNumber.style.width = `${CSV_LINE_NUMBER_WIDTH}px`;
-  group.appendChild(lineNumber);
-  const columns = Array.from({ length: columnCount }, (_, index) => {
-    const column = document.createElement("col");
-    const width = csvColumnWidths[index];
-    if (width) column.style.width = width + "px";
-    group.appendChild(column);
-    return column;
-  });
-  table.appendChild(group);
-  if (columns.length && csvColumnWidths.length >= columns.length) {
-    table.style.tableLayout = "fixed";
-    table.style.width = "max-content";
-  }
-  return columns;
 }
 
 function startCsvColumnResize(
@@ -318,79 +263,39 @@ function bindViewerControls() {
 function renderTable(text: string) {
   renderGeneration++;
   revokeArchiveAssetUrls();
-  const parsed = parseCsvSource(text, delimiterInput.value);
-  const sourceRows = parsed.rows;
-  currentRows = sourceRows.map((row) => row.values);
-  const table = document.createElement("table");
-  table.className = "viewer-grid";
-  const body = document.createElement("tbody");
-  const fragment = document.createDocumentFragment();
-  const rows: HTMLTableRowElement[] = [];
-  const maxColumns = currentRows.reduce((max, row) => Math.max(max, row.length), 0);
-  const columns = createCsvColumnGroup(table, Math.min(maxColumns, MAX_TABLE_COLUMNS));
-
-  currentRows.slice(0, MAX_TABLE_ROWS).forEach((row, rowIndex) => {
-    const sourceRow = sourceRows[rowIndex] ?? { values: row, text: "", line: rowIndex };
-    const tr = document.createElement("tr");
-    tr.dataset.sourceLine = String(sourceRow.line);
-    tr.dataset.sourceCsv = sourceRow.text;
-    tr.dataset.delimiter = delimiterInput.value;
-    const lineNumber = document.createElement(rowIndex === 0 ? "th" : "td");
-    lineNumber.className = "viewer-line-number";
-    lineNumber.textContent = String(rowIndex + 1);
-    lineNumber.dataset.sourceLine = String(sourceRow.line);
-    tr.appendChild(lineNumber);
-    row.slice(0, MAX_TABLE_COLUMNS).forEach((value, columnIndex) => {
-      const cell = document.createElement(rowIndex === 0 ? "th" : "td");
-      cell.dataset.sourceColumn = String(columnIndex);
-      appendCsvCaret(cell, value, sourceRow, columnIndex);
-      cell.classList.toggle("viewer-source-selected", csvCellSelected(sourceRow, columnIndex));
-      tr.appendChild(cell);
-      if (rowIndex === 0 && columns[columnIndex]) {
-        const handle = document.createElement("span");
-        handle.className = "viewer-column-resizer";
-        handle.setAttribute("aria-hidden", "true");
-        handle.addEventListener("pointerdown", (event) =>
-          runViewerOperation("CSV列幅の変更を開始できませんでした", () =>
-            startCsvColumnResize(event, table, columns, columnIndex)));
-        cell.appendChild(handle);
-      }
-    });
-    tr.classList.toggle("viewer-source-selected", csvRowSelected(sourceRow));
-    rows.push(tr);
-    fragment.appendChild(tr);
+  const rendered = renderCsvTable({
+    text,
+    delimiter: delimiterInput.value,
+    selection: currentSelection,
+    columnWidths: csvColumnWidths,
+    onColumnResize: (event, table, columns, columnIndex) => runViewerOperation(
+      "CSV列幅の変更を開始できませんでした",
+      () => startCsvColumnResize(event, table, columns, columnIndex),
+    ),
   });
-  body.appendChild(fragment);
-  table.appendChild(body);
-  content.replaceChildren(table);
-  scrollCsvRows(rows, currentSelection);
+  currentRows = rendered.values;
+  content.replaceChildren(rendered.table);
+  scrollCsvRows(rendered.rows, currentSelection);
 
-  const truncated = currentRows.length > MAX_TABLE_ROWS || maxColumns > MAX_TABLE_COLUMNS;
-  summary.classList.toggle("warning", parsed.errors.length > 0);
-  summary.title = parsed.errors.map((error) => error.message).join("\n");
-  summary.textContent = `${currentRows.length.toLocaleString()}行 × ${maxColumns.toLocaleString()}列${
+  const truncated = currentRows.length > MAX_TABLE_ROWS || rendered.maxColumns > MAX_TABLE_COLUMNS;
+  summary.classList.toggle("warning", rendered.errors.length > 0);
+  summary.title = rendered.errors.map((error) => error.message).join("\n");
+  summary.textContent = `${currentRows.length.toLocaleString()}行 × ${rendered.maxColumns.toLocaleString()}列${
     truncated ? "（表示上限を超えた部分は省略）" : ""
   }`;
   if (chartColumns) renderChart();
 }
 
 function revokeArchiveAssetUrls() {
-  archiveAssetUrls.forEach((url) => revokeImageUrl(url));
-  archiveAssetUrls = [];
+  archiveAssetTracker.revokeAll();
 }
 
 function retainArchiveAssetUrl(url: string, generation: number): boolean {
-  if (generation !== renderGeneration) {
-    revokeImageUrl(url);
-    return false;
-  }
-  archiveAssetUrls.push(url);
-  return true;
+  return archiveAssetTracker.retain(url, generation, renderGeneration);
 }
 
 function releaseArchiveAssetUrl(url: string) {
-  archiveAssetUrls = archiveAssetUrls.filter((current) => current !== url);
-  revokeImageUrl(url);
+  archiveAssetTracker.release(url);
 }
 
 async function loadArchiveImages(
@@ -579,108 +484,19 @@ function renderPayload(payload: ViewerPayload) {
   runViewerOperation("ビューを描画できませんでした", () => handler.render(payload.text));
 }
 
-function csvCellPositions(sourceRow: CsvSourceRow, columnIndex: number) {
-  const bounds = csvCellBoundsForColumn(sourceRow.text, columnIndex, delimiterInput.value);
-  return {
-    start: csvSourcePositionAtOffset(sourceRow.text, sourceRow.line, bounds.start),
-    end: csvSourcePositionAtOffset(sourceRow.text, sourceRow.line, bounds.end),
-  };
-}
-
-function csvCellSelected(sourceRow: CsvSourceRow, columnIndex: number) {
-  if (!currentSelection || isCollapsedViewerSelection(currentSelection)) return false;
-  const cell = csvCellPositions(sourceRow, columnIndex);
-  return comparePos(currentSelection.start, cell.end) < 0
-    && comparePos(currentSelection.end, cell.start) > 0;
-}
-
-function csvRowSelected(sourceRow: CsvSourceRow) {
-  const selection = currentSelection;
-  if (!selection || isCollapsedViewerSelection(selection)) return false;
-  const rowStart = { line: sourceRow.line, col: 0 };
-  const rowEnd = csvSourcePositionAtOffset(sourceRow.text, sourceRow.line, sourceRow.text.length);
-  if (comparePos(selection.start, rowEnd) >= 0 || comparePos(selection.end, rowStart) <= 0) return false;
-
-  const selectedCells = sourceRow.values
-    .slice(0, MAX_TABLE_COLUMNS)
-    .map((_, index) => csvCellPositions(sourceRow, index))
-    .filter((cell) => comparePos(selection.start, cell.end) < 0
-      && comparePos(selection.end, cell.start) > 0);
-  return selectedCells.length !== 1
-    || comparePos(selection.start, selectedCells[0].start) < 0
-    || comparePos(selection.end, selectedCells[0].end) > 0;
-}
-
 function openDelimiterDialog() {
-  const overlay = document.createElement("div");
-  overlay.className = "viewer-dialog-overlay";
-  const dialog = document.createElement("div");
-  dialog.className = "viewer-dialog";
-  const heading = document.createElement("h2");
-  heading.textContent = "区切り文字を変更";
-
-  const presetLabel = document.createElement("label");
-  presetLabel.textContent = "プリセット";
-  const preset = document.createElement("select");
-  CSV_DELIMITER_OPTIONS.forEach((option) => {
-    const item = document.createElement("option");
-    item.value = option.value;
-    item.textContent = option.label;
-    preset.appendChild(item);
-  });
-  const customOption = document.createElement("option");
-  customOption.value = CUSTOM_DELIMITER_VALUE;
-  customOption.textContent = "その他";
-  preset.appendChild(customOption);
-  preset.value = delimiterPresetFor(delimiterInput.value);
-  presetLabel.appendChild(preset);
-
-  const customLabel = document.createElement("label");
-  customLabel.textContent = "その他の区切り文字";
-  const customInput = document.createElement("input");
-  customInput.value = delimiterInput.value;
-  customInput.setAttribute("aria-label", "その他の区切り文字");
-  customLabel.appendChild(customInput);
-  const syncCustomVisibility = () => {
-    customLabel.hidden = preset.value !== CUSTOM_DELIMITER_VALUE;
-  };
-  preset.addEventListener("change", syncCustomVisibility);
-  syncCustomVisibility();
-
-  const error = document.createElement("div");
-  error.className = "viewer-dialog-error";
-  const buttons = document.createElement("div");
-  buttons.className = "viewer-dialog-buttons";
-  const cancel = document.createElement("button");
-  cancel.textContent = "キャンセル";
-  const apply = document.createElement("button");
-  apply.className = "primary";
-  apply.textContent = "適用";
-  buttons.append(cancel, apply);
-  dialog.append(heading, presetLabel, customLabel, error, buttons);
-  overlay.appendChild(dialog);
-  document.body.appendChild(overlay);
-
-  const finish = () => overlay.remove();
-  cancel.addEventListener("click", finish);
-  overlay.addEventListener("mousedown", (event) => {
-    if (event.target === overlay) finish();
-  });
-  apply.addEventListener("click", () => {
-    const value = preset.value === CUSTOM_DELIMITER_VALUE ? customInput.value : preset.value;
-    if (!value) {
-      error.textContent = "区切り文字を入力してください";
-      return;
-    }
-    delimiterInput.value = value;
-    finish();
-    if (isInlineViewer) {
-      postToParent({
-        type: INLINE_PREVIEW_MESSAGES.DELIMITER_CHANGE_MESSAGE,
-        delimiter: value,
-      });
-    }
-    runViewerOperation("ビューを再描画できませんでした", () => VIEWER_HANDLERS[currentFormat].render(currentText));
+  openViewerDelimiterDialog({
+    value: delimiterInput.value,
+    onApply: (value) => {
+      delimiterInput.value = value;
+      if (isInlineViewer) {
+        postToParent({
+          type: INLINE_PREVIEW_MESSAGES.DELIMITER_CHANGE_MESSAGE,
+          delimiter: value,
+        });
+      }
+      runViewerOperation("ビューを再描画できませんでした", () => VIEWER_HANDLERS[currentFormat].render(currentText));
+    },
   });
 }
 

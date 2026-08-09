@@ -1,7 +1,9 @@
 use crate::fileio::FileStamp;
+use crate::folder::FolderEntry;
 use crate::protocol;
 use crate::ziptext::Entry;
 use std::fs::File;
+use std::io;
 use std::path::{Path, PathBuf};
 
 // 文書の所在・閲覧対象だけを担当する。本文・Undo・検索状態は所有しない。
@@ -59,6 +61,13 @@ impl DocumentSource {
 
     pub(crate) fn folder_root(&self) -> Option<&Path> {
         self.root.as_deref()
+    }
+
+    pub(crate) fn folder_entries(&self) -> io::Result<Option<Vec<FolderEntry>>> {
+        self.root
+            .as_deref()
+            .map(|root| crate::folder::list_children(root, ""))
+            .transpose()
     }
 
     pub(crate) fn entries(&self) -> Option<&[Entry]> {

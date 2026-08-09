@@ -37,7 +37,9 @@ pub(crate) fn write_config(path: PathBuf, contents: &str) -> io::Result<()> {
         replace_file(&temp, &path)
     })();
     if result.is_err() {
-        let _ = std::fs::remove_file(&temp);
+        if let Err(error) = std::fs::remove_file(&temp) {
+            eprintln!("設定の一時ファイルを削除できませんでした: {error}");
+        }
     }
     result
 }

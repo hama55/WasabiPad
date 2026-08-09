@@ -30,6 +30,7 @@ const outcome = (
   scanned_files: results.length,
   hit_file_limit: false,
   hit_result_limit: false,
+  skipped_files: 0,
   pattern_error: null,
   file_name_match_mode: "fuzzy",
   ...extra,
@@ -292,6 +293,19 @@ describe("Feature: WorkspaceSearchPanel", () => {
 
     const warnings = [...host.querySelectorAll(".ws-warning")].map((el) => el.textContent);
     expect(warnings).toEqual(["最大ファイル数で列挙を打ち切った", "最大結果数で検索を打ち切った"]);
+  });
+
+  // Given: 本文検索中に2ファイルを読み取れなかった結果
+  // When: 検索結果を表示する
+  // Then: 部分検索だったことを件数付きで警告する
+  it("Scenario: 読み取れなかったファイルを黙らずに表示する", async () => {
+    vi.useFakeTimers();
+    const host = mount(async () => outcome([hit("a.txt", 0, "needle")], { skipped_files: 2 }));
+    await search(host, "needle");
+
+    expect([...host.querySelectorAll(".ws-warning")].map((el) => el.textContent)).toEqual([
+      "2 件のファイルを読み取れず、完全には検索できなかった",
+    ]);
   });
 
   // Given: onSearch が未解決Promiseのまま走査中になり、onCancel が回数を増やす

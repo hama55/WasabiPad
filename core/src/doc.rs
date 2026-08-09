@@ -28,6 +28,17 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+fn is_delete_target_affected(
+    current_path: Option<&Path>,
+    canonical_target: &Path,
+) -> io::Result<bool> {
+    let Some(path) = current_path else {
+        return Ok(false);
+    };
+    let current = path.canonicalize()?;
+    Ok(current == canonical_target || current.starts_with(canonical_target))
+}
+
 pub struct Doc {
     buf: TextBuffer,
     undo: UndoStack,
@@ -135,7 +146,9 @@ impl Doc {
     ) -> io::Result<Doc> {
         let archive_port = archive_port::system();
         if path.is_dir() {
-            let _ = archive_port.cleanup_stale_workspaces(path);
+            if let Err(error) = archive_port.cleanup_stale_workspaces(path) {
+                eprintln!("古いアーカイブ作業領域を回収できませんでした: {error}");
+            }
             let mut doc = Doc::empty_with_archive_port(archive_port);
             doc.source = DocumentSource {
                 root: Some(path.to_path_buf()),
@@ -174,7 +187,9 @@ impl Doc {
     ) -> io::Result<Doc> {
         if archive_port.supports_path(path) {
             if let Some(parent) = path.parent() {
-                let _ = archive_port.cleanup_stale_workspaces(parent);
+                if let Err(error) = archive_port.cleanup_stale_workspaces(parent) {
+                    eprintln!("古いアーカイブ作業領域を回収できませんでした: {error}");
+                }
             }
         }
         if crate::folder::is_lazy_archive_path(path) {
@@ -247,11 +262,11 @@ impl Doc {
             )
         })?;
         let o = fileio::open_buffer_as(&path, enc)?;
-        Ok(self.adopt_opened(path, o))
+        self.adopt_opened(path, o)
     }
 
     // ディスクから読み直した Opened で文書全体を差し替える (undo/検索状態は破棄)。
-    fn adopt_opened(&mut self, path: PathBuf, o: fileio::Opened) -> DocInfo {
+    fn adopt_opened(&mut self, path: PathBuf, o: fileio::Opened) -> io::Result<DocInfo> {
         let source = DocumentSource {
             root: self.source.folder_root().map(Path::to_path_buf),
             ..DocumentSource::file(path.clone(), o.source_file, o.stamp)
@@ -272,9 +287,9 @@ impl Doc {
             sevenz_passwords: std::mem::take(&mut self.sevenz_passwords),
             archive_port: Arc::clone(&self.archive_port),
         };
-        let info = replacement.info(path.to_string_lossy().into_owned());
+        let info = replacement.info(path.to_string_lossy().into_owned())?;
         *self = replacement;
-        info
+        Ok(info)
     }
 
     // 外部変更ポーリング。ハンドル非保持 (=閾値未満の実ファイル) の文書のみ対象。
@@ -289,7 +304,7 @@ impl Doc {
         match fileio::stamp(&path) {
             Ok(stamp) if stamp == stored => return ExternalCheck::Unchanged,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                return ExternalCheck::Unchanged
+                return ExternalCheck::Conflict
             }
             _ => {}
         }
@@ -318,7 +333,7 @@ impl Doc {
                 "ファイルがアーカイブに置き換えられています",
             ));
         }
-        Ok(self.adopt_opened(path, o))
+        self.adopt_opened(path, o)
     }
 
     // バナーの「無視」: 現在のディスク状態を新しい基準として記録し、以後の保存で上書きする。
@@ -334,8 +349,8 @@ impl Doc {
         Ok(())
     }
 
-    pub fn info(&self, path: String) -> DocInfo {
-        DocInfo {
+    pub fn info(&self, path: String) -> io::Result<DocInfo> {
+        Ok(DocInfo {
             // フォルダ閲覧中はどの子ファイル (アーカイブ内エントリ含む) を表示していても
             // "text" 扱い (folder_entries 側でツリーを組み立てる)。folder_root が無い場合のみ、
             // 直接開いたアーカイブ (またはその1エントリ表示中) を "archive" とする。
@@ -349,10 +364,7 @@ impl Doc {
                 .entries()
                 .map(|v| v.iter().map(|e| e.name.clone()).collect()),
             // ルート直下だけを毎回安価に取り直す (再帰しない読み取り専用の read_dir 1回分)
-            folder_entries: self
-                .source
-                .folder_root()
-                .and_then(|root| crate::folder::list_children(root, "").ok()),
+            folder_entries: self.source.folder_entries()?,
             folder_root: self
                 .source
                 .folder_root()
@@ -360,7 +372,7 @@ impl Doc {
             view_only: self.source.is_view_only(),
             byte_len: self.byte_len,
             is_huge: self.buf.is_huge(),
-        }
+        })
     }
 
     pub fn line_count(&self) -> usize {
@@ -423,17 +435,17 @@ impl Doc {
                         editable_entry: meta.map(|_| entry_name.to_string()),
                     },
                 };
-                return Ok(Some(self.info(archive_real.to_string_lossy().into_owned())));
+                return Ok(Some(self.info(archive_real.to_string_lossy().into_owned())?));
             }
             let path = join_relative(&root, rel_path);
             if self.source.path() == Some(path.as_path()) {
-                return Ok(Some(self.info(path.to_string_lossy().into_owned())));
+                return Ok(Some(self.info(path.to_string_lossy().into_owned())?));
             }
             let mut d = Doc::open_file(&path, Arc::clone(&self.archive_port))?;
             let path_str = path.to_string_lossy().into_owned();
             d.source.root = Some(root);
             d.sevenz_passwords = std::mem::take(&mut self.sevenz_passwords);
-            let info = d.info(path_str);
+            let info = d.info(path_str)?;
             *self = d;
             return Ok(Some(info));
         }
@@ -484,7 +496,7 @@ impl Doc {
         self.byte_len = text.len() as u64;
         self.buf = TextBuffer::from_text(&text);
         self.undo.clear();
-        Ok(Some(self.info(archive_path)))
+        Ok(Some(self.info(archive_path)?))
     }
 
     // 7z/zip の1エントリを展開してテキスト化する。編集して書き戻せる (=テキストとして
@@ -659,7 +671,7 @@ impl Doc {
         };
         d.source.root = Some(root);
         let path_str = path.to_string_lossy().into_owned();
-        let info = d.info(path_str);
+        let info = d.info(path_str)?;
         *self = d;
         Ok(info)
     }
@@ -682,7 +694,7 @@ impl Doc {
         if self.source.folder_root().is_some() {
             let current = match &mut self.source.target {
                 Target::File { path, .. } | Target::Archive { path, .. } => path,
-                Target::None => return Ok(self.info(String::new())),
+            Target::None => return self.info(String::new()),
             };
             if let Ok(rest) = current.strip_prefix(&old_abs) {
                 *current = if rest.as_os_str().is_empty() {
@@ -697,7 +709,7 @@ impl Doc {
             .display_path()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default();
-        Ok(self.info(path_str))
+        self.info(path_str)
     }
 
     // フォルダビューからの削除は、開いているフォルダの配下だけに限定する。
@@ -732,11 +744,7 @@ impl Doc {
         }
 
         let current_path = self.source.display_path().map(Path::to_path_buf);
-        let affected = current_path.as_ref().is_some_and(|path| {
-            path.canonicalize().ok().is_some_and(|current| {
-                current == canonical_target || current.starts_with(&canonical_target)
-            })
-        });
+        let affected = is_delete_target_affected(current_path.as_deref(), &canonical_target)?;
         let held_target = if affected {
             Some(std::mem::replace(&mut self.source.target, Target::None))
         } else {
@@ -763,7 +771,7 @@ impl Doc {
             self.replace_progress = None;
             self.byte_len = 0;
             self.source.target = Target::None;
-            return Ok(self.info(root.to_string_lossy().into_owned()));
+            return self.info(root.to_string_lossy().into_owned());
         }
 
         let path = self
@@ -771,7 +779,7 @@ impl Doc {
             .display_path()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|| root.to_string_lossy().into_owned());
-        Ok(self.info(path))
+        self.info(path)
     }
 
     // メモごとに画像を分けないと、同じフォルダ内のメモ同士で画像の持ち主が分からなくなる。
@@ -1471,7 +1479,7 @@ mod tests {
 
         let mut d = Doc::open(&archive).unwrap();
         assert!(
-            d.info(String::new()).view_only,
+            d.info(String::new()).unwrap().view_only,
             "エントリ未選択の間は閲覧専用"
         );
 
@@ -1960,14 +1968,17 @@ mod tests {
     }
 
     #[test]
-    fn poll_external_ignores_deleted_doc() {
+    fn poll_external_reports_deleted_doc_as_conflict() {
         let path =
             std::env::temp_dir().join(format!("wasabipad_poll_deleted_{}.txt", std::process::id()));
         std::fs::write(&path, "before").unwrap();
         let mut d = Doc::open(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
-        assert!(matches!(d.poll_external(false), ExternalCheck::Unchanged));
-        assert!(matches!(d.poll_external(true), ExternalCheck::Unchanged));
+        // Given: 開いているファイルが外部から削除されている
+        // When: 外部変更をポーリングする
+        // Then: 削除を変更競合として通知する
+        assert!(matches!(d.poll_external(false), ExternalCheck::Conflict));
+        assert!(matches!(d.poll_external(true), ExternalCheck::Conflict));
     }
 
     #[test]
@@ -2121,6 +2132,22 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
+    // Feature: フォルダ文書情報のエラー伝播
+    // Scenario: 文書情報の作成中にフォルダ一覧が読めなくなる
+    // Given: フォルダを開いた後、そのルートを削除する
+    // When: Doc::infoで文書情報を作る
+    // Then: 一覧欠落を成功扱いせず、読み取りエラーを返す
+    #[test]
+    fn info_reports_folder_listing_failure() {
+        let root = std::env::temp_dir().join(format!("wasabipad_info_error_{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let d = Doc::open(&root).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+
+        let error = d.info(root.to_string_lossy().into_owned()).err().unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+    }
+
     // Feature: 画像ファイルを右側プレビューへ渡すための簡易エディタ表示
     // Scenario: 画像ファイルを開く
     // Given: PNG形式のファイルがある
@@ -2135,7 +2162,7 @@ mod tests {
         std::fs::write(&path, bytes).unwrap();
 
         let mut d = Doc::open(&path).unwrap();
-        let info = d.info(path.to_string_lossy().into_owned());
+        let info = d.info(path.to_string_lossy().into_owned()).unwrap();
         assert!(info.view_only);
         assert_eq!(d.lines(0, 1), vec!["(バイナリ: 6 bytes)".to_string()]);
         assert!(d.edit(p(0, 0), p(0, 0), p(0, 0), "X", false).is_none());
@@ -2201,6 +2228,22 @@ mod tests {
         );
         drop(d);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn delete_target_check_reports_missing_current_path() {
+        // Given: 開いている文書の現在パスがすでに存在しない
+        // When: 削除対象への影響判定を行う
+        // Then: 正規化失敗を呼び出し元へ返す
+        let missing = std::env::temp_dir().join(format!(
+            "wasabipad_delete_missing_current_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&missing);
+
+        let error = is_delete_target_affected(Some(&missing), Path::new("target"))
+            .expect_err("存在しない現在パスは黙って無関係扱いしない");
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
     }
 
     #[test]

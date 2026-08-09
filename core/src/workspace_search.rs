@@ -11,7 +11,7 @@ use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkMatch}
 use ignore::overrides::OverrideBuilder;
 use ignore::{WalkBuilder, WalkState};
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -48,6 +48,8 @@ pub struct WorkspaceSearchOutcome {
     // UI 側の並べ替えは避けられず、ここでも並べると同じ規則が2実装になる。
     pub results: Vec<WorkspaceSearchResult>,
     pub scanned_files: usize,
+    // walk/open/read に失敗して、検索対象から完全には確認できなかったファイル数。
+    pub skipped_files: usize,
     pub hit_file_limit: bool,
     pub hit_result_limit: bool,
     pub pattern_error: Option<String>,
@@ -143,11 +145,13 @@ pub fn search_workspace(
     let max_results = limit(options.max_results);
     let shared_results = Mutex::new(Collected::default());
     let shared_scanned = AtomicUsize::new(0);
+    let shared_skipped = AtomicUsize::new(0);
     let shared_file_limit = AtomicBool::new(false);
     let shared_result_limit = AtomicBool::new(false);
     // 走査スレッドへ配るのは参照だけ。&T は Copy なので move クロージャへ渡せる
     let (results, scanned) = (&shared_results, &shared_scanned);
-    let (hit_file_limit, hit_result_limit) = (&shared_file_limit, &shared_result_limit);
+    let (hit_file_limit, hit_result_limit, skipped) =
+        (&shared_file_limit, &shared_result_limit, &shared_skipped);
 
     walk.build_parallel().run(|| {
         let mut engine = Engine::new(matcher.as_ref(), options, strict_names);
@@ -156,9 +160,14 @@ pub fn search_workspace(
                 return WalkState::Quit;
             }
             let Ok(entry) = entry else {
+                skipped.fetch_add(1, Ordering::Relaxed);
                 return WalkState::Continue;
             };
-            if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+            let Some(file_type) = entry.file_type() else {
+                skipped.fetch_add(1, Ordering::Relaxed);
+                return WalkState::Continue;
+            };
+            if !file_type.is_file() {
                 return WalkState::Continue;
             }
             if scanned.fetch_add(1, Ordering::Relaxed) >= max_files {
@@ -167,6 +176,9 @@ pub fn search_workspace(
             }
             let relative = relative_path(root, entry.path());
             let mut found = engine.search_file(entry.path(), &relative, pattern, max_results);
+            if found.skipped {
+                skipped.fetch_add(1, Ordering::Relaxed);
+            }
             if found.limited {
                 hit_result_limit.store(true, Ordering::Relaxed);
             }
@@ -205,6 +217,7 @@ pub fn search_workspace(
     WorkspaceSearchOutcome {
         results: output,
         scanned_files: shared_scanned.load(Ordering::Relaxed).min(max_files),
+        skipped_files: shared_skipped.load(Ordering::Relaxed),
         hit_file_limit: shared_file_limit.load(Ordering::Relaxed),
         hit_result_limit: truncated,
         pattern_error: None,
@@ -365,22 +378,52 @@ impl<'a> Engine<'a> {
         pattern: &str,
         max_results: usize,
     ) -> FileHits {
-        // 開けないファイルでも名前一致だけは返す (権限や排他はこちらでは直せない)。
-        // 本文検索と同じ File を使い回すのは、Windows では open のコストが
-        // 走査時間の無視できない割合を占めるため。
-        let mut file = File::open(path).ok();
-        let probe = file.as_mut().map_or(Probe::TEXT, probe_head);
-        if self.exclude_binary && probe.binary {
-            return FileHits::default();
-        }
         let mut hits = Vec::new();
         if self.match_names {
             hits.extend(name_hit(self.name, pattern, relative, self.match_case));
         }
-        let (Some(matcher), Some(file)) = (self.content, file.as_ref()) else {
+        if self.content.is_none() && !self.exclude_binary {
             return FileHits {
                 hits,
                 limited: false,
+                skipped: false,
+            };
+        }
+        // exclude_binary が有効な場合は、名前検索だけでもバイナリ判定が必要。
+        // 本文検索で開けないファイルは名前一致を残したまま、検索不完全として返す。
+        // 成功した空結果と混同させない。
+        let mut file = match File::open(path) {
+            Ok(file) => file,
+            Err(_) => {
+                return FileHits {
+                    hits,
+                    limited: false,
+                    skipped: true,
+                };
+            }
+        };
+        let probe = match probe_head(&mut file) {
+            Ok(probe) => probe,
+            Err(_) => {
+                return FileHits {
+                    hits,
+                    limited: false,
+                    skipped: true,
+                };
+            }
+        };
+        if self.exclude_binary && probe.binary {
+            return FileHits {
+                hits: Vec::new(),
+                limited: false,
+                skipped: false,
+            };
+        }
+        let Some(matcher) = self.content else {
+            return FileHits {
+                hits,
+                limited: false,
+                skipped: false,
             };
         };
         let searcher = match (probe.sjis, self.sjis.as_mut()) {
@@ -395,9 +438,9 @@ impl<'a> Engine<'a> {
             limited: false,
         };
         // 途中で読めなくなったファイルは黙って飛ばす (ここまでの一致は残す)
-        let _ = searcher.search_file(matcher, file, &mut collector);
+        let skipped = searcher.search_file(matcher, &file, &mut collector).is_err();
         let limited = collector.limited;
-        FileHits { hits, limited }
+        FileHits { hits, limited, skipped }
     }
 }
 
@@ -453,6 +496,7 @@ fn name_hit(
 struct FileHits {
     hits: Vec<WorkspaceSearchResult>,
     limited: bool,
+    skipped: bool,
 }
 
 // mmap は使わない (grep-searcher の既定のまま)。ripgrep が再帰検索で使わないのと
@@ -540,33 +584,25 @@ struct Probe {
     sjis: bool,
 }
 
-impl Probe {
-    // 中身を覗けなかったときの扱い。名前一致の機会だけは残す
-    const TEXT: Probe = Probe {
-        binary: false,
-        sjis: false,
-    };
-}
-
 // 先頭だけを覗いて、バイナリかどうかと Shift-JIS 扱いが要るかを決める。
 // grep-searcher は BOM 付き (UTF-8 / UTF-16) を自前で解くので、そこは触らない。
 // 読み終えたら位置を戻す (同じ File をそのまま本文検索へ渡すため)。
-fn probe_head(file: &mut File) -> Probe {
+fn probe_head(file: &mut File) -> io::Result<Probe> {
     let mut head = [0u8; PROBE_BYTES];
-    let read = file.read(&mut head).unwrap_or(0);
-    let _ = file.seek(SeekFrom::Start(0)); // 通常ファイルの seek は失敗しない
+    let read = file.read(&mut head)?;
+    file.seek(SeekFrom::Start(0))?;
     let head = &head[..read];
     if head.starts_with(&[0xFF, 0xFE]) || head.starts_with(&[0xFE, 0xFF]) {
-        return Probe {
+        return Ok(Probe {
             binary: false,
             sjis: false,
-        };
+        });
     }
-    Probe {
+    Ok(Probe {
         binary: head.contains(&0),
         // 末尾で多バイト文字が切れただけなら UTF-8 のまま扱う
         sjis: std::str::from_utf8(head).is_err_and(|error| error.error_len().is_some()),
-    }
+    })
 }
 
 #[cfg(test)]
@@ -659,6 +695,33 @@ mod tests {
         opts.search_contents = true;
         let found = run(&root, "needle", &opts);
         assert_eq!(found.results.iter().filter(|hit| hit.rel_path == "blob.pyc").count(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    // Feature: ワークスペース検索の部分結果通知
+    // Scenario: 本文検索対象のファイルを開けない
+    // Given: ファイル名は一致するが、本文ファイルが存在しないパス
+    // When: 検索エンジンでファイルを調べる
+    // Then: 名前一致は残し、本文検索が不完全だったことを記録する
+    #[test]
+    fn unreadable_content_file_is_marked_as_skipped() {
+        let root = workspace("unreadable");
+        let mut opts = options();
+        opts.search_file_names = true;
+        let matcher = super::build_matcher("needle", &opts, false)
+            .unwrap()
+            .unwrap();
+        let mut engine = super::Engine::new(Some(&matcher), &opts, false);
+
+        let found = engine.search_file(
+            &root.join("missing.txt"),
+            "needle.txt",
+            "needle",
+            usize::MAX,
+        );
+
+        assert_eq!(found.hits.len(), 1);
+        assert!(found.skipped);
         std::fs::remove_dir_all(root).unwrap();
     }
 

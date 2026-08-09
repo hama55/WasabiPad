@@ -46,7 +46,7 @@ pub(crate) async fn workspace_search(
     state: State<'_>,
     cancel: tauri::State<'_, SearchCancel>,
 ) -> Result<WorkspaceSearchOutcome, String> {
-    let root = with_doc(&state, |doc| doc.workspace_root())
+    let root = with_doc(&state, |doc| doc.workspace_root())?
         .ok_or_else(|| "folder is not open".to_string())?;
     let flag = take_over_search(&cancel, search_id)?;
     let result = tauri::async_runtime::spawn_blocking(move || {

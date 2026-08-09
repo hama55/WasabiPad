@@ -425,6 +425,11 @@ export class WorkspaceSearchPanel {
     // 上限で切ったなら必ず言う。黙って減らすのがいちばん困る
     if (outcome.hit_file_limit) summary.appendChild(warning("最大ファイル数で列挙を打ち切った"));
     if (outcome.hit_result_limit) summary.appendChild(warning("最大結果数で検索を打ち切った"));
+    if (outcome.skipped_files) {
+      summary.appendChild(warning(
+        `${outcome.skipped_files.toLocaleString()} 件のファイルを読み取れず、完全には検索できなかった`
+      ));
+    }
   }
 
   private groupRow(group: ResultGroup): HTMLElement {

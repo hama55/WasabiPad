@@ -1,4 +1,4 @@
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::Command;
@@ -28,27 +28,23 @@ pub(crate) struct InstanceServer {
 const INSTANCE_DIR: &str = "wasabipad-instances";
 
 impl InstanceServer {
-    pub(crate) fn new() -> Self {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).ok();
-        let endpoint = listener
-            .as_ref()
-            .and_then(|listener| listener.local_addr().ok())
-            .map(|address| InstanceEndpoint {
-                port: address.port(),
-                pid: std::process::id(),
-                started_at: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos(),
-            });
-        if let Some(endpoint) = &endpoint {
-            write_instance_endpoint(endpoint);
-        }
-        Self {
-            listener: Mutex::new(listener),
-            endpoint,
+    pub(crate) fn new() -> io::Result<Self> {
+        let listener = TcpListener::bind(("127.0.0.1", 0))?;
+        let address = listener.local_addr()?;
+        let endpoint = InstanceEndpoint {
+            port: address.port(),
+            pid: std::process::id(),
+            started_at: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos(),
+        };
+        write_instance_endpoint(&endpoint)?;
+        Ok(Self {
+            listener: Mutex::new(Some(listener)),
+            endpoint: Some(endpoint),
             pending: Arc::new(Mutex::new(Vec::new())),
-        }
+        })
     }
 
     pub(crate) fn start(&self, app: &AppHandle) {
@@ -75,7 +71,9 @@ impl InstanceServer {
                         poisoned.into_inner().push(request);
                     }
                 }
-                let _ = app.emit(EVENT_EXTERNAL_WINDOW_REQUEST, ());
+                if let Err(error) = app.emit(EVENT_EXTERNAL_WINDOW_REQUEST, ()) {
+                    eprintln!("外部起動要求の通知に失敗しました: {error}");
+                }
             }
         });
     }
@@ -92,7 +90,9 @@ impl InstanceServer {
                 current.port == endpoint.port && current.started_at == endpoint.started_at
             });
         if matches {
-            let _ = std::fs::remove_file(path);
+            if let Err(error) = std::fs::remove_file(path) {
+                eprintln!("インスタンス情報を削除できませんでした: {error}");
+            }
         }
     }
 }
@@ -105,14 +105,11 @@ fn instance_endpoint_path(pid: u32) -> PathBuf {
     instance_directory().join(format!("instance-{pid}.json"))
 }
 
-fn write_instance_endpoint(endpoint: &InstanceEndpoint) {
+fn write_instance_endpoint(endpoint: &InstanceEndpoint) -> io::Result<()> {
     let directory = instance_directory();
-    if std::fs::create_dir_all(&directory).is_err() {
-        return;
-    }
-    if let Ok(text) = serde_json::to_string(endpoint) {
-        let _ = std::fs::write(instance_endpoint_path(endpoint.pid), text);
-    }
+    std::fs::create_dir_all(&directory)?;
+    let text = serde_json::to_string(endpoint).map_err(io::Error::other)?;
+    std::fs::write(instance_endpoint_path(endpoint.pid), text)
 }
 
 fn read_instance_endpoints() -> Vec<(PathBuf, InstanceEndpoint)> {

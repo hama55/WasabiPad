@@ -5,7 +5,7 @@ import { DEFAULT_SEARCH_OPTIONS } from "./workspace-search-options";
 import type { FolderEntry } from "./api";
 
 function mount(onSearch: SidebarPorts["onSearch"] = vi.fn(async () => ({
-  results: [], scanned_files: 0, hit_file_limit: false, hit_result_limit: false,
+  results: [], scanned_files: 0, skipped_files: 0, hit_file_limit: false, hit_result_limit: false,
   pattern_error: null, file_name_match_mode: "strict" as const,
 }))) {
   const host = document.createElement("div");
