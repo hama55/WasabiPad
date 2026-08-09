@@ -26,6 +26,7 @@ use wasabipad_core::{
 
 const EVENT_EXTERNAL_WINDOW_REQUEST: &str = "external-window-request";
 const EVENT_WORKSPACE_SEARCH_BATCH: &str = "workspace-search-batch";
+pub(crate) const EVENT_DOCUMENT_LOAD_PROGRESS: &str = "document-load-progress";
 const EVENT_VIEWER_UPDATE: &str = "viewer-update";
 
 fn viewer_label(id: u64) -> String {
@@ -294,8 +295,8 @@ fn reload_from_disk(state: State) -> Result<DocInfo, String> {
 }
 
 #[tauri::command]
-fn ack_external(state: State) {
-    document::ack_external(state);
+fn ack_external(state: State) -> Result<(), String> {
+    document::ack_external(state)
 }
 
 #[tauri::command]

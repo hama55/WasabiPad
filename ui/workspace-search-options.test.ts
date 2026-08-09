@@ -74,4 +74,16 @@ describe("Feature: ワークスペース検索オプション", () => {
     expect(summary).toContain(".gitignore");
     expect(summary).toContain("5件目");
   });
+
+  // Given: ファイル名検索と本文検索の両方が無効
+  // When: searchScopeSummaryを呼ぶ
+  // Then: 存在しない検索対象を「ファイル名のみ」と誤表示しない
+  it("Scenario: 検索対象がない場合は対象なしと表示する", () => {
+    const summary = searchScopeSummary(options({
+      search_file_names: false,
+      search_contents: false,
+    }), "fuzzy");
+
+    expect(summary).toContain("検索対象: 検索対象なし");
+  });
 });

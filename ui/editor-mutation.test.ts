@@ -88,4 +88,43 @@ describe("Feature: EditorMutationController", () => {
     expect(document.text()).toBe("abcDEFghi");
     expect(document.calls).not.toContain('edit(0:3,0:6,"")');
   });
+
+  // Given: 0〜2行目の1〜3列を矩形選択している
+  // When: 矩形削除を直接依頼する
+  // Then: 各行を同じ列規則で削除し、短い行は無理に編集しない
+  it("Scenario: 矩形削除は短い行を安全に扱う", async () => {
+    const { document, selection, controller } = setup("abcd\nX\nefghij");
+    selection.setBlock({ line: 0, col: 1 }, { line: 2, col: 3 });
+
+    await controller.deleteSel();
+
+    expect(document.text()).toBe("ad\nX\nehij");
+    expect(document.calls).toContain("editMany(2)");
+  });
+
+  // Given: 0〜1行目の1〜3列を矩形選択している
+  // When: 2行の矩形文字列を貼り付ける
+  // Then: 選択幅を置換し、行ごとに対応する文字列を挿入する
+  it("Scenario: 矩形貼り付けは行ごとに選択幅を置換する", async () => {
+    const { document, selection, controller } = setup("abcd\nEFGH\nijkl");
+    selection.setBlock({ line: 0, col: 1 }, { line: 1, col: 3 });
+
+    await controller.pasteBlock(["XY", "Z"]);
+
+    expect(document.text()).toBe("aXYd\nEZH\nijkl");
+    expect(document.calls).toContain("editMany(2)");
+  });
+
+  // Given: 読み取り専用文書で矩形選択がある
+  // When: 矩形貼り付けを直接依頼する
+  // Then: IPC編集を呼ばず本文を変更しない
+  it("Scenario: 読み取り専用では矩形貼り付けも無視する", async () => {
+    const { document, selection, controller } = setup("abcd\nEFGH", true);
+    selection.setBlock({ line: 0, col: 1 }, { line: 1, col: 3 });
+
+    await controller.pasteBlock(["XY", "Z"]);
+
+    expect(document.text()).toBe("abcd\nEFGH");
+    expect(document.calls).not.toContain("editMany(2)");
+  });
 });

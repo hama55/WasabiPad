@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { DOCUMENT_LOAD_PROGRESS_EVENT } from "./document-load-progress";
+import type { DocumentLoadProgress } from "./document-load-progress";
 import { IPC_COMMANDS } from "./generated/IpcCommands";
 import type { EditManyItem } from "./generated/EditManyItem";
 import type { EditManyResult } from "./generated/EditManyResult";
@@ -59,15 +61,11 @@ export type ReadEncoding = (typeof READ_ENCODINGS)[number];
 export const EVENT_NAMES = {
   externalWindowRequest: "external-window-request",
   workspaceSearchBatch: "workspace-search-batch",
-  documentLoadProgress: "document-load-progress",
+  documentLoadProgress: DOCUMENT_LOAD_PROGRESS_EVENT,
   viewerUpdate: "viewer-update",
 } as const;
 
-export interface DocumentLoadProgress {
-  loaded: number;
-  total: number;
-  percent: number;
-}
+export type { DocumentLoadProgress } from "./document-load-progress";
 
 export const openPath = (path: string) => invoke<DocInfo>(IPC_COMMANDS.openPath, { path });
 export const newDoc = () => invoke<void>(IPC_COMMANDS.newDoc);

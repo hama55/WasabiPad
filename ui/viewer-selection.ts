@@ -4,6 +4,7 @@ import {
   csvCellSourceOffsetAtDisplayOffset,
   csvSourcePositionAtOffset,
 } from "./csv-viewer";
+import { DEFAULT_CSV_DELIMITER } from "./viewer-delimiter";
 
 export function isCollapsedViewerSelection(selection: ViewerSelection | null): boolean {
   return !!selection
@@ -65,7 +66,12 @@ export function sourcePositionFromPoint(
     const raw = row.dataset.sourceCsv ?? "";
     const column = Number(cell.dataset.sourceColumn ?? 0);
     const displayOffset = textOffsetWithin(cell, node, offset);
-    const rawOffset = csvCellSourceOffsetAtDisplayOffset(raw, column, displayOffset, row.dataset.delimiter ?? ",");
+    const rawOffset = csvCellSourceOffsetAtDisplayOffset(
+      raw,
+      column,
+      displayOffset,
+      row.dataset.delimiter ?? DEFAULT_CSV_DELIMITER,
+    );
     return csvSourcePositionAtOffset(raw, line, rawOffset);
   }
   const block = element?.closest<HTMLElement>("[data-source-start][data-source-end]");

@@ -8,8 +8,6 @@ use wasabipad_core::{
 
 use crate::state::{with_doc, State};
 
-const EVENT_DOCUMENT_LOAD_PROGRESS: &str = "document-load-progress";
-
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DocumentLoadProgress {
@@ -26,7 +24,7 @@ pub(crate) fn open_path(path: String, state: State, app: AppHandle) -> Result<Do
             loaded.saturating_mul(100).saturating_div(total).min(100) as u8
         };
         let _ = app.emit(
-            EVENT_DOCUMENT_LOAD_PROGRESS,
+            crate::EVENT_DOCUMENT_LOAD_PROGRESS,
             DocumentLoadProgress { loaded, total, percent },
         );
     };
@@ -220,8 +218,8 @@ pub(crate) fn reload_from_disk(state: State) -> Result<DocInfo, String> {
     with_doc(&state, |doc| doc.reload_from_disk()).map_err(|e| e.to_string())
 }
 
-pub(crate) fn ack_external(state: State) {
-    with_doc(&state, Doc::ack_external);
+pub(crate) fn ack_external(state: State) -> Result<(), String> {
+    with_doc(&state, Doc::ack_external).map_err(|error| error.to_string())
 }
 
 pub(crate) fn set_encoding(enc: EncodingId, state: State) {

@@ -10,6 +10,7 @@ const protocol = JSON.parse(read("shared/protocol.json"));
 const generatedProtocol = read("ui/generated/Protocol.ts");
 const rustProtocol = read("core/src/protocol.rs");
 const frontend = read("ui/api.ts");
+const documentLoadProgress = read("ui/document-load-progress.ts");
 const folder = read("core/src/folder.rs");
 const workspaceSearch = read("core/src/workspace_search.rs");
 const generatedSearchOptions = read("ui/generated/WorkspaceSearchOptions.ts");
@@ -302,10 +303,14 @@ for (const [label, labels] of [
 for (const [uiName, rustName] of [
   ["externalWindowRequest", "EVENT_EXTERNAL_WINDOW_REQUEST"],
   ["workspaceSearchBatch", "EVENT_WORKSPACE_SEARCH_BATCH"],
+  ["documentLoadProgress", "EVENT_DOCUMENT_LOAD_PROGRESS"],
   ["viewerUpdate", "EVENT_VIEWER_UPDATE"],
 ]) {
   const rustEvent = backend.match(new RegExp(`const ${rustName}: &str = "([^"]+)"`))?.[1];
-  const uiEvent = frontend.match(new RegExp(`${uiName}: "([^"]+)"`))?.[1];
+  const uiEvent = frontend.match(new RegExp(`${uiName}: "([^"]+)"`))?.[1]
+    ?? (uiName === "documentLoadProgress"
+      ? documentLoadProgress.match(/DOCUMENT_LOAD_PROGRESS_EVENT = "([^"]+)"/)?.[1]
+      : undefined);
   if (!rustEvent || !uiEvent || rustEvent !== uiEvent) {
     fail(`event name ${uiName}; core=${rustEvent ?? "<not found>"}, ui=${uiEvent ?? "<not found>"}`);
   }

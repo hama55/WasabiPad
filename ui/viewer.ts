@@ -48,6 +48,7 @@ import { createViewerDelimiterMenuItem } from "./viewer-context-menu";
 import {
   CSV_DELIMITER_OPTIONS,
   CUSTOM_DELIMITER_VALUE,
+  DEFAULT_CSV_DELIMITER,
   delimiterPresetFor,
 } from "./viewer-delimiter";
 import { INLINE_PREVIEW_MESSAGES } from "./inline-preview-protocol";
@@ -84,6 +85,7 @@ const chartTitle = document.getElementById("chart-title")!;
 const chartCanvas = document.getElementById("chart-canvas") as HTMLCanvasElement;
 const delimiterControl = document.getElementById("viewer-delimiter")!;
 const delimiterInput = document.getElementById("viewer-delimiter-input") as HTMLInputElement;
+delimiterInput.value ||= DEFAULT_CSV_DELIMITER;
 
 let currentFormat: ViewerFormat = "csv";
 let currentRows: string[][] = [];

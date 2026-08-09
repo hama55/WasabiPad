@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Selection } from "./selection";
+import { blockRangeForLine, Selection } from "./selection";
 
 const at = (line: number, col: number) => ({ line, col });
 
@@ -56,5 +56,26 @@ describe("Feature: Selection", () => {
     expect(sel.anchor).toEqual(at(2, 2));
     expect(sel.goalX).toBeNull();
     expect(sel.multiCaretX).toBeNull();
+  });
+
+  // Given: 行長が矩形選択の右端より短い行
+  // When: 共通の矩形行範囲計算を呼ぶ
+  // Then: 左右端を行長へ同じ規則でクランプする
+  it("Scenario: 矩形行範囲は短い行の左右端をクランプする", () => {
+    expect(blockRangeForLine("あいう", { left: 1, right: 8 })).toEqual({ start: 1, end: 3 });
+  });
+
+  // Given: 矩形のアンカーとキャレット
+  // When: Selectionへ矩形選択を設定する
+  // Then: 矩形状態と通常の端点が同じ値を参照し、他のキャレットを捨てる
+  it("Scenario: 矩形選択の設定を一つの操作へ集約する", () => {
+    const sel = new Selection();
+    sel.secondary = [at(4, 0)];
+    sel.setBlock(at(1, 2), at(3, 5));
+
+    expect(sel.blockBounds()).toEqual({ first: 1, last: 3, left: 2, right: 5 });
+    expect(sel.anchor).toEqual(at(1, 2));
+    expect(sel.caret).toEqual(at(3, 5));
+    expect(sel.secondary).toEqual([]);
   });
 });

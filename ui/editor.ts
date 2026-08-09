@@ -16,7 +16,7 @@ import { LineCache } from "./line-cache";
 import { EditorMutationController } from "./editor-mutation";
 import { LiveViewers } from "./live-viewers";
 import { lineNumberGroups } from "./line-number";
-import { Selection } from "./selection";
+import { blockRangeForLine, Selection } from "./selection";
 import { MAX_SAFE_HEIGHT, ViewportMetrics } from "./viewport-metrics";
 import {
   addRegisteredString,
@@ -42,7 +42,6 @@ import { selectedLineRange } from "./editor-edit-plan";
 
 const OVERSCAN = 8;
 type RectangularClipboard = { text: string; rows: string[] };
-let rectangularClipboard: RectangularClipboard | null = null;
 
 function normalizeClipboardText(text: string): string {
   return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
@@ -134,6 +133,7 @@ export class VirtualEditor {
   private revealInExplorer?: (path: string, isDir: boolean) => void | Promise<unknown>;
   private onError: (message: string, error: unknown) => Promise<void>;
   private onPasteImage?: (bytes: number[], mimeType: string) => Promise<string>;
+  private rectangularClipboard: RectangularClipboard | null = null;
   private liveViewers: LiveViewers;
 
   constructor(
@@ -314,6 +314,7 @@ export class VirtualEditor {
     this.dragCleanup?.();
     this.clearDragCaret();
     this.externalFilePath = externalFilePath;
+    this.rectangularClipboard = null;
     this.documentGeneration++;
     this.findGen++;
     this.lastFindMatch = null;
@@ -1019,8 +1020,7 @@ export class VirtualEditor {
       for (let i = Math.max(first, block.first); i < Math.min(last, block.last + 1); i++) {
         const str = this.lineCache.peek(i) ?? "";
         const lineEl = this.lineElem(i);
-        const c0 = Math.min(block.left, charLen(str));
-        const c1 = Math.min(block.right, charLen(str));
+        const { start: c0, end: c1 } = blockRangeForLine(str, block);
         if (this.wrap) {
           const node = lineEl?.firstChild;
           if (!node) continue;
@@ -1301,9 +1301,8 @@ export class VirtualEditor {
     const parts: string[] = [];
     for (let line = block.first; line <= block.last; line += 1) {
       const value = await this.lineCache.line(line);
-      const start = Math.min(block.left, charLen(value));
-      const end = Math.min(block.right, charLen(value));
-      parts.push([...value].slice(start, end).join(""));
+      const range = blockRangeForLine(value, block);
+      parts.push([...value].slice(range.start, range.end).join(""));
     }
     return parts.join("\n");
   }
@@ -1394,7 +1393,7 @@ export class VirtualEditor {
       ? await this.blockText()
       : await this.lineCache.textInRange(...this.sel.norm());
     await writeClipboardText(text);
-    rectangularClipboard = block ? { text, rows: text.split("\n") } : null;
+    this.rectangularClipboard = block ? { text, rows: text.split("\n") } : null;
     if (cut && !this.readOnly) await this.deleteSel();
   }
 
@@ -1443,8 +1442,8 @@ export class VirtualEditor {
       return;
     }
     const text = normalizeClipboardText(await readClipboardText());
-    if (rectangularClipboard?.text === text) {
-      await this.mutation.pasteBlock(rectangularClipboard.rows);
+    if (this.rectangularClipboard?.text === text) {
+      await this.mutation.pasteBlock(this.rectangularClipboard.rows);
       return;
     }
     if (text) await this.insertText(text);
@@ -1461,11 +1460,11 @@ export class VirtualEditor {
       return;
     }
     const text = normalizeClipboardText(event.clipboardData?.getData("text/plain") ?? "");
-    if (rectangularClipboard?.text !== text) return;
+    if (this.rectangularClipboard?.text !== text) return;
     event.preventDefault();
     this.dispatch(
       "矩形を貼り付けできませんでした",
-      () => this.mutation.pasteBlock(rectangularClipboard!.rows),
+      () => this.mutation.pasteBlock(this.rectangularClipboard!.rows),
     );
   }
 
@@ -1736,13 +1735,10 @@ export class VirtualEditor {
         const first = Math.min(...blockLines);
         const last = Math.max(...blockLines);
         if (baseColumn !== end.col) {
-          this.sel.block = {
-            anchor: { line: first, col: baseColumn },
-            caret: { line: last, col: end.col },
-          };
-          this.sel.anchor = this.sel.block.anchor;
-          this.sel.caret = this.sel.block.caret;
-          this.sel.secondary = [];
+          this.sel.setBlock(
+            { line: first, col: baseColumn },
+            { line: last, col: end.col },
+          );
         } else {
           const lo = Math.min(origin.line, end.line);
           const hi = Math.max(origin.line, end.line);

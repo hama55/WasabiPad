@@ -4,6 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import * as api from "./api";
+import { applyDocumentLoadProgress } from "./document-load-progress";
 import { VirtualEditor } from "./editor";
 import { Sidebar } from "./sidebar";
 import { FavBar } from "./favbar";
@@ -375,8 +376,7 @@ void api.onWorkspaceSearchBatch((batch) => runBackground("検索結果を画面�
 
 // フォルダビュー由来の relPath は、独立したファイルタブ用の絶対パスへ戻す
 void api.onDocumentLoadProgress((progress) => {
-  if (loading.hidden) return;
-  setLoading(true, `読み込み中… ${Math.max(0, Math.min(100, Math.round(progress.percent)))}%`);
+  applyDocumentLoadProgress(loading, loadingMessage, progress);
 })
   .then((unlisten) => documentLoadListener.set(unlisten))
   .catch((error) => reportBackgroundError("読み込み進捗の受信を開始できませんでした", error));

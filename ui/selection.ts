@@ -1,10 +1,25 @@
 // キャレットと選択範囲の状態。座標の比較だけを扱い、DOM も backend も知らない。
 import type { Pos } from "./api";
-import { comparePos as cmp } from "./editor-math";
+import { charLen, comparePos as cmp } from "./editor-math";
 
 export interface BlockSelection {
   anchor: Pos;
   caret: Pos;
+}
+
+export interface BlockBounds {
+  first: number;
+  last: number;
+  left: number;
+  right: number;
+}
+
+export function blockRangeForLine(text: string, bounds: Pick<BlockBounds, "left" | "right">) {
+  const length = charLen(text);
+  return {
+    start: Math.min(bounds.left, length),
+    end: Math.min(bounds.right, length),
+  };
 }
 
 export class Selection {
@@ -30,6 +45,15 @@ export class Selection {
     return this.blockBounds() !== null || cmp(this.anchor, this.caret) !== 0;
   }
 
+  setBlock(anchor: Pos, caret: Pos) {
+    this.block = { anchor: { ...anchor }, caret: { ...caret } };
+    this.anchor = this.block.anchor;
+    this.caret = this.block.caret;
+    this.secondary = [];
+    this.goalX = null;
+    this.multiCaretX = null;
+  }
+
   // 常に [先, 後] の順で返す
   norm(): [Pos, Pos] {
     const block = this.blockBounds();
@@ -42,7 +66,7 @@ export class Selection {
     return cmp(this.anchor, this.caret) <= 0 ? [this.anchor, this.caret] : [this.caret, this.anchor];
   }
 
-  blockBounds(): { first: number; last: number; left: number; right: number } | null {
+  blockBounds(): BlockBounds | null {
     if (!this.block || this.block.anchor.col === this.block.caret.col) return null;
     return {
       first: Math.min(this.block.anchor.line, this.block.caret.line),

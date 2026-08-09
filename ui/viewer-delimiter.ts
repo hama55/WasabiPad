@@ -1,4 +1,5 @@
 export const CUSTOM_DELIMITER_VALUE = "__custom__";
+export const DEFAULT_CSV_DELIMITER = ",";
 
 export const CSV_DELIMITER_OPTIONS = [
   { value: ",", label: ",（カンマ）" },

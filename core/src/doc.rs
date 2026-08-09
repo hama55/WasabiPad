@@ -322,16 +322,16 @@ impl Doc {
     }
 
     // バナーの「無視」: 現在のディスク状態を新しい基準として記録し、以後の保存で上書きする。
-    pub fn ack_external(&mut self) {
+    pub fn ack_external(&mut self) -> io::Result<()> {
         if self.source.stamp().is_none() {
-            return;
+            return Ok(());
         }
         let Some(path) = self.source.path().map(Path::to_path_buf) else {
-            return;
+            return Ok(());
         };
-        if let Ok(stamp) = fileio::stamp(&path) {
-            self.source.set_stamp(Some(stamp));
-        }
+        let stamp = fileio::stamp(&path)?;
+        self.source.set_stamp(Some(stamp));
+        Ok(())
     }
 
     pub fn info(&self, path: String) -> DocInfo {
@@ -1985,10 +1985,23 @@ mod tests {
             "dirty文書は勝手に読み直さない"
         );
         // 「無視」= 現ディスク状態を基準に採用 → 以後は変更なし扱い
-        d.ack_external();
+        d.ack_external().unwrap();
         assert!(matches!(d.poll_external(true), ExternalCheck::Unchanged));
         drop(d);
         std::fs::remove_file(path).unwrap();
+    }
+
+    // Given: 外部変更を無視する対象ファイルがすでに削除されている
+    // When: ack_external を呼ぶ
+    // Then: 基準更新失敗を呼び出し元へ返す
+    #[test]
+    fn ack_external_reports_stamp_failure() {
+        let path = std::env::temp_dir().join(format!("wasabipad_ack_external_{}.txt", std::process::id()));
+        std::fs::write(&path, "base").unwrap();
+        let mut d = Doc::open(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        assert!(d.ack_external().is_err());
     }
 
     #[test]

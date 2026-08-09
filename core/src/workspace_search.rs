@@ -166,7 +166,7 @@ pub fn search_workspace(
                 return WalkState::Quit;
             }
             let relative = relative_path(root, entry.path());
-            let found = engine.search_file(entry.path(), &relative, pattern, max_results);
+            let mut found = engine.search_file(entry.path(), &relative, pattern, max_results);
             if found.limited {
                 hit_result_limit.store(true, Ordering::Relaxed);
             }
@@ -176,9 +176,15 @@ pub fn search_workspace(
             let mut output = results
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if output.hits.len() >= max_results {
+            let remaining = max_results.saturating_sub(output.hits.len());
+            if remaining == 0 {
                 hit_result_limit.store(true, Ordering::Relaxed);
                 return WalkState::Quit;
+            }
+            let exceeded = found.hits.len() > remaining;
+            if exceeded {
+                found.hits.truncate(remaining);
+                hit_result_limit.store(true, Ordering::Relaxed);
             }
             output.hits.extend(found.hits);
             let batch = output.take_batch();
@@ -186,7 +192,7 @@ pub fn search_workspace(
             if let Some(batch) = batch {
                 on_batch(batch);
             }
-            WalkState::Continue
+            if exceeded { WalkState::Quit } else { WalkState::Continue }
         })
     });
 
@@ -345,10 +351,10 @@ impl<'a> Engine<'a> {
             match_names: options.search_file_names,
             match_case: options.match_case,
             exclude_binary: options.exclude_binary,
-            utf8: searcher(None),
+            utf8: searcher(None, options.exclude_binary),
             sjis: grep_searcher::Encoding::new("sjis")
                 .ok()
-                .map(|enc| searcher(Some(enc))),
+                .map(|enc| searcher(Some(enc), options.exclude_binary)),
         }
     }
 
@@ -451,10 +457,14 @@ struct FileHits {
 
 // mmap は使わない (grep-searcher の既定のまま)。ripgrep が再帰検索で使わないのと
 // 同じ理由で、Windows では 4MB 級のファイルでも実測でバッファ読みのほうが速かった。
-fn searcher(encoding: Option<grep_searcher::Encoding>) -> Searcher {
+fn searcher(encoding: Option<grep_searcher::Encoding>, exclude_binary: bool) -> Searcher {
     SearcherBuilder::new()
-        // NUL が出た時点で本文検索を止める (ripgrep の再帰検索と同じ既定)
-        .binary_detection(BinaryDetection::quit(0))
+        .binary_detection(if exclude_binary {
+            // NUL が出た時点で本文検索を止める (ripgrep の再帰検索と同じ既定)
+            BinaryDetection::quit(0)
+        } else {
+            BinaryDetection::none()
+        })
         .line_number(true)
         .encoding(encoding)
         .build()
@@ -483,6 +493,9 @@ impl Sink for Collector<'_> {
         let hits = &mut *self.hits;
         // 1行に複数一致があれば全部拾う。1件目だけ返すと「あるのに出ない」検索になる
         let _ = matcher.find_iter(text.as_bytes(), |at| {
+            if hits.len() >= max_results {
+                return false;
+            }
             let (preview, preview_col) = preview_around(text, at.start());
             let matched_chars = text[at.start()..at.end()].chars().count();
             let shown = matched_chars.min(preview.chars().count().saturating_sub(preview_col));
@@ -641,6 +654,11 @@ mod tests {
         opts.exclude_binary = false;
         let found = run(&root, "blob", &opts);
         assert_eq!(found.results.len(), 1, "名前一致だけは残る");
+
+        opts.search_file_names = false;
+        opts.search_contents = true;
+        let found = run(&root, "needle", &opts);
+        assert_eq!(found.results.iter().filter(|hit| hit.rel_path == "blob.pyc").count(), 1);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -657,6 +675,23 @@ mod tests {
         opts.max_files = 1;
         let found = run(&root, "needle", &opts);
         assert!(found.hit_file_limit);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    // Given: 同じ検索でファイル名一致と本文一致が発生し、結果上限が1件
+    // When: ワークスペースを検索する
+    // Then: 中間バッチを含めて結果数を上限以内に保つ
+    #[test]
+    fn result_limit_counts_file_name_and_content_hits_together() {
+        let root = workspace("name_and_content_limit");
+        let mut opts = options();
+        opts.search_file_names = true;
+        opts.max_results = 1;
+
+        let found = run(&root, "needle", &opts);
+
+        assert_eq!(found.results.len(), 1);
+        assert!(found.hit_result_limit);
         std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -1,12 +1,12 @@
 import * as api from "./api";
 import type { Pos } from "./api";
-import { charLen, comparePos as cmp } from "./editor-math";
+import { comparePos as cmp } from "./editor-math";
 import {
   newlineWithLeadingTabs,
   planLineIndent,
 } from "./editor-edit-plan";
 import { LineCache } from "./line-cache";
-import { Selection } from "./selection";
+import { blockRangeForLine, Selection } from "./selection";
 
 export interface EditorMutationPorts {
   doc: api.DocumentClient;
@@ -36,12 +36,11 @@ export class EditorMutationController {
     const edits: api.EditManyItem[] = [];
     for (let line = block.first; line <= block.last; line += 1) {
       const value = await this.ports.lineCache.line(line);
-      const start = Math.min(block.left, charLen(value));
-      const end = Math.min(block.right, charLen(value));
-      if (text || start < end) {
+      const range = blockRangeForLine(value, block);
+      if (text || range.start < range.end) {
         edits.push({
-          start: { line, col: start },
-          end: { line, col: end },
+          start: { line, col: range.start },
+          end: { line, col: range.end },
           text,
         });
       }
@@ -59,12 +58,16 @@ export class EditorMutationController {
       const line = firstLine + index;
       if (line >= this.ports.lineCount()) break;
       const value = await this.ports.lineCache.line(line);
-      const start = Math.min(left, charLen(value));
-      const end = block && index <= block.last - block.first
-        ? Math.min(block.right, charLen(value))
-        : start;
-      if (rows[index] || start < end) {
-        edits.push({ start: { line, col: start }, end: { line, col: end }, text: rows[index] });
+      const range = blockRangeForLine(value, {
+        left,
+        right: block && index <= block.last - block.first ? block.right : left,
+      });
+      if (rows[index] || range.start < range.end) {
+        edits.push({
+          start: { line, col: range.start },
+          end: { line, col: range.end },
+          text: rows[index],
+        });
       }
     }
     return edits;

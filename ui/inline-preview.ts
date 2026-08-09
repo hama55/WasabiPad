@@ -3,6 +3,7 @@ import { runAsyncBoundary } from "./async-boundary";
 import { isViewerFormat } from "./viewer-formats";
 import { isViewerSelection } from "./viewer-payload";
 import { INLINE_PREVIEW_MESSAGES } from "./inline-preview-protocol";
+import { DEFAULT_CSV_DELIMITER } from "./viewer-delimiter";
 
 const {
   READY_MESSAGE,
@@ -34,7 +35,7 @@ export class InlinePreview {
   private sourcePath: string | null = null;
   private archivePath: string | null = null;
   private archiveEntry: string | null = null;
-  private delimiter = ",";
+  private delimiter = DEFAULT_CSV_DELIMITER;
   private fontFamily: string | null = null;
   private fullscreen = false;
 

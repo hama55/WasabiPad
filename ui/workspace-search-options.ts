@@ -121,9 +121,13 @@ export function searchScopeSummary(
   options: WorkspaceSearchOptions,
   fileNameMatchMode: FileNameMatchMode
 ): string {
-  const target = options.search_contents
-    ? options.search_file_names ? "ファイル名と本文" : "本文のみ"
-    : "ファイル名のみ";
+  const target = options.search_file_names && options.search_contents
+    ? "ファイル名と本文"
+    : options.search_file_names
+      ? "ファイル名のみ"
+      : options.search_contents
+        ? "本文のみ"
+        : "検索対象なし";
   // ファイル名の当て方は本文と同じとは限らない。当て方が違う条件のときだけ断る
   const how = [
     options.match_case ? "大文字小文字を区別" : null,
