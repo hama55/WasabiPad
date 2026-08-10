@@ -6,7 +6,7 @@ import { createViewerFormatButtons, syncViewerFormatButtons } from "./viewer-for
 describe("Feature: viewer format buttons", () => {
   // Given: 表示形式ボタンの置き場と5形式の選択通知
   // When: ボタンを生成して5形式を順に押す
-  // Then: レジストリの表示順Markdown→CSV→Image→PDF→html(静的)で表示し、各形式を通知する
+  // Then: レジストリの表示順markdown→csv→image→pdf→html(静的)で表示し、各形式を通知する
   it("Scenario: 表示形式をボタンの並びから選択する", () => {
     const host = document.createElement("div");
     const onSelect = vi.fn();
@@ -14,7 +14,7 @@ describe("Feature: viewer format buttons", () => {
 
     const buttons = [...host.querySelectorAll<HTMLButtonElement>("button")];
     expect(buttons.map((button) => button.textContent)).toEqual([
-      "Markdown", "CSV", "Image", "PDF", "html(静的)",
+      "markdown", "csv", "image", "pdf", "html(静的)",
     ]);
     expect(buttons.map((button) => button.type)).toEqual(["button", "button", "button", "button", "button"]);
     buttons.forEach((button) => button.click());
@@ -23,6 +23,22 @@ describe("Feature: viewer format buttons", () => {
     syncViewerFormatButtons(host, "csv");
     expect(buttons[1].getAttribute("aria-pressed")).toBe("true");
     expect(buttons[0].getAttribute("aria-pressed")).toBe("false");
+  });
+
+  // Given: markdownファイルを表示中
+  // When: 形式ボタンの利用可能状態を同期する
+  // Then: テキスト形式は押せるがimage/pdfは押せない
+  it("Scenario: データに対応しない形式ボタンを無効にする", () => {
+    const host = document.createElement("div");
+    createViewerFormatButtons(host, vi.fn());
+
+    syncViewerFormatButtons(host, "markdown", "notes.md");
+
+    expect(host.querySelector<HTMLButtonElement>("[data-viewer-format='markdown']")?.disabled).toBe(false);
+    expect(host.querySelector<HTMLButtonElement>("[data-viewer-format='csv']")?.disabled).toBe(false);
+    expect(host.querySelector<HTMLButtonElement>("[data-viewer-format='image']")?.disabled).toBe(true);
+    expect(host.querySelector<HTMLButtonElement>("[data-viewer-format='pdf']")?.disabled).toBe(true);
+    expect(host.querySelector<HTMLButtonElement>("[data-viewer-format='image']")?.getAttribute("aria-disabled")).toBe("true");
   });
 
   // Given: viewer.htmlのタイトルバー

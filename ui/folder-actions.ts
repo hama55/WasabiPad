@@ -6,9 +6,7 @@ import { showMenu, MenuItem } from "./menu";
 import type { confirmMessage, promptFields } from "./prompt";
 import type { showError } from "./dialogs";
 import { basename, joinWindowsRoot, rebaseWindowsPath, relativePathFromRoot } from "./path";
-import { viewerFormatIcon, VIEWER_FORMAT_LABELS } from "./format";
 import { isArchiveEntryUnder } from "./archive-path";
-import { viewerFormatForPath } from "./viewer-formats";
 import { createRegisteredCommandMenu, type RegisteredCommandMenuPorts } from "./registered-command-menu";
 import { MENU_ICON } from "./menu-icons";
 import { MENU_LABELS } from "./menu-labels";
@@ -20,7 +18,6 @@ export interface FolderActionsPorts {
   sidebar: FolderActionsSidebarPort;
   onOpenInNewTab: (relPath: string, goto?: api.Pos) => void;
   onOpenInNewWindow: (path: string, goto?: api.Pos) => void;
-  onOpenViewer: (relPath: string, format: api.ViewerFormat) => void;
   onAddFavorite: (path: string) => void;
   onSetStartupPath: (path: string) => void;
   onOpenPath: (path: string) => void;
@@ -104,22 +101,16 @@ export class FolderActions {
         items.push({
           label: MENU_LABELS.expandFolder,
           iconClass: MENU_ICON.expandFolder,
+          sep: true,
           action: () => this.run(`${MENU_LABELS.expandFolder}できませんでした`, () => this.ports.sidebar.expandAllFolder(target.relPath)),
         });
       }
       if (!target.isDir) {
-        const viewerFormat = viewerFormatForPath(target.relPath);
-        if (viewerFormat) {
-          items.push({
-            label: VIEWER_FORMAT_LABELS[viewerFormat],
-            iconClass: viewerFormatIcon(viewerFormat),
-            action: () => this.ports.onOpenViewer(target.relPath, viewerFormat),
-          });
-        }
         items.push({
           label: MENU_LABELS.external,
           iconClass: MENU_ICON.external,
           action: () => this.run("アプリで開けませんでした", () => this.services.openInOtherApp(this.toAbsolute(target.relPath))),
+          sep: true,
         });
         items.push(this.registeredCommandMenu(target.relPath));
       }

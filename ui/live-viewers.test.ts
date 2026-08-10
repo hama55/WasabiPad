@@ -42,6 +42,32 @@ describe("Feature: LiveViewers", () => {
   // Given: 異なる原文範囲を持つ2つのviewerが登録されている
   // When: previewRangeと逆同期位置を問い合わせる
   // Then: 送信元を特定できないため、曖昧な範囲を採用しない
+  // Given: 選択範囲の終端とは別に、実際に操作しているキャレット位置がある
+  // When: 選択範囲を指定してCSVビューアを開く
+  // Then: ビューアへ選択範囲とキャレット位置を相対座標で渡す
+  it("Scenario: 複数行選択のキャレット位置をビューアへ渡す", async () => {
+    const openViewer = vi.fn(async () => "viewer-1");
+    const viewers = new LiveViewers({
+      openViewer,
+      updateViewer: async () => true,
+      wholeRange: async () => ({ start: { line: 0, col: 0 }, end: { line: 9, col: 0 } }),
+      textInRange: async () => "first\nsecond",
+    });
+
+    await viewers.open(
+      "csv",
+      { start: { line: 2, col: 3 }, end: { line: 4, col: 6 } },
+      { start: { line: 2, col: 5 }, end: { line: 4, col: 2 } },
+      { line: 2, col: 5 },
+    );
+
+    expect(openViewer).toHaveBeenCalledWith("csv", "first\nsecond", {
+      start: { line: 0, col: 2 },
+      end: { line: 2, col: 2 },
+      caret: { line: 0, col: 2 },
+    });
+  });
+
   it("Scenario: avoids ambiguous reverse mapping across different viewer ranges", async () => {
     const openViewer = vi.fn()
       .mockResolvedValueOnce("viewer-1")

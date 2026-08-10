@@ -19,11 +19,13 @@ function mount(
     ...storeOverrides,
   };
   const opened: { path: string; newTab: boolean }[] = [];
+  const openedInNewWindow: string[] = [];
   const addedGroups: { path: string; kind: "file" | "folder" }[][] = [];
   const favbar = new FavBar(
     document.getElementById("favbar")!,
     {
       onOpen: (path, newTab) => { opened.push({ path, newTab }); },
+      onOpenInNewWindow: (path) => { openedInNewWindow.push(path); },
       onAddGroupToTabs: (items) => addedGroups.push(items),
       revealInExplorer: (path, isDir) => api.revealInExplorer(path, isDir),
       onError,
@@ -31,7 +33,7 @@ function mount(
     },
     store
   );
-  return { favbar, saved, opened, addedGroups };
+  return { favbar, saved, opened, openedInNewWindow, addedGroups };
 }
 
 // jsdom は elementFromPoint / レイアウトを持たないので、落とし先とその矩形を差し替える
@@ -254,11 +256,12 @@ describe("Feature: FavBar", () => {
 
       buttons[0].dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
       expect([...document.querySelectorAll("#dropdown .dd-label")].map((label) => label.textContent))
-        .toEqual(["エクスプローラで開く", "新規タブで開く", "編集...", "移動 ▸", "削除"]);
+      .toEqual(["エクスプローラで開く", "新規タブで開く", "新規ウィンドウで開く", "編集...", "移動 ▸", "削除"]);
       expect(document.querySelectorAll("#dropdown .dd-sep")).toHaveLength(2);
       const itemIcons = [
         ["エクスプローラで開く", MENU_ICON.explorer],
         ["新規タブで開く", MENU_ICON.newTab],
+        ["新規ウィンドウで開く", MENU_ICON.newWindow],
         ["編集...", MENU_ICON.rename],
         ["移動 ▸", MENU_ICON.move],
         ["削除", MENU_ICON.delete],

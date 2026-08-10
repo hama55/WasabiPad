@@ -1,10 +1,12 @@
-import type { ViewerSelection } from "./api";
+import type { Pos, ViewerSelection } from "./api";
 import { comparePos } from "./editor-math";
 import {
   csvCellSourceOffsetAtDisplayOffset,
   csvSourcePositionAtOffset,
 } from "./csv-viewer";
 import { DEFAULT_CSV_DELIMITER } from "./viewer-delimiter";
+
+export type ViewerSelectionWithCaret = ViewerSelection & { caret?: Pos };
 
 export function isCollapsedViewerSelection(selection: ViewerSelection | null): boolean {
   return !!selection

@@ -37,6 +37,7 @@ import { createAsyncUnlisten } from "./async-unlisten";
 import { comparePos } from "./editor-math";
 import {
   viewerSelectionFromDom,
+  type ViewerSelectionWithCaret,
 } from "./viewer-selection";
 import { createViewerFormatButtons, syncViewerFormatButtons } from "./viewer-format-buttons";
 import { ViewerAssetTracker } from "./viewer-asset-tracker";
@@ -71,7 +72,7 @@ delimiterInput.value ||= DEFAULT_CSV_DELIMITER;
 let currentFormat: ViewerFormat = "csv";
 let currentRows: string[][] = [];
 let currentText = "";
-let currentSelection: ViewerSelection | null = null;
+let currentSelection: ViewerSelectionWithCaret | null = null;
 let currentSourcePath: string | null = null;
 let currentArchivePath: string | null = null;
 let currentArchiveEntry: string | null = null;
@@ -524,12 +525,12 @@ function renderPayload(payload: ViewerPayload) {
   }
   currentFormat = payload.format;
   currentText = payload.text;
-  currentSelection = payload.selection;
+  currentSelection = payload.selection as ViewerSelectionWithCaret | null;
   currentSourcePath = payload.source_path;
   currentArchivePath = payload.archive_path;
   currentArchiveEntry = payload.archive_entry;
   const handler = VIEWER_HANDLERS[payload.format];
-  syncViewerFormatButtons(formatButtons, payload.format);
+  syncViewerFormatButtons(formatButtons, payload.format, currentArchiveEntry ?? currentSourcePath);
   const formatSpec = viewerFormatSpec(payload.format);
   title.textContent = formatSpec.title;
   document.title = title.textContent;

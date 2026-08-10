@@ -60,6 +60,7 @@ export interface EditorPorts {
   onCursor: (line: number, col: number) => void;
   onFontChange: (fontFamily: string, fontSize: number, changed: "family" | "size" | "both") => void;
   openExternally: (path: string) => void | Promise<unknown>;
+  openInNewWindow?: (path: string) => void | Promise<unknown>;
   registeredCommandPorts: RegisteredCommandMenuPorts;
   revealInExplorer?: (path: string, isDir: boolean) => void | Promise<unknown>;
   onError: (message: string, error: unknown) => Promise<void>;
@@ -130,6 +131,7 @@ export class VirtualEditor {
   private onFontChange: (fontFamily: string, fontSize: number, changed: "family" | "size" | "both") => void;
   private externalFilePath: string | null = null;
   private openExternally: (path: string) => void | Promise<unknown>;
+  private openInNewWindow?: (path: string) => void | Promise<unknown>;
   private registeredCommandPorts: RegisteredCommandMenuPorts;
   private revealInExplorer?: (path: string, isDir: boolean) => void | Promise<unknown>;
   private onError: (message: string, error: unknown) => Promise<void>;
@@ -175,6 +177,7 @@ export class VirtualEditor {
     this.onCursor = ports.onCursor;
     this.onFontChange = ports.onFontChange;
     this.openExternally = ports.openExternally;
+    this.openInNewWindow = ports.openInNewWindow;
     this.registeredCommandPorts = ports.registeredCommandPorts;
     this.revealInExplorer = ports.revealInExplorer;
     this.onError = ports.onError;
@@ -1093,7 +1096,7 @@ export class VirtualEditor {
   // ---- カーソル移動 ----
   private notifyCursor() {
     const [start, end] = this.sel.norm();
-    this.liveViewers.setSelection({ start, end });
+    this.liveViewers.setSelection({ start, end }, this.sel.caret);
     this.onCursor(this.sel.caret.line + 1, this.sel.caret.col + 1);
   }
 
@@ -1421,14 +1424,15 @@ export class VirtualEditor {
   }
 
 
-  async openTextViewer(format: api.ViewerFormat) {
+  async openTextViewer(format: api.ViewerFormat, keepPreviewRange = false) {
     const [selectionStart, selectionEnd] = this.sel.norm();
     const selection = { start: selectionStart, end: selectionEnd };
-    const range = this.sel.hasSel()
+    const previewRange = keepPreviewRange ? this.liveViewers.previewRange() : null;
+    const range = previewRange ?? (this.sel.hasSel()
       ? { start: { ...selectionStart }, end: { ...selectionEnd } }
-      : null;
+      : null);
     this.liveViewers.clear();
-    const opened = await this.liveViewers.open(format, range, selection);
+    const opened = await this.liveViewers.open(format, range, selection, this.sel.caret);
     this.render();
     return opened;
   }
@@ -1929,6 +1933,7 @@ export class VirtualEditor {
     this.focus();
     const items: MenuItem[] = [];
     const commandPath = this.externalFilePath;
+    const hasOpenItems = Boolean(commandPath && (this.revealInExplorer || this.openInNewWindow));
     if (commandPath && this.revealInExplorer) {
       items.push({
         label: MENU_LABELS.explorer,
@@ -1936,9 +1941,16 @@ export class VirtualEditor {
         action: () => this.dispatch("エクスプローラで開けませんでした", () => this.revealInExplorer?.(commandPath, false)),
       });
     }
+    if (commandPath && this.openInNewWindow) {
+      items.push({
+        label: MENU_LABELS.newWindow,
+        iconClass: MENU_ICON.newWindow,
+        action: () => this.dispatch("新規ウィンドウで開けませんでした", () => this.openInNewWindow?.(commandPath)),
+      });
+    }
     if (!this.readOnly) {
       items.push({ label: "元に戻す", iconClass: MENU_ICON.undo, key: "Ctrl+Z", action: () =>
-        this.dispatch("編集を反映できませんでした", () => this.doUndo(false)) });
+        this.dispatch("編集を反映できませんでした", () => this.doUndo(false)), sep: hasOpenItems });
       items.push({ label: "やり直し", iconClass: MENU_ICON.redo, key: "Ctrl+Y", action: () =>
         this.dispatch("編集を反映できませんでした", () => this.doUndo(true)) });
       items.push({ label: "切り取り", iconClass: MENU_ICON.cut, key: "Ctrl+X", action: () =>

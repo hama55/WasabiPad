@@ -1,5 +1,6 @@
 const CHEVRON_LEFT = "\uE76B";
 const CHEVRON_RIGHT = "\uE76C";
+const PREVIEW_TOGGLE_RIGHT_INSET = 16;
 
 export type PaneToggleKind = "sidebar" | "preview";
 
@@ -23,5 +24,5 @@ export function previewToggleLeft(
   mainWidth: number,
   buttonWidth: number,
 ): number {
-  return Math.max(4, shown ? previewLeft - mainLeft : mainWidth - buttonWidth - 4);
+  return Math.max(4, shown ? previewLeft - mainLeft : mainWidth - buttonWidth - PREVIEW_TOGGLE_RIGHT_INSET);
 }

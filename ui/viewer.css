@@ -45,6 +45,7 @@ body {
   background: transparent; color: var(--fg); font: 12px var(--font-ui); cursor: default;
 }
 #viewer-format button:hover { background: var(--hover); }
+#viewer-format button:disabled { opacity: .45; }
 #viewer-format button.selected { background: var(--accent); color: #fff; }
 #wincontrols { display: flex; }
 #wincontrols button {
@@ -99,6 +100,7 @@ main { position: relative; flex: 1; min-height: 0; }
   min-width: 44px; text-align: right; color: var(--fg-dim);
   background: var(--bg-side);
 }
+.viewer-grid .viewer-line-number.viewer-caret-line-number { color: var(--accent); }
 .viewer-grid tr:nth-child(even) > :where(td, .viewer-line-number) { background: var(--row-alt); }
 .viewer-grid tr.viewer-source-selected > *,
 .viewer-grid tr > .viewer-source-selected {

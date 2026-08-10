@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   createViewerFormatHandlers,
+  canRenderViewerFormat,
   isViewerFormat,
   viewerFormatForPath,
   viewerFormatSpec,
@@ -18,6 +19,19 @@ describe("Feature: viewer formats", () => {
     expect(viewerFormatForPath("manual.PDF")).toBe("pdf");
     expect(viewerFormatForPath("manual.HTML")).toBe("html");
     expect(viewerFormatForPath("notes.txt")).toBeNull();
+  });
+
+  // Given: markdown/png/pdf/未指定のデータ
+  // When: 各形式の描画可否を判定する
+  // Then: 画像/PDFは対応データだけで、テキスト形式はテキストデータで描画できる
+  it("Scenario: データ種別に応じて描画できる形式を判定する", () => {
+    expect(canRenderViewerFormat("image", "notes.md")).toBe(false);
+    expect(canRenderViewerFormat("pdf", "photo.png")).toBe(false);
+    expect(canRenderViewerFormat("image", "photo.png")).toBe(true);
+    expect(canRenderViewerFormat("pdf", "manual.pdf")).toBe(true);
+    expect(canRenderViewerFormat("csv", "notes.md")).toBe(true);
+    expect(canRenderViewerFormat("markdown", null)).toBe(true);
+    expect(canRenderViewerFormat("image", null)).toBe(false);
   });
 
   // Given: csv/markdown/image/pdf/htmlの形式レジストリ

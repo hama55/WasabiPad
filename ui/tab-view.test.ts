@@ -13,6 +13,7 @@ function makePorts() {
     onCloseSaved: vi.fn(),
     onMove: vi.fn(),
     onDetach: vi.fn(),
+    onOpenInNewWindow: vi.fn(),
     onError: vi.fn(),
     revealInExplorer: vi.fn(),
     registeredCommandPorts: {} as RegisteredCommandMenuPorts,
@@ -87,5 +88,31 @@ describe("Feature: TabBarView", () => {
     await vi.waitFor(() => expect(ports.onError).toHaveBeenCalledWith(error, "エクスプローラで開けませんでした"));
     expect(event.defaultPrevented).toBe(true);
     expect(ports.revealInExplorer).toHaveBeenCalledWith("C:/docs", true);
+  });
+
+  // Given: パスを持つファイルタブを表示している
+  // When: タブの右クリックメニューから新規ウィンドウで開く
+  // Then: 現在のタブ情報を新規ウィンドウ操作へ渡す
+  it("Scenario: タブを新規ウィンドウで開く", async () => {
+    const host = document.createElement("div");
+    const dropdown = document.createElement("div");
+    dropdown.id = "dropdown";
+    document.body.append(dropdown);
+    const ports = makePorts();
+    const view = new TabBarView(host, ports);
+    view.render({
+      tabs: [{ id: "file", path: "C:/memo.md", kind: "file", label: "memo.md" }],
+      activeId: "file",
+      dirty: false,
+    });
+
+    host.querySelector<HTMLElement>(".doc-tab")!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "新規ウィンドウで開く")!.click();
+
+    await vi.waitFor(() => expect(ports.onOpenInNewWindow).toHaveBeenCalledWith(expect.objectContaining({
+      id: "file",
+      path: "C:/memo.md",
+    })));
   });
 });

@@ -23,6 +23,7 @@ export interface TabBarViewPorts {
   onCloseSaved: (id: string) => void | Promise<unknown>;
   onMove: (sourceId: string, spot: TabDropSpot | null) => void;
   onDetach: (id: string) => void | Promise<unknown>;
+  onOpenInNewWindow?: (tab: StoredTab) => void | Promise<unknown>;
   onError?: (error: unknown, message?: string) => void | Promise<void>;
   revealInExplorer?: (path: string, isDir: boolean) => void | Promise<unknown>;
   registeredCommandPorts: RegisteredCommandMenuPorts;
@@ -99,6 +100,13 @@ export class TabBarView {
           ...this.ports.registeredCommandPorts,
           run: (title, operation) => this.run(operation, title),
         }));
+      }
+      if (this.ports.onOpenInNewWindow) {
+        items.splice(tab.kind === "file" ? 1 : items.length, 0, {
+          label: MENU_LABELS.newWindow,
+          iconClass: MENU_ICON.newWindow,
+          action: () => this.run(() => this.ports.onOpenInNewWindow!(tab), "新規ウィンドウで開けませんでした"),
+        });
       }
     }
     items.push(

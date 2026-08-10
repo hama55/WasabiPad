@@ -57,10 +57,10 @@ describe("Feature: Sidebar", () => {
     ]);
   });
 
-  // Given: 上下キーで開いたファイルの処理中にエディタへフォーカスが移る
-  // When: 自動オープンの完了を待つ
-  // Then: 次の上下キーを受け取れるようツリーへフォーカスを戻す
-  it("Scenario: 上下キーで自動オープンした後もツリーへフォーカスを戻す", async () => {
+  // Given: 上下キーで開いたファイルの処理中にエディタへフォーカスが移ろうとする
+  // When: 自動オープンを開始する
+  // Then: キー操作中はツリーがフォーカスを保持し、完了後もツリーへ戻る
+  it("Scenario: 上下キーの自動オープン中もツリーがフォーカスを保持する", async () => {
     const { host, ports, sidebar } = mount();
     const editorInput = document.createElement("input");
     document.body.append(editorInput);
@@ -75,11 +75,41 @@ describe("Feature: Sidebar", () => {
     const tree = host.querySelector<HTMLElement>("[tabindex=\"0\"]")!;
     tree.focus();
     tree.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
-    expect(document.activeElement).toBe(editorInput);
+    expect(document.activeElement).toBe(tree);
 
     await vi.waitFor(() => expect(document.activeElement).toBe(tree));
     tree.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
     expect(ports.onSelect).toHaveBeenNthCalledWith(2, "second.txt", false);
+  });
+
+  // Given: 1件目のオープン中に2件目へのオープンが終了し、1件目の完了処理でエディタへフォーカスが移る
+  // When: 1件目の非同期オープンを完了する
+  // Then: 古いオープンの完了後もツリーがフォーカスを保持する
+  it("Scenario: 連続した上下キー操作で古いオープンが完了してもツリーへフォーカスを戻す", async () => {
+    const { host, ports, sidebar } = mount();
+    const editorInput = document.createElement("input");
+    document.body.append(editorInput);
+    let resolveFirst!: (opened: boolean) => void;
+    const firstOpen = new Promise<boolean>((resolve) => { resolveFirst = resolve; });
+    ports.onSelect
+      .mockImplementationOnce(() => firstOpen.then((opened) => {
+        editorInput.focus();
+        return opened;
+      }))
+      .mockResolvedValueOnce(false);
+    sidebar.setEntries([
+      { name: "first.txt", is_dir: false, is_archive: false },
+      { name: "second.txt", is_dir: false, is_archive: false },
+    ]);
+
+    const tree = host.querySelector<HTMLElement>("[tabindex=\"0\"]")!;
+    tree.focus();
+    tree.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    tree.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    await vi.waitFor(() => expect(ports.onSelect).toHaveBeenCalledTimes(2));
+
+    resolveFirst(true);
+    await vi.waitFor(() => expect(document.activeElement).toBe(tree));
   });
 
   // Given: ツリーのファイルをクリックするとエディタへフォーカスが移る

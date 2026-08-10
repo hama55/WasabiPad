@@ -29,7 +29,7 @@ installDomStubs();
 function mount(
   initial: string,
   saveImage?: EditorPorts["saveImage"],
-  overrides: Partial<Pick<EditorPorts, "revealInExplorer" | "registeredCommandPorts" | "openViewer">> = {},
+  overrides: Partial<Pick<EditorPorts, "revealInExplorer" | "openInNewWindow" | "registeredCommandPorts" | "openViewer">> = {},
 ) {
   const host = document.createElement("div");
   document.body.replaceChildren(host);
@@ -45,6 +45,7 @@ function mount(
     onCursor: (line, col) => { events.cursor = [line, col]; },
     onFontChange: (family, size, changed) => { events.fontChanges.push({ family, size, changed }); },
     openExternally: () => {},
+    openInNewWindow: overrides.openInNewWindow,
     revealInExplorer: overrides.revealInExplorer,
     registeredCommandPorts: overrides.registeredCommandPorts ?? {
       promptFields: async () => null,
@@ -143,7 +144,7 @@ describe("Feature: VirtualEditor", () => {
   // When: Markdownビューを開く
   // Then: 全文を渡しつつ、選択範囲だけは元の位置で通知する
   it("Scenario: エディタから開くプレビューは全文を映す", async () => {
-    const openViewer = vi.fn(async () => "inline-viewer");
+    const openViewer = vi.fn<EditorPorts["openViewer"]>(async () => "inline-viewer");
     const { editor } = mount("one\ntwo", undefined, { openViewer });
     editor.open(2, false);
     await settle();
@@ -873,13 +874,38 @@ describe("Feature: VirtualEditor", () => {
         .find((element) => element.textContent === label);
       expect(menuItem?.querySelector(`.${icon}`), label).not.toBeNull();
     }
-    expect(dropdown.querySelectorAll(".dd-sep")).toHaveLength(3);
+    expect(dropdown.querySelectorAll(".dd-sep")).toHaveLength(4);
     const item = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
       .find((element) => element.textContent === "エクスプローラで開く");
     item?.click();
     await settle();
 
     expect(revealInExplorer).toHaveBeenCalledWith("C:\\work\\memo.txt", false);
+  });
+
+  // Given: 外部ファイルパスと新規ウィンドウ操作がある
+  // When: エディタの右クリックメニューから新規ウィンドウで開く
+  // Then: 外部ファイルパスを新規ウィンドウ操作へ渡す
+  it("Scenario: エディタの右クリックから新規ウィンドウで開く", async () => {
+    const openInNewWindow = vi.fn();
+    const { editor, host } = mount("memo", undefined, {
+      revealInExplorer: vi.fn(),
+      openInNewWindow,
+    });
+    const dropdown = document.createElement("div");
+    dropdown.id = "dropdown";
+    document.body.appendChild(dropdown);
+    editor.open(1, false, false, "C:\\work\\memo.txt");
+    await settle();
+
+    host.querySelector<HTMLElement>(".ve-scroll")!.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, clientX: 0, clientY: 0 }),
+    );
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "新規ウィンドウで開く")!.click();
+    await settle();
+
+    expect(openInNewWindow).toHaveBeenCalledWith("C:\\work\\memo.txt");
   });
 
   // Given: Editorへ文書Aを表示し、次に文書B、最後に無題文書を表示する
@@ -1899,10 +1925,35 @@ describe("Feature: VirtualEditor", () => {
     expect(openViewer).toHaveBeenCalledWith("csv", "two\nthree", {
       start: { line: 0, col: 0 },
       end: { line: 1, col: 5 },
+      caret: { line: 1, col: 5 },
     });
     const marks = [...host.querySelectorAll<HTMLElement>(".ve-preview-mark")];
     expect(marks.filter((mark) => !mark.hidden).map((mark) => mark.textContent)).toEqual(["P", "P"]);
     expect(marks.filter((mark) => mark.hidden)).toHaveLength(1);
+  });
+
+  // Given: 選択範囲だけを対象にしたCSVビューが開き、エディタのキャレットが範囲内にある
+  // When: プレビュー側からMarkdownへ形式を切り替える
+  // Then: 切替後も同じ選択範囲だけを本文として渡す
+  it("Scenario: keeps the selected preview range when changing format", async () => {
+    const openViewer = vi.fn<EditorPorts["openViewer"]>(async () => "inline-viewer");
+    const { editor } = mount("one\ntwo\nthree", undefined, { openViewer });
+    editor.open(3, false);
+    await settle();
+    await editor.restoreViewState({
+      anchor: { line: 1, col: 0 },
+      caret: { line: 2, col: 5 },
+      topLine: 0,
+      wrapIntraLinePx: 0,
+      scrollLeft: 0,
+    });
+
+    await editor.openTextViewer("csv");
+    editor.goTo(1, 0);
+    await editor.openTextViewer("markdown", true);
+
+    expect(openViewer.mock.calls[1][0]).toBe("markdown");
+    expect(openViewer.mock.calls[1][1]).toBe("two\nthree");
   });
 
   // Given: プレビューが開いている

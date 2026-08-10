@@ -48,4 +48,46 @@ describe("Feature: CSVテーブル描画", () => {
       0,
     );
   });
+
+  // Given: 2行のCSVと2行目のキャレット位置
+  // When: CSVテーブルを描画する
+  // Then: キャレット行の行番号だけ色変更用クラスを持つ
+  it("Scenario: キャレット行の行番号を強調する", () => {
+    const result = renderCsvTable({
+      text: "name,value\nA,1",
+      delimiter: ",",
+      selection: { start: { line: 1, col: 2 }, end: { line: 1, col: 2 } },
+      columnWidths: [],
+      onColumnResize: vi.fn(),
+    });
+
+    expect(result.table.rows[0].querySelector(".viewer-line-number")?.classList.contains("viewer-caret-line-number"))
+      .toBe(false);
+    expect(result.table.rows[1].querySelector(".viewer-line-number")?.classList.contains("viewer-caret-line-number"))
+      .toBe(true);
+  });
+
+  // Given: 複数行選択と、その選択を操作しているキャレット位置
+  // When: CSVテーブルを描画する
+  // Then: 選択範囲が複数行でもキャレット行の行番号だけを強調する
+  it("Scenario: 複数行選択中もキャレット行の行番号を強調する", () => {
+    const result = renderCsvTable({
+      text: "name,value\nA,1\nB,2",
+      delimiter: ",",
+      selection: {
+        start: { line: 1, col: 0 },
+        end: { line: 2, col: 3 },
+        caret: { line: 2, col: 3 },
+      },
+      columnWidths: [],
+      onColumnResize: vi.fn(),
+    });
+
+    expect(result.table.rows[0].querySelector(".viewer-line-number")?.classList.contains("viewer-caret-line-number"))
+      .toBe(false);
+    expect(result.table.rows[1].querySelector(".viewer-line-number")?.classList.contains("viewer-caret-line-number"))
+      .toBe(false);
+    expect(result.table.rows[2].querySelector(".viewer-line-number")?.classList.contains("viewer-caret-line-number"))
+      .toBe(true);
+  });
 });

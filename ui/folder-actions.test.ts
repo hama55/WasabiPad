@@ -60,7 +60,6 @@ function fixture() {
     sidebar,
     onOpenInNewTab: vi.fn(),
     onOpenInNewWindow: vi.fn(),
-    onOpenViewer: vi.fn(),
     onAddFavorite: vi.fn(),
     onSetStartupPath: vi.fn(),
     onOpenPath: vi.fn(),
@@ -95,7 +94,7 @@ describe("Feature: FolderActions", () => {
 
   // Given: rootが`C:\work`、対象が`memo.txt`、gotoが`{line:499,col:8}`
   // When: コンテキストメニュー表示後に新規ウィンドウ項目をクリック
-  // Then: 10項目・区切り3個、Explorerが先頭で、絶対パスとgotoを渡す
+  // Then: 10項目・区切り4個、Explorerが先頭で、絶対パスとgotoを渡す
   it("Scenario: 右クリック項目を操作別に区切り、新規ウィンドウで開ける", () => {
     const { actions, dropdown, ports } = fixture();
     const goto = { line: 499, col: 8 };
@@ -113,7 +112,7 @@ describe("Feature: FolderActions", () => {
       "名前を変更...",
       "その他 ▸",
     ]);
-    expect(dropdown.querySelectorAll(".dd-sep")).toHaveLength(3);
+    expect(dropdown.querySelectorAll(".dd-sep")).toHaveLength(4);
     const expectedIcons = [
       ["エクスプローラで開く", MENU_ICON.explorer],
       ["新規タブで開く", MENU_ICON.newTab],
@@ -148,6 +147,7 @@ describe("Feature: FolderActions", () => {
       .find((element) => element.textContent === "フォルダを全展開");
     expect(item?.textContent).toBe("フォルダを全展開");
     expect(item?.querySelector(`.${MENU_ICON.expandFolder}`)).not.toBeNull();
+    expect(item?.previousElementSibling?.classList.contains("dd-sep")).toBe(true);
     if (!item) return;
     item.click();
 
@@ -190,30 +190,18 @@ describe("Feature: FolderActions", () => {
     }
   });
 
-  // Given: 対象が`table.CSV`、`photo.PNG`、`memo.txt`
-  // When: 各コンテキストメニューを表示し対応ビュー項目をクリック
-  // Then: CSV/Imageビューは対応形式を渡し、memoにはビューを表示しない
-  it("Scenario: CSVとImageの対応ファイルにビューを表示する", () => {
-    const { actions, dropdown, ports } = fixture();
-    actions.showContextMenu(0, 0, { relPath: "table.CSV", isDir: false });
-
-    expect([...dropdown.querySelectorAll(".dd-label")].map((label) => label.textContent)).toContain("CSVビュー");
-    expect(dropdown.querySelector(`.dd-item .${MENU_ICON.csv}`)).not.toBeNull();
-    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
-      .find((item) => item.textContent === "CSVビュー")!.click();
-    expect(ports.onOpenViewer).toHaveBeenCalledWith("table.CSV", "csv");
-
-    actions.showContextMenu(0, 0, { relPath: "photo.PNG", isDir: false });
-    expect([...dropdown.querySelectorAll(".dd-label")].map((label) => label.textContent)).toContain("Imageビュー");
-    expect(dropdown.querySelector(`.dd-item .${MENU_ICON.image}`)).not.toBeNull();
-    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
-      .find((item) => item.textContent === "Imageビュー")!.click();
-    expect(ports.onOpenViewer).toHaveBeenCalledWith("photo.PNG", "image");
-
-    actions.showContextMenu(0, 0, { relPath: "memo.txt", isDir: false });
-    expect([...dropdown.querySelectorAll(".dd-label")].map((label) => label.textContent)).not.toContain("CSVビュー");
-    expect([...dropdown.querySelectorAll(".dd-label")].map((label) => label.textContent)).not.toContain("Markdownビュー");
-    expect([...dropdown.querySelectorAll(".dd-label")].map((label) => label.textContent)).not.toContain("Imageビュー");
+  // Given: CSV/Markdown/Image/PDF/HTMLのファイルを対象にする
+  // When: フォルダツリーのコンテキストメニューを表示する
+  // Then: プレビュー形式の項目は表示しない
+  it("Scenario: フォルダツリーの右クリックメニューからプレビュー項目を除く", () => {
+    const { actions, dropdown } = fixture();
+    for (const relPath of ["table.csv", "notes.md", "photo.png", "manual.pdf", "index.html"]) {
+      actions.showContextMenu(0, 0, { relPath, isDir: false });
+      expect([...dropdown.querySelectorAll(".dd-label")].map((label) => label.textContent))
+        .not.toEqual(expect.arrayContaining([
+          "CSVビュー", "Markdownビュー", "Imageビュー", "PDFビュー", "html(静的)",
+        ]));
+    }
   });
 
   // Given: rootが`C:\work`で対象がない

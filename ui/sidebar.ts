@@ -361,7 +361,7 @@ export class Sidebar {
     }
   }
 
-  private openFileRow(r: Row) {
+  private openFileRow(r: Row, keepFocus = false) {
     const previous = this.sel;
     const request = ++this.openRequest;
     try {
@@ -373,7 +373,9 @@ export class Sidebar {
       this.focusTree();
       return;
     }
-    void this.requestSelection(r.relPath, false)
+    const opening = this.requestSelection(r.relPath, false);
+    if (keepFocus) this.focusTree();
+    void opening
       .then((opened) => {
         if (opened === false) this.restoreSelection(previous, r.relPath, request);
       })
@@ -382,7 +384,7 @@ export class Sidebar {
         return this.reportTreeError(error);
       })
       .finally(() => {
-        if (request === this.openRequest) this.focusTree();
+        if (keepFocus || request === this.openRequest) this.focusTree();
       });
   }
 
@@ -397,7 +399,7 @@ export class Sidebar {
       : visible[Math.min(visible.length - 1, current + 1)];
     const row = this.rows[next];
     if (row.relPath === this.sel) return;
-    if (row.kind === "file" || row.kind === "archiveEntry") this.openFileRow(row);
+    if (row.kind === "file" || row.kind === "archiveEntry") this.openFileRow(row, true);
     else {
       const previous = this.sel;
       try {

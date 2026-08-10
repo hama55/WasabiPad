@@ -1,5 +1,5 @@
 import type { ViewerFormat } from "./api";
-import { VIEWER_FORMATS } from "./viewer-formats";
+import { canRenderViewerFormat, VIEWER_FORMATS } from "./viewer-formats";
 
 export function createViewerFormatButtons(
   host: HTMLElement,
@@ -11,17 +11,20 @@ export function createViewerFormatButtons(
     const button = document.createElement("button");
     button.type = "button";
     button.dataset.viewerFormat = format;
-    button.textContent = spec.title;
+    button.textContent = spec.title.toLowerCase();
     button.setAttribute("aria-pressed", "false");
     button.addEventListener("click", () => onSelect(format));
     return button;
   }));
 }
 
-export function syncViewerFormatButtons(host: HTMLElement, current: ViewerFormat) {
+export function syncViewerFormatButtons(host: HTMLElement, current: ViewerFormat, sourcePath: string | null = null) {
   host.querySelectorAll<HTMLButtonElement>("[data-viewer-format]").forEach((button) => {
     const selected = button.dataset.viewerFormat === current;
+    const available = canRenderViewerFormat(button.dataset.viewerFormat as ViewerFormat, sourcePath);
     button.classList.toggle("selected", selected);
+    button.disabled = !available;
+    button.setAttribute("aria-disabled", String(!available));
     button.setAttribute("aria-pressed", String(selected));
   });
 }

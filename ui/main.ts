@@ -210,7 +210,7 @@ const inlinePreview = new InlinePreview(previewEl, {
     if (available) previewCollapsed = false;
     updatePreviewVisibility();
   },
-  onFormatChange: (format) => runBackground("ビューを切り替えられませんでした", () => editor.openTextViewer(format)),
+  onFormatChange: (format) => runBackground("ビューを切り替えられませんでした", () => editor.openTextViewer(format, true)),
   onDelimiterChange: (delimiter) => inlinePreview.setDelimiter(delimiter),
   onFontFamilyChange: (family) => editor.setFont(family, getSetting("fontSize"), "family"),
   onSelectionChange: (selection) =>
@@ -311,6 +311,7 @@ const editor: VirtualEditor = new VirtualEditor(editorHost, {
   },
   registeredCommandPorts,
   openExternally: (path) => openInOtherApp(path),
+  openInNewWindow: (path) => runBackground("新規ウィンドウで開けませんでした", () => launchNewWindow({ path })),
   revealInExplorer: (path, isDir) => revealInExplorer(path, isDir),
   onError: (message, error) => showError(message, error),
   openViewer: (format, text, selection) => {
@@ -455,6 +456,7 @@ window.addEventListener("beforeunload", () => {
 
 const favbar = new FavBar($("favbar"), {
   onOpen: (path, newTab) => runBackground("お気に入りを開けませんでした", () => openPathInTabs(tabs, path, newTab)),
+  onOpenInNewWindow: (path) => runBackground("新規ウィンドウで開けませんでした", () => launchNewWindow({ path })),
   onAddGroupToTabs: (items) => tabs.addLinks(items),
   revealInExplorer,
   currentFile: () => addressbar.path || null,
@@ -465,12 +467,6 @@ const folderActions = new FolderActions(doc, {
   sidebar,
   onOpenInNewTab: (relPath, goto) => runBackground("新規タブで開けませんでした", () => openInNewTab(relPath, goto)),
   onOpenInNewWindow: (path, goto) => runBackground("新規ウィンドウで開けませんでした", () => launchNewWindow({ path, goto: goto ?? null })),
-  onOpenViewer: (relPath, format) => {
-    void (async () => {
-      if (!(await tabs.navigateEntry(relPath))) return;
-      await editor.openTextViewer(format);
-    })().catch((error) => reportBackgroundError("ビューを開けませんでした", error));
-  },
   onAddFavorite: (path) => runBackground("お気に入りに追加できませんでした", () => favbar.addExternal(path)),
   onSetStartupPath: (path) => setSetting("startupPath", path),
   onOpenPath: (path) => {
@@ -526,7 +522,10 @@ $("sidebar-toggle").addEventListener("click", () => {
 });
 previewToggle.addEventListener("click", () => {
   previewCollapsed = !previewCollapsed;
-  if (previewCollapsed) previewFullscreen = false;
+  if (previewCollapsed) {
+    previewFullscreen = false;
+    previewEl.style.removeProperty("width");
+  }
   updatePreviewVisibility();
   if (!previewCollapsed) inlinePreview.resend();
 });
@@ -629,6 +628,7 @@ tabs = new TabManager($("tabs"), doc, {
   },
   onError: (error, message = "タブを操作できませんでした") => reportBackgroundError(message, error),
   onDetach: (request) => launchNewWindow(request),
+  onOpenInNewWindow: (request) => launchNewWindow(request),
   revealInExplorer,
 }, {
   ...registeredCommandPorts,

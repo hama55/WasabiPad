@@ -5,6 +5,7 @@ import type { EditManyItem, ViewerFormat, ViewerSelection } from "./api";
 import type { Pos } from "./api";
 import { comparePos } from "./editor-math";
 import { transformTrackedRange, type TrackedRange } from "./viewer-range";
+import { type ViewerSelectionWithCaret } from "./viewer-selection";
 
 const DEBOUNCE_MS = 120;
 
@@ -20,7 +21,7 @@ export interface LiveViewerPorts {
 }
 
 export class LiveViewers {
-  private viewers = new Map<string, { format: ViewerFormat; range: TrackedRange | null; selection: ViewerSelection | null }>();
+  private viewers = new Map<string, { format: ViewerFormat; range: TrackedRange | null; selection: ViewerSelectionWithCaret | null }>();
   private timer: number | undefined;
   private generation = 0;
   private refreshVersion = 0;
@@ -76,11 +77,11 @@ export class LiveViewers {
   }
 
   // range=null は「全文を映す」= 以後の編集で常に最新の全文へ追随する
-  async open(format: ViewerFormat, range: TrackedRange | null, selection: TrackedRange) {
+  async open(format: ViewerFormat, range: TrackedRange | null, selection: TrackedRange, caret = selection.end) {
     const generation = this.generation;
     const { start, end } = range ?? (await this.ports.wholeRange());
     if (generation !== this.generation) return;
-    const viewerSelection = relativeSelection(range, selection);
+    const viewerSelection = relativeSelection(range, selection, caret);
     const text = await this.ports.textInRange(start, end);
     if (generation !== this.generation) return;
     const label = await this.ports.openViewer(format, text, viewerSelection);
@@ -105,10 +106,10 @@ export class LiveViewers {
     }
   }
 
-  setSelection(selection: TrackedRange) {
+  setSelection(selection: TrackedRange, caret = selection.end) {
     this.refreshVersion++;
     for (const viewer of this.viewers.values()) {
-      viewer.selection = relativeSelection(viewer.range, selection);
+      viewer.selection = relativeSelection(viewer.range, selection, caret);
     }
     this.scheduleRefresh();
   }
@@ -176,12 +177,21 @@ export class LiveViewers {
   }
 }
 
-function relativeSelection(range: TrackedRange | null, selection: TrackedRange): ViewerSelection | null {
-  if (!range) return { start: { ...selection.start }, end: { ...selection.end } };
+function relativeSelection(
+  range: TrackedRange | null,
+  selection: TrackedRange,
+  caret: Pos,
+): ViewerSelectionWithCaret | null {
+  const collapsed = comparePos(selection.start, selection.end) === 0;
+  if (!range) {
+    const result = { start: { ...selection.start }, end: { ...selection.end } };
+    return collapsed ? result : { ...result, caret: { ...caret } };
+  }
   if (comparePos(selection.end, range.start) < 0 || comparePos(selection.start, range.end) > 0) return null;
   const start = comparePos(selection.start, range.start) < 0 ? range.start : selection.start;
   const end = comparePos(selection.end, range.end) > 0 ? range.end : selection.end;
-  return { start: relativePos(start, range.start), end: relativePos(end, range.start) };
+  const result = { start: relativePos(start, range.start), end: relativePos(end, range.start) };
+  return collapsed ? result : { ...result, caret: relativePos(caret, range.start) };
 }
 
 function relativePos(pos: Pos, origin: Pos): Pos {

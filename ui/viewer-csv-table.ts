@@ -10,7 +10,7 @@ import {
   csvSourcePositionAtOffset,
   type CsvSourceRow,
 } from "./csv-viewer";
-import { isCollapsedViewerSelection } from "./viewer-selection";
+import { isCollapsedViewerSelection, type ViewerSelectionWithCaret } from "./viewer-selection";
 
 export const MAX_TABLE_ROWS = 10_000;
 export const MAX_TABLE_COLUMNS = 200;
@@ -18,7 +18,7 @@ export const MAX_TABLE_COLUMNS = 200;
 export interface CsvTableRenderOptions {
   text: string;
   delimiter: string;
-  selection: ViewerSelection | null;
+  selection: ViewerSelectionWithCaret | null;
   columnWidths: number[];
   onColumnResize: (
     event: PointerEvent,
@@ -161,6 +161,10 @@ export function renderCsvTable(options: CsvTableRenderOptions): CsvTableRenderRe
     lineNumber.className = "viewer-line-number";
     lineNumber.textContent = String(rowIndex + 1);
     lineNumber.dataset.sourceLine = String(sourceRow.line);
+    const selection = options.selection;
+    const caretLine = selection?.caret?.line
+      ?? (selection && isCollapsedViewerSelection(selection) ? selection.start.line : null);
+    lineNumber.classList.toggle("viewer-caret-line-number", sourceRow.line === caretLine);
     tr.appendChild(lineNumber);
     row.slice(0, MAX_TABLE_COLUMNS).forEach((value, columnIndex) => {
       const cell = document.createElement(rowIndex === 0 ? "th" : "td");

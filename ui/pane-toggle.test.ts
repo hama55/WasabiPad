@@ -29,6 +29,6 @@ describe("Feature: pane toggle controls", () => {
   // Then: 表示時はプレビュー左端、非表示時は右端になる
   it("Scenario: anchors the preview toggle to the preview edge", () => {
     expect(previewToggleLeft(true, 100, 900, 1200, 28)).toBe(800);
-    expect(previewToggleLeft(false, 100, 900, 1200, 28)).toBe(1168);
+    expect(previewToggleLeft(false, 100, 900, 1200, 28)).toBe(1156);
   });
 });

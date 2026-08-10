@@ -33,6 +33,7 @@ export const bookmarkStore: BookmarkStore = {
 
 export interface FavBarPorts {
   onOpen: (path: string, newTab: boolean) => void | Promise<unknown>;
+  onOpenInNewWindow: (path: string) => void | Promise<unknown>;
   onAddGroupToTabs: (items: { path: string; kind: "file" | "folder" }[]) => void;
   revealInExplorer: (path: string, isDir: boolean) => void | Promise<unknown>;
   currentFile: () => string | null;
@@ -53,6 +54,7 @@ export class FavBar {
   private justDragged = false;
   private menuRoot = document.getElementById("dropdown");
   private onOpen: (path: string, newTab: boolean) => void | Promise<unknown>;
+  private onOpenInNewWindow: FavBarPorts["onOpenInNewWindow"];
   private onAddGroupToTabs: FavBarPorts["onAddGroupToTabs"];
   private revealInExplorer: FavBarPorts["revealInExplorer"];
   private currentFile: () => string | null;
@@ -64,6 +66,7 @@ export class FavBar {
     private store: BookmarkStore = bookmarkStore
   ) {
     this.onOpen = ports.onOpen;
+    this.onOpenInNewWindow = ports.onOpenInNewWindow;
     this.onAddGroupToTabs = ports.onAddGroupToTabs;
     this.revealInExplorer = ports.revealInExplorer;
     this.currentFile = ports.currentFile;
@@ -188,6 +191,7 @@ export class FavBar {
         { label: MENU_LABELS.explorer, iconClass: MENU_ICON.explorer, action: () =>
           this.runMutation(() => this.revealInExplorer(node.path, node.kind === "directory")) },
         { label: MENU_LABELS.newTab, iconClass: MENU_ICON.newTab, action: () => this.runOpen(node.path, true) },
+        { label: MENU_LABELS.newWindow, iconClass: MENU_ICON.newWindow, action: () => this.runOpenInNewWindow(node.path) },
         { label: "編集...", iconClass: MENU_ICON.rename, action: () => this.runMutation(() => this.editPath(path)), sep: true }
       );
     }
@@ -397,6 +401,10 @@ export class FavBar {
 
   private runOpen(path: string, newTab: boolean) {
     runAsyncBoundary(() => this.onOpen(path, newTab), (error) => this.reportDropError(error));
+  }
+
+  private runOpenInNewWindow(path: string) {
+    runAsyncBoundary(() => this.onOpenInNewWindow(path), (error) => this.reportDropError(error));
   }
 
   private async moveAdjacent(source: NodePath, target: NodePath, after: boolean) {

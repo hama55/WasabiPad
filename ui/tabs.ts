@@ -29,6 +29,7 @@ interface TabPorts {
   onChange: (state: StoredTabs) => void;
   onError?: (error: unknown, message?: string) => void | Promise<void>;
   onDetach?: (request: WindowRequest) => Promise<boolean>;
+  onOpenInNewWindow?: (request: WindowRequest) => Promise<boolean>;
   onHistoryChange?: (state: NavigationState) => void;
   revealInExplorer?: (path: string, isDir: boolean) => void | Promise<unknown>;
 }
@@ -66,6 +67,9 @@ export class TabManager {
       onCloseSaved: (id) => this.closeSaved(id),
       onMove: (sourceId, spot) => this.moveTab(sourceId, spot),
       onDetach: (id) => this.detachTab(id),
+      onOpenInNewWindow: ports.onOpenInNewWindow
+        ? (tab) => this.openTabInNewWindow(tab)
+        : undefined,
       onError: (error, message) => this.reportError(error, message),
       revealInExplorer: ports.revealInExplorer,
       registeredCommandPorts,
@@ -610,5 +614,15 @@ export class TabManager {
     }
     this.render();
     this.persist();
+  }
+
+  private openTabInNewWindow(tab: StoredTab) {
+    return this.ports.onOpenInNewWindow?.({
+      secondary: true,
+      path: tab.path,
+      goto: tab.viewState ? null : tab.goto ?? null,
+      selectedRelPath: tab.selectedRelPath ?? null,
+      viewState: tab.viewState ?? null,
+    });
   }
 }
