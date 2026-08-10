@@ -112,6 +112,28 @@ describe("Feature: Sidebar", () => {
     await vi.waitFor(() => expect(document.activeElement).toBe(tree));
   });
 
+  // Given: 上下キーでの非同期オープン中にエディタへ移動する
+  // When: エディタ側へポインター操作してからファイルのオープンを完了する
+  // Then: 完了処理でエディタのフォーカスをツリーへ奪い返さない
+  it("Scenario: 非同期オープン中に移動した別UIのフォーカスを保持する", async () => {
+    const { host, ports, sidebar } = mount();
+    const editorInput = document.createElement("input");
+    document.body.append(editorInput);
+    let resolveOpen!: (opened: boolean) => void;
+    const opening = new Promise<boolean>((resolve) => { resolveOpen = resolve; });
+    ports.onSelect.mockReturnValueOnce(opening);
+    sidebar.setEntries([{ name: "first.txt", is_dir: false, is_archive: false }]);
+
+    const tree = host.querySelector<HTMLElement>("[tabindex=\"0\"]")!;
+    tree.focus();
+    tree.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    editorInput.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    editorInput.focus();
+
+    resolveOpen(true);
+    await vi.waitFor(() => expect(document.activeElement).toBe(editorInput));
+  });
+
   // Given: ツリーのファイルをクリックするとエディタへフォーカスが移る
   // When: ファイルを開き終えてからArrowDownを送る
   // Then: ツリーがキー入力を受け取り、次のファイルを開く

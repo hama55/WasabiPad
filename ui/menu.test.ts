@@ -96,4 +96,32 @@ describe("Feature: menu", () => {
       log.mockRestore();
     }
   });
+
+  // Given: メニュー項目のactionが同期例外と非同期例外を発生させる
+  // When: それぞれのメニュー項目をクリックする
+  // Then: 共通の非同期境界から両方の例外を通知する
+  it("Scenario: メニューactionの同期・非同期例外を共通境界から通知する", async () => {
+    const syncError = new Error("sync action failed");
+    const asyncError = new Error("async action failed");
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      showMenu(0, 0, [{
+        label: "同期",
+        iconClass: MENU_ICON.more,
+        action: () => { throw syncError; },
+      }]);
+      document.querySelector<HTMLElement>(".dd-item")!.click();
+      expect(log).toHaveBeenCalledWith("メニュー操作に失敗しました", syncError);
+
+      showMenu(0, 0, [{
+        label: "非同期",
+        iconClass: MENU_ICON.more,
+        action: async () => { throw asyncError; },
+      }]);
+      document.querySelector<HTMLElement>(".dd-item")!.click();
+      await vi.waitFor(() => expect(log).toHaveBeenCalledWith("メニュー操作に失敗しました", asyncError));
+    } finally {
+      log.mockRestore();
+    }
+  });
 });

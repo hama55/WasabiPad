@@ -456,7 +456,7 @@ window.addEventListener("beforeunload", () => {
 
 const favbar = new FavBar($("favbar"), {
   onOpen: (path, newTab) => runBackground("お気に入りを開けませんでした", () => openPathInTabs(tabs, path, newTab)),
-  onOpenInNewWindow: (path) => runBackground("新規ウィンドウで開けませんでした", () => launchNewWindow({ path })),
+  onOpenInNewWindow: (path) => launchNewWindow({ path }),
   onAddGroupToTabs: (items) => tabs.addLinks(items),
   revealInExplorer,
   currentFile: () => addressbar.path || null,
@@ -466,7 +466,7 @@ const favbar = new FavBar($("favbar"), {
 const folderActions = new FolderActions(doc, {
   sidebar,
   onOpenInNewTab: (relPath, goto) => runBackground("新規タブで開けませんでした", () => openInNewTab(relPath, goto)),
-  onOpenInNewWindow: (path, goto) => runBackground("新規ウィンドウで開けませんでした", () => launchNewWindow({ path, goto: goto ?? null })),
+  onOpenInNewWindow: (path, goto) => launchNewWindow({ path, goto: goto ?? null }),
   onAddFavorite: (path) => runBackground("お気に入りに追加できませんでした", () => favbar.addExternal(path)),
   onSetStartupPath: (path) => setSetting("startupPath", path),
   onOpenPath: (path) => {

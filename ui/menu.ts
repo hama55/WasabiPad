@@ -1,6 +1,7 @@
 // 共有ドロップダウンメニュー (タイトルバーのメニュー・お気に入りグループ・右クリックで使用)
 import { createMenuIcon, type MenuItemIconClass } from "./menu-icons";
 import { isMiddleClick } from "./interaction-constants";
+import { runAsyncBoundary } from "./async-boundary";
 
 type MenuAction = (event?: MouseEvent) => void | Promise<unknown>;
 type MenuTrailingAction = { label: string; title: string; action: () => void | Promise<unknown> };
@@ -33,13 +34,9 @@ const dd = () => document.getElementById("dropdown")!;
 let activeMenu: MenuState | null = null;
 
 function invokeMenuCallback(callback: () => void | Promise<unknown>) {
-  try {
-    void Promise.resolve(callback()).catch((error) => {
-      console.error("メニュー操作に失敗しました", error);
-    });
-  } catch (error) {
+  runAsyncBoundary(callback, (error) => {
     console.error("メニュー操作に失敗しました", error);
-  }
+  });
 }
 
 function invokeLeaf(item: LeafMenuItem, event: MouseEvent) {

@@ -54,6 +54,8 @@ export class Sidebar {
   private sel: string | null = null; // 選択中の relPath
   private selectionRequest = 0;
   private openRequest = 0;
+  private keyboardFocusLock = false;
+  private keyboardFocusRequests = new Set<number>();
   private onSelect: (relPath: string, newTab: boolean) => void | Promise<boolean | void>;
   private onContextMenu: (x: number, y: number, target: ContextTarget | null) => void;
   private onExpandArchive: (relPath: string) => Promise<string[]>;
@@ -80,6 +82,11 @@ export class Sidebar {
     this.tree = document.createElement("div");
     this.tree.tabIndex = 0;
     this.tree.addEventListener("keydown", (event) => this.onTreeKeyDown(event));
+    document.addEventListener("pointerdown", (event) => {
+      if (!this.keyboardFocusLock) return;
+      const target = event.target;
+      if (!(target instanceof Node) || !this.tree.contains(target)) this.keyboardFocusLock = false;
+    }, true);
     const toolbar = document.createElement("div");
     toolbar.className = "fv-toolbar";
     const fold = iconButton("fv-fold", "⊟", "すべて折りたたむ");
@@ -374,7 +381,11 @@ export class Sidebar {
       return;
     }
     const opening = this.requestSelection(r.relPath, false);
-    if (keepFocus) this.focusTree();
+    if (keepFocus) {
+      this.keyboardFocusRequests.add(request);
+      this.keyboardFocusLock = true;
+      this.focusTree();
+    }
     void opening
       .then((opened) => {
         if (opened === false) this.restoreSelection(previous, r.relPath, request);
@@ -384,7 +395,13 @@ export class Sidebar {
         return this.reportTreeError(error);
       })
       .finally(() => {
-        if (keepFocus || request === this.openRequest) this.focusTree();
+        if (keepFocus) {
+          if (this.keyboardFocusLock) this.focusTree();
+          this.keyboardFocusRequests.delete(request);
+          if (!this.keyboardFocusRequests.size) this.keyboardFocusLock = false;
+        } else if (request === this.openRequest) {
+          this.focusTree();
+        }
       });
   }
 
