@@ -479,31 +479,30 @@ export class DocumentController {
     ], this.memoPromptOptions(directory));
   }
 
-  async promptMemoSpec(directory: string | null = null): Promise<MemoCreationSpec | null> {
-    const result = await this.promptMemoValues(
-      "新規メモ作成",
-      directory,
-      this.services.saveFormatFields(this.session),
-    );
-    const enteredStem = result?.[0].trim();
+  private memoCreationSpec(values: string[] | null): MemoCreationSpec | null {
+    const enteredStem = values?.[0].trim();
     return enteredStem
       ? {
-          memo: { stem: enteredStem, extension: result![1] },
-          format: this.services.saveFormatFromValues(result!, 2),
+          memo: { stem: enteredStem, extension: values![1] },
+          format: this.services.saveFormatFromValues(values!, 2),
         }
       : null;
   }
 
-  private async promptNewMemoSave(directory: string | null = null): Promise<{ memo: MemoSpec; format: SaveFormat } | null> {
-    const result = await this.promptMemoValues(
+  async promptMemoSpec(directory: string | null = null): Promise<MemoCreationSpec | null> {
+    return this.memoCreationSpec(await this.promptMemoValues(
+      "新規メモ作成",
+      directory,
+      this.services.saveFormatFields(this.session),
+    ));
+  }
+
+  private async promptNewMemoSave(directory: string | null = null): Promise<MemoCreationSpec | null> {
+    return this.memoCreationSpec(await this.promptMemoValues(
       "新規メモ保存",
       directory,
       this.services.saveFormatFields(this.session),
-    );
-    const enteredStem = result?.[0].trim();
-    return enteredStem
-      ? { memo: { stem: enteredStem, extension: result![1] }, format: this.services.saveFormatFromValues(result!, 2) }
-      : null;
+    ));
   }
 
   // フォルダビューでの名前変更後、開いている文書のパスを追従させる

@@ -62,9 +62,9 @@ describe("Feature: WindowChrome", () => {
   });
 
   // Given: titlebar外の通知要素とfake timer
-  // When: `notify("保存しました")`後に2秒進める
+  // When: `notify("外部変更を検知しました")`後に2秒進める
   // Then: 通知文を表示し、2秒後に空文字
-  it("Scenario: titlebar外の通知要素へ保存完了を表示する", () => {
+  it("Scenario: titlebar外の通知を2秒後に消す", () => {
     vi.useFakeTimers();
     try {
       const { host, notice, win } = mountChrome();
@@ -74,9 +74,9 @@ describe("Feature: WindowChrome", () => {
         onError: async () => {},
       }, notice);
 
-      chrome.notify("保存しました");
+      chrome.notify("外部変更を検知しました");
 
-      expect(notice.textContent).toBe("保存しました");
+      expect(notice.textContent).toBe("外部変更を検知しました");
       vi.advanceTimersByTime(2000);
       expect(notice.textContent).toBe("");
     } finally {

@@ -224,6 +224,31 @@ describe("Feature: DocumentController", () => {
     expect(view.pickSavePath).toHaveBeenCalledWith("C:\\Users\\sample\\Desktop\\memo.txt");
   });
 
+  // Feature: 新規メモ保存後の形式継承
+  // Scenario: 上書き保存でも新規作成時の文字コードと改行コードを使う
+  // Given: 新規メモをShift-JIS/LFで保存済み
+  // When: 本文を編集して上書き保存する
+  // Then: 2回目の保存にもShift-JIS/LFを渡す
+  it("Scenario: 新規メモ保存後の上書き保存は選択形式を継承する", async () => {
+    const { view } = fakeView();
+    const saveFile = vi.fn(async () => ({ kind: "saved" as const }));
+    const promptFieldsMock = vi.fn(async (..._args: Parameters<typeof promptFields>) => [
+      "memo", "txt", "sjis", "lf",
+    ]);
+    const controller = new DocumentController(view, {
+      ...services(),
+      api: { ...api, saveFile },
+      promptFields: promptFieldsMock,
+    });
+    view.pickSavePath.mockResolvedValueOnce("C:\\work\\memo.txt");
+
+    expect(await controller.saveAs()).toBe(true);
+    controller.onEdit(2);
+    expect(await controller.save()).toBe(true);
+
+    expect(saveFile).toHaveBeenNthCalledWith(2, "C:\\work\\memo.txt", "sjis", "lf");
+  });
+
   // Feature: フォルダ内の無題メモ保存
   // Scenario: 保存ボタンで表示する名前ダイアログに採番済み初期値を出す
   // Given: フォルダルート`C:\\work`と既存の`memo.txt`、空き名`memo1.txt`

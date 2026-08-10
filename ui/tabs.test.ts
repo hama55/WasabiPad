@@ -588,6 +588,84 @@ describe("Feature: TabManager", () => {
     expect(manager.state.tabs.at(-1)?.draftDirectory).toBe("C:\\Users\\sample\\Desktop");
   });
 
+  // Scenario: デスクトップ取得に失敗しても無題タブ作成を中断しない
+  // Given: ファイルタブがアクティブで、デスクトップ取得口が失敗する
+  // When: タブバーの＋を押す
+  // Then: エラーを通知し、保存先なしの無題タブを作成する
+  it("Scenario: デスクトップ取得失敗時も無題タブを作成する", async () => {
+    const { doc, host } = fixture();
+    const error = new Error("desktop unavailable");
+    const defaultMemoDirectory = vi.fn(async () => { throw error; });
+    const onError = vi.fn();
+    const manager = new TabManager(host, doc, {
+      onChange: () => {},
+      defaultMemoDirectory,
+      onError,
+    }, registeredCommandPorts);
+    await manager.init(stored, null, null);
+
+    host.querySelector<HTMLButtonElement>(".doc-tab-add")!.click();
+    await vi.waitFor(() => expect(manager.state.tabs.at(-1)?.kind).toBe("blank"));
+
+    expect(onError).toHaveBeenCalledWith(error, "新規メモの既定保存先を取得できませんでした");
+    expect(doc.newFile).toHaveBeenLastCalledWith(false, null);
+  });
+
+  // Feature: 無題タブの既定保存先の復元
+  // Scenario: 保存済みの無題タブは記録した下書き保存先を文書へ渡す
+  // Given: C:\workを下書き保存先に持つ無題タブ
+  // When: タブを初期化する
+  // Then: 文書作成へC:\workを渡す
+  it("Scenario: 保存済み無題タブの下書き保存先を復元する", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init({
+      tabs: [{ id: "blank", path: null, kind: "blank", label: "無題", draftDirectory: "C:\\work" }],
+      activeId: "blank",
+    }, null, null);
+
+    expect(doc.newFile).toHaveBeenCalledWith(false, "C:\\work");
+  });
+
+  // Scenario: 初期タブが無題の場合はデスクトップを下書き保存先にする
+  // Given: 保存済みタブも起動パスもなく、デスクトップ取得口が値を返す
+  // When: タブを初期化する
+  // Then: 初期文書へデスクトップを渡す
+  it("Scenario: 初期無題タブはデスクトップを使う", async () => {
+    const { doc, host } = fixture();
+    const defaultMemoDirectory = vi.fn(async () => "C:\\Users\\sample\\Desktop");
+    const manager = new TabManager(host, doc, {
+      onChange: () => {},
+      defaultMemoDirectory,
+    }, registeredCommandPorts);
+    await manager.init({ tabs: [], activeId: null }, null, null);
+
+    expect(defaultMemoDirectory).toHaveBeenCalledOnce();
+    expect(doc.newFile).toHaveBeenCalledWith(false, "C:\\Users\\sample\\Desktop");
+  });
+
+  // Scenario: 最後のタブを閉じた後の無題文書はデスクトップを使う
+  // Given: ファイルタブが1つだけあり、デスクトップ取得口が値を返す
+  // When: 最後のタブを閉じる
+  // Then: 置き換えた無題文書へデスクトップを渡す
+  it("Scenario: 最後のタブを閉じた後の無題タブはデスクトップを使う", async () => {
+    const { doc, host } = fixture();
+    const defaultMemoDirectory = vi.fn(async () => "C:\\Users\\sample\\Desktop");
+    const manager = new TabManager(host, doc, {
+      onChange: () => {},
+      defaultMemoDirectory,
+    }, registeredCommandPorts);
+    await manager.init({
+      tabs: [{ id: "a", path: "C:\\work\\a.txt", kind: "file", label: "a.txt" }],
+      activeId: "a",
+    }, null, null);
+    doc.newFile.mockClear();
+
+    await manager.close("a");
+
+    expect(doc.newFile).toHaveBeenCalledWith(false, "C:\\Users\\sample\\Desktop");
+  });
+
   // Given: activeId=a で a.txt と b.txt があり、addLinks に a.txt(file) と src(folder) を渡す
   // When: addLinks() を呼ぶ
   // Then: activeId は a のまま、path は [C:\work\a.txt,C:\work\b.txt,C:\work\src]、openPath は初期化時の1回だけ

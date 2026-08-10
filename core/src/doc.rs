@@ -1982,6 +1982,30 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
+    // Feature: 新規メモの保存形式
+    // Scenario: 作成時に指定した文字コードと改行コードを開いた文書へ反映する
+    // Given: 空のフォルダを開いている
+    // When: Shift-JIS/LFの新規メモを作成する
+    // Then: 返却情報へ指定形式が反映される
+    #[test]
+    fn create_note_applies_requested_format() {
+        let root = std::env::temp_dir().join(format!(
+            "wasabipad_create_note_format_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        let mut d = Doc::open(&root).unwrap();
+        let info = d
+            .create_note(None, "memo.txt", Encoding::ShiftJis, Eol::Lf)
+            .unwrap();
+
+        assert_eq!(info.enc, crate::fileio::EncodingId::ShiftJis);
+        assert_eq!(info.eol, Eol::Lf);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn document_source_derives_kind_and_editability() {
         let untitled = DocumentSource::untitled();

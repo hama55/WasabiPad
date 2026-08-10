@@ -96,7 +96,10 @@ export class TabManager {
     initialViewState?: EditorViewState,
   ) {
     this.navigationHistory.clear();
-    const initialTab = this.link(initialPath ?? startupPath, initialPath ? initialGoto : undefined);
+    const startupTarget = initialPath ?? startupPath;
+    const initialTab = stored.tabs.length || startupTarget
+      ? this.link(startupTarget, initialPath ? initialGoto : undefined)
+      : await this.blankTab(null);
     initialTab.selectedRelPath = initialSelectedRelPath;
     initialTab.viewState = initialViewState;
     this.tabs = stored.tabs.length ? stored.tabs.map((tab) => ({ ...tab })) : [initialTab];
@@ -141,11 +144,7 @@ export class TabManager {
   }
 
   async newBlank() {
-    const active = this.active();
-    const draftDirectory = active?.kind === "folder" && active.path
-      ? active.path
-      : await this.ports.defaultMemoDirectory?.() ?? null;
-    await this.addAndActivate(this.link(null, undefined, draftDirectory));
+    await this.addAndActivate(await this.blankTab());
   }
 
   async open(path: string, goto?: Pos) {
@@ -375,10 +374,11 @@ export class TabManager {
   async close(id: string) {
     if (this.tabs.length === 1) {
       if (id === this.activeId && !(await this.doc.confirmDiscard())) return;
+      const replacement = await this.blankTab(null);
       await this.commitTransition(async () => {
-        this.tabs = [this.link(null)];
+        this.tabs = [replacement];
         this.activeId = this.tabs[0].id;
-        await this.doc.newFile(false);
+        await this.doc.newFile(false, replacement.draftDirectory ?? null);
       });
       return;
     }
@@ -514,6 +514,22 @@ export class TabManager {
 
   private active() {
     return this.tabs.find((tab) => tab.id === this.activeId);
+  }
+
+  private async blankTab(source: StoredTab | null = this.active() ?? null): Promise<StoredTab> {
+    const draftDirectory = source?.kind === "folder" && source.path
+      ? source.path
+      : await this.resolveDefaultMemoDirectory();
+    return this.link(null, undefined, draftDirectory);
+  }
+
+  private async resolveDefaultMemoDirectory(): Promise<string | null> {
+    try {
+      return await this.ports.defaultMemoDirectory?.() ?? null;
+    } catch (error) {
+      await this.reportError(error, "新規メモの既定保存先を取得できませんでした");
+      return null;
+    }
   }
 
   private link(path: string | null, goto?: Pos, draftDirectory?: string | null): StoredTab {

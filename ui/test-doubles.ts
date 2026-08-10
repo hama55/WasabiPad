@@ -122,10 +122,12 @@ export function installDomStubs() {
   if (typeof HTMLCanvasElement !== "undefined") {
     Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
       configurable: true,
-      value: () => ({
-        font: "",
-        measureText: (text: string) => ({ width: text.length * 8 }),
-      }),
+      value: (type: string) => type === "2d"
+        ? {
+            font: "",
+            measureText: (text: string) => ({ width: text.length * 8 }),
+          }
+        : null,
     });
   }
 }
