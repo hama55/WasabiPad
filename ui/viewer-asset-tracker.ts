@@ -6,13 +6,7 @@ export class ViewerAssetTracker {
   revokeAll() {
     const urls = [...this.urls];
     this.urls.clear();
-    for (const url of urls) {
-      try {
-        this.revoke(url);
-      } catch (error) {
-        console.error("プレビュー資産URLを解放できませんでした", error);
-      }
-    }
+    for (const url of urls) this.revoke(url);
   }
 
   retain(url: string, generation: number, currentGeneration: number): boolean {
@@ -26,10 +20,6 @@ export class ViewerAssetTracker {
 
   release(url: string) {
     if (!this.urls.delete(url)) return;
-    try {
-      this.revoke(url);
-    } catch (error) {
-      console.error("プレビュー資産URLを解放できませんでした", error);
-    }
+    this.revoke(url);
   }
 }

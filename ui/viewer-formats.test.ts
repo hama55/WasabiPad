@@ -4,7 +4,6 @@ import {
   isViewerFormat,
   viewerFormatForPath,
   viewerFormatSpec,
-  viewerFormatSpecs,
 } from "./viewer-formats";
 import { MENU_ICON } from "./menu-icons";
 
@@ -75,18 +74,5 @@ describe("Feature: viewer formats", () => {
     expect(handlers.html.render).toBe(htmlRenderer);
     expect(handlers.csv.title).toBe("CSV");
     expect(handlers.markdown.title).toBe("Markdown");
-  });
-
-  // Given: 形式レジストリと全形式のrenderer
-  // When: レジストリのIDとhandlerのキーを比較する
-  // Then: IDの重複やhandlerの登録漏れがない
-  it("Scenario: keeps registry ids unique and handlers complete", () => {
-    const specs = viewerFormatSpecs();
-    const handlers = createViewerFormatHandlers({
-      csv: vi.fn(), markdown: vi.fn(), image: vi.fn(), pdf: vi.fn(), html: vi.fn(),
-    });
-
-    expect(new Set(specs.map((spec) => spec.id)).size).toBe(specs.length);
-    expect(Object.keys(handlers).sort()).toEqual(specs.map((spec) => spec.id).sort());
   });
 });

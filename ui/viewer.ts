@@ -406,7 +406,7 @@ async function renderAssetPreview(
   let keepArchiveUrl = false;
   try {
     if (archivePath && archiveEntry) {
-      archiveUrl = await imageUrlFromArchive(archivePath, archiveEntry, imageMimeType(archiveEntry));
+      archiveUrl = await imageUrlFromArchive(archivePath, archiveEntry, mimeType);
       if (!retainArchiveAssetUrl(archiveUrl, generation)) {
         archiveUrl = null;
         return;

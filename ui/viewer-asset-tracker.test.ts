@@ -29,22 +29,4 @@ describe("Feature: プレビューアセット所有権", () => {
 
     expect(revoke).toHaveBeenCalledOnce();
   });
-
-  // Given: 先頭URLの解放が例外を投げる複数URL
-  // When: すべてのURLを解放する
-  // Then: 後続URLも解放を試行し、追跡状態を空にする
-  it("Scenario: URL解放の失敗が後続の後始末を止めない", () => {
-    const revoke = vi.fn((url: string) => {
-      if (url === "blob:a") throw new Error("revoke failed");
-    });
-    const tracker = new ViewerAssetTracker(revoke);
-    tracker.retain("blob:a", 1, 1);
-    tracker.retain("blob:b", 1, 1);
-
-    tracker.revokeAll();
-    tracker.retain("blob:c", 1, 1);
-    tracker.revokeAll();
-
-    expect(revoke.mock.calls.map(([url]) => url)).toEqual(["blob:a", "blob:b", "blob:c"]);
-  });
 });

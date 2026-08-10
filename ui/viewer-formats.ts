@@ -17,10 +17,9 @@ export interface ViewerFormatSpec {
 export type ViewerRenderer = (text: string) => void | Promise<void>;
 export type ViewerFormatHandler = ViewerFormatSpec & { readonly render: ViewerRenderer };
 
-type ViewerFormatMetadata = Omit<ViewerFormatSpec, "id">;
-
-export const VIEWER_FORMATS: Record<ViewerFormat, ViewerFormatMetadata> = {
+export const VIEWER_FORMATS: Record<ViewerFormat, ViewerFormatSpec> = {
   csv: {
+    id: "csv",
     label: "CSVビュー",
     title: "CSV",
     previewOrder: 1,
@@ -31,6 +30,7 @@ export const VIEWER_FORMATS: Record<ViewerFormat, ViewerFormatMetadata> = {
     supportsDefaultBrowser: false,
   },
   markdown: {
+    id: "markdown",
     label: "Markdownビュー",
     title: "Markdown",
     previewOrder: 0,
@@ -41,6 +41,7 @@ export const VIEWER_FORMATS: Record<ViewerFormat, ViewerFormatMetadata> = {
     supportsDefaultBrowser: false,
   },
   image: {
+    id: "image",
     label: "Imageビュー",
     title: "Image",
     previewOrder: 2,
@@ -51,6 +52,7 @@ export const VIEWER_FORMATS: Record<ViewerFormat, ViewerFormatMetadata> = {
     supportsDefaultBrowser: false,
   },
   pdf: {
+    id: "pdf",
     label: "PDFビュー",
     title: "PDF",
     previewOrder: 3,
@@ -61,6 +63,7 @@ export const VIEWER_FORMATS: Record<ViewerFormat, ViewerFormatMetadata> = {
     supportsDefaultBrowser: false,
   },
   html: {
+    id: "html",
     label: "html(静的)",
     title: "html(静的)",
     previewOrder: 4,
@@ -73,11 +76,7 @@ export const VIEWER_FORMATS: Record<ViewerFormat, ViewerFormatMetadata> = {
 };
 
 export function viewerFormatSpec(format: ViewerFormat): ViewerFormatSpec {
-  return { id: format, ...VIEWER_FORMATS[format] };
-}
-
-export function viewerFormatSpecs(): ViewerFormatSpec[] {
-  return (Object.keys(VIEWER_FORMATS) as ViewerFormat[]).map(viewerFormatSpec);
+  return VIEWER_FORMATS[format];
 }
 
 export function isViewerFormat(value: unknown): value is ViewerFormat {
@@ -88,13 +87,13 @@ export function createViewerFormatHandlers(
   renderers: Record<ViewerFormat, ViewerRenderer>,
 ): Record<ViewerFormat, ViewerFormatHandler> {
   return Object.fromEntries(
-    viewerFormatSpecs().map((spec) => [spec.id, { ...spec, render: renderers[spec.id] }]),
+    Object.values(VIEWER_FORMATS).map((spec) => [spec.id, { ...spec, render: renderers[spec.id] }]),
   ) as Record<ViewerFormat, ViewerFormatHandler>;
 }
 
 export function viewerFormatForPath(path: string): ViewerFormat | null {
   const lowerPath = path.toLowerCase();
-  const format = viewerFormatSpecs().find((spec) =>
+  const format = Object.values(VIEWER_FORMATS).find((spec) =>
     spec.extensions.some((extension) => lowerPath.endsWith(extension)),
   );
   return format?.id ?? null;

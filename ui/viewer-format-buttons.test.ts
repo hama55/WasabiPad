@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
 import viewerHtml from "../viewer.html?raw";
-import { viewerFormatSpecs } from "./viewer-formats";
 import { createViewerFormatButtons, syncViewerFormatButtons } from "./viewer-format-buttons";
 
 describe("Feature: viewer format buttons", () => {
@@ -24,8 +23,6 @@ describe("Feature: viewer format buttons", () => {
     syncViewerFormatButtons(host, "csv");
     expect(buttons[1].getAttribute("aria-pressed")).toBe("true");
     expect(buttons[0].getAttribute("aria-pressed")).toBe("false");
-    expect(viewerFormatSpecs().sort((left, right) => left.previewOrder - right.previewOrder)
-      .map((spec) => spec.id)).toEqual(["markdown", "csv", "image", "pdf", "html"]);
   });
 
   // Given: viewer.htmlのタイトルバー
