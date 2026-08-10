@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { createViewerFormatHandlers, isViewerFormat, viewerFormatForPath, viewerFormatSpec } from "./viewer-formats";
+import {
+  createViewerFormatHandlers,
+  isViewerFormat,
+  viewerFormatForPath,
+  viewerFormatSpec,
+  viewerFormatSpecs,
+} from "./viewer-formats";
 import { MENU_ICON } from "./menu-icons";
 
 describe("Feature: viewer formats", () => {
@@ -21,6 +27,7 @@ describe("Feature: viewer formats", () => {
   it("Scenario: keeps format capabilities in the registry", () => {
     expect(viewerFormatSpec("csv").supportsDelimiter).toBe(true);
     expect(viewerFormatSpec("csv").supportsChart).toBe(true);
+    expect(viewerFormatSpec("csv").supportsDefaultBrowser).toBe(false);
     expect(viewerFormatSpec("csv").iconClass).toBe(MENU_ICON.csv);
     expect(viewerFormatSpec("markdown").supportsDelimiter).toBe(false);
     expect(viewerFormatSpec("markdown").supportsChart).toBe(false);
@@ -31,6 +38,7 @@ describe("Feature: viewer formats", () => {
     expect(viewerFormatSpec("html").extensions).toEqual([".html", ".htm"]);
     expect(viewerFormatSpec("html").supportsDelimiter).toBe(false);
     expect(viewerFormatSpec("html").supportsChart).toBe(false);
+    expect(viewerFormatSpec("html").supportsDefaultBrowser).toBe(true);
     expect(viewerFormatSpec("html").iconClass).toBe(MENU_ICON.html);
   });
 
@@ -67,5 +75,18 @@ describe("Feature: viewer formats", () => {
     expect(handlers.html.render).toBe(htmlRenderer);
     expect(handlers.csv.title).toBe("CSV");
     expect(handlers.markdown.title).toBe("Markdown");
+  });
+
+  // Given: 形式レジストリと全形式のrenderer
+  // When: レジストリのIDとhandlerのキーを比較する
+  // Then: IDの重複やhandlerの登録漏れがない
+  it("Scenario: keeps registry ids unique and handlers complete", () => {
+    const specs = viewerFormatSpecs();
+    const handlers = createViewerFormatHandlers({
+      csv: vi.fn(), markdown: vi.fn(), image: vi.fn(), pdf: vi.fn(), html: vi.fn(),
+    });
+
+    expect(new Set(specs.map((spec) => spec.id)).size).toBe(specs.length);
+    expect(Object.keys(handlers).sort()).toEqual(specs.map((spec) => spec.id).sort());
   });
 });

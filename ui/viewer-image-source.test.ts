@@ -34,6 +34,18 @@ describe("Feature: viewer image asset source", () => {
     expect(createObjectURL).toHaveBeenCalledWith(expect.objectContaining({ type: "image/png" }));
   });
 
+  // Given: アーカイブ内のPDFを読むポートがある
+  // When: PDFプレビュー用のアーカイブURLを作る
+  // Then: PDF MIME typeのBlob URLを生成する
+  it("Scenario: creates a PDF URL with the PDF MIME type", async () => {
+    const createObjectURL = vi.fn(() => "blob:pdf");
+    const source = ports({ createObjectURL });
+
+    await expect(imageUrlFromArchive("data.zip", "manual.pdf", "application/pdf", source))
+      .resolves.toBe("blob:pdf");
+    expect(createObjectURL).toHaveBeenCalledWith(expect.objectContaining({ type: "application/pdf" }));
+  });
+
   // Given: アーカイブ画像の読込ポートが失敗する
   // When: アーカイブ画像のURLを作る
   // Then: 読込エラーを呼び出し元へ返す

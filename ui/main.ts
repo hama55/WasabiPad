@@ -450,6 +450,7 @@ window.addEventListener("beforeunload", () => {
   dragDropListener.dispose();
   windowChrome.dispose();
   externalWatch.dispose();
+  favbar.dispose();
 });
 
 const favbar = new FavBar($("favbar"), {

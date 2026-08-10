@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
+import indexHtml from "../index.html?raw";
 import { AddressBar, pathSegments } from "./addressbar";
 
 function addressBarFixture() {
@@ -101,6 +101,18 @@ describe("Feature: AddressBar breadcrumbs", () => {
     expect(event.defaultPrevented).toBe(false);
   });
 
+  // Given: AddressBarとお気に入り追加ボタンを生成する
+  // When: アドレスバー左横のお気に入り追加ボタンをクリックする
+  // Then: 現在パスの追加処理をportへ1回委譲する
+  it("Scenario: お気に入り追加ボタンのクリックを委譲する", () => {
+    const { host, ports } = addressBarFixture();
+    new AddressBar(host, ports);
+
+    host.querySelector<HTMLButtonElement>("#addressbar-fav")!.click();
+
+    expect(ports.onFavorite).toHaveBeenCalledOnce();
+  });
+
   // Given: ドライブ直下/末尾/非ドライブ形式のパンくず
   // When: 指定位置を通常クリックする
   // Then: どのパスでも新規タブ指定で対象パスを通知する
@@ -142,13 +154,14 @@ describe("Feature: AddressBar layout", () => {
   // When: the address bar child order is inspected
   // Then: the favorite button is immediately to the left of the address bar
   it("Scenario: places the favorite button beside the address bar", () => {
-    const html = readFileSync("index.html", "utf8");
-    const page = new DOMParser().parseFromString(html, "text/html");
+    const page = new DOMParser().parseFromString(indexHtml, "text/html");
     const topbar = page.querySelector("#topbar")!;
     const children = [...topbar.children].map((child) => child.id);
     const favoriteIndex = children.indexOf("addressbar-fav");
     const shellIndex = children.indexOf("addressbar-shell");
 
     expect(favoriteIndex).toBe(shellIndex - 1);
+    expect(page.querySelector("#addressbar-back")).toBeNull();
+    expect(page.querySelector("#addressbar-forward")).toBeNull();
   });
 });

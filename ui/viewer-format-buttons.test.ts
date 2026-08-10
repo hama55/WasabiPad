@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
-import { VIEWER_FORMATS } from "./viewer-formats";
+import viewerHtml from "../viewer.html?raw";
+import { viewerFormatSpecs } from "./viewer-formats";
 import { createViewerFormatButtons, syncViewerFormatButtons } from "./viewer-format-buttons";
 
 describe("Feature: viewer format buttons", () => {
@@ -24,7 +24,7 @@ describe("Feature: viewer format buttons", () => {
     syncViewerFormatButtons(host, "csv");
     expect(buttons[1].getAttribute("aria-pressed")).toBe("true");
     expect(buttons[0].getAttribute("aria-pressed")).toBe("false");
-    expect([...Object.values(VIEWER_FORMATS)].sort((left, right) => left.previewOrder - right.previewOrder)
+    expect(viewerFormatSpecs().sort((left, right) => left.previewOrder - right.previewOrder)
       .map((spec) => spec.id)).toEqual(["markdown", "csv", "image", "pdf", "html"]);
   });
 
@@ -32,9 +32,7 @@ describe("Feature: viewer format buttons", () => {
   // When: 表示形式コントロールのDOMを確認する
   // Then: selectではなくボタン用グループを持つ
   it("Scenario: タイトルバーはプルダウンを使わない", () => {
-    const html = readFileSync("viewer.html", "utf8");
-
-    expect(html).toContain('<div id="viewer-format" role="group" aria-label="表示形式"></div>');
-    expect(html).not.toContain('<select id="viewer-format"');
+    expect(viewerHtml).toContain('<div id="viewer-format" role="group" aria-label="表示形式"></div>');
+    expect(viewerHtml).not.toContain('<select id="viewer-format"');
   });
 });

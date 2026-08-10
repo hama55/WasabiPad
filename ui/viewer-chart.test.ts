@@ -10,6 +10,16 @@ vi.mock("chart.js/auto", () => ({ default: chartMock }));
 
 import { ViewerChartController } from "./viewer-chart";
 
+type ChartConfig = {
+  type: string;
+  data: { labels: string[]; datasets: Array<{ label?: string; data: unknown[] }> };
+};
+
+function chartConfig(): ChartConfig {
+  const call = chartMock.mock.calls[0] as unknown as [HTMLCanvasElement, ChartConfig];
+  return call[1];
+}
+
 function createController() {
   const panel = document.createElement("section");
   const title = document.createElement("h1");
@@ -23,7 +33,7 @@ function createController() {
     ["first", "1"],
   ]);
   document.body.append(panel, content);
-  return { controller, run };
+  return { controller, run, panel, content };
 }
 
 describe("Feature: Chart viewer drawing boundary", () => {
@@ -91,6 +101,11 @@ describe("Feature: Chart viewer drawing boundary", () => {
     document.querySelector<HTMLButtonElement>(".viewer-dialog-buttons .primary")?.click();
 
     expect(chartMock).toHaveBeenCalledOnce();
+    const config = chartConfig();
+    expect(config.type).toBe("bar");
+    expect(config.data.labels).toEqual(["1"]);
+    expect(config.data.datasets).toHaveLength(1);
+    expect(config.data.datasets[0].data).toEqual([1]);
   });
 
   // Given: X軸と数値Y軸を含む表データ
@@ -103,5 +118,25 @@ describe("Feature: Chart viewer drawing boundary", () => {
     document.querySelector<HTMLButtonElement>(".viewer-dialog-buttons .primary")?.click();
 
     expect(chartMock).toHaveBeenCalledOnce();
+    const config = chartConfig();
+    expect(config.type).toBe("line");
+    expect(config.data.datasets[0].label).toBe("value");
+    expect(config.data.datasets[0].data).toEqual([1]);
+  });
+
+  // Given: 描画済みChart.jsインスタンスのdestroyが例外を投げる
+  // When: グラフを閉じる
+  // Then: 表示状態と内部状態の後始末を先に完了し、例外は呼び出し元へ返す
+  it("Scenario: Chart破棄失敗でも内部状態を解放する", () => {
+    const { controller, run, panel, content } = createController();
+    controller.openDialog();
+    document.querySelector<HTMLButtonElement>(".viewer-dialog-buttons .primary")?.click();
+    const chart = chartMock.mock.results[0].value;
+    chart.destroy.mockImplementation(() => { throw new Error("destroy failed"); });
+
+    expect(() => controller.close()).toThrow("destroy failed");
+    expect(panel.hidden).toBe(true);
+    expect(content.hidden).toBe(false);
+    expect(run).toHaveBeenCalledOnce();
   });
 });

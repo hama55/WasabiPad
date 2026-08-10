@@ -4,8 +4,15 @@ export class ViewerAssetTracker {
   constructor(private readonly revoke: (url: string) => void) {}
 
   revokeAll() {
-    for (const url of this.urls) this.revoke(url);
+    const urls = [...this.urls];
     this.urls.clear();
+    for (const url of urls) {
+      try {
+        this.revoke(url);
+      } catch (error) {
+        console.error("プレビュー資産URLを解放できませんでした", error);
+      }
+    }
   }
 
   retain(url: string, generation: number, currentGeneration: number): boolean {
@@ -19,6 +26,10 @@ export class ViewerAssetTracker {
 
   release(url: string) {
     if (!this.urls.delete(url)) return;
-    this.revoke(url);
+    try {
+      this.revoke(url);
+    } catch (error) {
+      console.error("プレビュー資産URLを解放できませんでした", error);
+    }
   }
 }

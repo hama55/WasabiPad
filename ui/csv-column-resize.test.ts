@@ -66,4 +66,24 @@ describe("Feature: CSV column resize lifecycle", () => {
     window.dispatchEvent(pointerEvent("pointermove", 10));
     expect(update).not.toHaveBeenCalled();
   });
+
+  // Given: 列幅ドラッグ中
+  // When: pointercancelが発生する
+  // Then: 幅を更新せず、リサイズ状態を解除する
+  it("Scenario: pointercancel finishes an active column drag", () => {
+    const update = vi.fn();
+    const setResizing = vi.fn();
+    startCsvColumnResize(pointerEvent("pointerdown"), {
+      startWidth: 80,
+      startX: 0,
+      update,
+      setResizing,
+    });
+
+    window.dispatchEvent(pointerEvent("pointercancel"));
+    window.dispatchEvent(pointerEvent("pointermove", 10));
+
+    expect(update).not.toHaveBeenCalled();
+    expect(setResizing).toHaveBeenLastCalledWith(false);
+  });
 });

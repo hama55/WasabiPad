@@ -26,6 +26,8 @@ pub(crate) struct InstanceServer {
 }
 
 const INSTANCE_DIR: &str = "wasabipad-instances";
+const MAX_WINDOW_REQUEST_BYTES: u64 = 1024 * 1024;
+const WINDOW_REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(2);
 
 impl InstanceServer {
     pub(crate) fn new() -> io::Result<Self> {
@@ -133,9 +135,18 @@ fn read_instance_endpoints() -> Vec<(PathBuf, InstanceEndpoint)> {
     endpoints
 }
 
-fn read_window_request(mut stream: TcpStream) -> Option<WindowRequest> {
+fn read_window_request(stream: TcpStream) -> Option<WindowRequest> {
+    stream
+        .set_read_timeout(Some(WINDOW_REQUEST_READ_TIMEOUT))
+        .ok()?;
     let mut bytes = Vec::new();
-    stream.read_to_end(&mut bytes).ok()?;
+    stream
+        .take(MAX_WINDOW_REQUEST_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > MAX_WINDOW_REQUEST_BYTES {
+        return None;
+    }
     serde_json::from_slice(&bytes).ok()
 }
 
@@ -215,5 +226,35 @@ pub(crate) fn take_pending_window_requests(
             eprintln!("外部起動要求のロックが壊れたため、待機要求を保持して取り出します");
             std::mem::take(&mut *poisoned.into_inner())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{read_window_request, MAX_WINDOW_REQUEST_BYTES};
+    use std::io::Write;
+    use std::net::{Shutdown, TcpListener, TcpStream};
+    use std::thread;
+
+    // Feature: 外部ウィンドウ要求の入力上限
+    // Scenario: 上限を超えるローカル要求を受信する
+    // Given: 1 MiBを超えるバイト列を送るTCP接続
+    // When: ウィンドウ要求を読み取る
+    // Then: JSON解析前に要求を破棄する
+    #[test]
+    fn rejects_window_requests_over_the_size_limit() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let client = thread::spawn(move || {
+            let mut stream = TcpStream::connect(address).unwrap();
+            stream
+                .write_all(&vec![b'x'; (MAX_WINDOW_REQUEST_BYTES + 1) as usize])
+                .unwrap();
+            stream.shutdown(Shutdown::Write).unwrap();
+        });
+        let (server, _) = listener.accept().unwrap();
+
+        assert!(read_window_request(server).is_none());
+        client.join().unwrap();
     }
 }

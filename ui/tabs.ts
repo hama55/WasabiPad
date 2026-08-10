@@ -275,7 +275,7 @@ export class TabManager {
     });
 
     if (!run.proceeded || run.result?.succeeded !== true) {
-      if (run.proceeded && run.before) await this.restoreTabs(run.before);
+      if (run.proceeded && run.before) await this.restoreTabsSafely(run.before);
       this.render();
       return false;
     }
@@ -304,7 +304,7 @@ export class TabManager {
       });
       return { proceeded, result, before, previous };
     } catch (error) {
-      if (before) await this.restoreTabs(before);
+      if (before) await this.restoreTabsSafely(before);
       this.render();
       throw error;
     }
@@ -416,7 +416,7 @@ export class TabManager {
     try {
       await operation();
     } catch (error) {
-      await this.restoreTabs(before);
+      await this.restoreTabsSafely(before);
       this.render();
       throw error;
     }
@@ -432,6 +432,14 @@ export class TabManager {
     } catch (error) {
       console.error("元のタブへ復帰できませんでした", error);
       throw error;
+    }
+  }
+
+  private async restoreTabsSafely(before: StoredTabs) {
+    try {
+      await this.restoreTabs(before);
+    } catch (error) {
+      await this.reportError(error, "タブを元に戻せませんでした");
     }
   }
 

@@ -11,14 +11,16 @@ export interface ViewerFormatSpec {
   readonly extensions: readonly string[];
   readonly supportsDelimiter: boolean;
   readonly supportsChart: boolean;
+  readonly supportsDefaultBrowser: boolean;
 }
 
 export type ViewerRenderer = (text: string) => void | Promise<void>;
 export type ViewerFormatHandler = ViewerFormatSpec & { readonly render: ViewerRenderer };
 
-export const VIEWER_FORMATS: Record<ViewerFormat, ViewerFormatSpec> = {
+type ViewerFormatMetadata = Omit<ViewerFormatSpec, "id">;
+
+export const VIEWER_FORMATS: Record<ViewerFormat, ViewerFormatMetadata> = {
   csv: {
-    id: "csv",
     label: "CSVビュー",
     title: "CSV",
     previewOrder: 1,
@@ -26,9 +28,9 @@ export const VIEWER_FORMATS: Record<ViewerFormat, ViewerFormatSpec> = {
     extensions: [".csv"],
     supportsDelimiter: true,
     supportsChart: true,
+    supportsDefaultBrowser: false,
   },
   markdown: {
-    id: "markdown",
     label: "Markdownビュー",
     title: "Markdown",
     previewOrder: 0,
@@ -36,9 +38,9 @@ export const VIEWER_FORMATS: Record<ViewerFormat, ViewerFormatSpec> = {
     extensions: [".md", ".markdown"],
     supportsDelimiter: false,
     supportsChart: false,
+    supportsDefaultBrowser: false,
   },
   image: {
-    id: "image",
     label: "Imageビュー",
     title: "Image",
     previewOrder: 2,
@@ -46,9 +48,9 @@ export const VIEWER_FORMATS: Record<ViewerFormat, ViewerFormatSpec> = {
     extensions: Object.keys(IMAGE_MIME_TYPES).map((extension) => `.${extension}`),
     supportsDelimiter: false,
     supportsChart: false,
+    supportsDefaultBrowser: false,
   },
   pdf: {
-    id: "pdf",
     label: "PDFビュー",
     title: "PDF",
     previewOrder: 3,
@@ -56,9 +58,9 @@ export const VIEWER_FORMATS: Record<ViewerFormat, ViewerFormatSpec> = {
     extensions: [".pdf"],
     supportsDelimiter: false,
     supportsChart: false,
+    supportsDefaultBrowser: false,
   },
   html: {
-    id: "html",
     label: "html(静的)",
     title: "html(静的)",
     previewOrder: 4,
@@ -66,8 +68,17 @@ export const VIEWER_FORMATS: Record<ViewerFormat, ViewerFormatSpec> = {
     extensions: [".html", ".htm"],
     supportsDelimiter: false,
     supportsChart: false,
+    supportsDefaultBrowser: true,
   },
 };
+
+export function viewerFormatSpec(format: ViewerFormat): ViewerFormatSpec {
+  return { id: format, ...VIEWER_FORMATS[format] };
+}
+
+export function viewerFormatSpecs(): ViewerFormatSpec[] {
+  return (Object.keys(VIEWER_FORMATS) as ViewerFormat[]).map(viewerFormatSpec);
+}
 
 export function isViewerFormat(value: unknown): value is ViewerFormat {
   return typeof value === "string" && Object.prototype.hasOwnProperty.call(VIEWER_FORMATS, value);
@@ -77,18 +88,14 @@ export function createViewerFormatHandlers(
   renderers: Record<ViewerFormat, ViewerRenderer>,
 ): Record<ViewerFormat, ViewerFormatHandler> {
   return Object.fromEntries(
-    Object.values(VIEWER_FORMATS).map((spec) => [spec.id, { ...spec, render: renderers[spec.id] }]),
+    viewerFormatSpecs().map((spec) => [spec.id, { ...spec, render: renderers[spec.id] }]),
   ) as Record<ViewerFormat, ViewerFormatHandler>;
 }
 
 export function viewerFormatForPath(path: string): ViewerFormat | null {
   const lowerPath = path.toLowerCase();
-  const format = Object.values(VIEWER_FORMATS).find((spec) =>
+  const format = viewerFormatSpecs().find((spec) =>
     spec.extensions.some((extension) => lowerPath.endsWith(extension)),
   );
   return format?.id ?? null;
-}
-
-export function viewerFormatSpec(format: ViewerFormat): ViewerFormatSpec {
-  return VIEWER_FORMATS[format];
 }

@@ -181,6 +181,20 @@ describe("Feature: FavBar", () => {
     expect(opened).toEqual([{ path: "C:/memo.txt", newTab: true }]);
   });
 
+  // Given: お気に入りバーが初期化されている
+  // When: dispose()後にバーの空白を右クリックする
+  // Then: 解除済みのイベントからメニューを開かない
+  it("Scenario: disposeでお気に入りバーのイベントを解除する", async () => {
+    const { favbar } = mount([]);
+    await favbar.init();
+    const host = document.getElementById("favbar")!;
+    favbar.dispose();
+
+    host.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+
+    expect(document.getElementById("dropdown")!.hidden).toBe(true);
+  });
+
   // Given: group直下にfile`a`とdirectory`src`、nested groupに`b`がある
   // When: groupのコンテキストメニューから一括追加
   // Then: `a`と`src`だけをタブ追加

@@ -297,16 +297,18 @@ describe("Feature: TabManager", () => {
 
   // Given: 通常遷移の読込が Error("transition failed")、復帰読込が Error("restore failed") になる
   // When: C:\work\c.txt への navigatePath() を呼ぶ
-  // Then: 復帰処理の失敗を握り潰さず Error("restore failed") で reject する
-  it("Scenario: タブ復帰処理自身の失敗を握り潰さない", async () => {
+  // Then: 元の遷移失敗でrejectし、復帰失敗は別エラーとして通知する
+  it("Scenario: タブ復帰失敗で元の遷移エラーを隠さない", async () => {
     const { doc, host } = fixture();
-    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    const onError = vi.fn();
+    const manager = new TabManager(host, doc, { onChange: () => {}, onError }, registeredCommandPorts);
     await manager.init(stored, null, null);
     vi.mocked(doc.openPath)
       .mockRejectedValueOnce(new Error("transition failed"))
       .mockRejectedValueOnce(new Error("restore failed"));
 
-    await expect(manager.navigatePath("C:\\work\\c.txt")).rejects.toThrow("restore failed");
+    await expect(manager.navigatePath("C:\\work\\c.txt")).rejects.toThrow("transition failed");
+    expect(onError).toHaveBeenCalledWith(expect.any(Error), "タブを元に戻せませんでした");
   });
 
   // Given: active tab a で、次の openPath が false を返す

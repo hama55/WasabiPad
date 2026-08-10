@@ -230,7 +230,13 @@ export class ViewerChartController {
       labels = rows.map((row) => row[this.columns!.x] ?? "");
     }
 
-    this.chart?.destroy();
+    const previousChart = this.chart;
+    this.chart = null;
+    try {
+      previousChart?.destroy();
+    } finally {
+      this.chart = null;
+    }
     this.chart = new Chart<"line" | "bar", (number | null)[], string>(this.options.canvas, {
       type: spec.base,
       data: { labels, datasets },
@@ -257,9 +263,13 @@ export class ViewerChartController {
     const wasOpen = this.chart !== null || this.columns !== null;
     this.options.panel.hidden = true;
     this.options.content.hidden = false;
-    this.chart?.destroy();
-    this.chart = null;
-    this.columns = null;
-    if (wasOpen) this.options.onClose();
+    const chart = this.chart;
+    try {
+      chart?.destroy();
+    } finally {
+      this.chart = null;
+      this.columns = null;
+      if (wasOpen) this.options.onClose();
+    }
   }
 }

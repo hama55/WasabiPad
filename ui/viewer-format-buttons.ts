@@ -1,11 +1,11 @@
 import type { ViewerFormat } from "./api";
-import { VIEWER_FORMATS } from "./viewer-formats";
+import { viewerFormatSpecs } from "./viewer-formats";
 
 export function createViewerFormatButtons(
   host: HTMLElement,
   onSelect: (format: ViewerFormat) => void,
 ) {
-  const specs = [...Object.values(VIEWER_FORMATS)].sort((left, right) => left.previewOrder - right.previewOrder);
+  const specs = viewerFormatSpecs().sort((left, right) => left.previewOrder - right.previewOrder);
   host.replaceChildren(...specs.map((spec) => {
     const format = spec.id;
     const button = document.createElement("button");

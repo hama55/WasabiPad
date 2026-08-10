@@ -28,7 +28,7 @@ export const CHART_TYPES: Record<ChartTypeId, ChartTypeSpec> = {
 export const DEFAULT_CHART_TYPE: ChartTypeId = "line-point";
 
 export function isChartTypeId(value: string): value is ChartTypeId {
-  return value in CHART_TYPES;
+  return Object.prototype.hasOwnProperty.call(CHART_TYPES, value);
 }
 
 // 点が多いと折れ線が点で埋まるので間引く。ただし点だけで描く種別は間引くと何も見えなくなる

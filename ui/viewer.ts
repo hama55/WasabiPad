@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { EVENT_NAMES, openInDefaultBrowser, takeViewerPayload, type ViewerFormat, type ViewerPayload, type ViewerSelection } from "./api";
 import { formatFontFamily } from "./format";
 import { basename } from "./path";
-import { createViewerFormatHandlers, isViewerFormat, VIEWER_FORMATS } from "./viewer-formats";
+import { createViewerFormatHandlers, isViewerFormat, viewerFormatSpec } from "./viewer-formats";
 import { getSetting, initSettings, setSetting } from "./settings";
 import { clampFontSize, promptFontFamily, promptFontSize as promptFontSizeDialog } from "./font-controls";
 import {
@@ -376,7 +376,18 @@ async function waitForImageLayout(image: HTMLImageElement) {
   }
 }
 
-async function renderImage(_text: string) {
+interface AssetPreviewTarget {
+  wrapper: HTMLElement;
+  setSource: (url: string) => void;
+  waitForReady?: () => Promise<void>;
+  markFailure: () => void;
+}
+
+async function renderAssetPreview(
+  name: string,
+  mimeType: string,
+  createTarget: () => AssetPreviewTarget,
+) {
   const generation = ++renderGeneration;
   const sourcePath = currentSourcePath;
   const archivePath = currentArchivePath;
@@ -385,9 +396,8 @@ async function renderImage(_text: string) {
   currentRows = [];
   chartController.clear();
 
-  const name = basename(archiveEntry ?? sourcePath ?? "image");
-  const { wrapper, image } = createImagePreview(name);
-  content.replaceChildren(wrapper);
+  const target = createTarget();
+  content.replaceChildren(target.wrapper);
   summary.classList.remove("warning");
   summary.title = "";
   summary.textContent = name;
@@ -401,18 +411,18 @@ async function renderImage(_text: string) {
         archiveUrl = null;
         return;
       }
-      image.src = archiveUrl;
+      target.setSource(archiveUrl);
     } else if (sourcePath && generation === renderGeneration) {
-      image.src = imageUrlFromPath(sourcePath);
+      target.setSource(imageUrlFromPath(sourcePath));
     } else {
-      markImageLoadFailure(image, name);
+      target.markFailure();
       return;
     }
-    await waitForImageLayout(image);
+    await target.waitForReady?.();
     keepArchiveUrl = true;
   } catch (error) {
     if (generation !== renderGeneration) return;
-    markImageLoadFailure(image, name);
+    target.markFailure();
     throw error;
   } finally {
     if (archiveUrl && (!keepArchiveUrl || generation !== renderGeneration)) {
@@ -421,48 +431,29 @@ async function renderImage(_text: string) {
   }
 }
 
+async function renderImage(_text: string) {
+  const name = basename(currentArchiveEntry ?? currentSourcePath ?? "image");
+  return renderAssetPreview(name, imageMimeType(currentArchiveEntry ?? ""), () => {
+    const { wrapper, image } = createImagePreview(name);
+    return {
+      wrapper,
+      setSource: (url) => { image.src = url; },
+      waitForReady: () => waitForImageLayout(image),
+      markFailure: () => markImageLoadFailure(image, name),
+    };
+  });
+}
+
 async function renderPdf(_text: string) {
-  const generation = ++renderGeneration;
-  const sourcePath = currentSourcePath;
-  const archivePath = currentArchivePath;
-  const archiveEntry = currentArchiveEntry;
-  revokeArchiveAssetUrls();
-  currentRows = [];
-  chartController.clear();
-
-  const name = basename(archiveEntry ?? sourcePath ?? "document.pdf");
-  const { wrapper, frame } = createPdfPreview(name);
-  content.replaceChildren(wrapper);
-  summary.classList.remove("warning");
-  summary.title = "";
-  summary.textContent = name;
-
-  let archiveUrl: string | null = null;
-  let keepArchiveUrl = false;
-  try {
-    if (archivePath && archiveEntry) {
-      archiveUrl = await imageUrlFromArchive(archivePath, archiveEntry, "application/pdf");
-      if (!retainArchiveAssetUrl(archiveUrl, generation)) {
-        archiveUrl = null;
-        return;
-      }
-      frame.src = archiveUrl;
-    } else if (sourcePath && generation === renderGeneration) {
-      frame.src = imageUrlFromPath(sourcePath);
-    } else {
-      markPdfLoadFailure(frame, name);
-      return;
-    }
-    keepArchiveUrl = true;
-  } catch (error) {
-    if (generation !== renderGeneration) return;
-    markPdfLoadFailure(frame, name);
-    throw error;
-  } finally {
-    if (archiveUrl && (!keepArchiveUrl || generation !== renderGeneration)) {
-      releaseArchiveAssetUrl(archiveUrl);
-    }
-  }
+  const name = basename(currentArchiveEntry ?? currentSourcePath ?? "document.pdf");
+  return renderAssetPreview(name, "application/pdf", () => {
+    const { wrapper, frame } = createPdfPreview(name);
+    return {
+      wrapper,
+      setSource: (url) => { frame.src = url; },
+      markFailure: () => markPdfLoadFailure(frame, name),
+    };
+  });
 }
 
 function htmlBaseUrl(sourcePath: string | null): string | null {
@@ -539,10 +530,11 @@ function renderPayload(payload: ViewerPayload) {
   currentArchiveEntry = payload.archive_entry;
   const handler = VIEWER_HANDLERS[payload.format];
   syncViewerFormatButtons(formatButtons, payload.format);
-  title.textContent = VIEWER_FORMATS[payload.format].title;
+  const formatSpec = viewerFormatSpec(payload.format);
+  title.textContent = formatSpec.title;
   document.title = title.textContent;
   if (!isInlineViewer) runViewerOperation("タイトルを更新できませんでした", () => win!.setTitle(title.textContent));
-  delimiterControl.hidden = !handler.supportsDelimiter;
+  delimiterControl.hidden = !formatSpec.supportsDelimiter;
   runViewerOperation("ビューを描画できませんでした", () => handler.render(payload.text));
 }
 
@@ -564,17 +556,20 @@ function openDelimiterDialog() {
 
 function showContextMenu(x: number, y: number) {
   contextMenu.replaceChildren();
-  if (currentFormat === "csv") {
+  const formatSpec = viewerFormatSpec(currentFormat);
+  if (formatSpec.supportsDelimiter) {
     contextMenu.appendChild(createViewerDelimiterMenuItem(() => {
       contextMenu.hidden = true;
       runViewerOperation("区切り文字設定を開けませんでした", openDelimiterDialog);
     }));
+  }
+  if (formatSpec.supportsChart) {
     contextMenu.appendChild(createViewerChartMenuItem(() => {
       contextMenu.hidden = true;
       runViewerOperation("グラフ設定を開けませんでした", () => chartController.openDialog());
     }));
   }
-  if (currentFormat === "html" && currentSourcePath) {
+  if (formatSpec.supportsDefaultBrowser && currentSourcePath) {
     const path = currentSourcePath;
     contextMenu.appendChild(createViewerBrowserMenuItem(() => {
       contextMenu.hidden = true;
@@ -615,8 +610,7 @@ async function start() {
       });
     });
     delimiterInput.addEventListener("input", () => {
-      const handler = VIEWER_HANDLERS[currentFormat];
-      if (!delimiterInput.value || !handler.supportsDelimiter) return;
+      if (!delimiterInput.value || !viewerFormatSpec(currentFormat).supportsDelimiter) return;
       if (isInlineViewer) {
         postToParent({
           type: INLINE_PREVIEW_MESSAGES.DELIMITER_CHANGE_MESSAGE,
@@ -630,10 +624,11 @@ async function start() {
     });
     content.addEventListener("contextmenu", (event) => {
       const target = event.target as Element;
-      if (currentFormat === "csv" && target.closest(".viewer-grid")) {
+      if (viewerFormatSpec(currentFormat).supportsChart && target.closest(".viewer-grid")) {
         event.preventDefault();
         runViewerOperation("グラフメニューを表示できませんでした", () => showContextMenu(event.clientX, event.clientY));
-      } else if (currentFormat === "html" && currentSourcePath && target.closest(".viewer-html-wrap")) {
+      } else if (viewerFormatSpec(currentFormat).supportsDefaultBrowser
+        && currentSourcePath && target.closest(".viewer-html-wrap")) {
         event.preventDefault();
         runViewerOperation("HTMLメニューを表示できませんでした", () => showContextMenu(event.clientX, event.clientY));
       }
@@ -652,7 +647,7 @@ async function start() {
         if (event.data?.type === INLINE_PREVIEW_MESSAGES.DELIMITER_MESSAGE) {
           if (typeof event.data.delimiter !== "string") return;
           delimiterInput.value = event.data.delimiter;
-          if (!delimiterInput.value || !VIEWER_HANDLERS[currentFormat].supportsDelimiter) return;
+          if (!delimiterInput.value || !viewerFormatSpec(currentFormat).supportsDelimiter) return;
           runViewerOperation("ビューを再描画できませんでした", () => VIEWER_HANDLERS[currentFormat].render(currentText));
           return;
         }

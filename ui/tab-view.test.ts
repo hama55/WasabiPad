@@ -65,4 +65,27 @@ describe("Feature: TabBarView", () => {
     expect(ports.onClose).not.toHaveBeenCalled();
     expect(ports.onActivate).not.toHaveBeenCalled();
   });
+
+  // Given: フォルダタブを描画し、エクスプローラ表示が失敗する
+  // When: タブを中クリックする
+  // Then: イベントを抑止し、フォルダ指定で呼び出し、失敗を通知する
+  it("Scenario: フォルダの中クリック失敗を通知する", async () => {
+    const host = document.createElement("div");
+    const ports = makePorts();
+    const error = new Error("explorer failed");
+    ports.revealInExplorer.mockRejectedValue(error);
+    const view = new TabBarView(host, ports);
+    view.render({
+      tabs: [{ id: "folder", path: "C:/docs", kind: "folder", label: "docs" }],
+      activeId: "folder",
+      dirty: false,
+    });
+
+    const event = new MouseEvent("auxclick", { button: 1, bubbles: true, cancelable: true });
+    host.querySelector<HTMLElement>(".doc-tab")!.dispatchEvent(event);
+
+    await vi.waitFor(() => expect(ports.onError).toHaveBeenCalledWith(error, "エクスプローラで開けませんでした"));
+    expect(event.defaultPrevented).toBe(true);
+    expect(ports.revealInExplorer).toHaveBeenCalledWith("C:/docs", true);
+  });
 });

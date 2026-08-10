@@ -68,19 +68,29 @@ export class FavBar {
     this.revealInExplorer = ports.revealInExplorer;
     this.currentFile = ports.currentFile;
     this.onError = ports.onError;
-    this.host.addEventListener("contextmenu", (e) => {
-      if (e.target !== this.host) return;
-      e.preventDefault();
-      showMenu(e.clientX, e.clientY, [
-        { label: FAVBAR_LABELS.addPath, iconClass: MENU_ICON.addPath, action: () => this.runMutation(() => this.addPath()) },
-        { label: FAVBAR_LABELS.addGroup, iconClass: MENU_ICON.addGroup, action: () => this.runMutation(() => this.addGroup()) },
-      ]);
-    });
+    this.host.addEventListener("contextmenu", this.onContextMenu);
     // WebView2 のネイティブ drag-drop が HTML5 DnD を奪うため pointer で自作する
     this.host.addEventListener("pointerdown", this.onPointerDown);
     this.menuRoot?.addEventListener("pointerdown", this.onPointerDown);
     window.addEventListener("click", this.swallowClickAfterDrag, true);
   }
+
+  dispose() {
+    this.endDrag();
+    this.host.removeEventListener("contextmenu", this.onContextMenu);
+    this.host.removeEventListener("pointerdown", this.onPointerDown);
+    this.menuRoot?.removeEventListener("pointerdown", this.onPointerDown);
+    window.removeEventListener("click", this.swallowClickAfterDrag, true);
+  }
+
+  private onContextMenu = (e: MouseEvent) => {
+    if (e.target !== this.host) return;
+    e.preventDefault();
+    showMenu(e.clientX, e.clientY, [
+      { label: FAVBAR_LABELS.addPath, iconClass: MENU_ICON.addPath, action: () => this.runMutation(() => this.addPath()) },
+      { label: FAVBAR_LABELS.addGroup, iconClass: MENU_ICON.addGroup, action: () => this.runMutation(() => this.addGroup()) },
+    ]);
+  };
 
   async init() {
     try {

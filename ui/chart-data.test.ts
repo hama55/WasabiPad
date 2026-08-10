@@ -39,12 +39,13 @@ describe("Feature: CSV chart data", () => {
 });
 
 describe("Feature: chart types", () => {
-  // Given: chart type idが`"bar-stacked"`と未知の`"pie"`
+  // Given: chart type idが`"bar-stacked"`と、未知の`"pie"`およびprototype由来の`"toString"`
   // When: `isChartTypeId`を呼ぶ
-  // Then: true、false
+  // Then: 登録済みだけtrue、未知値とprototype由来の値はfalse
   it("Scenario: rejects unknown type ids", () => {
     expect(isChartTypeId("bar-stacked")).toBe(true);
     expect(isChartTypeId("pie")).toBe(false);
+    expect(isChartTypeId("toString")).toBe(false);
   });
 
   // Given: `line-point`を100/1000点、`scatter`を1000点で描画
@@ -65,5 +66,27 @@ describe("Feature: chart types", () => {
     expect(result.labels).toHaveLength(2);
     expect(result.values).toEqual([2, 2]);
     expect(result.values.reduce((sum, count) => sum + count, 0)).toBe(4);
+  });
+
+  // Given: 空入力、数値でない入力、同じ値だけの入力
+  // When: ヒストグラム用データへ変換する
+  // Then: 空入力は空、定数値は1区間へ集計する
+  it("Scenario: histogram handles empty and constant input", () => {
+    expect(histogramData([])).toEqual({ labels: [], values: [] });
+    expect(histogramData(["memo", "-"])).toEqual({ labels: [], values: [] });
+    expect(histogramData(["-2.5", "-2.5", "-2.5"])).toEqual({
+      labels: ["-2.5"],
+      values: [3],
+    });
+  });
+
+  // Given: 50区間を超える件数の異なる数値
+  // When: ヒストグラム用データへ変換する
+  // Then: 区間数は最大50で、全数値を失わず集計する
+  it("Scenario: histogram caps bins without dropping values", () => {
+    const result = histogramData(Array.from({ length: 2_601 }, (_, index) => String(index)));
+
+    expect(result.labels).toHaveLength(50);
+    expect(result.values.reduce((sum, count) => sum + count, 0)).toBe(2_601);
   });
 });
