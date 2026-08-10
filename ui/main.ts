@@ -2,6 +2,7 @@
 // 文書の状態は DocumentController、画面の状態は各部品が持つ。
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { desktopDir } from "@tauri-apps/api/path";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import * as api from "./api";
 import { applyDocumentLoadProgress } from "./document-load-progress";
@@ -403,7 +404,6 @@ const doc: DocumentController = new DocumentController({
   setSidebar,
   setLoading,
   setTitle: (title) => windowChrome.setTitle(title),
-  notify: (text) => windowChrome.notify(text),
   onDocumentChange: (session, keepViewers = false) => syncPreviewDocument(session, !keepViewers),
   onSessionChange: (session) => {
     tabs?.syncActive(session);
@@ -629,6 +629,7 @@ tabs = new TabManager($("tabs"), doc, {
   onError: (error, message = "タブを操作できませんでした") => reportBackgroundError(message, error),
   onDetach: (request) => launchNewWindow(request),
   onOpenInNewWindow: (request) => launchNewWindow(request),
+  defaultMemoDirectory: desktopDir,
   revealInExplorer,
 }, {
   ...registeredCommandPorts,

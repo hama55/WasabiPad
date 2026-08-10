@@ -119,6 +119,15 @@ export function installDomStubs() {
     Range.prototype.getBoundingClientRect = zeroRect;
     Range.prototype.getClientRects = (() => Object.assign([], { item: () => null })) as never;
   }
+  if (typeof HTMLCanvasElement !== "undefined") {
+    Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
+      configurable: true,
+      value: () => ({
+        font: "",
+        measureText: (text: string) => ({ width: text.length * 8 }),
+      }),
+    });
+  }
 }
 
 // マイクロタスク/rAF に積まれた描画と IPC チェーンを待つ。

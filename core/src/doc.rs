@@ -659,7 +659,13 @@ impl Doc {
 
     // フォルダ内に空の新規ファイルを作り、その場で開く (サイドバーの「新規メモ作成」)。
     // rel_dir はフォルダルートからの相対パス(サブフォルダ見出しを右クリックした場合)。
-    pub fn create_note(&mut self, rel_dir: Option<&str>, name: &str) -> io::Result<DocInfo> {
+    pub fn create_note(
+        &mut self,
+        rel_dir: Option<&str>,
+        name: &str,
+        enc: Encoding,
+        eol: Eol,
+    ) -> io::Result<DocInfo> {
         crate::validate_windows_file_name(name)?;
         let root = self
             .source
@@ -680,6 +686,8 @@ impl Doc {
             }
         };
         d.source.root = Some(root);
+        d.enc = enc;
+        d.eol = eol;
         let path_str = path.to_string_lossy().into_owned();
         let info = match d.info(path_str) {
             Ok(info) => info,

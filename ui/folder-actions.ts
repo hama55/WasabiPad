@@ -1,6 +1,6 @@
 import * as api from "./api";
 import type { ContextTarget } from "./context-target";
-import { fileNameOf, type MemoSpec } from "./memo-name";
+import { fileNameOf } from "./memo-name";
 import type { DocumentSession } from "./session";
 import { showMenu, MenuItem } from "./menu";
 import type { confirmMessage, promptFields } from "./prompt";
@@ -12,6 +12,7 @@ import { MENU_ICON } from "./menu-icons";
 import { MENU_LABELS } from "./menu-labels";
 import { runAsyncBoundary } from "./async-boundary";
 import { reportErrorSafely } from "./report-error";
+import type { MemoCreationSpec } from "./document-controller";
 export { isImagePath } from "./image-formats";
 
 export interface FolderActionsPorts {
@@ -45,7 +46,7 @@ export interface FolderActionsServices {
 
 export interface FolderDocumentPort {
   readonly current: Readonly<DocumentSession>;
-  promptMemoSpec: (directory: string) => Promise<MemoSpec | null>;
+  promptMemoSpec: (directory: string) => Promise<MemoCreationSpec | null>;
   setSelectedRelPath: (relPath: string) => void;
   applyDocInfo: (info: api.DocInfo, keepViewers?: boolean, updateTree?: boolean) => void;
   applyRenamed: (info: api.DocInfo, selectedRelPath: string) => void;
@@ -170,7 +171,7 @@ export class FolderActions {
       return;
     }
     const directory = relDir ? joinWindowsRoot(root, relDir) : root;
-    let spec: MemoSpec | null;
+    let spec: MemoCreationSpec | null;
     try {
       spec = await this.doc.promptMemoSpec(directory);
     } catch (e) {
@@ -178,10 +179,10 @@ export class FolderActions {
       return;
     }
     if (!spec) return;
-    const name = fileNameOf(spec);
+    const name = fileNameOf(spec.memo);
     let info: api.DocInfo;
     try {
-      info = await this.services.api.createNote(relDir, name);
+      info = await this.services.api.createNote(relDir, name, spec.format.encoding, spec.format.eol);
     } catch (e) {
       await this.reportError("新規メモを作成できませんでした", e);
       return;

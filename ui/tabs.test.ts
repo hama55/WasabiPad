@@ -549,6 +549,45 @@ describe("Feature: TabManager", () => {
     expect(manager.state.tabs[2].kind).toBe("blank");
   });
 
+  // Feature: ＋から作る無題メモの既定保存先
+  // Scenario: カレントタブがフォルダの場合はフォルダを下書き保存先にする
+  // Given: C:\workのフォルダタブがアクティブ
+  // When: タブバーの＋を押す
+  // Then: 新規文書へC:\workを渡す
+  it("Scenario: フォルダタブから作る無題メモは同じフォルダを使う", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init({
+      tabs: [{ id: "folder", path: "C:\\work", kind: "folder", label: "work" }],
+      activeId: "folder",
+    }, null, null);
+
+    host.querySelector<HTMLButtonElement>(".doc-tab-add")!.click();
+    await vi.waitFor(() => expect(doc.newFile).toHaveBeenLastCalledWith(false, "C:\\work"));
+
+    expect(manager.state.tabs.at(-1)?.draftDirectory).toBe("C:\\work");
+  });
+
+  // Scenario: カレントタブがファイルの場合はデスクトップを下書き保存先にする
+  // Given: ファイルタブがアクティブで、デスクトップ取得口がC:\Users\sample\Desktopを返す
+  // When: タブバーの＋を押す
+  // Then: 新規文書へデスクトップを渡す
+  it("Scenario: ファイルタブから作る無題メモはデスクトップを使う", async () => {
+    const { doc, host } = fixture();
+    const defaultMemoDirectory = vi.fn(async () => "C:\\Users\\sample\\Desktop");
+    const manager = new TabManager(host, doc, {
+      onChange: () => {},
+      defaultMemoDirectory,
+    }, registeredCommandPorts);
+    await manager.init(stored, null, null);
+
+    host.querySelector<HTMLButtonElement>(".doc-tab-add")!.click();
+    await vi.waitFor(() => expect(doc.newFile).toHaveBeenLastCalledWith(false, "C:\\Users\\sample\\Desktop"));
+
+    expect(defaultMemoDirectory).toHaveBeenCalledOnce();
+    expect(manager.state.tabs.at(-1)?.draftDirectory).toBe("C:\\Users\\sample\\Desktop");
+  });
+
   // Given: activeId=a で a.txt と b.txt があり、addLinks に a.txt(file) と src(folder) を渡す
   // When: addLinks() を呼ぶ
   // Then: activeId は a のまま、path は [C:\work\a.txt,C:\work\b.txt,C:\work\src]、openPath は初期化時の1回だけ

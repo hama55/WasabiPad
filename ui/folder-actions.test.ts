@@ -14,7 +14,7 @@ import {
   type FolderDocumentPort,
 } from "./folder-actions";
 import type { RegisteredCommandMenuPorts } from "./registered-command-menu";
-import type { MemoSpec } from "./memo-name";
+import type { MemoCreationSpec } from "./document-controller";
 import { MENU_ICON } from "./menu-icons";
 
 vi.mock("./dialogs", () => ({ showError: vi.fn(async () => {}) }));
@@ -45,7 +45,7 @@ function fixture() {
   const expandAllFolder = vi.fn();
   const doc = {
     current: session,
-    promptMemoSpec: vi.fn(async (): Promise<MemoSpec | null> => null),
+    promptMemoSpec: vi.fn(async (): Promise<MemoCreationSpec | null> => null),
     setSelectedRelPath: vi.fn(),
     applyDocInfo: vi.fn(),
     applyRenamed: vi.fn(),
@@ -412,7 +412,10 @@ describe("Feature: FolderActions", () => {
       byte_len: 0,
       is_huge: false,
     } satisfies api.DocInfo;
-    doc.promptMemoSpec.mockResolvedValueOnce({ stem: "memo", extension: "txt" });
+    doc.promptMemoSpec.mockResolvedValueOnce({
+      memo: { stem: "memo", extension: "txt" },
+      format: { encoding: "utf8", eol: "crlf" },
+    });
     vi.spyOn(api, "createNote").mockResolvedValueOnce(docInfo);
     ports.sidebar.refreshFolderEntries.mockRejectedValueOnce(new Error("refresh failed"));
 
@@ -462,13 +465,16 @@ describe("Feature: FolderActions", () => {
       byte_len: 0,
       is_huge: false,
     } satisfies api.DocInfo;
-    doc.promptMemoSpec.mockResolvedValueOnce({ stem: "memo1", extension: "txt" });
+    doc.promptMemoSpec.mockResolvedValueOnce({
+      memo: { stem: "memo1", extension: "txt" },
+      format: { encoding: "sjis", eol: "lf" },
+    });
     vi.spyOn(api, "createNote").mockResolvedValueOnce(docInfo);
 
     await actions.createNote(null);
 
     expect(doc.promptMemoSpec).toHaveBeenCalledWith("C:\\work");
-    expect(api.createNote).toHaveBeenCalledWith(null, "memo1.txt");
+    expect(api.createNote).toHaveBeenCalledWith(null, "memo1.txt", "sjis", "lf");
     expect(doc.setSelectedRelPath).toHaveBeenCalledWith("memo1.txt");
   });
 });

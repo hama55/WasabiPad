@@ -15,6 +15,7 @@ describe("Feature: 保存タブの検証", () => {
   // Then: 正しいタブだけを受理する
   it("Scenario: 正しいStoredTabを受理する", () => {
     expect(isStoredTab(tab({
+      draftDirectory: "C:\\Users\\sample\\Desktop",
       goto: { line: 2, col: 3 },
       selectedRelPath: "memo.txt",
       selectedLine: 2,
@@ -26,6 +27,7 @@ describe("Feature: 保存タブの検証", () => {
   // Then: 不正なタブを拒否する
   it("Scenario: 整数でない位置や未知のkindを拒否する", () => {
     expect(isStoredTab(tab({ goto: { line: -1, col: 0 } }))).toBe(false);
+    expect(isStoredTab(tab({ draftDirectory: 1 }))).toBe(false);
     expect(isStoredTab(tab({ selectedLine: Number.NaN }))).toBe(false);
     expect(isStoredTab(tab({ kind: "unknown" }))).toBe(false);
   });

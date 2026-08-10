@@ -6,6 +6,7 @@ export interface StoredTab {
   path: string | null;
   kind: "file" | "folder" | "blank";
   label: string;
+  draftDirectory?: string;
   goto?: Pos;
   viewState?: EditorViewState;
   selectedRelPath?: string;
@@ -35,6 +36,7 @@ export function isStoredTab(value: unknown): value is StoredTab {
     && (typeof candidate.path === "string" || candidate.path === null)
     && (candidate.kind === "file" || candidate.kind === "folder" || candidate.kind === "blank")
     && typeof candidate.label === "string"
+    && (!("draftDirectory" in candidate) || candidate.draftDirectory === undefined || typeof candidate.draftDirectory === "string")
     && (!("goto" in candidate) || candidate.goto === undefined || isPos(candidate.goto))
     && (!("selectedRelPath" in candidate) || candidate.selectedRelPath === undefined || typeof candidate.selectedRelPath === "string")
     && (!("selectedLine" in candidate) || candidate.selectedLine === undefined

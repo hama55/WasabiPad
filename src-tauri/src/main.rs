@@ -170,8 +170,14 @@ fn workspace_search_cancel(
 }
 
 #[tauri::command]
-fn create_note(dir: Option<String>, name: String, state: State) -> Result<DocInfo, String> {
-    document::create_note(dir, name, state)
+fn create_note(
+    dir: Option<String>,
+    name: String,
+    enc: EncodingId,
+    eol: Eol,
+    state: State,
+) -> Result<DocInfo, String> {
+    document::create_note(dir, name, enc, eol, state)
 }
 
 #[tauri::command]

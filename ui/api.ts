@@ -106,8 +106,8 @@ export const workspaceSearchCancel = (searchId: number) =>
   invoke<void>(IPC_COMMANDS.workspaceSearchCancel, { searchId });
 
 // フォルダ内に空の新規ファイルを作り、その場で開く (dir はフォルダルートからの相対パス)
-export const createNote = (dir: string | null, name: string) =>
-  invoke<DocInfo>(IPC_COMMANDS.createNote, { dir, name });
+export const createNote = (dir: string | null, name: string, enc: Encoding, eol: Eol) =>
+  invoke<DocInfo>(IPC_COMMANDS.createNote, { dir, name, enc, eol });
 
 // サイドバー上のファイル/フォルダをリネームする (relPath はフォルダルートからの相対パス)
 export const renameEntry = (relPath: string, newName: string) =>

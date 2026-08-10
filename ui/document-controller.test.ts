@@ -76,7 +76,6 @@ function fakeView() {
     setSidebar: vi.fn(),
     setLoading: vi.fn(),
     setTitle: vi.fn(),
-    notify: vi.fn(),
     onDocumentChange: vi.fn(),
     hideExternalBanner: vi.fn(),
     pickSavePath: vi.fn(async (): Promise<string | null> => null),
@@ -147,21 +146,26 @@ describe("Feature: DocumentController", () => {
   });
 
   // Feature: 新規メモ入力
-  // Scenario: 新規メモの名前と拡張子を入力する
-  // Given: promptFieldsが名前と拡張子を返す
+  // Scenario: 新規メモの名前・拡張子・保存形式を入力する
+  // Given: promptFieldsが名前と拡張子と保存形式を返す
   // When: promptMemoSpecを呼ぶ
-  // Then: 名前をtrimしてMemoSpecへ変換し、拡張子候補を共有する
+  // Then: 名前をtrimしてMemoCreationSpecへ変換し、拡張子と保存形式の候補を共有する
   it("Scenario: 新規メモの入力項目を共通定義から組み立てる", async () => {
     const { view } = fakeView();
-    const promptFieldsMock = vi.fn(async (..._args: Parameters<typeof promptFields>) => [" memo ", "md"]);
+    const promptFieldsMock = vi.fn(async (..._args: Parameters<typeof promptFields>) => [" memo ", "md", "sjis", "lf"]);
     const controller = new DocumentController(view, { ...services(), promptFields: promptFieldsMock });
 
-    await expect(controller.promptMemoSpec()).resolves.toEqual({ stem: "memo", extension: "md" });
+    await expect(controller.promptMemoSpec()).resolves.toEqual({
+      memo: { stem: "memo", extension: "md" },
+      format: { encoding: "sjis", eol: "lf" },
+    });
     expect(promptFieldsMock).toHaveBeenCalledOnce();
     expect(promptFieldsMock.mock.calls[0][0]).toBe("新規メモ作成");
     expect(promptFieldsMock.mock.calls[0][1]).toEqual(expect.arrayContaining([
       expect.objectContaining({ label: "ファイル名", value: "memo" }),
       expect.objectContaining({ label: "拡張子", value: "txt" }),
+      expect.objectContaining({ label: "文字コード", value: "utf8" }),
+      expect.objectContaining({ label: "改行コード", value: "crlf" }),
     ]));
     expect(promptFieldsMock.mock.calls[0][2]).toEqual({});
   });
@@ -184,13 +188,40 @@ describe("Feature: DocumentController", () => {
       const setValue = (index: number, value: string) => { fields[index].value = value; };
       await fields[1].onChange?.("md", ["memo1", "md"], setValue);
       expect(fields[0].value).toBe("memo");
-      return ["memo", "md"];
+      return ["memo", "md", "utf8", "crlf"];
     });
     const controller = new DocumentController(view, { ...services(), promptFields: promptFieldsMock });
 
-    await expect(controller.promptMemoSpec("C:\\work")).resolves.toEqual({ stem: "memo", extension: "md" });
+    await expect(controller.promptMemoSpec("C:\\work")).resolves.toEqual({
+      memo: { stem: "memo", extension: "md" },
+      format: { encoding: "utf8", eol: "crlf" },
+    });
     expect(nextMemoPath).toHaveBeenNthCalledWith(1, "C:\\work", "memo", "txt");
     expect(nextMemoPath).toHaveBeenNthCalledWith(2, "C:\\work", "memo", "md");
+  });
+
+  // Feature: 無題メモの既定保存先
+  // Scenario: 下書き保存先を保存ダイアログの既定ファイルへ反映する
+  // Given: 新規文書の下書き保存先がデスクトップ
+  // When: 無題文書を保存する
+  // Then: memo.txtの既定パスがデスクトップ配下になる
+  it("Scenario: 無題メモの既定保存先を保存ダイアログへ渡す", async () => {
+    const { view } = fakeView();
+    const newDoc = vi.fn(async () => {});
+    const promptFieldsMock = vi.fn(async (..._args: Parameters<typeof promptFields>) => [
+      "memo", "txt", "utf8", "crlf",
+    ]);
+    const saveFile = vi.spyOn(api, "saveFile").mockResolvedValueOnce({ kind: "saved" });
+    const controller = new DocumentController(view, {
+      ...services(),
+      api: { ...api, newDoc, saveFile },
+      promptFields: promptFieldsMock,
+    });
+    await controller.newFile(false, "C:\\Users\\sample\\Desktop");
+    view.pickSavePath.mockResolvedValueOnce("C:\\Users\\sample\\Desktop\\memo.txt");
+
+    expect(await controller.saveAs()).toBe(true);
+    expect(view.pickSavePath).toHaveBeenCalledWith("C:\\Users\\sample\\Desktop\\memo.txt");
   });
 
   // Feature: フォルダ内の無題メモ保存

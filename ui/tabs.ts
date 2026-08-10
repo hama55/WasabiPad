@@ -18,7 +18,7 @@ export interface TabDocumentPort {
   confirmDiscard: (onProceed?: () => void | Promise<void>) => Promise<boolean>;
   openPath: (path: string, confirm?: boolean) => Promise<boolean>;
   selectEntry: (relPath: string) => Promise<boolean>;
-  newFile: (confirm?: boolean) => Promise<void>;
+  newFile: (confirm?: boolean, draftDirectory?: string | null) => Promise<void>;
   goTo: (position: Pos) => void;
   captureViewState: () => EditorViewState;
   restoreViewState: (state: EditorViewState) => Promise<void>;
@@ -30,6 +30,7 @@ interface TabPorts {
   onError?: (error: unknown, message?: string) => void | Promise<void>;
   onDetach?: (request: WindowRequest) => Promise<boolean>;
   onOpenInNewWindow?: (request: WindowRequest) => Promise<boolean>;
+  defaultMemoDirectory?: () => Promise<string>;
   onHistoryChange?: (state: NavigationState) => void;
   revealInExplorer?: (path: string, isDir: boolean) => void | Promise<unknown>;
 }
@@ -119,9 +120,10 @@ export class TabManager {
     tab.path = session.folderRoot ?? session.savePath ?? (session.readOnly ? session.displayPath : null);
     tab.kind = session.folderRoot ? "folder" : tab.path ? "file" : "blank";
     tab.label = tab.kind === "blank" ? "無題" : basename(tab.path!);
+    if (tab.kind !== "blank") delete tab.draftDirectory;
     tab.selectedRelPath = session.selectedRelPath || undefined;
     if (tab.kind !== "folder" || !tab.selectedRelPath) delete tab.selectedLine;
-    // 保存完了通知はタブ切替処理の途中でも届く。ここでDOMを作り直すと、
+    // セッション変更通知はタブ切替処理の途中でも届く。ここでDOMを作り直すと、
     // 選択元のクリック処理がまだ継続中なのに操作対象だけが差し替わる。
     if (this.transitionTarget || this.navigationInProgress) return;
     this.render();
@@ -139,7 +141,11 @@ export class TabManager {
   }
 
   async newBlank() {
-    await this.addAndActivate(this.link(null));
+    const active = this.active();
+    const draftDirectory = active?.kind === "folder" && active.path
+      ? active.path
+      : await this.ports.defaultMemoDirectory?.() ?? null;
+    await this.addAndActivate(this.link(null, undefined, draftDirectory));
   }
 
   async open(path: string, goto?: Pos) {
@@ -460,7 +466,7 @@ export class TabManager {
           tab.path = null;
           tab.kind = "blank";
           tab.label = "無題";
-          await this.doc.newFile(false);
+          await this.doc.newFile(false, tab.draftDirectory ?? null);
         } else if (rememberedRelPath) {
           try {
             selectionRestored = (await this.doc.selectEntry(rememberedRelPath)) === true;
@@ -484,7 +490,7 @@ export class TabManager {
           await this.doc.restoreViewState(tab.viewState);
         }
       } else {
-        await this.doc.newFile(false);
+        await this.doc.newFile(false, tab.draftDirectory ?? null);
         if (tab.viewState) await this.doc.restoreViewState(tab.viewState);
       }
     } finally {
@@ -510,12 +516,13 @@ export class TabManager {
     return this.tabs.find((tab) => tab.id === this.activeId);
   }
 
-  private link(path: string | null, goto?: Pos): StoredTab {
+  private link(path: string | null, goto?: Pos, draftDirectory?: string | null): StoredTab {
     return {
       id: newId(),
       path,
       kind: path ? "file" : "blank",
       label: path ? basename(path) : "無題",
+      ...(draftDirectory ? { draftDirectory } : {}),
       goto,
     };
   }

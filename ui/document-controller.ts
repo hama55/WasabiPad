@@ -19,6 +19,11 @@ export const SAVE_EXTENSIONS = [
   { name: "ログ", extension: "log" },
 ] as const;
 
+export interface MemoCreationSpec {
+  memo: MemoSpec;
+  format: SaveFormat;
+}
+
 const DEFAULT_MEMO_STEM = "memo";
 const DEFAULT_MEMO_EXTENSION = SAVE_EXTENSIONS[0].extension;
 
@@ -77,7 +82,6 @@ export interface DocumentView {
   setSidebar: (on: boolean, label?: string) => void;
   setLoading: (active: boolean, message?: string) => void;
   setTitle: (title: string) => void;
-  notify: (text: string) => void;
   onDocumentChange?: (session: Readonly<DocumentSession>, keepViewers?: boolean) => void;
   onSessionChange?: (session: Readonly<DocumentSession>) => void;
   hideExternalBanner: () => void;
@@ -90,6 +94,7 @@ export interface DocumentView {
 export class DocumentController {
   private session = initialSession();
   private loadRequest = 0;
+  private draftDirectory: string | null = null;
 
   constructor(
     private view: DocumentView,
@@ -223,7 +228,7 @@ export class DocumentController {
     }
   }
 
-  async newFile(confirm = true) {
+  async newFile(confirm = true, draftDirectory: string | null = null) {
     if (confirm && !(await this.confirmDiscard())) return;
     const request = ++this.loadRequest;
     try {
@@ -234,6 +239,7 @@ export class DocumentController {
     }
     if (request !== this.loadRequest) return;
     this.session = initialSession();
+    this.draftDirectory = draftDirectory;
     this.view.statusbar.setFormat(this.session);
     this.view.statusbar.setByteSize(null);
     this.view.statusbar.setLineCount(1);
@@ -279,6 +285,7 @@ export class DocumentController {
         const spec = await this.promptNewMemoSave();
         if (!spec) return false;
         defaultPath = fileNameOf(spec.memo);
+        if (this.draftDirectory) defaultPath = joinWindowsRoot(this.draftDirectory, defaultPath);
         newMemoFormat = spec.format;
       }
       const path = await this.view.pickSavePath(defaultPath);
@@ -289,7 +296,7 @@ export class DocumentController {
     }
   }
 
-  // 別名保存だけが保存形式の決定点。以降の上書き保存はここで決めた形式を使い回す。
+  // 新規メモ作成・別名保存が保存形式の決定点。以降の上書き保存はここで決めた形式を使い回す。
   private async saveAsTo(
     path: string,
     folderDraftRoot: string | null = null,
@@ -362,7 +369,6 @@ export class DocumentController {
       this.view.addressbar.render(path);
       this.view.statusbar.setFormat(this.session);
       this.updateTitle();
-      this.view.notify("保存しました");
     } catch (error) {
       await this.reportError("保存後の画面更新に失敗しました", error);
     }
@@ -473,10 +479,19 @@ export class DocumentController {
     ], this.memoPromptOptions(directory));
   }
 
-  async promptMemoSpec(directory: string | null = null): Promise<MemoSpec | null> {
-    const result = await this.promptMemoValues("新規メモ作成", directory);
+  async promptMemoSpec(directory: string | null = null): Promise<MemoCreationSpec | null> {
+    const result = await this.promptMemoValues(
+      "新規メモ作成",
+      directory,
+      this.services.saveFormatFields(this.session),
+    );
     const enteredStem = result?.[0].trim();
-    return enteredStem ? { stem: enteredStem, extension: result![1] } : null;
+    return enteredStem
+      ? {
+          memo: { stem: enteredStem, extension: result![1] },
+          format: this.services.saveFormatFromValues(result!, 2),
+        }
+      : null;
   }
 
   private async promptNewMemoSave(directory: string | null = null): Promise<{ memo: MemoSpec; format: SaveFormat } | null> {

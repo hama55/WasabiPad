@@ -94,9 +94,11 @@ pub(crate) fn list_folder_entries(
 pub(crate) fn create_note(
     dir: Option<String>,
     name: String,
+    enc: EncodingId,
+    eol: Eol,
     state: State,
 ) -> Result<DocInfo, String> {
-    with_doc(&state, |doc| doc.create_note(dir.as_deref(), &name))?
+    with_doc(&state, |doc| doc.create_note(dir.as_deref(), &name, enc.into(), eol))?
         .map_err(|e| e.to_string())
 }
 
