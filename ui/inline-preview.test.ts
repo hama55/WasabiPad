@@ -74,7 +74,7 @@ describe("Feature: inline preview", () => {
   });
 
   // Given: 右側プレビューが表示形式の選択を持つ
-  // When: 未登録の形式を選択した通知を親へ送る
+  // When: 未登録の形式（unknown）を選択した通知を親へ送る
   // Then: 親側の形式切替処理を呼ばない
   it("Scenario: ignores an unregistered preview format", () => {
     const onFormatChange = vi.fn();
@@ -84,7 +84,7 @@ describe("Feature: inline preview", () => {
     window.dispatchEvent(new MessageEvent("message", {
       source: frame.contentWindow,
       origin: window.location.origin,
-      data: { type: INLINE_PREVIEW_MESSAGES.FORMAT_CHANGE_MESSAGE, format: "html" },
+      data: { type: INLINE_PREVIEW_MESSAGES.FORMAT_CHANGE_MESSAGE, format: "unknown" },
     }));
 
     expect(onFormatChange).not.toHaveBeenCalled();

@@ -4,6 +4,8 @@ import { comparePos as cmp } from "./editor-math";
 import {
   newlineWithLeadingTabs,
   planLineIndent,
+  planLineUnindent,
+  selectedLineRangeForUnindent,
 } from "./editor-edit-plan";
 import { LineCache } from "./line-cache";
 import { blockRangeForLine, Selection } from "./selection";
@@ -179,6 +181,32 @@ export class EditorMutationController {
     return this.run(async () => {
       const caret = { ...selection.caret };
       const result = await this.ports.doc.editMany(plan.edits, caret, plan.primaryIndex);
+      this.ports.applyResult(
+        { caret: plan.nextCaret, line_count: result.line_count },
+        plan.fromLine,
+        plan.edits,
+      );
+      selection.anchor = plan.nextAnchor;
+      selection.caret = plan.nextCaret;
+      await this.ports.renderAfterEdit();
+    });
+  }
+
+  unindentSelection(): Promise<void> {
+    if (this.ports.isReadOnly()) return Promise.resolve();
+    const selection = this.ports.selection;
+    const block = selection.blockBounds();
+    const range = block
+      ? { first: block.first, last: block.last }
+      : selectedLineRangeForUnindent(selection.anchor, selection.caret);
+    return this.run(async () => {
+      const lines: string[] = [];
+      for (let line = range.first; line <= range.last; line += 1) {
+        lines.push(await this.ports.lineCache.line(line));
+      }
+      const plan = planLineUnindent(selection.anchor, selection.caret, lines, range);
+      if (!plan) return;
+      const result = await this.ports.doc.editMany(plan.edits, selection.caret, plan.primaryIndex);
       this.ports.applyResult(
         { caret: plan.nextCaret, line_count: result.line_count },
         plan.fromLine,

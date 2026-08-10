@@ -276,8 +276,6 @@ window.addEventListener("storage", (event) => {
 
 const addressbar = new AddressBar($("topbar"), {
   onOpen: (path, newTab) => runBackground("開けませんでした", () => openPathInTabs(tabs, path, newTab)),
-  onBack: () => runBackground("戻れませんでした", () => tabs.goBack()),
-  onForward: () => runBackground("進めませんでした", () => tabs.goForward()),
   onSave: () => runBackground("保存できませんでした", () => doc.save()),
   onSaveAs: () => runBackground("名前を付けて保存できませんでした", () => doc.saveAs()),
   onNew: () => runBackground("新規ウィンドウを開けませんでした", launchNewWindow),
@@ -451,7 +449,6 @@ window.addEventListener("beforeunload", () => {
   externalWindowListener.dispose();
   dragDropListener.dispose();
   windowChrome.dispose();
-  addressbar.dispose();
   externalWatch.dispose();
 });
 
@@ -629,7 +626,6 @@ tabs = new TabManager($("tabs"), doc, {
   onChange: (state) => {
     if (!secondaryInstance) setSetting("openTabs", state);
   },
-  onHistoryChange: (state) => addressbar.setNavigationState(state),
   onError: (error, message = "タブを操作できませんでした") => reportBackgroundError(message, error),
   onDetach: (request) => launchNewWindow(request),
   revealInExplorer,

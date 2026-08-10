@@ -11,6 +11,8 @@ export const MENU_ICON = {
   csv: "menu-icon-csv",
   markdown: "menu-icon-markdown",
   image: "menu-icon-image",
+  pdf: "menu-icon-pdf",
+  html: "menu-icon-html",
   external: "menu-icon-external",
   newTab: "menu-icon-new-tab",
   newWindow: "menu-icon-new-window",

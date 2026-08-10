@@ -15,6 +15,15 @@ struct OpenAsInfo {
 extern "system" {
     #[link_name = "SHOpenWithDialog"]
     fn sh_open_with_dialog(parent: *mut std::ffi::c_void, info: *const OpenAsInfo) -> i32;
+    #[link_name = "ShellExecuteW"]
+    fn shell_execute_w(
+        hwnd: *mut std::ffi::c_void,
+        operation: *const u16,
+        file: *const u16,
+        parameters: *const u16,
+        directory: *const u16,
+        show_command: i32,
+    ) -> isize;
 }
 
 fn explorer_args(path: &str, is_dir: bool) -> Result<Vec<String>, String> {
@@ -66,6 +75,52 @@ pub(crate) fn open_in_other_app(path: String) -> Result<(), String> {
         } else {
             Err(format!(
                 "アプリ選択画面を開けませんでした (HRESULT: 0x{result:08X})"
+            ))
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = path;
+        Err("この機能はWindowsでのみ使用できます".to_string())
+    }
+}
+
+pub(crate) fn open_in_default_browser(path: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::ffi::OsStrExt;
+
+        let target = PathBuf::from(path);
+        let extension = target.extension().and_then(|value| value.to_str());
+        if !target.is_file()
+            || !matches!(
+                extension.map(str::to_ascii_lowercase).as_deref(),
+                Some("html" | "htm")
+            )
+        {
+            return Err("HTMLファイルが見つかりません".to_string());
+        }
+        let operation: Vec<u16> = "open".encode_utf16().chain(std::iter::once(0)).collect();
+        let wide: Vec<u16> = target
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let result = unsafe {
+            shell_execute_w(
+                std::ptr::null_mut(),
+                operation.as_ptr(),
+                wide.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                1,
+            )
+        };
+        if result > 32 {
+            Ok(())
+        } else {
+            Err(format!(
+                "既定のブラウザで開けませんでした (HRESULT: 0x{result:08X})"
             ))
         }
     }

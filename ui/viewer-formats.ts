@@ -47,6 +47,26 @@ export const VIEWER_FORMATS: Record<ViewerFormat, ViewerFormatSpec> = {
     supportsDelimiter: false,
     supportsChart: false,
   },
+  pdf: {
+    id: "pdf",
+    label: "PDFビュー",
+    title: "PDF",
+    previewOrder: 3,
+    iconClass: MENU_ICON.pdf,
+    extensions: [".pdf"],
+    supportsDelimiter: false,
+    supportsChart: false,
+  },
+  html: {
+    id: "html",
+    label: "html(静的)",
+    title: "html(静的)",
+    previewOrder: 4,
+    iconClass: MENU_ICON.html,
+    extensions: [".html", ".htm"],
+    supportsDelimiter: false,
+    supportsChart: false,
+  },
 };
 
 export function isViewerFormat(value: unknown): value is ViewerFormat {

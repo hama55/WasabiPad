@@ -13,3 +13,10 @@ export function createViewerDelimiterMenuItem(onClick: () => void): HTMLButtonEl
   item.addEventListener("click", onClick);
   return item;
 }
+
+export function createViewerBrowserMenuItem(onClick: () => void): HTMLButtonElement {
+  const item = document.createElement("button");
+  item.append(createMenuIcon(MENU_ICON.external), document.createTextNode("規定のブラウザで表示"));
+  item.addEventListener("click", onClick);
+  return item;
+}

@@ -81,12 +81,12 @@ describe("Feature: CSV viewer helpers", () => {
     ]);
   });
 
-  // Given: 列幅48pxのCSV列
+  // Given: 列幅12pxのCSV列
   // When: 列幅を左右へドラッグする
   // Then: 最小幅を下回らず、整数pxで反映する
   it("Scenario: column resize keeps the minimum width", () => {
     expect(resizedCsvColumnWidth(80, 23.4)).toBe(103);
-    expect(resizedCsvColumnWidth(80, -50)).toBe(48);
+    expect(resizedCsvColumnWidth(80, -200)).toBe(12);
   });
 
   // Given: CSV/TSV表示の行番号列

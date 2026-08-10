@@ -5,9 +5,9 @@ import { VIEWER_FORMATS } from "./viewer-formats";
 import { createViewerFormatButtons, syncViewerFormatButtons } from "./viewer-format-buttons";
 
 describe("Feature: viewer format buttons", () => {
-  // Given: 表示形式ボタンの置き場と3形式の選択通知
-  // When: ボタンを生成して3形式を順に押す
-  // Then: レジストリの表示順Markdown→CSV→Imageで表示し、各形式を通知する
+  // Given: 表示形式ボタンの置き場と5形式の選択通知
+  // When: ボタンを生成して5形式を順に押す
+  // Then: レジストリの表示順Markdown→CSV→Image→PDF→html(静的)で表示し、各形式を通知する
   it("Scenario: 表示形式をボタンの並びから選択する", () => {
     const host = document.createElement("div");
     const onSelect = vi.fn();
@@ -15,17 +15,17 @@ describe("Feature: viewer format buttons", () => {
 
     const buttons = [...host.querySelectorAll<HTMLButtonElement>("button")];
     expect(buttons.map((button) => button.textContent)).toEqual([
-      "Markdown", "CSV", "Image",
+      "Markdown", "CSV", "Image", "PDF", "html(静的)",
     ]);
-    expect(buttons.map((button) => button.type)).toEqual(["button", "button", "button"]);
+    expect(buttons.map((button) => button.type)).toEqual(["button", "button", "button", "button", "button"]);
     buttons.forEach((button) => button.click());
-    expect(onSelect.mock.calls).toEqual([["markdown"], ["csv"], ["image"]]);
+    expect(onSelect.mock.calls).toEqual([["markdown"], ["csv"], ["image"], ["pdf"], ["html"]]);
 
     syncViewerFormatButtons(host, "csv");
     expect(buttons[1].getAttribute("aria-pressed")).toBe("true");
     expect(buttons[0].getAttribute("aria-pressed")).toBe("false");
     expect([...Object.values(VIEWER_FORMATS)].sort((left, right) => left.previewOrder - right.previewOrder)
-      .map((spec) => spec.id)).toEqual(["markdown", "csv", "image"]);
+      .map((spec) => spec.id)).toEqual(["markdown", "csv", "image", "pdf", "html"]);
   });
 
   // Given: viewer.htmlのタイトルバー

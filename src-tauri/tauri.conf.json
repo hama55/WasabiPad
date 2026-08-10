@@ -31,12 +31,14 @@
         "default-src": "'self' customprotocol: asset:",
         "connect-src": "ipc: http://ipc.localhost",
         "img-src": "'self' asset: http://asset.localhost blob: data:",
+        "frame-src": "'self' asset: http://asset.localhost blob:",
         "style-src": "'self' 'unsafe-inline'"
       },
       "devCsp": {
         "default-src": "'self' http://localhost:5173",
         "connect-src": "ipc: http://ipc.localhost http://localhost:5173 ws://localhost:5173",
         "img-src": "'self' asset: http://asset.localhost blob: data:",
+        "frame-src": "'self' asset: http://asset.localhost blob:",
         "style-src": "'self' 'unsafe-inline'"
       }
     }

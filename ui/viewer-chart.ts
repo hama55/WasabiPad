@@ -1,16 +1,18 @@
-import Chart from "chart.js/auto";
+import Chart, { type ChartDataset } from "chart.js/auto";
 import {
   chartColumnLabel,
   chartPointRadius,
   CHART_TYPES,
   DEFAULT_CHART_TYPE,
   isChartTypeId,
+  histogramData,
   numericColumnIndexes,
   parseChartNumber,
   type ChartTypeId,
 } from "./chart-data";
 
 type ChartInstance = Chart<"line" | "bar", (number | null)[], string>;
+type ViewerChartDataset = ChartDataset<"line" | "bar", (number | null)[]> & { columnIndex: number };
 
 interface ChartColumns {
   x: number;
@@ -118,8 +120,16 @@ export class ViewerChartController {
         if (check.disabled) check.checked = false;
       });
     };
+    const updateType = () => {
+      const requiresY = !isChartTypeId(typeSelect.value) || CHART_TYPES[typeSelect.value].requiresY !== false;
+      yTitle.hidden = !requiresY;
+      yGrid.hidden = !requiresY;
+      if (!requiresY) error.textContent = "";
+    };
     xSelect.addEventListener("change", updateChecks);
+    typeSelect.addEventListener("change", updateType);
     updateChecks();
+    updateType();
 
     const buttons = document.createElement("div");
     buttons.className = "viewer-dialog-buttons";
@@ -152,12 +162,17 @@ export class ViewerChartController {
     window.addEventListener("keydown", onKey, true);
     create.addEventListener("click", () => {
       const y = checks.filter((check) => check.checked).map((check) => Number(check.value));
-      if (!y.length) {
+      const type = isChartTypeId(typeSelect.value) ? typeSelect.value : DEFAULT_CHART_TYPE;
+      if (CHART_TYPES[type].requiresY !== false && !y.length) {
         error.textContent = "Y軸を1列以上選択してください";
         return;
       }
-      const type = isChartTypeId(typeSelect.value) ? typeSelect.value : DEFAULT_CHART_TYPE;
-      this.columns = { x: Number(xSelect.value), y, reverseX: reverseInput.checked, type };
+      this.columns = {
+        x: Number(xSelect.value),
+        y: CHART_TYPES[type].requiresY === false ? [] : y,
+        reverseX: reverseInput.checked,
+        type,
+      };
       finish();
       this.options.run(() => this.render());
     });
@@ -178,27 +193,45 @@ export class ViewerChartController {
     });
 
     const spec = CHART_TYPES[this.columns.type];
-    const datasets = this.columns.y.map((column, index) => {
-      const color = ["#4fc3f7", "#ffb74d", "#81c784", "#e57373", "#ba68c8", "#fff176", "#4dd0e1", "#f06292"][index % 8];
-      return {
-        label: chartColumnLabel(headers, column),
-        data: rows.map((row) => parseChartNumber(row[column] ?? "")),
-        borderColor: color,
-        backgroundColor: spec.fill ? `${color}55` : color,
-        pointRadius: chartPointRadius(spec, rows.length),
-        borderWidth: 2,
-        spanGaps: false,
-        showLine: spec.showLine,
-        stepped: spec.stepped ?? false,
-        fill: spec.fill ?? false,
-        columnIndex: column,
-        hidden: hidden.get(column) ?? false,
-      };
-    });
-    const labels = rows.map((row) => row[this.columns!.x] ?? "");
+    const color = (index: number) => ["#4fc3f7", "#ffb74d", "#81c784", "#e57373", "#ba68c8", "#fff176", "#4dd0e1", "#f06292"][index % 8];
+    let labels: string[];
+    let datasets: ViewerChartDataset[];
+    if (spec.histogram) {
+      const histogram = histogramData(rows.map((row) => row[this.columns!.x] ?? ""));
+      labels = histogram.labels;
+      const histogramColor = color(0);
+      datasets = [{
+        label: chartColumnLabel(headers, this.columns.x),
+        data: histogram.values,
+        borderColor: histogramColor,
+        backgroundColor: `${histogramColor}99`,
+        borderWidth: 1,
+        columnIndex: this.columns.x,
+        hidden: hidden.get(this.columns.x) ?? false,
+      }];
+    } else {
+      datasets = this.columns.y.map((column, index) => {
+        const datasetColor = color(index);
+        return {
+          label: chartColumnLabel(headers, column),
+          data: rows.map((row) => parseChartNumber(row[column] ?? "")),
+          borderColor: datasetColor,
+          backgroundColor: spec.fill ? `${datasetColor}55` : datasetColor,
+          pointRadius: chartPointRadius(spec, rows.length),
+          borderWidth: 2,
+          spanGaps: false,
+          showLine: spec.showLine,
+          stepped: spec.stepped ?? false,
+          fill: spec.fill ?? false,
+          columnIndex: column,
+          hidden: hidden.get(column) ?? false,
+        };
+      });
+      labels = rows.map((row) => row[this.columns!.x] ?? "");
+    }
 
     this.chart?.destroy();
-    this.chart = new Chart(this.options.canvas, {
+    this.chart = new Chart<"line" | "bar", (number | null)[], string>(this.options.canvas, {
       type: spec.base,
       data: { labels, datasets },
       options: {
@@ -213,7 +246,9 @@ export class ViewerChartController {
         },
       },
     });
-    this.options.title.textContent = `${spec.label}: ${chartColumnLabel(headers, this.columns.x)} × ${this.columns.y.map((column) => chartColumnLabel(headers, column)).join(", ")}`;
+    this.options.title.textContent = `${spec.label}: ${chartColumnLabel(headers, this.columns.x)}${
+      spec.requiresY === false ? "" : ` × ${this.columns.y.map((column) => chartColumnLabel(headers, column)).join(", ")}`
+    }`;
     this.options.content.hidden = true;
     this.options.panel.hidden = false;
   }

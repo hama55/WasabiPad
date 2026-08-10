@@ -14,6 +14,7 @@ function makePorts() {
     onMove: vi.fn(),
     onDetach: vi.fn(),
     onError: vi.fn(),
+    revealInExplorer: vi.fn(),
     registeredCommandPorts: {} as RegisteredCommandMenuPorts,
   };
 }
@@ -45,8 +46,8 @@ describe("Feature: TabBarView", () => {
 
   // Given: 描画済みのタブ
   // When: タブを中クリックする
-  // Then: close操作だけを親へ通知する
-  it("Scenario: 中クリックをタブクローズ操作へ委譲する", async () => {
+  // Then: タブのパスをエクスプローラで開く操作だけを親へ通知する
+  it("Scenario: 中クリックをエクスプローラ表示へ委譲する", async () => {
     const host = document.createElement("div");
     const ports = makePorts();
     const view = new TabBarView(host, ports);
@@ -56,9 +57,12 @@ describe("Feature: TabBarView", () => {
       dirty: false,
     });
 
-    host.querySelector<HTMLElement>(".doc-tab")!.dispatchEvent(new MouseEvent("auxclick", { button: 1, bubbles: true }));
+    host.querySelector<HTMLElement>(".doc-tab")!.dispatchEvent(new MouseEvent("auxclick", {
+      button: 1, bubbles: true, cancelable: true,
+    }));
 
-    await vi.waitFor(() => expect(ports.onClose).toHaveBeenCalledWith("file"));
+    await vi.waitFor(() => expect(ports.revealInExplorer).toHaveBeenCalledWith("C:/memo.md", false));
+    expect(ports.onClose).not.toHaveBeenCalled();
     expect(ports.onActivate).not.toHaveBeenCalled();
   });
 });

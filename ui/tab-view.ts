@@ -61,7 +61,11 @@ export class TabBarView {
         else this.run(() => this.ports.onActivate(tab.id));
       });
       button.addEventListener("auxclick", (event) => {
-        if (isMiddleClick(event)) this.run(() => this.ports.onClose(tab.id));
+        if (!isMiddleClick(event)) return;
+        event.preventDefault();
+        if (tab.path && this.ports.revealInExplorer) {
+          this.run(() => this.ports.revealInExplorer!(tab.path!, tab.kind === "folder"), "エクスプローラで開けませんでした");
+        }
       });
       button.addEventListener("contextmenu", (event) => {
         event.preventDefault();

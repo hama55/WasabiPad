@@ -127,6 +127,8 @@ export const revealInExplorer = (path: string, isDir: boolean) =>
 
 export const openInOtherApp = (path: string) =>
   invoke<void>(IPC_COMMANDS.openInOtherApp, { path });
+export const openInDefaultBrowser = (path: string) =>
+  invoke<void>(IPC_COMMANDS.openInDefaultBrowser, { path });
 export const runExternalCommand = (command: string, path: string) =>
   invoke<void>(IPC_COMMANDS.runExternalCommand, { command, path });
 

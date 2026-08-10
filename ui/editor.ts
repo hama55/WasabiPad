@@ -1382,6 +1382,7 @@ export class VirtualEditor {
   private insertText(text: string): Promise<void> { return this.mutation.insertText(text); }
   private insertNewlineWithIndent(): Promise<void> { return this.mutation.insertNewlineWithIndent(); }
   private indentSelection(): Promise<void> { return this.mutation.indentSelection(); }
+  private unindentSelection(): Promise<void> { return this.mutation.unindentSelection(); }
   private deleteSel(): Promise<void> { return this.mutation.deleteSel(); }
   private backspace(): Promise<void> { return this.mutation.backspace(); }
   private deleteForward(): Promise<void> { return this.mutation.deleteForward(); }
@@ -1542,7 +1543,8 @@ export class VirtualEditor {
       case "Backspace": e.preventDefault(); this.dispatch("編集を反映できませんでした", () => this.backspace()); break;
       case "Delete": e.preventDefault(); this.dispatch("編集を反映できませんでした", () => this.deleteForward()); break;
       case "Enter": e.preventDefault(); this.dispatch("編集を反映できませんでした", () => this.insertNewlineWithIndent()); break;
-      case "Tab": e.preventDefault(); this.dispatch("編集を反映できませんでした", () => this.indentSelection()); break;
+      case "Tab": e.preventDefault(); this.dispatch("編集を反映できませんでした", () =>
+        e.shiftKey ? this.unindentSelection() : this.indentSelection()); break;
       case "Escape": this.findBar.close(); break;
     }
   }

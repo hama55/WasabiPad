@@ -99,16 +99,14 @@ body {
 .addressbar-crumb { flex: none; max-width: 220px; overflow: hidden; text-overflow: ellipsis; border: 0; border-radius: 3px; padding: 2px 4px; background: none; color: inherit; font: inherit; cursor: default; }
 .addressbar-crumb:hover { background: var(--hover); }
 .addressbar-sep { flex: none; color: var(--fg-dim); }
-#addressbar-fav, #addressbar-open, #addressbar-back, #addressbar-forward, #addressbar-save, #addressbar-save-as, #addressbar-new, #addressbar-find {
+#addressbar-fav, #addressbar-open, #addressbar-save, #addressbar-save-as, #addressbar-new, #addressbar-find {
   flex: none; width: 26px; height: 26px;
   background: var(--bg-editor); color: var(--fg-dim);
   border: 1px solid var(--border); border-radius: 4px;
   font-size: 14px; cursor: default;
 }
 #addressbar-save-as { width: 32px; }
-#addressbar-back, #addressbar-forward { font-family: "Segoe MDL2 Assets", var(--font-ui); }
-#addressbar-fav:hover, #addressbar-open:hover, #addressbar-back:hover:not(:disabled), #addressbar-forward:hover:not(:disabled), #addressbar-save:hover, #addressbar-save-as:hover, #addressbar-new:hover, #addressbar-find:hover { background: var(--hover); color: var(--fg); }
-#addressbar-back:disabled, #addressbar-forward:disabled { opacity: 0.45; }
+#addressbar-fav:hover, #addressbar-open:hover, #addressbar-save:hover, #addressbar-save-as:hover, #addressbar-new:hover, #addressbar-find:hover { background: var(--hover); color: var(--fg); }
 
 /* ---- お気に入りバー ---- */
 #favbar {

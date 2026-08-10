@@ -16,7 +16,7 @@ describe("Feature: viewer payload validation", () => {
     })).toBe(true);
   });
 
-  // Given: 未登録形式または不正な選択位置を含むpayload
+  // Given: 未登録形式（unknown）または不正な選択位置を含むpayload
   // When: `isViewerPayload`を呼ぶ
   // Then: iframeからの描画入力として受け入れない
   it("Scenario: rejects malformed viewer payloads before state mutation", () => {
@@ -28,7 +28,7 @@ describe("Feature: viewer payload validation", () => {
       archive_path: null,
       archive_entry: null,
     };
-    expect(isViewerPayload({ ...base, format: "html" })).toBe(false);
+    expect(isViewerPayload({ ...base, format: "unknown" })).toBe(false);
     expect(isViewerPayload({
       ...base,
       selection: { start: { line: -1, col: 0 }, end: { line: 0, col: 0 } },

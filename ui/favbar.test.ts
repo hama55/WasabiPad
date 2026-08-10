@@ -18,12 +18,12 @@ function mount(
     isDirectory: async (path) => !path.split("/").pop()!.includes("."),
     ...storeOverrides,
   };
-  const opened: string[] = [];
+  const opened: { path: string; newTab: boolean }[] = [];
   const addedGroups: { path: string; kind: "file" | "folder" }[][] = [];
   const favbar = new FavBar(
     document.getElementById("favbar")!,
     {
-      onOpen: (path) => { opened.push(path); },
+      onOpen: (path, newTab) => { opened.push({ path, newTab }); },
       onAddGroupToTabs: (items) => addedGroups.push(items),
       revealInExplorer: (path, isDir) => api.revealInExplorer(path, isDir),
       onError,
@@ -173,12 +173,12 @@ describe("Feature: FavBar", () => {
 
   // Given: `memo.txt`がお気に入りにある
   // When: buttonをクリック
-  // Then: `onOpen("C:/memo.txt")`
-  it("Scenario: クリックは onOpen を呼ぶ", async () => {
+  // Then: `onOpen("C:/memo.txt", true)`を呼ぶ
+  it("Scenario: 左クリックは新規タブで開く", async () => {
     const { favbar, opened } = mount([{ kind: "file", name: "memo.txt", path: "C:/memo.txt" }]);
     await favbar.init();
     document.querySelector<HTMLButtonElement>("#favbar button")!.click();
-    expect(opened).toEqual(["C:/memo.txt"]);
+    expect(opened).toEqual([{ path: "C:/memo.txt", newTab: true }]);
   });
 
   // Given: group直下にfile`a`とdirectory`src`、nested groupに`b`がある

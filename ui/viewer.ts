@@ -1,6 +1,6 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
-import { EVENT_NAMES, takeViewerPayload, type ViewerFormat, type ViewerPayload, type ViewerSelection } from "./api";
+import { EVENT_NAMES, openInDefaultBrowser, takeViewerPayload, type ViewerFormat, type ViewerPayload, type ViewerSelection } from "./api";
 import { formatFontFamily } from "./format";
 import { basename } from "./path";
 import { createViewerFormatHandlers, isViewerFormat, VIEWER_FORMATS } from "./viewer-formats";
@@ -22,8 +22,7 @@ import {
   scrollMarkdownCaret,
 } from "./viewer-markdown";
 import { scrollViewerCaret, scrollViewerCell } from "./viewer-scroll";
-import { createViewerChartMenuItem } from "./viewer-context-menu";
-import { createViewerDelimiterMenuItem } from "./viewer-context-menu";
+import { createViewerBrowserMenuItem, createViewerChartMenuItem, createViewerDelimiterMenuItem } from "./viewer-context-menu";
 import {
   DEFAULT_CSV_DELIMITER,
 } from "./viewer-delimiter";
@@ -32,6 +31,8 @@ import { INLINE_PREVIEW_MESSAGES } from "./inline-preview-protocol";
 import { isViewerPayload } from "./viewer-payload";
 import { imageUrlFromArchive, imageUrlFromPath, revokeImageUrl } from "./viewer-image-source";
 import { createImagePreview, markImageLoadFailure } from "./viewer-image";
+import { createPdfPreview, markPdfLoadFailure } from "./viewer-pdf";
+import { createHtmlPreview } from "./viewer-html";
 import { createAsyncUnlisten } from "./async-unlisten";
 import { comparePos } from "./editor-math";
 import {
@@ -420,6 +421,82 @@ async function renderImage(_text: string) {
   }
 }
 
+async function renderPdf(_text: string) {
+  const generation = ++renderGeneration;
+  const sourcePath = currentSourcePath;
+  const archivePath = currentArchivePath;
+  const archiveEntry = currentArchiveEntry;
+  revokeArchiveAssetUrls();
+  currentRows = [];
+  chartController.clear();
+
+  const name = basename(archiveEntry ?? sourcePath ?? "document.pdf");
+  const { wrapper, frame } = createPdfPreview(name);
+  content.replaceChildren(wrapper);
+  summary.classList.remove("warning");
+  summary.title = "";
+  summary.textContent = name;
+
+  let archiveUrl: string | null = null;
+  let keepArchiveUrl = false;
+  try {
+    if (archivePath && archiveEntry) {
+      archiveUrl = await imageUrlFromArchive(archivePath, archiveEntry, "application/pdf");
+      if (!retainArchiveAssetUrl(archiveUrl, generation)) {
+        archiveUrl = null;
+        return;
+      }
+      frame.src = archiveUrl;
+    } else if (sourcePath && generation === renderGeneration) {
+      frame.src = imageUrlFromPath(sourcePath);
+    } else {
+      markPdfLoadFailure(frame, name);
+      return;
+    }
+    keepArchiveUrl = true;
+  } catch (error) {
+    if (generation !== renderGeneration) return;
+    markPdfLoadFailure(frame, name);
+    throw error;
+  } finally {
+    if (archiveUrl && (!keepArchiveUrl || generation !== renderGeneration)) {
+      releaseArchiveAssetUrl(archiveUrl);
+    }
+  }
+}
+
+function htmlBaseUrl(sourcePath: string | null): string | null {
+  if (!sourcePath) return null;
+  try {
+    return new URL(".", imageUrlFromPath(sourcePath)).toString();
+  } catch {
+    return null;
+  }
+}
+
+function renderHtml(text: string) {
+  const generation = ++renderGeneration;
+  const sourcePath = currentSourcePath;
+  revokeArchiveAssetUrls();
+  currentRows = [];
+  chartController.clear();
+
+  const name = basename(sourcePath ?? currentArchiveEntry ?? "document.html");
+  const { wrapper } = createHtmlPreview({
+    name,
+    html: text,
+    baseUrl: htmlBaseUrl(sourcePath),
+    onContextMenu: (x, y) => {
+      if (generation !== renderGeneration || !sourcePath) return;
+      runViewerOperation("既定のブラウザで開けませんでした", () => showContextMenu(x, y));
+    },
+  });
+  content.replaceChildren(wrapper);
+  summary.classList.remove("warning");
+  summary.title = "";
+  summary.textContent = name;
+}
+
 async function renderMarkdown(text: string) {
   const generation = ++renderGeneration;
   const archivePath = currentArchivePath;
@@ -442,6 +519,8 @@ const VIEWER_HANDLERS = createViewerFormatHandlers({
   csv: renderTable,
   markdown: renderMarkdown,
   image: renderImage,
+  pdf: renderPdf,
+  html: renderHtml,
 });
 
 function renderPayload(payload: ViewerPayload) {
@@ -495,6 +574,17 @@ function showContextMenu(x: number, y: number) {
       runViewerOperation("グラフ設定を開けませんでした", () => chartController.openDialog());
     }));
   }
+  if (currentFormat === "html" && currentSourcePath) {
+    const path = currentSourcePath;
+    contextMenu.appendChild(createViewerBrowserMenuItem(() => {
+      contextMenu.hidden = true;
+      runViewerOperation("既定のブラウザで開けませんでした", () => openInDefaultBrowser(path));
+    }));
+  }
+  if (!contextMenu.childElementCount) {
+    contextMenu.hidden = true;
+    return;
+  }
   contextMenu.hidden = false;
   contextMenu.style.left = "0";
   contextMenu.style.top = "0";
@@ -539,9 +629,14 @@ async function start() {
       runViewerOperation("グラフを閉じられませんでした", () => chartController.close());
     });
     content.addEventListener("contextmenu", (event) => {
-      if (currentFormat !== "csv" || !(event.target as Element).closest(".viewer-grid")) return;
-      event.preventDefault();
-      runViewerOperation("グラフメニューを表示できませんでした", () => showContextMenu(event.clientX, event.clientY));
+      const target = event.target as Element;
+      if (currentFormat === "csv" && target.closest(".viewer-grid")) {
+        event.preventDefault();
+        runViewerOperation("グラフメニューを表示できませんでした", () => showContextMenu(event.clientX, event.clientY));
+      } else if (currentFormat === "html" && currentSourcePath && target.closest(".viewer-html-wrap")) {
+        event.preventDefault();
+        runViewerOperation("HTMLメニューを表示できませんでした", () => showContextMenu(event.clientX, event.clientY));
+      }
     });
     document.addEventListener("mousedown", (event) => {
       if (!contextMenu.contains(event.target as Node)) contextMenu.hidden = true;

@@ -288,6 +288,29 @@ describe("Feature: VirtualEditor", () => {
     expect(doc.calls.filter((call) => call === "editMany(2)")).toHaveLength(2);
   });
 
+  // Given: 文書が「\tone\ntwo\n\tthree」、3行を選択している
+  // When: Shift+Tabを押す
+  // Then: 先頭タブがある行だけ各1つ削除され、選択は行内位置を保つ
+  it("Scenario: Shift+Tabは選択した各行の先頭タブを1つ削除する", async () => {
+    const { editor, doc, press } = mount("\tone\ntwo\n\tthree");
+    editor.open(3, false);
+    await settle();
+    await editor.restoreViewState({
+      anchor: { line: 0, col: 0 },
+      caret: { line: 2, col: 6 },
+      topLine: 0,
+      wrapIntraLinePx: 0,
+      scrollLeft: 0,
+    });
+
+    press("Tab", { shiftKey: true });
+    await settle();
+
+    expect(doc.text()).toBe("one\ntwo\nthree");
+    expect(doc.calls).toContain("editMany(2)");
+    expect(editor.captureViewState().caret).toEqual({ line: 2, col: 5 });
+  });
+
   // Given: 空の新規メモを折り返し表示し、本文の行より下の空白をクリックする
   // When: エディタの範囲外でマウス選択を開始する
   // Then: 選択開始位置を最終行として扱い、キャレットを表示する
@@ -824,6 +847,8 @@ describe("Feature: VirtualEditor", () => {
       "CSVビュー",
       "Markdownビュー",
       "Imageビュー",
+      "PDFビュー",
+      "html(静的)",
       "アプリで開く",
     ]);
     expect(dropdown.querySelector<HTMLElement>(".dd-label")?.textContent).toBe("エクスプローラで開く");
@@ -839,6 +864,8 @@ describe("Feature: VirtualEditor", () => {
       ["CSVビュー", MENU_ICON.csv],
       ["Markdownビュー", MENU_ICON.markdown],
       ["Imageビュー", MENU_ICON.image],
+      ["PDFビュー", MENU_ICON.pdf],
+      ["html(静的)", MENU_ICON.html],
       ["アプリで開く", MENU_ICON.external],
     ] as const;
     for (const [label, icon] of editorIcons) {
@@ -943,6 +970,8 @@ describe("Feature: VirtualEditor", () => {
       "CSVビュー",
       "Markdownビュー",
       "Imageビュー",
+      "PDFビュー",
+      "html(静的)",
       "アプリで開く",
     ]);
     expect(dropdown.querySelectorAll(".dd-sep")).toHaveLength(3);
@@ -953,6 +982,8 @@ describe("Feature: VirtualEditor", () => {
       ["CSVビュー", MENU_ICON.csv],
       ["Markdownビュー", MENU_ICON.markdown],
       ["Imageビュー", MENU_ICON.image],
+      ["PDFビュー", MENU_ICON.pdf],
+      ["html(静的)", MENU_ICON.html],
       ["アプリで開く", MENU_ICON.external],
     ] as const) {
       const item = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
@@ -1023,6 +1054,8 @@ describe("Feature: VirtualEditor", () => {
       "CSVビュー",
       "Markdownビュー",
       "Imageビュー",
+      "PDFビュー",
+      "html(静的)",
       "アプリで開く",
     ]);
     for (const [label, icon] of [

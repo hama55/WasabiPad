@@ -74,6 +74,10 @@ enum ViewerFormat {
     Markdown,
     #[serde(rename = "image")]
     Image,
+    #[serde(rename = "pdf")]
+    Pdf,
+    #[serde(rename = "html")]
+    Html,
 }
 
 #[derive(Clone, serde::Serialize, ts_rs::TS)]
@@ -199,6 +203,11 @@ fn reveal_in_explorer(path: String, is_dir: bool) -> Result<(), String> {
 #[tauri::command]
 fn open_in_other_app(path: String) -> Result<(), String> {
     system::open_in_other_app(path)
+}
+
+#[tauri::command]
+fn open_in_default_browser(path: String) -> Result<(), String> {
+    system::open_in_default_browser(path)
 }
 
 #[tauri::command]
@@ -493,6 +502,7 @@ fn main() {
             read_archive_asset,
             reveal_in_explorer,
             open_in_other_app,
+            open_in_default_browser,
             run_external_command,
             edit,
             edit_many,

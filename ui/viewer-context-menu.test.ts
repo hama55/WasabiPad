@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
+
 import { describe, expect, it, vi } from "vitest";
 import { MENU_ICON } from "./menu-icons";
-import { createViewerChartMenuItem } from "./viewer-context-menu";
+import { createViewerBrowserMenuItem, createViewerChartMenuItem } from "./viewer-context-menu";
 
 describe("Feature: viewer context menu", () => {
   // Given: グラフ作成アクションを渡したビューアのメニュー項目
@@ -19,5 +20,18 @@ describe("Feature: viewer context menu", () => {
 
     item.click();
     expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
+  // Given: ブラウザで開くアクション
+  // When: ブラウザメニュー項目を生成してクリックする
+  // Then: 指定ラベルを表示し、アクションを実行する
+  it("Scenario: 既定のブラウザ項目を作成する", () => {
+    const onClick = vi.fn();
+    const item = createViewerBrowserMenuItem(onClick);
+
+    expect(item.textContent).toBe("\u898f\u5b9a\u306e\u30d6\u30e9\u30a6\u30b6\u3067\u8868\u793a");
+    expect(item.querySelector(`.${MENU_ICON.external}`)).not.toBeNull();
+    item.click();
+    expect(onClick).toHaveBeenCalledOnce();
   });
 });

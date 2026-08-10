@@ -3,6 +3,7 @@ import {
   chartColumnLabel,
   chartPointRadius,
   CHART_TYPES,
+  histogramData,
   isChartTypeId,
   numericColumnIndexes,
   parseChartNumber,
@@ -53,5 +54,16 @@ describe("Feature: chart types", () => {
     expect(chartPointRadius(CHART_TYPES["line-point"], 100)).toBe(2);
     expect(chartPointRadius(CHART_TYPES["line-point"], 1000)).toBe(0);
     expect(chartPointRadius(CHART_TYPES.scatter, 1000)).toBe(3);
+  });
+
+  // Given: 数値4件と、数値でない値1件
+  // When: ヒストグラム用データへ変換する
+  // Then: 数値だけを複数の区間へ集計し、各区間の件数を返す
+  it("Scenario: histogram counts numeric values into bins", () => {
+    const result = histogramData(["1", "2", "3", "4", "memo"]);
+
+    expect(result.labels).toHaveLength(2);
+    expect(result.values).toEqual([2, 2]);
+    expect(result.values.reduce((sum, count) => sum + count, 0)).toBe(4);
   });
 });

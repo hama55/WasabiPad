@@ -76,6 +76,23 @@ describe("Feature: Chart viewer drawing boundary", () => {
     expect(run).not.toHaveBeenCalled();
   });
 
+  // Given: グラフ設定ダイアログが表示されている
+  // When: 種類をヒストグラムへ変更し、X軸だけを選択して作成する
+  // Then: Y軸を要求せず、Chart.jsへ描画を委譲する
+  it("Scenario: ヒストグラムはX軸だけで描画する", () => {
+    const { controller } = createController();
+    controller.openDialog();
+    const type = document.querySelector<HTMLSelectElement>(".viewer-dialog select")!;
+    type.value = "histogram";
+    type.dispatchEvent(new Event("change"));
+    expect(document.querySelector<HTMLElement>(".chart-column-grid")?.hidden).toBe(true);
+    const x = document.querySelectorAll<HTMLSelectElement>(".viewer-dialog select")[1]!;
+    x.value = "1";
+    document.querySelector<HTMLButtonElement>(".viewer-dialog-buttons .primary")?.click();
+
+    expect(chartMock).toHaveBeenCalledOnce();
+  });
+
   // Given: X軸と数値Y軸を含む表データ
   // When: 有効なグラフ設定で作成する
   // Then: Chart.jsへ委譲し、表をグラフ表示へ切り替える

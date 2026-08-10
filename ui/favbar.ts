@@ -112,7 +112,7 @@ export class FavBar {
       });
     } else {
       button.title = node.path;
-      button.addEventListener("click", (e) => this.runOpen(node.path, e.ctrlKey));
+      button.addEventListener("click", () => this.runOpen(node.path, true));
       button.addEventListener("auxclick", (e) => {
         if (isMiddleClick(e)) this.runOpen(node.path, true);
       });
@@ -151,7 +151,7 @@ export class FavBar {
             ...common,
             onContextMenu,
             label: child.name,
-            action: (e?: MouseEvent) => this.runOpen(child.path, Boolean(e?.ctrlKey || isMiddleClick(e))),
+            action: () => this.runOpen(child.path, true),
           };
     });
   }
