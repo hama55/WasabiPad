@@ -104,8 +104,10 @@ pub enum ExternalCheck {
 #[ts(export)]
 pub struct ExternalMergeChange {
     pub start_line: usize,
+    pub before: Vec<String>,
     pub mine: Vec<String>,
     pub theirs: Vec<String>,
+    pub after: Vec<String>,
     pub conflict: bool,
 }
 

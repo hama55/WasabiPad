@@ -15,6 +15,7 @@ pub(crate) struct MergeResult {
 }
 
 const MAX_LCS_CELLS: usize = 2_000_000;
+const DIFF_CONTEXT_LINES: usize = 3;
 
 fn diff_changes(base: &[String], variant: &[String]) -> Vec<Change> {
     let Some(cells) = (base.len() + 1).checked_mul(variant.len() + 1) else {
@@ -148,8 +149,10 @@ fn add_preview(
     }
     preview.changes.push(ExternalMergeChange {
         start_line: start + 1,
+        before: base[start.saturating_sub(DIFF_CONTEXT_LINES)..start].to_vec(),
         mine,
         theirs,
+        after: base[end..(end + DIFF_CONTEXT_LINES).min(base.len())].to_vec(),
         conflict,
     });
 }
@@ -334,6 +337,24 @@ mod tests {
 
         assert_eq!(result.merged, lines("私のa\nb"));
         assert!(result.preview.changes.is_empty());
+    }
+
+    // Feature: 外部変更の差分コンテキスト
+    // Scenario: 外部変更の前後に未変更行がある
+    // Given: 基準本文と1行だけの外部変更
+    // When: three_wayのプレビューを作る
+    // Then: 変更の前後3行以内をコンテキストとして返す
+    #[test]
+    fn includes_context_around_external_change() {
+        let result = three_way(
+            &lines("a\nb\nc\nd\ne\nf\ng"),
+            &lines("a\nb\nc\nd\ne\nf\ng"),
+            &lines("a\nb\n外部のc\nd\ne\nf\ng"),
+        );
+
+        let change = &result.preview.changes[0];
+        assert_eq!(change.before, lines("a\nb"));
+        assert_eq!(change.after, lines("d\ne\nf"));
     }
 
     // Feature: 外部変更の3-wayマージ

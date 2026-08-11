@@ -81,12 +81,15 @@ function installMouseLayout(host: HTMLElement) {
     x: 0, y: 0, top: 0, left: 0, right: 300, bottom: 100, width: 300, height: 100,
     toJSON: () => ({}),
   } as DOMRect);
-  const lineRects = [...host.querySelectorAll<HTMLElement>(".ve-line")].map((line) =>
-    vi.spyOn(line, "getBoundingClientRect").mockReturnValue({
-      x: 0, y: Number(line.dataset.line) * 20, top: Number(line.dataset.line) * 20,
-      left: 0, right: 300, bottom: Number(line.dataset.line) * 20 + 20,
+  const originalElementRect = HTMLElement.prototype.getBoundingClientRect;
+  const lineRect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (!this.classList.contains("ve-line")) return originalElementRect.call(this);
+    const top = Number(this.dataset.line) * 20;
+    return {
+      x: 0, y: top, top, left: 0, right: 300, bottom: top + 20,
       width: 300, height: 20, toJSON: () => ({}),
-    } as DOMRect));
+    } as DOMRect;
+  });
   const rangeRect = vi.spyOn(Range.prototype, "getBoundingClientRect").mockImplementation(function (this: Range) {
     const width = this.endOffset * 10;
     return { x: 0, y: 0, top: 0, left: 0, right: width, bottom: 20, width, height: 20, toJSON: () => ({}) } as DOMRect;
@@ -95,7 +98,7 @@ function installMouseLayout(host: HTMLElement) {
     scroll,
     restore: () => {
       scrollRect.mockRestore();
-      lineRects.forEach((rect) => rect.mockRestore());
+      lineRect.mockRestore();
       rangeRect.mockRestore();
       dropdown.remove();
     },

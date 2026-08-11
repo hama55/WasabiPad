@@ -13,7 +13,7 @@ import { AddressBar } from "./addressbar";
 import { StatusBar } from "./statusbar";
 import { WindowChrome } from "./window-chrome";
 import { ExternalWatch } from "./external-watch";
-import { confirmExternalMerge } from "./external-merge";
+import { confirmExternalMerge, isExternalMergeRetryError } from "./external-merge";
 import {
   FolderActions,
   isImagePath,
@@ -454,8 +454,8 @@ const externalWatch = new ExternalWatch($("external-banner"), {
     applyExternalMetadata(info);
     editor.focus();
   },
-  onConflict: async (preview) => {
-    const choice = await confirmExternalMerge(preview);
+  onConflict: async (preview, subscribe) => {
+    const choice = await confirmExternalMerge(preview, subscribe);
     if (!choice) return false;
     try {
       if (choice === "merge") {
@@ -473,6 +473,10 @@ const externalWatch = new ExternalWatch($("external-banner"), {
       }
       return true;
     } catch (error) {
+      if (choice === "merge" && isExternalMergeRetryError(error)) {
+        windowChrome.notify("外部ファイルが再変更されたため、最新の差分を確認してください");
+        return "retry";
+      }
       await showError("外部変更を解決できませんでした", error);
       return false;
     }
@@ -543,6 +547,7 @@ const commands = createCommandRegistry({
   openFolder: () => { void pickAndOpen(true); },
   save: () => doc.save(),
   saveAs: () => doc.saveAs(),
+  refresh: () => externalWatch.refresh(),
   quit: () => win.close(),
   find: () => editor.openSearch(),
 });

@@ -1,14 +1,18 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as api from "./api";
-import { ExternalWatch, type ExternalWatchPorts } from "./external-watch";
+import {
+  ExternalWatch,
+  type ExternalMergePreviewSubscription,
+  type ExternalWatchPorts,
+} from "./external-watch";
 
 let active: ExternalWatch | undefined;
 
 function fixture() {
   const banner = document.createElement("div");
   banner.hidden = false;
-  for (const id of ["external-reload", "external-ignore"]) {
+  for (const id of ["external-reload", "external-ignore", "external-review"]) {
     const button = document.createElement("button");
     button.id = id;
     banner.appendChild(button);
@@ -22,7 +26,8 @@ function fixture() {
     onIgnore: vi.fn(),
     onConflict: undefined,
   };
-  const watch = (active = new ExternalWatch(banner, ports, api));
+  const watch = new ExternalWatch(banner, ports, api);
+  active = watch;
   return { banner, ports, watch };
 }
 
@@ -110,8 +115,53 @@ describe("Feature: ExternalWatch", () => {
     expect(ports.onConflict).toHaveBeenCalledWith({
       changes: [],
       conflict_count: 0,
-    });
+    }, expect.any(Function));
     expect(banner.hidden).toBe(true);
+  });
+
+  // Given: F5相当の明示更新を行える外部監視と、外部変更による再読込結果
+  // When: refresh()を呼ぶ
+  // Then: バナー表示中でも外部ファイルを確認し、再読込結果を反映する
+  it("Scenario: 明示更新で外部ファイルを確認する", async () => {
+    const { banner, ports, watch } = fixture();
+    banner.hidden = false;
+    ports.canPoll = () => true;
+    const info = { kind: "text" as const } as api.DocInfo;
+    vi.spyOn(api, "pollExternal").mockResolvedValueOnce({ kind: "reloaded", info });
+
+    await watch.refresh();
+
+    expect(api.pollExternal).toHaveBeenCalledWith(true);
+    expect(ports.onReload).toHaveBeenCalledWith(info);
+  });
+
+  // Given: 競合確認中に外部ファイルが再変更され、onConflictがretryを返す
+  // When: 外部変更のポーリング周期を進める
+  // Then: 最新プレビューを取り直してから確認画面を続ける
+  it("Scenario: マージ中の外部再変更で最新プレビューを再表示する", async () => {
+    vi.useFakeTimers();
+    const { banner, ports, watch } = fixture();
+    banner.hidden = true;
+    ports.canPoll = () => true;
+    ports.onConflict = vi.fn()
+      .mockResolvedValueOnce("retry" as const)
+      .mockResolvedValueOnce(true);
+    const first = { changes: [], conflict_count: 0 };
+    const second = {
+      changes: [{ start_line: 4, before: [], mine: ["mine"], theirs: ["new"], after: [], conflict: true }],
+      conflict_count: 1,
+    };
+    vi.spyOn(api, "pollExternal").mockResolvedValueOnce({ kind: "conflict" });
+    vi.spyOn(api, "externalMergePreview")
+      .mockResolvedValueOnce(first)
+      .mockResolvedValueOnce(second);
+
+    await vi.advanceTimersByTimeAsync(3000);
+
+    expect(ports.onConflict).toHaveBeenNthCalledWith(1, first, expect.any(Function));
+    expect(ports.onConflict).toHaveBeenNthCalledWith(2, second, expect.any(Function));
+    expect(banner.hidden).toBe(true);
+    watch.dispose();
   });
 
   // Given: dirtyな文書で外部変更が検知され、差分プレビューAPIが失敗する
@@ -133,5 +183,57 @@ describe("Feature: ExternalWatch", () => {
       expect.any(Error),
     );
     expect(banner.hidden).toBe(false);
+  });
+
+  // Given: 競合バナーが表示中で、差分プレビューとマージ確認ポートが利用できる
+  // When: 「差分を確認」をクリックして確認画面をキャンセルする
+  // Then: 最新プレビューを確認画面へ渡し、再び3つの選択肢を持つバナーを表示する
+  it("Scenario: バナーから差分確認を開きキャンセルすると戻る", async () => {
+    const { banner, ports } = fixture();
+    banner.hidden = false;
+    ports.canPoll = () => true;
+    const preview = { changes: [], conflict_count: 0 };
+    ports.onConflict = vi.fn(async () => false);
+    vi.spyOn(api, "externalMergePreview").mockResolvedValueOnce(preview);
+
+    banner.querySelector<HTMLButtonElement>("#external-review")!.click();
+    await vi.waitFor(() => expect(ports.onConflict).toHaveBeenCalledOnce());
+
+    expect(ports.onConflict).toHaveBeenCalledWith(preview, expect.any(Function));
+    expect(banner.hidden).toBe(false);
+    expect(banner.querySelector("#external-review")).not.toBeNull();
+  });
+
+  // Given: 差分確認画面が開いており、最新プレビューを受け取る購読が登録されている
+  // When: 確認画面の表示中に外部変更のポーリング周期を進める
+  // Then: 新しいプレビューを取得し、同じ確認画面の更新リスナーへ渡す
+  it("Scenario: マージ画面を開いたまま外部変更を検知して更新する", async () => {
+    vi.useFakeTimers();
+    const { banner, ports } = fixture();
+    banner.hidden = true;
+    ports.canPoll = () => true;
+    let observed: api.ExternalMergePreview | undefined;
+    let finish!: () => void;
+    const initial = { changes: [], conflict_count: 0 };
+    const latest = { changes: [], conflict_count: 1 };
+    ports.onConflict = vi.fn(async (_preview, subscribe: ExternalMergePreviewSubscription) => {
+      subscribe((preview) => { observed = preview; });
+      return new Promise<boolean>((resolve) => { finish = () => resolve(true); });
+    });
+    vi.spyOn(api, "pollExternal")
+      .mockResolvedValueOnce({ kind: "conflict" })
+      .mockResolvedValueOnce({ kind: "conflict" });
+    vi.spyOn(api, "externalMergePreview")
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce(latest);
+
+    await vi.advanceTimersByTimeAsync(3000);
+    await vi.advanceTimersByTimeAsync(3000);
+
+    expect(api.pollExternal).toHaveBeenCalledTimes(2);
+    expect(api.externalMergePreview).toHaveBeenCalledTimes(2);
+    expect(observed).toBe(latest);
+    finish();
+    await vi.waitFor(() => expect(banner.hidden).toBe(true));
   });
 });

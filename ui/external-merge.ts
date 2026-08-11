@@ -3,21 +3,122 @@ import { openModal } from "./modal";
 
 export type ExternalMergeChoice = "merge" | "keep" | "reload";
 
-function side(label: string, lines: string[], className: string): HTMLElement {
-  const box = document.createElement("div");
-  box.className = `em-side ${className}`;
-  const heading = document.createElement("div");
-  heading.className = "em-side-label";
-  heading.textContent = label;
-  const body = document.createElement("pre");
-  body.className = "em-side-body";
-  body.textContent = lines.length ? lines.join("\n") : "（変更なし）";
-  box.append(heading, body);
-  return box;
+export function isExternalMergeRetryError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("外部ファイルが再度変更されました");
 }
+
+function diffCell(marker: string, line: string | undefined, className: string): HTMLElement {
+  const cell = document.createElement("div");
+  const cellClass = line === undefined ? "em-empty-cell" : className;
+  cell.className = `em-diff-cell ${cellClass}${line === undefined ? " is-empty" : ""}`;
+  const markerEl = document.createElement("span");
+  markerEl.className = "em-diff-marker";
+  markerEl.textContent = line === undefined ? " " : marker;
+  const text = document.createElement("span");
+  text.className = "em-diff-text";
+  text.textContent = line ?? "";
+  cell.append(markerEl, text);
+  return cell;
+}
+
+function diffCellWithNumber(
+  marker: string,
+  lineNumber: number | undefined,
+  line: string | undefined,
+  className: string,
+): HTMLElement {
+  const cell = diffCell(marker, line, className);
+  const lineNumberEl = document.createElement("span");
+  lineNumberEl.className = "em-line-number";
+  lineNumberEl.textContent = line === undefined || lineNumber === undefined ? "" : String(lineNumber);
+  cell.insertBefore(lineNumberEl, cell.firstChild);
+  return cell;
+}
+
+function renderDiff(changes: HTMLElement, preview: api.ExternalMergePreview) {
+  changes.replaceChildren();
+  if (!preview.changes.length) {
+    const empty = document.createElement("div");
+    empty.className = "em-empty";
+    empty.textContent = "表示する差分はありません。外部ファイルを採用するか、自分の編集を維持できます。";
+    changes.append(empty);
+    return;
+  }
+
+  const diff = document.createElement("div");
+  diff.className = "em-diff";
+  const headers = document.createElement("div");
+  headers.className = "em-diff-columns em-diff-headers";
+  const mineHeader = document.createElement("div");
+  mineHeader.className = "em-diff-header-mine";
+  mineHeader.textContent = "WasabiPad側";
+  const theirsHeader = document.createElement("div");
+  theirsHeader.className = "em-diff-header-theirs";
+  theirsHeader.textContent = "外部アプリ側";
+  headers.append(mineHeader, theirsHeader);
+  diff.append(headers);
+
+  for (const change of preview.changes) {
+    const group = document.createElement("section");
+    group.className = `em-diff-group${change.conflict ? " is-conflict" : ""}`;
+
+    const rows = document.createElement("div");
+    rows.className = "em-diff-body";
+    const appendRow = (
+      mine: string | undefined,
+      theirs: string | undefined,
+      mineLine: number | undefined,
+      theirsLine: number | undefined,
+      context: boolean,
+    ) => {
+      const row = document.createElement("div");
+      row.className = `em-diff-row${context ? " is-context" : ""}`;
+      row.append(
+        diffCellWithNumber(context ? " " : "-", mineLine, mine, context ? "em-context" : "em-mine"),
+        diffCellWithNumber(context ? " " : "+", theirsLine, theirs, context ? "em-context" : "em-theirs"),
+      );
+      rows.append(row);
+    };
+
+    const beforeStart = change.start_line - change.before.length;
+    for (let i = 0; i < change.before.length; i++) {
+      appendRow(change.before[i], change.before[i], beforeStart + i, beforeStart + i, true);
+    }
+    const changedRows = Math.max(change.mine.length, change.theirs.length, 1);
+    for (let i = 0; i < changedRows; i++) {
+      appendRow(
+        change.mine[i],
+        change.theirs[i],
+        change.mine[i] === undefined ? undefined : change.start_line + i,
+        change.theirs[i] === undefined ? undefined : change.start_line + i,
+        false,
+      );
+    }
+    const mineAfterStart = change.start_line + change.mine.length;
+    const theirsAfterStart = change.start_line + change.theirs.length;
+    for (let i = 0; i < change.after.length; i++) {
+      appendRow(
+        change.after[i],
+        change.after[i],
+        mineAfterStart + i,
+        theirsAfterStart + i,
+        true,
+      );
+    }
+    group.append(rows);
+    diff.append(group);
+  }
+  changes.append(diff);
+}
+
+export type ExternalMergePreviewSubscription = (
+  listener: (preview: api.ExternalMergePreview) => void,
+) => () => void;
 
 export function confirmExternalMerge(
   preview: api.ExternalMergePreview,
+  subscribe?: ExternalMergePreviewSubscription,
 ): Promise<ExternalMergeChoice | null> {
   return new Promise((resolve) => {
     let closed = false;
@@ -33,36 +134,20 @@ export function confirmExternalMerge(
 
     const message = document.createElement("div");
     message.className = "pf-message";
-    message.textContent = preview.conflict_count
-      ? `外部の変更を表示しています。競合 ${preview.conflict_count} 箇所は自分の編集を優先します。`
-      : "外部の変更を自分の編集へ取り込みますか？";
     box.append(message);
 
     const changes = document.createElement("div");
     changes.className = "em-changes";
-    for (const change of preview.changes) {
-      const item = document.createElement("section");
-      item.className = `em-change${change.conflict ? " is-conflict" : ""}`;
-      const heading = document.createElement("div");
-      heading.className = "em-change-heading";
-      heading.textContent = `行 ${change.start_line}${change.conflict ? "（競合）" : ""}`;
-      item.append(heading);
-      const columns = document.createElement("div");
-      columns.className = "em-columns";
-      columns.append(
-        side("WasabiPad側", change.mine, "em-mine"),
-        side("外部アプリ側", change.theirs, "em-theirs"),
-      );
-      item.append(columns);
-      changes.append(item);
-    }
-    if (!preview.changes.length) {
-      const empty = document.createElement("div");
-      empty.className = "em-empty";
-      empty.textContent = "表示する差分はありません。外部ファイルを採用するか、自分の編集を維持できます。";
-      changes.append(empty);
-    }
     box.append(changes);
+
+    let unsubscribe: (() => void) | undefined;
+    const renderPreview = (next: api.ExternalMergePreview) => {
+      message.textContent = next.conflict_count
+        ? `外部の変更を表示しています。競合 ${next.conflict_count} 箇所は自分の編集を優先します。`
+        : "外部の変更を自分の編集へ取り込みますか？";
+      renderDiff(changes, next);
+    };
+    renderPreview(preview);
 
     const note = document.createElement("div");
     note.className = "em-note";
@@ -86,6 +171,7 @@ export function confirmExternalMerge(
     const finish = (choice: ExternalMergeChoice | null) => {
       if (closed) return;
       closed = true;
+      unsubscribe?.();
       close();
       resolve(choice);
     };
@@ -93,6 +179,7 @@ export function confirmExternalMerge(
     reload.addEventListener("click", () => finish("reload"));
     keep.addEventListener("click", () => finish("keep"));
     merge.addEventListener("click", () => finish("merge"));
+    unsubscribe = subscribe?.(renderPreview);
     merge.focus();
   });
 }

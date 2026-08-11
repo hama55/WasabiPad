@@ -1,25 +1,53 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from "vitest";
-import { confirmExternalMerge } from "./external-merge";
+import { confirmExternalMerge, isExternalMergeRetryError } from "./external-merge";
 import type { ExternalMergePreview } from "./api";
 
 const preview: ExternalMergePreview = {
-  changes: [{ start_line: 3, mine: ["自分の行"], theirs: ["外部の行"], conflict: true }],
+  changes: [
+    {
+      start_line: 3,
+      before: ["変更前の行"],
+      mine: ["自分の行"],
+      theirs: ["外部の行"],
+      after: ["変更後の行"],
+      conflict: true,
+    },
+    { start_line: 8, before: [], mine: ["削除された行"], theirs: [], after: [], conflict: false },
+  ],
   conflict_count: 1,
 };
 
 afterEach(() => document.body.replaceChildren());
 
 describe("Feature: 外部変更マージ確認画面", () => {
+  // Given: マージ実行時にbackendが返す「外部ファイルが再変更された」エラー
+  // When: 再確認が必要か判定する
+  // Then: trueを返し、別種のエラーは再試行扱いにしない
+  it("Scenario: プレビュー後の外部再変更だけを再確認対象にする", () => {
+    expect(isExternalMergeRetryError("外部ファイルが再度変更されました。もう一度確認してください")).toBe(true);
+    expect(isExternalMergeRetryError(new Error("ファイルがありません"))).toBe(false);
+  });
+
   // Given: 自分側と外部側の競合差分を含むプレビュー
   // When: マージ確認画面を開いて「マージする」を押す
-  // Then: 両側の差分を表示し、mergeを返す
+  // Then: 1つの左右分割差分画面で行番号・前後コンテキスト・差分と +/- 記号を表示し、mergeを返す
   it("Scenario: 競合差分を表示してマージを選べる", async () => {
     const resultPromise = confirmExternalMerge(preview);
 
-    expect(document.querySelector(".pf-merge-box")).not.toBeNull();
+    expect(document.querySelectorAll(".pf-merge-box")).toHaveLength(1);
+    expect(document.querySelector(".em-diff")).not.toBeNull();
     expect(document.querySelector(".em-mine")?.textContent).toContain("自分の行");
     expect(document.querySelector(".em-theirs")?.textContent).toContain("外部の行");
+    expect(document.querySelector(".em-mine .em-diff-marker")?.textContent).toBe("-");
+    expect(document.querySelector(".em-theirs .em-diff-marker")?.textContent).toBe("+");
+    expect(document.querySelector(".em-context")?.textContent).toContain("変更前の行");
+    expect(document.querySelectorAll(".em-line-number").length).toBeGreaterThan(0);
+    expect(document.querySelector(".em-change-heading")).toBeNull();
+    expect(document.querySelectorAll(".em-diff-cell.em-mine.is-empty")).toHaveLength(0);
+    expect(document.querySelectorAll(".em-diff-cell.em-theirs.is-empty")).toHaveLength(0);
+    expect(document.querySelectorAll(".em-empty-cell.is-empty")).toHaveLength(1);
+    expect(document.querySelectorAll(".em-diff-row")).toHaveLength(4);
     document.querySelectorAll<HTMLButtonElement>(".pf-btns button")[3].click();
 
     await expect(resultPromise).resolves.toBe("merge");
@@ -44,5 +72,35 @@ describe("Feature: 外部変更マージ確認画面", () => {
     document.querySelectorAll<HTMLButtonElement>(".pf-btns button")[1].click();
 
     await expect(resultPromise).resolves.toBe("reload");
+  });
+
+  // Given: 差分確認画面が開いており、表示更新リスナーが登録されている
+  // When: 外部変更監視から最新プレビューを通知する
+  // Then: ダイアログを閉じずに左右の差分表示を最新内容へ更新する
+  it("Scenario: 表示中のマージ画面を最新プレビューへ更新する", async () => {
+    let update!: (next: ExternalMergePreview) => void;
+    const resultPromise = confirmExternalMerge(preview, (listener) => {
+      update = listener;
+      return () => {};
+    });
+    const latest: ExternalMergePreview = {
+      changes: [{
+        start_line: 5,
+        before: ["最新の前"],
+        mine: ["自分の最新"],
+        theirs: ["外部の最新"],
+        after: ["最新の後"],
+        conflict: false,
+      }],
+      conflict_count: 0,
+    };
+
+    update(latest);
+
+    expect(document.querySelector(".em-mine")?.textContent).toContain("自分の最新");
+    expect(document.querySelector(".em-theirs")?.textContent).toContain("外部の最新");
+    expect(document.querySelector(".pf-merge-box")).not.toBeNull();
+    document.querySelector<HTMLButtonElement>(".pf-btns button")!.click();
+    await expect(resultPromise).resolves.toBeNull();
   });
 });

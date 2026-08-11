@@ -8,6 +8,7 @@ const registry = createCommandRegistry({
   openFolder: noop,
   save: async () => true,
   saveAs: async () => true,
+  refresh: async () => {},
   quit: noop,
   find: noop,
 });
@@ -31,5 +32,13 @@ describe("Feature: command registry", () => {
   it("Scenario: does not dispatch events already handled by the editor", () => {
     expect(globalCommandForEvent(registry, key("f"))).toBeUndefined();
     expect(globalCommandForEvent(registry, key("s", false, true))).toBeUndefined();
+  });
+
+  // Given: F5をファイル更新へ割り当てたcommand registry
+  // When: CtrlなしのF5イベントを`globalCommandForEvent`へ渡す
+  // Then: refresh commandを返す
+  it("Scenario: F5をファイル更新へ割り当てる", () => {
+    const event = { key: "F5", ctrlKey: false, shiftKey: false, defaultPrevented: false } as KeyboardEvent;
+    expect(globalCommandForEvent(registry, event)).toBe(registry.refresh);
   });
 });

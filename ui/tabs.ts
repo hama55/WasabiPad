@@ -241,6 +241,7 @@ export class TabManager {
 
   private async switchTo(id: string) {
     this.rememberActiveView();
+    this.persist();
     try {
       await this.commitTransition(async () => {
         this.activeId = id;

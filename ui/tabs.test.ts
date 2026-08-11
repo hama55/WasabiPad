@@ -441,7 +441,8 @@ describe("Feature: TabManager", () => {
     await expect(manager.activate("b")).rejects.toThrow("load failed");
 
     expect(manager.state.activeId).toBe("a");
-    expect(changes).toEqual([]);
+    expect(changes).toHaveLength(1);
+    expect(changes[0].activeId).toBe("a");
     expect(doc.openPath).toHaveBeenLastCalledWith("C:\\work\\a.txt", false);
   });
 
@@ -460,6 +461,39 @@ describe("Feature: TabManager", () => {
       topLine: 0,
       scrollLeft: 0,
     }));
+  });
+
+  // Given: 切替先の読み込みが継続中で、active tab a の現在位置が保存対象にある
+  // When: tab b への切替を開始する
+  // Then: 非同期の読み込み完了を待たず、aのviewStateを永続化通知へ渡す
+  it("Scenario: tab切替開始時に現在位置を先に永続化する", async () => {
+    const { doc, host } = fixture();
+    const changes: StoredTabs[] = [];
+    const manager = new TabManager(host, doc, { onChange: (state) => changes.push(state) }, registeredCommandPorts);
+    await manager.init(stored, null, null);
+    changes.length = 0;
+    vi.mocked(doc.captureViewState).mockReturnValue({
+      anchor: { line: 12, col: 2 },
+      caret: { line: 12, col: 5 },
+      topLine: 10,
+      wrapIntraLinePx: 1,
+      scrollLeft: 24,
+    });
+    let release!: (value: boolean) => void;
+    vi.mocked(doc.openPath).mockReturnValueOnce(new Promise<boolean>((resolve) => { release = resolve; }));
+
+    const switching = manager.activate("b");
+    await vi.waitFor(() => expect(changes.length).toBeGreaterThan(0));
+
+    expect(changes[0].tabs.find((tab) => tab.id === "a")?.viewState).toEqual({
+      anchor: { line: 12, col: 2 },
+      caret: { line: 12, col: 5 },
+      topLine: 10,
+      wrapIntraLinePx: 1,
+      scrollLeft: 24,
+    });
+    release(true);
+    await switching;
   });
 
   // Given: activate("b") の確認処理中に syncActive(doc.current) が実行されてから onProceed が続行される
