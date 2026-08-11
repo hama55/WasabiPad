@@ -13,10 +13,30 @@ export interface MarkdownRenderResult {
   highlightTargets: HTMLElement[];
 }
 
+function decorateTaskListItems(article: HTMLElement) {
+  article.querySelectorAll<HTMLLIElement>("li").forEach((item) => {
+    const walker = document.createTreeWalker(item, NodeFilter.SHOW_TEXT);
+    const text = walker.nextNode();
+    if (!(text instanceof Text)) return;
+    const match = text.data.match(/^\[([ xX])\](?:[ \t]+|$)/);
+    if (!match) return;
+
+    text.data = text.data.slice(match[0].length);
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.disabled = true;
+    checkbox.checked = match[1].toLowerCase() === "x";
+    checkbox.className = "viewer-markdown-task";
+    checkbox.setAttribute("aria-label", checkbox.checked ? "完了" : "未完了");
+    text.parentNode?.insertBefore(checkbox, text);
+    item.classList.add("viewer-markdown-task-list-item");
+  });
+}
+
 export function renderMarkdownDocument(text: string, selection: ViewerSelection | null): MarkdownRenderResult {
   const article = document.createElement("article");
   const sourceLines = text.split(/\r?\n/);
-  const markdown = new MarkdownIt({ html: true, linkify: true, typographer: false });
+  const markdown = new MarkdownIt({ breaks: false, html: true, linkify: true, typographer: false });
   const rawHtml = (tokens: { content: string }[], index: number) =>
     renderRawHtml(tokens[index].content, markdown.utils.escapeHtml);
   markdown.renderer.rules.html_block = rawHtml;
@@ -30,6 +50,7 @@ export function renderMarkdownDocument(text: string, selection: ViewerSelection 
     }
   });
   article.innerHTML = markdown.renderer.render(tokens, markdown.options, {});
+  decorateTaskListItems(article);
   const sourceElements = [...article.querySelectorAll<HTMLElement>("[data-source-start]")];
   const highlightTargets = markdownHighlightTargets(sourceElements);
   highlightTargets.forEach((element) => {

@@ -67,6 +67,7 @@ describe("Feature: ExternalWatch", () => {
       folder_entries: null,
       folder_root: null,
       view_only: false,
+      is_binary: false,
       byte_len: 99,
       is_huge: false,
       modified_at: 1730000000000,

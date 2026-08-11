@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
+import { initialSession } from "./session";
 import { StatusBar, type StatusBarPorts } from "./statusbar";
 
 function mount() {
   const host = document.createElement("div");
   host.innerHTML = `
     <span id="st-mode"></span>
+    <span id="st-binary" hidden></span>
     <label id="st-delimiter" hidden>区切り <input id="st-delimiter-input" value="," /></label>
     <button id="st-pos"></button><span id="st-size"></span><span id="st-modified"></span><button id="st-lines"></button>
     <button id="st-font"></button><button id="st-font-size"></button>
@@ -27,6 +29,24 @@ function mount() {
 }
 
 describe("Feature: statusbar preview controls", () => {
+  // Feature: バイナリ文書の状態表示
+  // Scenario: バイナリ文書を開く
+  // Given: 編集不可のバイナリ文書と通常文書がある
+  // When: ステータスバーへ順に反映する
+  // Then: バイナリ時だけ閲覧専用である理由を表示する
+  it("Scenario: shows binary read-only status only for binary documents", () => {
+    const { host, statusbar } = mount();
+    const binary = host.querySelector<HTMLElement>("#st-binary")!;
+
+    statusbar.setFormat({ ...initialSession(), readOnly: true, isBinary: true });
+    expect(binary.hidden).toBe(false);
+    expect(binary.textContent).toBe("閲覧専用（バイナリ）");
+
+    statusbar.setFormat(initialSession());
+    expect(binary.hidden).toBe(true);
+    expect(binary.textContent).toBe("");
+  });
+
   // Given: CSV区切り文字入力を持つステータスバー
   // When: CSV形式/Markdown形式を順に表示し、CSV区切り文字を入力する
   // Then: CSV時だけ入力欄を表示し、入力値をプレビュー更新ポートへ渡す

@@ -128,6 +128,7 @@ body.viewer-resizing * {
 
 article { max-width: 900px; margin: 0 auto; padding: 24px 36px 64px; line-height: 1.65; font: var(--viewer-font-size) var(--font-mono); }
 article h1, article h2 { border-bottom: 1px solid var(--border-strong); padding-bottom: .25em; }
+article p + p { margin-top: 1em; }
 article ul, article ol { padding-inline-start: 2em; }
 article pre, article code { font-family: var(--font-mono); background: var(--bg-side); }
 article code { padding: .12em .3em; border-radius: 3px; }
@@ -135,6 +136,7 @@ article pre { padding: 12px; overflow: auto; border: 1px solid var(--border-stro
 article pre code { padding: 0; }
 article blockquote { margin-left: 0; padding-left: 14px; color: var(--fg-dim); border-left: 4px solid var(--border-strong); }
 article img { max-width: 100%; }
+article .viewer-markdown-task { margin-inline-end: .45em; vertical-align: baseline; }
 article a { color: var(--bg-status); }
 article table {
   min-width: 0; width: auto; display: block; overflow: auto;
@@ -160,6 +162,8 @@ article tbody tr:nth-child(even) { background: var(--row-alt); }
   max-height: 100%;
   object-fit: contain;
 }
+.viewer-image-wrap.viewer-image-zoomed .viewer-image { max-width: none; max-height: none; cursor: grab; touch-action: none; }
+.viewer-image.viewer-image-panning { cursor: grabbing; user-select: none; }
 .viewer-pdf-wrap { width: 100%; height: 100%; background: #666; }
 .viewer-pdf { display: block; width: 100%; height: 100%; border: 0; background: #fff; }
 .viewer-html-wrap { width: 100%; height: 100%; background: #fff; }

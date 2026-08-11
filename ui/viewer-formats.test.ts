@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createViewerFormatHandlers,
   canRenderViewerFormat,
+  isAssetViewerFormat,
   isViewerFormat,
   viewerFormatForPath,
   viewerFormatSpec,
@@ -32,6 +33,16 @@ describe("Feature: viewer formats", () => {
     expect(canRenderViewerFormat("csv", "notes.md")).toBe(true);
     expect(canRenderViewerFormat("markdown", null)).toBe(true);
     expect(canRenderViewerFormat("image", null)).toBe(false);
+  });
+
+  // Given: 画像・PDF・テキストのビュー形式
+  // When: 資産プレビュー形式かを判定する
+  // Then: 画像とPDFだけが実ファイルを必要とする
+  it("Scenario: treats PDF as an asset preview", () => {
+    expect(isAssetViewerFormat("image")).toBe(true);
+    expect(isAssetViewerFormat("pdf")).toBe(true);
+    expect(isAssetViewerFormat("markdown")).toBe(false);
+    expect(isAssetViewerFormat(null)).toBe(false);
   });
 
   // Given: csv/markdown/image/pdf/htmlの形式レジストリ

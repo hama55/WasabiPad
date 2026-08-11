@@ -1442,7 +1442,7 @@ export class VirtualEditor {
     const [selectionStart, selectionEnd] = this.sel.norm();
     const selection = { start: selectionStart, end: selectionEnd };
     const previewRange = keepPreviewRange ? this.liveViewers.previewRange() : null;
-    const range = previewRange ?? (this.sel.hasSel()
+    const range = format === "image" ? null : previewRange ?? (this.sel.hasSel()
       ? { start: { ...selectionStart }, end: { ...selectionEnd } }
       : null);
     this.liveViewers.clear();

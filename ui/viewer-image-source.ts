@@ -19,6 +19,24 @@ export function imageUrlFromPath(path: string, ports: ImageAssetSourcePorts = de
   return ports.convertFileSrc(path);
 }
 
+export function imageUrlFromPathWithCacheBust(
+  path: string,
+  cacheKey: string | number,
+  ports: ImageAssetSourcePorts = defaultPorts,
+): string {
+  const url = imageUrlFromPath(path, ports);
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}wasabipad=${encodeURIComponent(String(cacheKey))}`;
+}
+
+export function imageUrlFromText(
+  text: string,
+  mimeType: string,
+  ports: ImageAssetSourcePorts = defaultPorts,
+): string {
+  return ports.createObjectURL(new Blob([text], { type: mimeType }));
+}
+
 export async function imageUrlFromArchive(
   archivePath: string,
   entry: string,

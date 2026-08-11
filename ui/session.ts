@@ -13,6 +13,7 @@ export interface DocumentSession {
   savePath: string | null;
   folderRoot: string | null;
   readOnly: boolean;
+  isBinary: boolean;
   dirty: boolean;
   encoding: Encoding;
   sourceEncoding: Encoding;
@@ -30,6 +31,7 @@ export function initialSession(): DocumentSession {
     savePath: null,
     folderRoot: null,
     readOnly: false,
+    isBinary: false,
     dirty: false,
     encoding: "utf8",
     sourceEncoding: "utf8",
@@ -72,6 +74,7 @@ export function sessionFromDocInfo(
     savePath: info.view_only || folderDraft ? null : info.path,
     folderRoot: info.folder_root,
     readOnly: info.view_only,
+    isBinary: info.is_binary,
     dirty: false,
     encoding: info.enc,
     sourceEncoding: info.enc,

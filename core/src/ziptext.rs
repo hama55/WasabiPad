@@ -1,6 +1,7 @@
 // ZIP (xlsx/docx 等) やフォルダをエントリ一覧として展開する。
 // 各エントリは左のフォルダビューに並び、選択されたものだけをエディタに表示する。
 use encoding_rs::SHIFT_JIS;
+use std::path::Path;
 
 pub(crate) const MAX_ENTRY: usize = 32 * 1024 * 1024; // 1エントリの展開上限
 const MAX_TOTAL: usize = 256 * 1024 * 1024; // 合計上限
@@ -8,6 +9,7 @@ const MAX_TOTAL: usize = 256 * 1024 * 1024; // 合計上限
 pub struct Entry {
     pub name: String, // 相対パス ("sub/a.txt") またはシート名
     pub text: String,
+    pub is_binary: bool,
 }
 
 fn u16le(b: &[u8], p: usize) -> Option<u16> {
@@ -32,7 +34,7 @@ fn find_eocd(b: &[u8]) -> Option<usize> {
 }
 
 // エントリ本文の復号: BOM → UTF-8厳密 → Shift-JIS。バイナリらしければ None
-fn decode_entry(v: Vec<u8>) -> Option<String> {
+fn decode_entry(v: &[u8]) -> Option<String> {
     if v.starts_with(&[0xEF, 0xBB, 0xBF]) {
         return Some(String::from_utf8_lossy(&v[3..]).into_owned());
     }
@@ -40,20 +42,19 @@ fn decode_entry(v: Vec<u8>) -> Option<String> {
         let (cow, _, _) = encoding_rs::UTF_16LE.decode(&v[2..]);
         return Some(cow.into_owned());
     }
-    match String::from_utf8(v) {
+    match std::str::from_utf8(v) {
         Ok(s) => {
             if s.contains('\0') {
                 None
             } else {
-                Some(s)
+                Some(s.to_string())
             }
         }
-        Err(e) => {
-            let v = e.into_bytes();
+        Err(_) => {
             if v.contains(&0) {
                 return None;
             }
-            let (cow, _, had_errors) = SHIFT_JIS.decode(&v);
+            let (cow, _, had_errors) = SHIFT_JIS.decode(v);
             if had_errors {
                 None
             } else {
@@ -61,6 +62,13 @@ fn decode_entry(v: Vec<u8>) -> Option<String> {
             }
         }
     }
+}
+
+fn decode_entry_text(name: &str, bytes: &[u8]) -> (String, bool) {
+    let decoded = decode_entry(bytes);
+    let is_binary = crate::document_source::is_binary_image_path(Path::new(name)) || decoded.is_none();
+    let text = decoded.unwrap_or_else(|| crate::fileio::decode(bytes).0);
+    (text.replace("\r\n", "\n").replace('\r', "\n"), is_binary)
 }
 
 fn decode_name(raw: &[u8], utf8_flag: bool) -> String {
@@ -153,16 +161,16 @@ fn central_dir(bytes: &[u8]) -> Option<Vec<CdEntry>> {
 }
 
 // 1エントリぶんの本文を展開してテキスト化する
-fn decode_cd_entry(bytes: &[u8], e: &CdEntry) -> Option<String> {
+fn decode_cd_entry(bytes: &[u8], e: &CdEntry) -> Option<(String, bool)> {
     let nl = u16le(bytes, e.loff + 26)? as usize;
     let xl = u16le(bytes, e.loff + 28)? as usize;
     let data_at = e.loff + 30 + nl + xl;
     let data = bytes.get(data_at..data_at + e.comp)?;
 
     Some(if e.flags & 1 != 0 {
-        "(暗号化エントリ)".to_string()
+        ("(暗号化エントリ)".to_string(), false)
     } else if e.uncomp > MAX_ENTRY {
-        format!("(サイズ超過のためスキップ: {} bytes)", e.uncomp)
+        (format!("(サイズ超過のためスキップ: {} bytes)", e.uncomp), false)
     } else {
         let raw = match e.method {
             0 => Some(data.to_vec()),
@@ -170,14 +178,8 @@ fn decode_cd_entry(bytes: &[u8], e: &CdEntry) -> Option<String> {
             _ => None,
         };
         match raw {
-            None => format!("(未対応の圧縮方式: method {})", e.method),
-            Some(v) => {
-                let n = v.len();
-                match decode_entry(v) {
-                    Some(s) => s.replace("\r\n", "\n").replace('\r', "\n"),
-                    None => format!("(バイナリ: {} bytes)", n),
-                }
-            }
+            None => (format!("(未対応の圧縮方式: method {})", e.method), false),
+            Some(v) => decode_entry_text(&e.name, &v),
         }
     })
 }
@@ -190,9 +192,10 @@ pub fn list_names(bytes: &[u8]) -> Option<Vec<String>> {
 }
 
 // 指定した1エントリだけを展開してテキスト化する (選択時の遅延展開用)
-pub fn decode_one(bytes: &[u8], target: &str) -> Option<String> {
+pub fn decode_one_entry(bytes: &[u8], target: &str) -> Option<Entry> {
     let e = central_dir(bytes)?.into_iter().find(|e| e.name == target)?;
-    decode_cd_entry(bytes, &e)
+    let (text, is_binary) = decode_cd_entry(bytes, &e)?;
+    Some(Entry { name: e.name, text, is_binary })
 }
 
 pub fn parse(bytes: &[u8]) -> Option<Vec<Entry>> {
@@ -204,12 +207,13 @@ pub fn parse(bytes: &[u8]) -> Option<Vec<Entry>> {
             entries.push(Entry {
                 name: e.name.clone(),
                 text: format!("(サイズ超過のためスキップ: {} bytes)", e.uncomp),
+                is_binary: false,
             });
             continue;
         }
-        let text = decode_cd_entry(bytes, e)?;
+        let (text, is_binary) = decode_cd_entry(bytes, e)?;
         total_out += text.len();
-        entries.push(Entry { name: e.name.clone(), text });
+        entries.push(Entry { name: e.name.clone(), text, is_binary });
     }
     // フォルダビューで階層がまとまるようパス順に並べる
     entries.sort_by(|a, b| a.name.cmp(&b.name));
@@ -282,9 +286,9 @@ mod tests {
     #[test]
     fn decode_one_returns_only_the_requested_entry() {
         let z = build_stored_zip(&[("b/c.txt", b"x"), ("a.txt", b"hello\nworld")]);
-        assert_eq!(decode_one(&z, "b/c.txt").unwrap(), "x");
-        assert_eq!(decode_one(&z, "a.txt").unwrap(), "hello\nworld");
-        assert!(decode_one(&z, "missing.txt").is_none());
+        assert_eq!(decode_one_entry(&z, "b/c.txt").unwrap().text, "x");
+        assert_eq!(decode_one_entry(&z, "a.txt").unwrap().text, "hello\nworld");
+        assert!(decode_one_entry(&z, "missing.txt").is_none());
     }
 
     #[test]
@@ -296,10 +300,16 @@ mod tests {
     }
 
     #[test]
-    fn binary_entry_shows_size() {
+    // Feature: アーカイブ内バイナリの生表示
+    // Scenario: NULを含むエントリを展開する
+    // Given: バイナリデータを含むZIPがある
+    // When: エントリを解析する
+    // Then: 説明文に置換せず、バイナリとして印を付けた内容を返す
+    fn binary_entry_shows_raw_content_and_is_binary() {
         let z = build_stored_zip(&[("a.bin", &[0u8, 1, 2, 255])]);
         let r = parse(&z).unwrap();
-        assert_eq!(r[0].text, "(バイナリ: 4 bytes)");
+        assert!(r[0].is_binary);
+        assert!(r[0].text.contains('\0'));
     }
 
     #[test]

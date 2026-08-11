@@ -99,8 +99,12 @@ export function viewerFormatForPath(path: string): ViewerFormat | null {
   return format?.id ?? null;
 }
 
+export function isAssetViewerFormat(format: ViewerFormat | null): format is "image" | "pdf" {
+  return format === "image" || format === "pdf";
+}
+
 export function canRenderViewerFormat(format: ViewerFormat, sourcePath: string | null): boolean {
   const sourceFormat = sourcePath ? viewerFormatForPath(sourcePath) : null;
-  if (format === "image" || format === "pdf") return sourceFormat === format;
+  if (isAssetViewerFormat(format)) return sourceFormat === format;
   return sourceFormat !== "image" && sourceFormat !== "pdf";
 }

@@ -19,6 +19,7 @@ const info = (overrides: Partial<DocInfo> = {}): DocInfo => ({
   folder_entries: null,
   folder_root: "C:\\work",
   view_only: false,
+  is_binary: false,
   byte_len: 10,
   is_huge: false,
   modified_at: 1720000000000,
@@ -33,6 +34,7 @@ describe("Feature: DocumentSession", () => {
     expect(initialSession()).toMatchObject({
       savePath: null,
       readOnly: false,
+      isBinary: false,
       dirty: false,
       encoding: "utf8",
       sourceEncoding: "utf8",
@@ -58,6 +60,9 @@ describe("Feature: DocumentSession", () => {
     expect(archive.savePath).toBeNull();
     expect(archive.readOnly).toBe(true);
     expect(displayName(archive)).toBe("memo.txt");
+
+    const binary = sessionFromDocInfo(editable, info({ view_only: true, is_binary: true }));
+    expect(binary.isBinary).toBe(true);
   });
 
   // Given: フォルダ内アーカイブの`data.zip::docs/readme.md`と直接開いたアーカイブの`docs/readme.md`

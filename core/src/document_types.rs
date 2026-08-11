@@ -22,6 +22,7 @@ pub struct DocInfo {
     pub folder_entries: Option<Vec<FolderEntry>>,
     pub folder_root: Option<String>,
     pub view_only: bool,
+    pub is_binary: bool,
     pub byte_len: u64,
     pub is_huge: bool,
     pub modified_at: Option<u64>,

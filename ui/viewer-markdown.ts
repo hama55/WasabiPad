@@ -10,15 +10,18 @@ export function renderRawHtml(raw: string, escape: (text: string) => string): st
   const nodes = [...template.content.childNodes];
   if (!nodes.length || nodes.some((node) => {
     if (node.nodeType === Node.TEXT_NODE) return !!node.textContent?.trim();
-    return !(node instanceof HTMLImageElement);
+    return !(node instanceof HTMLImageElement || node instanceof HTMLBRElement);
   })) return escape(raw);
   return nodes
-    .filter((node): node is HTMLImageElement => node instanceof HTMLImageElement)
-    .map((img) => {
-      for (const name of img.getAttributeNames()) {
-        if (!IMG_ATTRIBUTES.includes(name.toLowerCase())) img.removeAttribute(name);
+    .filter((node): node is HTMLImageElement | HTMLBRElement =>
+      node instanceof HTMLImageElement || node instanceof HTMLBRElement,
+    )
+    .map((node) => {
+      if (node instanceof HTMLBRElement) return "<br>";
+      for (const name of node.getAttributeNames()) {
+        if (!IMG_ATTRIBUTES.includes(name.toLowerCase())) node.removeAttribute(name);
       }
-      return img.outerHTML;
+      return node.outerHTML;
     })
     .join("\n");
 }

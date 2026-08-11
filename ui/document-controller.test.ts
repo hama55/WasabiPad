@@ -43,6 +43,7 @@ const info = (overrides: Partial<DocInfo> = {}): DocInfo => ({
   folder_entries: null,
   folder_root: null,
   view_only: false,
+  is_binary: false,
   byte_len: 1234,
   is_huge: false,
   modified_at: 1720000000000,

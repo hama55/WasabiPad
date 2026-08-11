@@ -87,7 +87,7 @@ impl DocumentSource {
                 editable_entry: None,
                 ..
             }
-        ) || matches!(&self.target, Target::File { path, .. } if is_image_path(path))
+        ) || matches!(&self.target, Target::File { path, .. } if is_binary_image_path(path))
     }
 
     pub(crate) fn kind(&self) -> SourceKind {
@@ -132,8 +132,8 @@ impl DocumentSource {
     }
 }
 
-pub(crate) fn is_image_path(path: &Path) -> bool {
+pub(crate) fn is_binary_image_path(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
-        .is_some_and(protocol::is_image_extension)
+        .is_some_and(|ext| !ext.eq_ignore_ascii_case("svg") && protocol::is_image_extension(ext))
 }

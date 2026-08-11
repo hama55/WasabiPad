@@ -10,8 +10,14 @@ pub(crate) fn list(bytes: &[u8]) -> Option<Vec<String>> {
     crate::ziptext::list_names(bytes).or_else(|| crate::xlstext::list_sheet_names(bytes))
 }
 
-pub(crate) fn decode_one(bytes: &[u8], name: &str) -> Option<String> {
-    crate::ziptext::decode_one(bytes, name).or_else(|| crate::xlstext::decode_one(bytes, name))
+pub(crate) fn decode_one_entry(bytes: &[u8], name: &str) -> Option<Entry> {
+    crate::ziptext::decode_one_entry(bytes, name).or_else(|| {
+        crate::xlstext::decode_one(bytes, name).map(|text| Entry {
+            name: name.to_string(),
+            text,
+            is_binary: false,
+        })
+    })
 }
 
 pub(crate) fn parse(bytes: &[u8]) -> Option<Vec<Entry>> {

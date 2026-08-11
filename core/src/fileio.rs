@@ -146,8 +146,23 @@ pub struct Opened {
     // ZIP/.xls のエントリ一覧 (閲覧専用のフォルダビュー用)。buf は先頭エントリ
     pub entries: Option<Vec<crate::ziptext::Entry>>,
     pub byte_len: u64,             // ステータスバー表示用。開いた実体のバイト数
+    pub is_binary: bool,
     pub source_file: Option<File>, // mmap/アーカイブのみ排他保持。小ファイルは None
     pub stamp: Option<FileStamp>,  // ハンドル非保持 (=外部編集可) の場合のみ Some
+}
+
+pub(crate) fn is_binary_bytes(bytes: &[u8]) -> bool {
+    if bytes.starts_with(&[0xFF, 0xFE]) || bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        return false;
+    }
+    if bytes.contains(&0) {
+        return true;
+    }
+    if std::str::from_utf8(bytes).is_ok() {
+        return false;
+    }
+    let (_, _, had_errors) = SHIFT_JIS.decode(bytes);
+    had_errors
 }
 
 fn opened_from_entries(entries: Vec<crate::ziptext::Entry>, source_file: File) -> Opened {
@@ -158,6 +173,7 @@ fn opened_from_entries(entries: Vec<crate::ziptext::Entry>, source_file: File) -
         eol: Eol::Lf,
         entries: Some(entries),
         byte_len,
+        is_binary: false,
         source_file: Some(source_file),
         stamp: None,
     }
@@ -240,6 +256,7 @@ fn open_buffer_impl_with_progress(
             eol,
             entries: None,
             byte_len: len,
+            is_binary: is_binary_bytes(&bytes),
             source_file: Some(source_file),
             stamp: None,
         });
@@ -260,6 +277,7 @@ fn open_buffer_impl_with_progress(
                 eol,
                 entries: None,
                 byte_len: len,
+                is_binary: false,
                 source_file: Some(source_file),
                 stamp: None,
             });
@@ -274,6 +292,7 @@ fn open_buffer_impl_with_progress(
         eol,
         entries: None,
         byte_len: len,
+        is_binary: is_binary_bytes(&bytes),
         source_file: Some(source_file),
         stamp: None,
     })
@@ -289,6 +308,7 @@ fn read_released(
     let stamp = stamp_of(&probe)?;
     let bytes = read_locked(&probe)?;
     drop(probe);
+    let is_binary = is_binary_bytes(&bytes);
     let (text, enc) = decode_fn(&bytes)?;
     let eol = detect_eol(&text);
     Ok(Opened {
@@ -297,6 +317,7 @@ fn read_released(
         eol,
         entries: None,
         byte_len: len,
+        is_binary,
         source_file: None,
         stamp: Some(stamp),
     })
@@ -363,6 +384,7 @@ pub fn open_buffer_as_with_progress(
             eol,
             entries: None,
             byte_len: len,
+            is_binary: false,
             source_file: Some(source_file),
             stamp: None,
         });
@@ -376,6 +398,7 @@ pub fn open_buffer_as_with_progress(
         eol,
         entries: None,
         byte_len: len,
+        is_binary: is_binary_bytes(&bytes),
         source_file: Some(source_file),
         stamp: None,
     })

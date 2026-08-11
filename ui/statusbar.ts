@@ -170,6 +170,9 @@ export class StatusBar {
     source.disabled = session.readOnly || !session.savePath;
     source.title = session.sourceEncoding === "utf8bom" ? "読込文字コード: UTF-8 (BOMあり)" : "読込文字コード";
     this.pick("st-eol").textContent = session.sourceEol.toUpperCase();
+    const binary = this.pick<HTMLElement>("st-binary");
+    binary.hidden = !session.isBinary;
+    binary.textContent = session.isBinary ? "閲覧専用（バイナリ）" : "";
   }
 
   private async requestReadEncoding() {

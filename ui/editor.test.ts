@@ -166,6 +166,33 @@ describe("Feature: VirtualEditor", () => {
     });
   });
 
+  // Feature: SVGの全文プレビュー
+  // Scenario: SVGの一部を選択中に画像ビューを開く
+  // Given: SVG本文の一部が選択されている
+  // When: 画像ビューを開く
+  // Then: 選択部分ではなくSVG全文をプレビューへ渡す
+  it("Scenario: SVG image preview always uses the full document", async () => {
+    const openViewer = vi.fn<EditorPorts["openViewer"]>(async () => "inline-viewer");
+    const { editor } = mount("<svg>\n<rect/>\n</svg>", undefined, { openViewer });
+    editor.open(3, false);
+    await settle();
+    await editor.restoreViewState({
+      anchor: { line: 1, col: 0 },
+      caret: { line: 1, col: 7 },
+      topLine: 0,
+      wrapIntraLinePx: 0,
+      scrollLeft: 0,
+    });
+
+    await editor.openTextViewer("image");
+
+    expect(openViewer).toHaveBeenCalledWith("image", "<svg>\n<rect/>\n</svg>", {
+      start: { line: 1, col: 0 },
+      end: { line: 1, col: 7 },
+      caret: { line: 1, col: 7 },
+    });
+  });
+
   // Given: 文書が「ab」、編集モードで開かれ、既存の .ve-line・.ve-gnum と lines(...) 呼び出し数を記録している
   // When: 「X」を入力してから改行を入力する
   // Then: 1回目は文書が「Xab」、既存DOMノードを維持し lines(...) 呼び出し数も不変、2回目は文書が「X\nab」かつ lineCount が2になる

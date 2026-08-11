@@ -573,6 +573,7 @@ pub fn parse(bytes: &[u8]) -> Option<Vec<Entry>> {
         return Some(vec![Entry {
             name: "(未対応)".to_string(),
             text: "(BIFF8 以外の旧形式 .xls のため未対応)".to_string(),
+            is_binary: false,
         }]);
     }
 
@@ -587,7 +588,7 @@ pub fn parse(bytes: &[u8]) -> Option<Vec<Entry>> {
                 .cloned()
                 .unwrap_or_else(|| format!("Sheet{}", sheet_idx + 1));
             sheet_idx += 1;
-            entries.push(Entry { name, text: cells_to_text(&cells) });
+            entries.push(Entry { name, text: cells_to_text(&cells), is_binary: false });
         }
     }
     if entries.is_empty() {

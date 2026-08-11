@@ -16,7 +16,6 @@ import { ExternalWatch } from "./external-watch";
 import { confirmExternalMerge, isExternalMergeRetryError } from "./external-merge";
 import {
   FolderActions,
-  isImagePath,
   openInOtherApp,
   revealInExplorer,
   type FolderActionsServices,
@@ -47,7 +46,7 @@ import { searchResultGoto } from "./search-results";
 import { runAsyncBoundary, reportUnhandledRejection } from "./async-boundary";
 import { openPath as openPathInTabs } from "./path-opener";
 import { InlinePreview } from "./inline-preview";
-import { viewerFormatForPath } from "./viewer-formats";
+import { isAssetViewerFormat, viewerFormatForPath } from "./viewer-formats";
 import { documentPathOf, type DocumentSession } from "./session";
 import {
   isPreviewFullscreen,
@@ -240,10 +239,11 @@ function runPreviewBackground(path: string, title: string, operation: () => void
 
 function syncPreviewDocument(session: Readonly<DocumentSession>, force = false) {
   const path = documentPathOf(session);
-  const sourcePath = session.savePath ?? (isImagePath(session.displayPath) ? session.displayPath : null);
-  inlinePreview.setSourcePath(sourcePath, session.archivePath, session.archiveEntry);
-  if (!force && path === previewDocumentPath && !isImagePath(session.displayPath)) return;
   const format = viewerFormatForPath(path);
+  const isAssetPreview = isAssetViewerFormat(format);
+  const sourcePath = session.savePath ?? (isAssetPreview ? session.displayPath : null);
+  inlinePreview.setSourcePath(sourcePath, session.archivePath, session.archiveEntry);
+  if (!force && path === previewDocumentPath && !isAssetPreview) return;
   if (!format) {
     previewDocumentPath = path;
     statusbar.setPreviewFormat(null);

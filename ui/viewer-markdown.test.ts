@@ -39,6 +39,15 @@ describe("Feature: Markdown viewer specifications", () => {
       .toBe("&lt;script&gt;alert(1)&lt;/script&gt;");
   });
 
+  // Feature: Markdownの明示改行
+  // Scenario: 生HTMLのbrを使う
+  // Given: 改行だけを表す`<br>`がある
+  // When: `renderRawHtml`を呼ぶ
+  // Then: 安全な改行要素としてそのまま描画する
+  it("Scenario: br要素をMarkdownの改行として許可する", () => {
+    expect(renderRawHtml("<br>", escape)).toBe("<br>");
+  });
+
   // Given: outer範囲`0..3`内にinner範囲`1..2`とnext範囲`3..4`を配置
   // When: `markdownHighlightTargets`を呼ぶ
   // Then: `[inner, next]`だけを返す

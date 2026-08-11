@@ -7,7 +7,7 @@
 // 変換は to_byte / to_char が担う (グラフェムは非対応 = ネイティブ版と同じ割り切り)。
 use crate::archive_port::{self, ArchivePort};
 use crate::buffer::{Pos, TextBuffer};
-use crate::document_source::{is_image_path, DocumentSource, SourceKind, Target};
+use crate::document_source::{is_binary_image_path, DocumentSource, SourceKind, Target};
 use crate::document_assets::{
     archive_entry_parent, archive_entry_stem, archive_join, cleanup_image_dir,
     next_archive_image_name, referenced_image_files, remove_empty_dir,
@@ -81,6 +81,7 @@ pub struct Doc {
     source: DocumentSource,
     replace_progress: Option<search_replace::ReplaceProgress>, // 全置換のチャンク間進行状態
     byte_len: u64,                             // ステータスバー表示用。開いた実体のバイト数
+    is_binary: bool,
     // 小ファイルの外部変更を3-wayマージするための、最後に採用した本文。
     merge_base: Option<Vec<String>>,
     // プレビューと適用で同じ外部スナップショットを使い、確認後の再変更を検知する。
@@ -165,6 +166,7 @@ impl Doc {
             source: DocumentSource::untitled(),
             replace_progress: None,
             byte_len: 0,
+            is_binary: false,
             merge_base: None,
             pending_merge: None,
             sevenz_passwords: HashMap::new(),
@@ -252,6 +254,7 @@ impl Doc {
                     },
                     replace_progress: None,
                     byte_len,
+                    is_binary: false,
                     merge_base: None,
                     pending_merge: None,
                     sevenz_passwords: HashMap::new(),
@@ -278,24 +281,21 @@ impl Doc {
         } else {
             DocumentSource::file(path.to_path_buf(), o.source_file, o.stamp)
         };
-        let merge_base = if o.stamp.is_some() && !is_image_path(path) {
+        let is_binary = o.is_binary || is_binary_image_path(path);
+        let merge_base = if o.stamp.is_some() && !is_binary {
             Some(buffer_lines(&o.buf))
         } else {
             None
         };
-        let buf = if is_image_path(path) {
-            TextBuffer::from_text(&format!("(バイナリ: {} bytes)", o.byte_len))
-        } else {
-            o.buf
-        };
         Ok(Doc {
-            buf,
+            buf: o.buf,
             undo: UndoStack::new(),
             enc: o.enc,
             eol: o.eol,
             source,
             replace_progress: None,
             byte_len: o.byte_len,
+            is_binary,
             merge_base,
             pending_merge: None,
             sevenz_passwords: HashMap::new(),
@@ -316,7 +316,8 @@ impl Doc {
 
     // ディスクから読み直した Opened で文書全体を差し替える (undo/検索状態は破棄)。
     fn adopt_opened(&mut self, path: PathBuf, o: fileio::Opened) -> io::Result<DocInfo> {
-        let merge_base = if o.stamp.is_some() && !is_image_path(&path) {
+        let is_binary = o.is_binary || is_binary_image_path(&path);
+        let merge_base = if o.stamp.is_some() && !is_binary {
             Some(buffer_lines(&o.buf))
         } else {
             None
@@ -325,19 +326,15 @@ impl Doc {
             root: self.source.folder_root().map(Path::to_path_buf),
             ..DocumentSource::file(path.clone(), o.source_file, o.stamp)
         };
-        let buf = if is_image_path(&path) {
-            TextBuffer::from_text(&format!("(バイナリ: {} bytes)", o.byte_len))
-        } else {
-            o.buf
-        };
         let replacement = Doc {
-            buf,
+            buf: o.buf,
             undo: UndoStack::new(),
             enc: o.enc,
             eol: o.eol,
             source,
             replace_progress: None,
             byte_len: o.byte_len,
+            is_binary,
             merge_base,
             pending_merge: None,
             sevenz_passwords: std::mem::take(&mut self.sevenz_passwords),
@@ -473,7 +470,8 @@ impl Doc {
         })?;
         self.source.set_stamp(Some(stamp));
         self.byte_len = opened.byte_len;
-        self.merge_base = Some(buffer_lines(&opened.buf));
+        self.is_binary = opened.is_binary || is_binary_image_path(&path);
+        self.merge_base = (!self.is_binary).then(|| buffer_lines(&opened.buf));
         self.pending_merge = None;
         self.info(display_path)
     }
@@ -498,7 +496,8 @@ impl Doc {
                 .source
                 .folder_root()
                 .map(|p| p.to_string_lossy().into_owned()),
-            view_only: self.source.is_view_only(),
+            view_only: self.is_view_only(),
+            is_binary: self.is_binary,
             byte_len: self.byte_len,
             is_huge: self.buf.is_huge(),
             modified_at: fileio::modified_at_from_stamp_or_path(
@@ -510,6 +509,10 @@ impl Doc {
 
     pub fn line_count(&self) -> usize {
         self.buf.line_count()
+    }
+
+    fn is_view_only(&self) -> bool {
+        self.is_binary || self.source.is_view_only()
     }
 
     // 可視範囲の行テキスト (char列そのまま)。全文は渡さない。
@@ -540,23 +543,24 @@ impl Doc {
             {
                 let archive_real = join_relative(&root, archive_rel);
                 let source_file = fileio::open_exclusive(&archive_real)?;
-                let (text, meta) = if self.archive_port.supports_path(&archive_real) {
+                let (text, meta, is_binary) = if self.archive_port.supports_path(&archive_real) {
                     self.decode_archive_entry(&archive_real, entry_name)?
                 } else {
                     let bytes = fileio::read_locked(&source_file)?;
-                    let text = crate::archive::decode_one(&bytes, entry_name).ok_or_else(|| {
+                    let entry = crate::archive::decode_one_entry(&bytes, entry_name).ok_or_else(|| {
                         io::Error::new(
                             io::ErrorKind::InvalidData,
                             "アーカイブのエントリが見つかりません",
                         )
                     })?;
-                    (text, None)
+                    (entry.text, None, entry.is_binary)
                 };
                 if let Some((enc, eol)) = meta {
                     self.enc = enc;
                     self.eol = eol;
                 }
                 self.byte_len = text.len() as u64;
+                self.is_binary = is_binary;
                 self.buf = TextBuffer::from_text(&text);
                 self.merge_base = None;
                 self.pending_merge = None;
@@ -584,7 +588,7 @@ impl Doc {
             *self = d;
             return Ok(Some(info));
         }
-        let (archive_path, text, meta) = match &self.source.target {
+        let (archive_path, text, meta, is_binary) = match &self.source.target {
             Target::Archive {
                 path,
                 source_file,
@@ -593,12 +597,12 @@ impl Doc {
             } => {
                 if self.archive_port.supports_path(path) {
                     let path = path.clone();
-                    let (text, meta) = self.decode_archive_entry(&path, rel_path)?;
-                    (path.to_string_lossy().into_owned(), text, meta)
+                    let (text, meta, is_binary) = self.decode_archive_entry(&path, rel_path)?;
+                    (path.to_string_lossy().into_owned(), text, meta, is_binary)
                 } else {
-                    let text = if let Some(entries) = entries {
+                    let (text, is_binary) = if let Some(entries) = entries {
                         match entries.iter().find(|entry| entry.name == rel_path) {
-                            Some(entry) => entry.text.clone(),
+                            Some(entry) => (entry.text.clone(), entry.is_binary),
                             None => return Ok(None),
                         }
                     } else {
@@ -609,14 +613,15 @@ impl Doc {
                             ));
                         };
                         let bytes = fileio::read_locked(source_file)?;
-                        crate::archive::decode_one(&bytes, rel_path).ok_or_else(|| {
+                        let entry = crate::archive::decode_one_entry(&bytes, rel_path).ok_or_else(|| {
                             io::Error::new(
                                 io::ErrorKind::InvalidData,
                                 "アーカイブのエントリが見つかりません",
                             )
-                        })?
+                        })?;
+                        (entry.text, entry.is_binary)
                     };
-                    (path.to_string_lossy().into_owned(), text, None)
+                    (path.to_string_lossy().into_owned(), text, None, is_binary)
                 }
             }
             _ => return Ok(None),
@@ -629,6 +634,7 @@ impl Doc {
             *editable_entry = meta.map(|_| rel_path.to_string());
         }
         self.byte_len = text.len() as u64;
+        self.is_binary = is_binary;
         self.buf = TextBuffer::from_text(&text);
         self.merge_base = None;
         self.pending_merge = None;
@@ -637,12 +643,12 @@ impl Doc {
     }
 
     // 7z/zip の1エントリを展開してテキスト化する。編集して書き戻せる (=テキストとして
-    // 復元可能な) 場合のみ検出した enc/eol を返す。バイナリ等は説明文 + None (閲覧専用)。
+    // 復元可能な) 場合のみ検出した enc/eol を返す。展開できたバイナリは生表示 + None (閲覧専用)。
     fn decode_archive_entry(
         &self,
         archive: &Path,
         entry: &str,
-    ) -> io::Result<(String, Option<(Encoding, Eol)>)> {
+    ) -> io::Result<(String, Option<(Encoding, Eol)>, bool)> {
         let bytes = match self
             .archive_port
             .extract(archive, entry, self.sevenz_password(archive))
@@ -655,14 +661,17 @@ impl Doc {
                 // テスト用の最小 ZIP や一部の古い ZIP は CRC 情報が厳密でないことがある。
                 // 7z で読めない場合だけ既存の軽量パーサへ戻し、通常の ZIP 互換性を保つ。
                 let raw = std::fs::read(archive)?;
-                let text = crate::archive::decode_one(&raw, entry).ok_or(error)?;
-                let editable = !text.starts_with("(バイナリ:")
+                let decoded = crate::archive::decode_one_entry(&raw, entry).ok_or(error)?;
+                let text = decoded.text;
+                let is_binary = decoded.is_binary;
+                let editable = !is_binary
                     && !text.starts_with("(暗号化エントリ)")
                     && !text.starts_with("(未対応の圧縮方式:")
                     && !text.starts_with("(サイズ超過のためスキップ:");
                 return Ok((
                     text.clone(),
                     editable.then_some((Encoding::Utf8 { bom: false }, fileio::detect_eol(&text))),
+                    is_binary,
                 ));
             }
             Err(error) => return Err(self.annotate_sevenz_error(archive, error)),
@@ -671,15 +680,16 @@ impl Doc {
             return Ok((
                 format!("(サイズ超過のためスキップ: {} bytes)", bytes.len()),
                 None,
+                false,
             ));
         }
-        // UTF-16 (BOM付き) 以外で NUL を含むものはバイナリとみなし書き戻し対象から外す
-        if !bytes.starts_with(&[0xFF, 0xFE]) && bytes.contains(&0) {
-            return Ok((format!("(バイナリ: {} bytes)", bytes.len()), None));
+        let is_binary = is_binary_image_path(Path::new(entry)) || fileio::is_binary_bytes(&bytes);
+        if is_binary {
+            return Ok((fileio::decode(&bytes).0, None, true));
         }
         let (text, enc) = fileio::decode(&bytes);
         let eol = fileio::detect_eol(&text);
-        Ok((text, Some((enc, eol))))
+        Ok((text, Some((enc, eol)), false))
     }
 
     fn sevenz_password(&self, archive: &Path) -> &str {
@@ -929,7 +939,7 @@ impl Doc {
 
     // メモごとに画像を分けないと、同じフォルダ内のメモ同士で画像の持ち主が分からなくなる。
     pub fn save_pasted_image(&mut self, bytes: &[u8], mime_type: &str) -> io::Result<String> {
-        if self.source.is_view_only() {
+        if self.is_view_only() {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "閲覧専用の文書には画像を貼り付けられません",
@@ -1037,7 +1047,7 @@ impl Doc {
 
     // 本文から参照が消えた画像を削除する。旧 image フォルダも既存メモのために整理する。
     pub fn cleanup_unused_images(&mut self) -> io::Result<()> {
-        if self.source.is_view_only() {
+        if self.is_view_only() {
             return Ok(());
         }
         if let Target::Archive {
@@ -1197,7 +1207,7 @@ impl Doc {
         coalesce: bool,
     ) -> Option<EditResult> {
         // 閲覧専用文書は「編集できた」と嘘をつかず None を返す (呼び出し側でエラーにする)
-        if self.source.is_view_only() {
+        if self.is_view_only() {
             return None;
         }
         let s = self.to_byte(start);
@@ -1217,7 +1227,7 @@ impl Doc {
         caret_before: PosC,
         primary_index: usize,
     ) -> Option<EditManyResult> {
-        if self.source.is_view_only() {
+        if self.is_view_only() {
             return None;
         }
         if items.is_empty() {
@@ -1318,7 +1328,7 @@ impl Doc {
         match_case: bool,
         budget: usize,
     ) -> ReplaceChunkResult {
-        if self.source.is_view_only() || pat.is_empty() {
+        if self.is_view_only() || pat.is_empty() {
             return ReplaceChunkResult {
                 done: true,
                 count: 0,
@@ -1376,7 +1386,7 @@ impl Doc {
                 return self.save_archive_entry(&archive_path, &entry, enc, eol);
             }
         }
-        if self.source.is_view_only() {
+        if self.is_view_only() {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "閲覧専用文書は保存できません",
@@ -1424,7 +1434,7 @@ impl Doc {
                 self.buf = old_buf;
                 self.enc = enc;
                 self.eol = eol;
-                self.merge_base = (!self.buf.is_huge() && !is_image_path(path))
+                self.merge_base = (!self.buf.is_huge() && !self.is_binary && !is_binary_image_path(path))
                     .then(|| buffer_lines(&self.buf));
                 let stamp = match fileio::stamp(path) {
                     Ok(stamp) => Some(stamp),
@@ -1453,7 +1463,8 @@ impl Doc {
             }
         };
         let modified_at = fileio::modified_at_from_stamp_or_path(o.stamp, Some(path));
-        let merge_base = if o.stamp.is_some() && !is_image_path(path) {
+        let is_binary = o.is_binary || is_binary_image_path(path);
+        let merge_base = if o.stamp.is_some() && !is_binary {
             Some(buffer_lines(&o.buf))
         } else {
             None
@@ -1462,6 +1473,7 @@ impl Doc {
         self.enc = enc;
         self.eol = eol;
         self.byte_len = o.byte_len;
+        self.is_binary = is_binary;
         self.source = DocumentSource {
             root: workspace_root,
             ..DocumentSource::file(path.to_path_buf(), o.source_file, o.stamp)
@@ -1658,6 +1670,7 @@ mod tests {
             },
             replace_progress: None,
             byte_len: 0,
+            is_binary: false,
             merge_base: None,
             pending_merge: None,
             sevenz_passwords: HashMap::new(),
@@ -1873,9 +1886,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    // バイナリエントリは説明文表示のみで編集不可のまま
+    // Feature: アーカイブ内バイナリの表示とロック
+    // Scenario: 7z内のバイナリエントリを開く
+    // Given: NULを含むバイナリエントリがある
+    // When: エントリを選択する
+    // Then: 生内容を表示し、編集・保存できない
     #[test]
-    fn sevenz_binary_entry_stays_view_only() {
+    fn sevenz_binary_entry_shows_raw_content_and_stays_view_only() {
         if !crate::sevenz::available() {
             return;
         }
@@ -1889,10 +1906,17 @@ mod tests {
         let mut d = Doc::open(&archive).unwrap();
         let info = d.select_entry("a.bin").unwrap().unwrap();
         assert!(info.view_only);
-        assert_eq!(d.lines(0, 1), vec!["(バイナリ: 4 bytes)".to_string()]);
+        assert!(info.is_binary);
+        assert!(d.lines(0, 1)[0].contains('\0'));
         assert!(d
             .edit(pos(0, 0), pos(0, 0), pos(0, 0), "X", false)
             .is_none());
+        assert_eq!(
+            d.save(&archive, Encoding::Utf8 { bom: false }, Eol::Lf)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1905,6 +1929,7 @@ mod tests {
             source: DocumentSource::untitled(),
             replace_progress: None,
             byte_len: 0,
+            is_binary: false,
             merge_base: None,
             pending_merge: None,
             sevenz_passwords: HashMap::new(),
@@ -2491,25 +2516,122 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
     }
 
-    // Feature: 画像ファイルを右側プレビューへ渡すための簡易エディタ表示
+    // Feature: 画像バイナリの内容表示
     // Scenario: 画像ファイルを開く
     // Given: PNG形式のファイルがある
     // When: そのファイルを文書として開く
-    // Then: バイナリサイズを表示し、編集不可になる
+    // Then: 内容を置換せずに表示し、編集・保存はできない
     #[test]
-    fn image_file_shows_binary_description_and_is_view_only() {
+    fn image_file_shows_raw_content_and_is_view_only() {
         let root = std::env::temp_dir().join(format!("wasabipad_image_doc_{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join("picture.PNG");
-        let bytes = [0x89, b'P', b'N', b'G', 0x0d, 0x0a];
+        let bytes = b"raw image bytes\n";
         std::fs::write(&path, bytes).unwrap();
 
         let mut d = Doc::open(&path).unwrap();
         let info = d.info(path.to_string_lossy().into_owned()).unwrap();
         assert!(info.view_only);
-        assert_eq!(d.lines(0, 1), vec!["(バイナリ: 6 bytes)".to_string()]);
+        assert!(info.is_binary);
+        assert_eq!(d.lines(0, 2), vec!["raw image bytes", ""]);
         assert!(d.edit(p(0, 0), p(0, 0), p(0, 0), "X", false).is_none());
+        assert_eq!(
+            d.save(&path, Encoding::Utf8 { bom: false }, Eol::Lf)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied,
+        );
 
+        drop(d);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    // Feature: NULを含むバイナリの閲覧専用表示
+    // Scenario: 拡張子では判定できないバイナリを開く
+    // Given: NULを含む`.bin`ファイルがある
+    // When: そのファイルを文書として開く
+    // Then: 内容を表示しつつ、編集・保存はできない
+    #[test]
+    fn nul_binary_file_shows_raw_content_and_is_view_only() {
+        let root = std::env::temp_dir().join(format!("wasabipad_binary_doc_{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("payload.bin");
+        std::fs::write(&path, b"A\0B\n").unwrap();
+
+        let mut d = Doc::open(&path).unwrap();
+        let info = d.info(path.to_string_lossy().into_owned()).unwrap();
+        assert!(info.view_only);
+        assert!(info.is_binary);
+        assert_eq!(d.lines(0, 2), vec!["A\0B", ""]);
+        assert!(d.edit(p(0, 0), p(0, 0), p(0, 0), "X", false).is_none());
+        assert_eq!(
+            d.save(&path, Encoding::Utf8 { bom: false }, Eol::Lf)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied,
+        );
+
+        drop(d);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    // Feature: NULを含まないバイナリの編集ロック
+    // Scenario: UTF-8とShift-JISのどちらとしても不正なデータを開く
+    // Given: NULを含まないバイト列`0x81`のファイルがある
+    // When: 文書として開く
+    // Then: 文字化けした内容を表示しつつ、バイナリとして編集・保存を拒否する
+    #[test]
+    fn invalid_encoded_binary_shows_lossy_content_and_is_view_only() {
+        let root = std::env::temp_dir().join(format!(
+            "wasabipad_invalid_binary_doc_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("payload.bin");
+        std::fs::write(&path, [0x81]).unwrap();
+
+        let mut d = Doc::open(&path).unwrap();
+        let info = d.info(path.to_string_lossy().into_owned()).unwrap();
+        assert!(info.view_only);
+        assert!(info.is_binary);
+        assert!(!d.lines(0, 1)[0].is_empty());
+        assert!(d.edit(p(0, 0), p(0, 0), p(0, 0), "X", false).is_none());
+        assert_eq!(
+            d.save(&path, Encoding::Utf8 { bom: false }, Eol::Lf)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied,
+        );
+
+        drop(d);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    // Feature: SVGファイルのテキスト編集
+    // Scenario: SVGファイルを開いて編集・保存する
+    // Given: XMLとして読めるSVGファイルがある
+    // When: SVG本文を編集して保存する
+    // Then: SVGは閲覧専用にならず、編集内容が実ファイルへ保存される
+    #[test]
+    fn svg_file_is_text_editable_and_savable() {
+        let root = std::env::temp_dir().join(format!("wasabipad_svg_doc_{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("picture.svg");
+        let original = "<svg>\n<rect/>\n</svg>\n";
+        std::fs::write(&path, original).unwrap();
+
+        let mut d = Doc::open(&path).unwrap();
+        let info = d.info(path.to_string_lossy().into_owned()).unwrap();
+        assert!(!info.view_only);
+        assert!(!info.is_binary);
+        assert_eq!(d.lines(0, 4), vec!["<svg>", "<rect/>", "</svg>", ""]);
+
+        d.edit(p(1, 5), p(1, 5), p(1, 5), " fill=\"red\"", false)
+            .unwrap();
+        d.save(&path, Encoding::Utf8 { bom: false }, Eol::Lf)
+            .unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "<svg>\n<rect fill=\"red\"/>\n</svg>\n");
         drop(d);
         std::fs::remove_dir_all(&root).unwrap();
     }
@@ -2687,9 +2809,10 @@ mod tests {
             .unwrap();
         assert!(matches!(outcome, SaveOutcome::Saved { .. }));
         let saved = std::fs::read(&zpath).unwrap();
+        let saved_entry = crate::archive::decode_one_entry(&saved, "memo.txt").unwrap();
         assert_eq!(
-            crate::archive::decode_one(&saved, "memo.txt").as_deref(),
-            Some("Xsecret text")
+            saved_entry.text,
+            "Xsecret text"
         );
 
         drop(d);

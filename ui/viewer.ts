@@ -17,7 +17,7 @@ import { normalizeTheme, THEME_STORAGE_KEY } from "./theme";
 import { showError } from "./dialogs";
 import { WindowControls } from "./window-controls";
 import { reportWindowOperationError, runWindowOperation } from "./window-operation";
-import { imageMimeType } from "./image-formats";
+import { imageExtensionOf, imageMimeType } from "./image-formats";
 import {
   scrollMarkdownCaret,
 } from "./viewer-markdown";
@@ -29,8 +29,21 @@ import {
 import { openViewerDelimiterDialog } from "./viewer-delimiter-dialog";
 import { INLINE_PREVIEW_MESSAGES } from "./inline-preview-protocol";
 import { isViewerPayload } from "./viewer-payload";
-import { imageUrlFromArchive, imageUrlFromPath, revokeImageUrl } from "./viewer-image-source";
-import { createImagePreview, markImageLoadFailure } from "./viewer-image";
+import {
+  imageUrlFromArchive,
+  imageUrlFromPath,
+  imageUrlFromPathWithCacheBust,
+  imageUrlFromText,
+  revokeImageUrl,
+} from "./viewer-image-source";
+import {
+  bindImagePan,
+  createImagePreview,
+  DEFAULT_IMAGE_ZOOM,
+  markImageLoadFailure,
+  setImageZoom,
+  zoomImageByWheel,
+} from "./viewer-image";
 import { createPdfPreview, markPdfLoadFailure } from "./viewer-pdf";
 import { createHtmlPreview } from "./viewer-html";
 import { createAsyncUnlisten } from "./async-unlisten";
@@ -77,6 +90,8 @@ let currentSourcePath: string | null = null;
 let currentArchivePath: string | null = null;
 let currentArchiveEntry: string | null = null;
 let renderGeneration = 0;
+let imageZoom = DEFAULT_IMAGE_ZOOM;
+let disposeImagePan: (() => void) | null = null;
 const archiveAssetTracker = new ViewerAssetTracker(revokeImageUrl);
 let csvColumnWidths: number[] = [];
 let fontFamily = getSetting("fontFamily");
@@ -185,6 +200,8 @@ function setFullscreenButton(fullscreen: boolean) {
 }
 
 function disposeViewer() {
+  disposeImagePan?.();
+  disposeImagePan = null;
   try {
     viewerUpdateListener.dispose();
   } catch (error) {
@@ -222,6 +239,15 @@ async function promptFontSize() {
 function onViewerWheel(event: WheelEvent) {
   if (!event.ctrlKey) return;
   event.preventDefault();
+  if (currentFormat === "image") {
+    const image = content.querySelector<HTMLImageElement>(".viewer-image");
+    if (image && event.deltaY) {
+      imageZoom = zoomImageByWheel(image, imageZoom, event.deltaY);
+      const source = currentArchiveEntry ?? currentSourcePath ?? "image";
+      summary.textContent = `${basename(source)} ${Math.round(imageZoom * 100)}%`;
+    }
+    return;
+  }
   if (event.deltaY) applyFontSize(clampFontSize(fontSize + (event.deltaY < 0 ? 1 : -1)));
 }
 
@@ -338,7 +364,7 @@ async function loadArchiveImages(
       }
       const resolved = resolveAssetPath(currentSourcePath, src);
       if (resolved && generation === renderGeneration) {
-        image.src = imageUrlFromPath(resolved);
+        image.src = imageUrlFromPathWithCacheBust(resolved, generation);
         await waitForImageLayout(image);
       }
     } catch (error) {
@@ -388,6 +414,8 @@ async function renderAssetPreview(
   name: string,
   mimeType: string,
   createTarget: () => AssetPreviewTarget,
+  sourceText?: string,
+  cacheBustFile = false,
 ) {
   const generation = ++renderGeneration;
   const sourcePath = currentSourcePath;
@@ -401,48 +429,64 @@ async function renderAssetPreview(
   content.replaceChildren(target.wrapper);
   summary.classList.remove("warning");
   summary.title = "";
-  summary.textContent = name;
+  summary.textContent = currentFormat === "image" ? `${name} ${Math.round(imageZoom * 100)}%` : name;
 
-  let archiveUrl: string | null = null;
-  let keepArchiveUrl = false;
+  let assetUrl: string | null = null;
+  let keepAssetUrl = false;
   try {
-    if (archivePath && archiveEntry) {
-      archiveUrl = await imageUrlFromArchive(archivePath, archiveEntry, mimeType);
-      if (!retainArchiveAssetUrl(archiveUrl, generation)) {
-        archiveUrl = null;
+    if (sourceText !== undefined) {
+      assetUrl = imageUrlFromText(sourceText, mimeType);
+      if (!retainArchiveAssetUrl(assetUrl, generation)) {
+        assetUrl = null;
         return;
       }
-      target.setSource(archiveUrl);
+      target.setSource(assetUrl);
+    } else if (archivePath && archiveEntry) {
+      assetUrl = await imageUrlFromArchive(archivePath, archiveEntry, mimeType);
+      if (!retainArchiveAssetUrl(assetUrl, generation)) {
+        assetUrl = null;
+        return;
+      }
+      target.setSource(assetUrl);
     } else if (sourcePath && generation === renderGeneration) {
-      target.setSource(imageUrlFromPath(sourcePath));
+      target.setSource(cacheBustFile
+        ? imageUrlFromPathWithCacheBust(sourcePath, generation)
+        : imageUrlFromPath(sourcePath));
     } else {
       target.markFailure();
       return;
     }
     await target.waitForReady?.();
-    keepArchiveUrl = true;
+    keepAssetUrl = true;
   } catch (error) {
     if (generation !== renderGeneration) return;
     target.markFailure();
     throw error;
   } finally {
-    if (archiveUrl && (!keepArchiveUrl || generation !== renderGeneration)) {
-      releaseArchiveAssetUrl(archiveUrl);
+    if (assetUrl && (!keepAssetUrl || generation !== renderGeneration)) {
+      releaseArchiveAssetUrl(assetUrl);
     }
   }
 }
 
-async function renderImage(_text: string) {
-  const name = basename(currentArchiveEntry ?? currentSourcePath ?? "image");
-  return renderAssetPreview(name, imageMimeType(currentArchiveEntry ?? ""), () => {
+async function renderImage(text: string) {
+  const source = currentArchiveEntry ?? currentSourcePath ?? "image";
+  const name = basename(source);
+  const mimeType = imageMimeType(source);
+  const editedSvg = imageExtensionOf(source) === "svg" ? text : undefined;
+  return renderAssetPreview(name, mimeType, () => {
     const { wrapper, image } = createImagePreview(name);
+    disposeImagePan = bindImagePan(image, content);
     return {
       wrapper,
       setSource: (url) => { image.src = url; },
-      waitForReady: () => waitForImageLayout(image),
+      waitForReady: async () => {
+        await waitForImageLayout(image);
+        setImageZoom(image, imageZoom);
+      },
       markFailure: () => markImageLoadFailure(image, name),
     };
-  });
+  }, editedSvg, true);
 }
 
 async function renderPdf(_text: string) {
@@ -517,18 +561,22 @@ const VIEWER_HANDLERS = createViewerFormatHandlers({
 
 function renderPayload(payload: ViewerPayload) {
   if (!isViewerPayload(payload)) throw new Error("ビューのデータが不正です");
-  if (payload.format !== currentFormat
-    || payload.source_path !== currentSourcePath
+  const sourceChanged = payload.source_path !== currentSourcePath
     || payload.archive_path !== currentArchivePath
-    || payload.archive_entry !== currentArchiveEntry) {
+    || payload.archive_entry !== currentArchiveEntry;
+  if (payload.format !== currentFormat
+    || sourceChanged) {
     csvColumnWidths = [];
   }
+  if (sourceChanged) imageZoom = DEFAULT_IMAGE_ZOOM;
   currentFormat = payload.format;
   currentText = payload.text;
   currentSelection = payload.selection as ViewerSelectionWithCaret | null;
   currentSourcePath = payload.source_path;
   currentArchivePath = payload.archive_path;
   currentArchiveEntry = payload.archive_entry;
+  disposeImagePan?.();
+  disposeImagePan = null;
   const handler = VIEWER_HANDLERS[payload.format];
   syncViewerFormatButtons(formatButtons, payload.format, currentArchiveEntry ?? currentSourcePath);
   const formatSpec = viewerFormatSpec(payload.format);

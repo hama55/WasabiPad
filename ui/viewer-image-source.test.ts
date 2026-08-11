@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { imageUrlFromArchive, imageUrlFromPath, revokeImageUrl, type ImageAssetSourcePorts } from "./viewer-image-source";
+import {
+  imageUrlFromArchive,
+  imageUrlFromPath,
+  imageUrlFromPathWithCacheBust,
+  imageUrlFromText,
+  revokeImageUrl,
+  type ImageAssetSourcePorts,
+} from "./viewer-image-source";
 
 function ports(overrides: Partial<ImageAssetSourcePorts> = {}): ImageAssetSourcePorts {
   return {
@@ -19,6 +26,38 @@ describe("Feature: viewer image asset source", () => {
     const source = ports();
 
     expect(imageUrlFromPath("C:\\work\\photo.png", source)).toBe("asset://C:\\work\\photo.png");
+  });
+
+  // Feature: PDFの直接プレビューURL
+  // Scenario: PDFファイルを直接開く
+  // Given: PDFへのファイルURL生成ポートがある
+  // When: PDFのプレビューURLを作る
+  // Then: PDFビューア互換のためキャッシュ破棄クエリを付けない
+  it("Scenario: keeps direct PDF URLs free of cache-busting queries", () => {
+    const source = ports();
+
+    expect(imageUrlFromPath("C:\\work\\manual.pdf", source)).toBe("asset://C:\\work\\manual.pdf");
+  });
+
+  // Given: 同じ画像パスへ変換するファイルURL生成ポートと再描画世代`2`
+  // When: キャッシュ破棄付きの画像URLを作る
+  // Then: 同じファイルでもWebViewが別リソースとして取得するクエリを付ける
+  it("Scenario: adds a cache-busting query to refreshed file images", () => {
+    const source = ports();
+
+    expect(imageUrlFromPathWithCacheBust("C:\\work\\photo.png", 2, source))
+      .toBe("asset://C:\\work\\photo.png?wasabipad=2");
+  });
+
+  // Given: SVG本文をBlob URLへ変換する画像ソースポート
+  // When: 編集中のSVG本文から画像URLを作る
+  // Then: SVG MIME type付きのBlob URLを返す
+  it("Scenario: creates a Blob URL from edited SVG text", () => {
+    const createObjectURL = vi.fn(() => "blob:svg");
+    const source = ports({ createObjectURL });
+
+    expect(imageUrlFromText("<svg/>", "image/svg+xml", source)).toBe("blob:svg");
+    expect(createObjectURL).toHaveBeenCalledWith(expect.objectContaining({ type: "image/svg+xml" }));
   });
 
   // Given: アーカイブ画像の読込ポートがある
