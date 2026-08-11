@@ -60,6 +60,10 @@ fn buffer_lines(buf: &TextBuffer) -> Vec<String> {
         .collect()
 }
 
+fn opened_is_binary(opened: &fileio::Opened, path: &Path) -> bool {
+    opened.is_binary || is_binary_image_path(path)
+}
+
 enum ArchiveCommandOutcome {
     Reopened,
     ReopenFailed(io::Error),
@@ -268,6 +272,7 @@ impl Doc {
         } else {
             fileio::open_buffer(path)?
         };
+        let is_binary = opened_is_binary(&o, path);
         let source = if let Some(entries) = o.entries {
             DocumentSource {
                 root: None,
@@ -281,7 +286,6 @@ impl Doc {
         } else {
             DocumentSource::file(path.to_path_buf(), o.source_file, o.stamp)
         };
-        let is_binary = o.is_binary || is_binary_image_path(path);
         let merge_base = if o.stamp.is_some() && !is_binary {
             Some(buffer_lines(&o.buf))
         } else {
@@ -316,7 +320,7 @@ impl Doc {
 
     // ディスクから読み直した Opened で文書全体を差し替える (undo/検索状態は破棄)。
     fn adopt_opened(&mut self, path: PathBuf, o: fileio::Opened) -> io::Result<DocInfo> {
-        let is_binary = o.is_binary || is_binary_image_path(&path);
+        let is_binary = opened_is_binary(&o, &path);
         let merge_base = if o.stamp.is_some() && !is_binary {
             Some(buffer_lines(&o.buf))
         } else {
@@ -470,7 +474,7 @@ impl Doc {
         })?;
         self.source.set_stamp(Some(stamp));
         self.byte_len = opened.byte_len;
-        self.is_binary = opened.is_binary || is_binary_image_path(&path);
+        self.is_binary = opened_is_binary(&opened, &path);
         self.merge_base = (!self.is_binary).then(|| buffer_lines(&opened.buf));
         self.pending_merge = None;
         self.info(display_path)
@@ -1463,7 +1467,7 @@ impl Doc {
             }
         };
         let modified_at = fileio::modified_at_from_stamp_or_path(o.stamp, Some(path));
-        let is_binary = o.is_binary || is_binary_image_path(path);
+        let is_binary = opened_is_binary(&o, path);
         let merge_base = if o.stamp.is_some() && !is_binary {
             Some(buffer_lines(&o.buf))
         } else {
@@ -2813,6 +2817,43 @@ mod tests {
         assert_eq!(
             saved_entry.text,
             "Xsecret text"
+        );
+
+        drop(d);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    // Feature: ZIP内バイナリの閲覧専用表示
+    // Scenario: NULを含むZIPエントリを選択する
+    // Given: `payload.bin`にNULを含むZIPファイル
+    // When: エントリを開く
+    // Then: 生内容を表示し、編集・保存を拒否する
+    #[test]
+    fn zip_binary_entry_shows_raw_content_and_is_view_only() {
+        let root = std::env::temp_dir().join(format!(
+            "wasabipad_zip_binary_doc_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let zpath = root.join("payload.zip");
+        std::fs::write(
+            &zpath,
+            crate::ziptext::build_stored_zip(&[("payload.bin", b"A\0B\n")]),
+        )
+        .unwrap();
+
+        let mut d = Doc::open(&zpath).unwrap();
+        let info = d.select_entry("payload.bin").unwrap().unwrap();
+
+        assert!(info.view_only);
+        assert!(info.is_binary);
+        assert_eq!(d.lines(0, 2), vec!["A\0B", ""]);
+        assert!(d.edit(p(0, 0), p(0, 0), p(0, 0), "X", false).is_none());
+        assert_eq!(
+            d.save(&zpath, Encoding::Utf8 { bom: false }, Eol::Lf)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied,
         );
 
         drop(d);

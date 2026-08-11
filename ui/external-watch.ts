@@ -1,4 +1,6 @@
 import type * as api from "./api";
+import { documentPathOf, type DocumentSession } from "./session";
+import { isAssetViewerFormat, viewerFormatForPath } from "./viewer-formats";
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -27,6 +29,15 @@ export type ExternalWatchApi = Pick<
   typeof api,
   "pollExternal" | "reloadFromDisk" | "ackExternal" | "externalMergePreview"
 >;
+
+export function canPollExternalDocument(
+  session: Pick<DocumentSession, "archivePath" | "displayPath" | "savePath" | "selectedRelPath">,
+): boolean {
+  return session.savePath !== null || (
+    session.archivePath === null
+    && isAssetViewerFormat(viewerFormatForPath(documentPathOf(session)))
+  );
+}
 
 // 対象文書かどうか (小ファイル=ハンドル非保持) の判定は backend が持つ。
 // 未編集なら backend が自動再読込し、dirty なら競合バナーで再読込/無視を選ばせる。

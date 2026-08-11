@@ -2,10 +2,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as api from "./api";
 import {
+  canPollExternalDocument,
   ExternalWatch,
   type ExternalMergePreviewSubscription,
   type ExternalWatchPorts,
 } from "./external-watch";
+import { initialSession } from "./session";
 
 let active: ExternalWatch | undefined;
 
@@ -37,6 +39,26 @@ describe("Feature: ExternalWatch", () => {
     active = undefined;
     vi.restoreAllMocks();
     vi.useRealTimers();
+  });
+
+  // Given: 保存先を持たない直接開きのPNG/PDFとアーカイブ内PDF
+  // When: 外部更新をポーリングできるか判定する
+  // Then: 直接開きの資産だけを監視し、アーカイブ内エントリは監視しない
+  it("Scenario: polls read-only asset files for external updates", () => {
+    expect(canPollExternalDocument({
+      ...initialSession(),
+      displayPath: "C:\\work\\picture.png",
+    })).toBe(true);
+    expect(canPollExternalDocument({
+      ...initialSession(),
+      displayPath: "C:\\work\\manual.pdf",
+    })).toBe(true);
+    expect(canPollExternalDocument({
+      ...initialSession(),
+      displayPath: "C:\\work\\archive.zip",
+      selectedRelPath: "manual.pdf",
+      archivePath: "C:\\work\\archive.zip",
+    })).toBe(false);
   });
 
   // Given: bannerが表示中、reload/ignoreボタン、isDirty=true、reloadFromDiskが`Error("locked")`でreject

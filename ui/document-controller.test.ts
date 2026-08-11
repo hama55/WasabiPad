@@ -79,6 +79,7 @@ function fakeView() {
     setLoading: vi.fn(),
     setTitle: vi.fn(),
     onDocumentChange: vi.fn(),
+    onSessionChange: vi.fn(),
     hideExternalBanner: vi.fn(),
     pickSavePath: vi.fn(async (): Promise<string | null> => null),
   } satisfies DocumentView;
@@ -323,7 +324,52 @@ describe("Feature: DocumentController", () => {
     expect(view.addressbar.render).toHaveBeenCalledWith("C:\\work\\memo.txt");
     expect(view.editor.open).toHaveBeenCalledWith(42, false, false, "C:\\work\\memo.txt", false);
     expect(view.onDocumentChange).toHaveBeenCalledWith(expect.objectContaining({ savePath: "C:\\work\\memo.txt" }), false);
+    expect(view.onSessionChange).not.toHaveBeenCalled();
     expect(view.setTitle).toHaveBeenLastCalledWith(formatTitleBar("memo.txt"));
+  });
+
+  // Given: `view_only=true`かつ`is_binary=true`のDocInfo
+  // When: `applyDocInfo`で文書状態を反映する
+  // Then: エディタを閲覧専用で開き、ステータスにもバイナリ状態を渡す
+  it("Scenario: propagates a binary document lock to the editor and status bar", () => {
+    const { view, controller } = fakeView();
+    controller.applyDocInfo(info({ view_only: true, is_binary: true }));
+
+    expect(view.editor.open).toHaveBeenCalledWith(42, true, false, "C:\\work\\memo.txt", false);
+    expect(view.statusbar.setFormat).toHaveBeenCalledWith(expect.objectContaining({
+      isBinary: true,
+      readOnly: true,
+    }));
+  });
+
+  // Given: 新規文書を作るDocumentController
+  // When: `newFile(false)`で文書を入れ替える
+  // Then: 文書置換通知だけを1回送り、通常の状態通知は重ねない
+  it("Scenario: emits one replacement notification for a new document", async () => {
+    const { view } = fakeView();
+    const newDoc = vi.fn(async () => {});
+    const controller = new DocumentController(view, {
+      ...services(),
+      api: { ...api, newDoc },
+    });
+
+    await controller.newFile(false);
+
+    expect(view.onDocumentChange).toHaveBeenCalledOnce();
+    expect(view.onSessionChange).not.toHaveBeenCalled();
+  });
+
+  // Given: 文書置換通知が例外を投げるビュー
+  // When: `applyDocInfo`で文書を入れ替える
+  // Then: 例外を外へ出さず、通常の状態通知へフォールバックする
+  it("Scenario: falls back to the session notification when replacement notification fails", () => {
+    const { view, controller } = fakeView();
+    view.onDocumentChange.mockImplementationOnce(() => { throw new Error("preview failed"); });
+
+    expect(() => controller.applyDocInfo(info())).not.toThrow();
+    expect(view.onSessionChange).toHaveBeenCalledWith(expect.objectContaining({
+      savePath: "C:\\work\\memo.txt",
+    }));
   });
 
   // Feature: 外部変更マージ後の文書状態

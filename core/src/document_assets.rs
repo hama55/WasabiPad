@@ -72,14 +72,45 @@ pub(crate) fn referenced_image_files(buf: &TextBuffer) -> HashSet<String> {
             };
             let end = start + end_relative;
             if let Some(src) = image_src_in_tag(&text[start..=end]) {
-                if let Some(name) = image_name_from_src(&src) {
-                    referenced.insert(name);
-                }
+                add_referenced_image(&mut referenced, &src);
             }
             from = end + 1;
         }
+
+        let mut from = 0;
+        while let Some(relative) = text[from..].find("![") {
+            let label_start = from + relative + 2;
+            let Some(source_start_relative) = text[label_start..].find("](") else {
+                from = label_start;
+                continue;
+            };
+            let source_start = label_start + source_start_relative + 2;
+            let Some(source_end_relative) = text[source_start..].find(')') else {
+                from = source_start;
+                continue;
+            };
+            let source_end = source_start + source_end_relative;
+            if let Some(src) = markdown_image_src(&text[source_start..source_end]) {
+                add_referenced_image(&mut referenced, src);
+            }
+            from = source_end + 1;
+        }
     }
     referenced
+}
+
+fn add_referenced_image(referenced: &mut HashSet<String>, src: &str) {
+    if let Some(name) = image_name_from_src(src) {
+        referenced.insert(name);
+    }
+}
+
+fn markdown_image_src(reference: &str) -> Option<&str> {
+    let reference = reference.trim();
+    if let Some(reference) = reference.strip_prefix('<') {
+        return reference.split_once('>').map(|(src, _)| src);
+    }
+    reference.split_ascii_whitespace().next()
 }
 
 fn image_src_in_tag(tag: &str) -> Option<String> {
@@ -196,10 +227,10 @@ mod tests {
     #[test]
     fn referenced_images_and_next_name_follow_image_path_contract() {
         // Feature: 貼り付け画像の参照管理
-        // Scenario: HTML の参照だけを抽出し、既存名と衝突しない名前を選ぶ
+        // Scenario: HTML/Markdown の参照を抽出し、既存名と衝突しない名前を選ぶ
         // Given: image と image_markdown の参照を含む文書
         let buf = TextBuffer::from_text(
-            r#"<img src="image/keep.PNG"><img src='image_markdown/memo/pasted-image-2.jpg'>"#,
+            r#"<img src="image/keep.PNG"><img src='image_markdown/memo/pasted-image-2.jpg'>![keep](image_markdown/memo/pasted-image-3.PNG)![angle](<image/kept.jpg>)"#,
         );
         // When: 参照画像と次の貼り付け名を求める
         let referenced = referenced_image_files(&buf);
@@ -215,6 +246,8 @@ mod tests {
         // Then: 大文字小文字を吸収し、未使用名を返す
         assert!(referenced.contains("image/keep.png"));
         assert!(referenced.contains("image_markdown/memo/pasted-image-2.jpg"));
+        assert!(referenced.contains("image_markdown/memo/pasted-image-3.png"));
+        assert!(referenced.contains("image/kept.jpg"));
         assert_eq!(next, "pasted-image-3.png");
     }
 }

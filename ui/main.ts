@@ -12,7 +12,7 @@ import { FavBar } from "./favbar";
 import { AddressBar } from "./addressbar";
 import { StatusBar } from "./statusbar";
 import { WindowChrome } from "./window-chrome";
-import { ExternalWatch } from "./external-watch";
+import { canPollExternalDocument, ExternalWatch } from "./external-watch";
 import { confirmExternalMerge, isExternalMergeRetryError } from "./external-merge";
 import {
   FolderActions,
@@ -46,7 +46,7 @@ import { searchResultGoto } from "./search-results";
 import { runAsyncBoundary, reportUnhandledRejection } from "./async-boundary";
 import { openPath as openPathInTabs } from "./path-opener";
 import { InlinePreview } from "./inline-preview";
-import { isAssetViewerFormat, viewerFormatForPath } from "./viewer-formats";
+import { isAssetViewerFormat, sourcePathForViewer, viewerFormatForPath } from "./viewer-formats";
 import { documentPathOf, type DocumentSession } from "./session";
 import {
   isPreviewFullscreen,
@@ -241,7 +241,7 @@ function syncPreviewDocument(session: Readonly<DocumentSession>, force = false) 
   const path = documentPathOf(session);
   const format = viewerFormatForPath(path);
   const isAssetPreview = isAssetViewerFormat(format);
-  const sourcePath = session.savePath ?? (isAssetPreview ? session.displayPath : null);
+  const sourcePath = sourcePathForViewer(format, session.savePath, session.displayPath);
   inlinePreview.setSourcePath(sourcePath, session.archivePath, session.archiveEntry);
   if (!force && path === previewDocumentPath && !isAssetPreview) return;
   if (!format) {
@@ -405,7 +405,10 @@ const doc: DocumentController = new DocumentController({
   setSidebar,
   setLoading,
   setTitle: (title) => windowChrome.setTitle(title),
-  onDocumentChange: (session, keepViewers = false) => syncPreviewDocument(session, !keepViewers),
+  onDocumentChange: (session, keepViewers = false) => {
+    tabs?.syncActive(session);
+    syncPreviewDocument(session, !keepViewers);
+  },
   onSessionChange: (session) => {
     tabs?.syncActive(session);
     syncPreviewDocument(session);
@@ -445,7 +448,7 @@ function applyExternalMetadata(info: api.DocInfo) {
 }
 
 const externalWatch = new ExternalWatch($("external-banner"), {
-  canPoll: () => doc.current.savePath !== null && loading.hidden,
+  canPoll: () => canPollExternalDocument(doc.current) && loading.hidden,
   isDirty: () => doc.current.dirty,
   onReload: applyExternalInfo,
   onNotice: (text) => windowChrome.notify(text),

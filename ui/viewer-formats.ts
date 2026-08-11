@@ -103,6 +103,14 @@ export function isAssetViewerFormat(format: ViewerFormat | null): format is "ima
   return format === "image" || format === "pdf";
 }
 
+export function sourcePathForViewer(
+  format: ViewerFormat | null,
+  savePath: string | null,
+  displayPath: string,
+): string | null {
+  return savePath ?? (isAssetViewerFormat(format) ? displayPath : null);
+}
+
 export function canRenderViewerFormat(format: ViewerFormat, sourcePath: string | null): boolean {
   const sourceFormat = sourcePath ? viewerFormatForPath(sourcePath) : null;
   if (isAssetViewerFormat(format)) return sourceFormat === format;

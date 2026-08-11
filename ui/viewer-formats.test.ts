@@ -4,6 +4,7 @@ import {
   canRenderViewerFormat,
   isAssetViewerFormat,
   isViewerFormat,
+  sourcePathForViewer,
   viewerFormatForPath,
   viewerFormatSpec,
 } from "./viewer-formats";
@@ -43,6 +44,15 @@ describe("Feature: viewer formats", () => {
     expect(isAssetViewerFormat("pdf")).toBe(true);
     expect(isAssetViewerFormat("markdown")).toBe(false);
     expect(isAssetViewerFormat(null)).toBe(false);
+  });
+
+  // Given: 保存先を持たないPDFと、通常のMarkdown文書
+  // When: ビューへ渡す実ファイルパスを求める
+  // Then: PDFは表示パス、Markdownはnullになる
+  it("Scenario: keeps the direct path for a read-only PDF preview", () => {
+    expect(sourcePathForViewer("pdf", null, "C:\\work\\manual.pdf"))
+      .toBe("C:\\work\\manual.pdf");
+    expect(sourcePathForViewer("markdown", null, "C:\\work\\notes.md")).toBeNull();
   });
 
   // Given: csv/markdown/image/pdf/htmlの形式レジストリ

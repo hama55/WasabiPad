@@ -126,16 +126,28 @@ export class DocumentController {
     }
   }
 
-  updateTitle() {
+  updateTitle(notifySession = true) {
     try {
       this.view.setTitle(formatWindowTitle(this.session));
     } catch (error) {
       void this.reportError("タイトルを更新できませんでした", error);
     }
+    if (!notifySession) return;
     try {
       this.view.onSessionChange?.(this.session);
     } catch (error) {
       void this.reportError("タブ状態を更新できませんでした", error);
+    }
+  }
+
+  private notifyDocumentChange(keepViewers: boolean): boolean {
+    if (!this.view.onDocumentChange) return false;
+    try {
+      this.view.onDocumentChange(this.session, keepViewers);
+      return true;
+    } catch (error) {
+      void this.reportError("文書表示を更新できませんでした", error);
+      return false;
     }
   }
 
@@ -171,8 +183,8 @@ export class DocumentController {
       markdownForSession(this.session),
     );
     this.view.editor.focus();
-    this.view.onDocumentChange?.(this.session, keepViewers);
-    this.updateTitle();
+    const documentChangeNotified = this.notifyDocumentChange(keepViewers);
+    this.updateTitle(!documentChangeNotified);
   }
 
   applyMergedDocInfo(info: api.DocInfo) {
@@ -273,8 +285,8 @@ export class DocumentController {
     this.view.sidebar.setWorkspaceSearch(null);
     this.view.editor.open(1, false);
     this.view.editor.focus();
-    this.view.onDocumentChange?.(this.session);
-    this.updateTitle();
+    const documentChangeNotified = this.notifyDocumentChange(false);
+    this.updateTitle(!documentChangeNotified);
   }
 
   async reloadWithEncoding(encoding: api.ReadEncoding): Promise<boolean> {
