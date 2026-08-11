@@ -1,21 +1,10 @@
 import type { Encoding, Eol } from "./api";
 import { promptFields } from "./prompt";
+import { ENCODING_LABELS, EOL_LABELS } from "./generated/Protocol";
 
-// 保存形式の決定点は別名保存だけ。上書き保存は前回決めた形式をそのまま使う。
+// 新規メモ作成と別名保存で形式を決め、上書き保存は前回決めた形式をそのまま使う。
 // Record のキーを型そのものにすることで、api.ts の union に増減があれば
 // 選択肢の追従漏れが tsc で落ちる (実行時の検証を持ち込まずに二重定義を塞ぐ)。
-const ENCODING_LABELS: Record<Encoding, string> = {
-  utf8: "UTF-8",
-  utf8bom: "UTF-8 (BOM)",
-  sjis: "Shift-JIS",
-  utf16le: "UTF-16LE",
-};
-
-const EOL_LABELS: Record<Eol, string> = {
-  crlf: "CRLF",
-  lf: "LF",
-};
-
 const options = (labels: Record<string, string>) =>
   Object.entries(labels).map(([value, label]) => ({ label, value }));
 

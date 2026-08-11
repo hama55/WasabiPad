@@ -1,14 +1,17 @@
 import type * as api from "./api";
 import type { DocumentSession } from "./session";
-import { initialSession, sessionFromDocInfo } from "./session";
+import { documentPathOf, externalFilePathOf, initialSession, sessionFromDocInfo } from "./session";
 import type { promptSaveFormat, saveFormatFields, saveFormatFromValues, SaveFormat } from "./save-format";
-import type { confirmSaveDiscard, promptFields } from "./prompt";
+import type { confirmSaveDiscard, promptFields, PromptField, PromptFieldsOptions } from "./prompt";
 import type { isPasswordCancelled, withArchivePassword } from "./archive-password";
 import { archiveRelOf } from "./archive-path";
 import type { showError } from "./dialogs";
 import { formatWindowTitle } from "./format";
-import { basename, relativePathWithinRoot } from "./path";
+import { viewerFormatForPath } from "./viewer-formats";
+import { basename, joinWindowsRoot, relativePathWithinRoot } from "./path";
 import type { EditorViewState } from "./editor-view-state";
+import { reportErrorSafely } from "./report-error";
+import { fileNameOf, memoStemOf, type MemoSpec } from "./memo-name";
 
 // 保存ダイアログのフィルタと新規メモの拡張子候補で共有する
 export const SAVE_EXTENSIONS = [
@@ -17,10 +20,17 @@ export const SAVE_EXTENSIONS = [
   { name: "ログ", extension: "log" },
 ] as const;
 
-export interface MemoSpec {
-  stem: string;
-  extension: string;
+function markdownForSession(session: Readonly<DocumentSession>): boolean {
+  return viewerFormatForPath(documentPathOf(session)) === "markdown";
 }
+
+export interface MemoCreationSpec {
+  memo: MemoSpec;
+  format: SaveFormat;
+}
+
+const DEFAULT_MEMO_STEM = "memo";
+const DEFAULT_MEMO_EXTENSION = SAVE_EXTENSIONS[0].extension;
 
 export type DocumentControllerApi = Pick<
   typeof api,
@@ -41,7 +51,14 @@ export interface DocumentControllerServices {
 }
 
 export interface DocumentEditorPort {
-  open: (lineCount: number, readOnly: boolean, keepViewers?: boolean) => void;
+  open: (
+    lineCount: number,
+    readOnly: boolean,
+    keepViewers?: boolean,
+    externalFilePath?: string | null,
+    markdown?: boolean,
+  ) => void;
+  setExternalFilePath: (path: string | null, markdown?: boolean) => void;
   focus: () => void;
   goTo: (line: number, col: number) => void;
   captureViewState: () => EditorViewState;
@@ -51,6 +68,7 @@ export interface DocumentEditorPort {
 export interface DocumentStatusPort {
   setFormat: (session: Readonly<DocumentSession>) => void;
   setByteSize: (bytes: number | null, isHuge?: boolean) => void;
+  setModifiedAt: (timestamp: number | null) => void;
   setLineCount: (count: number) => void;
 }
 
@@ -76,7 +94,7 @@ export interface DocumentView {
   setSidebar: (on: boolean, label?: string) => void;
   setLoading: (active: boolean, message?: string) => void;
   setTitle: (title: string) => void;
-  notify: (text: string) => void;
+  onDocumentChange?: (session: Readonly<DocumentSession>, keepViewers?: boolean) => void;
   onSessionChange?: (session: Readonly<DocumentSession>) => void;
   hideExternalBanner: () => void;
   // ファイル保存先を選ばせる (OS のダイアログ)
@@ -88,6 +106,7 @@ export interface DocumentView {
 export class DocumentController {
   private session = initialSession();
   private loadRequest = 0;
+  private draftDirectory: string | null = null;
 
   constructor(
     private view: DocumentView,
@@ -107,16 +126,28 @@ export class DocumentController {
     }
   }
 
-  updateTitle() {
+  updateTitle(notifySession = true) {
     try {
       this.view.setTitle(formatWindowTitle(this.session));
     } catch (error) {
       void this.reportError("タイトルを更新できませんでした", error);
     }
+    if (!notifySession) return;
     try {
       this.view.onSessionChange?.(this.session);
     } catch (error) {
       void this.reportError("タブ状態を更新できませんでした", error);
+    }
+  }
+
+  private notifyDocumentChange(keepViewers: boolean): boolean {
+    if (!this.view.onDocumentChange) return false;
+    try {
+      this.view.onDocumentChange(this.session, keepViewers);
+      return true;
+    } catch (error) {
+      void this.reportError("文書表示を更新できませんでした", error);
+      return false;
     }
   }
 
@@ -130,11 +161,7 @@ export class DocumentController {
   }
 
   private async reportError(title: string, error: unknown) {
-    try {
-      await this.services.showError(title, error);
-    } catch (reportError) {
-      console.error(`${title}のエラーを表示できませんでした`, reportError);
-    }
+    await reportErrorSafely(this.services.showError, title, error);
   }
 
   // アーカイブ選択後/フォルダのエントリ切替後で共通の状態反映。
@@ -144,12 +171,25 @@ export class DocumentController {
     this.session = sessionFromDocInfo(this.session, info);
     this.view.statusbar.setFormat(this.session);
     this.view.statusbar.setByteSize(info.byte_len, info.is_huge);
+    this.view.statusbar.setModifiedAt(info.modified_at);
     this.view.statusbar.setLineCount(info.line_count);
     this.view.addressbar.render(info.path);
     if (updateTree) this.showTree(info);
-    this.view.editor.open(info.line_count, this.session.readOnly, keepViewers);
+    this.view.editor.open(
+      info.line_count,
+      this.session.readOnly,
+      keepViewers,
+      externalFilePathOf(info),
+      markdownForSession(this.session),
+    );
     this.view.editor.focus();
-    this.updateTitle();
+    const documentChangeNotified = this.notifyDocumentChange(keepViewers);
+    this.updateTitle(!documentChangeNotified);
+  }
+
+  applyMergedDocInfo(info: api.DocInfo) {
+    this.applyDocInfo(info, true);
+    this.onEdit(info.line_count);
   }
 
   async openPath(path: string, confirm = true): Promise<boolean> {
@@ -224,25 +264,29 @@ export class DocumentController {
     }
   }
 
-  async newFile(confirm = true) {
+  async newFile(confirm = true, draftDirectory: string | null = null) {
     if (confirm && !(await this.confirmDiscard())) return;
-    ++this.loadRequest;
+    const request = ++this.loadRequest;
     try {
       await this.services.api.newDoc();
     } catch (error) {
-      await this.reportError("新規文書を作成できませんでした", error);
+      if (request === this.loadRequest) await this.reportError("新規文書を作成できませんでした", error);
       return;
     }
+    if (request !== this.loadRequest) return;
     this.session = initialSession();
+    this.draftDirectory = draftDirectory;
     this.view.statusbar.setFormat(this.session);
     this.view.statusbar.setByteSize(null);
+    this.view.statusbar.setModifiedAt(null);
     this.view.statusbar.setLineCount(1);
     this.view.addressbar.render("");
     this.view.setSidebar(false);
     this.view.sidebar.setWorkspaceSearch(null);
     this.view.editor.open(1, false);
     this.view.editor.focus();
-    this.updateTitle();
+    const documentChangeNotified = this.notifyDocumentChange(false);
+    this.updateTitle(!documentChangeNotified);
   }
 
   async reloadWithEncoding(encoding: api.ReadEncoding): Promise<boolean> {
@@ -270,7 +314,7 @@ export class DocumentController {
   async saveAs(): Promise<boolean> {
     try {
       if (this.session.folderRoot && !this.session.savePath && !this.session.selectedRelPath) {
-        return this.saveFolderDraft();
+        return await this.saveFolderDraft();
       }
       let defaultPath = this.session.savePath ?? "";
       let newMemoFormat: SaveFormat | undefined;
@@ -278,6 +322,7 @@ export class DocumentController {
         const spec = await this.promptNewMemoSave();
         if (!spec) return false;
         defaultPath = fileNameOf(spec.memo);
+        if (this.draftDirectory) defaultPath = joinWindowsRoot(this.draftDirectory, defaultPath);
         newMemoFormat = spec.format;
       }
       const path = await this.view.pickSavePath(defaultPath);
@@ -288,7 +333,7 @@ export class DocumentController {
     }
   }
 
-  // 別名保存だけが保存形式の決定点。以降の上書き保存はここで決めた形式を使い回す。
+  // 新規メモ作成・別名保存が保存形式の決定点。以降の上書き保存はここで決めた形式を使い回す。
   private async saveAsTo(
     path: string,
     folderDraftRoot: string | null = null,
@@ -304,14 +349,14 @@ export class DocumentController {
     }
   }
 
-  // フォルダを開いた状態の無題文書は、保存先ダイアログではなくフォルダ直下へ採番して置く
+  // フォルダを開いた状態の無題文書は、保存先ダイアログではなくフォルダ直下へ置く
   private async saveFolderDraft(): Promise<boolean> {
     const root = this.session.folderRoot;
     if (!root) return false;
-    const spec = await this.promptNewMemoSave();
-    if (!spec) return false;
     try {
-      const path = await this.services.api.nextMemoPath(root, spec.memo.stem, spec.memo.extension);
+      const spec = await this.promptNewMemoSave(root);
+      if (!spec) return false;
+      const path = joinWindowsRoot(root, fileNameOf(spec.memo));
       return this.saveAsTo(path, root, spec.format);
     } catch (e) {
       await this.reportError("ファイル名を決められませんでした", e);
@@ -324,6 +369,7 @@ export class DocumentController {
     folderDraftRoot: string | null = null,
     format: SaveFormat = this.session,
   ): Promise<boolean> {
+    const savingArchiveEntryInPlace = this.session.archivePath !== null && this.session.savePath === path;
     let outcome: api.SaveOutcome;
     try {
       // 7z エントリの書き戻し中にパスワードが要求されたら入力させて再試行する
@@ -342,6 +388,7 @@ export class DocumentController {
       );
       return false;
     }
+    const saveWarning = outcome.kind === "savedwithwarning" ? outcome.warning : null;
     this.session.encoding = format.encoding;
     this.session.eol = format.eol;
     this.session.savePath = path;
@@ -349,13 +396,22 @@ export class DocumentController {
     this.session.sourceEncoding = this.session.encoding;
     this.session.sourceEol = this.session.eol;
     this.session.dirty = false;
+    if (!folderDraftRoot && !savingArchiveEntryInPlace) {
+      this.session.selectedRelPath = "";
+      this.session.archivePath = null;
+      this.session.archiveEntry = null;
+    }
     try {
+      this.view.editor.setExternalFilePath(path, markdownForSession(this.session));
       this.view.addressbar.render(path);
       this.view.statusbar.setFormat(this.session);
+      this.view.statusbar.setModifiedAt(outcome.modified_at);
       this.updateTitle();
-      this.view.notify("保存しました");
     } catch (error) {
       await this.reportError("保存後の画面更新に失敗しました", error);
+    }
+    if (saveWarning) {
+      await this.reportError("保存後の再読込に失敗しました", saveWarning);
     }
     if (folderDraftRoot) await this.revealSavedDraft(folderDraftRoot, path);
     return true;
@@ -405,42 +461,86 @@ export class DocumentController {
     return this.view.editor.restoreViewState(state);
   }
 
-  async promptMemoSpec(): Promise<MemoSpec | null> {
-    const result = await this.services.promptFields("新規メモ作成", [
+  private memoFields(directory: string | null, initialStem: string) {
+    let request = 0;
+    return [
       {
         label: "ファイル名",
-        value: "memo",
-        validate: (value) => {
-          if (!value.trim()) return "名前を入力してください";
-          return null;
-        },
+        value: initialStem,
+        validate: (value: string) => value.trim() ? null : "名前を入力してください",
       },
-      { label: "拡張子", value: SAVE_EXTENSIONS[0].extension, options: [
-        ...SAVE_EXTENSIONS.map(({ extension }) => ({ label: `.${extension}`, value: extension })),
-        { label: "拡張子なし", value: "" },
-      ] },
-    ]);
-    const stem = result?.[0].trim();
-    return stem ? { stem, extension: result![1] } : null;
+      {
+        label: "拡張子",
+        value: DEFAULT_MEMO_EXTENSION,
+        options: [
+          ...SAVE_EXTENSIONS.map(({ extension }) => ({ label: `.${extension}`, value: extension })),
+          { label: "拡張子なし", value: "" },
+        ],
+        onChange: directory ? async (
+          extension: string,
+          _values: string[],
+          setValue: (index: number, value: string) => void,
+        ) => {
+          const current = ++request;
+          try {
+            const path = await this.services.api.nextMemoPath(directory, DEFAULT_MEMO_STEM, extension);
+            if (current === request) setValue(0, memoStemOf(path, extension));
+          } catch (error) {
+            if (current === request) throw error;
+          }
+        } : undefined,
+      },
+    ];
   }
 
-  private async promptNewMemoSave(): Promise<{ memo: MemoSpec; format: SaveFormat } | null> {
-    const result = await this.services.promptFields("新規メモ保存", [
-      {
-        label: "ファイル名",
-        value: "memo",
-        validate: (value) => value.trim() ? null : "名前を入力してください",
-      },
-      { label: "拡張子", value: SAVE_EXTENSIONS[0].extension, options: [
-        ...SAVE_EXTENSIONS.map(({ extension }) => ({ label: `.${extension}`, value: extension })),
-        { label: "拡張子なし", value: "" },
-      ] },
-      ...this.services.saveFormatFields(this.session),
-    ]);
-    const stem = result?.[0].trim();
-    return stem
-      ? { memo: { stem, extension: result![1] }, format: this.services.saveFormatFromValues(result!, 2) }
+  private async initialMemoStem(directory: string | null, extension: string): Promise<string> {
+    if (!directory) return DEFAULT_MEMO_STEM;
+    const path = await this.services.api.nextMemoPath(directory, DEFAULT_MEMO_STEM, extension);
+    return memoStemOf(path, extension);
+  }
+
+  private memoPromptOptions(directory: string | null): PromptFieldsOptions {
+    return directory
+      ? { onChangeError: (error) => this.reportError("ファイル名を決められませんでした", error) }
+      : {};
+  }
+
+  private async promptMemoValues(
+    title: string,
+    directory: string | null,
+    extraFields: PromptField[] = [],
+  ): Promise<string[] | null> {
+    const stem = await this.initialMemoStem(directory, DEFAULT_MEMO_EXTENSION);
+    return this.services.promptFields(title, [
+      ...this.memoFields(directory, stem),
+      ...extraFields,
+    ], this.memoPromptOptions(directory));
+  }
+
+  private memoCreationSpec(values: string[] | null): MemoCreationSpec | null {
+    const enteredStem = values?.[0].trim();
+    return enteredStem
+      ? {
+          memo: { stem: enteredStem, extension: values![1] },
+          format: this.services.saveFormatFromValues(values!, 2),
+        }
       : null;
+  }
+
+  async promptMemoSpec(directory: string | null = null): Promise<MemoCreationSpec | null> {
+    return this.memoCreationSpec(await this.promptMemoValues(
+      "新規メモ作成",
+      directory,
+      this.services.saveFormatFields(this.session),
+    ));
+  }
+
+  private async promptNewMemoSave(directory: string | null = null): Promise<MemoCreationSpec | null> {
+    return this.memoCreationSpec(await this.promptMemoValues(
+      "新規メモ保存",
+      directory,
+      this.services.saveFormatFields(this.session),
+    ));
   }
 
   // フォルダビューでの名前変更後、開いている文書のパスを追従させる
@@ -449,14 +549,12 @@ export class DocumentController {
     this.session.displayPath = info.path;
     this.session.savePath = this.session.readOnly ? null : info.path;
     this.session.selectedRelPath = selectedRelPath;
+    this.view.editor.setExternalFilePath(externalFilePathOf(info), markdownForSession(this.session));
+    this.view.statusbar.setModifiedAt(info.modified_at);
     this.updateTitle();
   }
 
   setSelectedRelPath(relPath: string) {
     this.session.selectedRelPath = relPath;
   }
-}
-
-export function fileNameOf(spec: MemoSpec): string {
-  return `${spec.stem}${spec.extension ? `.${spec.extension}` : ""}`;
 }

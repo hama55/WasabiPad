@@ -1,0 +1,25 @@
+{
+  "archiveEntrySeparator": "::",
+  "passwordErrorMarker": "7z-password",
+  "imageFormats": [
+    { "extensions": ["apng"], "mimeTypes": ["image/apng"] },
+    { "extensions": ["avif"], "mimeTypes": ["image/avif"] },
+    { "extensions": ["bmp"], "mimeTypes": ["image/bmp"] },
+    { "extensions": ["gif"], "mimeTypes": ["image/gif"] },
+    { "extensions": ["ico"], "mimeTypes": ["image/x-icon", "image/vnd.microsoft.icon"] },
+    { "extensions": ["jpeg", "jpg"], "canonicalExtension": "jpg", "mimeTypes": ["image/jpeg"] },
+    { "extensions": ["png"], "mimeTypes": ["image/png"] },
+    { "extensions": ["svg"], "mimeTypes": ["image/svg+xml"] },
+    { "extensions": ["webp"], "mimeTypes": ["image/webp"] }
+  ],
+  "encodingLabels": {
+    "utf8": "UTF-8",
+    "utf8bom": "UTF-8 (BOM)",
+    "sjis": "Shift-JIS",
+    "utf16le": "UTF-16LE"
+  },
+  "eolLabels": {
+    "crlf": "CRLF",
+    "lf": "LF"
+  }
+}

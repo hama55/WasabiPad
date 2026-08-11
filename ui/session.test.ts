@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { DocInfo } from "./api";
-import { displayName, initialSession, readEncodingOf, sessionFromDocInfo } from "./session";
+import {
+  displayName,
+  documentPathOf,
+  externalFilePathOf,
+  initialSession,
+  readEncodingOf,
+  sessionFromDocInfo,
+} from "./session";
 
 const info = (overrides: Partial<DocInfo> = {}): DocInfo => ({
   kind: "text",
@@ -12,16 +19,22 @@ const info = (overrides: Partial<DocInfo> = {}): DocInfo => ({
   folder_entries: null,
   folder_root: "C:\\work",
   view_only: false,
+  is_binary: false,
   byte_len: 10,
   is_huge: false,
+  modified_at: 1720000000000,
   ...overrides,
 });
 
-describe("DocumentSession", () => {
-  it("defines the untitled document state once", () => {
+describe("Feature: DocumentSession", () => {
+  // Given: 初期セッションを作成する
+  // When: `initialSession()`を呼ぶ
+  // Then: 未保存・未変更、utf8/crlf、lineCount=1の状態になる
+  it("Scenario: defines the untitled document state once", () => {
     expect(initialSession()).toMatchObject({
       savePath: null,
       readOnly: false,
+      isBinary: false,
       dirty: false,
       encoding: "utf8",
       sourceEncoding: "utf8",
@@ -31,7 +44,10 @@ describe("DocumentSession", () => {
     });
   });
 
-  it("derives editable and read-only save paths from DocInfo", () => {
+  // Given: editableなDocInfoが`C:\work\memo.txt`/sjis/lf、archiveかつview_onlyのDocInfo
+  // When: `sessionFromDocInfo`と`displayName`を呼ぶ
+  // Then: 通常文書は編集可能なpath/encoding/eol、archiveはsavePath=null・readOnly=true・表示名memo.txt
+  it("Scenario: derives editable and read-only save paths from DocInfo", () => {
     const editable = sessionFromDocInfo(initialSession(), info());
     expect(editable.savePath).toBe("C:\\work\\memo.txt");
     expect(editable.folderRoot).toBe("C:\\work");
@@ -44,9 +60,56 @@ describe("DocumentSession", () => {
     expect(archive.savePath).toBeNull();
     expect(archive.readOnly).toBe(true);
     expect(displayName(archive)).toBe("memo.txt");
+
+    const binary = sessionFromDocInfo(editable, info({ view_only: true, is_binary: true }));
+    expect(binary.isBinary).toBe(true);
   });
 
-  it("folds BOM into the plain read encoding", () => {
+  // Given: フォルダ内アーカイブの`data.zip::docs/readme.md`と直接開いたアーカイブの`docs/readme.md`
+  // When: `sessionFromDocInfo`を呼ぶ
+  // Then: プレビューが使う実アーカイブパスとエントリ名を復元する
+  it("Scenario: keeps archive context for preview assets", () => {
+    const folderEntry = sessionFromDocInfo(
+      { ...initialSession(), selectedRelPath: "data.zip::docs/readme.md" },
+      info({ path: "C:\\work\\data.zip" }),
+    );
+    expect(folderEntry.archivePath).toBe("C:\\work\\data.zip");
+    expect(folderEntry.archiveEntry).toBe("docs/readme.md");
+
+    const directEntry = sessionFromDocInfo(
+      { ...initialSession(), selectedRelPath: "docs/readme.md" },
+      info({ kind: "archive", path: "C:\\work\\data.zip", folder_root: null }),
+    );
+    expect(directEntry.archivePath).toBe("C:\\work\\data.zip");
+    expect(directEntry.archiveEntry).toBe("docs/readme.md");
+  });
+
+  // Given: フォルダ自身のDocInfoと、フォルダ内で選択したファイルのDocInfo
+  // When: externalFilePathOfを呼ぶ
+  // Then: フォルダ自身はnull、選択ファイルは実パスになる
+  it("Scenario: フォルダ表示と選択ファイルのExplorer対象を区別する", () => {
+    expect(externalFilePathOf(info({ path: "C:\\work", folder_root: "C:\\work" }))).toBeNull();
+    expect(externalFilePathOf(info({
+      path: "C:\\work\\memo.txt",
+      folder_root: "C:\\work",
+    }))).toBe("C:\\work\\memo.txt");
+  });
+
+  // Given: selectedRelPath、savePath、displayPathのいずれかが設定された文書セッション
+  // When: documentPathOfを呼ぶ
+  // Then: プレビューとMarkdown判定で共有できる優先順位でパスを返す
+  it("Scenario: 文書パスはアーカイブ内相対パスを最優先する", () => {
+    expect(documentPathOf({ selectedRelPath: "docs/readme.md", savePath: "C:\\work\\data.zip", displayPath: "data.zip" }))
+      .toBe("docs/readme.md");
+    expect(documentPathOf({ selectedRelPath: "", savePath: "C:\\work\\memo.md", displayPath: "memo" }))
+      .toBe("C:\\work\\memo.md");
+    expect(documentPathOf({ selectedRelPath: "", savePath: null, displayPath: "" })).toBe("");
+  });
+
+  // Given: encodingが`utf8bom`または`sjis`
+  // When: `readEncodingOf`を呼ぶ
+  // Then: utf8bomはutf8、sjisはsjis
+  it("Scenario: folds BOM into the plain read encoding", () => {
     expect(readEncodingOf("utf8bom")).toBe("utf8");
     expect(readEncodingOf("sjis")).toBe("sjis");
   });

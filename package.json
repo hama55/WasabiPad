@@ -1,13 +1,14 @@
 {
   "name": "wasabipad-ui",
   "private": true,
-  "version": "1.4.1",
+  "version": "1.4.5",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "check:ipc": "node scripts/check-ipc-contract.mjs",
     "sync:ipc": "node scripts/sync-ipc.mjs",
-    "check:generated": "npm run sync:ipc && git diff --exit-code -- ui/generated",
+    "sync:protocol": "node scripts/sync-protocol.mjs",
+    "check:generated": "npm run sync:ipc && npm run sync:protocol && git diff --exit-code -- ui/generated core/src/protocol.rs",
     "sync:config": "node scripts/sync-app-config.mjs",
     "check:config": "node scripts/check-config.mjs",
     "sync:version": "node scripts/sync-version.mjs",

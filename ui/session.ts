@@ -1,4 +1,5 @@
 import type { DocInfo, Encoding, Eol, ReadEncoding } from "./api";
+import { splitArchiveEntryPath } from "./archive-path";
 import { basename } from "./path";
 
 // BOM の有無は読込時に自動判定される (指定して読み直す対象ではない) ため、
@@ -12,6 +13,7 @@ export interface DocumentSession {
   savePath: string | null;
   folderRoot: string | null;
   readOnly: boolean;
+  isBinary: boolean;
   dirty: boolean;
   encoding: Encoding;
   sourceEncoding: Encoding;
@@ -19,6 +21,8 @@ export interface DocumentSession {
   sourceEol: Eol;
   lineCount: number;
   selectedRelPath: string;
+  archivePath: string | null;
+  archiveEntry: string | null;
 }
 
 export function initialSession(): DocumentSession {
@@ -27,6 +31,7 @@ export function initialSession(): DocumentSession {
     savePath: null,
     folderRoot: null,
     readOnly: false,
+    isBinary: false,
     dirty: false,
     encoding: "utf8",
     sourceEncoding: "utf8",
@@ -34,19 +39,42 @@ export function initialSession(): DocumentSession {
     sourceEol: "crlf",
     lineCount: 1,
     selectedRelPath: "",
+    archivePath: null,
+    archiveEntry: null,
   };
+}
+
+export function isFolderDraftInfo(info: Pick<DocInfo, "path" | "folder_root">): boolean {
+  return info.folder_root !== null && info.folder_root === info.path;
+}
+
+export function externalFilePathOf(info: Pick<DocInfo, "path" | "folder_root">): string | null {
+  return info.path && !isFolderDraftInfo(info) ? info.path : null;
+}
+
+export function documentPathOf(
+  session: Pick<DocumentSession, "selectedRelPath" | "savePath" | "displayPath">,
+): string {
+  return session.selectedRelPath || session.savePath || session.displayPath;
 }
 
 export function sessionFromDocInfo(
   previous: Readonly<DocumentSession>,
   info: DocInfo
 ): DocumentSession {
-  const folderDraft = info.folder_root === info.path;
+  const folderDraft = isFolderDraftInfo(info);
+  const archiveEntryPath = splitArchiveEntryPath(previous.selectedRelPath);
+  const archivePath = archiveEntryPath
+    ? info.path
+    : info.kind === "archive" && previous.selectedRelPath ? info.path : null;
+  const archiveEntry = archiveEntryPath?.entryName
+    ?? (archivePath ? previous.selectedRelPath : null);
   return {
     displayPath: info.path,
     savePath: info.view_only || folderDraft ? null : info.path,
     folderRoot: info.folder_root,
     readOnly: info.view_only,
+    isBinary: info.is_binary,
     dirty: false,
     encoding: info.enc,
     sourceEncoding: info.enc,
@@ -54,6 +82,8 @@ export function sessionFromDocInfo(
     sourceEol: info.eol,
     lineCount: info.line_count,
     selectedRelPath: previous.selectedRelPath,
+    archivePath,
+    archiveEntry,
   };
 }
 

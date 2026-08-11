@@ -15,6 +15,7 @@ export interface Settings {
   indentSize: number;
   fontFamily: string;
   fontSize: number;
+  previewFontSize: number;
   startupPath: string | null;
   registeredStrings: string[];
   registeredCommands: RegisteredCommand[];
@@ -27,6 +28,7 @@ const DEFAULTS: Settings = {
   indentSize: DEFAULT_INDENT_SIZE,
   fontFamily: DEFAULT_EDITOR_CONFIG.fontFamily,
   fontSize: DEFAULT_EDITOR_CONFIG.fontSize,
+  previewFontSize: DEFAULT_EDITOR_CONFIG.fontSize,
   startupPath: null,
   registeredStrings: [],
   registeredCommands: [],
@@ -40,14 +42,25 @@ const saveErrors = new Map<keyof Settings, unknown>();
 
 // 手で編集されうるファイルなので、型が合わない項目は既定値へ落とす
 export function parseSettings(text: string): Settings {
+  return parseSettingsResult(text).settings;
+}
+
+export interface SettingsParseResult {
+  settings: Settings;
+  corrupted: boolean;
+}
+
+export function parseSettingsResult(text: string): SettingsParseResult {
   let value: Partial<Settings>;
   try {
     value = JSON.parse(text) as Partial<Settings>;
   } catch {
-    return { ...DEFAULTS };
+    return { settings: { ...DEFAULTS }, corrupted: true };
   }
-  if (typeof value !== "object" || value === null) return { ...DEFAULTS };
-  return {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return { settings: { ...DEFAULTS }, corrupted: true };
+  }
+  const settings: Settings = {
     indentSize: typeof value.indentSize === "number" && INDENT_SIZES.includes(value.indentSize as typeof INDENT_SIZES[number])
       ? value.indentSize
       : DEFAULTS.indentSize,
@@ -57,6 +70,9 @@ export function parseSettings(text: string): Settings {
     fontSize: isValidFontSize(value.fontSize)
       ? value.fontSize
       : DEFAULTS.fontSize,
+    previewFontSize: isValidFontSize(value.previewFontSize)
+      ? value.previewFontSize
+      : isValidFontSize(value.fontSize) ? value.fontSize : DEFAULTS.previewFontSize,
     startupPath: typeof value.startupPath === "string" ? value.startupPath : null,
     registeredStrings: Array.isArray(value.registeredStrings)
       ? value.registeredStrings.filter((item): item is string => typeof item === "string" && item.length > 0)
@@ -72,17 +88,31 @@ export function parseSettings(text: string): Settings {
         : null,
     openTabs: isStoredTabs(value.openTabs) ? value.openTabs : DEFAULTS.openTabs,
   };
+  return { settings, corrupted: false };
 }
 
-export async function initSettings(): Promise<void> {
+export async function initSettings(
+  onWarning?: (error: unknown) => void | Promise<void>,
+): Promise<void> {
+  let shouldWarn = false;
+  let warning: unknown;
   try {
-    cache = parseSettings(await loadSettingsJson());
+    const parsed = parseSettingsResult(await loadSettingsJson());
+    cache = parsed.settings;
+    if (parsed.corrupted) {
+      warning = new Error("設定JSONが壊れているため、既定値を使用しました");
+      shouldWarn = true;
+      console.error("設定JSONが壊れているため、既定値を使用しました");
+    }
   } catch (error) {
     console.error("設定を読み込めませんでした", error);
     cache = { ...DEFAULTS };
+    warning = error;
+    shouldWarn = true;
   }
   pendingSave = Promise.resolve();
   saveErrors.clear();
+  if (shouldWarn) await onWarning?.(warning);
 }
 
 export function getSetting<K extends keyof Settings>(key: K): Settings[K] {
@@ -104,7 +134,11 @@ export function setSetting<K extends keyof Settings>(key: K, value: Settings[K])
 }
 
 export async function flushSettings(): Promise<void> {
-  await pendingSave;
+  for (;;) {
+    const current = pendingSave;
+    await current;
+    if (current === pendingSave) break;
+  }
   const firstError = saveErrors.values().next();
   if (!firstError.done) throw firstError.value;
 }

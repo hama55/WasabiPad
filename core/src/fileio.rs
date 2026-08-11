@@ -4,6 +4,7 @@
 // (外部変更は FileStamp の比較で検知する)。保存はストリーム書き。
 use crate::buffer::{Store, TextBuffer};
 use crate::hugebuf::HugeBuf;
+use crate::protocol;
 use encoding_rs::SHIFT_JIS;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -24,10 +25,10 @@ pub enum Encoding {
 impl Encoding {
     pub fn label(&self) -> &'static str {
         match self {
-            Encoding::Utf8 { bom: false } => "UTF-8",
-            Encoding::Utf8 { bom: true } => "UTF-8 (BOM)",
-            Encoding::ShiftJis => "Shift-JIS",
-            Encoding::Utf16Le => "UTF-16LE",
+            Encoding::Utf8 { bom: false } => protocol::encoding_label("utf8"),
+            Encoding::Utf8 { bom: true } => protocol::encoding_label("utf8bom"),
+            Encoding::ShiftJis => protocol::encoding_label("sjis"),
+            Encoding::Utf16Le => protocol::encoding_label("utf16le"),
         }
     }
 }
@@ -78,8 +79,8 @@ pub enum Eol {
 impl Eol {
     pub fn label(&self) -> &'static str {
         match self {
-            Eol::Crlf => "CRLF",
-            Eol::Lf => "LF",
+            Eol::Crlf => protocol::eol_label("crlf"),
+            Eol::Lf => protocol::eol_label("lf"),
         }
     }
     pub fn as_str(&self) -> &'static str {
@@ -91,6 +92,7 @@ impl Eol {
 }
 
 pub const MMAP_THRESHOLD: u64 = 100 * 1024 * 1024;
+pub type LoadProgress<'a> = dyn FnMut(u64, u64) + 'a;
 
 // 外部変更検知用のスナップショット。ハンドルを保持しない文書は開いた時点で記録し、
 // ポーリングや保存時に現在値と比較する。
@@ -98,6 +100,15 @@ pub const MMAP_THRESHOLD: u64 = 100 * 1024 * 1024;
 pub struct FileStamp {
     len: u64,
     mtime: std::time::SystemTime,
+}
+
+impl FileStamp {
+    pub fn modified_at(self) -> Option<u64> {
+        self.mtime
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|duration| duration.as_millis() as u64)
+    }
 }
 
 pub fn stamp(path: &Path) -> io::Result<FileStamp> {
@@ -115,6 +126,19 @@ fn stamp_of_metadata(meta: std::fs::Metadata) -> io::Result<FileStamp> {
     })
 }
 
+pub fn modified_at(path: &Path) -> Option<u64> {
+    stamp(path).ok()?.modified_at()
+}
+
+pub fn modified_at_from_stamp_or_path(
+    stamp: Option<FileStamp>,
+    path: Option<&Path>,
+) -> Option<u64> {
+    stamp
+        .and_then(FileStamp::modified_at)
+        .or_else(|| path.and_then(modified_at))
+}
+
 pub struct Opened {
     pub buf: TextBuffer,
     pub enc: Encoding,
@@ -122,8 +146,23 @@ pub struct Opened {
     // ZIP/.xls のエントリ一覧 (閲覧専用のフォルダビュー用)。buf は先頭エントリ
     pub entries: Option<Vec<crate::ziptext::Entry>>,
     pub byte_len: u64,             // ステータスバー表示用。開いた実体のバイト数
+    pub is_binary: bool,
     pub source_file: Option<File>, // mmap/アーカイブのみ排他保持。小ファイルは None
     pub stamp: Option<FileStamp>,  // ハンドル非保持 (=外部編集可) の場合のみ Some
+}
+
+pub(crate) fn is_binary_bytes(bytes: &[u8]) -> bool {
+    if bytes.starts_with(&[0xFF, 0xFE]) || bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        return false;
+    }
+    if bytes.contains(&0) {
+        return true;
+    }
+    if std::str::from_utf8(bytes).is_ok() {
+        return false;
+    }
+    let (_, _, had_errors) = SHIFT_JIS.decode(bytes);
+    had_errors
 }
 
 fn opened_from_entries(entries: Vec<crate::ziptext::Entry>, source_file: File) -> Opened {
@@ -134,6 +173,7 @@ fn opened_from_entries(entries: Vec<crate::ziptext::Entry>, source_file: File) -
         eol: Eol::Lf,
         entries: Some(entries),
         byte_len,
+        is_binary: false,
         source_file: Some(source_file),
         stamp: None,
     }
@@ -175,6 +215,21 @@ pub fn open_buffer(path: &Path) -> io::Result<Opened> {
 
 // threshold はテスト用に注入可能 (0 で非空ファイルを強制 mmap)。
 fn open_buffer_impl(path: &Path, threshold: u64) -> io::Result<Opened> {
+    open_buffer_impl_with_progress(path, threshold, None)
+}
+
+pub fn open_buffer_with_progress(
+    path: &Path,
+    progress: &mut LoadProgress<'_>,
+) -> io::Result<Opened> {
+    open_buffer_impl_with_progress(path, MMAP_THRESHOLD, Some(progress))
+}
+
+fn open_buffer_impl_with_progress(
+    path: &Path,
+    threshold: u64,
+    mut progress: Option<&mut LoadProgress<'_>>,
+) -> io::Result<Opened> {
     // 全共有で開いて小ファイルかどうかを判定。小ファイルはこのハンドルのまま読み切る
     let probe = File::open(path)?;
     let len = probe.metadata()?.len();
@@ -201,6 +256,7 @@ fn open_buffer_impl(path: &Path, threshold: u64) -> io::Result<Opened> {
             eol,
             entries: None,
             byte_len: len,
+            is_binary: is_binary_bytes(&bytes),
             source_file: Some(source_file),
             stamp: None,
         });
@@ -209,13 +265,19 @@ fn open_buffer_impl(path: &Path, threshold: u64) -> io::Result<Opened> {
     // UTF-16LE (行分割が byte 単位不可) と空ファイルは None/スキップして通常読込へ
     // フォールバック (排他は維持する)。
     if len > 0 {
-        if let Some((h, enc, eol)) = HugeBuf::open(source_file.try_clone()?)? {
+        let huge = if let Some(progress) = progress.as_deref_mut() {
+            HugeBuf::open_with_progress(source_file.try_clone()?, Some(progress))?
+        } else {
+            HugeBuf::open(source_file.try_clone()?)?
+        };
+        if let Some((h, enc, eol)) = huge {
             return Ok(Opened {
                 buf: TextBuffer::from_huge(h),
                 enc,
                 eol,
                 entries: None,
                 byte_len: len,
+                is_binary: false,
                 source_file: Some(source_file),
                 stamp: None,
             });
@@ -230,6 +292,7 @@ fn open_buffer_impl(path: &Path, threshold: u64) -> io::Result<Opened> {
         eol,
         entries: None,
         byte_len: len,
+        is_binary: is_binary_bytes(&bytes),
         source_file: Some(source_file),
         stamp: None,
     })
@@ -245,6 +308,7 @@ fn read_released(
     let stamp = stamp_of(&probe)?;
     let bytes = read_locked(&probe)?;
     drop(probe);
+    let is_binary = is_binary_bytes(&bytes);
     let (text, enc) = decode_fn(&bytes)?;
     let eol = detect_eol(&text);
     Ok(Opened {
@@ -253,6 +317,7 @@ fn read_released(
         eol,
         entries: None,
         byte_len: len,
+        is_binary,
         source_file: None,
         stamp: Some(stamp),
     })
@@ -279,6 +344,14 @@ pub(crate) fn decode(bytes: &[u8]) -> (String, Encoding) {
 }
 
 pub fn open_buffer_as(path: &Path, requested: Encoding) -> io::Result<Opened> {
+    open_buffer_as_with_progress(path, requested, None)
+}
+
+pub fn open_buffer_as_with_progress(
+    path: &Path,
+    requested: Encoding,
+    mut progress: Option<&mut LoadProgress<'_>>,
+) -> io::Result<Opened> {
     const MAX_UTF16_BYTES: u64 = 256 * 1024 * 1024;
     let probe = File::open(path)?;
     if is_archive_handle(&probe) {
@@ -299,13 +372,19 @@ pub fn open_buffer_as(path: &Path, requested: Encoding) -> io::Result<Opened> {
     }
     drop(probe);
     let source_file = open_exclusive(path)?;
-    if let Some((h, enc, eol)) = HugeBuf::open_as(source_file.try_clone()?, requested)? {
+    let huge = if let Some(progress) = progress.as_deref_mut() {
+        HugeBuf::open_with_encoding(source_file.try_clone()?, Some(requested), Some(progress))?
+    } else {
+        HugeBuf::open_as(source_file.try_clone()?, requested)?
+    };
+    if let Some((h, enc, eol)) = huge {
         return Ok(Opened {
             buf: TextBuffer::from_huge(h),
             enc,
             eol,
             entries: None,
             byte_len: len,
+            is_binary: false,
             source_file: Some(source_file),
             stamp: None,
         });
@@ -319,6 +398,7 @@ pub fn open_buffer_as(path: &Path, requested: Encoding) -> io::Result<Opened> {
         eol,
         entries: None,
         byte_len: len,
+        is_binary: is_binary_bytes(&bytes),
         source_file: Some(source_file),
         stamp: None,
     })
@@ -733,6 +813,26 @@ mod tests {
         assert!(o.stamp.is_none());
         assert_eq!(o.buf.line_count(), 3);
         assert_exclusive_until_drop(&path, o);
+    }
+
+    // Given: mmap経路で開く非空ファイルと進捗コールバックがある
+    // When: ファイルを開く
+    // Then: 0%から100%までの読み込み進捗が通知される
+    #[test]
+    fn huge_file_reports_load_progress() {
+        let path = unique_temp_path("load_progress");
+        std::fs::write(&path, "line1\nline2\nあいう").unwrap();
+        let total = std::fs::metadata(&path).unwrap().len();
+        let mut reports = Vec::new();
+        let mut report = |loaded, total| reports.push((loaded, total));
+
+        let opened = open_buffer_impl_with_progress(&path, 0, Some(&mut report)).unwrap();
+
+        assert!(!reports.is_empty());
+        assert_eq!(reports.first(), Some(&(0, total)));
+        assert_eq!(reports.last(), Some(&(total, total)));
+        assert!(reports.windows(2).all(|pair| pair[0].0 <= pair[1].0));
+        assert_exclusive_until_drop(&path, opened);
     }
 
     // 空ファイルは mmap 不可 → 閾値0でも in-RAM (解放) へフォールバック

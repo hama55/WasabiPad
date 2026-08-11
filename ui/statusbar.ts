@@ -1,18 +1,16 @@
-import { READ_ENCODINGS, type ReadEncoding } from "./api";
+import { READ_ENCODINGS, type ReadEncoding, type ViewerFormat } from "./api";
 import type { DocumentSession } from "./session";
 import { readEncodingOf } from "./session";
-import { formatByteSize, formatCursor, formatFontFamily, formatLineCount } from "./format";
+import { formatByteSize, formatCursor, formatFontFamily, formatLineCount, formatModifiedAt } from "./format";
 import { DEFAULT_INDENT_SIZE, INDENT_SIZES, promptFontFamily, promptFontSize } from "./font-controls";
 import { confirmMessage, promptFields } from "./prompt";
 import { normalizeTheme, THEME_STORAGE_KEY, THEMES, type Theme } from "./theme";
+import { runAsyncBoundary } from "./async-boundary";
+import { viewerFormatSpec } from "./viewer-formats";
+import { reportErrorSafely } from "./report-error";
+import { ENCODING_LABELS } from "./generated/Protocol";
 
 const THEME_LABELS: Record<Theme, string> = { dark: "ダーク", light: "ライト" };
-const READ_ENCODING_LABELS: Record<ReadEncoding, string> = {
-  utf8: "UTF-8",
-  sjis: "Shift-JIS",
-  utf16le: "UTF-16LE",
-};
-
 function option(value: string, label: string): HTMLOptionElement {
   const element = document.createElement("option");
   element.value = value;
@@ -22,9 +20,11 @@ function option(value: string, label: string): HTMLOptionElement {
 
 export interface StatusBarPorts {
   onGoTo: (line: number) => void;
-  onFont: (family: string, size: number) => void;
+  onFontFamily: (family: string) => void;
+  onFontSize: (size: number) => void;
   onWrap: (on: boolean) => void;
   onIndent: (size: number) => void;
+  onPreviewDelimiter?: (delimiter: string) => void;
   // 再読込を受け入れたら true。false なら選択を元へ戻す (成否の判断は呼び出し側に残す)
   onReadEncoding: (encoding: ReadEncoding) => Promise<boolean>;
   onError?: (title: string, error: unknown) => void | Promise<void>;
@@ -46,8 +46,14 @@ export class StatusBar {
       ...INDENT_SIZES.map((size) => option(String(size), `インデント: ${size}`)),
     );
     this.sourceEncodingSelect.replaceChildren(
-      ...READ_ENCODINGS.map((encoding) => option(encoding, READ_ENCODING_LABELS[encoding])),
+      ...READ_ENCODINGS.map((encoding) => option(encoding, ENCODING_LABELS[encoding])),
     );
+    this.previewDelimiterInput.addEventListener("input", () => {
+      this.run("CSV区切り文字を変更できませんでした", () => {
+        if (!this.previewDelimiterInput.value) return;
+        return this.ports.onPreviewDelimiter?.(this.previewDelimiterInput.value);
+      });
+    });
     this.pick("st-theme").addEventListener("click", () => {
       this.run("テーマを変更できませんでした", () => {
         const current = (document.documentElement.getAttribute("data-theme") as Theme) ?? "dark";
@@ -76,19 +82,11 @@ export class StatusBar {
   }
 
   private run(title: string, operation: () => void | Promise<unknown>) {
-    try {
-      void Promise.resolve(operation()).catch((error) => this.reportError(title, error));
-    } catch (error) {
-      void this.reportError(title, error);
-    }
+    runAsyncBoundary(operation, (error) => this.reportError(title, error));
   }
 
   private async reportError(title: string, error: unknown) {
-    try {
-      await this.ports.onError?.(title, error);
-    } catch (reportError) {
-      console.error(`${title}のエラーを表示できませんでした`, reportError);
-    }
+    await reportErrorSafely(this.ports.onError, title, error);
   }
 
   private get indentSelect() {
@@ -97,6 +95,14 @@ export class StatusBar {
 
   private get sourceEncodingSelect() {
     return this.pick<HTMLSelectElement>("st-source-enc");
+  }
+
+  private get previewDelimiter() {
+    return this.pick<HTMLElement>("st-delimiter");
+  }
+
+  private get previewDelimiterInput() {
+    return this.pick<HTMLInputElement>("st-delimiter-input");
   }
 
   // 保存済みの配色を復元する。未保存/未知の値はダーク扱い。
@@ -140,12 +146,20 @@ export class StatusBar {
     size.classList.toggle("is-huge", bytes !== null && isHuge);
   }
 
+  setModifiedAt(timestamp: number | null) {
+    this.pick("st-modified").textContent = formatModifiedAt(timestamp);
+  }
+
   setMode(label: string) {
     this.pick("st-mode").textContent = label;
   }
 
   get mode(): string {
     return this.pick("st-mode").textContent ?? "";
+  }
+
+  setPreviewFormat(format: ViewerFormat | null) {
+    this.previewDelimiter.hidden = format === null || !viewerFormatSpec(format).supportsDelimiter;
   }
 
   // ステータスバーが示すのは読込時の形式だけ。保存形式は別名保存ダイアログが持つ。
@@ -156,6 +170,9 @@ export class StatusBar {
     source.disabled = session.readOnly || !session.savePath;
     source.title = session.sourceEncoding === "utf8bom" ? "読込文字コード: UTF-8 (BOMあり)" : "読込文字コード";
     this.pick("st-eol").textContent = session.sourceEol.toUpperCase();
+    const binary = this.pick<HTMLElement>("st-binary");
+    binary.hidden = !session.isBinary;
+    binary.textContent = session.isBinary ? "閲覧専用（バイナリ）" : "";
   }
 
   private async requestReadEncoding() {
@@ -167,12 +184,12 @@ export class StatusBar {
 
   private async promptFont() {
     const family = await promptFontFamily(this.fontFamily);
-    if (family) this.ports.onFont(family, this.fontSize);
+    if (family) this.ports.onFontFamily(family);
   }
 
   private async promptFontSize() {
     const size = await promptFontSize(this.fontSize);
-    if (size !== null) this.ports.onFont(this.fontFamily, size);
+    if (size !== null) this.ports.onFontSize(size);
   }
 
   private async promptGoTo() {

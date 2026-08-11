@@ -13,7 +13,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 // パスワード起因の失敗を UI 側で識別するためのマーカー (表示前に UI が拾って
 // パスワード入力ダイアログへ差し替える)。
-pub const PASSWORD_ERROR_MARKER: &str = "7z-password";
+pub const PASSWORD_ERROR_MARKER: &str = crate::protocol::PASSWORD_ERROR_MARKER;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub fn is_7z_path(path: &Path) -> bool {

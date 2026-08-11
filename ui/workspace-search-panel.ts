@@ -1,5 +1,7 @@
 import type { WorkspaceSearchOptions, WorkspaceSearchOutcome, WorkspaceSearchResult } from "./api";
-import type { ContextTarget } from "./sidebar";
+import type { ContextTarget } from "./context-target";
+import { isMiddleClick } from "./interaction-constants";
+import { iconButton } from "./icon-button";
 import { groupResults, highlightedPreview, searchResultGoto, sortResults, type ResultGroup } from "./search-results";
 import { openSearchSettings } from "./search-settings-dialog";
 import {
@@ -21,10 +23,11 @@ export interface WorkspaceSearchPorts {
     searchId: number
   ) => Promise<WorkspaceSearchOutcome>;
   onCancel: (searchId: number) => void | Promise<void>;
+  onCancelError?: (error: unknown) => void | Promise<void>;
   onError: (error: unknown) => Promise<void>;
   // 一致の範囲は result.highlights が持つ。パターンを渡さないのは、
   // 正規表現や大小の畳み込みで「当たった長さ」がパターンの長さと一致しないため。
-  onOpen: (result: WorkspaceSearchResult, newTab: boolean) => unknown;
+  onOpen: (result: WorkspaceSearchResult, newTab: boolean) => void | boolean | Promise<void | boolean>;
   onContextMenu: (x: number, y: number, target: ContextTarget) => void;
   // 検索条件が変わった。保存先を知るのは呼び出し側 (ここは永続化を知らない)
   onOptionsChange: (options: WorkspaceSearchOptions) => void;
@@ -42,6 +45,7 @@ type SearchViewState = {
   pattern: string;
   outcome: SearchState;
   partial: WorkspaceSearchResult[];
+  selected: string | null;
   collapseByDefault: boolean;
   collapsed: Set<string>;
   collapseTouched: boolean;
@@ -73,6 +77,7 @@ export class WorkspaceSearchPanel {
   private searchTimer: number | undefined;
   private running: Promise<WorkspaceSearchOutcome> | null = null; // 走行中の検索
   private runningSearchId: number | null = null;
+  private openRequest = 0;
   private ports: WorkspaceSearchPorts;
 
   constructor(options: WorkspaceSearchOptions, ports: WorkspaceSearchPorts) {
@@ -99,6 +104,7 @@ export class WorkspaceSearchPanel {
 
   setFolderRoot(folderRoot: string | null) {
     if (folderRoot === this.folderRoot) return;
+    this.openRequest++;
     if (this.folderRoot && this.state.outcome === "searching") this.stop();
     else {
       this.searchGen++;
@@ -115,7 +121,15 @@ export class WorkspaceSearchPanel {
     if (!root) throw new Error("フォルダ検索の対象がありません");
     let state = this.states.get(root);
     if (!state) {
-      state = { pattern: "", outcome: null, partial: [], collapseByDefault: false, collapsed: new Set(), collapseTouched: false };
+      state = {
+        pattern: "",
+        outcome: null,
+        partial: [],
+        selected: null,
+        collapseByDefault: false,
+        collapsed: new Set(),
+        collapseTouched: false,
+      };
       this.states.set(root, state);
     }
     return state;
@@ -138,11 +152,9 @@ export class WorkspaceSearchPanel {
     refresh.addEventListener("click", () => this.queueSearch(0));
     const clear = iconButton("ws-clear", "✕", "検索をクリア");
     clear.addEventListener("click", () => this.clear());
-    const fold = iconButton("ws-fold", "⊟", "すべて折りたたむ / 展開");
-    fold.addEventListener("click", () => this.toggleAllGroups());
     const settings = iconButton("ws-settings", "⚙", "検索の設定");
     settings.addEventListener("click", () => this.openSettings());
-    header.append(title, scope, stop, refresh, clear, fold, settings);
+    header.append(title, scope, stop, refresh, clear, settings);
     return header;
   }
 
@@ -201,6 +213,8 @@ export class WorkspaceSearchPanel {
   private queueSearch(delay = 150) {
     const pat = this.searchInput.value;
     this.state.pattern = pat;
+    this.state.selected = null;
+    this.openRequest++;
     const gen = ++this.searchGen;
     window.clearTimeout(this.searchTimer);
     // 条件が1つでも変われば最初から引き直す (前回の結果は再利用しない)。
@@ -229,9 +243,11 @@ export class WorkspaceSearchPanel {
 
   private clear(focus = true) {
     this.stop();
+    this.openRequest++;
     this.setOutcome(null);
     this.searchInput.value = "";
     this.state.pattern = "";
+    this.state.selected = null;
     if (focus) this.searchInput.focus();
   }
 
@@ -240,10 +256,19 @@ export class WorkspaceSearchPanel {
     if (searchId === null) return;
     try {
       void Promise.resolve(this.ports.onCancel(searchId)).catch((error) => {
-        console.error("検索の中止に失敗しました", error);
+        void this.reportCancelError(error);
       });
     } catch (error) {
-      console.error("検索の中止に失敗しました", error);
+      void this.reportCancelError(error);
+    }
+  }
+
+  private async reportCancelError(error: unknown) {
+    try {
+      if (this.ports.onCancelError) await this.ports.onCancelError(error);
+      else await this.ports.onError(error);
+    } catch (reportError) {
+      console.error("検索中止エラーを表示できませんでした", reportError);
     }
   }
 
@@ -275,10 +300,10 @@ export class WorkspaceSearchPanel {
     this.ports.onViewChange();
   }
 
-  private toggleAllGroups() {
+  collapseAllGroups() {
     if (!this.shownResults().length) return;
     this.state.collapseTouched = true;
-    this.state.collapseByDefault = !this.state.collapseByDefault;
+    this.state.collapseByDefault = true;
     this.state.collapsed.clear();
     this.ports.onViewChange();
   }
@@ -400,6 +425,11 @@ export class WorkspaceSearchPanel {
     // 上限で切ったなら必ず言う。黙って減らすのがいちばん困る
     if (outcome.hit_file_limit) summary.appendChild(warning("最大ファイル数で列挙を打ち切った"));
     if (outcome.hit_result_limit) summary.appendChild(warning("最大結果数で検索を打ち切った"));
+    if (outcome.skipped_files) {
+      summary.appendChild(warning(
+        `${outcome.skipped_files.toLocaleString()} 件のファイルを読み取れず、完全には検索できなかった`
+      ));
+    }
   }
 
   private groupRow(group: ResultGroup): HTMLElement {
@@ -433,7 +463,7 @@ export class WorkspaceSearchPanel {
 
   private matchRow(match: WorkspaceSearchResult): HTMLElement {
     const div = document.createElement("div");
-    div.className = "ws-match";
+    div.className = `ws-match${this.state.selected === searchResultKey(match) ? " sel" : ""}`;
     const mark = document.createElement("span");
     mark.className = "ws-line";
     mark.textContent = match.is_filename ? "名" : String(match.line + 1);
@@ -448,8 +478,16 @@ export class WorkspaceSearchPanel {
   }
 
   private invokeOpen(match: WorkspaceSearchResult, newTab: boolean) {
+    const request = ++this.openRequest;
+    const key = searchResultKey(match);
     try {
-      void Promise.resolve(this.ports.onOpen(match, newTab)).catch((error) => this.reportUiError(error));
+      void Promise.resolve(this.ports.onOpen(match, newTab))
+        .then((opened) => {
+          if (opened === false || request !== this.openRequest) return;
+          this.state.selected = key;
+          this.ports.onViewChange();
+        })
+        .catch((error) => this.reportUiError(error));
     } catch (error) {
       void this.reportUiError(error);
     }
@@ -466,7 +504,7 @@ export class WorkspaceSearchPanel {
   // ホイールクリックと右クリックは、どちらの行でも「新規タブで開く」入口になる
   private bindOpen(row: HTMLElement, match: WorkspaceSearchResult) {
     row.addEventListener("auxclick", (e) => {
-      if (e.button !== 1) return;
+      if (!isMiddleClick(e)) return;
       e.preventDefault();
       this.invokeOpen(match, true);
     });
@@ -482,13 +520,8 @@ export class WorkspaceSearchPanel {
   }
 }
 
-function iconButton(className: string, label: string, title: string): HTMLButtonElement {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = className;
-  button.textContent = label;
-  button.title = title;
-  return button;
+function searchResultKey(result: Pick<WorkspaceSearchResult, "rel_path" | "line" | "col" | "is_filename">): string {
+  return `${result.rel_path}\u0000${result.line}\u0000${result.col}\u0000${result.is_filename ? "name" : "text"}`;
 }
 
 function searchingRow(stopped: boolean): HTMLElement {

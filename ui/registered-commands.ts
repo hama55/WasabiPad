@@ -2,6 +2,7 @@
 import { getSetting, setSetting } from "./settings";
 import {
   DEFAULT_COMMAND_VALUE_KIND,
+  commandValueKind,
   normalizeExtension,
   normalizeRegisteredCommand,
   type CommandValueKind,
@@ -40,17 +41,13 @@ export function commandLineForFile(prefix: string, command: string, path: string
   return commandLineForValue(prefix, command, path, "file");
 }
 
-function valueKindOf(command: Pick<RegisteredCommand, "valueKind">): CommandValueKind {
-  return command.valueKind ?? DEFAULT_COMMAND_VALUE_KIND;
-}
-
 export function commandsForPath(
   path: string,
   kind: CommandValueKind = DEFAULT_COMMAND_VALUE_KIND,
 ): RegisteredCommand[] {
   const extension = extensionOf(path);
   return getSetting("registeredCommands").filter((command) =>
-    normalizeExtension(command.extension) === extension && valueKindOf(command) === kind
+    normalizeExtension(command.extension) === extension && commandValueKind(command) === kind
   );
 }
 
@@ -83,7 +80,7 @@ export function addRegisteredCommand(command: RegisteredCommand): void {
     && item.label === normalized.label
     && item.prefix === normalized.prefix
     && item.command === normalized.command
-    && valueKindOf(item) === valueKindOf(normalized))) return;
+    && commandValueKind(item) === commandValueKind(normalized))) return;
   setSetting("registeredCommands", [...commands, normalized]);
 }
 
@@ -101,7 +98,7 @@ export function updateRegisteredCommand(
     && item.label === updated.label
     && item.prefix === updated.prefix
     && item.command === updated.command
-    && valueKindOf(item) === valueKindOf(updated))) return;
+    && commandValueKind(item) === commandValueKind(updated))) return;
   const next = [...commands];
   next[index] = updated;
   setSetting("registeredCommands", next);
@@ -113,5 +110,5 @@ export function removeRegisteredCommand(command: RegisteredCommand): void {
     || item.label !== command.label
     || item.prefix !== command.prefix
     || item.command !== command.command
-    || valueKindOf(item) !== valueKindOf(command)));
+    || commandValueKind(item) !== commandValueKind(command)));
 }

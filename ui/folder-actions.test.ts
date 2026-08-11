@@ -14,7 +14,8 @@ import {
   type FolderDocumentPort,
 } from "./folder-actions";
 import type { RegisteredCommandMenuPorts } from "./registered-command-menu";
-import type { MemoSpec } from "./document-controller";
+import type { MemoCreationSpec } from "./document-controller";
+import { MENU_ICON } from "./menu-icons";
 
 vi.mock("./dialogs", () => ({ showError: vi.fn(async () => {}) }));
 vi.mock("./api", async (importOriginal) => ({
@@ -41,22 +42,24 @@ function fixture() {
   document.body.replaceChildren(dropdown);
   const session = initialSession();
   session.folderRoot = "C:\\work";
+  const expandAllFolder = vi.fn();
   const doc = {
     current: session,
-    promptMemoSpec: vi.fn(async (): Promise<MemoSpec | null> => null),
+    promptMemoSpec: vi.fn(async (): Promise<MemoCreationSpec | null> => null),
     setSelectedRelPath: vi.fn(),
     applyDocInfo: vi.fn(),
     applyRenamed: vi.fn(),
   } satisfies FolderDocumentPort;
+  const sidebar = {
+    setEntries: vi.fn(),
+    selectByRelPath: vi.fn(),
+    refreshFolderEntries: vi.fn(async () => {}),
+    expandAllFolder,
+  };
   const ports = {
-    sidebar: {
-      setEntries: vi.fn(),
-      selectByRelPath: vi.fn(),
-      refreshFolderEntries: vi.fn(async () => {}),
-    },
+    sidebar,
     onOpenInNewTab: vi.fn(),
     onOpenInNewWindow: vi.fn(),
-    onOpenViewer: vi.fn(),
     onAddFavorite: vi.fn(),
     onSetStartupPath: vi.fn(),
     onOpenPath: vi.fn(),
@@ -75,10 +78,11 @@ function fixture() {
     doc,
     dropdown,
     ports,
+    expandAllFolder,
   };
 }
 
-describe("FolderActions", () => {
+describe("Feature: FolderActions", () => {
   beforeEach(async () => {
     document.body.replaceChildren();
     await initSettings();
@@ -88,43 +92,154 @@ describe("FolderActions", () => {
     vi.mocked(promptFields).mockResolvedValue(null);
   });
 
-  it("右クリック項目を操作別に区切り、新規ウィンドウで開ける", () => {
+  // Given: rootが`C:\work`、対象が`memo.txt`、gotoが`{line:499,col:8}`
+  // When: コンテキストメニュー表示後に新規ウィンドウ項目をクリック
+  // Then: 10項目・区切り4個、Explorerが先頭で、絶対パスとgotoを渡す
+  it("Scenario: 右クリック項目を操作別に区切り、新規ウィンドウで開ける", () => {
     const { actions, dropdown, ports } = fixture();
     const goto = { line: 499, col: 8 };
     actions.showContextMenu(0, 0, { relPath: "memo.txt", isDir: false, goto });
 
     expect([...dropdown.querySelectorAll(".dd-label")].map((label) => label.textContent)).toEqual([
+      "エクスプローラで開く",
       "新規タブで開く",
       "新規ウィンドウで開く",
       "アプリで開く",
       "コマンドを登録...",
       "アドレスバーに設定",
+      "お気に入りに追加",
       "新規メモ作成...",
       "名前を変更...",
       "その他 ▸",
-      "お気に入りに追加",
-      "エクスプローラで開く",
     ]);
-    expect(dropdown.querySelectorAll(".dd-sep")).toHaveLength(2);
+    expect(dropdown.querySelectorAll(".dd-sep")).toHaveLength(4);
+    const expectedIcons = [
+      ["エクスプローラで開く", MENU_ICON.explorer],
+      ["新規タブで開く", MENU_ICON.newTab],
+      ["新規ウィンドウで開く", MENU_ICON.newWindow],
+      ["アプリで開く", MENU_ICON.external],
+      ["コマンドを登録...", MENU_ICON.command],
+      ["アドレスバーに設定", MENU_ICON.address],
+      ["お気に入りに追加", MENU_ICON.favorite],
+      ["新規メモ作成...", MENU_ICON.newMemo],
+      ["名前を変更...", MENU_ICON.rename],
+      ["その他 ▸", MENU_ICON.more],
+    ] as const;
+    for (const [label, icon] of expectedIcons) {
+      const item = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+        .find((element) => element.textContent === label);
+      expect(item?.querySelector(`.${icon}`), label).not.toBeNull();
+    }
 
-    dropdown.querySelectorAll<HTMLElement>(".dd-item")[1].click();
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "新規ウィンドウで開く")!.click();
     expect(ports.onOpenInNewWindow).toHaveBeenCalledWith("C:\\work\\memo.txt", goto);
   });
 
-  it("CSVとMarkdownだけに対応するビューを表示する", () => {
-    const { actions, dropdown, ports } = fixture();
-    actions.showContextMenu(0, 0, { relPath: "table.CSV", isDir: false });
+  // Given: rootが`C:\\work`、対象が`docs`フォルダ
+  // When: フォルダの右クリックメニューから「フォルダを全展開」を選ぶ
+  // Then: 対象の相対パスでフォルダ全展開を依頼する
+  it("Scenario: フォルダメニューから対象フォルダを全展開する", () => {
+    const { actions, dropdown, expandAllFolder } = fixture();
+    actions.showContextMenu(0, 0, { relPath: "docs", isDir: true });
 
-    expect([...dropdown.querySelectorAll(".dd-label")].map((label) => label.textContent)).toContain("CSVビュー");
-    dropdown.querySelectorAll<HTMLElement>(".dd-item")[2].click();
-    expect(ports.onOpenViewer).toHaveBeenCalledWith("table.CSV", "csv");
+    const item = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((element) => element.textContent === "フォルダを全展開");
+    expect(item?.textContent).toBe("フォルダを全展開");
+    expect(item?.querySelector(`.${MENU_ICON.expandFolder}`)).not.toBeNull();
+    expect(item?.previousElementSibling?.classList.contains("dd-sep")).toBe(true);
+    if (!item) return;
+    item.click();
 
-    actions.showContextMenu(0, 0, { relPath: "memo.txt", isDir: false });
-    expect([...dropdown.querySelectorAll(".dd-label")].map((label) => label.textContent)).not.toContain("CSVビュー");
-    expect([...dropdown.querySelectorAll(".dd-label")].map((label) => label.textContent)).not.toContain("Markdownビュー");
+    expect(expandAllFolder).toHaveBeenCalledWith("docs");
   });
 
-  it("拡張子別の登録コマンドを表示して実行できる", async () => {
+  // Given: フォルダ全展開の取得が`expand failed`でrejectする
+  // When: フォルダの右クリックメニューから「フォルダを全展開」をクリックする
+  // Then: フォルダ操作の失敗として`showError`へ通知する
+  it("Scenario: フォルダ全展開の失敗を表示する", async () => {
+    const error = new Error("expand failed");
+    const { actions, dropdown, expandAllFolder } = fixture();
+    expandAllFolder.mockRejectedValueOnce(error);
+    actions.showContextMenu(0, 0, { relPath: "docs", isDir: true });
+
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "フォルダを全展開")!.click();
+
+    await vi.waitFor(() => expect(showError).toHaveBeenCalledWith(
+      "フォルダを全展開できませんでした",
+      error,
+    ));
+  });
+
+  // Given: ファイル、フォルダ、空白部の右クリックメニューを表示する
+  // When: 各メニューの表示項目を調べる
+  // Then: すべての項目にメニューアイコンが付いている
+  it("Scenario: 右クリックメニューの全項目にアイコンを表示する", () => {
+    const { actions, dropdown } = fixture();
+    for (const target of [
+      { relPath: "memo.txt", isDir: false },
+      { relPath: "docs", isDir: true },
+      null,
+    ] as const) {
+      actions.showContextMenu(0, 0, target);
+      const missing = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+        .filter((item) => !item.querySelector(".menu-icon, .fav-icon"))
+        .map((item) => item.textContent);
+      expect(missing, target?.relPath ?? "空白部").toEqual([]);
+    }
+  });
+
+  // Given: CSV/Markdown/Image/PDF/HTMLのファイルを対象にする
+  // When: フォルダツリーのコンテキストメニューを表示する
+  // Then: プレビュー形式の項目は表示しない
+  it("Scenario: フォルダツリーの右クリックメニューからプレビュー項目を除く", () => {
+    const { actions, dropdown } = fixture();
+    for (const relPath of ["table.csv", "notes.md", "photo.png", "manual.pdf", "index.html"]) {
+      actions.showContextMenu(0, 0, { relPath, isDir: false });
+      expect([...dropdown.querySelectorAll(".dd-label")].map((label) => label.textContent))
+        .not.toEqual(expect.arrayContaining([
+          "CSVビュー", "Markdownビュー", "Imageビュー", "PDFビュー", "html(静的)",
+        ]));
+    }
+  });
+
+  // Given: rootが`C:\work`で対象がない
+  // When: フォルダ空白部のコンテキストメニューを表示する
+  // Then: Explorerが先頭にあり、新規作成とお気に入り追加が残り、rootをフォルダとして開く
+  it("Scenario: 対象なしのフォルダメニューでもExplorerを先頭にする", async () => {
+    const reveal = vi.spyOn(api, "revealInExplorer").mockResolvedValue();
+    try {
+      const { actions, dropdown } = fixture();
+      actions.showContextMenu(0, 0, null);
+
+      expect([...dropdown.querySelectorAll(".dd-label")].map((label) => label.textContent)).toEqual([
+        "エクスプローラで開く",
+        "新規メモ作成...",
+        "お気に入りに追加",
+      ]);
+      expect(dropdown.querySelectorAll(".dd-sep")).toHaveLength(2);
+      for (const [label, icon] of [
+        ["エクスプローラで開く", MENU_ICON.explorer],
+        ["新規メモ作成...", MENU_ICON.newMemo],
+        ["お気に入りに追加", MENU_ICON.favorite],
+      ] as const) {
+        const item = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+          .find((element) => element.textContent === label);
+        expect(item?.querySelector(`.${icon}`), label).not.toBeNull();
+      }
+      dropdown.querySelector<HTMLElement>(".dd-item:first-child")!.click();
+
+      await vi.waitFor(() => expect(reveal).toHaveBeenCalledWith("C:\\work", true));
+    } finally {
+      reveal.mockRestore();
+    }
+  });
+
+  // Given: `.html`用Chromeコマンドを登録済み
+  // When: `index.html`の登録コマンドを開いて実行
+  // Then: trailingが`⚙,×`、絶対パス入りコマンドを実行
+  it("Scenario: 拡張子別の登録コマンドを表示して実行できる", async () => {
     addRegisteredCommand({ extension: ".html", label: "Chrome", prefix: "cmd.exe /D /C", command: "chrome {file}" });
     const { actions, dropdown } = fixture();
     actions.showContextMenu(0, 0, { relPath: "index.html", isDir: false });
@@ -143,7 +258,10 @@ describe("FolderActions", () => {
     ));
   });
 
-  it("登録コマンドの実行失敗を表示する", async () => {
+  // Given: `.html`用コマンド実行が`command failed`でreject
+  // When: 登録コマンドをクリック
+  // Then: `showError("登録コマンドを実行できませんでした", Error)`
+  it("Scenario: 登録コマンドの実行失敗を表示する", async () => {
     addRegisteredCommand({ extension: ".html", label: "Chrome", prefix: "", command: "chrome {file}" });
     vi.mocked(api.runExternalCommand).mockRejectedValueOnce(new Error("command failed"));
     const { actions, dropdown } = fixture();
@@ -159,7 +277,10 @@ describe("FolderActions", () => {
     ));
   });
 
-  it("登録時は選択ファイルの拡張子をコマンドへ紐付ける", async () => {
+  // Given: promptが`Chrome`,``,`chrome {file}`を返す
+  // When: `index.HTML`でコマンド登録
+  // Then: 拡張子`.html`で登録、各promptラベルと空prefixを表示
+  it("Scenario: 登録時は選択ファイルの拡張子をコマンドへ紐付ける", async () => {
     vi.mocked(promptFields).mockResolvedValueOnce(["Chrome", "", "chrome {file}"]);
     const { actions, dropdown } = fixture();
     actions.showContextMenu(0, 0, { relPath: "index.HTML", isDir: false });
@@ -180,7 +301,10 @@ describe("FolderActions", () => {
     ]));
   });
 
-  it("登録コマンドを歯車から編集し、×から削除できる", async () => {
+  // Given: Chromeコマンドを登録済み
+  // When: gearで更新後、再表示して×で削除
+  // Then: Chrome Devの内容へ更新後、一覧が空になる
+  it("Scenario: 登録コマンドを歯車から編集し、×から削除できる", async () => {
     addRegisteredCommand({ extension: ".html", label: "Chrome", prefix: "", command: "chrome {file}" });
     const { actions, dropdown } = fixture();
     actions.showContextMenu(0, 0, { relPath: "index.html", isDir: false });
@@ -200,7 +324,10 @@ describe("FolderActions", () => {
     expect(commandsForPath("index.html")).toEqual([]);
   });
 
-  it("ファイルのExplorerメニューはその絶対パスを渡す", async () => {
+  // Given: Explorer起動spy、対象`memo.txt`
+  // When: Explorer項目をクリック
+  // Then: `revealInExplorer("C:\\work\\memo.txt",false)`
+  it("Scenario: ファイルのExplorerメニューはその絶対パスを渡す", async () => {
     const reveal = vi.spyOn(api, "revealInExplorer").mockResolvedValue();
     try {
       const { actions, dropdown } = fixture();
@@ -214,7 +341,10 @@ describe("FolderActions", () => {
     }
   });
 
-  it("Explorer起動失敗をフォルダ操作の文脈で表示する", async () => {
+  // Given: Explorer起動が`explorer failed`でreject
+  // When: Explorer項目をクリック
+  // Then: `showError("エクスプローラで開けませんでした", Error)`
+  it("Scenario: Explorer起動失敗をフォルダ操作の文脈で表示する", async () => {
     const reveal = vi.spyOn(api, "revealInExplorer").mockRejectedValueOnce(new Error("explorer failed"));
     try {
       const { actions, dropdown } = fixture();
@@ -231,13 +361,19 @@ describe("FolderActions", () => {
     }
   });
 
-  it("画像ファイルの拡張子を大文字小文字に関係なく判定する", () => {
+  // Given: 対象拡張子がPNG、webp、md
+  // When: `isImagePath`を呼ぶ
+  // Then: PNG/webpはtrue、mdはfalse
+  it("Scenario: 画像ファイルの拡張子を大文字小文字に関係なく判定する", () => {
     expect(isImagePath("picture.PNG")).toBe(true);
     expect(isImagePath("picture.webp")).toBe(true);
     expect(isImagePath("memo.md")).toBe(false);
   });
 
-  it("削除はその他サブメニューを経由する", async () => {
+  // Given: 対象が`memo.txt`、delete APIは成功
+  // When: その他→削除をクリック
+  // Then: `deleteEntry("memo.txt")`、確認文言表示、一覧更新
+  it("Scenario: 削除はその他サブメニューを経由する", async () => {
     const { actions, dropdown, ports } = fixture();
     vi.spyOn(api, "deleteEntry").mockResolvedValueOnce({} as api.DocInfo);
     actions.showContextMenu(0, 0, { relPath: "memo.txt", isDir: false });
@@ -246,6 +382,7 @@ describe("FolderActions", () => {
       .find((item) => item.textContent?.includes("その他"));
     other!.click();
     expect(dropdown.querySelector<HTMLElement>(".dd-submenu .dd-item")?.textContent).toBe("削除");
+    expect(dropdown.querySelector<HTMLElement>(`.dd-submenu .${MENU_ICON.delete}`)).not.toBeNull();
     dropdown.querySelector<HTMLElement>(".dd-submenu .dd-item")!.click();
     await vi.waitFor(() => expect(api.deleteEntry).toHaveBeenCalledWith("memo.txt"));
 
@@ -257,7 +394,10 @@ describe("FolderActions", () => {
     expect(ports.sidebar.refreshFolderEntries).toHaveBeenCalled();
   });
 
-  it("作成成功後の一覧更新失敗を作成失敗として表示しない", async () => {
+  // Given: createNoteは成功、一覧更新だけ`refresh failed`でreject
+  // When: `createNote(null)`
+  // Then: 作成APIは呼ばれ、作成失敗ではなく一覧更新失敗を通知
+  it("Scenario: 作成成功後の一覧更新失敗を作成失敗として表示しない", async () => {
     const { actions, doc, ports } = fixture();
     const docInfo = {
       kind: "text",
@@ -269,10 +409,15 @@ describe("FolderActions", () => {
       folder_entries: [],
       folder_root: "C:\\work",
       view_only: false,
+      is_binary: false,
       byte_len: 0,
       is_huge: false,
+      modified_at: null,
     } satisfies api.DocInfo;
-    doc.promptMemoSpec.mockResolvedValueOnce({ stem: "memo", extension: "txt" });
+    doc.promptMemoSpec.mockResolvedValueOnce({
+      memo: { stem: "memo", extension: "txt" },
+      format: { encoding: "utf8", eol: "crlf" },
+    });
     vi.spyOn(api, "createNote").mockResolvedValueOnce(docInfo);
     ports.sidebar.refreshFolderEntries.mockRejectedValueOnce(new Error("refresh failed"));
 
@@ -283,5 +428,57 @@ describe("FolderActions", () => {
       "メモは作成されましたが一覧を更新できませんでした",
       expect.any(Error),
     );
+  });
+
+  // Feature: 新規メモ名ダイアログのエラー境界
+  // Scenario: 初期候補の取得に失敗しても作成APIを呼ばない
+  // Given: promptMemoSpecがError("candidate failed")でrejectする
+  // When: ルート直下で`createNote(null)`を実行する
+  // Then: 新規メモ作成失敗を通知し、ファイル作成へ進まない
+  it("Scenario: 新規メモの候補取得失敗を通知する", async () => {
+    const { actions, doc } = fixture();
+    const error = new Error("candidate failed");
+    const createNote = vi.spyOn(api, "createNote").mockClear();
+    doc.promptMemoSpec.mockRejectedValueOnce(error);
+
+    await actions.createNote(null);
+
+    expect(showError).toHaveBeenCalledWith("新規メモを作成できませんでした", error);
+    expect(createNote).not.toHaveBeenCalled();
+  });
+
+  // Feature: フォルダ内の新規メモ採番
+  // Scenario: 初期名が存在すると空いている連番名で作成する
+  // Given: 名前入力ダイアログが初期値`memo1`を返す
+  // When: ルート直下で`createNote(null)`を実行する
+  // Then: `createNote`へ`memo1.txt`を渡し、作成後の選択先も同じ名前にする
+  it("Scenario: 同名メモがあると1から連番を付ける", async () => {
+    const { actions, doc } = fixture();
+    const docInfo = {
+      kind: "text",
+      line_count: 1,
+      enc: "utf8",
+      eol: "crlf",
+      path: "C:\\work\\memo1.txt",
+      entries: null,
+      folder_entries: [],
+      folder_root: "C:\\work",
+      view_only: false,
+      is_binary: false,
+      byte_len: 0,
+      is_huge: false,
+      modified_at: null,
+    } satisfies api.DocInfo;
+    doc.promptMemoSpec.mockResolvedValueOnce({
+      memo: { stem: "memo1", extension: "txt" },
+      format: { encoding: "sjis", eol: "lf" },
+    });
+    vi.spyOn(api, "createNote").mockResolvedValueOnce(docInfo);
+
+    await actions.createNote(null);
+
+    expect(doc.promptMemoSpec).toHaveBeenCalledWith("C:\\work");
+    expect(api.createNote).toHaveBeenCalledWith(null, "memo1.txt", "sjis", "lf");
+    expect(doc.setSelectedRelPath).toHaveBeenCalledWith("memo1.txt");
   });
 });

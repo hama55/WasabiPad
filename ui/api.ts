@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { DOCUMENT_LOAD_PROGRESS_EVENT } from "./document-load-progress";
+import type { DocumentLoadProgress } from "./document-load-progress";
 import { IPC_COMMANDS } from "./generated/IpcCommands";
 import type { EditManyItem } from "./generated/EditManyItem";
 import type { EditManyResult } from "./generated/EditManyResult";
@@ -9,6 +11,7 @@ import type { DocInfo } from "./generated/DocInfo";
 import type { Encoding } from "./generated/Encoding";
 import type { Eol } from "./generated/Eol";
 import type { ExternalCheck } from "./generated/ExternalCheck";
+import type { ExternalMergePreview } from "./generated/ExternalMergePreview";
 import type { WindowRequest } from "./generated/WindowRequest";
 import type { FileNameMatchMode } from "./generated/FileNameMatchMode";
 import type { FindCursor } from "./generated/FindCursor";
@@ -35,6 +38,7 @@ export type {
   Encoding,
   Eol,
   ExternalCheck,
+  ExternalMergePreview,
   WindowRequest,
   FileNameMatchMode,
   FindCursor,
@@ -59,8 +63,11 @@ export type ReadEncoding = (typeof READ_ENCODINGS)[number];
 export const EVENT_NAMES = {
   externalWindowRequest: "external-window-request",
   workspaceSearchBatch: "workspace-search-batch",
+  documentLoadProgress: DOCUMENT_LOAD_PROGRESS_EVENT,
   viewerUpdate: "viewer-update",
 } as const;
+
+export type { DocumentLoadProgress } from "./document-load-progress";
 
 export const openPath = (path: string) => invoke<DocInfo>(IPC_COMMANDS.openPath, { path });
 export const newDoc = () => invoke<void>(IPC_COMMANDS.newDoc);
@@ -93,13 +100,16 @@ export const workspaceSearch = (pat: string, options: WorkspaceSearchOptions, se
 export const onWorkspaceSearchBatch = (handler: (batch: WorkspaceSearchBatch) => void) =>
   listen<WorkspaceSearchBatch>(EVENT_NAMES.workspaceSearchBatch, (event) => handler(event.payload));
 
+export const onDocumentLoadProgress = (handler: (progress: DocumentLoadProgress) => void) =>
+  listen<DocumentLoadProgress>(EVENT_NAMES.documentLoadProgress, (event) => handler(event.payload));
+
 // 進行中の検索を打ち切る (無制限指定で走り出した検索から抜ける手段)
 export const workspaceSearchCancel = (searchId: number) =>
   invoke<void>(IPC_COMMANDS.workspaceSearchCancel, { searchId });
 
 // フォルダ内に空の新規ファイルを作り、その場で開く (dir はフォルダルートからの相対パス)
-export const createNote = (dir: string | null, name: string) =>
-  invoke<DocInfo>(IPC_COMMANDS.createNote, { dir, name });
+export const createNote = (dir: string | null, name: string, enc: Encoding, eol: Eol) =>
+  invoke<DocInfo>(IPC_COMMANDS.createNote, { dir, name, enc, eol });
 
 // サイドバー上のファイル/フォルダをリネームする (relPath はフォルダルートからの相対パス)
 export const renameEntry = (relPath: string, newName: string) =>
@@ -119,6 +129,8 @@ export const revealInExplorer = (path: string, isDir: boolean) =>
 
 export const openInOtherApp = (path: string) =>
   invoke<void>(IPC_COMMANDS.openInOtherApp, { path });
+export const openInDefaultBrowser = (path: string) =>
+  invoke<void>(IPC_COMMANDS.openInDefaultBrowser, { path });
 export const runExternalCommand = (command: string, path: string) =>
   invoke<void>(IPC_COMMANDS.runExternalCommand, { command, path });
 
@@ -170,7 +182,9 @@ export const reloadWithEncoding = (enc: ReadEncoding) =>
 export const pollExternal = (dirty: boolean) =>
   invoke<ExternalCheck>(IPC_COMMANDS.pollExternal, { dirty });
 export const reloadFromDisk = () => invoke<DocInfo>(IPC_COMMANDS.reloadFromDisk);
-export const ackExternal = () => invoke<void>(IPC_COMMANDS.ackExternal);
+export const ackExternal = () => invoke<DocInfo>(IPC_COMMANDS.ackExternal);
+export const externalMergePreview = () => invoke<ExternalMergePreview>(IPC_COMMANDS.externalMergePreview);
+export const mergeExternal = () => invoke<DocInfo>(IPC_COMMANDS.mergeExternal);
 export const setEncoding = (enc: Encoding) => invoke<void>(IPC_COMMANDS.setEncoding, { enc });
 export const setEol = (eol: Eol) => invoke<void>(IPC_COMMANDS.setEol, { eol });
 
@@ -230,3 +244,5 @@ export const takeViewerPayload = (label: string) =>
   invoke<ViewerPayload>(IPC_COMMANDS.takeViewerPayload, { label });
 export const updateViewer = (label: string, text: string, selection: ViewerSelection | null) =>
   invoke<boolean>(IPC_COMMANDS.updateViewer, { label, text, selection });
+export const closeViewer = (label: string) =>
+  invoke<void>(IPC_COMMANDS.closeViewer, { label });

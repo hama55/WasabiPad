@@ -1,8 +1,10 @@
 import { BmNode, loadBookmarks, pathIsDirectory, saveBookmarks } from "./api";
 import { hideMenu, showMenu, MenuItem } from "./menu";
 import { promptFields } from "./prompt";
-import { revealInExplorer } from "./folder-actions";
-import { DRAG_THRESHOLD } from "./interaction-constants";
+import { DRAG_THRESHOLD, isMiddleClick } from "./interaction-constants";
+import { favoriteIconClass, MENU_ICON } from "./menu-icons";
+import { MENU_LABELS } from "./menu-labels";
+import { runAsyncBoundary } from "./async-boundary";
 
 type NodePath = number[];
 type DropKind = "before" | "inside" | "after";
@@ -11,6 +13,10 @@ type DropSpot = { kind: "root" } | { kind: DropKind; path: NodePath; el: HTMLEle
 
 const GROUP_OPEN_DELAY = 650;
 const DROP_CLASSES = ["fav-drop", "fav-drop-before", "fav-drop-after"];
+const FAVBAR_LABELS = {
+  addPath: "パスを追加...",
+  addGroup: "グループを追加...",
+} as const;
 
 // お気に入りの保存先。既定は backend のブックマークファイル。
 export interface BookmarkStore {
@@ -26,8 +32,10 @@ export const bookmarkStore: BookmarkStore = {
 };
 
 export interface FavBarPorts {
-  onOpen: (path: string, newTab: boolean) => unknown;
+  onOpen: (path: string, newTab: boolean) => void | Promise<unknown>;
+  onOpenInNewWindow: (path: string) => void | Promise<unknown>;
   onAddGroupToTabs: (items: { path: string; kind: "file" | "folder" }[]) => void;
+  revealInExplorer: (path: string, isDir: boolean) => void | Promise<unknown>;
   currentFile: () => string | null;
   onError: (error: unknown) => Promise<void>;
 }
@@ -45,8 +53,10 @@ export class FavBar {
   } | null = null;
   private justDragged = false;
   private menuRoot = document.getElementById("dropdown");
-  private onOpen: (path: string, newTab: boolean) => void;
+  private onOpen: (path: string, newTab: boolean) => void | Promise<unknown>;
+  private onOpenInNewWindow: FavBarPorts["onOpenInNewWindow"];
   private onAddGroupToTabs: FavBarPorts["onAddGroupToTabs"];
+  private revealInExplorer: FavBarPorts["revealInExplorer"];
   private currentFile: () => string | null;
   private onError: (error: unknown) => Promise<void>;
 
@@ -56,22 +66,34 @@ export class FavBar {
     private store: BookmarkStore = bookmarkStore
   ) {
     this.onOpen = ports.onOpen;
+    this.onOpenInNewWindow = ports.onOpenInNewWindow;
     this.onAddGroupToTabs = ports.onAddGroupToTabs;
+    this.revealInExplorer = ports.revealInExplorer;
     this.currentFile = ports.currentFile;
     this.onError = ports.onError;
-    this.host.addEventListener("contextmenu", (e) => {
-      if (e.target !== this.host) return;
-      e.preventDefault();
-      showMenu(e.clientX, e.clientY, [
-        { label: "パスを追加...", action: () => this.runMutation(() => this.addPath()) },
-        { label: "グループを追加...", action: () => this.runMutation(() => this.addGroup()) },
-      ]);
-    });
+    this.host.addEventListener("contextmenu", this.onContextMenu);
     // WebView2 のネイティブ drag-drop が HTML5 DnD を奪うため pointer で自作する
     this.host.addEventListener("pointerdown", this.onPointerDown);
     this.menuRoot?.addEventListener("pointerdown", this.onPointerDown);
     window.addEventListener("click", this.swallowClickAfterDrag, true);
   }
+
+  dispose() {
+    this.endDrag();
+    this.host.removeEventListener("contextmenu", this.onContextMenu);
+    this.host.removeEventListener("pointerdown", this.onPointerDown);
+    this.menuRoot?.removeEventListener("pointerdown", this.onPointerDown);
+    window.removeEventListener("click", this.swallowClickAfterDrag, true);
+  }
+
+  private onContextMenu = (e: MouseEvent) => {
+    if (e.target !== this.host) return;
+    e.preventDefault();
+    showMenu(e.clientX, e.clientY, [
+      { label: FAVBAR_LABELS.addPath, iconClass: MENU_ICON.addPath, action: () => this.runMutation(() => this.addPath()) },
+      { label: FAVBAR_LABELS.addGroup, iconClass: MENU_ICON.addGroup, action: () => this.runMutation(() => this.addGroup()) },
+    ]);
+  };
 
   async init() {
     try {
@@ -103,9 +125,9 @@ export class FavBar {
       });
     } else {
       button.title = node.path;
-      button.addEventListener("click", (e) => this.runOpen(node.path, e.ctrlKey));
+      button.addEventListener("click", () => this.runOpen(node.path, true));
       button.addEventListener("auxclick", (e) => {
-        if (e.button === 1) this.runOpen(node.path, true);
+        if (isMiddleClick(e)) this.runOpen(node.path, true);
       });
     }
 
@@ -119,7 +141,7 @@ export class FavBar {
 
   private icon(kind: BmNode["kind"]): HTMLElement {
     const icon = document.createElement("span");
-    icon.className = `fav-icon fav-icon-${kind}`;
+    icon.className = favoriteIconClass(kind);
     return icon;
   }
 
@@ -128,7 +150,7 @@ export class FavBar {
       const path = [...parent, index];
       const common = {
         favPath: path.join("."),
-        iconClass: `fav-icon fav-icon-${child.kind}`,
+        iconClass: favoriteIconClass(child.kind),
       };
       const onContextMenu = (x: number, y: number) => showMenu(x, y, this.contextItems(child, path));
       return child.kind === "group"
@@ -142,7 +164,7 @@ export class FavBar {
             ...common,
             onContextMenu,
             label: child.name,
-            action: (e?: MouseEvent) => this.runOpen(child.path, Boolean(e?.ctrlKey || e?.button === 1)),
+            action: () => this.runOpen(child.path, true),
           };
     });
   }
@@ -153,6 +175,7 @@ export class FavBar {
       items.push(
         {
           label: "直下の項目をタブに一括追加",
+          iconClass: MENU_ICON.addGroupTabs,
           action: () => this.onAddGroupToTabs(node.children.flatMap((child) =>
             child.kind === "group" ? [] : [{
               path: child.path,
@@ -160,19 +183,21 @@ export class FavBar {
             }]
           )),
         },
-        { label: "パスを追加...", action: () => this.runMutation(() => this.addPath(path)), sep: true },
-        { label: "グループを追加...", action: () => this.runMutation(() => this.addGroup(path)) }
+        { label: FAVBAR_LABELS.addPath, iconClass: MENU_ICON.addPath, action: () => this.runMutation(() => this.addPath(path)), sep: true },
+        { label: FAVBAR_LABELS.addGroup, iconClass: MENU_ICON.addGroup, action: () => this.runMutation(() => this.addGroup(path)) }
       );
     } else {
       items.push(
-        { label: "新規タブで開く", action: () => this.runOpen(node.path, true) },
-        { label: "エクスプローラで開く", action: () => this.runMutation(() => revealInExplorer(node.path, node.kind === "directory")), sep: true },
-        { label: "編集...", action: () => this.runMutation(() => this.editPath(path)) }
+        { label: MENU_LABELS.explorer, iconClass: MENU_ICON.explorer, action: () =>
+          this.runMutation(() => this.revealInExplorer(node.path, node.kind === "directory")) },
+        { label: MENU_LABELS.newTab, iconClass: MENU_ICON.newTab, action: () => this.runOpen(node.path, true) },
+        { label: MENU_LABELS.newWindow, iconClass: MENU_ICON.newWindow, action: () => this.runOpenInNewWindow(node.path) },
+        { label: "編集...", iconClass: MENU_ICON.rename, action: () => this.runMutation(() => this.editPath(path)), sep: true }
       );
     }
     items.push(
-      { label: "移動", sub: this.moveDestinations(path), sep: true },
-      { label: "削除", action: () => this.runMutation(() => this.remove(path)) }
+      { label: "移動", iconClass: MENU_ICON.move, sub: this.moveDestinations(path), sep: node.kind === "group" },
+      { label: MENU_LABELS.delete, iconClass: MENU_ICON.delete, action: () => this.runMutation(() => this.remove(path)), sep: true }
     );
     return items;
   }
@@ -180,6 +205,7 @@ export class FavBar {
   private moveDestinations(source: NodePath): MenuItem[] {
     const items: MenuItem[] = [{
       label: "お気に入りバー",
+      iconClass: MENU_ICON.move,
       action: () => this.runMutation(() => this.moveTo(source, null)),
     }];
     const visit = (nodes: BmNode[], parent: NodePath, names: string[]) => {
@@ -191,6 +217,7 @@ export class FavBar {
         const groupNames = [...names, node.name];
         items.push({
           label: groupNames.join(" / "),
+          iconClass: MENU_ICON.move,
           action: () => this.runMutation(() => this.moveTo(source, path)),
         });
         visit(node.children, path, groupNames);
@@ -236,7 +263,9 @@ export class FavBar {
     origin!.setPointerCapture?.(e.pointerId);
     window.addEventListener("pointermove", this.onPointerMove);
     window.addEventListener("pointerup", this.onPointerUp);
+    window.addEventListener("pointercancel", this.onPointerCancel);
     window.addEventListener("keydown", this.onDragKey);
+    window.addEventListener("blur", this.onWindowBlur);
   };
 
   private onPointerMove = (e: PointerEvent) => {
@@ -255,6 +284,14 @@ export class FavBar {
     this.justDragged = true;
     hideMenu();
     void this.applyDrop(drag.source, drag.spot).catch((error) => this.reportDropError(error));
+  };
+
+  private onPointerCancel = () => {
+    this.endDrag();
+  };
+
+  private onWindowBlur = () => {
+    this.endDrag();
   };
 
   private onDragKey = (e: KeyboardEvent) => {
@@ -332,7 +369,9 @@ export class FavBar {
   private endDrag() {
     window.removeEventListener("pointermove", this.onPointerMove);
     window.removeEventListener("pointerup", this.onPointerUp);
+    window.removeEventListener("pointercancel", this.onPointerCancel);
     window.removeEventListener("keydown", this.onDragKey);
+    window.removeEventListener("blur", this.onWindowBlur);
     this.pending = null;
     if (!this.drag) return;
     window.clearTimeout(this.drag.openTimer);
@@ -356,20 +395,16 @@ export class FavBar {
     }
   }
 
-  private runMutation(operation: () => Promise<void>) {
-    try {
-      void Promise.resolve(operation()).catch((error) => this.reportDropError(error));
-    } catch (error) {
-      void this.reportDropError(error);
-    }
+  private runMutation(operation: () => void | Promise<unknown>) {
+    runAsyncBoundary(operation, (error) => this.reportDropError(error));
   }
 
   private runOpen(path: string, newTab: boolean) {
-    try {
-      void Promise.resolve(this.onOpen(path, newTab)).catch((error) => this.reportDropError(error));
-    } catch (error) {
-      void this.reportDropError(error);
-    }
+    runAsyncBoundary(() => this.onOpen(path, newTab), (error) => this.reportDropError(error));
+  }
+
+  private runOpenInNewWindow(path: string) {
+    runAsyncBoundary(() => this.onOpenInNewWindow(path), (error) => this.reportDropError(error));
   }
 
   private async moveAdjacent(source: NodePath, target: NodePath, after: boolean) {

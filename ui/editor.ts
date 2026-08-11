@@ -1,6 +1,8 @@
 import * as api from "./api";
 import type { Pos } from "./api";
 import { readText as readClipboardText, writeText as writeClipboardText } from "@tauri-apps/plugin-clipboard-manager";
+import { RectangularClipboard } from "./editor-clipboard";
+import { findForward } from "./editor-find-loop";
 import { FindBar } from "./findbar";
 import { clampFontSize } from "./font-controls";
 import { DEFAULT_EDITOR_CONFIG, EditorConfig } from "./editor-config";
@@ -9,11 +11,15 @@ import {
   createRegisteredCommandMenu,
   type RegisteredCommandMenuPorts,
 } from "./registered-command-menu";
-import { VIEWER_FORMAT_LABELS } from "./format";
+import { MENU_ICON } from "./menu-icons";
+import { MENU_LABELS } from "./menu-labels";
+import { viewerFormatIcon, VIEWER_FORMAT_LABELS } from "./format";
+import { viewerFormatForPath } from "./viewer-formats";
 import { LineCache } from "./line-cache";
+import { EditorMutationController } from "./editor-mutation";
 import { LiveViewers } from "./live-viewers";
 import { lineNumberGroups } from "./line-number";
-import { Selection } from "./selection";
+import { blockRangeForLine, Selection } from "./selection";
 import { MAX_SAFE_HEIGHT, ViewportMetrics } from "./viewport-metrics";
 import {
   addRegisteredString,
@@ -29,33 +35,39 @@ import {
   clampImeAnchor,
   comparePos as cmp,
   findProgressPercent,
-  positionAfterDeletion,
   u16ToChar,
   unescapePattern,
   WrapHeightMap,
   wordBounds,
 } from "./editor-math";
 import type { EditorViewState } from "./editor-view-state";
-import {
-  newlineWithLeadingTabs,
-  planLineIndent,
-  selectedLineRange,
-} from "./editor-edit-plan";
+import { selectedLineRange } from "./editor-edit-plan";
 
 const OVERSCAN = 8;
+
+function normalizeClipboardText(text: string): string {
+  return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
+
 export type { EditorViewState } from "./editor-view-state";
+
+function isPreviewLine(line: number, range: { start: Pos; end: Pos } | null): boolean {
+  const selected = range ? selectedLineRange(range.start, range.end) : null;
+  return !!selected && line >= selected.first && line <= selected.last;
+}
 
 export interface EditorPorts {
   onDocChange: (lineCount: number) => void;
   onCursor: (line: number, col: number) => void;
-  onFontChange: (fontFamily: string, fontSize: number) => void;
-  getExternalFilePath: () => string | null;
-  openExternally: () => void;
+  onFontChange: (fontFamily: string, fontSize: number, changed: "family" | "size" | "both") => void;
+  openExternally: (path: string) => void | Promise<unknown>;
+  openInNewWindow?: (path: string) => void | Promise<unknown>;
   registeredCommandPorts: RegisteredCommandMenuPorts;
-  revealInExplorer?: () => void;
+  revealInExplorer?: (path: string, isDir: boolean) => void | Promise<unknown>;
   onError: (message: string, error: unknown) => Promise<void>;
   openViewer: (format: api.ViewerFormat, text: string, selection: api.ViewerSelection | null) => Promise<string | null>;
   updateViewer: (label: string, text: string, selection: api.ViewerSelection | null) => Promise<boolean>;
+  closeViewer: (label: string) => Promise<void>;
   saveImage?: (bytes: number[], mimeType: string) => Promise<string>;
 }
 
@@ -69,6 +81,7 @@ export class VirtualEditor {
   private inner: HTMLElement;
   private linesLayer: HTMLElement; // 行/選択ハイライトの描画専用コンテナ
   private caretEl: HTMLElement;
+  private dragCaretEl: HTMLElement;
   private secondaryCaretEls: HTMLElement[] = [];
   private input: HTMLTextAreaElement;
   private findBar: FindBar;
@@ -105,21 +118,27 @@ export class VirtualEditor {
   private scrollbarDragging = false; // ネイティブscrollTopを入力として扱う間だけtrue
 
   private sel = new Selection();
+  private dragCaret: Pos | null = null;
+  private dragCleanup: (() => void) | null = null;
+  private ctrlDown = false;
   private composing = false;
-  private chain: Promise<unknown> = Promise.resolve();
+  private mutation: EditorMutationController;
   private findGen = 0; // 検索ループの世代。closeやEnter連打で古いループを打ち切るため
   private lastFindMatch: { start: Pos; end: Pos; pat: string; matchCase: boolean } | null = null; // 連続置換が対象にしてよい直前の一致
   private busy = false; // 全置換チャンク実行中は入力を無効化 (レジューム状態の破損防止)
 
   private onDocChange: (lineCount: number) => void;
   private onCursor: (line: number, col: number) => void;
-  private onFontChange: (fontFamily: string, fontSize: number) => void;
-  private getExternalFilePath: () => string | null;
-  private openExternally: () => void;
+  private onFontChange: (fontFamily: string, fontSize: number, changed: "family" | "size" | "both") => void;
+  private externalFilePath: string | null = null;
+  private markdown = false;
+  private openExternally: (path: string) => void | Promise<unknown>;
+  private openInNewWindow?: (path: string) => void | Promise<unknown>;
   private registeredCommandPorts: RegisteredCommandMenuPorts;
-  private revealInExplorer?: () => void;
+  private revealInExplorer?: (path: string, isDir: boolean) => void | Promise<unknown>;
   private onError: (message: string, error: unknown) => Promise<void>;
   private onPasteImage?: (bytes: number[], mimeType: string) => Promise<string>;
+  private rectangularClipboard = new RectangularClipboard();
   private liveViewers: LiveViewers;
 
   constructor(
@@ -139,6 +158,7 @@ export class VirtualEditor {
     this.liveViewers = new LiveViewers({
       openViewer: ports.openViewer,
       updateViewer: ports.updateViewer,
+      closeViewer: ports.closeViewer,
       wholeRange: async () => {
         const last = this.lineCount - 1;
         return { start: { line: 0, col: 0 }, end: { line: last, col: await this.lineCache.lineLength(last) } };
@@ -146,11 +166,21 @@ export class VirtualEditor {
       textInRange: (start, end) => this.lineCache.textInRange(start, end),
       onError: (error) => this.reportActionError("プレビューを更新できませんでした", error),
     });
+    this.mutation = new EditorMutationController({
+      doc: this.doc,
+      selection: this.sel,
+      lineCache: this.lineCache,
+      lineCount: () => this.lineCount,
+      isReadOnly: () => this.readOnly,
+      isMarkdown: () => this.markdown,
+      applyResult: (result, fromLine, edits) => this.applyResult(result, fromLine, edits),
+      renderAfterEdit: () => this.renderAfterEdit(),
+    });
     this.onDocChange = ports.onDocChange;
     this.onCursor = ports.onCursor;
     this.onFontChange = ports.onFontChange;
-    this.getExternalFilePath = ports.getExternalFilePath;
     this.openExternally = ports.openExternally;
+    this.openInNewWindow = ports.openInNewWindow;
     this.registeredCommandPorts = ports.registeredCommandPorts;
     this.revealInExplorer = ports.revealInExplorer;
     this.onError = ports.onError;
@@ -175,6 +205,7 @@ export class VirtualEditor {
     this.inner = el("div", "ve-inner");
     this.linesLayer = el("div", "ve-lines");
     this.caretEl = el("div", "ve-caret");
+    this.dragCaretEl = el("div", "ve-caret ve-drag-caret");
     this.input = document.createElement("textarea");
     this.input.className = "ve-input";
     this.input.spellcheck = false;
@@ -184,6 +215,7 @@ export class VirtualEditor {
     // caretEl は一度だけ挿入し、以後 render() では linesLayer の中身だけ差し替える。
     this.inner.appendChild(this.linesLayer);
     this.inner.appendChild(this.caretEl);
+    this.inner.appendChild(this.dragCaretEl);
     this.scroll.appendChild(this.inner);
     this.hScroll.appendChild(this.hScrollSpacer);
     this.host.appendChild(this.gutter);
@@ -249,6 +281,15 @@ export class VirtualEditor {
       this.scrollbarDragging = false;
       this.schedule();
     });
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "Control") this.ctrlDown = true;
+    });
+    window.addEventListener("keyup", (e) => {
+      if (e.key === "Control") this.ctrlDown = false;
+    });
+    window.addEventListener("blur", () => {
+      this.ctrlDown = false;
+    });
     window.addEventListener("focus", () => this.syncImeAnchorAfterLayout());
     window.addEventListener("resize", () => this.syncWindowGeometry());
     document.addEventListener("visibilitychange", () => {
@@ -276,7 +317,18 @@ export class VirtualEditor {
 
   // ---- 文書ロード ----
   // keepViewers: 同じファイルを読み直しただけの場合。開いているビューを閉じずに新内容へ差し替える
-  open(lineCount: number, readOnly: boolean, keepViewers = false) {
+  open(
+    lineCount: number,
+    readOnly: boolean,
+    keepViewers = false,
+    externalFilePath: string | null = null,
+    markdown = viewerFormatForPath(externalFilePath ?? "") === "markdown",
+  ) {
+    this.dragCleanup?.();
+    this.clearDragCaret();
+    this.externalFilePath = externalFilePath;
+    this.markdown = markdown;
+    this.rectangularClipboard.clear();
     this.documentGeneration++;
     this.findGen++;
     this.lastFindMatch = null;
@@ -306,6 +358,14 @@ export class VirtualEditor {
     this.readOnly = on;
   }
 
+  setExternalFilePath(
+    path: string | null,
+    markdown = viewerFormatForPath(path ?? "") === "markdown",
+  ) {
+    this.externalFilePath = path;
+    this.markdown = markdown;
+  }
+
   focus() {
     this.syncImeAnchor();
     this.input.focus({ preventScroll: true });
@@ -326,12 +386,14 @@ export class VirtualEditor {
   }
 
   async restoreViewState(state: EditorViewState) {
+    const generation = this.documentGeneration;
     const anchorLine = Math.max(0, Math.min(this.lineCount - 1, state.anchor.line));
     const caretLine = Math.max(0, Math.min(this.lineCount - 1, state.caret.line));
     const [anchorText, caretText] = await Promise.all([
       this.lineCache.line(anchorLine),
       this.lineCache.line(caretLine),
     ]);
+    if (generation !== this.documentGeneration) return;
     this.sel.anchor = {
       line: anchorLine,
       col: Math.max(0, Math.min(charLen(anchorText), state.anchor.col)),
@@ -341,11 +403,13 @@ export class VirtualEditor {
       col: Math.max(0, Math.min(charLen(caretText), state.caret.col)),
     };
     this.sel.secondary = [];
+    this.sel.block = null;
     this.sel.goalX = null;
     const topLine = Math.max(0, Math.min(this.maxTopLine(), state.topLine));
     if (this.wrap) this.setWrapAnchor(topLine, Math.max(0, state.wrapIntraLinePx));
     else this.setTopLine(topLine);
     await this.lineCache.line(Math.floor(topLine));
+    if (generation !== this.documentGeneration) return;
     this.render();
     this.setHorizontalScroll(Math.max(0, state.scrollLeft));
     this.notifyCursor();
@@ -373,6 +437,28 @@ export class VirtualEditor {
     this.moveTo(pos, false);
     this.centerLine(pos.line);
     this.render();
+    this.focus();
+  }
+
+  async goToPreview(selection: api.ViewerSelection) {
+    const generation = this.documentGeneration;
+    const target = this.liveViewers.positionInDocument(selection.end);
+    const line = Math.max(0, Math.min(this.lineCount - 1, target.line));
+    const text = await this.lineCache.line(line);
+    if (generation !== this.documentGeneration) return;
+    const pos = { line, col: Math.max(0, Math.min(charLen(text), target.col)) };
+    this.sel.reset(pos);
+    this.centerLine(line);
+    this.render();
+    if (!this.wrap) {
+      const lineEl = this.lineElem(line);
+      if (lineEl) {
+        const x = this.colToX(lineEl, text, pos.col);
+        this.setHorizontalScroll(x - this.scroll.clientWidth / 2);
+      }
+    }
+    this.render();
+    this.notifyCursor();
     this.focus();
   }
 
@@ -407,7 +493,7 @@ export class VirtualEditor {
     this.render();
   }
 
-  setFont(fontFamily: string, fontSize: number) {
+  setFont(fontFamily: string, fontSize: number, changed: "family" | "size" | "both" = "both") {
     const topLine = this.wrap || this.metrics.scaleMode ? this.topLineF : this.pxToLine(this.scroll.scrollTop);
     const wasAtBottom = topLine >= this.maxTopLine();
     this.fontFamily = fontFamily;
@@ -422,7 +508,7 @@ export class VirtualEditor {
     this.updateMetrics();
     this.setTopLine(wasAtBottom ? this.maxTopLine() : topLine);
     this.render();
-    this.onFontChange(this.fontFamily, this.fontSize);
+    this.onFontChange(this.fontFamily, this.fontSize, changed);
   }
 
   setTabSize(size: number) {
@@ -493,13 +579,43 @@ export class VirtualEditor {
     this.setTopLine(line - (visibleRows - 1) / 2);
   }
 
+  private centerSelection(line: number) {
+    if (!this.wrap) {
+      this.centerLine(line);
+      return;
+    }
+    const viewportHeight = this.scroll.clientHeight;
+    if (viewportHeight <= 0) {
+      this.pendingCenterLine = line;
+      return;
+    }
+    this.pendingCenterLine = null;
+    const boxes = [...this.linesLayer.querySelectorAll<HTMLElement>(".ve-sel")];
+    let top = Infinity;
+    let bottom = -Infinity;
+    for (const box of boxes) {
+      const boxTop = Number.parseFloat(box.style.top);
+      const height = Number.parseFloat(box.style.height);
+      if (!Number.isFinite(boxTop) || !Number.isFinite(height)) continue;
+      top = Math.min(top, boxTop);
+      bottom = Math.max(bottom, boxTop + height);
+    }
+    if (!Number.isFinite(top) || !Number.isFinite(bottom)) {
+      this.centerLine(line);
+      return;
+    }
+    const selectionCenter = (top + bottom) / 2;
+    this.scrollWrapBy(selectionCenter - (this.viewTop + viewportHeight / 2));
+  }
+
   private selectAndCenter(start: Pos, end: Pos) {
     this.sel.anchor = start;
     this.moveTo(end, true);
     // moveTo() の描画後に横方向の可視性を確定し、行高を反映した中央配置を
     // 最後に行う。フォルダ検索と本文検索の結果を同じ規則へ通す。
     this.ensureVisible();
-    this.centerLine(start.line);
+    if (this.wrap) this.render();
+    this.centerSelection(start.line);
     this.render();
   }
 
@@ -613,11 +729,11 @@ export class VirtualEditor {
       this.sel.anchor.col === 0 && this.sel.caret.col === 0 && this.sel.caret.line > this.sel.anchor.line;
     const curLine = wholeLineSelectEnd ? this.sel.caret.line - 1 : this.sel.caret.line;
     const caretLines = new Set([curLine, ...this.sel.secondary.map((caret) => caret.line)]);
-    const selectedLines = selectedLineRange(this.sel.anchor, this.sel.caret);
+    const selectedLines = this.sel.blockBounds() ?? selectedLineRange(this.sel.anchor, this.sel.caret);
     this.renderVisibleLines(first, last);
     this.layoutVisibleLines(first, last, topLine, top);
 
-    this.renderGutter(first, last, top, selectedLines, caretLines);
+    this.renderGutter(first, last, top, selectedLines, caretLines, this.liveViewers.previewRange());
 
     // 新しい可視行DOMを基準にRangeを測定する。旧DOMを測るとスクロール後に欠落する。
     const selectionFrag = document.createDocumentFragment();
@@ -659,6 +775,7 @@ export class VirtualEditor {
     top: number,
     selectedLines: { first: number; last: number } | null,
     caretLines: Set<number>,
+    previewRange: { start: Pos; end: Pos } | null,
   ) {
     let rows = [...this.gutter.querySelectorAll<HTMLElement>(":scope > .ve-gnum")];
     const canReuse = rows.length === last - first
@@ -668,6 +785,10 @@ export class VirtualEditor {
       for (let i = first; i < last; i++) {
         const row = el("div", "ve-gnum");
         row.dataset.line = String(i);
+        const previewMark = el("span", "ve-preview-mark");
+        previewMark.textContent = "P";
+        previewMark.setAttribute("aria-hidden", "true");
+        row.appendChild(previewMark);
         const groups = lineNumberGroups(i + 1);
         row.append(document.createTextNode(groups[0]));
         for (const group of groups.slice(1)) {
@@ -682,6 +803,8 @@ export class VirtualEditor {
     }
     rows.forEach((row, index) => {
       const line = first + index;
+      const previewMark = row.querySelector<HTMLElement>(".ve-preview-mark");
+      if (previewMark) previewMark.hidden = !isPreviewLine(line, previewRange);
       row.style.top = `${this.rowTop(line) - top}px`;
       row.classList.toggle(
         "selected-line",
@@ -760,7 +883,8 @@ export class VirtualEditor {
     context.font = style.font;
     const groups = lineNumberGroups(this.lineCount);
     const numberWidth = context.measureText(groups.join("")).width + (groups.length - 1) * 2;
-    const w = Math.max(this.gutterWidth, Math.ceil(numberWidth + 24));
+    const previewExtra = this.liveViewers.previewRange() ? 14 : 0;
+    const w = Math.max(this.gutterWidth, Math.ceil(numberWidth + 24 + previewExtra));
     this.scroll.parentElement!.style.setProperty("--gutter-w", `${w}px`);
   }
 
@@ -795,7 +919,7 @@ export class VirtualEditor {
       this.placeSecondaryCarets();
       return;
     }
-    this.caretEl.classList.toggle("on", document.activeElement === this.input);
+    this.caretEl.classList.toggle("on", document.activeElement === this.input && this.dragCaret === null);
     const x = point?.x ?? (lineEl ? this.colToX(lineEl, s, this.sel.caret.col) : this.paddingLeft);
     this.caretEl.style.top = `${caretY}px`;
     this.caretEl.style.left = `${x}px`;
@@ -811,6 +935,35 @@ export class VirtualEditor {
       this.input.style.removeProperty("text-indent");
       this.input.style.removeProperty("--ime-indent");
     }
+  }
+
+  private placeDragCaret() {
+    if (!this.dragCaret) {
+      this.dragCaretEl.classList.remove("on");
+      return;
+    }
+    const line = this.lineElem(this.dragCaret.line);
+    if (!line) {
+      this.dragCaretEl.classList.remove("on");
+      return;
+    }
+    const text = this.lineCache.peek(this.dragCaret.line) ?? "";
+    const point = this.wrap ? this.wrapPoint(line, text, this.dragCaret.col) : null;
+    this.dragCaretEl.style.top = `${point?.y ?? this.rowTop(this.dragCaret.line)}px`;
+    this.dragCaretEl.style.left = `${point?.x ?? this.colToX(line, text, this.dragCaret.col)}px`;
+    this.dragCaretEl.classList.add("on");
+  }
+
+  private showDragCaret(pos: Pos) {
+    this.dragCaret = { ...pos };
+    this.placeCaret();
+    this.placeDragCaret();
+  }
+
+  private clearDragCaret() {
+    this.dragCaret = null;
+    this.dragCaretEl.classList.remove("on");
+    this.syncCaretVisibility();
   }
 
   private placeInputAt(contentX: number, contentY: number) {
@@ -830,6 +983,7 @@ export class VirtualEditor {
 
   private syncImeAnchor() {
     this.placeCaret();
+    this.placeDragCaret();
     if (this.composing) this.resizeImeInput();
     this.keepImeAnchorInsideViewport();
     // WebView2がnative IMEへ渡すcaret矩形を、現在のlayoutで確定させる。
@@ -879,6 +1033,39 @@ export class VirtualEditor {
   }
 
   private appendSelection(frag: DocumentFragment, first: number, last: number) {
+    const block = this.sel.blockBounds();
+    if (block) {
+      for (let i = Math.max(first, block.first); i < Math.min(last, block.last + 1); i++) {
+        const str = this.lineCache.peek(i) ?? "";
+        const lineEl = this.lineElem(i);
+        const { start: c0, end: c1 } = blockRangeForLine(str, block);
+        if (this.wrap) {
+          const node = lineEl?.firstChild;
+          if (!node) continue;
+          const inner = this.inner.getBoundingClientRect();
+          const range = document.createRange();
+          range.setStart(node, charToU16(str, c0));
+          range.setEnd(node, charToU16(str, c1));
+          for (const rect of range.getClientRects()) {
+            const box = el("div", "ve-sel");
+            box.style.top = `${rect.top - inner.top}px`;
+            box.style.left = `${rect.left - inner.left}px`;
+            box.style.width = `${Math.max(2, rect.width)}px`;
+            box.style.height = `${rect.height}px`;
+            frag.insertBefore(box, frag.firstChild);
+          }
+        } else {
+          const x0 = lineEl ? this.colToX(lineEl, str, c0) : this.paddingLeft;
+          const x1 = lineEl ? this.colToX(lineEl, str, c1) : this.paddingLeft;
+          const box = el("div", "ve-sel");
+          box.style.top = `${this.rowTop(i)}px`;
+          box.style.left = `${x0}px`;
+          box.style.width = `${Math.max(2, x1 - x0)}px`;
+          frag.insertBefore(box, frag.firstChild);
+        }
+      }
+      return;
+    }
     if (cmp(this.sel.anchor, this.sel.caret) === 0) return;
     const [s, e] = cmp(this.sel.anchor, this.sel.caret) < 0 ? [this.sel.anchor, this.sel.caret] : [this.sel.caret, this.sel.anchor];
     if (this.wrap) {
@@ -923,13 +1110,14 @@ export class VirtualEditor {
   // ---- カーソル移動 ----
   private notifyCursor() {
     const [start, end] = this.sel.norm();
-    this.liveViewers.setSelection({ start, end });
+    this.liveViewers.setSelection({ start, end }, this.sel.caret);
     this.onCursor(this.sel.caret.line + 1, this.sel.caret.col + 1);
   }
 
   private moveTo(pos: Pos, extend: boolean, keepGoal = false, keepSecondary = false) {
     if (!keepSecondary) {
       this.sel.secondary = [];
+      this.sel.block = null;
       this.sel.multiCaretX = null;
     }
     this.sel.caret = pos;
@@ -943,7 +1131,9 @@ export class VirtualEditor {
   private syncCaretVisibility() {
     const carets = [this.caretEl, ...this.secondaryCaretEls.slice(0, this.sel.secondary.length)];
     carets.forEach((caret) => caret.classList.remove("on"));
-    if (document.activeElement === this.input) carets.forEach((caret) => caret.classList.add("on"));
+    if (document.activeElement === this.input && this.dragCaret === null) {
+      carets.forEach((caret) => caret.classList.add("on"));
+    }
   }
 
   private async addCaretVert(delta: -1 | 1) {
@@ -1123,8 +1313,20 @@ export class VirtualEditor {
   }
 
   // ---- 選択 ----
+  private async blockText(): Promise<string> {
+    const block = this.sel.blockBounds();
+    if (!block) return "";
+    const parts: string[] = [];
+    for (let line = block.first; line <= block.last; line += 1) {
+      const value = await this.lineCache.line(line);
+      const range = blockRangeForLine(value, block);
+      parts.push([...value].slice(range.start, range.end).join(""));
+    }
+    return parts.join("\n");
+  }
+
   private selectionText(): string {
-    if (!this.sel.hasSel()) return "";
+    if (!this.sel.hasSel() || this.sel.blockBounds()) return "";
     const [s, e] = this.sel.norm();
     if (s.line === e.line) {
       const str = this.lineCache.peek(s.line) ?? "";
@@ -1141,16 +1343,14 @@ export class VirtualEditor {
   }
 
   // ---- 編集 (backend へ委譲・順序保証) ----
-  private run<T>(fn: () => Promise<T>): Promise<T> {
-    const p = this.chain.then(fn);
-    this.chain = p.catch(() => {});
-    return p;
-  }
-
   private applyResult(r: api.EditResult, fromLine: number, edits: api.EditManyItem[] = []) {
-    const oldTopLine = this.wrap || this.metrics.scaleMode ? this.topLineF : this.pxToLine(this.scroll.scrollTop);
+    const oldScrollTop = this.scroll.scrollTop;
+    const oldTopLine = this.wrap || this.metrics.scaleMode ? this.topLineF : this.pxToLine(oldScrollTop);
     const oldIntraLinePx = this.wrapIntraLinePx;
-    const wasAtBottom = oldTopLine >= this.maxTopLine();
+    const oldMaxScroll = Math.max(0, this.metrics.scrollHeight - this.scroll.clientHeight);
+    const wasAtBottom = this.wrap || this.metrics.scaleMode
+      ? oldTopLine >= this.maxTopLine()
+      : oldScrollTop >= oldMaxScroll;
     const oldLineCount = this.lineCount;
     this.lineCount = Math.max(1, r.line_count);
     this.resetWrapHeights();
@@ -1159,7 +1359,12 @@ export class VirtualEditor {
     // それ以外は同じ先頭行を維持する。
     const nextTopLine = wasAtBottom ? this.maxTopLine() : oldTopLine;
     if (this.wrap) this.setWrapAnchor(nextTopLine, nextTopLine === oldTopLine ? oldIntraLinePx : 0);
-    else this.setTopLine(nextTopLine);
+    else if (this.metrics.scaleMode || wasAtBottom) this.setTopLine(nextTopLine);
+    else {
+      // 通常モードでは行途中のスクロール位置を編集前のまま保持する。
+      this.scroll.scrollTop = Math.min(oldScrollTop, Math.max(0, this.metrics.scrollHeight - this.scroll.clientHeight));
+      this.topLineF = this.pxToLine(this.scroll.scrollTop);
+    }
     const cached = oldLineCount === this.lineCount
       && edits.length === 1
       && this.lineCache.applySingleLineEdit(edits[0].start, edits[0].end, edits[0].text);
@@ -1167,6 +1372,8 @@ export class VirtualEditor {
     this.liveViewers.applyEdits(edits);
     this.sel.caret = r.caret;
     this.sel.anchor = r.caret;
+    this.sel.secondary = [];
+    this.sel.block = null;
     this.sel.goalX = null;
     this.onDocChange(this.lineCount);
     this.liveViewers.scheduleRefresh();
@@ -1189,125 +1396,24 @@ export class VirtualEditor {
     this.notifyCursor();
   }
 
-  private insertText(text: string): Promise<void> {
-    if (this.readOnly) return Promise.resolve();
-    if (this.sel.secondary.length) {
-      return this.run(async () => {
-        this.sel.multiCaretX = null;
-        const carets = this.sel.all();
-        const edits = carets.map((pos) => ({ start: pos, end: pos, text }));
-        const fromLine = Math.min(...carets.map((pos) => pos.line));
-        const r = await this.doc.editMany(edits, this.sel.caret, 0);
-        this.applyResult({ caret: r.carets[0], line_count: r.line_count }, fromLine, edits);
-        this.sel.caret = r.carets[0];
-        this.sel.anchor = this.sel.caret;
-        this.sel.secondary = r.carets.slice(1);
-        await this.renderAfterEdit();
-      });
-    }
-    return this.run(async () => {
-      const [s, e] = this.sel.norm();
-      const coalesce = !this.sel.hasSel() && text.length === 1 && text !== "\n";
-      const r = await this.doc.edit(s, e, this.sel.caret, text, coalesce);
-      this.applyResult(r, s.line, [{ start: s, end: e, text }]);
-      await this.renderAfterEdit();
-    });
-  }
-
-  private insertNewlineWithIndent(): Promise<void> {
-    if (this.readOnly) return Promise.resolve();
-    if (this.sel.secondary.length) return this.insertText("\n");
-    return this.run(async () => {
-      const [s, e] = this.sel.norm();
-      const line = await this.lineCache.line(s.line);
-      const text = newlineWithLeadingTabs(line);
-      const r = await this.doc.edit(s, e, this.sel.caret, text, false);
-      this.applyResult(r, s.line, [{ start: s, end: e, text }]);
-      await this.renderAfterEdit();
-    });
-  }
-
-  private indentSelection(): Promise<void> {
-    const plan = planLineIndent(this.sel.anchor, this.sel.caret);
-    if (!plan) return this.insertText("\t");
-    if (this.readOnly) return Promise.resolve();
-    return this.run(async () => {
-      const caret = { ...this.sel.caret };
-      const r = await this.doc.editMany(
-        plan.edits,
-        caret,
-        plan.primaryIndex,
-      );
-      this.applyResult({ caret: plan.nextCaret, line_count: r.line_count }, plan.fromLine, plan.edits);
-      this.sel.anchor = plan.nextAnchor;
-      this.sel.caret = plan.nextCaret;
-      await this.renderAfterEdit();
-    });
-  }
-
-  private deleteSel(): Promise<void> {
-    return this.run(async () => {
-      const [s, e] = this.sel.norm();
-      const r = await this.doc.edit(s, e, this.sel.caret, "", false);
-      this.applyResult(r, s.line, [{ start: s, end: e, text: "" }]);
-      await this.renderAfterEdit();
-    });
-  }
-
-  private backspace(): Promise<void> {
-    if (this.readOnly) return Promise.resolve();
-    if (this.sel.hasSel()) {
-      return this.deleteSel();
-    }
-    return this.run(async () => {
-      const c = this.sel.caret;
-      let s: Pos;
-      if (c.col > 0) s = { line: c.line, col: c.col - 1 };
-      else if (c.line > 0) s = { line: c.line - 1, col: await this.lineCache.lineLength(c.line - 1) };
-      else return;
-      const r = await this.doc.edit(s, c, c, "", false);
-      this.applyResult(r, s.line, [{ start: s, end: c, text: "" }]);
-      await this.renderAfterEdit();
-    });
-  }
-
-  private deleteForward(): Promise<void> {
-    if (this.readOnly) return Promise.resolve();
-    if (this.sel.hasSel()) {
-      return this.deleteSel();
-    }
-    return this.run(async () => {
-      const c = this.sel.caret;
-      const len = await this.lineCache.lineLength(c.line);
-      let e: Pos;
-      if (c.col < len) e = { line: c.line, col: c.col + 1 };
-      else if (c.line + 1 < this.lineCount) e = { line: c.line + 1, col: 0 };
-      else return;
-      const r = await this.doc.edit(c, e, c, "", false);
-      this.applyResult(r, c.line, [{ start: c, end: e, text: "" }]);
-      await this.renderAfterEdit();
-    });
-  }
-
-  private doUndo(redo: boolean): Promise<void> {
-    if (this.readOnly) return Promise.resolve();
-    return this.run(async () => {
-      const r = redo ? await this.doc.redo() : await this.doc.undo();
-      if (!r) return;
-      this.applyResult(r, 0);
-      this.sel.secondary = [];
-      this.sel.multiCaretX = null;
-      this.ensureVisible();
-      this.render();
-      this.notifyCursor();
-    });
-  }
+  private insertText(text: string): Promise<void> { return this.mutation.insertText(text); }
+  private insertNewlineWithIndent(): Promise<void> { return this.mutation.insertNewlineWithIndent(); }
+  private indentSelection(): Promise<void> { return this.mutation.indentSelection(); }
+  private unindentSelection(): Promise<void> { return this.mutation.unindentSelection(); }
+  private deleteSel(): Promise<void> { return this.mutation.deleteSel(); }
+  private backspace(): Promise<void> { return this.mutation.backspace(); }
+  private deleteForward(): Promise<void> { return this.mutation.deleteForward(); }
+  private doUndo(redo: boolean): Promise<void> { return this.mutation.undo(redo); }
 
   private async copy(cut: boolean) {
     if (!this.sel.hasSel()) return;
-    const [s, e] = this.sel.norm();
-    const text = await this.lineCache.textInRange(s, e);
+    const block = this.sel.blockBounds();
+    const text = block
+      ? await this.blockText()
+      : await this.lineCache.textInRange(...this.sel.norm());
+    this.rectangularClipboard.clear();
     await writeClipboardText(text);
+    if (block) this.rectangularClipboard.set(text);
     if (cut && !this.readOnly) await this.deleteSel();
   }
 
@@ -1332,27 +1438,21 @@ export class VirtualEditor {
   }
 
 
-  async openTextViewer(format: api.ViewerFormat) {
+  async openTextViewer(format: api.ViewerFormat, keepPreviewRange = false) {
     const [selectionStart, selectionEnd] = this.sel.norm();
     const selection = { start: selectionStart, end: selectionEnd };
-    if (!this.sel.hasSel()) return this.liveViewers.open(format, null, selection);
-    const { start, end } = selection;
-    return this.liveViewers.open(format, { start: { ...start }, end: { ...end } }, selection);
+    const previewRange = keepPreviewRange ? this.liveViewers.previewRange() : null;
+    const range = format === "image" ? null : previewRange ?? (this.sel.hasSel()
+      ? { start: { ...selectionStart }, end: { ...selectionEnd } }
+      : null);
+    this.liveViewers.clear();
+    const opened = await this.liveViewers.open(format, range, selection, this.sel.caret);
+    this.render();
+    return opened;
   }
 
-  private moveSelection(target: Pos) {
-    if (this.readOnly) return;
-    const [s, e] = this.sel.norm();
-    if (cmp(target, s) >= 0 && cmp(target, e) <= 0) return;
-    void this.run(async () => {
-      const text = await this.lineCache.textInRange(s, e);
-      const drop = cmp(target, e) > 0 ? positionAfterDeletion(s, e, target) : target;
-      const deleted = await this.doc.edit(s, e, e, "", false);
-      this.applyResult(deleted, s.line, [{ start: s, end: e, text: "" }]);
-      const inserted = await this.doc.edit(drop, drop, drop, text, false);
-      this.applyResult(inserted, drop.line, [{ start: drop, end: drop, text }]);
-      await this.renderAfterEdit();
-    }).catch((error) => this.reportActionError("選択範囲を移動できませんでした", error));
+  private moveSelection(start: Pos, end: Pos, target: Pos, copy: boolean) {
+    return this.mutation.moveSelection(start, end, target, copy);
   }
 
   private async paste() {
@@ -1362,7 +1462,12 @@ export class VirtualEditor {
       await this.insertImage(image.bytes, image.mimeType);
       return;
     }
-    const text = (await readClipboardText()).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    const text = normalizeClipboardText(await readClipboardText());
+    const rows = this.rectangularClipboard.rowsFor(text);
+    if (rows) {
+      await this.mutation.pasteBlock(rows);
+      return;
+    }
     if (text) await this.insertText(text);
   }
 
@@ -1371,9 +1476,19 @@ export class VirtualEditor {
     const item = [...(event.clipboardData?.items ?? [])]
       .find((candidate) => candidate.type.toLowerCase().startsWith("image/"));
     const file = item?.getAsFile();
-    if (!file) return;
+    if (file) {
+      event.preventDefault();
+      this.dispatch("クリップボードから画像を貼り付けできませんでした", () => this.insertImageBlob(file));
+      return;
+    }
+    const text = normalizeClipboardText(event.clipboardData?.getData("text/plain") ?? "");
+    const rows = this.rectangularClipboard.rowsFor(text);
+    if (!rows) return;
     event.preventDefault();
-    this.dispatch("クリップボードから画像を貼り付けできませんでした", () => this.insertImageBlob(file));
+    this.dispatch(
+      "矩形を貼り付けできませんでした",
+      () => this.mutation.pasteBlock(rows),
+    );
   }
 
   private async readClipboardImage(): Promise<{ bytes: number[]; mimeType: string } | null> {
@@ -1446,7 +1561,8 @@ export class VirtualEditor {
       case "Backspace": e.preventDefault(); this.dispatch("編集を反映できませんでした", () => this.backspace()); break;
       case "Delete": e.preventDefault(); this.dispatch("編集を反映できませんでした", () => this.deleteForward()); break;
       case "Enter": e.preventDefault(); this.dispatch("編集を反映できませんでした", () => this.insertNewlineWithIndent()); break;
-      case "Tab": e.preventDefault(); this.dispatch("編集を反映できませんでした", () => this.indentSelection()); break;
+      case "Tab": e.preventDefault(); this.dispatch("編集を反映できませんでした", () =>
+        e.shiftKey ? this.unindentSelection() : this.indentSelection()); break;
       case "Escape": this.findBar.close(); break;
     }
   }
@@ -1574,7 +1690,7 @@ export class VirtualEditor {
   private onWheel(e: WheelEvent) {
     if (e.ctrlKey) {
       e.preventDefault();
-      if (e.deltaY) this.setFont(this.fontFamily, this.fontSize + (e.deltaY < 0 ? 1 : -1));
+      if (e.deltaY) this.setFont(this.fontFamily, this.fontSize + (e.deltaY < 0 ? 1 : -1), "size");
       return;
     }
     if (this.wrap) {
@@ -1628,25 +1744,42 @@ export class VirtualEditor {
     e.preventDefault();
     this.focus();
     if (e.altKey) {
-      const base = this.sel.all();
-      const startLine = pos.line;
+      const base = this.sel.all().map((item) => ({ ...item }));
+      const origin = { ...pos };
+      const baseLines = [...new Set(base.map((item) => item.line))];
+      const existingColumn = baseLines.length > 1
+        && base.every((item) => item.col === base[0].col);
+      const baseColumn = existingColumn ? base[0].col : origin.col;
       const update = (ev: MouseEvent) => {
         const end = this.posFromPoint(ev.clientX, ev.clientY);
         if (!end) return;
-        const lo = Math.min(startLine, end.line);
-        const hi = Math.max(startLine, end.line);
-        const added: Pos[] = [];
-        for (let line = lo; line <= hi; line++) {
-          const text = this.lineCache.peek(line);
-          if (text !== undefined) added.push(this.posFromLineAndX(line, ev.clientX, text));
+        const blockLines = existingColumn
+          ? [...baseLines, origin.line, end.line]
+          : [origin.line, end.line];
+        const first = Math.min(...blockLines);
+        const last = Math.max(...blockLines);
+        if (baseColumn !== end.col) {
+          this.sel.setBlock(
+            { line: first, col: baseColumn },
+            { line: last, col: end.col },
+          );
+        } else {
+          const lo = Math.min(origin.line, end.line);
+          const hi = Math.max(origin.line, end.line);
+          const added: Pos[] = [];
+          for (let line = lo; line <= hi; line++) {
+            const text = this.lineCache.peek(line);
+            if (text !== undefined) added.push(this.posFromLineAndX(line, ev.clientX, text));
+          }
+          const primary = added.find((item) => item.line === end.line) ?? origin;
+          const unique = [...base, ...added].filter(
+            (item, index, items) => items.findIndex((candidate) => cmp(candidate, item) === 0) === index
+          );
+          this.sel.block = null;
+          this.sel.caret = primary;
+          this.sel.anchor = primary;
+          this.sel.secondary = unique.filter((item) => cmp(item, primary) !== 0);
         }
-        const primary = added.find((item) => item.line === end.line) ?? pos;
-        const unique = [...base, ...added].filter(
-          (item, index, items) => items.findIndex((candidate) => cmp(candidate, item) === 0) === index
-        );
-        this.sel.caret = primary;
-        this.sel.anchor = primary;
-        this.sel.secondary = unique.filter((item) => cmp(item, primary) !== 0);
         this.sel.multiCaretX = null;
         this.sel.goalX = null;
         this.render();
@@ -1655,13 +1788,22 @@ export class VirtualEditor {
       };
       update(e);
       const move = (ev: MouseEvent) => update(ev);
-      const up = () => {
+      const cleanup = () => {
         window.removeEventListener("mousemove", move);
         window.removeEventListener("mouseup", up);
+        window.removeEventListener("blur", cancel);
+      };
+      const cancel = () => {
+        cleanup();
+        this.syncCaretVisibility();
+      };
+      const up = () => {
+        cleanup();
         this.syncCaretVisibility();
       };
       window.addEventListener("mousemove", move);
       window.addEventListener("mouseup", up);
+      window.addEventListener("blur", cancel);
       return;
     }
     if (!this.readOnly && this.sel.hasSel()) {
@@ -1669,22 +1811,58 @@ export class VirtualEditor {
       if (cmp(pos, s) >= 0 && cmp(pos, end) < 0) {
         const startX = e.clientX;
         const startY = e.clientY;
+        const originalAnchor = { ...this.sel.anchor };
+        const originalCaret = { ...this.sel.caret };
+        let copy = this.isCtrlPressed(e);
         let dragging = false;
-        const moveSelection = (ev: MouseEvent) => {
-          if (Math.abs(ev.clientX - startX) > 3 || Math.abs(ev.clientY - startY) > 3) dragging = true;
+        let drop: Pos | null = null;
+        const updateSelectionDrag = (ev: MouseEvent) => {
+          if (!dragging && (Math.abs(ev.clientX - startX) > 3 || Math.abs(ev.clientY - startY) > 3)) {
+            dragging = true;
+          }
+          if (!dragging) return;
+          const next = this.posFromPoint(ev.clientX, ev.clientY);
+          if (!next) return;
+          drop = next;
+          copy = this.isCtrlPressed(ev);
+          this.showDragCaret(next);
+        };
+        const cleanupSelectionDrag = () => {
+          window.removeEventListener("mousemove", updateSelectionDrag);
+          window.removeEventListener("mouseup", upSelection);
+          window.removeEventListener("blur", cancelSelectionDrag);
+          if (this.dragCleanup === cleanupSelectionDrag) this.dragCleanup = null;
+          this.clearDragCaret();
+        };
+        const cancelSelectionDrag = () => {
+          cleanupSelectionDrag();
         };
         const upSelection = (ev: MouseEvent) => {
-          window.removeEventListener("mousemove", moveSelection);
-          window.removeEventListener("mouseup", upSelection);
-          if (dragging) {
-            const drop = this.posFromPoint(ev.clientX, ev.clientY);
-            if (drop) this.moveSelection(drop);
-          } else {
-            this.moveTo(pos, false);
+          try {
+            updateSelectionDrag(ev);
+            if (dragging && drop) {
+              if (cmp(drop, s) >= 0 && cmp(drop, end) <= 0) {
+                this.sel.anchor = originalAnchor;
+                this.sel.caret = originalCaret;
+                this.render();
+                this.notifyCursor();
+                return;
+              }
+              void this.moveSelection(s, end, drop, copy)
+                .catch((error) => this.reportActionError("選択範囲を移動またはコピーできませんでした", error));
+            } else {
+              this.moveTo(pos, false);
+            }
+          } catch (error) {
+            void this.reportActionError("選択範囲を移動またはコピーできませんでした", error);
+          } finally {
+            cleanupSelectionDrag();
           }
         };
-        window.addEventListener("mousemove", moveSelection);
+        this.dragCleanup = cleanupSelectionDrag;
+        window.addEventListener("mousemove", updateSelectionDrag);
         window.addEventListener("mouseup", upSelection);
+        window.addEventListener("blur", cancelSelectionDrag);
         return;
       }
     }
@@ -1702,18 +1880,31 @@ export class VirtualEditor {
       const p = this.posFromPoint(ev.clientX, ev.clientY);
       if (p) this.moveTo(p, true);
     };
-    const up = () => {
+    const cleanup = () => {
       window.removeEventListener("mousemove", move);
       window.removeEventListener("mouseup", up);
+      window.removeEventListener("blur", cancel);
     };
+    const up = () => cleanup();
+    const cancel = () => cleanup();
+    window.addEventListener("blur", cancel);
     window.addEventListener("mousemove", move);
     window.addEventListener("mouseup", up);
   }
 
+  private isCtrlPressed(e: MouseEvent): boolean {
+    return e.ctrlKey || e.getModifierState("Control") || this.ctrlDown;
+  }
+
   private posFromPoint(cx: number, cy: number): Pos | null {
     if (this.wrap) {
-      const target = document.elementFromPoint(cx, cy)?.closest<HTMLElement>(".ve-line");
-      if (!target?.dataset.line) return null;
+      const target = document.elementFromPoint?.(cx, cy)?.closest<HTMLElement>(".ve-line");
+      if (!target?.dataset.line) {
+        // 行のない空白 (新規メモの本文下など) でもクリックを捨てず、文書末尾へ置く。
+        const line = this.lineCount - 1;
+        const text = this.lineCache.peek(line) ?? "";
+        return { line, col: charLen(text) };
+      }
       const line = Number(target.dataset.line);
       const point = document.caretPositionFromPoint?.(cx, cy);
       const text = this.lineCache.peek(line) ?? "";
@@ -1755,32 +1946,64 @@ export class VirtualEditor {
     if (pos && !this.sel.contains(pos)) this.moveTo(pos, false);
     this.focus();
     const items: MenuItem[] = [];
+    const commandPath = this.externalFilePath;
+    const hasOpenItems = Boolean(commandPath && (this.revealInExplorer || this.openInNewWindow));
+    if (commandPath && this.revealInExplorer) {
+      items.push({
+        label: MENU_LABELS.explorer,
+        iconClass: MENU_ICON.explorer,
+        action: () => this.dispatch("エクスプローラで開けませんでした", () => this.revealInExplorer?.(commandPath, false)),
+      });
+    }
+    if (commandPath && this.openInNewWindow) {
+      items.push({
+        label: MENU_LABELS.newWindow,
+        iconClass: MENU_ICON.newWindow,
+        action: () => this.dispatch("新規ウィンドウで開けませんでした", () => this.openInNewWindow?.(commandPath)),
+      });
+    }
     if (!this.readOnly) {
-      items.push({ label: "元に戻す", key: "Ctrl+Z", action: () =>
-        this.dispatch("編集を反映できませんでした", () => this.doUndo(false)) });
-      items.push({ label: "やり直し", key: "Ctrl+Y", action: () =>
+      items.push({ label: "元に戻す", iconClass: MENU_ICON.undo, key: "Ctrl+Z", action: () =>
+        this.dispatch("編集を反映できませんでした", () => this.doUndo(false)), sep: hasOpenItems });
+      items.push({ label: "やり直し", iconClass: MENU_ICON.redo, key: "Ctrl+Y", action: () =>
         this.dispatch("編集を反映できませんでした", () => this.doUndo(true)) });
-      items.push({ label: "切り取り", key: "Ctrl+X", action: () =>
+      items.push({ label: "切り取り", iconClass: MENU_ICON.cut, key: "Ctrl+X", action: () =>
         this.dispatch("切り取りできませんでした", () => this.copy(true)), sep: true });
     }
-    items.push({ label: "コピー", key: "Ctrl+C", action: () =>
+    items.push({ label: "コピー", iconClass: MENU_ICON.copy, key: "Ctrl+C", action: () =>
       this.dispatch("クリップボードへコピーできませんでした", () => this.copy(false)), sep: this.readOnly });
     if (!this.readOnly) {
-      items.push({ label: "貼り付け", key: "Ctrl+V", action: () =>
+      items.push({ label: "貼り付け", iconClass: MENU_ICON.paste, key: "Ctrl+V", action: () =>
         this.dispatch("クリップボードから貼り付けできませんでした", () => this.paste()) });
-      items.push({ label: "削除", action: () => {
+      items.push({ label: MENU_LABELS.delete, iconClass: MENU_ICON.delete, action: () => {
         if (this.sel.hasSel()) this.dispatch("編集を反映できませんでした", () => this.deleteSel());
       } });
-      if (this.sel.hasSel()) items.push({
+    }
+    items.push({
+      label: "すべて選択",
+      iconClass: MENU_ICON.selectAll,
+      key: "Ctrl+A",
+      action: () => this.dispatch("全選択できませんでした", () => this.selectAll()),
+    });
+    let customStarted = false;
+    const addCustomItem = (item: MenuItem) => {
+      items.push(customStarted ? item : { ...item, sep: true });
+      customStarted = true;
+    };
+    if (!this.readOnly) {
+      if (this.sel.hasSel()) addCustomItem({
         label: "選択範囲を登録文字列に追加",
+        iconClass: MENU_ICON.registeredString,
         action: () => this.dispatch("登録文字列に追加できませんでした", () => this.addSelectionAsRegisteredString()),
       });
       const registered = loadRegisteredStrings();
       if (registered.length) {
-        items.push({
+        addCustomItem({
           label: "登録文字列",
+          iconClass: MENU_ICON.registeredString,
           sub: registered.map((text) => ({
             label: registeredStringLabel(text),
+            iconClass: MENU_ICON.registeredString,
             action: () => this.dispatch("登録文字列を挿入できませんでした", () => this.insertText(text)),
             trailing: {
               label: "×",
@@ -1794,38 +2017,35 @@ export class VirtualEditor {
         });
       }
     }
-    const commandPath = this.getExternalFilePath();
     if (this.sel.hasSel() && commandPath) {
       const [start, end] = this.sel.norm();
-      items.push({
+      addCustomItem({
         ...createRegisteredCommandMenu({
           path: commandPath,
-          value: () => this.lineCache.textInRange(start, end),
+          value: () => this.sel.blockBounds() ? this.blockText() : this.lineCache.textInRange(start, end),
           valueKind: "string",
         }, {
           ...this.registeredCommandPorts,
           run: (title, operation) => this.dispatch(title, operation),
         }),
-        sep: true,
       });
     }
-    items.push({
-      label: "すべて選択",
-      key: "Ctrl+A",
-      action: () => this.dispatch("全選択できませんでした", () => this.selectAll()),
-      sep: true,
-    });
     const viewerFormats = Object.entries(VIEWER_FORMAT_LABELS) as [api.ViewerFormat, string][];
     items.push(
       ...viewerFormats.map(([format, label], index) => ({
         label,
+        iconClass: viewerFormatIcon(format),
         action: () => this.dispatch("ビューを開けませんでした", () => this.openTextViewer(format)),
         sep: index === 0,
       })),
     );
     if (commandPath) {
-      items.push({ label: "アプリで開く", action: this.openExternally, sep: true });
-      if (this.revealInExplorer) items.push({ label: "エクスプローラで開く", action: this.revealInExplorer });
+      items.push({
+        label: MENU_LABELS.external,
+        iconClass: MENU_ICON.external,
+        action: () => this.dispatch("アプリで開けませんでした", () => this.openExternally(commandPath)),
+        sep: true,
+      });
     }
     showMenu(e.clientX, e.clientY, items);
   }
@@ -1871,16 +2091,23 @@ export class VirtualEditor {
     this.focus();
     const clicked = this.lineFromGutterY(e.clientY);
     const startLine = e.shiftKey ? this.sel.anchor.line : clicked;
-    this.selectLines(startLine, clicked);
-    const move = (ev: MouseEvent) => {
-      this.selectLines(startLine, this.lineFromGutterY(ev.clientY));
+    const update = (line: number) => {
+      this.dispatch("行選択を更新できませんでした", () => this.selectLines(startLine, line));
     };
-    const up = () => {
+    update(clicked);
+    const move = (ev: MouseEvent) => {
+      update(this.lineFromGutterY(ev.clientY));
+    };
+    const cleanup = () => {
       window.removeEventListener("mousemove", move);
       window.removeEventListener("mouseup", up);
+      window.removeEventListener("blur", cancel);
     };
+    const cancel = () => cleanup();
+    const up = () => cleanup();
     window.addEventListener("mousemove", move);
     window.addEventListener("mouseup", up);
+    window.addEventListener("blur", cancel);
   }
 
   // ---- 検索 ----
@@ -1904,20 +2131,25 @@ export class VirtualEditor {
       this.lastFindMatch = { start: r.start, end: r.end, pat: p, matchCase };
       return true;
     }
-    let cursor: api.FindCursor | undefined;
-    for (;;) {
-      const outcome = await this.doc.findStep(p, from, matchCase, cursor, VirtualEditor.FIND_BUDGET);
-      if (myGen !== this.findGen) return false; // 検索バーが閉じられた/新しい検索が始まった
-      if (outcome.kind === "Found") {
-        this.findBar.setProgress("");
-        this.selectAndCenter(outcome.start, outcome.end);
-        this.lastFindMatch = { start: outcome.start, end: outcome.end, pat: p, matchCase };
-        return true;
-      }
-      if (outcome.kind === "NotFound") { this.lastFindMatch = null; return false; }
-      cursor = outcome.cursor;
-      this.findBar.setProgress(`検索中… ${findProgressPercent(cursor, from.line, this.lineCount)}%`);
+    const outcome = await findForward(
+      this.doc,
+      p,
+      from,
+      matchCase,
+      VirtualEditor.FIND_BUDGET,
+      () => myGen === this.findGen,
+      (cursor) => this.findBar.setProgress(
+        `検索中… ${findProgressPercent(cursor, from.line, this.lineCount)}%`,
+      ),
+    );
+    if (!outcome || outcome.kind !== "Found") {
+      this.lastFindMatch = null;
+      return false;
     }
+    this.findBar.setProgress("");
+    this.selectAndCenter(outcome.start, outcome.end);
+    this.lastFindMatch = { start: outcome.start, end: outcome.end, pat: p, matchCase };
+    return true;
   }
 
   // 現在の選択が直前の検索結果そのものであれば置換してから次を検索する (連続置換)。

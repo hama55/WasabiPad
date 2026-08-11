@@ -1,4 +1,4 @@
-export type CommandId = "new" | "open" | "openFolder" | "save" | "saveAs" | "quit" | "find";
+export type CommandId = "new" | "open" | "openFolder" | "save" | "saveAs" | "refresh" | "quit" | "find";
 
 export interface Command {
   label: string;
@@ -15,6 +15,7 @@ interface CommandDependencies {
   openFolder: () => void;
   save: () => Promise<unknown>;
   saveAs: () => Promise<unknown>;
+  refresh: () => Promise<unknown>;
   quit: () => void;
   find: () => void;
 }
@@ -26,6 +27,7 @@ export function createCommandRegistry(deps: CommandDependencies): CommandRegistr
     openFolder: { label: "フォルダを開く...", run: deps.openFolder },
     save: { label: "上書き保存", shortcut: "Ctrl+S", globalShortcut: true, run: deps.save },
     saveAs: { label: "名前を付けて保存...", shortcut: "Ctrl+Shift+S", globalShortcut: true, run: deps.saveAs },
+    refresh: { label: "ファイルを更新", shortcut: "F5", globalShortcut: true, run: deps.refresh },
     quit: { label: "終了", run: deps.quit },
     find: { label: "検索と置換", shortcut: "Ctrl+F", run: deps.find },
   };

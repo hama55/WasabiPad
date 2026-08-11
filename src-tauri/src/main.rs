@@ -20,12 +20,13 @@ use tauri::{AppHandle, Manager};
 use viewer::ViewerStore;
 use wasabipad_core::{
     self, BookmarkNode, Doc, DocInfo, EditManyItem, EditManyResult, EditResult, EncodingId, Eol,
-    ExternalCheck, FindCursor, FindOutcome, FindResult, FolderEntry, PosC, ReplaceChunkResult,
-    SaveOutcome, SearchOptions, WorkspaceSearchOutcome,
+    ExternalCheck, ExternalMergePreview, FindCursor, FindOutcome, FindResult, FolderEntry, PosC,
+    ReplaceChunkResult, SaveOutcome, SearchOptions, WorkspaceSearchOutcome,
 };
 
 const EVENT_EXTERNAL_WINDOW_REQUEST: &str = "external-window-request";
 const EVENT_WORKSPACE_SEARCH_BATCH: &str = "workspace-search-batch";
+pub(crate) const EVENT_DOCUMENT_LOAD_PROGRESS: &str = "document-load-progress";
 const EVENT_VIEWER_UPDATE: &str = "viewer-update";
 
 fn viewer_label(id: u64) -> String {
@@ -71,6 +72,12 @@ enum ViewerFormat {
     Csv,
     #[serde(rename = "markdown")]
     Markdown,
+    #[serde(rename = "image")]
+    Image,
+    #[serde(rename = "pdf")]
+    Pdf,
+    #[serde(rename = "html")]
+    Html,
 }
 
 #[derive(Clone, serde::Serialize, ts_rs::TS)]
@@ -94,27 +101,27 @@ struct ViewerSelection {
 }
 
 #[tauri::command]
-fn open_path(path: String, state: State) -> Result<DocInfo, String> {
-    document::open_path(path, state)
+fn open_path(path: String, state: State, app: AppHandle) -> Result<DocInfo, String> {
+    document::open_path(path, state, app)
 }
 
 #[tauri::command]
-fn new_doc(state: State) {
-    document::new_doc(state);
+fn new_doc(state: State) -> Result<(), String> {
+    document::new_doc(state)
 }
 
 #[tauri::command]
-fn close_doc(state: State) {
-    document::close_doc(state);
+fn close_doc(state: State) -> Result<(), String> {
+    document::close_doc(state)
 }
 
 #[tauri::command]
-fn lines(start: usize, count: usize, state: State) -> Vec<String> {
+fn lines(start: usize, count: usize, state: State) -> Result<Vec<String>, String> {
     document::lines(start, count, state)
 }
 
 #[tauri::command]
-fn line_char_len(line: usize, state: State) -> usize {
+fn line_char_len(line: usize, state: State) -> Result<usize, String> {
     document::line_char_len(line, state)
 }
 
@@ -163,8 +170,14 @@ fn workspace_search_cancel(
 }
 
 #[tauri::command]
-fn create_note(dir: Option<String>, name: String, state: State) -> Result<DocInfo, String> {
-    document::create_note(dir, name, state)
+fn create_note(
+    dir: Option<String>,
+    name: String,
+    enc: EncodingId,
+    eol: Eol,
+    state: State,
+) -> Result<DocInfo, String> {
+    document::create_note(dir, name, enc, eol, state)
 }
 
 #[tauri::command]
@@ -199,6 +212,11 @@ fn open_in_other_app(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn open_in_default_browser(path: String) -> Result<(), String> {
+    system::open_in_default_browser(path)
+}
+
+#[tauri::command]
 fn run_external_command(command: String, path: String) -> Result<(), String> {
     system::run_external_command(command, path)
 }
@@ -226,12 +244,12 @@ fn edit_many(
 }
 
 #[tauri::command]
-fn undo(state: State) -> Option<EditResult> {
+fn undo(state: State) -> Result<Option<EditResult>, String> {
     document::undo(state)
 }
 
 #[tauri::command]
-fn redo(state: State) -> Option<EditResult> {
+fn redo(state: State) -> Result<Option<EditResult>, String> {
     document::redo(state)
 }
 
@@ -242,7 +260,7 @@ fn find(
     forward: bool,
     match_case: bool,
     state: State,
-) -> Option<FindResult> {
+) -> Result<Option<FindResult>, String> {
     document::find(pat, from, forward, match_case, state)
 }
 
@@ -254,7 +272,7 @@ fn find_step(
     cursor: Option<FindCursor>,
     budget: usize,
     state: State,
-) -> FindOutcome {
+) -> Result<FindOutcome, String> {
     document::find_step(pat, from, match_case, cursor, budget, state)
 }
 
@@ -265,12 +283,12 @@ fn replace_all_chunk(
     match_case: bool,
     budget: usize,
     state: State,
-) -> ReplaceChunkResult {
+) -> Result<ReplaceChunkResult, String> {
     document::replace_all_chunk(pat, rep, match_case, budget, state)
 }
 
 #[tauri::command]
-fn replace_all_cancel(state: State) -> EditResult {
+fn replace_all_cancel(state: State) -> Result<EditResult, String> {
     document::replace_all_cancel(state)
 }
 
@@ -282,7 +300,7 @@ fn save_file(path: String, enc: EncodingId, eol: Eol, state: State) -> Result<Sa
 // 外部変更ポーリング (フロントの定期タイマーから呼ぶ)。dirty はフロントが管理する
 // 未保存フラグ。小/巨大ファイルの区別も含め、判定はすべて core 側が持つ。
 #[tauri::command]
-fn poll_external(dirty: bool, state: State) -> ExternalCheck {
+fn poll_external(dirty: bool, state: State) -> Result<ExternalCheck, String> {
     document::poll_external(dirty, state)
 }
 
@@ -292,18 +310,28 @@ fn reload_from_disk(state: State) -> Result<DocInfo, String> {
 }
 
 #[tauri::command]
-fn ack_external(state: State) {
-    document::ack_external(state);
+fn ack_external(state: State) -> Result<DocInfo, String> {
+    document::ack_external(state)
 }
 
 #[tauri::command]
-fn set_encoding(enc: EncodingId, state: State) {
-    document::set_encoding(enc, state);
+fn external_merge_preview(state: State) -> Result<ExternalMergePreview, String> {
+    document::external_merge_preview(state)
 }
 
 #[tauri::command]
-fn set_eol(eol: Eol, state: State) {
-    document::set_eol(eol, state);
+fn merge_external(state: State) -> Result<DocInfo, String> {
+    document::merge_external(state)
+}
+
+#[tauri::command]
+fn set_encoding(enc: EncodingId, state: State) -> Result<(), String> {
+    document::set_encoding(enc, state)
+}
+
+#[tauri::command]
+fn set_eol(eol: Eol, state: State) -> Result<(), String> {
+    document::set_eol(eol, state)
 }
 
 #[tauri::command]
@@ -428,6 +456,15 @@ fn update_viewer(
     viewer::update_viewer(label, text, selection, app, state)
 }
 
+#[tauri::command]
+fn close_viewer(
+    label: String,
+    app: AppHandle,
+    state: tauri::State<'_, ViewerStore>,
+) -> Result<(), String> {
+    viewer::close_viewer(label, app, state)
+}
+
 fn main() {
     let initial_request = match parse_window_request(std::env::args().skip(1)) {
         Ok(request) => request,
@@ -443,7 +480,13 @@ fn main() {
         return;
     }
 
-    let instance_server = InstanceServer::new();
+    let instance_server = match InstanceServer::new() {
+        Ok(server) => server,
+        Err(error) => {
+            eprintln!("WasabiPadのインスタンス受付を初期化できません: {error}");
+            return;
+        }
+    };
     let app = match tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
@@ -475,6 +518,7 @@ fn main() {
             read_archive_asset,
             reveal_in_explorer,
             open_in_other_app,
+            open_in_default_browser,
             run_external_command,
             edit,
             edit_many,
@@ -488,6 +532,8 @@ fn main() {
             poll_external,
             reload_from_disk,
             ack_external,
+            external_merge_preview,
+            merge_external,
             reload_with_encoding,
             set_encoding,
             set_eol,
@@ -503,6 +549,7 @@ fn main() {
             open_viewer,
             take_viewer_payload,
             update_viewer,
+            close_viewer,
         ])
         .build(tauri::generate_context!())
     {

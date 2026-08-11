@@ -2,4 +2,4 @@
 import type { FileNameMatchMode } from "./FileNameMatchMode";
 import type { WorkspaceSearchResult } from "./WorkspaceSearchResult";
 
-export type WorkspaceSearchOutcome = { results: Array<WorkspaceSearchResult>, scanned_files: number, hit_file_limit: boolean, hit_result_limit: boolean, pattern_error: string | null, file_name_match_mode: FileNameMatchMode, };
+export type WorkspaceSearchOutcome = { results: Array<WorkspaceSearchResult>, scanned_files: number, skipped_files: number, hit_file_limit: boolean, hit_result_limit: boolean, pattern_error: string | null, file_name_match_mode: FileNameMatchMode, };

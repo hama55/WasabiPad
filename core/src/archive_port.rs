@@ -2,7 +2,7 @@ use std::io;
 use std::path::Path;
 use std::sync::Arc;
 
-pub(crate) const PASSWORD_ERROR_MARKER: &str = crate::sevenz::PASSWORD_ERROR_MARKER;
+pub(crate) const PASSWORD_ERROR_MARKER: &str = crate::protocol::PASSWORD_ERROR_MARKER;
 
 pub(crate) trait ArchiveWorkspacePort: Send {
     fn path(&self) -> &Path;

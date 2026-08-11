@@ -1,0 +1,198 @@
+import type { ViewerFormat, ViewerPayload, ViewerSelection } from "./api";
+import { runAsyncBoundary } from "./async-boundary";
+import { isViewerFormat } from "./viewer-formats";
+import { isViewerSelection } from "./viewer-payload";
+import { INLINE_PREVIEW_MESSAGES } from "./inline-preview-protocol";
+import { DEFAULT_CSV_DELIMITER } from "./viewer-delimiter";
+
+const {
+  READY_MESSAGE,
+  PAYLOAD_MESSAGE,
+  FORMAT_CHANGE_MESSAGE,
+  DELIMITER_MESSAGE,
+  FONT_MESSAGE,
+  FONT_CHANGE_MESSAGE,
+  FULLSCREEN_CHANGE_MESSAGE,
+  FULLSCREEN_STATE_MESSAGE,
+} = INLINE_PREVIEW_MESSAGES;
+
+export interface InlinePreviewPorts {
+  onAvailabilityChange?: (available: boolean) => void;
+  onFormatChange?: (format: ViewerFormat) => void;
+  onDelimiterChange?: (delimiter: string) => void;
+  onFontFamilyChange?: (family: string) => void;
+  onFullscreenChange?: () => void | Promise<void>;
+  onSelectionChange?: (selection: ViewerSelection) => void | Promise<void>;
+  onError?: (error: unknown) => void | Promise<void>;
+}
+
+export class InlinePreview {
+  private readonly frame: HTMLIFrameElement;
+  private payload: ViewerPayload | null = null;
+  private label = "";
+  private nextLabel = 0;
+  private ready = false;
+  private sourcePath: string | null = null;
+  private archivePath: string | null = null;
+  private archiveEntry: string | null = null;
+  private delimiter = DEFAULT_CSV_DELIMITER;
+  private fontFamily: string | null = null;
+  private fullscreen = false;
+
+  constructor(
+    private host: HTMLElement,
+    private ports: InlinePreviewPorts = {},
+  ) {
+    this.frame = host.querySelector<HTMLIFrameElement>("iframe") ?? document.createElement("iframe");
+    if (!this.frame.parentElement) host.appendChild(this.frame);
+    this.frame.title = "プレビュー";
+    this.frame.src = new URL("/viewer.html?inline=1", window.location.href).toString();
+    window.addEventListener("message", (event) => {
+      if (event.source !== this.frame.contentWindow || event.origin !== window.location.origin) return;
+      if (event.data?.type === READY_MESSAGE) {
+        this.ready = true;
+        this.send();
+        return;
+      }
+      if (event.data?.type === FORMAT_CHANGE_MESSAGE) {
+        if (isViewerFormat(event.data.format)) {
+          this.notifyPort(() => this.ports.onFormatChange?.(event.data.format));
+        }
+        return;
+      }
+      if (event.data?.type === INLINE_PREVIEW_MESSAGES.DELIMITER_CHANGE_MESSAGE) {
+        if (typeof event.data.delimiter === "string" && event.data.delimiter) {
+          this.notifyPort(() => this.ports.onDelimiterChange?.(event.data.delimiter));
+        }
+        return;
+      }
+      if (event.data?.type === FONT_CHANGE_MESSAGE) {
+        if (typeof event.data.family === "string" && event.data.family.trim()) {
+          this.notifyPort(() => this.ports.onFontFamilyChange?.(event.data.family));
+        }
+        return;
+      }
+      if (event.data?.type === FULLSCREEN_CHANGE_MESSAGE) {
+        this.notifyPort(() => this.ports.onFullscreenChange?.());
+        return;
+      }
+      if (event.data?.type === INLINE_PREVIEW_MESSAGES.SELECTION_CHANGE_MESSAGE) {
+        if (!isViewerSelection(event.data.selection)) return;
+        this.notifyPort(() => this.ports.onSelectionChange?.(event.data.selection));
+      }
+    });
+  }
+
+  setSourcePath(path: string | null, archivePath: string | null = null, archiveEntry: string | null = null) {
+    this.sourcePath = path;
+    this.archivePath = archivePath;
+    this.archiveEntry = archiveEntry;
+  }
+
+  setDelimiter(delimiter: string) {
+    this.delimiter = delimiter;
+    this.send();
+  }
+
+  setFontFamily(family: string) {
+    this.fontFamily = family;
+    this.sendFontFamily();
+  }
+
+  setFullscreen(fullscreen: boolean) {
+    this.fullscreen = fullscreen;
+    this.send();
+  }
+
+  async open(format: ViewerFormat, text: string, selection: ViewerSelection | null): Promise<string> {
+    this.label = `inline-preview-${++this.nextLabel}`;
+    this.payload = this.createPayload(format, text, selection);
+    this.host.hidden = false;
+    this.notifyPort(() => this.ports.onAvailabilityChange?.(true));
+    this.send();
+    return this.label;
+  }
+
+  async update(label: string, text: string, selection: ViewerSelection | null): Promise<boolean> {
+    if (!this.payload || label !== this.label) return false;
+    this.payload = this.createPayload(this.payload.format, text, selection);
+    this.send();
+    return true;
+  }
+
+  async close(label: string): Promise<void> {
+    if (label !== this.label) return;
+    this.payload = null;
+    this.label = "";
+    this.host.hidden = true;
+    this.notifyPort(() => this.ports.onAvailabilityChange?.(false));
+  }
+
+  clear() {
+    if (!this.label) return;
+    const label = this.label;
+    runAsyncBoundary(() => this.close(label), (error) => this.reportPortError(error));
+  }
+
+  resend() {
+    this.send();
+  }
+
+  private createPayload(
+    format: ViewerFormat,
+    text: string,
+    selection: ViewerSelection | null,
+  ): ViewerPayload {
+    return {
+      format,
+      text,
+      selection,
+      source_path: this.sourcePath,
+      archive_path: this.archivePath,
+      archive_entry: this.archiveEntry,
+    };
+  }
+
+  private send() {
+    if (!this.ready) return;
+    this.frame.contentWindow?.postMessage({
+      type: FULLSCREEN_STATE_MESSAGE,
+      fullscreen: this.fullscreen,
+    }, window.location.origin);
+    if (!this.payload) return;
+    this.frame.contentWindow?.postMessage({ type: PAYLOAD_MESSAGE, payload: this.payload }, window.location.origin);
+    this.frame.contentWindow?.postMessage({
+      type: DELIMITER_MESSAGE,
+      delimiter: this.delimiter,
+    }, window.location.origin);
+    this.sendFontFamily();
+  }
+
+  private sendFontFamily() {
+    if (!this.ready || !this.fontFamily) return;
+    this.frame.contentWindow?.postMessage({
+      type: FONT_MESSAGE,
+      family: this.fontFamily,
+    }, window.location.origin);
+  }
+
+  private notifyPort(operation: () => void | Promise<unknown>) {
+    runAsyncBoundary(operation, (error) => this.reportPortError(error));
+  }
+
+  private reportPortError(error: unknown) {
+    if (!this.ports.onError) {
+      console.error("プレビュー通知の処理に失敗しました", error);
+      return;
+    }
+    try {
+      void Promise.resolve(this.ports.onError(error)).catch((reportError) => {
+        console.error("プレビュー通知のエラー表示に失敗しました", reportError);
+      });
+    } catch (reportError) {
+      console.error("プレビュー通知のエラー表示に失敗しました", reportError);
+    }
+  }
+}
+
+export { INLINE_PREVIEW_MESSAGES } from "./inline-preview-protocol";

@@ -1,24 +1,34 @@
 import * as api from "./api";
-import type { ContextTarget, Sidebar } from "./sidebar";
-import { fileNameOf, type MemoSpec } from "./document-controller";
+import type { ContextTarget } from "./context-target";
+import { fileNameOf } from "./memo-name";
 import type { DocumentSession } from "./session";
 import { showMenu, MenuItem } from "./menu";
 import type { confirmMessage, promptFields } from "./prompt";
 import type { showError } from "./dialogs";
 import { basename, joinWindowsRoot, rebaseWindowsPath, relativePathFromRoot } from "./path";
-import { VIEWER_FORMAT_LABELS } from "./format";
 import { isArchiveEntryUnder } from "./archive-path";
-import { viewerFormatForPath } from "./viewer-formats";
 import { createRegisteredCommandMenu, type RegisteredCommandMenuPorts } from "./registered-command-menu";
+import { MENU_ICON } from "./menu-icons";
+import { MENU_LABELS } from "./menu-labels";
+import { runAsyncBoundary } from "./async-boundary";
+import { reportErrorSafely } from "./report-error";
+import type { MemoCreationSpec } from "./document-controller";
+export { isImagePath } from "./image-formats";
 
 export interface FolderActionsPorts {
-  sidebar: Pick<Sidebar, "setEntries" | "selectByRelPath" | "refreshFolderEntries">;
+  sidebar: FolderActionsSidebarPort;
   onOpenInNewTab: (relPath: string, goto?: api.Pos) => void;
   onOpenInNewWindow: (path: string, goto?: api.Pos) => void;
-  onOpenViewer: (relPath: string, format: api.ViewerFormat) => void;
   onAddFavorite: (path: string) => void;
   onSetStartupPath: (path: string) => void;
   onOpenPath: (path: string) => void;
+}
+
+export interface FolderActionsSidebarPort {
+  setEntries: (entries: api.FolderEntry[]) => void;
+  selectByRelPath: (relPath: string) => void | Promise<void>;
+  refreshFolderEntries: () => void | Promise<void>;
+  expandAllFolder: (relDir: string) => void | Promise<void>;
 }
 
 export type FolderActionsApi = Pick<typeof api, "createNote" | "renameEntry" | "deleteEntry">;
@@ -36,7 +46,7 @@ export interface FolderActionsServices {
 
 export interface FolderDocumentPort {
   readonly current: Readonly<DocumentSession>;
-  promptMemoSpec: () => Promise<MemoSpec | null>;
+  promptMemoSpec: (directory: string) => Promise<MemoCreationSpec | null>;
   setSelectedRelPath: (relPath: string) => void;
   applyDocInfo: (info: api.DocInfo, keepViewers?: boolean, updateTree?: boolean) => void;
   applyRenamed: (info: api.DocInfo, selectedRelPath: string) => void;
@@ -59,69 +69,89 @@ export class FolderActions {
   }
 
   private run(title: string, operation: () => void | Promise<unknown>) {
-    try {
-      void Promise.resolve(operation()).catch((error) => this.reportError(title, error));
-    } catch (error) {
-      void this.reportError(title, error);
-    }
+    runAsyncBoundary(operation, (error) => this.reportError(title, error));
   }
 
   private async reportError(title: string, error: unknown) {
-    try {
-      await this.services.showError(title, error);
-    } catch (reportError) {
-      console.error(`${title}のエラーを表示できませんでした`, reportError);
-    }
+    await reportErrorSafely(this.services.showError, title, error);
   }
 
   showContextMenu(x: number, y: number, target: ContextTarget | null) {
     const root = this.root;
     if (!root) return; // アーカイブ閲覧中はファイル操作の対象がない
+    const revealPath = target ? this.toAbsolute(target.relPath) : root;
+    const revealIsDir = target ? target.isDir : true;
     const items: MenuItem[] = [];
+    items.push({
+      label: MENU_LABELS.explorer,
+      iconClass: MENU_ICON.explorer,
+      action: () => this.run("エクスプローラで開けませんでした", () => this.services.revealInExplorer(revealPath, revealIsDir)),
+    });
     if (target) {
       items.push({
-        label: "新規タブで開く",
+        label: MENU_LABELS.newTab,
+        iconClass: MENU_ICON.newTab,
         action: () => this.ports.onOpenInNewTab(target.relPath, target.goto),
       });
       items.push({
-        label: "新規ウィンドウで開く",
+        label: MENU_LABELS.newWindow,
+        iconClass: MENU_ICON.newWindow,
         action: () => this.ports.onOpenInNewWindow(this.toAbsolute(target.relPath), target.goto),
       });
-      if (!target.isDir) {
-        const viewerFormat = viewerFormatForPath(target.relPath);
-        if (viewerFormat) {
-          items.push({
-            label: VIEWER_FORMAT_LABELS[viewerFormat],
-            action: () => this.ports.onOpenViewer(target.relPath, viewerFormat),
-          });
-        }
+      if (target.isDir) {
         items.push({
-          label: "アプリで開く",
+          label: MENU_LABELS.expandFolder,
+          iconClass: MENU_ICON.expandFolder,
+          sep: true,
+          action: () => this.run(`${MENU_LABELS.expandFolder}できませんでした`, () => this.ports.sidebar.expandAllFolder(target.relPath)),
+        });
+      }
+      if (!target.isDir) {
+        items.push({
+          label: MENU_LABELS.external,
+          iconClass: MENU_ICON.external,
           action: () => this.run("アプリで開けませんでした", () => this.services.openInOtherApp(this.toAbsolute(target.relPath))),
+          sep: true,
         });
         items.push(this.registeredCommandMenu(target.relPath));
       }
-      items.push({ label: "アドレスバーに設定", action: () => this.ports.onOpenPath(this.toAbsolute(target.relPath)) });
-    }
-    items.push({
-      label: "新規メモ作成...",
-      action: () => this.run("新規メモを作成できませんでした", () => this.createNote(target?.isDir ? target.relPath : null)),
-      sep: items.length > 0,
-    });
-    if (target) {
-      items.push({ label: "名前を変更...", action: () => this.run("名前を変更できませんでした", () => this.rename(target.relPath)) });
       items.push({
-        label: "その他",
-        sub: [{ label: "削除", action: () => this.run("削除できませんでした", () => this.delete(target)) }],
+        label: MENU_LABELS.address,
+        iconClass: MENU_ICON.address,
+        action: () => this.ports.onOpenPath(this.toAbsolute(target.relPath)),
       });
     }
-    const revealPath = target ? this.toAbsolute(target.relPath) : root;
-    const revealIsDir = target ? target.isDir : true;
-    items.push({ label: "お気に入りに追加", action: () => this.ports.onAddFavorite(revealPath), sep: true });
+    const favoriteItem: MenuItem = {
+      label: MENU_LABELS.favorite,
+      iconClass: MENU_ICON.favorite,
+      action: () => this.ports.onAddFavorite(revealPath),
+      sep: true,
+    };
+    if (target) items.push(favoriteItem);
     items.push({
-      label: "エクスプローラで開く",
-      action: () => this.run("エクスプローラで開けませんでした", () => this.services.revealInExplorer(revealPath, revealIsDir)),
+      label: MENU_LABELS.newMemo,
+      iconClass: MENU_ICON.newMemo,
+      action: () => this.run("新規メモを作成できませんでした", () => this.createNote(target?.isDir ? target.relPath : null)),
+      sep: true,
     });
+    if (target) {
+      items.push({
+        label: MENU_LABELS.rename,
+        iconClass: MENU_ICON.rename,
+        action: () => this.run("名前を変更できませんでした", () => this.rename(target.relPath)),
+      });
+      items.push({
+        label: MENU_LABELS.more,
+        iconClass: MENU_ICON.more,
+        sep: true,
+        sub: [{
+          label: MENU_LABELS.delete,
+          iconClass: MENU_ICON.delete,
+          action: () => this.run("削除できませんでした", () => this.delete(target)),
+        }],
+      });
+    }
+    if (!target) items.push(favoriteItem);
     showMenu(x, y, items);
   }
 
@@ -135,19 +165,36 @@ export class FolderActions {
   }
 
   async createNote(relDir: string | null) {
-    const spec = await this.doc.promptMemoSpec();
+    const root = this.root;
+    if (!root) {
+      await this.reportError("新規メモを作成できませんでした", new Error("フォルダを開いていません"));
+      return;
+    }
+    const directory = relDir ? joinWindowsRoot(root, relDir) : root;
+    let spec: MemoCreationSpec | null;
+    try {
+      spec = await this.doc.promptMemoSpec(directory);
+    } catch (e) {
+      await this.reportError("新規メモを作成できませんでした", e);
+      return;
+    }
     if (!spec) return;
-    const name = fileNameOf(spec);
+    const name = fileNameOf(spec.memo);
     let info: api.DocInfo;
     try {
-      info = await this.services.api.createNote(relDir, name);
+      info = await this.services.api.createNote(relDir, name, spec.format.encoding, spec.format.eol);
     } catch (e) {
       await this.reportError("新規メモを作成できませんでした", e);
       return;
     }
     const relPath = relDir ? `${relDir}/${name}` : name;
-    this.doc.setSelectedRelPath(relPath);
-    this.doc.applyDocInfo(info);
+    try {
+      this.doc.setSelectedRelPath(relPath);
+      this.doc.applyDocInfo(info);
+    } catch (e) {
+      await this.reportError("メモは作成されましたが画面を更新できませんでした", e);
+      return;
+    }
     try {
       await this.ports.sidebar.refreshFolderEntries();
       await this.ports.sidebar.selectByRelPath(relPath);
@@ -217,11 +264,6 @@ export class FolderActions {
       await this.reportError("削除は完了しましたが一覧を更新できませんでした", e);
     }
   }
-}
-
-export function isImagePath(path: string): boolean {
-  const extension = path.slice(path.lastIndexOf(".")).toLowerCase();
-  return [".apng", ".avif", ".bmp", ".gif", ".ico", ".jpeg", ".jpg", ".png", ".svg", ".webp"].includes(extension);
 }
 
 export async function revealInExplorer(path: string, isDir: boolean) {

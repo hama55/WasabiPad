@@ -3,8 +3,11 @@ import { NavigationHistory, type NavigationEntry } from "./navigation-history";
 
 const file = (path: string): NavigationEntry => ({ path, kind: "file", line: 0 });
 
-describe("NavigationHistory", () => {
-  it("戻る/進むの対象を状態遷移として管理する", () => {
+describe("Feature: NavigationHistory", () => {
+  // Given: 履歴が空、`a.txt`,`b.txt`を用意
+  // When: aをrecord、back完了、forward完了
+  // Then: back/forward可否とtargetが各状態遷移どおり変化
+  it("Scenario: 戻る/進むの対象を状態遷移として管理する", () => {
     const history = new NavigationHistory();
     const first = file("C:\\work\\a.txt");
     const second = file("C:\\work\\b.txt");
@@ -22,7 +25,10 @@ describe("NavigationHistory", () => {
     expect(history.target("back")).toEqual(first);
   });
 
-  it("取得した履歴項目を変更しても内部状態を変更しない", () => {
+  // Given: a.txtをrecord済み
+  // When: back targetのlineを12へ変更
+  // Then: 内部targetは元のline 0を保持
+  it("Scenario: 取得した履歴項目を変更しても内部状態を変更しない", () => {
     const history = new NavigationHistory();
     const entry = file("C:\\work\\a.txt");
     history.record(entry);

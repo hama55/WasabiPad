@@ -8,7 +8,7 @@ const CACHE_MAX = 64;
 
 export class LineCache {
   private chunks = new Map<number, string[]>();
-  private pending = new Map<number, number>();
+  private pending = new Map<number, { generation: number; promise: Promise<void> }>();
   private generation = 0;
 
   constructor(private doc: DocumentClient) {}
@@ -34,9 +34,19 @@ export class LineCache {
   }
 
   async fetch(chunk: number): Promise<void> {
-    if (this.chunks.has(chunk) || this.pending.has(chunk)) return;
+    if (this.chunks.has(chunk)) return;
+    const pending = this.pending.get(chunk);
+    if (pending) {
+      await pending.promise;
+      return;
+    }
     const generation = this.generation;
-    this.pending.set(chunk, generation);
+    const promise = this.fetchChunk(chunk, generation);
+    this.pending.set(chunk, { generation, promise });
+    await promise;
+  }
+
+  private async fetchChunk(chunk: number, generation: number): Promise<void> {
     try {
       const lines = await this.doc.lines(chunk * CHUNK, CHUNK);
       if (generation !== this.generation) return;
@@ -47,15 +57,20 @@ export class LineCache {
         this.chunks.delete(oldest);
       }
     } finally {
-      if (this.pending.get(chunk) === generation) this.pending.delete(chunk);
+      if (this.pending.get(chunk)?.generation === generation) this.pending.delete(chunk);
     }
   }
 
   async line(index: number): Promise<string> {
-    const cached = this.peek(index);
-    if (cached !== undefined) return cached;
-    await this.fetch(LineCache.chunkOf(index));
-    return this.peek(index) ?? "";
+    const chunk = LineCache.chunkOf(index);
+    for (;;) {
+      const generation = this.generation;
+      const cached = this.peek(index);
+      if (cached !== undefined) return cached;
+      await this.fetch(chunk);
+      if (generation !== this.generation) continue;
+      return this.peek(index) ?? "";
+    }
   }
 
   async lineLength(index: number): Promise<number> {
@@ -65,8 +80,16 @@ export class LineCache {
 
   // 編集で fromLine 以降の行番号がずれるため、その位置に触れるチャンクを捨てる
   invalidateFrom(fromLine: number) {
+    const invalidatedPending: number[] = [];
     for (const chunk of [...this.chunks.keys()]) {
       if (chunk * CHUNK + CHUNK > fromLine) this.chunks.delete(chunk);
+    }
+    for (const chunk of this.pending.keys()) {
+      if (chunk * CHUNK + CHUNK > fromLine) invalidatedPending.push(chunk);
+    }
+    if (invalidatedPending.length) {
+      this.generation++;
+      for (const chunk of invalidatedPending) this.pending.delete(chunk);
     }
   }
 

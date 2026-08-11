@@ -2,10 +2,8 @@ import type { Pos, WindowRequest } from "./api";
 import type { DocumentSession } from "./session";
 import { cloneEditorViewState, type EditorViewState } from "./editor-view-state";
 import { basename } from "./path";
-import { showMenu, type MenuItem } from "./menu";
-import { revealInExplorer } from "./folder-actions";
-import { createRegisteredCommandMenu, type RegisteredCommandMenuPorts } from "./registered-command-menu";
-import { DRAG_THRESHOLD } from "./interaction-constants";
+import { TabBarView, type TabDropSpot } from "./tab-view";
+import type { RegisteredCommandMenuPorts } from "./registered-command-menu";
 import {
   NavigationHistory,
   type NavigationEntry,
@@ -19,8 +17,8 @@ export interface TabDocumentPort {
   readonly current: Readonly<DocumentSession>;
   confirmDiscard: (onProceed?: () => void | Promise<void>) => Promise<boolean>;
   openPath: (path: string, confirm?: boolean) => Promise<boolean>;
-  selectEntry: (relPath: string) => Promise<boolean | void>;
-  newFile: (confirm?: boolean) => Promise<void>;
+  selectEntry: (relPath: string) => Promise<boolean>;
+  newFile: (confirm?: boolean, draftDirectory?: string | null) => Promise<void>;
   goTo: (position: Pos) => void;
   captureViewState: () => EditorViewState;
   restoreViewState: (state: EditorViewState) => Promise<void>;
@@ -31,11 +29,13 @@ interface TabPorts {
   onChange: (state: StoredTabs) => void;
   onError?: (error: unknown, message?: string) => void | Promise<void>;
   onDetach?: (request: WindowRequest) => Promise<boolean>;
+  onOpenInNewWindow?: (request: WindowRequest) => Promise<boolean>;
+  defaultMemoDirectory?: () => Promise<string>;
   onHistoryChange?: (state: NavigationState) => void;
+  revealInExplorer?: (path: string, isDir: boolean) => void | Promise<unknown>;
 }
 
 const newId = () => `tab-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-type DropSpot = { targetId: string | null; after: boolean; el?: HTMLElement };
 type NavigationRun<T> = {
   proceeded: boolean;
   result?: T;
@@ -51,19 +51,30 @@ export class TabManager {
   private navigationInProgress = false;
   private navigationBusy = false;
   private navigationHistory = new Map<string, NavigationHistory>();
-  private pendingDrag: { sourceId: string; x: number; y: number } | null = null;
-  private drag: { sourceId: string; ghost: HTMLElement; spot: DropSpot | null } | null = null;
-  private justDragged = false;
+  private view: TabBarView;
 
   constructor(
-    private host: HTMLElement,
+    host: HTMLElement,
     private doc: TabDocumentPort,
     private ports: TabPorts,
-    private registeredCommandPorts: RegisteredCommandMenuPorts,
+    registeredCommandPorts: RegisteredCommandMenuPorts,
   ) {
-    // WebView2ではネイティブDnDがHTML5 DnDを奪うため、お気に入りバーと同じpointer方式を使う。
-    this.host.addEventListener("pointerdown", this.onPointerDown);
-    this.host.addEventListener("click", this.swallowClickAfterDrag, true);
+    this.view = new TabBarView(host, {
+      onActivate: (id) => this.activate(id),
+      onClose: (id) => this.close(id),
+      onNewBlank: () => this.newBlank(),
+      onKeepOnly: (id) => this.keepOnly(id),
+      onCloseRight: (id) => this.closeRight(id),
+      onCloseSaved: (id) => this.closeSaved(id),
+      onMove: (sourceId, spot) => this.moveTab(sourceId, spot),
+      onDetach: (id) => this.detachTab(id),
+      onOpenInNewWindow: ports.onOpenInNewWindow
+        ? (tab) => this.openTabInNewWindow(tab)
+        : undefined,
+      onError: (error, message) => this.reportError(error, message),
+      revealInExplorer: ports.revealInExplorer,
+      registeredCommandPorts,
+    });
   }
 
   get state(): StoredTabs {
@@ -85,7 +96,10 @@ export class TabManager {
     initialViewState?: EditorViewState,
   ) {
     this.navigationHistory.clear();
-    const initialTab = this.link(initialPath ?? startupPath, initialPath ? initialGoto : undefined);
+    const startupTarget = initialPath ?? startupPath;
+    const initialTab = stored.tabs.length || startupTarget
+      ? this.link(startupTarget, initialPath ? initialGoto : undefined)
+      : await this.blankTab(null);
     initialTab.selectedRelPath = initialSelectedRelPath;
     initialTab.viewState = initialViewState;
     this.tabs = stored.tabs.length ? stored.tabs.map((tab) => ({ ...tab })) : [initialTab];
@@ -109,9 +123,10 @@ export class TabManager {
     tab.path = session.folderRoot ?? session.savePath ?? (session.readOnly ? session.displayPath : null);
     tab.kind = session.folderRoot ? "folder" : tab.path ? "file" : "blank";
     tab.label = tab.kind === "blank" ? "無題" : basename(tab.path!);
+    if (tab.kind !== "blank") delete tab.draftDirectory;
     tab.selectedRelPath = session.selectedRelPath || undefined;
     if (tab.kind !== "folder" || !tab.selectedRelPath) delete tab.selectedLine;
-    // 保存完了通知はタブ切替処理の途中でも届く。ここでDOMを作り直すと、
+    // セッション変更通知はタブ切替処理の途中でも届く。ここでDOMを作り直すと、
     // 選択元のクリック処理がまだ継続中なのに操作対象だけが差し替わる。
     if (this.transitionTarget || this.navigationInProgress) return;
     this.render();
@@ -129,7 +144,7 @@ export class TabManager {
   }
 
   async newBlank() {
-    await this.addAndActivate(this.link(null));
+    await this.addAndActivate(await this.blankTab());
   }
 
   async open(path: string, goto?: Pos) {
@@ -226,6 +241,7 @@ export class TabManager {
 
   private async switchTo(id: string) {
     this.rememberActiveView();
+    this.persist();
     try {
       await this.commitTransition(async () => {
         this.activeId = id;
@@ -269,7 +285,7 @@ export class TabManager {
     });
 
     if (!run.proceeded || run.result?.succeeded !== true) {
-      if (run.proceeded && run.before) await this.restoreTabs(run.before);
+      if (run.proceeded && run.before) await this.restoreTabsSafely(run.before);
       this.render();
       return false;
     }
@@ -298,7 +314,7 @@ export class TabManager {
       });
       return { proceeded, result, before, previous };
     } catch (error) {
-      if (before) await this.restoreTabs(before);
+      if (before) await this.restoreTabsSafely(before);
       this.render();
       throw error;
     }
@@ -359,10 +375,11 @@ export class TabManager {
   async close(id: string) {
     if (this.tabs.length === 1) {
       if (id === this.activeId && !(await this.doc.confirmDiscard())) return;
+      const replacement = await this.blankTab(null);
       await this.commitTransition(async () => {
-        this.tabs = [this.link(null)];
+        this.tabs = [replacement];
         this.activeId = this.tabs[0].id;
-        await this.doc.newFile(false);
+        await this.doc.newFile(false, replacement.draftDirectory ?? null);
       });
       return;
     }
@@ -410,7 +427,7 @@ export class TabManager {
     try {
       await operation();
     } catch (error) {
-      await this.restoreTabs(before);
+      await this.restoreTabsSafely(before);
       this.render();
       throw error;
     }
@@ -425,6 +442,15 @@ export class TabManager {
       if (this.activeId) await this.loadActive();
     } catch (error) {
       console.error("元のタブへ復帰できませんでした", error);
+      throw error;
+    }
+  }
+
+  private async restoreTabsSafely(before: StoredTabs) {
+    try {
+      await this.restoreTabs(before);
+    } catch (error) {
+      await this.reportError(error, "タブを元に戻せませんでした");
     }
   }
 
@@ -441,7 +467,7 @@ export class TabManager {
           tab.path = null;
           tab.kind = "blank";
           tab.label = "無題";
-          await this.doc.newFile(false);
+          await this.doc.newFile(false, tab.draftDirectory ?? null);
         } else if (rememberedRelPath) {
           try {
             selectionRestored = (await this.doc.selectEntry(rememberedRelPath)) === true;
@@ -465,7 +491,7 @@ export class TabManager {
           await this.doc.restoreViewState(tab.viewState);
         }
       } else {
-        await this.doc.newFile(false);
+        await this.doc.newFile(false, tab.draftDirectory ?? null);
         if (tab.viewState) await this.doc.restoreViewState(tab.viewState);
       }
     } finally {
@@ -491,54 +517,36 @@ export class TabManager {
     return this.tabs.find((tab) => tab.id === this.activeId);
   }
 
-  private link(path: string | null, goto?: Pos): StoredTab {
+  private async blankTab(source: StoredTab | null = this.active() ?? null): Promise<StoredTab> {
+    const draftDirectory = source?.kind === "folder" && source.path
+      ? source.path
+      : await this.resolveDefaultMemoDirectory();
+    return this.link(null, undefined, draftDirectory);
+  }
+
+  private async resolveDefaultMemoDirectory(): Promise<string | null> {
+    try {
+      return await this.ports.defaultMemoDirectory?.() ?? null;
+    } catch (error) {
+      await this.reportError(error, "新規メモの既定保存先を取得できませんでした");
+      return null;
+    }
+  }
+
+  private link(path: string | null, goto?: Pos, draftDirectory?: string | null): StoredTab {
     return {
       id: newId(),
       path,
       kind: path ? "file" : "blank",
       label: path ? basename(path) : "無題",
+      ...(draftDirectory ? { draftDirectory } : {}),
       goto,
     };
   }
 
   private render() {
     this.pruneNavigationHistories();
-    const buttons = this.tabs.map((tab) => {
-      const button = document.createElement("button");
-      button.className = "doc-tab";
-      button.dataset.tabId = tab.id;
-      button.classList.toggle("active", tab.id === this.activeId);
-      button.title = tab.path ?? "無題";
-      button.innerHTML = `<span class="doc-tab-icon">${tab.kind === "folder" ? "📁" : "📄"}</span><span class="doc-tab-label"></span><span class="doc-tab-close">×</span>`;
-      const dirty = tab.id === this.activeId && this.doc.current.dirty;
-      button.querySelector(".doc-tab-label")!.textContent = `${dirty ? "● " : ""}${tab.label}`;
-      button.addEventListener("click", (event) => {
-        if (this.justDragged) {
-          this.justDragged = false;
-          event.preventDefault();
-          event.stopPropagation();
-          return;
-        }
-        if ((event.target as Element).closest(".doc-tab-close")) this.run(() => this.close(tab.id));
-        else this.run(() => this.activate(tab.id));
-      });
-      button.addEventListener("auxclick", (event) => {
-        if (event.button === 1) this.run(() => this.close(tab.id));
-      });
-      button.addEventListener("contextmenu", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        showMenu(event.clientX, event.clientY, this.contextItems(tab));
-      });
-      return button;
-    });
-    const add = document.createElement("button");
-    add.className = "doc-tab-add";
-    add.title = "新規タブ";
-    add.setAttribute("aria-label", "新規タブ");
-    add.textContent = "+";
-    add.addEventListener("click", () => this.run(() => this.newBlank()));
-    this.host.replaceChildren(...buttons, add);
+    this.view.render({ tabs: this.tabs, activeId: this.activeId || null, dirty: this.doc.current.dirty });
     const history = this.navigationHistory.get(this.activeId);
     this.ports.onHistoryChange?.(history?.state ?? { canGoBack: false, canGoForward: false });
   }
@@ -548,29 +556,6 @@ export class TabManager {
     for (const id of this.navigationHistory.keys()) {
       if (!ids.has(id)) this.navigationHistory.delete(id);
     }
-  }
-
-  private contextItems(tab: StoredTab): MenuItem[] {
-    const items: MenuItem[] = [];
-    if (tab.path) {
-      items.push({
-        label: "エクスプローラで開く",
-        action: () => this.run(() => revealInExplorer(tab.path!, tab.kind === "folder")),
-      });
-      if (tab.kind === "file") {
-        items.push(createRegisteredCommandMenu(tab.path, {
-          ...this.registeredCommandPorts,
-          run: (title, operation) => this.run(operation, title),
-        }));
-      }
-    }
-    items.push(
-      { label: "閉じる", action: () => this.run(() => this.close(tab.id)) },
-      { label: "ほかのタブを閉じる", action: () => this.run(() => this.keepOnly(tab.id)), sep: true },
-      { label: "右側のタブを閉じる", action: () => this.run(() => this.closeRight(tab.id)) },
-      { label: "保存済みのタブを閉じる", action: () => this.run(() => this.closeSaved(tab.id)) },
-    );
-    return items;
   }
 
   private async keepOnly(id: string) {
@@ -599,90 +584,7 @@ export class TabManager {
     this.ports.onChange(this.state);
   }
 
-  private onPointerDown = (event: PointerEvent) => {
-    this.justDragged = false;
-    if (event.button !== 0 || (event.target as Element | null)?.closest(".doc-tab-close")) return;
-    const tab = (event.target as Element | null)?.closest<HTMLElement>(".doc-tab");
-    const sourceId = tab?.dataset.tabId;
-    if (!sourceId) return;
-    this.pendingDrag = { sourceId, x: event.clientX, y: event.clientY };
-    tab.setPointerCapture?.(event.pointerId);
-    window.addEventListener("pointermove", this.onPointerMove);
-    window.addEventListener("pointerup", this.onPointerUp);
-    window.addEventListener("keydown", this.onDragKey);
-  };
-
-  private onPointerMove = (event: PointerEvent) => {
-    const pending = this.pendingDrag;
-    if (pending && Math.hypot(event.clientX - pending.x, event.clientY - pending.y) >= DRAG_THRESHOLD) {
-      this.pendingDrag = null;
-      this.drag = { sourceId: pending.sourceId, ghost: this.spawnGhost(pending.sourceId), spot: null };
-    }
-    if (!this.drag) return;
-    this.drag.ghost.style.transform = `translate(${event.clientX + 12}px, ${event.clientY + 12}px)`;
-    this.drag.spot = this.resolveDrop(event.clientX, event.clientY);
-    this.paintDrop(this.drag.spot);
-  };
-
-  private onPointerUp = (event: PointerEvent) => {
-    const drag = this.drag;
-    this.endDrag();
-    if (!drag) return;
-    this.justDragged = true;
-    if (drag.spot) this.moveTab(drag.sourceId, drag.spot);
-    else if (this.outsideWindow(event.clientX, event.clientY)) this.run(() => this.detachTab(drag.sourceId));
-  };
-
-  private outsideWindow(x: number, y: number): boolean {
-    return x < 0 || y < 0 || x >= window.innerWidth || y >= window.innerHeight;
-  }
-
-  private onDragKey = (event: KeyboardEvent) => {
-    if (event.key === "Escape") this.endDrag();
-  };
-
-  private swallowClickAfterDrag = (event: MouseEvent) => {
-    if (!this.justDragged) return;
-    this.justDragged = false;
-    event.preventDefault();
-    event.stopPropagation();
-  };
-
-  private resolveDrop(x: number, y: number): DropSpot | null {
-    const hit = document.elementFromPoint(x, y) as HTMLElement | null;
-    const target = hit?.closest<HTMLElement>(".doc-tab");
-    if (target?.dataset.tabId) {
-      const rect = target.getBoundingClientRect();
-      return { targetId: target.dataset.tabId, after: x >= rect.left + rect.width / 2, el: target };
-    }
-    return hit && this.host.contains(hit) ? { targetId: null, after: true } : null;
-  }
-
-  private paintDrop(spot: DropSpot | null) {
-    this.host.querySelectorAll(".doc-tab-drop-before, .doc-tab-drop-after")
-      .forEach((tab) => tab.classList.remove("doc-tab-drop-before", "doc-tab-drop-after"));
-    spot?.el?.classList.add(spot.after ? "doc-tab-drop-after" : "doc-tab-drop-before");
-  }
-
-  private spawnGhost(sourceId: string): HTMLElement {
-    const ghost = document.createElement("div");
-    ghost.className = "doc-tab-ghost";
-    ghost.textContent = this.tabs.find((tab) => tab.id === sourceId)?.label ?? "";
-    document.body.appendChild(ghost);
-    return ghost;
-  }
-
-  private endDrag() {
-    window.removeEventListener("pointermove", this.onPointerMove);
-    window.removeEventListener("pointerup", this.onPointerUp);
-    window.removeEventListener("keydown", this.onDragKey);
-    this.pendingDrag = null;
-    this.drag?.ghost.remove();
-    this.drag = null;
-    this.paintDrop(null);
-  }
-
-  private moveTab(sourceId: string, spot: DropSpot | null) {
+  private moveTab(sourceId: string, spot: TabDropSpot | null) {
     if (!spot || spot.targetId === sourceId) return;
     const source = this.tabs.findIndex((tab) => tab.id === sourceId);
     if (source < 0) return;
@@ -693,12 +595,6 @@ export class TabManager {
     this.tabs.splice(Math.max(0, target), 0, tab);
     this.render();
     this.persist();
-  }
-
-  private run(operation: () => void | Promise<unknown>, message = "タブを操作できませんでした") {
-    void Promise.resolve()
-      .then(operation)
-      .catch((error) => this.reportError(error, message));
   }
 
   private async reportError(error: unknown, message = "タブを操作できませんでした") {
@@ -742,5 +638,15 @@ export class TabManager {
     }
     this.render();
     this.persist();
+  }
+
+  private openTabInNewWindow(tab: StoredTab) {
+    return this.ports.onOpenInNewWindow?.({
+      secondary: true,
+      path: tab.path,
+      goto: tab.viewState ? null : tab.goto ?? null,
+      selectedRelPath: tab.selectedRelPath ?? null,
+      viewState: tab.viewState ?? null,
+    });
   }
 }

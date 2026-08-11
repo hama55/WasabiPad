@@ -15,16 +15,35 @@ struct OpenAsInfo {
 extern "system" {
     #[link_name = "SHOpenWithDialog"]
     fn sh_open_with_dialog(parent: *mut std::ffi::c_void, info: *const OpenAsInfo) -> i32;
+    #[link_name = "ShellExecuteW"]
+    fn shell_execute_w(
+        hwnd: *mut std::ffi::c_void,
+        operation: *const u16,
+        file: *const u16,
+        parameters: *const u16,
+        directory: *const u16,
+        show_command: i32,
+    ) -> isize;
+}
+
+fn explorer_args(path: &str, is_dir: bool) -> Result<Vec<String>, String> {
+    let target = PathBuf::from(path);
+    if is_dir {
+        if !target.is_dir() {
+            return Err("対象フォルダが見つかりません".to_string());
+        }
+        return Ok(vec![path.to_string()]);
+    }
+    if !target.is_file() {
+        return Err("対象ファイルが見つかりません".to_string());
+    }
+    Ok(vec![format!("/select,{path}")])
 }
 
 pub(crate) fn reveal_in_explorer(path: String, is_dir: bool) -> Result<(), String> {
+    let args = explorer_args(&path, is_dir)?;
     let mut cmd = std::process::Command::new("explorer");
-    if is_dir {
-        cmd.arg(&path);
-    } else {
-        // 空白入りパスでも explorer の legacy parser がパス部分だけを正しく引用できるよう分離する
-        cmd.arg("/select,").arg(&path);
-    }
+    cmd.args(args);
     // explorer は既存ウィンドウへ委譲した場合など正常時でも非0を返すことがあるため終了コードは見ない
     cmd.spawn().map_err(|e| e.to_string())?;
     Ok(())
@@ -56,6 +75,52 @@ pub(crate) fn open_in_other_app(path: String) -> Result<(), String> {
         } else {
             Err(format!(
                 "アプリ選択画面を開けませんでした (HRESULT: 0x{result:08X})"
+            ))
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = path;
+        Err("この機能はWindowsでのみ使用できます".to_string())
+    }
+}
+
+pub(crate) fn open_in_default_browser(path: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::ffi::OsStrExt;
+
+        let target = PathBuf::from(path);
+        let extension = target.extension().and_then(|value| value.to_str());
+        if !target.is_file()
+            || !matches!(
+                extension.map(str::to_ascii_lowercase).as_deref(),
+                Some("html" | "htm")
+            )
+        {
+            return Err("HTMLファイルが見つかりません".to_string());
+        }
+        let operation: Vec<u16> = "open".encode_utf16().chain(std::iter::once(0)).collect();
+        let wide: Vec<u16> = target
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let result = unsafe {
+            shell_execute_w(
+                std::ptr::null_mut(),
+                operation.as_ptr(),
+                wide.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                1,
+            )
+        };
+        if result > 32 {
+            Ok(())
+        } else {
+            Err(format!(
+                "既定のブラウザで開けませんでした (HRESULT: 0x{result:08X})"
             ))
         }
     }
@@ -150,6 +215,60 @@ pub(crate) fn run_external_command(command: String, path: String) -> Result<(), 
 
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
+    use std::fs;
+
+    // Feature: Explorer引数の生成
+    // Scenario: 空白を含むファイルを選択する
+    // Given: 空白を含む実ファイルが存在する
+    // When: ファイル用のExplorer引数を生成する
+    // Then: /select,と実ファイルパスが1引数になる
+    #[test]
+    fn builds_one_select_argument_for_a_file_with_spaces() {
+        let root = std::env::temp_dir().join(format!("wasabipad_explorer_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("memo with space.txt");
+        fs::write(&file, "memo").unwrap();
+
+        let args = super::explorer_args(&file.to_string_lossy(), false).unwrap();
+
+        assert_eq!(args, vec![format!("/select,{}", file.to_string_lossy())]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    // Feature: Explorer引数の生成
+    // Scenario: フォルダを開く
+    // Given: 実フォルダが存在する
+    // When: フォルダ用のExplorer引数を生成する
+    // Then: フォルダパスだけを1引数として返す
+    #[test]
+    fn builds_a_directory_argument_for_a_folder() {
+        let root = std::env::temp_dir().join(format!("wasabipad_explorer_dir_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        let args = super::explorer_args(&root.to_string_lossy(), true).unwrap();
+
+        assert_eq!(args, vec![root.to_string_lossy().to_string()]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    // Feature: Explorer引数の生成
+    // Scenario: 存在しない対象を指定する
+    // Given: ファイルもフォルダも存在しないパスがある
+    // When: Explorer引数を生成する
+    // Then: フォールバック起動せずエラーを返す
+    #[test]
+    fn rejects_a_missing_explorer_target() {
+        let path = std::env::temp_dir()
+            .join(format!("wasabipad_missing_explorer_{}", std::process::id()))
+            .to_string_lossy()
+            .to_string();
+
+        assert!(super::explorer_args(&path, false).is_err());
+        assert!(super::explorer_args(&path, true).is_err());
+    }
+
     #[test]
     fn runs_the_complete_command_line_without_adding_a_shell() {
         super::spawn_command_line("cmd.exe /D /C exit 0").unwrap();

@@ -10,12 +10,16 @@
 <body>
   <div id="titlebar">
     <div id="viewer-title-spacer"></div>
-    <div id="viewer-title" data-tauri-drag-region>読込み中…</div>
+    <div id="viewer-title" data-tauri-drag-region>
+      <span id="viewer-title-text">読込み中…</span>
+      <div id="viewer-format" role="group" aria-label="表示形式"></div>
+    </div>
     <div id="wincontrols">
       <button id="win-min" title="最小化">&#xE921;</button>
       <button id="win-max" title="最大化">&#xE922;</button>
       <button id="win-close" title="閉じる">&#xE8BB;</button>
     </div>
+    <button id="viewer-fullscreen"></button>
   </div>
   <main>
     <div id="viewer-content"></div>
@@ -29,7 +33,7 @@
   </main>
   <div id="statusbar">
     <span id="viewer-summary"></span>
-    <label id="viewer-delimiter">区切り文字 <input id="viewer-delimiter-input" value="," aria-label="区切り文字" /></label>
+    <label id="viewer-delimiter">区切り文字 <input id="viewer-delimiter-input" aria-label="区切り文字" /></label>
     <span class="st-spacer"></span>
     <button id="viewer-font" title="フォントを変更"></button>
     <button id="viewer-font-size" title="フォントサイズを変更"></button>

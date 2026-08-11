@@ -1,4 +1,5 @@
 @import "./theme.css";
+@import "./menu-icons.css";
 
 /* 共通パレットは theme.css。ここはメモ本体だけで使う変数。 */
 :root, :root[data-theme="dark"] {
@@ -98,16 +99,14 @@ body {
 .addressbar-crumb { flex: none; max-width: 220px; overflow: hidden; text-overflow: ellipsis; border: 0; border-radius: 3px; padding: 2px 4px; background: none; color: inherit; font: inherit; cursor: default; }
 .addressbar-crumb:hover { background: var(--hover); }
 .addressbar-sep { flex: none; color: var(--fg-dim); }
-#addressbar-fav, #addressbar-open, #addressbar-back, #addressbar-forward, #addressbar-save, #addressbar-save-as, #addressbar-new, #addressbar-find {
+#addressbar-fav, #addressbar-open, #addressbar-save, #addressbar-save-as, #addressbar-new, #addressbar-find {
   flex: none; width: 26px; height: 26px;
   background: var(--bg-editor); color: var(--fg-dim);
   border: 1px solid var(--border); border-radius: 4px;
   font-size: 14px; cursor: default;
 }
 #addressbar-save-as { width: 32px; }
-#addressbar-back, #addressbar-forward { font-family: "Segoe MDL2 Assets", var(--font-ui); }
-#addressbar-fav:hover, #addressbar-open:hover, #addressbar-back:hover:not(:disabled), #addressbar-forward:hover:not(:disabled), #addressbar-save:hover, #addressbar-save-as:hover, #addressbar-new:hover, #addressbar-find:hover { background: var(--hover); color: var(--fg); }
-#addressbar-back:disabled, #addressbar-forward:disabled { opacity: 0.45; }
+#addressbar-fav:hover, #addressbar-open:hover, #addressbar-save:hover, #addressbar-save-as:hover, #addressbar-new:hover, #addressbar-find:hover { background: var(--hover); color: var(--fg); }
 
 /* ---- お気に入りバー ---- */
 #favbar {
@@ -164,16 +163,49 @@ body {
   padding: 4px 0;
 }
 #sidebar-toggle {
-  position: absolute; z-index: 8; bottom: 6px;
+  position: absolute; z-index: 8; top: 4px;
   min-width: 28px; height: 24px; padding: 0 5px;
   border: 1px solid var(--border); border-radius: 4px;
-  background: var(--bg-side); color: var(--fg-dim); font: 12px var(--font-ui);
+  background: var(--bg-side); color: var(--fg-dim);
+  font: 16px/1 "Segoe MDL2 Assets", var(--font-ui);
 }
 #sidebar-toggle:hover { background: var(--hover); color: var(--fg); }
+#preview {
+  width: 38%; min-width: var(--preview-min-width); flex: none;
+  background: var(--bg-editor); border-left: 1px solid var(--border-strong);
+}
+#main.preview-fullscreen #preview { width: auto !important; flex: 1; }
+#preview iframe { display: block; width: 100%; height: 100%; border: 0; }
+#preview-splitter {
+  width: 4px; cursor: ew-resize; flex: none; background: transparent;
+}
+#preview-splitter:hover { background: var(--bg-status); }
+#preview-toggle {
+  position: absolute; z-index: 8; left: 0; top: 4px;
+  min-width: 28px; height: 24px; padding: 0 5px;
+  border: 1px solid var(--border); border-radius: 4px;
+  background: var(--bg-title); color: var(--fg-dim);
+  font: 16px/1 "Segoe MDL2 Assets", var(--font-ui);
+}
+#preview-toggle:hover { background: var(--hover); color: var(--fg); }
+body.preview-resizing,
+body.preview-resizing * { cursor: ew-resize !important; user-select: none !important; }
+/* ---- フォルダツリー共通操作 ---- */
+.fv-toolbar {
+  position: sticky; top: -4px; z-index: 2;
+  display: flex; justify-content: flex-start; gap: 2px;
+  min-height: 24px; box-sizing: border-box;
+  padding: 0 4px 4px; background: var(--bg-side);
+}
+.fv-toolbar button {
+  border: 0; background: none; color: var(--fg-dim); padding: 0 3px;
+  font-size: 14px; line-height: 20px; cursor: default;
+}
+.fv-toolbar button:hover { background: var(--hover); color: var(--fg); }
 /* ---- フォルダ検索バー ---- */
 /* 結果が長くなるため、入力欄と件数は上端へ貼り付けたままにする */
 .ws-search {
-  position: sticky; top: -4px; z-index: 1;
+  position: sticky; top: 20px; z-index: 1;
   padding: 4px; background: var(--bg-side);
 }
 .ws-search[hidden] { display: none; }
@@ -209,6 +241,7 @@ body {
   white-space: nowrap; overflow: hidden; cursor: default;
 }
 .ws-group:hover, .ws-match:hover { background: var(--hover); }
+.ws-match.sel { background: var(--sel-row); }
 .ws-twisty { width: 12px; flex: none; color: var(--fg-dim); text-align: center; }
 .ws-file { flex: none; color: var(--fg); }
 .ws-dir { flex: 1; min-width: 0; color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; }
@@ -294,6 +327,8 @@ body {
 
 /* ---- 仮想スクロールエディタ ---- */
 #editorhost { position: relative; flex: 1; min-width: 0; }
+#editorhost[hidden] { display: none; }
+#main.preview-fullscreen #editorhost { display: none; }
 .ve {
   position: relative;
   background: var(--bg-editor);
@@ -323,6 +358,10 @@ body {
   text-align: right; user-select: none; box-sizing: border-box;
 }
 .ve-gnum-separator { margin-left: 2px; }
+.ve-preview-mark {
+  position: absolute; left: 4px; color: var(--accent); font-weight: 600;
+}
+.ve-preview-mark[hidden] { display: none; }
 .ve-gnum.selected-line {
   background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
@@ -367,6 +406,7 @@ body {
   position: absolute; width: 2px; height: var(--line-h);
   background: var(--caret); z-index: 3; display: none;
 }
+.ve-drag-caret { background: var(--accent); }
 .ve-caret.on { display: block; }
 .ve-input {
   position: absolute; z-index: 3;
@@ -439,8 +479,14 @@ body {
   background: none; border: none; color: #fff;
   font-size: 12px; font-family: var(--font-ui); cursor: default;
 }
+#statusbar input {
+  width: 42px; border: 0; border-bottom: 1px solid #ffffff88;
+  background: transparent; color: inherit; font: inherit; text-align: center;
+}
 #statusbar button:hover, #statusbar select:hover { background: var(--hover); }
 #statusbar select option { background: var(--bg-side); color: var(--fg); }
+#st-delimiter { display: flex; align-items: center; gap: 4px; }
+#st-delimiter[hidden] { display: none; }
 #st-mode:empty { display: none; }
 #st-mode { background: #c586c0; color: #1e1e1e; padding: 0 6px; border-radius: 3px; }
 #st-size.is-huge { background: #8a9a3c; padding: 0 4px; border-radius: 3px; }

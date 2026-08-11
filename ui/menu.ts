@@ -1,10 +1,14 @@
 // 共有ドロップダウンメニュー (タイトルバーのメニュー・お気に入りグループ・右クリックで使用)
+import { createMenuIcon, type MenuItemIconClass } from "./menu-icons";
+import { isMiddleClick } from "./interaction-constants";
+import { runAsyncBoundary } from "./async-boundary";
+
 type MenuAction = (event?: MouseEvent) => void | Promise<unknown>;
 type MenuTrailingAction = { label: string; title: string; action: () => void | Promise<unknown> };
 
 interface MenuItemBase {
   label: string;
-  iconClass?: string;
+  iconClass: MenuItemIconClass;
   key?: string; // ショートカット表示
   trailing?: MenuTrailingAction | MenuTrailingAction[];
   sep?: boolean; // trueならこの項目の前に区切り線
@@ -30,13 +34,9 @@ const dd = () => document.getElementById("dropdown")!;
 let activeMenu: MenuState | null = null;
 
 function invokeMenuCallback(callback: () => void | Promise<unknown>) {
-  try {
-    void Promise.resolve(callback()).catch((error) => {
-      console.error("メニュー操作に失敗しました", error);
-    });
-  } catch (error) {
+  runAsyncBoundary(callback, (error) => {
     console.error("メニュー操作に失敗しました", error);
-  }
+  });
 }
 
 function invokeLeaf(item: LeafMenuItem, event: MouseEvent) {
@@ -82,11 +82,7 @@ function renderItems(state: MenuState, el: HTMLElement, items: MenuItem[]) {
     }
     const label = document.createElement("span");
     label.className = "dd-label";
-    if (item.iconClass) {
-      const icon = document.createElement("span");
-      icon.className = item.iconClass;
-      label.append(icon);
-    }
+    label.append(createMenuIcon(item.iconClass));
     label.append(document.createTextNode(hasSubmenu(item) ? `${item.label} ▸` : item.label));
     div.appendChild(label);
     if (item.key) {
@@ -126,7 +122,7 @@ function renderItems(state: MenuState, el: HTMLElement, items: MenuItem[]) {
       }
     });
     div.addEventListener("auxclick", (e) => {
-      if (e.button !== 1 || hasSubmenu(item)) return;
+      if (!isMiddleClick(e) || hasSubmenu(item)) return;
       e.preventDefault();
       e.stopPropagation();
       invokeLeaf(item, e);

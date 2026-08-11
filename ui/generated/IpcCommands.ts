@@ -18,6 +18,7 @@ export const IPC_COMMANDS = {
   cleanupUnusedImages: "cleanup_unused_images",
   revealInExplorer: "reveal_in_explorer",
   openInOtherApp: "open_in_other_app",
+  openInDefaultBrowser: "open_in_default_browser",
   runExternalCommand: "run_external_command",
   edit: "edit",
   editMany: "edit_many",
@@ -31,6 +32,8 @@ export const IPC_COMMANDS = {
   pollExternal: "poll_external",
   reloadFromDisk: "reload_from_disk",
   ackExternal: "ack_external",
+  externalMergePreview: "external_merge_preview",
+  mergeExternal: "merge_external",
   setEncoding: "set_encoding",
   setEol: "set_eol",
   loadBookmarks: "load_bookmarks",
@@ -47,4 +50,5 @@ export const IPC_COMMANDS = {
   openViewer: "open_viewer",
   takeViewerPayload: "take_viewer_payload",
   updateViewer: "update_viewer",
+  closeViewer: "close_viewer",
 } as const;

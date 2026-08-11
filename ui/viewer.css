@@ -1,4 +1,5 @@
 @import "./theme.css";
+@import "./menu-icons.css";
 
 /* --font-mono は viewer.ts が DEFAULT_EDITOR_CONFIG.fontFamily から設定する */
 /* 共通パレットは theme.css。ここはビューだけで使う変数。 */
@@ -35,6 +36,17 @@ body {
   min-width: 0; overflow: hidden; white-space: nowrap;
   color: var(--fg); font-size: 12px;
 }
+#viewer-title-text { overflow: hidden; text-overflow: ellipsis; }
+#viewer-format {
+  display: none; align-items: center; gap: 2px; margin-left: 8px;
+}
+#viewer-format button {
+  padding: 2px 6px; border: 0; border-radius: 3px;
+  background: transparent; color: var(--fg); font: 12px var(--font-ui); cursor: default;
+}
+#viewer-format button:hover { background: var(--hover); }
+#viewer-format button:disabled { opacity: .45; }
+#viewer-format button.selected { background: var(--accent); color: #fff; }
 #wincontrols { display: flex; }
 #wincontrols button {
   width: 46px; border: 0; background: none; color: var(--fg);
@@ -42,6 +54,17 @@ body {
 }
 #wincontrols button:hover { background: var(--hover); }
 #win-close:hover { background: #e81123; color: #fff; }
+#viewer-fullscreen {
+  display: none; width: 36px; flex: none;
+  border: 0; background: none; color: var(--fg);
+  font: 16px var(--font-ui); cursor: default;
+}
+#viewer-fullscreen:hover { background: var(--hover); }
+body.inline-viewer #viewer-title-spacer { width: 8px; }
+body.inline-viewer #wincontrols { display: none; }
+body.inline-viewer #viewer-title-text { display: none; }
+body.inline-viewer #viewer-format { display: flex; }
+body.inline-viewer #viewer-fullscreen { display: block; }
 
 main { position: relative; flex: 1; min-height: 0; }
 #viewer-content { width: 100%; height: 100%; overflow: auto; user-select: text; }
@@ -52,19 +75,32 @@ main { position: relative; flex: 1; min-height: 0; }
   min-width: 100%; font: var(--viewer-font-size) var(--font-mono);
 }
 .viewer-grid th, .viewer-grid td {
-  max-width: 520px; padding: 5px 9px; overflow: hidden; text-overflow: ellipsis;
+  min-width: 0; max-width: 520px; padding: 5px 9px; overflow: hidden; text-overflow: ellipsis;
   white-space: pre; text-align: left; border-right: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
 }
 .viewer-grid th {
-  position: sticky; top: 0; z-index: 1;
   background: var(--bg-side); color: var(--fg);
+}
+.viewer-grid th { position: relative; overflow: visible; }
+.viewer-column-resizer {
+  position: absolute; top: 0; right: 0; bottom: 0; width: 8px;
+  cursor: col-resize; user-select: none;
+}
+.viewer-caret {
+  display: inline-block; width: 2px; height: 1.2em;
+  margin: 0 -1px; background: var(--accent); vertical-align: text-bottom;
+}
+.viewer-markdown-caret {
+  display: inline-block; width: 2px; height: 1.2em;
+  margin: 0 -1px; background: var(--accent); vertical-align: text-bottom;
 }
 .viewer-grid .viewer-line-number {
   position: sticky; left: 0; z-index: 2;
   min-width: 44px; text-align: right; color: var(--fg-dim);
   background: var(--bg-side);
 }
+.viewer-grid .viewer-line-number.viewer-caret-line-number { color: var(--accent); }
 .viewer-grid tr:nth-child(even) > :where(td, .viewer-line-number) { background: var(--row-alt); }
 .viewer-grid tr.viewer-source-selected > *,
 .viewer-grid tr > .viewer-source-selected {
@@ -79,8 +115,20 @@ main { position: relative; flex: 1; min-height: 0; }
   outline-offset: -1px;
 }
 
+.viewer-caret-line {
+  border-left: 2px solid var(--accent);
+  padding-left: 8px;
+}
+
+body.viewer-resizing,
+body.viewer-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
 article { max-width: 900px; margin: 0 auto; padding: 24px 36px 64px; line-height: 1.65; font: var(--viewer-font-size) var(--font-mono); }
 article h1, article h2 { border-bottom: 1px solid var(--border-strong); padding-bottom: .25em; }
+article p + p { margin-top: 1em; }
 article ul, article ol { padding-inline-start: 2em; }
 article pre, article code { font-family: var(--font-mono); background: var(--bg-side); }
 article code { padding: .12em .3em; border-radius: 3px; }
@@ -88,6 +136,7 @@ article pre { padding: 12px; overflow: auto; border: 1px solid var(--border-stro
 article pre code { padding: 0; }
 article blockquote { margin-left: 0; padding-left: 14px; color: var(--fg-dim); border-left: 4px solid var(--border-strong); }
 article img { max-width: 100%; }
+article .viewer-markdown-task { margin-inline-end: .45em; vertical-align: baseline; }
 article a { color: var(--bg-status); }
 article table {
   min-width: 0; width: auto; display: block; overflow: auto;
@@ -100,6 +149,25 @@ article th, article td {
 }
 article th { background: var(--bg-side); }
 article tbody tr:nth-child(even) { background: var(--row-alt); }
+
+.viewer-image-wrap {
+  display: grid;
+  place-items: center;
+  min-height: 100%;
+  padding: 24px;
+  box-sizing: border-box;
+}
+.viewer-image {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+.viewer-image-wrap.viewer-image-zoomed .viewer-image { max-width: none; max-height: none; cursor: grab; touch-action: none; }
+.viewer-image.viewer-image-panning { cursor: grabbing; user-select: none; }
+.viewer-pdf-wrap { width: 100%; height: 100%; background: #666; }
+.viewer-pdf { display: block; width: 100%; height: 100%; border: 0; background: #fff; }
+.viewer-html-wrap { width: 100%; height: 100%; background: #fff; }
+.viewer-html { display: block; width: 100%; height: 100%; border: 0; background: #fff; }
 
 #statusbar {
   display: flex; align-items: center; gap: 12px;
@@ -121,6 +189,7 @@ article tbody tr:nth-child(even) { background: var(--row-alt); }
   font: 12px var(--font-ui); padding: 0 4px; cursor: default;
 }
 #statusbar button:hover { background: var(--hover); }
+body.inline-viewer #statusbar { display: none; }
 
 #viewer-context-menu {
   position: fixed; z-index: 1000; min-width: 180px; padding: 4px;
@@ -129,6 +198,7 @@ article tbody tr:nth-child(even) { background: var(--row-alt); }
 }
 #viewer-context-menu[hidden] { display: none; }
 #viewer-context-menu button {
+  display: flex; align-items: center; gap: 7px;
   width: 100%; border: 0; border-radius: 4px; padding: 5px 10px;
   background: none; color: var(--fg); text-align: left; font: 13px var(--font-ui);
 }

@@ -2,6 +2,7 @@
 import type * as api from "./api";
 import { basename } from "./path";
 import type { MenuItem } from "./menu";
+import { MENU_ICON } from "./menu-icons";
 import type { promptFields } from "./prompt";
 import {
   addRegisteredCommand,
@@ -9,7 +10,6 @@ import {
   commandLineForValue,
   commandsForPath,
   COMMAND_PREFIX_FIELD_LABEL,
-  DEFAULT_COMMAND_VALUE_KIND,
   DEFAULT_COMMAND_PREFIX,
   extensionOf,
   removeRegisteredCommand,
@@ -17,6 +17,7 @@ import {
   type CommandValueKind,
   type RegisteredCommand,
 } from "./registered-commands";
+import { commandValueKind } from "./registered-command-model";
 import { flushSettings } from "./settings";
 
 export interface RegisteredCommandMenuPorts {
@@ -45,10 +46,6 @@ function valueOf(target: RegisteredCommandTarget): string | Promise<string> {
   return target.value ?? target.path;
 }
 
-function valueKindOf(target: RegisteredCommandTarget): CommandValueKind {
-  return target.valueKind ?? DEFAULT_COMMAND_VALUE_KIND;
-}
-
 function promptCommand(
   services: RegisteredCommandMenuServices,
   title: string,
@@ -70,7 +67,7 @@ function promptCommandWithValue(
   const path = target.path;
   const extension = extensionOf(path);
   const extensionLabel = extension || "拡張子なし";
-  const valueTarget = COMMAND_VALUE_TARGETS[valueKindOf(target)];
+  const valueTarget = COMMAND_VALUE_TARGETS[commandValueKind(target)];
   return services.promptFields(title, [
     {
       label: `表示名（${extensionLabel}用）`,
@@ -94,7 +91,7 @@ function promptCommandWithValue(
         values[1] ?? "",
         values[2] ?? "",
         value,
-        valueKindOf(target),
+        commandValueKind(target),
       ),
     },
   }).then((values) => values ? { label: values[0], prefix: values[1], command: values[2] } : null);
@@ -103,7 +100,7 @@ function promptCommandWithValue(
 async function registerCommand(services: RegisteredCommandMenuServices, target: RegisteredCommandTarget) {
   const result = await promptCommand(services, "コマンドを登録", target);
   if (!result) return;
-  addRegisteredCommand({ extension: extensionOf(target.path), valueKind: valueKindOf(target), ...result });
+  addRegisteredCommand({ extension: extensionOf(target.path), valueKind: commandValueKind(target), ...result });
   await flushSettings();
 }
 
@@ -123,9 +120,10 @@ export function createRegisteredCommandMenu(
   services: RegisteredCommandMenuServices,
 ): MenuItem {
   const target = targetOf(input);
-  const commands = commandsForPath(target.path, valueKindOf(target));
+  const commands = commandsForPath(target.path, commandValueKind(target));
   const register: MenuItem = {
     label: "コマンドを登録...",
+    iconClass: MENU_ICON.command,
     action: () => services.run(
       "コマンドを登録できませんでした",
       () => registerCommand(services, target),
@@ -134,9 +132,11 @@ export function createRegisteredCommandMenu(
   if (commands.length === 0) return register;
   return {
     label: "登録コマンド",
+    iconClass: MENU_ICON.command,
     sub: [
       ...commands.map((command) => ({
         label: command.label,
+        iconClass: MENU_ICON.command,
         action: () => services.run(
           "登録コマンドを実行できませんでした",
           async () => services.runExternalCommand(
@@ -144,7 +144,7 @@ export function createRegisteredCommandMenu(
               command.prefix,
               command.command,
               await valueOf(target),
-              valueKindOf(target),
+              commandValueKind(target),
             ),
             target.path,
           ),
