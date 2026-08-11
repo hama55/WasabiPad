@@ -16,7 +16,8 @@ use crate::document_assets::{
 use crate::editing::{self, ByteEdit};
 pub use crate::document_types::{
     DocInfo, DocKind, EditManyItem, EditManyResult, EditResult, ExternalCheck,
-    ExternalMergeChange, ExternalMergePreview, FindCursor, FindOutcome, FindResult, PosC,
+    ExternalMergeChange, ExternalMergeContextLine, ExternalMergePreview, FindCursor, FindOutcome,
+    FindResult, PosC,
     ReplaceChunkResult, SaveOutcome, WorkspaceSearchResult,
 };
 use crate::fileio::{self, Encoding, Eol};

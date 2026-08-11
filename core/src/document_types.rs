@@ -100,14 +100,24 @@ pub enum ExternalCheck {
     Conflict,
 }
 
+#[derive(Serialize, Clone, PartialEq, Eq, Debug, ts_rs::TS)]
+#[ts(export)]
+pub struct ExternalMergeContextLine {
+    pub text: String,
+    pub mine_line: usize,
+    pub theirs_line: usize,
+}
+
 #[derive(Serialize, Clone, ts_rs::TS)]
 #[ts(export)]
 pub struct ExternalMergeChange {
     pub start_line: usize,
-    pub before: Vec<String>,
+    pub mine_start_line: usize,
+    pub theirs_start_line: usize,
+    pub before: Vec<ExternalMergeContextLine>,
     pub mine: Vec<String>,
     pub theirs: Vec<String>,
-    pub after: Vec<String>,
+    pub after: Vec<ExternalMergeContextLine>,
     pub conflict: bool,
 }
 

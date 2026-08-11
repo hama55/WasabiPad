@@ -9,6 +9,8 @@ use wasabipad_core::{
 
 use crate::state::{with_doc, State};
 
+const EXTERNAL_MERGE_RETRY_CODE: &str = "external_merge_retry";
+
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DocumentLoadProgress {
@@ -247,7 +249,13 @@ pub(crate) fn external_merge_preview(state: State) -> Result<ExternalMergePrevie
 
 pub(crate) fn merge_external(state: State) -> Result<DocInfo, String> {
     with_doc(&state, |doc| doc.merge_external()).map_err(|error| error.to_string())?
-        .map_err(|error| error.to_string())
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::WouldBlock {
+                EXTERNAL_MERGE_RETRY_CODE.to_string()
+            } else {
+                error.to_string()
+            }
+        })
 }
 
 pub(crate) fn set_encoding(enc: EncodingId, state: State) -> Result<(), String> {

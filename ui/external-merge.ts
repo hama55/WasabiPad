@@ -1,9 +1,12 @@
 import type * as api from "./api";
+import type { ExternalMergePreviewSubscription } from "./external-watch";
 import { openModal } from "./modal";
 
 export type ExternalMergeChoice = "merge" | "keep" | "reload";
+const EXTERNAL_MERGE_RETRY_CODE = "external_merge_retry";
 
 export function isExternalMergeRetryError(error: unknown): boolean {
+  if (error === EXTERNAL_MERGE_RETRY_CODE) return true;
   const message = error instanceof Error ? error.message : String(error);
   return message.includes("外部ファイルが再度変更されました");
 }
@@ -81,28 +84,33 @@ function renderDiff(changes: HTMLElement, preview: api.ExternalMergePreview) {
       rows.append(row);
     };
 
-    const beforeStart = change.start_line - change.before.length;
     for (let i = 0; i < change.before.length; i++) {
-      appendRow(change.before[i], change.before[i], beforeStart + i, beforeStart + i, true);
+      const context = change.before[i];
+      appendRow(
+        context.text,
+        context.text,
+        context.mine_line,
+        context.theirs_line,
+        true,
+      );
     }
     const changedRows = Math.max(change.mine.length, change.theirs.length, 1);
     for (let i = 0; i < changedRows; i++) {
       appendRow(
         change.mine[i],
         change.theirs[i],
-        change.mine[i] === undefined ? undefined : change.start_line + i,
-        change.theirs[i] === undefined ? undefined : change.start_line + i,
+        change.mine[i] === undefined ? undefined : change.mine_start_line + i,
+        change.theirs[i] === undefined ? undefined : change.theirs_start_line + i,
         false,
       );
     }
-    const mineAfterStart = change.start_line + change.mine.length;
-    const theirsAfterStart = change.start_line + change.theirs.length;
     for (let i = 0; i < change.after.length; i++) {
+      const context = change.after[i];
       appendRow(
-        change.after[i],
-        change.after[i],
-        mineAfterStart + i,
-        theirsAfterStart + i,
+        context.text,
+        context.text,
+        context.mine_line,
+        context.theirs_line,
         true,
       );
     }
@@ -111,10 +119,6 @@ function renderDiff(changes: HTMLElement, preview: api.ExternalMergePreview) {
   }
   changes.append(diff);
 }
-
-export type ExternalMergePreviewSubscription = (
-  listener: (preview: api.ExternalMergePreview) => void,
-) => () => void;
 
 export function confirmExternalMerge(
   preview: api.ExternalMergePreview,

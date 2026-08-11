@@ -29,7 +29,8 @@ mod ziptext;
 pub use bookmarks::{load as load_bookmarks, save as save_bookmarks, Node as BookmarkNode};
 pub use doc::{
     Doc, DocInfo, EditManyItem, EditManyResult, EditResult, ExternalCheck, ExternalMergeChange,
-    ExternalMergePreview, FindCursor, FindOutcome, FindResult, FolderEntry, PosC,
+    ExternalMergeContextLine, ExternalMergePreview, FindCursor, FindOutcome, FindResult,
+    FolderEntry, PosC,
     ReplaceChunkResult, SaveOutcome,
     WorkspaceSearchResult,
 };

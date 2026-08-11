@@ -7,13 +7,24 @@ const preview: ExternalMergePreview = {
   changes: [
     {
       start_line: 3,
-      before: ["変更前の行"],
+      mine_start_line: 3,
+      theirs_start_line: 3,
+      before: [{ text: "変更前の行", mine_line: 2, theirs_line: 2 }],
       mine: ["自分の行"],
       theirs: ["外部の行"],
-      after: ["変更後の行"],
+      after: [{ text: "変更後の行", mine_line: 4, theirs_line: 4 }],
       conflict: true,
     },
-    { start_line: 8, before: [], mine: ["削除された行"], theirs: [], after: [], conflict: false },
+    {
+      start_line: 8,
+      mine_start_line: 8,
+      theirs_start_line: 8,
+      before: [],
+      mine: ["削除された行"],
+      theirs: [],
+      after: [],
+      conflict: false,
+    },
   ],
   conflict_count: 1,
 };
@@ -25,6 +36,7 @@ describe("Feature: 外部変更マージ確認画面", () => {
   // When: 再確認が必要か判定する
   // Then: trueを返し、別種のエラーは再試行扱いにしない
   it("Scenario: プレビュー後の外部再変更だけを再確認対象にする", () => {
+    expect(isExternalMergeRetryError("external_merge_retry")).toBe(true);
     expect(isExternalMergeRetryError("外部ファイルが再度変更されました。もう一度確認してください")).toBe(true);
     expect(isExternalMergeRetryError(new Error("ファイルがありません"))).toBe(false);
   });
@@ -86,10 +98,12 @@ describe("Feature: 外部変更マージ確認画面", () => {
     const latest: ExternalMergePreview = {
       changes: [{
         start_line: 5,
-        before: ["最新の前"],
+        mine_start_line: 5,
+        theirs_start_line: 5,
+        before: [{ text: "最新の前", mine_line: 4, theirs_line: 4 }],
         mine: ["自分の最新"],
         theirs: ["外部の最新"],
-        after: ["最新の後"],
+        after: [{ text: "最新の後", mine_line: 6, theirs_line: 6 }],
         conflict: false,
       }],
       conflict_count: 0,
@@ -100,6 +114,38 @@ describe("Feature: 外部変更マージ確認画面", () => {
     expect(document.querySelector(".em-mine")?.textContent).toContain("自分の最新");
     expect(document.querySelector(".em-theirs")?.textContent).toContain("外部の最新");
     expect(document.querySelector(".pf-merge-box")).not.toBeNull();
+    document.querySelector<HTMLButtonElement>(".pf-btns button")!.click();
+    await expect(resultPromise).resolves.toBeNull();
+  });
+
+  // Given: 左右で先行する行数が異なる差分プレビュー
+  // When: マージ確認画面を表示する
+  // Then: 各ペインの行番号を別々に表示する
+  it("Scenario: 左右ペインで異なる開始行番号を表示する", async () => {
+    const resultPromise = confirmExternalMerge({
+      changes: [{
+        start_line: 3,
+        mine_start_line: 4,
+        theirs_start_line: 3,
+        before: [
+          { text: "a", mine_line: 1, theirs_line: 1 },
+          { text: "b", mine_line: 3, theirs_line: 2 },
+        ],
+        mine: ["c"],
+        theirs: ["外部のc"],
+        after: [{ text: "d", mine_line: 5, theirs_line: 4 }],
+        conflict: false,
+      }],
+      conflict_count: 0,
+    });
+
+    const rows = [...document.querySelectorAll<HTMLElement>(".em-diff-row")];
+    expect(rows.map((row) => [...row.querySelectorAll(".em-line-number")].map((el) => el.textContent))).toEqual([
+      ["1", "1"],
+      ["3", "2"],
+      ["4", "3"],
+      ["5", "4"],
+    ]);
     document.querySelector<HTMLButtonElement>(".pf-btns button")!.click();
     await expect(resultPromise).resolves.toBeNull();
   });

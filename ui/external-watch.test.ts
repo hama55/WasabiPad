@@ -148,7 +148,16 @@ describe("Feature: ExternalWatch", () => {
       .mockResolvedValueOnce(true);
     const first = { changes: [], conflict_count: 0 };
     const second = {
-      changes: [{ start_line: 4, before: [], mine: ["mine"], theirs: ["new"], after: [], conflict: true }],
+      changes: [{
+        start_line: 4,
+        mine_start_line: 4,
+        theirs_start_line: 4,
+        before: [],
+        mine: ["mine"],
+        theirs: ["new"],
+        after: [],
+        conflict: true,
+      }],
       conflict_count: 1,
     };
     vi.spyOn(api, "pollExternal").mockResolvedValueOnce({ kind: "conflict" });
@@ -235,5 +244,49 @@ describe("Feature: ExternalWatch", () => {
     expect(observed).toBe(latest);
     finish();
     await vi.waitFor(() => expect(banner.hidden).toBe(true));
+  });
+
+  // Given: マージ画面の表示中に外部監視タイマーが動作している
+  // When: 文書切替相当のhide()を呼んでから時間を進める
+  // Then: 表示中のマージ監視も停止し、古い文書へのポーリングを続けない
+  it("Scenario: 文書切替時にマージ中の外部監視を停止する", async () => {
+    vi.useFakeTimers();
+    const { banner, ports, watch } = fixture();
+    banner.hidden = true;
+    ports.canPoll = () => true;
+    let finish!: () => void;
+    ports.onConflict = vi.fn(async (_preview, _subscribe: ExternalMergePreviewSubscription) => {
+      return new Promise<boolean>((resolve) => { finish = () => resolve(true); });
+    });
+    const poll = vi.spyOn(api, "pollExternal").mockResolvedValueOnce({ kind: "conflict" });
+    vi.spyOn(api, "externalMergePreview").mockResolvedValueOnce({ changes: [], conflict_count: 0 });
+
+    await vi.advanceTimersByTimeAsync(3000);
+    watch.hide();
+    await vi.advanceTimersByTimeAsync(6000);
+
+    expect(poll).toHaveBeenCalledOnce();
+    finish();
+  });
+
+  // Given: 外部ポーリングAPIが応答待ちのまま文書切替が発生する
+  // When: 古い文書のポーリングがエラーで終了する
+  // Then: 現在の文書へ古いエラーを通知しない
+  it("Scenario: 文書切替後の旧ポーリングエラーを通知しない", async () => {
+    vi.useFakeTimers();
+    const { banner, ports, watch } = fixture();
+    banner.hidden = true;
+    ports.canPoll = () => true;
+    let rejectPoll!: (error: Error) => void;
+    vi.spyOn(api, "pollExternal").mockImplementationOnce(() => new Promise((_resolve, reject) => {
+      rejectPoll = reject;
+    }));
+
+    await vi.advanceTimersByTimeAsync(3000);
+    watch.hide();
+    rejectPoll(new Error("old document"));
+    await Promise.resolve();
+
+    expect(ports.onError).not.toHaveBeenCalled();
   });
 });

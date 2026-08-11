@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { readClipboardText, writeClipboardText } = vi.hoisted(() => ({
   readClipboardText: vi.fn(async () => ""),
@@ -106,6 +106,11 @@ function installMouseLayout(host: HTMLElement) {
 }
 
 describe("Feature: VirtualEditor", () => {
+  afterEach(() => {
+    // 失敗したテストでもプロトタイプ上のレイアウトモックを次のテストへ残さない。
+    vi.restoreAllMocks();
+  });
+
   beforeEach(async () => {
     document.body.replaceChildren();
     loadSettings.mockResolvedValue("{}");

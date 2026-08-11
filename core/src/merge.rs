@@ -1,6 +1,6 @@
 // 開いた時点の本文を基準にした行単位の3-wayマージ。
 // 競合時はWasabiPad側を採用し、外部側の変更はプレビューに残す。
-use crate::document_types::{ExternalMergeChange, ExternalMergePreview};
+use crate::document_types::{ExternalMergeChange, ExternalMergeContextLine, ExternalMergePreview};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Change {
@@ -128,11 +128,123 @@ fn append_base(merged: &mut Vec<String>, base: &[String], from: usize, to: usize
     }
 }
 
+fn variant_start_line(changes: &[Change], base_pos: usize) -> usize {
+    let mut base_cursor = 0;
+    let mut variant_cursor = 0;
+    for change in changes {
+        if change.start > base_pos {
+            break;
+        }
+        if change.start > base_cursor {
+            variant_cursor += change.start - base_cursor;
+            base_cursor = change.start;
+        }
+        if change.start == base_pos && change.start == change.end {
+            break;
+        }
+        if change.end > base_pos {
+            break;
+        }
+        variant_cursor += change.replacement.len();
+        base_cursor = change.end;
+    }
+    variant_cursor += base_pos.saturating_sub(base_cursor);
+    variant_cursor + 1
+}
+
+fn context_bounds(
+    mine_changes: &[Change],
+    theirs_changes: &[Change],
+    start: usize,
+    end: usize,
+    from: usize,
+    to: usize,
+) -> (usize, usize) {
+    let previous_end = mine_changes
+        .iter()
+        .chain(theirs_changes.iter())
+        .filter(|change| {
+            change.end <= start && !(change.start == start && change.end == end)
+        })
+        .map(|change| change.end)
+        .max()
+        .unwrap_or(0);
+    let next_start = mine_changes
+        .iter()
+        .chain(theirs_changes.iter())
+        .filter(|change| {
+            change.start >= end && !(change.start == start && change.end == end)
+        })
+        .map(|change| change.start)
+        .min()
+        .unwrap_or(usize::MAX);
+    (from.max(previous_end), to.min(next_start))
+}
+
+fn context_lines(
+    base: &[String],
+    mine_changes: &[Change],
+    theirs_changes: &[Change],
+    change_start: usize,
+    change_end: usize,
+    from: usize,
+    to: usize,
+) -> Vec<ExternalMergeContextLine> {
+    let (from, to) = context_bounds(
+        mine_changes,
+        theirs_changes,
+        change_start,
+        change_end,
+        from,
+        to,
+    );
+    (from..to)
+        .map(|index| ExternalMergeContextLine {
+            text: base[index].clone(),
+            mine_line: variant_start_line(mine_changes, index),
+            theirs_line: variant_start_line(theirs_changes, index),
+        })
+        .collect()
+}
+
+fn after_context_lines(
+    base: &[String],
+    mine_changes: &[Change],
+    theirs_changes: &[Change],
+    start: usize,
+    end: usize,
+) -> Vec<ExternalMergeContextLine> {
+    let next_start = mine_changes
+        .iter()
+        .chain(theirs_changes.iter())
+        .filter(|change| !(change.start == start && change.end == end) && change.start >= end)
+        .map(|change| change.start)
+        .min();
+    if next_start.map_or(false, |next| {
+        next.saturating_sub(end) <= DIFF_CONTEXT_LINES * 2
+    }) {
+        return Vec::new();
+    }
+    context_lines(
+        base,
+        mine_changes,
+        theirs_changes,
+        start,
+        end,
+        end,
+        (end + DIFF_CONTEXT_LINES).min(base.len()),
+    )
+}
+
 fn add_preview(
     preview: &mut ExternalMergePreview,
     base: &[String],
+    mine_changes: &[Change],
+    theirs_changes: &[Change],
     start: usize,
     end: usize,
+    mine_start_line: usize,
+    theirs_start_line: usize,
     mine: Vec<String>,
     theirs: Vec<String>,
     conflict: bool,
@@ -149,10 +261,20 @@ fn add_preview(
     }
     preview.changes.push(ExternalMergeChange {
         start_line: start + 1,
-        before: base[start.saturating_sub(DIFF_CONTEXT_LINES)..start].to_vec(),
+        mine_start_line,
+        theirs_start_line,
+        before: context_lines(
+            base,
+            mine_changes,
+            theirs_changes,
+            start,
+            end,
+            start.saturating_sub(DIFF_CONTEXT_LINES),
+            start,
+        ),
         mine,
         theirs,
-        after: base[end..(end + DIFF_CONTEXT_LINES).min(base.len())].to_vec(),
+        after: after_context_lines(base, mine_changes, theirs_changes, start, end),
         conflict,
     });
 }
@@ -177,8 +299,12 @@ pub(crate) fn three_way(base: &[String], mine: &[String], theirs: &[String]) -> 
             add_preview(
                 &mut preview,
                 base,
+                &mine_changes,
+                &theirs_changes,
                 theirs_change.start,
                 theirs_change.end,
+                variant_start_line(&mine_changes, theirs_change.start),
+                variant_start_line(&theirs_changes, theirs_change.start),
                 base[theirs_change.start..theirs_change.end].to_vec(),
                 theirs_change.replacement.clone(),
                 false,
@@ -209,8 +335,12 @@ pub(crate) fn three_way(base: &[String], mine: &[String], theirs: &[String]) -> 
                 add_preview(
                     &mut preview,
                     base,
+                    &mine_changes,
+                    &theirs_changes,
                     theirs_change.start,
                     theirs_change.end,
+                    variant_start_line(&mine_changes, theirs_change.start),
+                    variant_start_line(&theirs_changes, theirs_change.start),
                     base[theirs_change.start..theirs_change.end].to_vec(),
                     theirs_change.replacement.clone(),
                     false,
@@ -265,8 +395,12 @@ pub(crate) fn three_way(base: &[String], mine: &[String], theirs: &[String]) -> 
         add_preview(
             &mut preview,
             base,
+            &mine_changes,
+            &theirs_changes,
             group_start,
             group_end,
+            variant_start_line(&mine_changes, group_start),
+            variant_start_line(&theirs_changes, group_start),
             mine_value,
             theirs_value,
             true,
@@ -353,8 +487,58 @@ mod tests {
         );
 
         let change = &result.preview.changes[0];
-        assert_eq!(change.before, lines("a\nb"));
-        assert_eq!(change.after, lines("d\ne\nf"));
+        assert_eq!(
+            change.before.iter().map(|line| line.text.clone()).collect::<Vec<_>>(),
+            lines("a\nb")
+        );
+        assert_eq!(
+            change.after.iter().map(|line| line.text.clone()).collect::<Vec<_>>(),
+            lines("d\ne\nf")
+        );
+    }
+
+    // Feature: 外部変更の左右行番号
+    // Scenario: 自分側に先行する行追加がある
+    // Given: 外部変更より前に自分側だけが1行追加されている
+    // When: three_wayのプレビューを作る
+    // Then: 左右それぞれの実文書上の開始行を返す
+    #[test]
+    fn reports_side_specific_start_lines() {
+        let result = three_way(
+            &lines("a\nb\nc\nd"),
+            &lines("a\n自分の追加\nb\nc\nd"),
+            &lines("a\nb\n外部のc\nd"),
+        );
+
+        let change = &result.preview.changes[0];
+        assert_eq!(change.start_line, 3);
+        assert_eq!(change.mine_start_line, 4);
+        assert_eq!(change.theirs_start_line, 3);
+    }
+
+    // Feature: 外部変更の差分コンテキスト
+    // Scenario: 複数の変更が近接している
+    // Given: 変更間隔がコンテキスト行数より短い本文
+    // When: three_wayのプレビューを作る
+    // Then: 変更行を別の変更のコンテキストとして重複表示しない
+    #[test]
+    fn avoids_duplicate_context_between_nearby_changes() {
+        let result = three_way(
+            &lines("a\nb\nc\nd\ne\nf"),
+            &lines("a\nb\nc\nd\ne\nf"),
+            &lines("a\n外部のb\nc\n外部のd\ne\nf"),
+        );
+
+        assert_eq!(result.preview.changes.len(), 2);
+        assert!(result.preview.changes[0].after.is_empty());
+        assert_eq!(
+            result.preview.changes[1]
+                .before
+                .iter()
+                .map(|line| line.text.clone())
+                .collect::<Vec<_>>(),
+            lines("c")
+        );
     }
 
     // Feature: 外部変更の3-wayマージ

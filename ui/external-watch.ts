@@ -38,6 +38,7 @@ export class ExternalWatch {
   private reloadButton: HTMLButtonElement;
   private ignoreButton: HTMLButtonElement;
   private reviewButton: HTMLButtonElement;
+  private conflictMonitorStop?: () => void;
 
   constructor(
     private banner: HTMLElement,
@@ -54,19 +55,20 @@ export class ExternalWatch {
   }
 
   private onReloadClick = () => {
-    void this.reloadFromDisk().catch((error) => this.reportError("再読込できませんでした", error));
+    void this.reloadFromDisk();
   };
 
   private onIgnoreClick = () => {
-    void this.ignore().catch((error) => this.reportError("外部変更を無視できませんでした", error));
+    void this.ignore();
   };
 
   private onReviewClick = () => {
-    void this.review().catch((error) => this.reportError("差分を確認できませんでした", error));
+    void this.review();
   };
 
   dispose() {
     this.generation++;
+    this.conflictMonitorStop?.();
     window.clearInterval(this.pollTimer);
     this.reloadButton.removeEventListener("click", this.onReloadClick);
     this.ignoreButton.removeEventListener("click", this.onIgnoreClick);
@@ -80,6 +82,7 @@ export class ExternalWatch {
   // 文書が切り替わったら競合バナーは無効
   hide() {
     this.generation++;
+    this.conflictMonitorStop?.();
     this.banner.hidden = true;
   }
 
@@ -115,18 +118,8 @@ export class ExternalWatch {
         if (!this.ports.onConflict) {
           this.banner.hidden = false;
         } else {
-          let preview = await this.api.externalMergePreview();
-          while (true) {
-            if (generation !== this.generation) return;
-            this.banner.hidden = true;
-            const resolved = await this.runConflict(preview, generation);
-            if (generation !== this.generation) return;
-            if (resolved !== "retry") {
-              this.banner.hidden = resolved;
-              break;
-            }
-            preview = await this.api.externalMergePreview();
-          }
+          const preview = await this.api.externalMergePreview();
+          if (!(await this.resolveConflict(preview, generation))) return;
         }
       }
       this.pollErrorReported = false;
@@ -153,23 +146,34 @@ export class ExternalWatch {
     if (generation === null) return;
     this.banner.hidden = true;
     try {
-      let preview = await this.api.externalMergePreview();
-      while (true) {
-        if (generation !== this.generation) return;
-        const resolved = await this.runConflict(preview, generation);
-        if (generation !== this.generation) return;
-        if (resolved !== "retry") {
-          this.banner.hidden = resolved;
-          break;
-        }
-        preview = await this.api.externalMergePreview();
-      }
+      const preview = await this.api.externalMergePreview();
+      if (!(await this.resolveConflict(preview, generation))) return;
       this.pollErrorReported = false;
     } catch (error) {
-      if (generation === this.generation) this.banner.hidden = false;
-      await this.reportError("差分を確認できませんでした", error);
+      if (generation === this.generation) {
+        this.banner.hidden = false;
+        await this.reportError("差分を確認できませんでした", error);
+      }
     } finally {
       this.busy = false;
+    }
+  }
+
+  private async resolveConflict(
+    initialPreview: api.ExternalMergePreview,
+    generation: number,
+  ): Promise<boolean> {
+    let preview = initialPreview;
+    while (true) {
+      if (generation !== this.generation) return false;
+      this.banner.hidden = true;
+      const resolved = await this.runConflict(preview, generation);
+      if (generation !== this.generation) return false;
+      if (resolved !== "retry") {
+        this.banner.hidden = resolved;
+        return true;
+      }
+      preview = await this.api.externalMergePreview();
     }
   }
 
@@ -186,6 +190,14 @@ export class ExternalWatch {
     const monitorTimer = window.setInterval(() => {
       void this.pollConflict(generation, listeners, monitorState);
     }, POLL_INTERVAL_MS);
+    const stop = () => {
+      if (!monitorState.active) return;
+      monitorState.active = false;
+      window.clearInterval(monitorTimer);
+      listeners.clear();
+      if (this.conflictMonitorStop === stop) this.conflictMonitorStop = undefined;
+    };
+    this.conflictMonitorStop = stop;
     const subscribe: ExternalMergePreviewSubscription = (listener) => {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -193,9 +205,7 @@ export class ExternalWatch {
     try {
       return await this.ports.onConflict(preview, subscribe);
     } finally {
-      monitorState.active = false;
-      window.clearInterval(monitorTimer);
-      listeners.clear();
+      stop();
     }
   }
 
@@ -208,13 +218,15 @@ export class ExternalWatch {
     monitorState.busy = true;
     try {
       const check = await this.api.pollExternal(this.ports.isDirty());
-      if (generation !== this.generation || check.kind !== "conflict") return;
+      if (!monitorState.active || generation !== this.generation || check.kind !== "conflict") return;
       const preview = await this.api.externalMergePreview();
-      if (generation !== this.generation) return;
+      if (!monitorState.active || generation !== this.generation) return;
       for (const listener of listeners) listener(preview);
       this.pollErrorReported = false;
     } catch (error) {
-      if (generation === this.generation) await this.reportPollError(error);
+      if (monitorState.active && generation === this.generation) {
+        await this.reportPollError(error);
+      }
     } finally {
       monitorState.busy = false;
     }
@@ -229,8 +241,10 @@ export class ExternalWatch {
       if (generation !== this.generation) return;
       this.ports.onReload(info);
     } catch (e) {
-      if (generation === this.generation) this.banner.hidden = false;
-      await this.reportError("再読込できませんでした", e);
+      if (generation === this.generation) {
+        this.banner.hidden = false;
+        await this.reportError("再読込できませんでした", e);
+      }
     } finally {
       this.busy = false;
     }
@@ -245,8 +259,10 @@ export class ExternalWatch {
       if (generation !== this.generation) return;
       this.ports.onIgnore(info);
     } catch (error) {
-      if (generation === this.generation) this.banner.hidden = false; // 無視できていない競合を隠したままにしない。
-      await this.reportError("外部変更を無視できませんでした", error);
+      if (generation === this.generation) {
+        this.banner.hidden = false; // 無視できていない競合を隠したままにしない。
+        await this.reportError("外部変更を無視できませんでした", error);
+      }
     } finally {
       this.busy = false;
     }
