@@ -90,27 +90,32 @@ function installMouseLayout(host: HTMLElement) {
       width: 300, height: 20, toJSON: () => ({}),
     } as DOMRect;
   });
-  const nativeCreateRange = document.createRange.bind(document);
-  const createRange = vi.spyOn(document, "createRange").mockImplementation(() => {
-    const range = nativeCreateRange();
-    Object.defineProperty(range, "getBoundingClientRect", {
-      configurable: true,
-      value: () => {
-        const width = range.endOffset * 10;
-        return { x: 0, y: 0, top: 0, left: 0, right: width, bottom: 20, width, height: 20, toJSON: () => ({}) } as DOMRect;
-      },
-    });
-    return range;
+  const rangeRect = vi.spyOn(Range.prototype, "getBoundingClientRect").mockImplementation(function (this: Range) {
+    const width = this.endOffset * 10;
+    return { x: 0, y: 0, top: 0, left: 0, right: width, bottom: 20, width, height: 20, toJSON: () => ({}) } as DOMRect;
   });
   return {
     scroll,
     restore: () => {
       scrollRect.mockRestore();
       lineRect.mockRestore();
-      createRange.mockRestore();
+      rangeRect.mockRestore();
       dropdown.remove();
     },
   };
+}
+
+function mockBlockSelectionPoints(editor: VirtualEditor) {
+  // jsdomのRange座標差を避け、Alt+D&D処理へ渡す文字位置だけを固定する。
+  return vi.spyOn(
+    editor as unknown as {
+      posFromPoint(cx: number, cy: number): { line: number; col: number } | null;
+    },
+    "posFromPoint",
+  ).mockImplementation((cx, cy) => ({
+    line: Math.floor(cy / 20),
+    col: Math.round((cx - 8) / 10),
+  }));
 }
 
 describe("Feature: VirtualEditor", () => {
@@ -505,6 +510,7 @@ describe("Feature: VirtualEditor", () => {
     editor.open(3, false);
     await settle();
     const layout = installMouseLayout(host);
+    const points = mockBlockSelectionPoints(editor);
     const scroll = layout.scroll;
 
     scroll.dispatchEvent(new MouseEvent("mousedown", {
@@ -522,6 +528,7 @@ describe("Feature: VirtualEditor", () => {
 
     expect(doc.text()).toBe("ad\nAD\nwz");
     expect(doc.calls).toContain("editMany(3)");
+    points.mockRestore();
     layout.restore();
   });
 
@@ -534,6 +541,7 @@ describe("Feature: VirtualEditor", () => {
     editor.open(4, false);
     await settle();
     const layout = installMouseLayout(host);
+    const points = mockBlockSelectionPoints(editor);
     const scroll = layout.scroll;
     scroll.dispatchEvent(new MouseEvent("mousedown", {
       bubbles: true, button: 0, clientX: 18, clientY: 10, altKey: true,
@@ -559,6 +567,7 @@ describe("Feature: VirtualEditor", () => {
     expect(pasteEvent.defaultPrevented).toBe(true);
     expect(doc.text()).toBe("abcd\nABCD\nwbcxyz\n-BC---");
     expect(doc.calls).toContain("editMany(2)");
+    points.mockRestore();
     layout.restore();
   });
 
@@ -570,6 +579,7 @@ describe("Feature: VirtualEditor", () => {
     editor.open(3, false);
     await settle();
     const layout = installMouseLayout(host);
+    const points = mockBlockSelectionPoints(editor);
     const scroll = layout.scroll;
     scroll.dispatchEvent(new MouseEvent("mousedown", {
       bubbles: true, button: 0, clientX: 18, clientY: 10, altKey: true,
@@ -591,6 +601,7 @@ describe("Feature: VirtualEditor", () => {
 
     expect(doc.calls.some((call) => call.startsWith('edit(2:1,2:1,"bc'))).toBe(true);
     expect(doc.calls).not.toContain("editMany(2)");
+    points.mockRestore();
     layout.restore();
   });
 
@@ -602,6 +613,7 @@ describe("Feature: VirtualEditor", () => {
     editor.open(4, false);
     await settle();
     const layout = installMouseLayout(host);
+    const points = mockBlockSelectionPoints(editor);
     const scroll = layout.scroll;
     scroll.dispatchEvent(new MouseEvent("mousedown", {
       bubbles: true, button: 0, clientX: 18, clientY: 10, altKey: true,
@@ -622,6 +634,7 @@ describe("Feature: VirtualEditor", () => {
     await settle();
 
     expect(doc.text()).toBe("ad\nAD\nwbcxyz\n-BC---");
+    points.mockRestore();
     layout.restore();
   });
 
