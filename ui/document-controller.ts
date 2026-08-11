@@ -175,6 +175,11 @@ export class DocumentController {
     this.updateTitle();
   }
 
+  applyMergedDocInfo(info: api.DocInfo) {
+    this.applyDocInfo(info, true);
+    this.onEdit(info.line_count);
+  }
+
   async openPath(path: string, confirm = true): Promise<boolean> {
     if (confirm && !(await this.confirmDiscard())) return false;
     const request = ++this.loadRequest;
@@ -388,7 +393,7 @@ export class DocumentController {
       this.view.editor.setExternalFilePath(path, markdownForSession(this.session));
       this.view.addressbar.render(path);
       this.view.statusbar.setFormat(this.session);
-      this.view.statusbar.setModifiedAt(Date.now());
+      this.view.statusbar.setModifiedAt(outcome.modified_at);
       this.updateTitle();
     } catch (error) {
       await this.reportError("保存後の画面更新に失敗しました", error);

@@ -102,6 +102,15 @@ pub struct FileStamp {
     mtime: std::time::SystemTime,
 }
 
+impl FileStamp {
+    pub fn modified_at(self) -> Option<u64> {
+        self.mtime
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|duration| duration.as_millis() as u64)
+    }
+}
+
 pub fn stamp(path: &Path) -> io::Result<FileStamp> {
     stamp_of_metadata(std::fs::metadata(path)?)
 }
@@ -118,13 +127,16 @@ fn stamp_of_metadata(meta: std::fs::Metadata) -> io::Result<FileStamp> {
 }
 
 pub fn modified_at(path: &Path) -> Option<u64> {
-    std::fs::metadata(path)
-        .ok()?
-        .modified()
-        .ok()?
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .map(|duration| duration.as_millis() as u64)
+    stamp(path).ok()?.modified_at()
+}
+
+pub fn modified_at_from_stamp_or_path(
+    stamp: Option<FileStamp>,
+    path: Option<&Path>,
+) -> Option<u64> {
+    stamp
+        .and_then(FileStamp::modified_at)
+        .or_else(|| path.and_then(modified_at))
 }
 
 pub struct Opened {

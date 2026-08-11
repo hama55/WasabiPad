@@ -6,7 +6,6 @@ import type { ExternalMergePreview } from "./api";
 const preview: ExternalMergePreview = {
   changes: [{ start_line: 3, mine: ["自分の行"], theirs: ["外部の行"], conflict: true }],
   conflict_count: 1,
-  modified_at: 1720000000000,
 };
 
 afterEach(() => document.body.replaceChildren());
@@ -35,5 +34,15 @@ describe("Feature: 外部変更マージ確認画面", () => {
     document.querySelectorAll<HTMLButtonElement>(".pf-btns button")[2].click();
 
     await expect(resultPromise).resolves.toBe("keep");
+  });
+
+  // Given: 外部変更マージ確認画面
+  // When: 「外部を採用」を押す
+  // Then: reloadを返す
+  it("Scenario: 外部ファイルを採用する選択を返す", async () => {
+    const resultPromise = confirmExternalMerge(preview);
+    document.querySelectorAll<HTMLButtonElement>(".pf-btns button")[1].click();
+
+    await expect(resultPromise).resolves.toBe("reload");
   });
 });

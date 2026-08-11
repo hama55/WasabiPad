@@ -64,6 +64,14 @@ enum ArchiveCommandOutcome {
     ReopenFailed(io::Error),
 }
 
+struct PendingExternalMerge {
+    base: Vec<String>,
+    mine: Vec<String>,
+    theirs: Vec<String>,
+    stamp: fileio::FileStamp,
+    byte_len: u64,
+}
+
 pub struct Doc {
     buf: TextBuffer,
     undo: UndoStack,
@@ -74,6 +82,8 @@ pub struct Doc {
     byte_len: u64,                             // ステータスバー表示用。開いた実体のバイト数
     // 小ファイルの外部変更を3-wayマージするための、最後に採用した本文。
     merge_base: Option<Vec<String>>,
+    // プレビューと適用で同じ外部スナップショットを使い、確認後の再変更を検知する。
+    pending_merge: Option<PendingExternalMerge>,
     // 7z のパスワードをアーカイブ絶対パス単位でメモリ保持する (ディスクへは残さない)。
     // 同じフォルダ内の複数の 7z を行き来しても都度入力し直さずに済む。
     sevenz_passwords: HashMap<PathBuf, String>,
@@ -155,6 +165,7 @@ impl Doc {
             replace_progress: None,
             byte_len: 0,
             merge_base: None,
+            pending_merge: None,
             sevenz_passwords: HashMap::new(),
             archive_port,
         }
@@ -241,6 +252,7 @@ impl Doc {
                     replace_progress: None,
                     byte_len,
                     merge_base: None,
+                    pending_merge: None,
                     sevenz_passwords: HashMap::new(),
                     archive_port,
                 });
@@ -284,6 +296,7 @@ impl Doc {
             replace_progress: None,
             byte_len: o.byte_len,
             merge_base,
+            pending_merge: None,
             sevenz_passwords: HashMap::new(),
             archive_port,
         })
@@ -325,6 +338,7 @@ impl Doc {
             replace_progress: None,
             byte_len: o.byte_len,
             merge_base,
+            pending_merge: None,
             sevenz_passwords: std::mem::take(&mut self.sevenz_passwords),
             archive_port: Arc::clone(&self.archive_port),
         };
@@ -359,36 +373,46 @@ impl Doc {
         }
     }
 
-    pub fn external_merge_preview(&self) -> io::Result<ExternalMergePreview> {
-        let (base, mine, theirs, _, _) = self.read_external_for_merge()?;
-        let mut preview = merge::three_way(&base, &mine, &theirs).preview;
-        preview.modified_at = self
-            .source
-            .path()
-            .and_then(fileio::modified_at);
+    pub fn external_merge_preview(&mut self) -> io::Result<ExternalMergePreview> {
+        let pending = self.read_external_for_merge()?;
+        let preview = merge::three_way(&pending.base, &pending.mine, &pending.theirs).preview;
+        self.pending_merge = Some(pending);
         Ok(preview)
     }
 
     pub fn merge_external(&mut self) -> io::Result<DocInfo> {
-        let (base, mine, theirs, stamp, byte_len) = self.read_external_for_merge()?;
-        let result = merge::three_way(&base, &mine, &theirs);
-        self.buf = TextBuffer::from_text(&result.merged.join("\n"));
-        self.undo.clear();
-        self.byte_len = byte_len;
-        self.merge_base = Some(theirs);
-        self.source.set_stamp(Some(stamp));
+        let pending = self.pending_merge.take().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "先に外部変更のプレビューが必要です")
+        })?;
         let path = self
             .source
             .path()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "マージ対象のファイルがありません"))?
-            .to_string_lossy()
-            .into_owned();
-        self.info(path)
+            .map(Path::to_path_buf)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "マージ対象のファイルがありません")
+            })?;
+        match fileio::stamp(&path) {
+            Ok(stamp) if stamp == pending.stamp => {}
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "外部ファイルが再度変更されました。もう一度確認してください",
+                ));
+            }
+            Err(error) => return Err(error),
+        }
+        let result = merge::three_way(&pending.base, &pending.mine, &pending.theirs);
+        self.buf = TextBuffer::from_text(&result.merged.join("\n"));
+        self.undo.clear();
+        self.byte_len = pending.byte_len;
+        self.merge_base = Some(pending.theirs);
+        self.source.set_stamp(Some(pending.stamp));
+        self.info(path.to_string_lossy().into_owned())
     }
 
     fn read_external_for_merge(
         &self,
-    ) -> io::Result<(Vec<String>, Vec<String>, Vec<String>, fileio::FileStamp, u64)> {
+    ) -> io::Result<PendingExternalMerge> {
         let base = self.merge_base.clone().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "この文書はマージできません")
         })?;
@@ -402,7 +426,13 @@ impl Doc {
         if opened.entries.is_some() {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "この文書はマージできません"));
         }
-        Ok((base, buffer_lines(&self.buf), buffer_lines(&opened.buf), stamp, opened.byte_len))
+        Ok(PendingExternalMerge {
+            base,
+            mine: buffer_lines(&self.buf),
+            theirs: buffer_lines(&opened.buf),
+            stamp,
+            byte_len: opened.byte_len,
+        })
     }
 
     // 編集中の内容を捨てて現在のディスク内容を読み直す (バナーの「再読込」)。
@@ -424,20 +454,27 @@ impl Doc {
     }
 
     // バナーの「無視」: 現在のディスク状態を新しい基準として記録し、以後の保存で上書きする。
-    pub fn ack_external(&mut self) -> io::Result<()> {
+    pub fn ack_external(&mut self) -> io::Result<DocInfo> {
+        let path = self.source.path().map(Path::to_path_buf);
+        let display_path = path
+            .as_deref()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default();
         if self.source.stamp().is_none() {
-            return Ok(());
+            return self.info(display_path);
         }
-        let Some(path) = self.source.path().map(Path::to_path_buf) else {
-            return Ok(());
+        let Some(path) = path else {
+            return self.info(display_path);
         };
         let opened = fileio::open_buffer(&path)?;
         let stamp = opened.stamp.ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "外部変更を基準にできません")
         })?;
         self.source.set_stamp(Some(stamp));
+        self.byte_len = opened.byte_len;
         self.merge_base = Some(buffer_lines(&opened.buf));
-        Ok(())
+        self.pending_merge = None;
+        self.info(display_path)
     }
 
     pub fn info(&self, path: String) -> io::Result<DocInfo> {
@@ -463,7 +500,10 @@ impl Doc {
             view_only: self.source.is_view_only(),
             byte_len: self.byte_len,
             is_huge: self.buf.is_huge(),
-            modified_at: self.source.path().and_then(fileio::modified_at),
+            modified_at: fileio::modified_at_from_stamp_or_path(
+                self.source.stamp(),
+                self.source.path(),
+            ),
         })
     }
 
@@ -518,6 +558,7 @@ impl Doc {
                 self.byte_len = text.len() as u64;
                 self.buf = TextBuffer::from_text(&text);
                 self.merge_base = None;
+                self.pending_merge = None;
                 self.undo.clear();
                 self.source = DocumentSource {
                     root: Some(root),
@@ -589,6 +630,7 @@ impl Doc {
         self.byte_len = text.len() as u64;
         self.buf = TextBuffer::from_text(&text);
         self.merge_base = None;
+        self.pending_merge = None;
         self.undo.clear();
         Ok(Some(self.info(archive_path)?))
     }
@@ -1160,6 +1202,7 @@ impl Doc {
         let s = self.to_byte(start);
         let e = self.to_byte(end);
         let cb = self.to_byte(caret_before);
+        self.pending_merge = None;
         let after = editing::apply_edit(&mut self.buf, &mut self.undo, s, e, cb, text, coalesce);
         Some(EditResult {
             caret: self.to_char(after),
@@ -1182,6 +1225,7 @@ impl Doc {
                 line_count: self.buf.line_count(),
             });
         }
+        self.pending_merge = None;
         let cb = self.to_byte(caret_before);
         let byte_items = items
             .into_iter()
@@ -1206,6 +1250,7 @@ impl Doc {
 
     pub fn undo(&mut self) -> Option<EditResult> {
         let caret = editing::undo(&mut self.buf, &mut self.undo)?;
+        self.pending_merge = None;
         Some(EditResult {
             caret: self.to_char(caret),
             line_count: self.buf.line_count(),
@@ -1214,6 +1259,7 @@ impl Doc {
 
     pub fn redo(&mut self) -> Option<EditResult> {
         let caret = editing::redo(&mut self.buf, &mut self.undo)?;
+        self.pending_merge = None;
         Some(EditResult {
             caret: self.to_char(caret),
             line_count: self.buf.line_count(),
@@ -1288,6 +1334,9 @@ impl Doc {
             match_case,
             budget,
         );
+        if result.count > 0 {
+            self.pending_merge = None;
+        }
         ReplaceChunkResult {
             done: result.done,
             count: result.count,
@@ -1303,6 +1352,7 @@ impl Doc {
             &mut self.undo,
             &mut self.replace_progress,
         );
+        self.pending_merge = None;
         EditResult {
             caret: self.to_char(caret),
             line_count: self.buf.line_count(),
@@ -1341,6 +1391,7 @@ impl Doc {
                         transaction
                             .commit(&conflict)
                             .map_err(fileio::SaveCommitError::into_error)?;
+                        self.pending_merge = None;
                         return Ok(SaveOutcome::Conflict {
                             saved_to: conflict.to_string_lossy().into_owned(),
                         });
@@ -1388,12 +1439,19 @@ impl Doc {
                     root: workspace_root,
                     ..DocumentSource::file(path.to_path_buf(), None, stamp)
                 };
+                let modified_at = fileio::modified_at_from_stamp_or_path(
+                    self.source.stamp(),
+                    Some(path),
+                );
+                self.pending_merge = None;
                 self.undo.break_coalescing();
                 return Ok(SaveOutcome::SavedWithWarning {
                     warning: format!("保存後の文書再読込に失敗しました: {error}"),
+                    modified_at,
                 });
             }
         };
+        let modified_at = fileio::modified_at_from_stamp_or_path(o.stamp, Some(path));
         let merge_base = if o.stamp.is_some() && !is_image_path(path) {
             Some(buffer_lines(&o.buf))
         } else {
@@ -1408,8 +1466,9 @@ impl Doc {
             ..DocumentSource::file(path.to_path_buf(), o.source_file, o.stamp)
         };
         self.merge_base = merge_base;
+        self.pending_merge = None;
         self.undo.break_coalescing();
-        Ok(SaveOutcome::Saved)
+        Ok(SaveOutcome::Saved { modified_at })
     }
 
     // 7z/zip エントリの書き戻し。アーカイブと同じフォルダの作業領域へ構造を再現して
@@ -1450,10 +1509,13 @@ impl Doc {
         self.enc = enc;
         self.eol = eol;
         self.undo.break_coalescing();
+        let modified_at = fileio::modified_at(archive);
+        self.pending_merge = None;
         match archive_result {
-            ArchiveCommandOutcome::Reopened => Ok(SaveOutcome::Saved),
+            ArchiveCommandOutcome::Reopened => Ok(SaveOutcome::Saved { modified_at }),
             ArchiveCommandOutcome::ReopenFailed(error) => Ok(SaveOutcome::SavedWithWarning {
                 warning: format!("保存後のアーカイブ再取得に失敗しました: {error}"),
+                modified_at,
             }),
         }
     }
@@ -1596,6 +1658,7 @@ mod tests {
             replace_progress: None,
             byte_len: 0,
             merge_base: None,
+            pending_merge: None,
             sevenz_passwords: HashMap::new(),
             archive_port: Arc::new(FakeArchivePort),
         };
@@ -1660,7 +1723,7 @@ mod tests {
         let outcome = d
             .save(&archive, Encoding::Utf8 { bom: false }, Eol::Lf)
             .unwrap();
-        assert!(matches!(outcome, SaveOutcome::Saved));
+        assert!(matches!(outcome, SaveOutcome::Saved { .. }));
 
         // 書き戻し後もパスワード + ヘッダ暗号化が維持され、内容が更新されている
         assert!(crate::sevenz::is_header_encrypted(&archive).unwrap());
@@ -1842,6 +1905,7 @@ mod tests {
             replace_progress: None,
             byte_len: 0,
             merge_base: None,
+            pending_merge: None,
             sevenz_passwords: HashMap::new(),
             archive_port: archive_port::system(),
         }
@@ -2126,7 +2190,7 @@ mod tests {
         assert!(matches!(
             d.save(&path, Encoding::Utf8 { bom: false }, Eol::Lf)
                 .unwrap(),
-            SaveOutcome::Saved
+            SaveOutcome::Saved { .. }
         ));
         assert_eq!(d.lines(0, 1), vec!["abc!"]);
         assert!(
@@ -2185,7 +2249,9 @@ mod tests {
             "dirty文書は勝手に読み直さない"
         );
         // 「無視」= 現ディスク状態を基準に採用 → 以後は変更なし扱い
-        d.ack_external().unwrap();
+        let info = d.ack_external().unwrap();
+        assert_eq!(info.line_count, 1);
+        assert!(info.modified_at.is_some());
         assert!(matches!(d.poll_external(true), ExternalCheck::Unchanged));
         drop(d);
         std::fs::remove_file(path).unwrap();
@@ -2214,9 +2280,41 @@ mod tests {
         assert!(matches!(
             d.save(&path, Encoding::Utf8 { bom: false }, Eol::Lf)
                 .unwrap(),
-            SaveOutcome::Saved
+            SaveOutcome::Saved {
+                modified_at: Some(_)
+            }
         ));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "base+mine\nexternal\nend");
+
+        drop(d);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    // Feature: 外部変更の3-wayマージ
+    // Scenario: 確認画面を出した後に外部ファイルが再変更される
+    // Given: 外部変更のプレビューを取得済み
+    // When: プレビュー対象と異なる外部内容でマージを実行する
+    // Then: 未確認の内容を適用せず、再確認を要求する
+    #[test]
+    fn external_merge_rejects_file_changed_after_preview() {
+        let path = std::env::temp_dir().join(format!(
+            "wasabipad_merge_recheck_{}.txt",
+            std::process::id()
+        ));
+        std::fs::write(&path, "base").unwrap();
+        let mut d = Doc::open(&path).unwrap();
+        d.edit(p(0, 4), p(0, 4), p(0, 4), "+mine", false)
+            .unwrap();
+        std::fs::write(&path, "external-one").unwrap();
+        d.external_merge_preview().unwrap();
+        std::fs::write(&path, "external-two-is-newer").unwrap();
+
+        let error = match d.merge_external() {
+            Ok(_) => panic!("プレビュー後に外部再変更があれば適用しないはず"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        assert_eq!(d.lines(0, 1), vec!["base+mine"]);
 
         drop(d);
         std::fs::remove_file(path).unwrap();
@@ -2271,7 +2369,7 @@ mod tests {
             .unwrap()
         {
             SaveOutcome::Conflict { saved_to } => PathBuf::from(saved_to),
-            SaveOutcome::Saved | SaveOutcome::SavedWithWarning { .. } => {
+            SaveOutcome::Saved { .. } | SaveOutcome::SavedWithWarning { .. } => {
                 panic!("外部変更があるときは本体を上書きしないはず")
             }
         };
@@ -2586,7 +2684,7 @@ mod tests {
         let outcome = d
             .save(&zpath, Encoding::Utf8 { bom: false }, Eol::Lf)
             .unwrap();
-        assert!(matches!(outcome, SaveOutcome::Saved));
+        assert!(matches!(outcome, SaveOutcome::Saved { .. }));
         let saved = std::fs::read(&zpath).unwrap();
         assert_eq!(
             crate::archive::decode_one(&saved, "memo.txt").as_deref(),

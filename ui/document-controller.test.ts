@@ -212,7 +212,7 @@ describe("Feature: DocumentController", () => {
     const promptFieldsMock = vi.fn(async (..._args: Parameters<typeof promptFields>) => [
       "memo", "txt", "utf8", "crlf",
     ]);
-    const saveFile = vi.spyOn(api, "saveFile").mockResolvedValueOnce({ kind: "saved" });
+    const saveFile = vi.spyOn(api, "saveFile").mockResolvedValueOnce({ kind: "saved", modified_at: null });
     const controller = new DocumentController(view, {
       ...services(),
       api: { ...api, newDoc, saveFile },
@@ -232,7 +232,7 @@ describe("Feature: DocumentController", () => {
   // Then: 2回目の保存にもShift-JIS/LFを渡す
   it("Scenario: 新規メモ保存後の上書き保存は選択形式を継承する", async () => {
     const { view } = fakeView();
-    const saveFile = vi.fn(async () => ({ kind: "saved" as const }));
+    const saveFile = vi.fn(async () => ({ kind: "saved" as const, modified_at: null }));
     const promptFieldsMock = vi.fn(async (..._args: Parameters<typeof promptFields>) => [
       "memo", "txt", "sjis", "lf",
     ]);
@@ -258,7 +258,7 @@ describe("Feature: DocumentController", () => {
   it("Scenario: 保存ボタンより前に名前を採番してダイアログへ表示する", async () => {
     const { view } = fakeView();
     const nextMemoPath = vi.spyOn(api, "nextMemoPath").mockResolvedValueOnce("C:\\work\\memo1.txt");
-    vi.spyOn(api, "saveFile").mockResolvedValueOnce({ kind: "saved" });
+    vi.spyOn(api, "saveFile").mockResolvedValueOnce({ kind: "saved", modified_at: null });
     vi.spyOn(api, "listFolderEntries").mockResolvedValueOnce([]);
     const promptFieldsMock = vi.fn(async (
       _title: string,
@@ -286,7 +286,7 @@ describe("Feature: DocumentController", () => {
     const nextMemoPath = vi.spyOn(api, "nextMemoPath")
       .mockResolvedValueOnce("C:\\work\\memo1.txt")
       .mockResolvedValueOnce("C:\\work\\memo.md");
-    vi.spyOn(api, "saveFile").mockResolvedValueOnce({ kind: "saved" });
+    vi.spyOn(api, "saveFile").mockResolvedValueOnce({ kind: "saved", modified_at: null });
     vi.spyOn(api, "listFolderEntries").mockResolvedValueOnce([]);
     const promptFieldsMock = vi.fn(async (
       _title: string,
@@ -323,6 +323,21 @@ describe("Feature: DocumentController", () => {
     expect(view.editor.open).toHaveBeenCalledWith(42, false, false, "C:\\work\\memo.txt", false);
     expect(view.onDocumentChange).toHaveBeenCalledWith(expect.objectContaining({ savePath: "C:\\work\\memo.txt" }), false);
     expect(view.setTitle).toHaveBeenLastCalledWith(formatTitleBar("memo.txt"));
+  });
+
+  // Feature: 外部変更マージ後の文書状態
+  // Scenario: マージ結果を文書コントローラへ反映する
+  // Given: 保存済み文書を表示中
+  // When: マージ結果を適用する
+  // Then: 本文表示を更新し、未保存状態を維持する
+  it("Scenario: マージ結果の反映を一つの状態更新にまとめる", () => {
+    const { controller } = fakeView();
+    controller.applyDocInfo(info({ line_count: 42 }));
+
+    controller.applyMergedDocInfo(info({ line_count: 43 }));
+
+    expect(controller.current.lineCount).toBe(43);
+    expect(controller.current.dirty).toBe(true);
   });
 
   // Given: フォルダのDocInfoがpath=\`C:\\work\`、folder_rootも\`C:\\work\`
@@ -389,7 +404,7 @@ describe("Feature: DocumentController", () => {
     controller.applyDocInfo(info());
     controller.onEdit(42);
     vi.mocked(confirmSaveDiscard).mockResolvedValueOnce("save");
-    vi.spyOn(api, "saveFile").mockResolvedValueOnce({ kind: "saved" });
+    vi.spyOn(api, "saveFile").mockResolvedValueOnce({ kind: "saved", modified_at: null });
     view.setTitle.mockImplementation(() => { throw new Error("post-save view failure"); });
     const proceed = vi.fn();
 
@@ -404,11 +419,27 @@ describe("Feature: DocumentController", () => {
     const { view, controller } = fakeView();
     controller.applyDocInfo(info());
     controller.onEdit(42);
-    vi.spyOn(api, "saveFile").mockResolvedValueOnce({ kind: "saved" });
+    vi.spyOn(api, "saveFile").mockResolvedValueOnce({ kind: "saved", modified_at: null });
     view.setLoading.mockClear();
 
     expect(await controller.save()).toBe(true);
     expect(view.setLoading).not.toHaveBeenCalled();
+  });
+
+  // Feature: 保存日時の表示
+  // Scenario: 保存結果がバックエンドの更新日時を持つ
+  // Given: 編集済み文書と保存成功結果
+  // When: `controller.save()`を呼ぶ
+  // Then: 受け取った更新日時をステータスバーへ表示する
+  it("Scenario: 保存結果の更新日時をステータスバーへ反映する", async () => {
+    const { view, controller } = fakeView();
+    controller.applyDocInfo(info());
+    controller.onEdit(42);
+    const savedAt = 1730000000000;
+    vi.spyOn(api, "saveFile").mockResolvedValueOnce({ kind: "saved", modified_at: savedAt });
+
+    expect(await controller.save()).toBe(true);
+    expect(view.statusbar.setModifiedAt).toHaveBeenLastCalledWith(savedAt);
   });
 
   // Given: 保存結果が「保存済みだが再読込警告」を返す
@@ -422,6 +453,7 @@ describe("Feature: DocumentController", () => {
     vi.spyOn(api, "saveFile").mockResolvedValueOnce({
         kind: "savedwithwarning",
       warning: "再読込できませんでした",
+      modified_at: null,
     });
 
     expect(await controller.save()).toBe(true);
@@ -437,7 +469,7 @@ describe("Feature: DocumentController", () => {
     controller.applyDocInfo(info());
     view.pickSavePath.mockResolvedValueOnce("C:\\new\\memo.txt");
     vi.spyOn(saveFormat, "promptSaveFormat").mockResolvedValueOnce({ encoding: "utf8", eol: "lf" });
-    vi.spyOn(api, "saveFile").mockResolvedValueOnce({ kind: "saved" });
+    vi.spyOn(api, "saveFile").mockResolvedValueOnce({ kind: "saved", modified_at: null });
 
     expect(await controller.saveAs()).toBe(true);
     expect(view.editor.setExternalFilePath).toHaveBeenLastCalledWith("C:\\new\\memo.txt", false);
@@ -452,7 +484,7 @@ describe("Feature: DocumentController", () => {
     controller.applyDocInfo(info({ path: "C:\\work\\data.zip", folder_root: null, kind: "archive" }));
     view.pickSavePath.mockResolvedValueOnce("C:\\new\\readme.md");
     vi.spyOn(saveFormat, "promptSaveFormat").mockResolvedValueOnce({ encoding: "utf8", eol: "lf" });
-    vi.spyOn(api, "saveFile").mockResolvedValueOnce({ kind: "saved" });
+    vi.spyOn(api, "saveFile").mockResolvedValueOnce({ kind: "saved", modified_at: null });
 
     expect(await controller.saveAs()).toBe(true);
     expect(controller.current.selectedRelPath).toBe("");
@@ -468,7 +500,7 @@ describe("Feature: DocumentController", () => {
     controller.setSelectedRelPath("docs/readme.md");
     controller.applyDocInfo(info({ path: "C:\\work\\data.zip", folder_root: null, kind: "archive" }));
     controller.onEdit(4);
-    vi.spyOn(api, "saveFile").mockResolvedValueOnce({ kind: "saved" });
+    vi.spyOn(api, "saveFile").mockResolvedValueOnce({ kind: "saved", modified_at: null });
 
     expect(view.editor.open).toHaveBeenCalledWith(42, false, false, "C:\\work\\data.zip", true);
     expect(await controller.save()).toBe(true);

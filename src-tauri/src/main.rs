@@ -310,7 +310,7 @@ fn reload_from_disk(state: State) -> Result<DocInfo, String> {
 }
 
 #[tauri::command]
-fn ack_external(state: State) -> Result<(), String> {
+fn ack_external(state: State) -> Result<DocInfo, String> {
     document::ack_external(state)
 }
 

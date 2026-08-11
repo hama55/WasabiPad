@@ -439,25 +439,34 @@ function applyExternalInfo(info: api.DocInfo) {
   editor.goTo(line - 1, 0);
 }
 
+function applyExternalMetadata(info: api.DocInfo) {
+  statusbar.setByteSize(info.byte_len, info.is_huge);
+  statusbar.setModifiedAt(info.modified_at);
+}
+
 const externalWatch = new ExternalWatch($("external-banner"), {
   canPoll: () => doc.current.savePath !== null && loading.hidden,
   isDirty: () => doc.current.dirty,
   onReload: applyExternalInfo,
   onNotice: (text) => windowChrome.notify(text),
   onError: showError,
-  onIgnore: () => editor.focus(),
+  onIgnore: (info) => {
+    applyExternalMetadata(info);
+    editor.focus();
+  },
   onConflict: async (preview) => {
     const choice = await confirmExternalMerge(preview);
     if (!choice) return false;
     try {
       if (choice === "merge") {
         const info = await api.mergeExternal();
-        applyExternalInfo(info);
-        doc.onEdit(info.line_count);
+        const line = currentLine;
+        doc.applyMergedDocInfo(info);
+        editor.goTo(line - 1, 0);
         windowChrome.notify("外部の変更をマージしました。内容を確認して保存してください");
       } else if (choice === "keep") {
-        await api.ackExternal();
-        statusbar.setModifiedAt(preview.modified_at);
+        const info = await api.ackExternal();
+        applyExternalMetadata(info);
         editor.focus();
       } else {
         applyExternalInfo(await api.reloadFromDisk());

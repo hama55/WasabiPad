@@ -161,7 +161,6 @@ pub(crate) fn three_way(base: &[String], mine: &[String], theirs: &[String]) -> 
     let mut preview = ExternalMergePreview {
         changes: Vec::new(),
         conflict_count: 0,
-        modified_at: None,
     };
     let mut mine_index = 0;
     let mut theirs_index = 0;
@@ -351,6 +350,23 @@ mod tests {
         );
 
         assert_eq!(result.merged, lines("a\n自分の追加\n外部のb\nc"));
+        assert_eq!(result.preview.conflict_count, 0);
+    }
+
+    // Feature: 外部変更の3-wayマージ
+    // Scenario: 外部が行を削除し、自分が別の行を変更する
+    // Given: 基準本文と、重ならない削除/変更
+    // When: three_wayを呼ぶ
+    // Then: 外部の削除と自分の変更を両方取り込む
+    #[test]
+    fn merges_external_deletion_with_mine_change() {
+        let result = three_way(
+            &lines("a\nb\nc"),
+            &lines("a\nb\n私のc"),
+            &lines("a\nc"),
+        );
+
+        assert_eq!(result.merged, lines("a\n私のc"));
         assert_eq!(result.preview.conflict_count, 0);
     }
 }

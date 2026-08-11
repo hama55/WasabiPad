@@ -10,7 +10,7 @@ export interface ExternalWatchPorts {
   onReload: (info: api.DocInfo) => void;
   onNotice: (text: string) => void;
   onError: (title: string, error: unknown) => Promise<void>;
-  onIgnore: () => void;
+  onIgnore: (info: api.DocInfo) => void;
   // 差分確認画面を閉じるまで待ち、trueなら競合が解決された扱いにする。
   onConflict?: (preview: api.ExternalMergePreview) => Promise<boolean>;
 }
@@ -135,9 +135,9 @@ export class ExternalWatch {
     if (generation === null) return;
     this.banner.hidden = true;
     try {
-      await this.api.ackExternal();
+      const info = await this.api.ackExternal();
       if (generation !== this.generation) return;
-      this.ports.onIgnore();
+      this.ports.onIgnore(info);
     } catch (error) {
       if (generation === this.generation) this.banner.hidden = false; // 無視できていない競合を隠したままにしない。
       await this.reportError("外部変更を無視できませんでした", error);

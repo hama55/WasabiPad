@@ -47,6 +47,34 @@ describe("Feature: ExternalWatch", () => {
     expect(banner.hidden).toBe(false);
   });
 
+  // Given: bannerが表示中、ackExternalが最新DocInfoを返す
+  // When: 「無視」ボタンをクリックする
+  // Then: 最新DocInfoを反映ポートへ渡し、bannerを閉じる
+  it("Scenario: 外部変更を無視すると最新のファイル情報を渡す", async () => {
+    const { banner, ports } = fixture();
+    const acknowledged = {
+      kind: "text" as const,
+      line_count: 1,
+      enc: "utf8" as const,
+      eol: "lf" as const,
+      path: "C:\\work\\memo.txt",
+      entries: null,
+      folder_entries: null,
+      folder_root: null,
+      view_only: false,
+      byte_len: 99,
+      is_huge: false,
+      modified_at: 1730000000000,
+    } satisfies api.DocInfo;
+    vi.spyOn(api, "ackExternal").mockResolvedValueOnce(acknowledged);
+
+    banner.querySelector<HTMLButtonElement>("#external-ignore")!.click();
+    await vi.waitFor(() => expect(ports.onIgnore).toHaveBeenCalledOnce());
+
+    expect(ports.onIgnore).toHaveBeenCalledWith(acknowledged);
+    expect(banner.hidden).toBe(true);
+  });
+
   // Given: 外部変更監視が作成され、定期ポーリングのintervalが登録されている
   // When: dispose()してから1周期分の時間を進める
   // Then: ポーリングもボタンのイベント処理も残らない
@@ -75,7 +103,6 @@ describe("Feature: ExternalWatch", () => {
     vi.spyOn(api, "externalMergePreview").mockResolvedValueOnce({
       changes: [],
       conflict_count: 0,
-      modified_at: null,
     });
 
     await vi.advanceTimersByTimeAsync(3000);
@@ -83,8 +110,28 @@ describe("Feature: ExternalWatch", () => {
     expect(ports.onConflict).toHaveBeenCalledWith({
       changes: [],
       conflict_count: 0,
-      modified_at: null,
     });
     expect(banner.hidden).toBe(true);
+  });
+
+  // Given: dirtyな文書で外部変更が検知され、差分プレビューAPIが失敗する
+  // When: 外部変更のポーリング周期を進める
+  // Then: エラーを通知し、未解決のバナーを表示する
+  it("Scenario: 差分プレビュー失敗時は競合バナーを戻す", async () => {
+    vi.useFakeTimers();
+    const { banner, ports } = fixture();
+    banner.hidden = true;
+    ports.canPoll = () => true;
+    ports.onConflict = vi.fn(async () => false);
+    vi.spyOn(api, "pollExternal").mockResolvedValueOnce({ kind: "conflict" });
+    vi.spyOn(api, "externalMergePreview").mockRejectedValueOnce(new Error("read failed"));
+
+    await vi.advanceTimersByTimeAsync(3000);
+
+    expect(ports.onError).toHaveBeenCalledWith(
+      "外部変更を確認できませんでした",
+      expect.any(Error),
+    );
+    expect(banner.hidden).toBe(false);
   });
 });

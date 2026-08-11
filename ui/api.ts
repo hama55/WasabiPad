@@ -182,7 +182,7 @@ export const reloadWithEncoding = (enc: ReadEncoding) =>
 export const pollExternal = (dirty: boolean) =>
   invoke<ExternalCheck>(IPC_COMMANDS.pollExternal, { dirty });
 export const reloadFromDisk = () => invoke<DocInfo>(IPC_COMMANDS.reloadFromDisk);
-export const ackExternal = () => invoke<void>(IPC_COMMANDS.ackExternal);
+export const ackExternal = () => invoke<DocInfo>(IPC_COMMANDS.ackExternal);
 export const externalMergePreview = () => invoke<ExternalMergePreview>(IPC_COMMANDS.externalMergePreview);
 export const mergeExternal = () => invoke<DocInfo>(IPC_COMMANDS.mergeExternal);
 export const setEncoding = (enc: Encoding) => invoke<void>(IPC_COMMANDS.setEncoding, { enc });

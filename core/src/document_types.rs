@@ -114,15 +114,17 @@ pub struct ExternalMergeChange {
 pub struct ExternalMergePreview {
     pub changes: Vec<ExternalMergeChange>,
     pub conflict_count: usize,
-    pub modified_at: Option<u64>,
 }
 
 #[derive(Serialize, Debug, ts_rs::TS)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 #[ts(export)]
 pub enum SaveOutcome {
-    Saved,
-    SavedWithWarning { warning: String },
+    Saved { modified_at: Option<u64> },
+    SavedWithWarning {
+        warning: String,
+        modified_at: Option<u64>,
+    },
     Conflict { saved_to: String },
 }
 

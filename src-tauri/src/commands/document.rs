@@ -235,7 +235,7 @@ pub(crate) fn reload_from_disk(state: State) -> Result<DocInfo, String> {
         .map_err(|e| e.to_string())
 }
 
-pub(crate) fn ack_external(state: State) -> Result<(), String> {
+pub(crate) fn ack_external(state: State) -> Result<DocInfo, String> {
     with_doc(&state, Doc::ack_external)?
         .map_err(|error| error.to_string())
 }
