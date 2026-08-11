@@ -15,6 +15,7 @@ mod filename;
 mod folder;
 mod fuzzy;
 mod hugebuf;
+mod merge;
 mod protocol;
 mod search;
 mod search_replace;
@@ -27,8 +28,9 @@ mod ziptext;
 
 pub use bookmarks::{load as load_bookmarks, save as save_bookmarks, Node as BookmarkNode};
 pub use doc::{
-    Doc, DocInfo, EditManyItem, EditManyResult, EditResult, ExternalCheck, FindCursor,
-    FindOutcome, FindResult, FolderEntry, PosC, ReplaceChunkResult, SaveOutcome,
+    Doc, DocInfo, EditManyItem, EditManyResult, EditResult, ExternalCheck, ExternalMergeChange,
+    ExternalMergePreview, FindCursor, FindOutcome, FindResult, FolderEntry, PosC,
+    ReplaceChunkResult, SaveOutcome,
     WorkspaceSearchResult,
 };
 pub use fileio::{Encoding, EncodingId, Eol};

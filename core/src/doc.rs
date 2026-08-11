@@ -1,6 +1,7 @@
 // 高レベル文書API: Tauri/GUI から叩く単一エントリポイント。
 // 文書本体 (TextBuffer: Small=RAM / Huge=mmap+overlay) と Undo を所有し、
-// 可視行取得・編集・検索・保存を提供する。全文は決して外へ渡さない。
+// 可視行取得・編集・検索・保存を提供する。通常は全文を外へ渡さず、
+// 外部変更マージ時だけ差分行を確認画面へ渡す。
 //
 // 列の単位: IPC境界では Unicode スカラー(char)index、内部では UTF-8 バイト col。
 // 変換は to_byte / to_char が担う (グラフェムは非対応 = ネイティブ版と同じ割り切り)。
@@ -14,12 +15,14 @@ use crate::document_assets::{
 };
 use crate::editing::{self, ByteEdit};
 pub use crate::document_types::{
-    DocInfo, DocKind, EditManyItem, EditManyResult, EditResult, ExternalCheck, FindCursor,
-    FindOutcome, FindResult, PosC, ReplaceChunkResult, SaveOutcome, WorkspaceSearchResult,
+    DocInfo, DocKind, EditManyItem, EditManyResult, EditResult, ExternalCheck,
+    ExternalMergeChange, ExternalMergePreview, FindCursor, FindOutcome, FindResult, PosC,
+    ReplaceChunkResult, SaveOutcome, WorkspaceSearchResult,
 };
 use crate::fileio::{self, Encoding, Eol};
 use crate::filename::next_available_path;
 use crate::folder::join_relative;
+use crate::merge;
 pub use crate::folder::FolderEntry;
 use crate::search_replace::{self, FindStep};
 use crate::undo::UndoStack;
@@ -50,6 +53,12 @@ fn create_empty_file(path: &Path) -> io::Result<()> {
     }
 }
 
+fn buffer_lines(buf: &TextBuffer) -> Vec<String> {
+    (0..buf.line_count())
+        .map(|line| buf.line(line).into_owned())
+        .collect()
+}
+
 enum ArchiveCommandOutcome {
     Reopened,
     ReopenFailed(io::Error),
@@ -63,6 +72,8 @@ pub struct Doc {
     source: DocumentSource,
     replace_progress: Option<search_replace::ReplaceProgress>, // 全置換のチャンク間進行状態
     byte_len: u64,                             // ステータスバー表示用。開いた実体のバイト数
+    // 小ファイルの外部変更を3-wayマージするための、最後に採用した本文。
+    merge_base: Option<Vec<String>>,
     // 7z のパスワードをアーカイブ絶対パス単位でメモリ保持する (ディスクへは残さない)。
     // 同じフォルダ内の複数の 7z を行き来しても都度入力し直さずに済む。
     sevenz_passwords: HashMap<PathBuf, String>,
@@ -143,6 +154,7 @@ impl Doc {
             source: DocumentSource::untitled(),
             replace_progress: None,
             byte_len: 0,
+            merge_base: None,
             sevenz_passwords: HashMap::new(),
             archive_port,
         }
@@ -228,6 +240,7 @@ impl Doc {
                     },
                     replace_progress: None,
                     byte_len,
+                    merge_base: None,
                     sevenz_passwords: HashMap::new(),
                     archive_port,
                 });
@@ -252,6 +265,11 @@ impl Doc {
         } else {
             DocumentSource::file(path.to_path_buf(), o.source_file, o.stamp)
         };
+        let merge_base = if o.stamp.is_some() && !is_image_path(path) {
+            Some(buffer_lines(&o.buf))
+        } else {
+            None
+        };
         let buf = if is_image_path(path) {
             TextBuffer::from_text(&format!("(バイナリ: {} bytes)", o.byte_len))
         } else {
@@ -265,6 +283,7 @@ impl Doc {
             source,
             replace_progress: None,
             byte_len: o.byte_len,
+            merge_base,
             sevenz_passwords: HashMap::new(),
             archive_port,
         })
@@ -283,6 +302,11 @@ impl Doc {
 
     // ディスクから読み直した Opened で文書全体を差し替える (undo/検索状態は破棄)。
     fn adopt_opened(&mut self, path: PathBuf, o: fileio::Opened) -> io::Result<DocInfo> {
+        let merge_base = if o.stamp.is_some() && !is_image_path(&path) {
+            Some(buffer_lines(&o.buf))
+        } else {
+            None
+        };
         let source = DocumentSource {
             root: self.source.folder_root().map(Path::to_path_buf),
             ..DocumentSource::file(path.clone(), o.source_file, o.stamp)
@@ -300,6 +324,7 @@ impl Doc {
             source,
             replace_progress: None,
             byte_len: o.byte_len,
+            merge_base,
             sevenz_passwords: std::mem::take(&mut self.sevenz_passwords),
             archive_port: Arc::clone(&self.archive_port),
         };
@@ -334,6 +359,52 @@ impl Doc {
         }
     }
 
+    pub fn external_merge_preview(&self) -> io::Result<ExternalMergePreview> {
+        let (base, mine, theirs, _, _) = self.read_external_for_merge()?;
+        let mut preview = merge::three_way(&base, &mine, &theirs).preview;
+        preview.modified_at = self
+            .source
+            .path()
+            .and_then(fileio::modified_at);
+        Ok(preview)
+    }
+
+    pub fn merge_external(&mut self) -> io::Result<DocInfo> {
+        let (base, mine, theirs, stamp, byte_len) = self.read_external_for_merge()?;
+        let result = merge::three_way(&base, &mine, &theirs);
+        self.buf = TextBuffer::from_text(&result.merged.join("\n"));
+        self.undo.clear();
+        self.byte_len = byte_len;
+        self.merge_base = Some(theirs);
+        self.source.set_stamp(Some(stamp));
+        let path = self
+            .source
+            .path()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "マージ対象のファイルがありません"))?
+            .to_string_lossy()
+            .into_owned();
+        self.info(path)
+    }
+
+    fn read_external_for_merge(
+        &self,
+    ) -> io::Result<(Vec<String>, Vec<String>, Vec<String>, fileio::FileStamp, u64)> {
+        let base = self.merge_base.clone().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "この文書はマージできません")
+        })?;
+        let path = self.source.path().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "マージ対象のファイルがありません")
+        })?;
+        let opened = fileio::open_buffer(path)?;
+        let Some(stamp) = opened.stamp else {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "この文書はマージできません"));
+        };
+        if opened.entries.is_some() {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "この文書はマージできません"));
+        }
+        Ok((base, buffer_lines(&self.buf), buffer_lines(&opened.buf), stamp, opened.byte_len))
+    }
+
     // 編集中の内容を捨てて現在のディスク内容を読み直す (バナーの「再読込」)。
     pub fn reload_from_disk(&mut self) -> io::Result<DocInfo> {
         let path = self.source.path().map(Path::to_path_buf).ok_or_else(|| {
@@ -360,8 +431,12 @@ impl Doc {
         let Some(path) = self.source.path().map(Path::to_path_buf) else {
             return Ok(());
         };
-        let stamp = fileio::stamp(&path)?;
+        let opened = fileio::open_buffer(&path)?;
+        let stamp = opened.stamp.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "外部変更を基準にできません")
+        })?;
         self.source.set_stamp(Some(stamp));
+        self.merge_base = Some(buffer_lines(&opened.buf));
         Ok(())
     }
 
@@ -388,6 +463,7 @@ impl Doc {
             view_only: self.source.is_view_only(),
             byte_len: self.byte_len,
             is_huge: self.buf.is_huge(),
+            modified_at: self.source.path().and_then(fileio::modified_at),
         })
     }
 
@@ -441,6 +517,7 @@ impl Doc {
                 }
                 self.byte_len = text.len() as u64;
                 self.buf = TextBuffer::from_text(&text);
+                self.merge_base = None;
                 self.undo.clear();
                 self.source = DocumentSource {
                     root: Some(root),
@@ -511,6 +588,7 @@ impl Doc {
         }
         self.byte_len = text.len() as u64;
         self.buf = TextBuffer::from_text(&text);
+        self.merge_base = None;
         self.undo.clear();
         Ok(Some(self.info(archive_path)?))
     }
@@ -1294,6 +1372,8 @@ impl Doc {
                 self.buf = old_buf;
                 self.enc = enc;
                 self.eol = eol;
+                self.merge_base = (!self.buf.is_huge() && !is_image_path(path))
+                    .then(|| buffer_lines(&self.buf));
                 let stamp = match fileio::stamp(path) {
                     Ok(stamp) => Some(stamp),
                     Err(stamp_error) => {
@@ -1314,6 +1394,11 @@ impl Doc {
                 });
             }
         };
+        let merge_base = if o.stamp.is_some() && !is_image_path(path) {
+            Some(buffer_lines(&o.buf))
+        } else {
+            None
+        };
         self.buf = o.buf;
         self.enc = enc;
         self.eol = eol;
@@ -1322,6 +1407,7 @@ impl Doc {
             root: workspace_root,
             ..DocumentSource::file(path.to_path_buf(), o.source_file, o.stamp)
         };
+        self.merge_base = merge_base;
         self.undo.break_coalescing();
         Ok(SaveOutcome::Saved)
     }
@@ -1509,6 +1595,7 @@ mod tests {
             },
             replace_progress: None,
             byte_len: 0,
+            merge_base: None,
             sevenz_passwords: HashMap::new(),
             archive_port: Arc::new(FakeArchivePort),
         };
@@ -1754,6 +1841,7 @@ mod tests {
             source: DocumentSource::untitled(),
             replace_progress: None,
             byte_len: 0,
+            merge_base: None,
             sevenz_passwords: HashMap::new(),
             archive_port: archive_port::system(),
         }
@@ -2099,6 +2187,59 @@ mod tests {
         // 「無視」= 現ディスク状態を基準に採用 → 以後は変更なし扱い
         d.ack_external().unwrap();
         assert!(matches!(d.poll_external(true), ExternalCheck::Unchanged));
+        drop(d);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    // Feature: 外部変更の3-wayマージ
+    // Scenario: 自分と外部が別の行を変更する
+    // Given: 開いた本文、自分側の未保存編集、外部側の別行変更
+    // When: 外部変更のプレビューとマージを実行する
+    // Then: 自分の編集を残し、外部の非競合変更を取り込む
+    #[test]
+    fn external_merge_applies_non_conflicting_change() {
+        let path = std::env::temp_dir().join(format!("wasabipad_merge_{}.txt", std::process::id()));
+        std::fs::write(&path, "base\ncommon\nend").unwrap();
+        let mut d = Doc::open(&path).unwrap();
+        d.edit(p(0, 4), p(0, 4), p(0, 4), "+mine", false).unwrap();
+        std::fs::write(&path, "base\nexternal\nend").unwrap();
+
+        let preview = d.external_merge_preview().unwrap();
+        assert_eq!(preview.conflict_count, 0);
+        assert_eq!(preview.changes.len(), 1);
+        let info = d.merge_external().unwrap();
+        assert!(info.modified_at.is_some());
+        assert_eq!(d.lines(0, 3), vec!["base+mine", "external", "end"]);
+        assert!(matches!(d.poll_external(true), ExternalCheck::Unchanged));
+        assert!(matches!(
+            d.save(&path, Encoding::Utf8 { bom: false }, Eol::Lf)
+                .unwrap(),
+            SaveOutcome::Saved
+        ));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "base+mine\nexternal\nend");
+
+        drop(d);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    // Feature: 外部変更の競合優先順位
+    // Scenario: 同じ行を自分と外部が変更する
+    // Given: 自分側と外部側の異なる編集
+    // When: マージを実行する
+    // Then: 自分側を本文として残し、競合をプレビューする
+    #[test]
+    fn external_merge_keeps_mine_on_conflict() {
+        let path = std::env::temp_dir().join(format!("wasabipad_merge_conflict_{}.txt", std::process::id()));
+        std::fs::write(&path, "base\ncommon").unwrap();
+        let mut d = Doc::open(&path).unwrap();
+        d.edit(p(1, 6), p(1, 6), p(1, 6), "+mine", false).unwrap();
+        std::fs::write(&path, "base\nexternal-change").unwrap();
+
+        let preview = d.external_merge_preview().unwrap();
+        assert_eq!(preview.conflict_count, 1);
+        d.merge_external().unwrap();
+        assert_eq!(d.lines(0, 2), vec!["base", "common+mine"]);
+
         drop(d);
         std::fs::remove_file(path).unwrap();
     }

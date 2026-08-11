@@ -26,6 +26,19 @@ export function formatByteSize(bytes: number): string {
 
 export const formatLineCount = (count: number) => `${count.toLocaleString("ja-JP")} 行`;
 export const formatCursor = (line: number, column: number) => `${line}行 ${column}列`;
+export function formatModifiedAt(timestamp: number | null): string {
+  if (timestamp === null) return "";
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return "";
+  return `保存: ${date.toLocaleString("ja-JP", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  })}`;
+}
 export const formatFontFamily = (family: string) => family.split(",")[0].replaceAll("\"", "").trim();
 export const formatTitleBar = (subject: string) => `${subject} — ${APP_NAME}`;
 export const formatWindowTitle = (session: Readonly<DocumentSession>) =>

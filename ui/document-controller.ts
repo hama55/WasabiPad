@@ -68,6 +68,7 @@ export interface DocumentEditorPort {
 export interface DocumentStatusPort {
   setFormat: (session: Readonly<DocumentSession>) => void;
   setByteSize: (bytes: number | null, isHuge?: boolean) => void;
+  setModifiedAt: (timestamp: number | null) => void;
   setLineCount: (count: number) => void;
 }
 
@@ -158,6 +159,7 @@ export class DocumentController {
     this.session = sessionFromDocInfo(this.session, info);
     this.view.statusbar.setFormat(this.session);
     this.view.statusbar.setByteSize(info.byte_len, info.is_huge);
+    this.view.statusbar.setModifiedAt(info.modified_at);
     this.view.statusbar.setLineCount(info.line_count);
     this.view.addressbar.render(info.path);
     if (updateTree) this.showTree(info);
@@ -259,6 +261,7 @@ export class DocumentController {
     this.draftDirectory = draftDirectory;
     this.view.statusbar.setFormat(this.session);
     this.view.statusbar.setByteSize(null);
+    this.view.statusbar.setModifiedAt(null);
     this.view.statusbar.setLineCount(1);
     this.view.addressbar.render("");
     this.view.setSidebar(false);
@@ -385,6 +388,7 @@ export class DocumentController {
       this.view.editor.setExternalFilePath(path, markdownForSession(this.session));
       this.view.addressbar.render(path);
       this.view.statusbar.setFormat(this.session);
+      this.view.statusbar.setModifiedAt(Date.now());
       this.updateTitle();
     } catch (error) {
       await this.reportError("保存後の画面更新に失敗しました", error);
@@ -529,6 +533,7 @@ export class DocumentController {
     this.session.savePath = this.session.readOnly ? null : info.path;
     this.session.selectedRelPath = selectedRelPath;
     this.view.editor.setExternalFilePath(externalFilePathOf(info), markdownForSession(this.session));
+    this.view.statusbar.setModifiedAt(info.modified_at);
     this.updateTitle();
   }
 

@@ -45,6 +45,7 @@ const info = (overrides: Partial<DocInfo> = {}): DocInfo => ({
   view_only: false,
   byte_len: 1234,
   is_huge: false,
+  modified_at: 1720000000000,
   ...overrides,
 });
 
@@ -64,7 +65,7 @@ function fakeView() {
       })),
       restoreViewState: vi.fn(async () => {}),
     },
-    statusbar: { setFormat: vi.fn(), setByteSize: vi.fn(), setLineCount: vi.fn() },
+  statusbar: { setFormat: vi.fn(), setByteSize: vi.fn(), setModifiedAt: vi.fn(), setLineCount: vi.fn() },
     addressbar: { render: vi.fn() },
     sidebar: {
       setWorkspaceSearch: vi.fn(),

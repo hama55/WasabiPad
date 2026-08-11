@@ -24,6 +24,7 @@ pub struct DocInfo {
     pub view_only: bool,
     pub byte_len: u64,
     pub is_huge: bool,
+    pub modified_at: Option<u64>,
 }
 
 #[derive(Serialize, serde::Deserialize, Clone, Copy, ts_rs::TS)]
@@ -97,6 +98,23 @@ pub enum ExternalCheck {
     Unchanged,
     Reloaded { info: DocInfo },
     Conflict,
+}
+
+#[derive(Serialize, Clone, ts_rs::TS)]
+#[ts(export)]
+pub struct ExternalMergeChange {
+    pub start_line: usize,
+    pub mine: Vec<String>,
+    pub theirs: Vec<String>,
+    pub conflict: bool,
+}
+
+#[derive(Serialize, Clone, ts_rs::TS)]
+#[ts(export)]
+pub struct ExternalMergePreview {
+    pub changes: Vec<ExternalMergeChange>,
+    pub conflict_count: usize,
+    pub modified_at: Option<u64>,
 }
 
 #[derive(Serialize, Debug, ts_rs::TS)]

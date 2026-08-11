@@ -117,6 +117,16 @@ fn stamp_of_metadata(meta: std::fs::Metadata) -> io::Result<FileStamp> {
     })
 }
 
+pub fn modified_at(path: &Path) -> Option<u64> {
+    std::fs::metadata(path)
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_millis() as u64)
+}
+
 pub struct Opened {
     pub buf: TextBuffer,
     pub enc: Encoding,

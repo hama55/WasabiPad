@@ -21,6 +21,7 @@ const info = (overrides: Partial<DocInfo> = {}): DocInfo => ({
   view_only: false,
   byte_len: 10,
   is_huge: false,
+  modified_at: 1720000000000,
   ...overrides,
 });
 

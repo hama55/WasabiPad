@@ -13,14 +13,15 @@ function fixture() {
     button.id = id;
     banner.appendChild(button);
   }
-  const ports = {
+  const ports: ExternalWatchPorts = {
     canPoll: () => false,
     isDirty: () => true,
     onReload: vi.fn(),
     onNotice: vi.fn(),
     onError: vi.fn(async () => {}),
     onIgnore: vi.fn(),
-  } satisfies ExternalWatchPorts;
+    onConflict: undefined,
+  };
   const watch = (active = new ExternalWatch(banner, ports, api));
   return { banner, ports, watch };
 }
@@ -59,5 +60,31 @@ describe("Feature: ExternalWatch", () => {
     banner.querySelector<HTMLButtonElement>("#external-reload")!.click();
 
     expect(poll).not.toHaveBeenCalled();
+  });
+
+  // Given: dirtyな文書で外部変更が検知され、差分プレビューAPIが値を返す
+  // When: 外部変更のポーリング周期を進める
+  // Then: バナーではなくマージ確認ポートへプレビューを渡す
+  it("Scenario: 競合時にマージ確認を開く", async () => {
+    vi.useFakeTimers();
+    const { banner, ports } = fixture();
+    banner.hidden = true;
+    ports.canPoll = () => true;
+    ports.onConflict = vi.fn(async () => true);
+    vi.spyOn(api, "pollExternal").mockResolvedValueOnce({ kind: "conflict" });
+    vi.spyOn(api, "externalMergePreview").mockResolvedValueOnce({
+      changes: [],
+      conflict_count: 0,
+      modified_at: null,
+    });
+
+    await vi.advanceTimersByTimeAsync(3000);
+
+    expect(ports.onConflict).toHaveBeenCalledWith({
+      changes: [],
+      conflict_count: 0,
+      modified_at: null,
+    });
+    expect(banner.hidden).toBe(true);
   });
 });

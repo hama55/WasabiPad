@@ -7,7 +7,7 @@ function mount() {
   host.innerHTML = `
     <span id="st-mode"></span>
     <label id="st-delimiter" hidden>区切り <input id="st-delimiter-input" value="," /></label>
-    <button id="st-pos"></button><span id="st-size"></span><button id="st-lines"></button>
+    <button id="st-pos"></button><span id="st-size"></span><span id="st-modified"></span><button id="st-lines"></button>
     <button id="st-font"></button><button id="st-font-size"></button>
     <select id="st-indent"></select><button id="st-wrap"></button>
     <select id="st-source-enc"></select><span id="st-eol"></span><button id="st-theme"></button>
@@ -60,5 +60,18 @@ describe("Feature: statusbar preview controls", () => {
       "CSV区切り文字を変更できませんでした",
       expect.any(Error),
     ));
+  });
+
+  // Given: ファイル保存日時を表示するステータスバー
+  // When: 日時を設定してから未保存状態へ戻す
+  // Then: 保存日時を表示し、nullでは空表示にする
+  it("Scenario: ファイル保存日時を表示する", () => {
+    const { host, statusbar } = mount();
+    const modified = host.querySelector<HTMLElement>("#st-modified")!;
+
+    statusbar.setModifiedAt(1720000000000);
+    expect(modified.textContent).toContain("保存:");
+    statusbar.setModifiedAt(null);
+    expect(modified.textContent).toBe("");
   });
 });

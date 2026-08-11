@@ -32,6 +32,8 @@ export const IPC_COMMANDS = {
   pollExternal: "poll_external",
   reloadFromDisk: "reload_from_disk",
   ackExternal: "ack_external",
+  externalMergePreview: "external_merge_preview",
+  mergeExternal: "merge_external",
   setEncoding: "set_encoding",
   setEol: "set_eol",
   loadBookmarks: "load_bookmarks",

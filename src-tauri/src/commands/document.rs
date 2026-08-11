@@ -3,7 +3,8 @@ use tauri::{AppHandle, Emitter};
 
 use wasabipad_core::{
     Doc, DocInfo, EditManyItem, EditManyResult, EditResult, EncodingId, Eol, ExternalCheck,
-    FindCursor, FindOutcome, FindResult, FolderEntry, PosC, ReplaceChunkResult, SaveOutcome,
+    ExternalMergePreview, FindCursor, FindOutcome, FindResult, FolderEntry, PosC,
+    ReplaceChunkResult, SaveOutcome,
 };
 
 use crate::state::{with_doc, State};
@@ -236,6 +237,16 @@ pub(crate) fn reload_from_disk(state: State) -> Result<DocInfo, String> {
 
 pub(crate) fn ack_external(state: State) -> Result<(), String> {
     with_doc(&state, Doc::ack_external)?
+        .map_err(|error| error.to_string())
+}
+
+pub(crate) fn external_merge_preview(state: State) -> Result<ExternalMergePreview, String> {
+    with_doc(&state, |doc| doc.external_merge_preview()).map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
+}
+
+pub(crate) fn merge_external(state: State) -> Result<DocInfo, String> {
+    with_doc(&state, |doc| doc.merge_external()).map_err(|error| error.to_string())?
         .map_err(|error| error.to_string())
 }
 

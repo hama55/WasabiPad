@@ -11,9 +11,14 @@ export interface ExternalWatchPorts {
   onNotice: (text: string) => void;
   onError: (title: string, error: unknown) => Promise<void>;
   onIgnore: () => void;
+  // 差分確認画面を閉じるまで待ち、trueなら競合が解決された扱いにする。
+  onConflict?: (preview: api.ExternalMergePreview) => Promise<boolean>;
 }
 
-export type ExternalWatchApi = Pick<typeof api, "pollExternal" | "reloadFromDisk" | "ackExternal">;
+export type ExternalWatchApi = Pick<
+  typeof api,
+  "pollExternal" | "reloadFromDisk" | "ackExternal" | "externalMergePreview"
+>;
 
 // 対象文書かどうか (小ファイル=ハンドル非保持) の判定は backend が持つ。
 // 未編集なら backend が自動再読込し、dirty なら競合バナーで再読込/無視を選ばせる。
@@ -87,7 +92,16 @@ export class ExternalWatch {
         this.ports.onReload(check.info);
         this.ports.onNotice("外部の変更を再読込しました");
       } else if (check.kind === "conflict") {
-        this.banner.hidden = false;
+        if (this.ports.onConflict) {
+          const preview = await this.api.externalMergePreview();
+          if (generation !== this.generation) return;
+          this.banner.hidden = true;
+          const resolved = await this.ports.onConflict(preview);
+          if (generation !== this.generation) return;
+          this.banner.hidden = resolved;
+        } else {
+          this.banner.hidden = false;
+        }
       }
       this.pollErrorReported = false;
     } catch (error) {

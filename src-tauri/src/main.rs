@@ -20,8 +20,8 @@ use tauri::{AppHandle, Manager};
 use viewer::ViewerStore;
 use wasabipad_core::{
     self, BookmarkNode, Doc, DocInfo, EditManyItem, EditManyResult, EditResult, EncodingId, Eol,
-    ExternalCheck, FindCursor, FindOutcome, FindResult, FolderEntry, PosC, ReplaceChunkResult,
-    SaveOutcome, SearchOptions, WorkspaceSearchOutcome,
+    ExternalCheck, ExternalMergePreview, FindCursor, FindOutcome, FindResult, FolderEntry, PosC,
+    ReplaceChunkResult, SaveOutcome, SearchOptions, WorkspaceSearchOutcome,
 };
 
 const EVENT_EXTERNAL_WINDOW_REQUEST: &str = "external-window-request";
@@ -315,6 +315,16 @@ fn ack_external(state: State) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn external_merge_preview(state: State) -> Result<ExternalMergePreview, String> {
+    document::external_merge_preview(state)
+}
+
+#[tauri::command]
+fn merge_external(state: State) -> Result<DocInfo, String> {
+    document::merge_external(state)
+}
+
+#[tauri::command]
 fn set_encoding(enc: EncodingId, state: State) -> Result<(), String> {
     document::set_encoding(enc, state)
 }
@@ -522,6 +532,8 @@ fn main() {
             poll_external,
             reload_from_disk,
             ack_external,
+            external_merge_preview,
+            merge_external,
             reload_with_encoding,
             set_encoding,
             set_eol,

@@ -411,6 +411,7 @@ describe("Feature: FolderActions", () => {
       view_only: false,
       byte_len: 0,
       is_huge: false,
+      modified_at: null,
     } satisfies api.DocInfo;
     doc.promptMemoSpec.mockResolvedValueOnce({
       memo: { stem: "memo", extension: "txt" },
@@ -464,6 +465,7 @@ describe("Feature: FolderActions", () => {
       view_only: false,
       byte_len: 0,
       is_huge: false,
+      modified_at: null,
     } satisfies api.DocInfo;
     doc.promptMemoSpec.mockResolvedValueOnce({
       memo: { stem: "memo1", extension: "txt" },

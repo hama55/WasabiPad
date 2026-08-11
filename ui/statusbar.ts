@@ -1,7 +1,7 @@
 import { READ_ENCODINGS, type ReadEncoding, type ViewerFormat } from "./api";
 import type { DocumentSession } from "./session";
 import { readEncodingOf } from "./session";
-import { formatByteSize, formatCursor, formatFontFamily, formatLineCount } from "./format";
+import { formatByteSize, formatCursor, formatFontFamily, formatLineCount, formatModifiedAt } from "./format";
 import { DEFAULT_INDENT_SIZE, INDENT_SIZES, promptFontFamily, promptFontSize } from "./font-controls";
 import { confirmMessage, promptFields } from "./prompt";
 import { normalizeTheme, THEME_STORAGE_KEY, THEMES, type Theme } from "./theme";
@@ -144,6 +144,10 @@ export class StatusBar {
     const size = this.pick("st-size");
     size.textContent = bytes === null ? "" : formatByteSize(bytes);
     size.classList.toggle("is-huge", bytes !== null && isHuge);
+  }
+
+  setModifiedAt(timestamp: number | null) {
+    this.pick("st-modified").textContent = formatModifiedAt(timestamp);
   }
 
   setMode(label: string) {
