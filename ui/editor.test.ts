@@ -22,6 +22,7 @@ import { fakeDocument, installDomStubs, settle } from "./test-doubles";
 import { VirtualEditor, type EditorPorts } from "./editor";
 import { initSettings } from "./settings";
 import type { RegisteredCommandMenuPorts } from "./registered-command-menu";
+import type { Selection } from "./selection";
 import { MENU_ICON } from "./menu-icons";
 
 installDomStubs();
@@ -522,20 +523,13 @@ describe("Feature: VirtualEditor", () => {
   // Then: 同じ列位置へ2行分を矩形貼り付けする
   it("Scenario: 矩形コピーを同じ列位置へ矩形貼り付けできる", async () => {
     const saveImage = vi.fn(async () => "unused");
-    const { editor, doc, host, input, press } = mount("abcd\nABCD\nwxyz\n----", saveImage);
+    const { editor, doc, input, press } = mount("abcd\nABCD\nwxyz\n----", saveImage);
     editor.open(4, false);
     await settle();
-    const layout = installMouseLayout(host);
-    const scroll = layout.scroll;
-    scroll.dispatchEvent(new MouseEvent("mousedown", {
-      bubbles: true, button: 0, clientX: 18, clientY: 10, altKey: true,
-    }));
-    window.dispatchEvent(new MouseEvent("mousemove", {
-      bubbles: true, clientX: 38, clientY: 30, altKey: true,
-    }));
-    window.dispatchEvent(new MouseEvent("mouseup", {
-      bubbles: true, clientX: 38, clientY: 30, altKey: true,
-    }));
+    // 矩形選択のポインター操作は直前のシナリオで検証済み。
+    // ここではコピーと貼り付けの仕様だけを固定した矩形選択で検証する。
+    const selection = (editor as unknown as { sel: Selection }).sel;
+    selection.setBlock({ line: 0, col: 1 }, { line: 1, col: 3 });
 
     press("c", { ctrlKey: true });
     await settle();
@@ -551,7 +545,6 @@ describe("Feature: VirtualEditor", () => {
     expect(pasteEvent.defaultPrevented).toBe(true);
     expect(doc.text()).toBe("abcd\nABCD\nwbcxyz\n-BC---");
     expect(doc.calls).toContain("editMany(2)");
-    layout.restore();
   });
 
   // Given: 矩形コピーのクリップボード書き込みが失敗する
