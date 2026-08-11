@@ -328,6 +328,20 @@ describe("Feature: VirtualEditor", () => {
     expect(doc.text()).toBe("- item\n");
   });
 
+  // Given: Markdownではないtxt文書の空行にいる
+  // When: ```を入力する
+  // Then: 閉じフェンスを自動挿入しない
+  it("Scenario: Markdownコードフェンス自動挿入をtxt文書へ適用しない", async () => {
+    const { editor, doc, type } = mount("");
+    editor.open(1, false, false, "C:\\work\\memo.txt");
+    await settle();
+
+    type("```");
+    await settle();
+
+    expect(doc.text()).toBe("```");
+  });
+
   // Given: 文書が「one\ntwo\nthree」、選択範囲が0行1列から1行1列までである
   // When: Tab を押す
   // Then: 選択文字列がタブで置換され、行単位indentは発生しない

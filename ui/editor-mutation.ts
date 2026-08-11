@@ -12,7 +12,7 @@ import {
   planLineUnindent,
   selectedLineRangeForUnindent,
 } from "./editor-edit-plan";
-import { LineCache } from "./line-cache";
+import { CHUNK, LineCache } from "./line-cache";
 import { blockRangeForLine, Selection } from "./selection";
 
 export interface EditorMutationPorts {
@@ -21,7 +21,7 @@ export interface EditorMutationPorts {
   lineCache: LineCache;
   lineCount: () => number;
   isReadOnly: () => boolean;
-  isMarkdown?: () => boolean;
+  isMarkdown: () => boolean;
   applyResult: (result: api.EditResult, fromLine: number, edits?: api.EditManyItem[]) => void;
   renderAfterEdit: () => Promise<void>;
 }
@@ -39,13 +39,18 @@ export class EditorMutationController {
   }
 
   private markdownEnabled(): boolean {
-    return this.ports.isMarkdown?.() ?? true;
+    return this.ports.isMarkdown();
   }
 
   private async markdownFenceStateBefore(line: number) {
     const lines: string[] = [];
-    for (let index = 0; index < line; index += 1) {
-      lines.push(await this.ports.lineCache.line(index));
+    for (let first = 0; first < line; first += CHUNK) {
+      await this.ports.lineCache.fetch(LineCache.chunkOf(first));
+      const last = Math.min(line, first + CHUNK);
+      for (let index = first; index < last; index += 1) {
+        const value = this.ports.lineCache.peek(index);
+        lines.push(value === undefined ? await this.ports.lineCache.line(index) : value);
+      }
     }
     return markdownFenceState(lines);
   }

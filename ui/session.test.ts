@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { DocInfo } from "./api";
-import { displayName, externalFilePathOf, initialSession, readEncodingOf, sessionFromDocInfo } from "./session";
+import {
+  displayName,
+  documentPathOf,
+  externalFilePathOf,
+  initialSession,
+  readEncodingOf,
+  sessionFromDocInfo,
+} from "./session";
 
 const info = (overrides: Partial<DocInfo> = {}): DocInfo => ({
   kind: "text",
@@ -80,6 +87,17 @@ describe("Feature: DocumentSession", () => {
       path: "C:\\work\\memo.txt",
       folder_root: "C:\\work",
     }))).toBe("C:\\work\\memo.txt");
+  });
+
+  // Given: selectedRelPath、savePath、displayPathのいずれかが設定された文書セッション
+  // When: documentPathOfを呼ぶ
+  // Then: プレビューとMarkdown判定で共有できる優先順位でパスを返す
+  it("Scenario: 文書パスはアーカイブ内相対パスを最優先する", () => {
+    expect(documentPathOf({ selectedRelPath: "docs/readme.md", savePath: "C:\\work\\data.zip", displayPath: "data.zip" }))
+      .toBe("docs/readme.md");
+    expect(documentPathOf({ selectedRelPath: "", savePath: "C:\\work\\memo.md", displayPath: "memo" }))
+      .toBe("C:\\work\\memo.md");
+    expect(documentPathOf({ selectedRelPath: "", savePath: null, displayPath: "" })).toBe("");
   });
 
   // Given: encodingが`utf8bom`または`sjis`

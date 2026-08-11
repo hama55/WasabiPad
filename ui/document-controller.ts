@@ -1,6 +1,6 @@
 import type * as api from "./api";
 import type { DocumentSession } from "./session";
-import { externalFilePathOf, initialSession, sessionFromDocInfo } from "./session";
+import { documentPathOf, externalFilePathOf, initialSession, sessionFromDocInfo } from "./session";
 import type { promptSaveFormat, saveFormatFields, saveFormatFromValues, SaveFormat } from "./save-format";
 import type { confirmSaveDiscard, promptFields, PromptField, PromptFieldsOptions } from "./prompt";
 import type { isPasswordCancelled, withArchivePassword } from "./archive-password";
@@ -21,8 +21,7 @@ export const SAVE_EXTENSIONS = [
 ] as const;
 
 function markdownForSession(session: Readonly<DocumentSession>): boolean {
-  const path = session.selectedRelPath || session.savePath || session.displayPath;
-  return viewerFormatForPath(path) === "markdown";
+  return viewerFormatForPath(documentPathOf(session)) === "markdown";
 }
 
 export interface MemoCreationSpec {

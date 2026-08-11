@@ -15,6 +15,7 @@ function setup(initial: string, readOnly = false) {
     lineCache,
     lineCount: () => document.text().split("\n").length,
     isReadOnly: () => readOnly,
+    isMarkdown: () => true,
     applyResult: (result) => {
       results.push(result);
       selection.caret = result.caret;

@@ -50,6 +50,12 @@ export function externalFilePathOf(info: Pick<DocInfo, "path" | "folder_root">):
   return info.path && !isFolderDraftInfo(info) ? info.path : null;
 }
 
+export function documentPathOf(
+  session: Pick<DocumentSession, "selectedRelPath" | "savePath" | "displayPath">,
+): string {
+  return session.selectedRelPath || session.savePath || session.displayPath;
+}
+
 export function sessionFromDocInfo(
   previous: Readonly<DocumentSession>,
   info: DocInfo

@@ -47,7 +47,7 @@ import { runAsyncBoundary, reportUnhandledRejection } from "./async-boundary";
 import { openPath as openPathInTabs } from "./path-opener";
 import { InlinePreview } from "./inline-preview";
 import { viewerFormatForPath } from "./viewer-formats";
-import type { DocumentSession } from "./session";
+import { documentPathOf, type DocumentSession } from "./session";
 import {
   isPreviewFullscreen,
   isPreviewShown,
@@ -238,7 +238,7 @@ function runPreviewBackground(path: string, title: string, operation: () => void
 }
 
 function syncPreviewDocument(session: Readonly<DocumentSession>, force = false) {
-  const path = session.selectedRelPath || session.savePath || session.displayPath;
+  const path = documentPathOf(session);
   const sourcePath = session.savePath ?? (isImagePath(session.displayPath) ? session.displayPath : null);
   inlinePreview.setSourcePath(sourcePath, session.archivePath, session.archiveEntry);
   if (!force && path === previewDocumentPath && !isImagePath(session.displayPath)) return;

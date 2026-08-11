@@ -54,9 +54,9 @@ function leadingWhitespace(line: string): string {
   return line.match(/^[\t ]*/)?.[0] ?? "";
 }
 
-function fenceAtStart(line: string): { marker: string; rest: string } | null {
-  const match = line.match(/^[\t ]{0,3}(`{3,}|~{3,})(.*)$/);
-  return match ? { marker: match[1], rest: match[2] } : null;
+function fenceAtStart(line: string): { indent: string; marker: string; rest: string } | null {
+  const match = line.match(/^([\t ]{0,3})(`{3,}|~{3,})(.*)$/);
+  return match ? { indent: match[1], marker: match[2], rest: match[3] } : null;
 }
 
 function markdownLinePrefix(line: string): MarkdownLinePrefix {
@@ -157,10 +157,9 @@ export function autoCloseMarkdownFence(
   const suffix = [...line].slice(endCol).join("");
   if (suffix || fenceState) return null;
   const candidate = `${prefix}${inserted}`;
-  const match = candidate.match(/^([\t ]*)(`{3,}|~{3,})$/);
-  if (!match) return null;
-  const indent = match[1];
-  const marker = match[2];
+  const fence = fenceAtStart(candidate);
+  if (!fence || fence.rest) return null;
+  const { indent, marker } = fence;
   return {
     text: `${inserted}\n${indent}\n${indent}${marker}`,
     caretLineOffset: 1,
