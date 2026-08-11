@@ -319,7 +319,7 @@ describe("Feature: DocumentController", () => {
     expect(view.statusbar.setByteSize).toHaveBeenCalledWith(1234, false);
     expect(view.statusbar.setLineCount).toHaveBeenCalledWith(42);
     expect(view.addressbar.render).toHaveBeenCalledWith("C:\\work\\memo.txt");
-    expect(view.editor.open).toHaveBeenCalledWith(42, false, false, "C:\\work\\memo.txt");
+    expect(view.editor.open).toHaveBeenCalledWith(42, false, false, "C:\\work\\memo.txt", false);
     expect(view.onDocumentChange).toHaveBeenCalledWith(expect.objectContaining({ savePath: "C:\\work\\memo.txt" }), false);
     expect(view.setTitle).toHaveBeenLastCalledWith(formatTitleBar("memo.txt"));
   });
@@ -337,7 +337,7 @@ describe("Feature: DocumentController", () => {
     }));
 
     expect(controller.current.savePath).toBeNull();
-    expect(view.editor.open).toHaveBeenCalledWith(1, false, false, null);
+    expect(view.editor.open).toHaveBeenCalledWith(1, false, false, null, false);
   });
 
   // Given: フォルダのDocInfoがfolder_root=C:\work、選択中path=C:\work\memo.txt
@@ -350,7 +350,7 @@ describe("Feature: DocumentController", () => {
       folder_root: "C:\\work",
     }));
 
-    expect(view.editor.open).toHaveBeenCalledWith(42, false, false, "C:\\work\\memo.txt");
+    expect(view.editor.open).toHaveBeenCalledWith(42, false, false, "C:\\work\\memo.txt", false);
   });
 
   // Given: info適用済みでtitle mockをclear
@@ -439,7 +439,7 @@ describe("Feature: DocumentController", () => {
     vi.spyOn(api, "saveFile").mockResolvedValueOnce({ kind: "saved" });
 
     expect(await controller.saveAs()).toBe(true);
-    expect(view.editor.setExternalFilePath).toHaveBeenLastCalledWith("C:\\new\\memo.txt");
+    expect(view.editor.setExternalFilePath).toHaveBeenLastCalledWith("C:\\new\\memo.txt", false);
   });
 
   // Given: アーカイブ内エントリを表示中で、別名保存先が通常ファイル
@@ -469,10 +469,11 @@ describe("Feature: DocumentController", () => {
     controller.onEdit(4);
     vi.spyOn(api, "saveFile").mockResolvedValueOnce({ kind: "saved" });
 
+    expect(view.editor.open).toHaveBeenCalledWith(42, false, false, "C:\\work\\data.zip", true);
     expect(await controller.save()).toBe(true);
     expect(controller.current.archivePath).toBe("C:\\work\\data.zip");
     expect(controller.current.archiveEntry).toBe("docs/readme.md");
-    expect(view.editor.setExternalFilePath).toHaveBeenCalledWith("C:\\work\\data.zip");
+    expect(view.editor.setExternalFilePath).toHaveBeenCalledWith("C:\\work\\data.zip", true);
   });
 
   // Given: C:\work\memo.txtを表示中
@@ -488,7 +489,7 @@ describe("Feature: DocumentController", () => {
       folder_root: "C:\\work",
     }), "renamed.txt");
 
-    expect(view.editor.setExternalFilePath).toHaveBeenCalledWith("C:\\work\\renamed.txt");
+    expect(view.editor.setExternalFilePath).toHaveBeenCalledWith("C:\\work\\renamed.txt", false);
   });
 
   // Given: 元文書のencoding=`sjis`/eol=`lf`、別名path選択、保存形式がutf8/crlf、saveFileが失敗

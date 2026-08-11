@@ -7,6 +7,7 @@ import type { isPasswordCancelled, withArchivePassword } from "./archive-passwor
 import { archiveRelOf } from "./archive-path";
 import type { showError } from "./dialogs";
 import { formatWindowTitle } from "./format";
+import { viewerFormatForPath } from "./viewer-formats";
 import { basename, joinWindowsRoot, relativePathWithinRoot } from "./path";
 import type { EditorViewState } from "./editor-view-state";
 import { reportErrorSafely } from "./report-error";
@@ -18,6 +19,11 @@ export const SAVE_EXTENSIONS = [
   { name: "Markdown", extension: "md" },
   { name: "ログ", extension: "log" },
 ] as const;
+
+function markdownForSession(session: Readonly<DocumentSession>): boolean {
+  const path = session.selectedRelPath || session.savePath || session.displayPath;
+  return viewerFormatForPath(path) === "markdown";
+}
 
 export interface MemoCreationSpec {
   memo: MemoSpec;
@@ -46,8 +52,14 @@ export interface DocumentControllerServices {
 }
 
 export interface DocumentEditorPort {
-  open: (lineCount: number, readOnly: boolean, keepViewers?: boolean, externalFilePath?: string | null) => void;
-  setExternalFilePath: (path: string | null) => void;
+  open: (
+    lineCount: number,
+    readOnly: boolean,
+    keepViewers?: boolean,
+    externalFilePath?: string | null,
+    markdown?: boolean,
+  ) => void;
+  setExternalFilePath: (path: string | null, markdown?: boolean) => void;
   focus: () => void;
   goTo: (line: number, col: number) => void;
   captureViewState: () => EditorViewState;
@@ -150,7 +162,13 @@ export class DocumentController {
     this.view.statusbar.setLineCount(info.line_count);
     this.view.addressbar.render(info.path);
     if (updateTree) this.showTree(info);
-    this.view.editor.open(info.line_count, this.session.readOnly, keepViewers, externalFilePathOf(info));
+    this.view.editor.open(
+      info.line_count,
+      this.session.readOnly,
+      keepViewers,
+      externalFilePathOf(info),
+      markdownForSession(this.session),
+    );
     this.view.editor.focus();
     this.view.onDocumentChange?.(this.session, keepViewers);
     this.updateTitle();
@@ -365,7 +383,7 @@ export class DocumentController {
       this.session.archiveEntry = null;
     }
     try {
-      this.view.editor.setExternalFilePath(path);
+      this.view.editor.setExternalFilePath(path, markdownForSession(this.session));
       this.view.addressbar.render(path);
       this.view.statusbar.setFormat(this.session);
       this.updateTitle();
@@ -511,7 +529,7 @@ export class DocumentController {
     this.session.displayPath = info.path;
     this.session.savePath = this.session.readOnly ? null : info.path;
     this.session.selectedRelPath = selectedRelPath;
-    this.view.editor.setExternalFilePath(externalFilePathOf(info));
+    this.view.editor.setExternalFilePath(externalFilePathOf(info), markdownForSession(this.session));
     this.updateTitle();
   }
 

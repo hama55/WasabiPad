@@ -14,6 +14,7 @@ import {
 import { MENU_ICON } from "./menu-icons";
 import { MENU_LABELS } from "./menu-labels";
 import { viewerFormatIcon, VIEWER_FORMAT_LABELS } from "./format";
+import { viewerFormatForPath } from "./viewer-formats";
 import { LineCache } from "./line-cache";
 import { EditorMutationController } from "./editor-mutation";
 import { LiveViewers } from "./live-viewers";
@@ -130,6 +131,7 @@ export class VirtualEditor {
   private onCursor: (line: number, col: number) => void;
   private onFontChange: (fontFamily: string, fontSize: number, changed: "family" | "size" | "both") => void;
   private externalFilePath: string | null = null;
+  private markdown = false;
   private openExternally: (path: string) => void | Promise<unknown>;
   private openInNewWindow?: (path: string) => void | Promise<unknown>;
   private registeredCommandPorts: RegisteredCommandMenuPorts;
@@ -170,6 +172,7 @@ export class VirtualEditor {
       lineCache: this.lineCache,
       lineCount: () => this.lineCount,
       isReadOnly: () => this.readOnly,
+      isMarkdown: () => this.markdown,
       applyResult: (result, fromLine, edits) => this.applyResult(result, fromLine, edits),
       renderAfterEdit: () => this.renderAfterEdit(),
     });
@@ -314,10 +317,17 @@ export class VirtualEditor {
 
   // ---- 文書ロード ----
   // keepViewers: 同じファイルを読み直しただけの場合。開いているビューを閉じずに新内容へ差し替える
-  open(lineCount: number, readOnly: boolean, keepViewers = false, externalFilePath: string | null = null) {
+  open(
+    lineCount: number,
+    readOnly: boolean,
+    keepViewers = false,
+    externalFilePath: string | null = null,
+    markdown = viewerFormatForPath(externalFilePath ?? "") === "markdown",
+  ) {
     this.dragCleanup?.();
     this.clearDragCaret();
     this.externalFilePath = externalFilePath;
+    this.markdown = markdown;
     this.rectangularClipboard.clear();
     this.documentGeneration++;
     this.findGen++;
@@ -348,8 +358,12 @@ export class VirtualEditor {
     this.readOnly = on;
   }
 
-  setExternalFilePath(path: string | null) {
+  setExternalFilePath(
+    path: string | null,
+    markdown = viewerFormatForPath(path ?? "") === "markdown",
+  ) {
     this.externalFilePath = path;
+    this.markdown = markdown;
   }
 
   focus() {

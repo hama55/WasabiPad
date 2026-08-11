@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  autoCloseMarkdownFence,
+  markdownEmptyListPrefix,
+  markdownFenceState,
+  newlineWithMarkdownContinuation,
   newlineWithLeadingTabs,
   planLineIndent,
   planLineUnindent,
@@ -8,16 +12,66 @@ import {
 } from "./editor-edit-plan";
 
 describe("Feature: editor edit plans", () => {
-  // Given: 行頭の連続tabが `text`、`\ttext`、`\t\ttext`、` \ttext`
+  // Given: 行頭の連続tabを含む各行
   // When: `newlineWithLeadingTabs`を各入力へ適用
-  // Then: それぞれ改行後が`\n`、`\n\t`、`\n\t\t`、`\n`
+  // Then: 行頭の連続tabだけが改行後へ引き継がれる
   it.each([
     ["text", "\n"],
     ["\ttext", "\n\t"],
     ["\t\ttext", "\n\t\t"],
     [" \ttext", "\n"],
-  ])("Scenario: 先頭の連続tabだけを改行へ引き継ぐ", (line, expected) => {
+  ])("Scenario: 先頭の連続tabを改行へ引き継ぐ", (line, expected) => {
     expect(newlineWithLeadingTabs(line)).toBe(expected);
+  });
+
+  // Given: Markdownの箇条書き・引用・表・コード行
+  // When: Markdown用の改行継続計画を評価する
+  // Then: 記法に応じた次行の接頭辞を作る
+  it.each([
+    ["* text", null, "\n* "],
+    ["\t- text", null, "\n\t- "],
+    ["+ text", null, "\n+ "],
+    ["\t\t1. text", null, "\n\t\t2. "],
+    ["- [ ] text", null, "\n- [ ] "],
+    ["- [x] done", null, "\n- [ ] "],
+    ["> quote", null, "\n> "],
+    ["> - item", null, "\n> - "],
+    ["| cell |", null, "\n| "],
+    ["    code", null, "\n    "],
+    ["- code", { char: "`", length: 3 }, "\n"],
+  ] as const)("Scenario: Markdown記法を改行後へ継続する", (line, fenceState, expected) => {
+    expect(newlineWithMarkdownContinuation(line, fenceState)).toBe(expected);
+  });
+
+  // Given: 空のMarkdownリスト項目
+  // When: 空リストの終了用接頭辞を評価する
+  // Then: リスト記号を外し、親のtabや引用だけを残す
+  it.each([
+    ["- ", ""],
+    ["\t1. ", "\t"],
+    ["> - [ ] ", "> "],
+  ])("Scenario: 空リストでは記号を外してMarkdownを終了する", (line, expected) => {
+    expect(markdownEmptyListPrefix(line)).toBe(expected);
+  });
+
+  // Given: Markdown文書のフェンス行列
+  // When: フェンス状態を走査する
+  // Then: 開始フェンスから終了フェンスまでだけコードブロック中と判定する
+  it("Scenario: Markdownコードフェンスの状態を判定する", () => {
+    expect(markdownFenceState(["```ts", "- code"])).toEqual({ char: "`", length: 3 });
+    expect(markdownFenceState(["```ts", "code", "```"])).toBeNull();
+  });
+
+  // Given: 行頭でMarkdownの```を入力し、現在はコードブロック外
+  // When: フェンス自動挿入計画を評価する
+  // Then: 閉じフェンスを作り、キャレットを空の中間行へ置く
+  it("Scenario: Markdownコードフェンスの閉じ側を自動挿入する", () => {
+    expect(autoCloseMarkdownFence("", 0, 0, "```", null)).toEqual({
+      text: "```\n\n```",
+      caretLineOffset: 1,
+      caretCol: 0,
+    });
+    expect(autoCloseMarkdownFence("", 0, 0, "```", { char: "`", length: 3 })).toBeNull();
   });
 
   // Given: anchor=`{line:3,col:0}`、caret=`{line:1,col:0}`の逆向き選択

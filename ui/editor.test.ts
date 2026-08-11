@@ -239,6 +239,95 @@ describe("Feature: VirtualEditor", () => {
     expect(doc.text()).toBe("\t\tmemo\n\t\t");
   });
 
+  // Given: 文書が行頭tab付きのMarkdownリスト「\t* item」または「\t- item」
+  // When: 行末でEnterを押す
+  // Then: 改行後の行頭へtabと同じリスト記号が引き継がれる
+  it.each([
+    ["\t* item", "\t* item\n\t* "],
+    ["\t- item", "\t- item\n\t- "],
+    ["+ item", "+ item\n+ "],
+    ["1. item", "1. item\n2. "],
+    ["- [ ] item", "- [ ] item\n- [ ] "],
+    ["> quote", "> quote\n> "],
+    ["| cell | value |", "| cell | value |\n| "],
+  ])("Scenario: Markdownの記法を改行後へ継続する", async (initial, expected) => {
+    const { editor, doc, press } = mount(initial);
+    editor.open(1, false, false, "C:\\work\\memo.md");
+    await settle();
+    editor.goTo(0, initial.length);
+
+    press("Enter");
+    await settle();
+
+    expect(doc.text()).toBe(expected);
+  });
+
+  // Given: Markdownの空リスト項目「- 」または「1. 」の末尾
+  // When: Enterを押す
+  // Then: 記号だけを削除して現在行を空行にする
+  it.each([
+    ["- item\n- ", "- item\n"],
+    ["1. item\n2. ", "1. item\n"],
+    ["> - item\n> - ", "> - item\n> "],
+  ])("Scenario: Markdownの空リストでEnterするとリストを終了する", async (initial, expected) => {
+    const { editor, doc, press } = mount(initial);
+    editor.open(initial.split("\n").length, false, false, "C:\\work\\memo.md");
+    await settle();
+    const line = initial.split("\n").length - 1;
+    editor.goTo(line, initial.split("\n").at(-1)!.length);
+
+    press("Enter");
+    await settle();
+
+    expect(doc.text()).toBe(expected);
+  });
+
+  // Given: Markdownのコードフェンス内に2つの空白で始まる行がある
+  // When: 行末でEnterを押す
+  // Then: コードブロック内の空白インデントを継承する
+  it("Scenario: Markdownコードブロック内の空白インデントを継承する", async () => {
+    const initial = "```\n  code";
+    const { editor, doc, press } = mount(initial);
+    editor.open(2, false, false, "C:\\work\\memo.md");
+    await settle();
+    editor.goTo(1, initial.split("\n")[1].length);
+
+    press("Enter");
+    await settle();
+
+    expect(doc.text()).toBe("```\n  code\n  ");
+  });
+
+  // Given: Markdown文書の空行でコードフェンス開始の```を入力する
+  // When: ```を入力する
+  // Then: 閉じフェンスを自動挿入し、中間行へキャレットを置く
+  it("Scenario: Markdownコードフェンスの閉じ側を自動挿入する", async () => {
+    const { editor, doc, type } = mount("");
+    editor.open(1, false, false, "C:\\work\\memo.md");
+    await settle();
+
+    type("```");
+    await settle();
+
+    expect(doc.text()).toBe("```\n\n```");
+    expect(editor.captureViewState().caret).toEqual({ line: 1, col: 0 });
+  });
+
+  // Given: Markdownではないtxt文書で行頭に`- `がある
+  // When: 行末でEnterを押す
+  // Then: Markdownのリスト記号は自動挿入せず、通常の改行だけを入れる
+  it("Scenario: Markdown自動継続をtxt文書へ適用しない", async () => {
+    const { editor, doc, press } = mount("- item");
+    editor.open(1, false, false, "C:\\work\\memo.txt");
+    await settle();
+    editor.goTo(0, 6);
+
+    press("Enter");
+    await settle();
+
+    expect(doc.text()).toBe("- item\n");
+  });
+
   // Given: 文書が「one\ntwo\nthree」、選択範囲が0行1列から1行1列までである
   // When: Tab を押す
   // Then: 選択文字列がタブで置換され、行単位indentは発生しない

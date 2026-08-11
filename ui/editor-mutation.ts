@@ -2,6 +2,11 @@ import * as api from "./api";
 import type { Pos } from "./api";
 import { comparePos as cmp } from "./editor-math";
 import {
+  autoCloseMarkdownFence,
+  markdownEmptyListPrefix,
+  markdownFenceState,
+  markdownLineHasStructure,
+  newlineWithMarkdownContinuation,
   newlineWithLeadingTabs,
   planLineIndent,
   planLineUnindent,
@@ -16,6 +21,7 @@ export interface EditorMutationPorts {
   lineCache: LineCache;
   lineCount: () => number;
   isReadOnly: () => boolean;
+  isMarkdown?: () => boolean;
   applyResult: (result: api.EditResult, fromLine: number, edits?: api.EditManyItem[]) => void;
   renderAfterEdit: () => Promise<void>;
 }
@@ -30,6 +36,18 @@ export class EditorMutationController {
     const promise = this.chain.then(operation);
     this.chain = promise.catch(() => {});
     return promise;
+  }
+
+  private markdownEnabled(): boolean {
+    return this.ports.isMarkdown?.() ?? true;
+  }
+
+  private async markdownFenceStateBefore(line: number) {
+    const lines: string[] = [];
+    for (let index = 0; index < line; index += 1) {
+      lines.push(await this.ports.lineCache.line(index));
+    }
+    return markdownFenceState(lines);
   }
 
   private async blockEdits(text: string): Promise<api.EditManyItem[]> {
@@ -130,9 +148,27 @@ export class EditorMutationController {
     }
     return this.run(async () => {
       const [start, end] = selection.norm();
-      const coalesce = !selection.hasSel() && text.length === 1 && text !== "\n";
-      const result = await this.ports.doc.edit(start, end, selection.caret, text, coalesce);
-      this.ports.applyResult(result, start.line, [{ start, end, text }]);
+      let inserted = text;
+      let caret: Pos | null = null;
+      if (this.markdownEnabled()) {
+        const line = await this.ports.lineCache.line(start.line);
+        const candidate = autoCloseMarkdownFence(line, start.col, end.col, text, null);
+        if (candidate) {
+          const fenceState = await this.markdownFenceStateBefore(start.line);
+          const fence = autoCloseMarkdownFence(line, start.col, end.col, text, fenceState);
+          if (fence) {
+            inserted = fence.text;
+            caret = { line: start.line + fence.caretLineOffset, col: fence.caretCol };
+          }
+        }
+      }
+      const coalesce = !selection.hasSel() && inserted.length === 1 && inserted !== "\n";
+      const result = await this.ports.doc.edit(start, end, selection.caret, inserted, coalesce);
+      this.ports.applyResult(
+        { caret: caret ?? result.caret, line_count: result.line_count },
+        start.line,
+        [{ start, end, text: inserted }],
+      );
       await this.ports.renderAfterEdit();
     });
   }
@@ -160,15 +196,33 @@ export class EditorMutationController {
     return this.run(async () => {
       const [start, end] = this.ports.selection.norm();
       const line = await this.ports.lineCache.line(start.line);
-      const text = newlineWithLeadingTabs(line);
+      const markdown = this.markdownEnabled();
+      const fenceState = markdown && (line.startsWith(" ") || markdownLineHasStructure(line))
+        ? await this.markdownFenceStateBefore(start.line)
+        : null;
+      const emptyListPrefix = markdown && !fenceState ? markdownEmptyListPrefix(line) : null;
+      const atLineEnd = start.line === end.line
+        && start.col === end.col
+        && start.col === [...line].length;
+      const editStart = emptyListPrefix !== null && atLineEnd
+        ? { line: start.line, col: [...emptyListPrefix].length }
+        : start;
+      const editEnd = emptyListPrefix !== null && atLineEnd
+        ? { line: start.line, col: [...line].length }
+        : end;
+      const text = emptyListPrefix !== null && atLineEnd
+        ? ""
+        : markdown
+          ? newlineWithMarkdownContinuation(line, fenceState)
+          : newlineWithLeadingTabs(line);
       const result = await this.ports.doc.edit(
-        start,
-        end,
+        editStart,
+        editEnd,
         this.ports.selection.caret,
         text,
         false,
       );
-      this.ports.applyResult(result, start.line, [{ start, end, text }]);
+      this.ports.applyResult(result, start.line, [{ start: editStart, end: editEnd, text }]);
       await this.ports.renderAfterEdit();
     });
   }
