@@ -148,6 +148,49 @@ describe("Feature: TabManager", () => {
     expect(manager.state.tabs[0].selectedRelPath).toBe("deleted.txt");
   });
 
+  // Feature: フォルダ検索結果からの連続操作
+  // Scenario: 変更中の同じファイルを再選択する
+  // Given: folder tab が memo.txt を選択中で dirty
+  // When: 同じ memo.txt へ navigateEntry する
+  // Then: 確認と再読込を行わず dirty の本文を維持する
+  it("Scenario: 同じフォルダ内ファイルへの再移動は未保存確認を出さない", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init({
+      tabs: [{ id: "folder", path: "C:\\work", kind: "folder", label: "work" }],
+      activeId: "folder",
+    }, null, null);
+    doc.current.folderRoot = "C:\\work";
+    doc.current.selectedRelPath = "memo.txt";
+    doc.current.dirty = true;
+    vi.mocked(doc.confirmDiscard).mockClear();
+    vi.mocked(doc.selectEntry).mockClear();
+
+    await expect(manager.navigateEntry("memo.txt")).resolves.toBe(true);
+
+    expect(doc.confirmDiscard).not.toHaveBeenCalled();
+    expect(doc.selectEntry).not.toHaveBeenCalled();
+    expect(doc.current.dirty).toBe(true);
+  });
+
+  // Feature: 終了時の未保存確認
+  // Scenario: dirty なメモを閉じる
+  // Given: active document が dirty で確認処理が false を返す
+  // When: saveForExit を呼ぶ
+  // Then: 終了を止め、save を自動実行しない
+  it("Scenario: 終了前に未保存メモの確認結果を待つ", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init(stored, null, null);
+    doc.current.dirty = true;
+    vi.mocked(doc.confirmDiscard).mockResolvedValue(false);
+
+    await expect(manager.saveForExit()).resolves.toBe(false);
+
+    expect(doc.confirmDiscard).toHaveBeenCalledOnce();
+    expect(doc.save).not.toHaveBeenCalled();
+  });
+
   // Given: activeId=a の stored があり、confirmDiscard は true を返す
   // When: init 後に manager.activate("b") を呼ぶ
   // Then: confirmDiscard は1回、openPath の最終呼出しは C:\work\b.txt と false、activeId は b

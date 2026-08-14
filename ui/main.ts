@@ -97,6 +97,7 @@ let previewCollapsed = false;
 let previewFullscreen = false;
 let currentLine = 1;
 let tabs: TabManager;
+let sidebar: Sidebar;
 let restoringEditorFont = true;
 let imageCleanupTimer: number | undefined;
 let externalRequestChain = Promise.resolve();
@@ -293,9 +294,10 @@ const registeredCommandPorts = {
 
 // 部品どうしが相互に参照するため、型注釈で推論の循環を切る
 const editor: VirtualEditor = new VirtualEditor(editorHost, {
-  onDocChange: (lineCount) => {
+  onDocChange: (lineCount, edits) => {
     doc.onEdit(lineCount);
     statusbar.setLineCount(lineCount);
+    sidebar?.refreshWorkspaceSearch(doc.current.selectedRelPath, edits ?? []);
     scheduleImageCleanup();
   },
   onCursor: (line, col) => {
@@ -333,7 +335,7 @@ editor.setFont(getSetting("fontFamily"), getSetting("fontSize"));
 restoringEditorFont = false;
 editor.setTabSize(statusbar.setIndent(getSetting("indentSize")));
 
-const sidebar = new Sidebar(sidebarEl, {
+sidebar = new Sidebar(sidebarEl, {
   onSelect: async (relPath, newTab) => {
     if (newTab) {
       await openInNewTab(relPath);
@@ -345,6 +347,10 @@ const sidebar = new Sidebar(sidebarEl, {
   onExpandArchive: (relPath) =>
     withArchivePassword(relPath, () => api.listArchiveEntries(relPath)),
   onExpandFolder: (relDir) => api.listFolderEntries(relDir),
+  onMoveEntry: async (sourceRelPath, targetRelDir) => {
+    const info = await api.moveEntry(sourceRelPath, targetRelDir);
+    doc.applyMoved(info, movedRelPath(doc.current.selectedRelPath, sourceRelPath, targetRelDir));
+  },
   onTreeError: async (error) => {
     if (!isPasswordCancelled(error)) await showError("フォルダを展開できませんでした", error);
   },
@@ -366,6 +372,13 @@ const sidebar = new Sidebar(sidebarEl, {
     else await editor.selectRange(result.line, result.col, result.col + length);
     return true;
   },
+  onReplace: async (result, replacement) => {
+    if (result.is_filename) return false;
+    if (!(await tabs.navigateEntry(result.rel_path))) return false;
+    const [, length] = result.highlights[0] ?? [0, 0];
+    if (!length) return false;
+    return editor.replaceRange(result.line, result.col, result.col + length, replacement);
+  },
 }, loadSearchOptions());
 
 // 検索の途中経過。確定を待たずに届いた分から並べる
@@ -385,6 +398,20 @@ void api.onDocumentLoadProgress((progress) => {
 async function openInNewTab(relPath: string, goto?: api.Pos) {
   const root = doc.current.folderRoot;
   if (root) await tabs.open(joinWindowsRoot(root, relPath), goto);
+}
+
+function movedRelPath(currentRelPath: string, sourceRelPath: string, targetRelDir: string): string {
+  const current = currentRelPath.replace(/\\/g, "/");
+  const source = sourceRelPath.replace(/\\/g, "/").replace(/\/$/, "");
+  const target = targetRelDir.replace(/\\/g, "/").replace(/\/$/, "");
+  const suffix = current === source
+    ? ""
+    : current.startsWith(`${source}/`) || current.startsWith(`${source}::`)
+      ? current.slice(source.length)
+      : null;
+  if (suffix === null) return currentRelPath;
+  const name = source.split("/").at(-1) ?? source;
+  return `${target ? `${target}/` : ""}${name}${suffix}`;
 }
 
 const windowChrome = new WindowChrome($("titlebar"), win, {

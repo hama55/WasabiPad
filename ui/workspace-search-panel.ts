@@ -1,4 +1,4 @@
-import type { WorkspaceSearchOptions, WorkspaceSearchOutcome, WorkspaceSearchResult } from "./api";
+import type { EditManyItem, WorkspaceSearchOptions, WorkspaceSearchOutcome, WorkspaceSearchResult } from "./api";
 import type { ContextTarget } from "./context-target";
 import { isMiddleClick } from "./interaction-constants";
 import { iconButton } from "./icon-button";
@@ -28,6 +28,8 @@ export interface WorkspaceSearchPorts {
   // 一致の範囲は result.highlights が持つ。パターンを渡さないのは、
   // 正規表現や大小の畳み込みで「当たった長さ」がパターンの長さと一致しないため。
   onOpen: (result: WorkspaceSearchResult, newTab: boolean) => void | boolean | Promise<void | boolean>;
+  // 本文一致を検索結果の位置で1件置換する。ファイル名一致では呼ばない。
+  onReplace?: (result: WorkspaceSearchResult, replacement: string) => void | boolean | Promise<void | boolean>;
   onContextMenu: (x: number, y: number, target: ContextTarget) => void;
   // 検索条件が変わった。保存先を知るのは呼び出し側 (ここは永続化を知らない)
   onOptionsChange: (options: WorkspaceSearchOptions) => void;
@@ -67,6 +69,7 @@ const SCOPE_TOGGLES: [string, ToggleKey][] = [
 export class WorkspaceSearchPanel {
   readonly bar: HTMLElement; // 検索窓 (ヘッダ + 入力欄 + 件数)
   private searchInput: HTMLInputElement;
+  private replaceInput: HTMLInputElement;
   private searchStop: HTMLButtonElement;
   private summary: HTMLElement;
   private toggleButtons = new Map<ToggleKey, HTMLButtonElement>();
@@ -89,11 +92,13 @@ export class WorkspaceSearchPanel {
     const header = this.buildHeader();
     const row = this.buildInputRow();
     this.searchInput = row.querySelector("input")!;
+    const replaceRow = this.buildReplaceRow();
+    this.replaceInput = replaceRow.querySelector("input")!;
     this.summary = document.createElement("div");
     this.summary.className = "ws-summary";
     this.summary.hidden = true;
     this.searchStop = header.querySelector(".ws-stop")!;
-    this.bar.append(header, row, this.summary);
+    this.bar.append(header, row, replaceRow, this.summary);
     this.searchInput.addEventListener("input", () => this.queueSearch());
   }
 
@@ -113,6 +118,28 @@ export class WorkspaceSearchPanel {
     this.folderRoot = folderRoot;
     this.bar.hidden = folderRoot === null;
     if (folderRoot) this.searchInput.value = this.state.pattern;
+    this.ports.onViewChange();
+  }
+
+  // 未保存の本文は backend のフォルダ検索から見えないため再走査しない。
+  // 編集範囲だけを既存結果へ反映し、後続一致の位置を現バッファに合わせる。
+  refreshAfterDocumentChange(relPath: string, edits: EditManyItem[]) {
+    if (!this.folderRoot || !this.state.pattern || !relPath || !edits.length) return;
+    this.openRequest++;
+    if (this.state.outcome === "searching") this.stop();
+    const normalizedRelPath = relPath.replace(/\\/g, "/");
+    const update = (results: WorkspaceSearchResult[]) => results.flatMap((result) =>
+      result.rel_path.replace(/\\/g, "/") !== normalizedRelPath || result.is_filename
+        ? [result]
+        : adjustResultAfterEdits(result, edits)
+    );
+    this.state.partial = update(this.state.partial);
+    if (this.state.outcome && typeof this.state.outcome === "object") {
+      this.state.outcome = { ...this.state.outcome, results: update(this.state.outcome.results) };
+    }
+    if (this.state.selected && !this.shownResults().some((result) => searchResultKey(result) === this.state.selected)) {
+      this.state.selected = null;
+    }
     this.ports.onViewChange();
   }
 
@@ -168,6 +195,19 @@ export class WorkspaceSearchPanel {
     toggles.className = "ws-toggles";
     toggles.append(...MATCH_TOGGLES.map(([icon, key]) => this.targetToggle(icon, key)));
     row.append(input, toggles);
+    return row;
+  }
+
+  private buildReplaceRow(): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "ws-replace-row";
+    const input = document.createElement("input");
+    input.placeholder = "置換後";
+    input.spellcheck = false;
+    const hint = document.createElement("span");
+    hint.className = "ws-replace-hint";
+    hint.textContent = "一致行の置換";
+    row.append(input, hint);
     return row;
   }
 
@@ -471,10 +511,39 @@ export class WorkspaceSearchPanel {
     preview.className = "ws-preview";
     preview.appendChild(highlightedPreview(match.preview, match.highlights));
     div.append(mark, preview);
+    if (!match.is_filename) {
+      const replace = document.createElement("button");
+      replace.className = "ws-replace-button";
+      replace.type = "button";
+      replace.textContent = "置換";
+      replace.title = "この一致だけ置換";
+      replace.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        this.invokeReplace(match);
+      });
+      div.appendChild(replace);
+    }
     div.title = match.preview;
     div.addEventListener("click", () => this.invokeOpen(match, false));
     this.bindOpen(div, match);
     return div;
+  }
+
+  private invokeReplace(match: WorkspaceSearchResult) {
+    const onReplace = this.ports.onReplace;
+    if (!onReplace) return;
+    const request = ++this.openRequest;
+    try {
+      void Promise.resolve(onReplace(match, this.replaceInput.value))
+        .then((replaced) => {
+          if (replaced === false || request !== this.openRequest) return;
+          this.queueSearch(0);
+        })
+        .catch((error) => this.reportUiError(error));
+    } catch (error) {
+      void this.reportUiError(error);
+    }
   }
 
   private invokeOpen(match: WorkspaceSearchResult, newTab: boolean) {
@@ -554,4 +623,53 @@ function emptyNotice(detail: string): HTMLElement {
   excluded.textContent = detail;
   empty.append(title, excluded);
   return empty;
+}
+
+function adjustResultAfterEdits(result: WorkspaceSearchResult, edits: EditManyItem[]): WorkspaceSearchResult[] {
+  let current: WorkspaceSearchResult | null = result;
+  const ordered = [...edits].sort((a, b) => comparePos(b.start, a.start));
+  for (const edit of ordered) {
+    if (!current) break;
+    current = adjustResultAfterEdit(current, edit);
+  }
+  return current ? [current] : [];
+}
+
+function adjustResultAfterEdit(result: WorkspaceSearchResult, edit: EditManyItem): WorkspaceSearchResult | null {
+  const length = result.highlights[0]?.[1] ?? 0;
+  const start = { line: result.line, col: result.col };
+  const end = { line: result.line, col: result.col + length };
+  const insertion = comparePos(edit.start, edit.end) === 0;
+  const overlaps = insertion
+    ? comparePos(start, edit.start) < 0 && comparePos(edit.start, end) < 0
+    : comparePos(start, edit.end) < 0 && comparePos(edit.start, end) < 0;
+  if (overlaps || (!length && comparePos(start, edit.start) === 0 && !insertion)) return null;
+  if (comparePos(start, edit.end) < 0) return result;
+  const mapped = mapPositionAfterEdit(start, edit);
+  return { ...result, line: mapped.line, col: mapped.col };
+}
+
+function mapPositionAfterEdit(pos: { line: number; col: number }, edit: EditManyItem) {
+  if (comparePos(pos, edit.start) < 0) return pos;
+  const replacementLines = edit.text.split("\n");
+  const replacementEnd = replacementLines.length === 1
+    ? { line: edit.start.line, col: edit.start.col + [...replacementLines[0]].length }
+    : {
+      line: edit.start.line + replacementLines.length - 1,
+      col: [...replacementLines[replacementLines.length - 1]].length,
+    };
+  if (comparePos(pos, edit.end) >= 0) {
+    if (pos.line === edit.end.line) {
+      return { line: replacementEnd.line, col: replacementEnd.col + pos.col - edit.end.col };
+    }
+    return {
+      line: pos.line + replacementEnd.line - edit.end.line,
+      col: pos.col,
+    };
+  }
+  return replacementEnd;
+}
+
+function comparePos(a: { line: number; col: number }, b: { line: number; col: number }): number {
+  return a.line - b.line || a.col - b.col;
 }

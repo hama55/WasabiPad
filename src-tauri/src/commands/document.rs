@@ -114,6 +114,15 @@ pub(crate) fn rename_entry(
         .map_err(|e| e.to_string())
 }
 
+pub(crate) fn move_entry(
+    source_rel_path: String,
+    target_rel_dir: String,
+    state: State,
+) -> Result<DocInfo, String> {
+    with_doc(&state, |doc| doc.move_entry(&source_rel_path, &target_rel_dir))?
+        .map_err(|e| e.to_string())
+}
+
 pub(crate) fn delete_entry(rel_path: String, state: State) -> Result<DocInfo, String> {
     with_doc(&state, |doc| doc.delete_entry(&rel_path))?
         .map_err(|e| e.to_string())

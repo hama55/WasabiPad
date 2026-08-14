@@ -192,6 +192,20 @@ export class DocumentController {
     this.onEdit(info.line_count);
   }
 
+  // フォルダ内の移動後は本文を読み直さず、保存先と表示パスだけ追従させる。
+  // dirty は維持する。
+  applyMoved(info: api.DocInfo, selectedRelPath: string) {
+    this.view.hideExternalBanner();
+    this.session.displayPath = info.path;
+    if (this.session.savePath) this.session.savePath = info.path;
+    if (this.session.archivePath) this.session.archivePath = info.path;
+    this.session.selectedRelPath = selectedRelPath;
+    this.view.addressbar.render(info.path);
+    this.view.editor.setExternalFilePath(externalFilePathOf(info), markdownForSession(this.session));
+    this.view.statusbar.setModifiedAt(info.modified_at);
+    this.updateTitle();
+  }
+
   async openPath(path: string, confirm = true): Promise<boolean> {
     if (confirm && !(await this.confirmDiscard())) return false;
     const request = ++this.loadRequest;

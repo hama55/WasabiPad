@@ -146,6 +146,21 @@ describe("Feature: VirtualEditor", () => {
     expect(doc.calls.some((call) => call.startsWith("lines("))).toBe(true);
   });
 
+  // Feature: フォルダ検索の一致単位置換
+  // Scenario: エディタ上の一致範囲を置換する
+  // Given: 「before needle after」を表示している
+  // When: needle の範囲を wasabi へ置換する
+  // Then: 文書本文が置換され、成功を返す
+  it("Scenario: 検索結果から指定範囲だけを置換する", async () => {
+    const { editor, doc } = mount("before needle after");
+    editor.open(1, false);
+    await settle();
+
+    await expect(editor.replaceRange(0, 7, 13, "wasabi")).resolves.toBe(true);
+
+    expect(doc.text()).toBe("before wasabi after");
+  });
+
   // Given: 文書をエディタで表示している
   // When: エディタ上で Ctrl+ホイールを操作する
   // Then: フォントサイズ変更として通知し、フォントファミリー変更とは通知しない

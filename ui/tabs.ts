@@ -218,6 +218,12 @@ export class TabManager {
   }
 
   navigateEntry(relPath: string): Promise<boolean> {
+    // 同じファイルを検索結果から再度選んだだけなら、再読込も確認も不要。
+    // dirty と編集中のバッファを維持したまま、呼び出し側が一致位置を扱う。
+    if (this.doc.current.folderRoot
+      && this.doc.current.selectedRelPath.replace(/\\/g, "/") === relPath.replace(/\\/g, "/")) {
+      return Promise.resolve(true);
+    }
     return this.runNavigationCommand(() =>
       this.navigateCurrent(async () => (await this.doc.selectEntry(relPath)) === true)
     );
@@ -401,7 +407,7 @@ export class TabManager {
   }
 
   async saveForExit(): Promise<boolean> {
-    if (this.doc.current.dirty && !await this.doc.save()) return false;
+    if (!(await this.doc.confirmDiscard())) return false;
     this.rememberActiveView();
     return true;
   }

@@ -345,7 +345,7 @@ async function loadArchiveImages(
   archiveEntry: string | null,
 ) {
   const images = [...article.querySelectorAll<HTMLImageElement>("img")];
-  await Promise.all(images.map(async (image) => {
+  for (const image of images) {
     let archiveUrl: string | null = null;
     let keepArchiveUrl = false;
     try {
@@ -376,7 +376,7 @@ async function loadArchiveImages(
         releaseArchiveAssetUrl(archiveUrl);
       }
     }
-  }));
+  }
 }
 
 async function waitForImageLayout(image: HTMLImageElement) {

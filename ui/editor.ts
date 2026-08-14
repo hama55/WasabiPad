@@ -57,7 +57,7 @@ function isPreviewLine(line: number, range: { start: Pos; end: Pos } | null): bo
 }
 
 export interface EditorPorts {
-  onDocChange: (lineCount: number) => void;
+  onDocChange: (lineCount: number, edits?: api.EditManyItem[]) => void;
   onCursor: (line: number, col: number) => void;
   onFontChange: (fontFamily: string, fontSize: number, changed: "family" | "size" | "both") => void;
   openExternally: (path: string) => void | Promise<unknown>;
@@ -127,7 +127,7 @@ export class VirtualEditor {
   private lastFindMatch: { start: Pos; end: Pos; pat: string; matchCase: boolean } | null = null; // 連続置換が対象にしてよい直前の一致
   private busy = false; // 全置換チャンク実行中は入力を無効化 (レジューム状態の破損防止)
 
-  private onDocChange: (lineCount: number) => void;
+  private onDocChange: (lineCount: number, edits?: api.EditManyItem[]) => void;
   private onCursor: (line: number, col: number) => void;
   private onFontChange: (fontFamily: string, fontSize: number, changed: "family" | "size" | "both") => void;
   private externalFilePath: string | null = null;
@@ -472,6 +472,27 @@ export class VirtualEditor {
       { line: targetLine, col: Math.max(startCol, endCol) },
     );
     this.focus();
+  }
+
+  // フォルダ検索の「この一致だけ置換」。編集後は onDocChange が検索を引き直すため、
+  // 古い結果を次の置換へ持ち越さない。
+  async replaceRange(line: number, startCol: number, endCol: number, text: string): Promise<boolean> {
+    if (this.readOnly || this.busy) return false;
+    const targetLine = Math.max(0, Math.min(this.lineCount - 1, line));
+    const generation = this.documentGeneration;
+    const lineText = await this.lineCache.line(targetLine);
+    if (generation !== this.documentGeneration) return false;
+    const start = Math.max(0, Math.min(charLen(lineText), startCol));
+    const end = Math.max(start, Math.min(charLen(lineText), endCol));
+    if (start === end) return false;
+    const startPos = { line: targetLine, col: start };
+    const endPos = { line: targetLine, col: end };
+    const result = await this.doc.edit(startPos, endPos, startPos, text, false);
+    if (generation !== this.documentGeneration) return false;
+    this.applyResult(result, targetLine, [{ start: startPos, end: endPos, text }]);
+    await this.renderAfterEdit();
+    this.focus();
+    return true;
   }
 
   setWrap(on: boolean) {
@@ -1375,7 +1396,7 @@ export class VirtualEditor {
     this.sel.secondary = [];
     this.sel.block = null;
     this.sel.goalX = null;
-    this.onDocChange(this.lineCount);
+    this.onDocChange(this.lineCount, edits);
     this.liveViewers.scheduleRefresh();
   }
 

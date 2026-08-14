@@ -51,6 +51,7 @@ describe("Feature: WorkspaceSearchPanel", () => {
     onCancel: WorkspaceSearchPorts["onCancel"] = () => {},
     onError: WorkspaceSearchPorts["onError"] = async () => {},
     onCancelError: WorkspaceSearchPorts["onCancelError"] = undefined,
+    onReplace: NonNullable<WorkspaceSearchPorts["onReplace"]> = () => {},
   ) {
     const host = document.createElement("div");
     document.body.appendChild(host);
@@ -61,6 +62,7 @@ describe("Feature: WorkspaceSearchPanel", () => {
       onCancelError,
       onError,
       onOpen,
+      onReplace,
       onContextMenu: () => {},
       onOptionsChange: () => {},
       onViewChange: () => {
@@ -181,6 +183,46 @@ describe("Feature: WorkspaceSearchPanel", () => {
     host.querySelector<HTMLElement>(".ws-match")!.click();
 
     expect(onOpen).toHaveBeenCalledWith(result, false);
+  });
+
+  // Feature: フォルダ検索の置換
+  // Scenario: 一致行を1件置換する
+  // Given: a.txt の本文一致と置換後文字列を表示している
+  // When: 一致行の「置換」を押す
+  // Then: onReplace に検索結果と置換後文字列を渡す
+  it("Scenario: 検索結果の一致単位で置換を依頼する", async () => {
+    vi.useFakeTimers();
+    const result = hit("a.txt", 2, "before needle after", [[7, 6]]);
+    const onReplace = vi.fn(async () => true);
+    const host = mount(async () => outcome([result]), () => {}, () => {}, async () => {}, undefined, onReplace);
+    await search(host, "needle");
+    const replacement = host.querySelector<HTMLInputElement>(".ws-replace-row > input")!;
+    replacement.value = "wasabi";
+
+    host.querySelector<HTMLButtonElement>(".ws-replace-button")!.click();
+
+    expect(onReplace).toHaveBeenCalledWith(result, "wasabi");
+  });
+
+  // Feature: 編集後のフォルダ検索位置
+  // Scenario: 一致より前に文字を挿入する
+  // Given: folder search が a.txt の先頭一致を表示している
+  // When: 一致より前へ2文字挿入した編集を通知する
+  // Then: 同じ検索結果の列を2文字分ずらして開く
+  it("Scenario: 本文編集後は検索結果の列をずらす", async () => {
+    vi.useFakeTimers();
+    const onOpen = vi.fn();
+    const host = mount(async () => outcome([hit("a.txt", 0, "needle", [[0, 6]])]), onOpen);
+    await search(host, "needle");
+
+    mounted.refreshAfterDocumentChange("a.txt", [{
+      start: { line: 0, col: 0 },
+      end: { line: 0, col: 0 },
+      text: "xx",
+    }]);
+    host.querySelector<HTMLElement>(".ws-match")!.click();
+
+    expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ line: 0, col: 2 }), false);
   });
 
   // Given: a.txt と b.txt に各1件の検索結果がある

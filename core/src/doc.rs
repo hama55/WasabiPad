@@ -29,7 +29,7 @@ use crate::search_replace::{self, FindStep};
 use crate::undo::UndoStack;
 use std::collections::HashMap;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 fn is_delete_target_affected(
@@ -51,6 +51,35 @@ fn create_empty_file(path: &Path) -> io::Result<()> {
             "同名のファイルが既にあります",
         )),
         Err(error) => Err(error),
+    }
+}
+
+fn normalize_move_path(relative: &str, allow_empty: bool) -> io::Result<String> {
+    if relative.is_empty() {
+        if allow_empty {
+            return Ok(String::new());
+        }
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "移動元が空です"));
+    }
+    let normalized = relative.replace('\\', "/");
+    let path = Path::new(&normalized);
+    if path.is_absolute()
+        || path.components().any(|component| {
+            matches!(component, Component::CurDir | Component::ParentDir | Component::RootDir | Component::Prefix(_))
+        })
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "不正な移動先です"));
+    }
+    Ok(normalized)
+}
+
+fn rebase_path(path: &mut PathBuf, old_root: &Path, new_root: &Path) {
+    if let Ok(rest) = path.strip_prefix(old_root) {
+        *path = if rest.as_os_str().is_empty() {
+            new_root.to_path_buf()
+        } else {
+            new_root.join(rest)
+        };
     }
 }
 
@@ -869,6 +898,91 @@ impl Doc {
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default();
         self.info(path_str)
+    }
+
+    // フォルダビューからのD&D移動。移動元・移動先とも現在のフォルダ配下に限定し、
+    // 開いている文書のパスだけを追従させる (本文とdirty状態は保持する)。
+    pub fn move_entry(&mut self, source_rel_path: &str, target_rel_dir: &str) -> io::Result<DocInfo> {
+        let source_rel_path = normalize_move_path(source_rel_path, false)?;
+        let target_rel_dir = normalize_move_path(target_rel_dir, true)?;
+        let root = self
+            .source
+            .folder_root()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| io::Error::other("フォルダを開いていません"))?;
+        let source = join_relative(&root, &source_rel_path);
+        let target_dir = join_relative(&root, &target_rel_dir);
+        let source_metadata = std::fs::symlink_metadata(&source)?;
+        if source_metadata.file_type().is_symlink() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "シンボリックリンクは移動できません",
+            ));
+        }
+        let canonical_root = root.canonicalize()?;
+        let canonical_source = source.canonicalize()?;
+        let canonical_target_dir = target_dir.canonicalize()?;
+        if !canonical_source.starts_with(&canonical_root)
+            || !canonical_target_dir.starts_with(&canonical_root)
+            || !canonical_target_dir.is_dir()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "フォルダの外へは移動できません",
+            ));
+        }
+        if source_metadata.is_dir() && canonical_target_dir.starts_with(&canonical_source) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "フォルダ自身やその配下へは移動できません",
+            ));
+        }
+        let name = source.file_name().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "移動元の名前を取得できません")
+        })?;
+        let destination = target_dir.join(name);
+        if destination == source {
+            let path = self
+                .source
+                .display_path()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|| root.to_string_lossy().into_owned());
+            return self.info(path);
+        }
+        if std::fs::symlink_metadata(&destination).is_ok() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "移動先に同名のファイルまたはフォルダがあります",
+            ));
+        }
+
+        let current_path = self.source.display_path().map(Path::to_path_buf);
+        let affected = current_path
+            .as_deref()
+            .is_some_and(|path| path.starts_with(&source));
+        let mut held_target = affected.then(|| std::mem::replace(&mut self.source.target, Target::None));
+        if let Err(error) = std::fs::rename(&source, &destination) {
+            if let Some(target) = held_target.take() {
+                self.source.target = target;
+            }
+            return Err(error);
+        }
+        if let Some(mut target) = held_target {
+            match &mut target {
+                Target::File { path, .. } | Target::Archive { path, .. } => {
+                    rebase_path(path, &source, &destination);
+                }
+                Target::None => {}
+            }
+            self.source.target = target;
+        }
+
+        let path = self
+            .source
+            .display_path()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| root.to_string_lossy().into_owned());
+        self.info(path)
     }
 
     // フォルダビューからの削除は、開いているフォルダの配下だけに限定する。
@@ -2730,6 +2844,74 @@ mod tests {
         assert_eq!(d.line_count(), 1);
         let root_string = root.to_string_lossy().into_owned();
         assert_eq!(info.folder_root.as_deref(), Some(root_string.as_str()));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Feature: フォルダビューのD&D移動
+    // Scenario: 選択中のファイルを別フォルダへ移動する
+    // Given: sub/memo.txt を開いているフォルダ文書
+    // When: memo.txt を sub2 へ移動する
+    // Then: ファイルと開いている文書のパスが移動先へ追従する
+    #[test]
+    fn moving_selected_file_updates_the_open_path() {
+        let root = std::env::temp_dir().join(format!("wasabipad_move_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("sub2")).unwrap();
+        std::fs::write(root.join("memo.txt"), "memo").unwrap();
+
+        let mut d = Doc::open(&root).unwrap();
+        d.select_entry("memo.txt").unwrap().unwrap();
+        let info = d.move_entry("memo.txt", "sub2").unwrap();
+
+        assert!(root.join("sub2/memo.txt").is_file());
+        assert_eq!(d.path(), Some(root.join("sub2/memo.txt").as_path()));
+        assert_eq!(info.path, root.join("sub2").join("memo.txt").to_string_lossy());
+        assert_eq!(d.lines(0, 1), vec!["memo"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Feature: フォルダビューのD&D移動
+    // Scenario: 選択中のファイルを含むフォルダを別フォルダへ移動する
+    // Given: a/memo.txt を開いているフォルダ文書と dest フォルダ
+    // When: a を dest へ移動する
+    // Then: 開いている本文のパスも dest/a/memo.txt へ追従する
+    #[test]
+    fn moving_selected_directory_updates_the_open_path() {
+        let root = std::env::temp_dir().join(format!("wasabipad_move_dir_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("a")).unwrap();
+        std::fs::create_dir_all(root.join("dest")).unwrap();
+        std::fs::write(root.join("a/memo.txt"), "memo").unwrap();
+
+        let mut d = Doc::open(&root).unwrap();
+        d.select_entry("a/memo.txt").unwrap().unwrap();
+        d.move_entry("a", "dest").unwrap();
+
+        assert_eq!(d.path(), Some(root.join("dest/a/memo.txt").as_path()));
+        assert!(root.join("dest/a/memo.txt").is_file());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Feature: フォルダビューのD&D移動
+    // Scenario: フォルダ自身の配下へ移動する操作を拒否する
+    // Given: a/memo.txt を開いているフォルダ文書
+    // When: a を a/inner へ移動しようとする
+    // Then: エラーになり元のフォルダは残る
+    #[test]
+    fn moving_directory_into_itself_is_rejected() {
+        let root = std::env::temp_dir().join(format!("wasabipad_move_desc_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("a/inner")).unwrap();
+        std::fs::write(root.join("a/memo.txt"), "memo").unwrap();
+
+        let mut d = Doc::open(&root).unwrap();
+        let error = match d.move_entry("a", "a/inner") {
+            Ok(_) => panic!("フォルダ自身の配下への移動を受理した"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(root.join("a/memo.txt").is_file());
         let _ = std::fs::remove_dir_all(&root);
     }
 

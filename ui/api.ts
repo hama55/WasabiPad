@@ -114,6 +114,8 @@ export const createNote = (dir: string | null, name: string, enc: Encoding, eol:
 // サイドバー上のファイル/フォルダをリネームする (relPath はフォルダルートからの相対パス)
 export const renameEntry = (relPath: string, newName: string) =>
   invoke<DocInfo>(IPC_COMMANDS.renameEntry, { relPath, newName });
+export const moveEntry = (sourceRelPath: string, targetRelDir: string) =>
+  invoke<DocInfo>(IPC_COMMANDS.moveEntry, { sourceRelPath, targetRelDir });
 export const deleteEntry = (relPath: string) =>
   invoke<DocInfo>(IPC_COMMANDS.deleteEntry, { relPath });
 

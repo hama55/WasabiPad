@@ -13,6 +13,7 @@ export const IPC_COMMANDS = {
   workspaceSearchCancel: "workspace_search_cancel",
   createNote: "create_note",
   renameEntry: "rename_entry",
+  moveEntry: "move_entry",
   deleteEntry: "delete_entry",
   savePastedImage: "save_pasted_image",
   cleanupUnusedImages: "cleanup_unused_images",

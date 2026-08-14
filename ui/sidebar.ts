@@ -1,4 +1,4 @@
-import type { FolderEntry, WorkspaceSearchOptions, WorkspaceSearchResult } from "./api";
+import type { EditManyItem, FolderEntry, WorkspaceSearchOptions, WorkspaceSearchResult } from "./api";
 import { WorkspaceSearchPanel, type WorkspaceSearchPorts } from "./workspace-search-panel";
 import { archiveEntryPath } from "./archive-path";
 import type { ContextTarget } from "./context-target";
@@ -25,6 +25,20 @@ interface Row {
   childrenLoaded: boolean; // dir/archive の子一覧を取得済みか
 }
 
+interface PointerDrag {
+  sourceRelPath: string;
+  startX: number;
+  startY: number;
+  moved: boolean;
+  targetRelDir: string | null;
+  cleanup: () => void;
+}
+
+interface FolderMove {
+  sourceRelPath: string;
+  targetRelDir: string;
+}
+
 // 行頭の記号 [閉じているとき, 開いているとき]。種別を足したらここも足りなくなる
 // (Record なので、足し忘れは型が落とす)。
 const ROW_GLYPHS: Record<RowKind, [string, string]> = {
@@ -43,6 +57,7 @@ export interface SidebarPorts extends Omit<WorkspaceSearchPorts, "onViewChange" 
   onContextMenu: (x: number, y: number, target: ContextTarget | null) => void;
   onExpandArchive: (relPath: string) => Promise<string[]>;
   onExpandFolder: (relDir: string) => Promise<FolderEntry[]>;
+  onMoveEntry?: (sourceRelPath: string, targetRelDir: string) => Promise<void>;
   onTreeError: (error: unknown) => Promise<void>;
 }
 
@@ -60,7 +75,14 @@ export class Sidebar {
   private onContextMenu: (x: number, y: number, target: ContextTarget | null) => void;
   private onExpandArchive: (relPath: string) => Promise<string[]>;
   private onExpandFolder: (relDir: string) => Promise<FolderEntry[]>;
+  private onMoveEntry: (sourceRelPath: string, targetRelDir: string) => Promise<void>;
   private onTreeError: (error: unknown) => Promise<void>;
+  private dropTarget: HTMLElement | null = null;
+  private pointerDrag: PointerDrag | null = null;
+  private suppressRowClick = false;
+  private lastFolderMove: FolderMove | null = null;
+  private entryMoveInProgress = false;
+  private workspaceRoot: string | null = null;
 
   constructor(host: HTMLElement, ports: SidebarPorts, searchOptions: WorkspaceSearchOptions) {
     this.host = host;
@@ -68,6 +90,7 @@ export class Sidebar {
     this.onContextMenu = ports.onContextMenu;
     this.onExpandArchive = ports.onExpandArchive;
     this.onExpandFolder = ports.onExpandFolder;
+    this.onMoveEntry = ports.onMoveEntry ?? (async () => {});
     this.onTreeError = ports.onTreeError;
     this.panel = new WorkspaceSearchPanel(searchOptions, {
       onSearch: ports.onSearch,
@@ -75,6 +98,7 @@ export class Sidebar {
       onCancelError: ports.onCancelError,
       onError: ports.onError,
       onOpen: ports.onOpen,
+      onReplace: ports.onReplace,
       onOptionsChange: ports.onOptionsChange,
       onContextMenu: (x, y, target) => this.onContextMenu(x, y, target),
       onViewChange: () => this.render(),
@@ -82,6 +106,8 @@ export class Sidebar {
     this.tree = document.createElement("div");
     this.tree.tabIndex = 0;
     this.tree.addEventListener("keydown", (event) => this.onTreeKeyDown(event));
+    this.host.addEventListener("mousedown", (event) => this.onBackButton(event), true);
+    this.host.addEventListener("auxclick", (event) => this.onBackButton(event), true);
     document.addEventListener("pointerdown", (event) => {
       if (!this.keyboardFocusLock) return;
       const target = event.target;
@@ -106,7 +132,13 @@ export class Sidebar {
   setWorkspaceSearch(folderRoot: string | null) {
     this.selectionRequest++;
     this.invalidateOpenRequests();
+    if (folderRoot !== this.workspaceRoot) this.lastFolderMove = null;
+    this.workspaceRoot = folderRoot;
     this.panel.setFolderRoot(folderRoot);
+  }
+
+  refreshWorkspaceSearch(relPath: string, edits: EditManyItem[]) {
+    this.panel.refreshAfterDocumentChange(relPath, edits);
   }
 
   acceptSearchBatch(searchId: number, results: WorkspaceSearchResult[]) {
@@ -198,6 +230,7 @@ export class Sidebar {
   setArchiveEntries(names: string[]) {
     this.selectionRequest++;
     this.invalidateOpenRequests();
+    this.lastFolderMove = null;
     this.rows = this.buildRows(names, 0, "", () => "archiveEntry");
     this.sel = null;
     this.render();
@@ -218,6 +251,7 @@ export class Sidebar {
   setArchiveRoot(displayName: string) {
     this.selectionRequest++;
     this.invalidateOpenRequests();
+    this.lastFolderMove = null;
     this.rows = [{ label: displayName, relPath: "", depth: 0, kind: "archive", expanded: false, childrenLoaded: false }];
     this.sel = null;
     this.render();
@@ -406,6 +440,12 @@ export class Sidebar {
   }
 
   private onTreeKeyDown(event: KeyboardEvent) {
+    if (isUndoShortcut(event) && (this.lastFolderMove || this.entryMoveInProgress)) {
+      event.preventDefault();
+      event.stopPropagation();
+      void this.undoLastFolderMove();
+      return;
+    }
     if (this.panel.showing || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
     const visible = this.visible();
     if (!visible.length) return;
@@ -430,14 +470,170 @@ export class Sidebar {
     this.tree.querySelector<HTMLElement>(".fv-row.sel")?.scrollIntoView?.({ block: "nearest" });
   }
 
+  private canDrop(sourceRelPath: string | null, targetRelDir: string): sourceRelPath is string {
+    if (!sourceRelPath || sourceRelPath.includes("::")) return false;
+    if (!targetRelDir) return true;
+    const source = sourceRelPath.replace(/\\/g, "/").replace(/\/$/, "");
+    const target = targetRelDir.replace(/\\/g, "/").replace(/\/$/, "");
+    return source !== target && !target.startsWith(`${source}/`);
+  }
+
+  private setDropTarget(target: HTMLElement) {
+    if (this.dropTarget === target) return;
+    this.clearDropTarget();
+    this.dropTarget = target;
+    target.classList.add("fv-drop-target");
+  }
+
+  private clearDropTarget(target?: HTMLElement) {
+    if (target && this.dropTarget !== target) return;
+    this.dropTarget?.classList.remove("fv-drop-target");
+    this.dropTarget = null;
+  }
+
+  private clearDragState() {
+    this.pointerDrag?.cleanup();
+    this.pointerDrag = null;
+    this.clearDropTarget();
+    this.host.classList.remove("fv-drop-root");
+    this.host.classList.remove("fv-dragging");
+    document.body.classList.remove("fv-dragging");
+  }
+
+  private beginPointerDrag(row: Row, event: PointerEvent) {
+    if (!isMovable(row) || event.button !== 0 || event.isPrimary === false) return;
+    this.focusTree();
+    this.clearDragState();
+    const onMove = (move: PointerEvent) => this.updatePointerDrag(move);
+    const onEnd = (end: PointerEvent) => {
+      this.pointerDrag?.cleanup();
+      this.finishPointerDrag(end);
+    };
+    const onCancel = () => this.clearDragState();
+    const cleanup = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onEnd);
+      window.removeEventListener("pointercancel", onCancel);
+    };
+    this.pointerDrag = {
+      sourceRelPath: row.relPath,
+      startX: event.clientX,
+      startY: event.clientY,
+      moved: false,
+      targetRelDir: null,
+      cleanup,
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onEnd);
+    window.addEventListener("pointercancel", onCancel);
+  }
+
+  private updatePointerDrag(event: PointerEvent) {
+    const drag = this.pointerDrag;
+    if (!drag) return;
+    if (!drag.moved && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 5) return;
+    drag.moved = true;
+    event.preventDefault();
+    document.body.classList.add("fv-dragging");
+    this.host.classList.add("fv-dragging");
+    const target = this.pointerDropTarget(event.clientX, event.clientY, drag.sourceRelPath);
+    drag.targetRelDir = target?.relPath ?? null;
+    if (!target) {
+      this.clearDropTarget();
+      this.host.classList.remove("fv-drop-root");
+    } else if (target.element === this.tree) {
+      this.clearDropTarget();
+      this.host.classList.add("fv-drop-root");
+    } else {
+      this.host.classList.remove("fv-drop-root");
+      this.setDropTarget(target.element);
+    }
+  }
+
+  private pointerDropTarget(x: number, y: number, sourceRelPath: string): { relPath: string; element: HTMLElement } | null {
+    const element = document.elementFromPoint(x, y);
+    if (!(element instanceof Element)) return null;
+    const rowElement = element.closest<HTMLElement>(".fv-row");
+    const row = rowElement && this.tree.contains(rowElement)
+      ? this.rows.find((candidate) => candidate.kind === "dir" && candidate.relPath === rowElement.dataset.relPath)
+      : undefined;
+    if (row && rowElement && this.canDrop(sourceRelPath, row.relPath)) return { relPath: row.relPath, element: rowElement };
+    if (rowElement) return null;
+    if (this.host.contains(element) && !element.closest(".fv-toolbar, .ws-search") && this.canDrop(sourceRelPath, "")) {
+      return { relPath: "", element: this.tree };
+    }
+    return null;
+  }
+
+  private finishPointerDrag(event: PointerEvent) {
+    const drag = this.pointerDrag;
+    if (!drag) return;
+    if (drag.moved) this.updatePointerDrag(event);
+    const targetRelDir = drag.targetRelDir;
+    const shouldMove = drag.moved && targetRelDir !== null;
+    this.clearDragState();
+    if (!shouldMove) return;
+    event.preventDefault();
+    this.suppressRowClick = true;
+    window.setTimeout(() => { this.suppressRowClick = false; }, 0);
+    this.moveEntry(drag.sourceRelPath, targetRelDir);
+  }
+
+  private moveEntry(sourceRelPath: string, targetRelDir: string) {
+    if (this.entryMoveInProgress) return;
+    this.entryMoveInProgress = true;
+    runAsyncBoundary(
+      async () => {
+        try {
+          await this.onMoveEntry(sourceRelPath, targetRelDir);
+          this.lastFolderMove = { sourceRelPath, targetRelDir };
+          await this.refreshFolderEntries();
+          await this.selectByRelPath(destinationRelPath(sourceRelPath, targetRelDir));
+        } finally {
+          this.entryMoveInProgress = false;
+        }
+      },
+      (error) => this.reportTreeError(error),
+    );
+  }
+
+  private onBackButton(event: MouseEvent) {
+    if (event.button !== 3 || (!this.lastFolderMove && !this.entryMoveInProgress)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    void this.undoLastFolderMove();
+  }
+
+  private async undoLastFolderMove(): Promise<boolean> {
+    const move = this.lastFolderMove;
+    if (!move || this.entryMoveInProgress) return false;
+    this.entryMoveInProgress = true;
+    try {
+      await this.onMoveEntry(destinationRelPath(move.sourceRelPath, move.targetRelDir), parentRelPath(move.sourceRelPath));
+      this.lastFolderMove = null;
+      await this.refreshFolderEntries();
+      await this.selectByRelPath(move.sourceRelPath);
+      return true;
+    } catch (error) {
+      await this.reportTreeError(error);
+      return false;
+    } finally {
+      this.entryMoveInProgress = false;
+    }
+  }
+
   // ---- フォルダ/アーカイブのツリー ----
   private folderTree(): DocumentFragment {
     const frag = document.createDocumentFragment();
     for (const i of this.visible()) {
       const r = this.rows[i];
       const div = document.createElement("div");
-      div.className = "fv-row" + (r.relPath === this.sel ? " sel" : "");
+      div.className = "fv-row" + (r.relPath === this.sel ? " sel" : "") + (isMovable(r) ? " fv-draggable" : "");
+      div.dataset.relPath = r.relPath;
       div.style.paddingLeft = `${r.depth * 14 + 4}px`;
+      if (isMovable(r)) {
+        div.addEventListener("pointerdown", (event) => this.beginPointerDrag(r, event));
+      }
 
       const arrow = document.createElement("span");
       arrow.className = "fv-arrow";
@@ -462,6 +658,7 @@ export class Sidebar {
         }
       };
       div.addEventListener("click", (e) => {
+        if (this.suppressRowClick) return;
         this.focusTree();
         runAsyncBoundary(
           () => activate(e.ctrlKey),
@@ -487,6 +684,12 @@ export class Sidebar {
       }
       frag.appendChild(div);
     }
+    if (this.rows.some(isMovable)) {
+      const rootDrop = document.createElement("div");
+      rootDrop.className = "fv-root-drop";
+      rootDrop.textContent = "↥ フォルダ直下へ移動";
+      frag.appendChild(rootDrop);
+    }
     return frag;
   }
 
@@ -501,4 +704,25 @@ export class Sidebar {
 
 function isExpandable(row: Row): boolean {
   return row.kind === "dir" || row.kind === "archive" || row.kind === "archiveDir";
+}
+
+function isMovable(row: Row): boolean {
+  return !!row.relPath && (row.kind === "dir" || row.kind === "file" || row.kind === "archive");
+}
+
+function destinationRelPath(sourceRelPath: string, targetRelDir: string): string {
+  const source = sourceRelPath.replace(/\\/g, "/").replace(/\/$/, "");
+  const target = targetRelDir.replace(/\\/g, "/").replace(/\/$/, "");
+  const name = source.split("/").at(-1) ?? source;
+  return `${target ? `${target}/` : ""}${name}`;
+}
+
+function parentRelPath(relPath: string): string {
+  const path = relPath.replace(/\\/g, "/").replace(/\/$/, "");
+  const slash = path.lastIndexOf("/");
+  return slash < 0 ? "" : path.slice(0, slash);
+}
+
+function isUndoShortcut(event: KeyboardEvent): boolean {
+  return event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey && event.key.toLowerCase() === "z";
 }
