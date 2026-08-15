@@ -213,6 +213,7 @@ body.preview-resizing * { cursor: ew-resize !important; user-select: none !impor
 .ws-title { flex: 1; min-width: 0; color: var(--fg-dim); font-size: 12px; }
 /* 一致のしかたのトグルは VSCode と同じく入力欄の内側へ重ねる */
 .ws-search-row { position: relative; display: flex; align-items: center; }
+.ws-replace-toggle { flex: none; }
 .ws-search-row > input {
   min-width: 0; flex: 1; background: var(--bg-editor); color: var(--fg);
   border: 1px solid var(--border-strong); padding: 3px 74px 3px 5px; font: 12px var(--font-ui);
@@ -230,9 +231,10 @@ body.preview-resizing * { cursor: ew-resize !important; user-select: none !impor
   line-height: 20px; cursor: default;
 }
 .ws-search .ws-toggle { font-size: 12px; min-width: 20px; }
+.ws-replace-toggle, .ve-find-toggle { font-family: "Segoe MDL2 Assets"; font-size: 12px !important; }
 .ws-search button:hover { background: var(--hover); color: var(--fg); }
 .ws-search button.on { background: var(--accent); color: #fff; }
-.ws-search button[hidden] { display: none; }
+.ws-search button[hidden], .ws-replace-row[hidden], .ws-replace-button[hidden] { display: none; }
 
 .ws-summary {
   margin-top: 5px; font-size: 12px; color: var(--fg-dim); line-height: 1.5;
@@ -270,7 +272,7 @@ body.preview-resizing * { cursor: ew-resize !important; user-select: none !impor
 }
 .ws-empty-detail {
   margin-top: 4px;
-  white-space: normal;
+  white-space: pre-line;
   line-height: 1.5;
 }
 
@@ -339,8 +341,7 @@ body.preview-resizing * { cursor: ew-resize !important; user-select: none !impor
 }
 #sidebar.fv-dragging .fv-root-drop { display: flex; }
 #sidebar.fv-drop-root .fv-root-drop { background: color-mix(in srgb, var(--accent) 25%, var(--bg-side)); color: var(--fg); }
-.fv-row.fv-draggable { cursor: grab; }
-.fv-row.fv-draggable:active, body.fv-dragging .fv-row.fv-draggable { cursor: grabbing; }
+body.fv-dragging .fv-row.fv-draggable { cursor: grabbing; }
 body.fv-dragging { cursor: grabbing; user-select: none; }
 .fv-arrow { width: 22px; text-align: center; color: var(--fg-dim); flex: none; font-size: 16px; }
 
@@ -482,7 +483,7 @@ body.fv-dragging { cursor: grabbing; user-select: none; }
   color: var(--fg); font-size: 12px; padding: 3px 7px; cursor: default;
 }
 .ve-find button:hover { background: var(--hover); }
-.ve-find-toggle { font-size: 10px; padding: 3px 5px; }
+.ve-find-toggle { padding: 3px 5px; }
 .ve-find-case { display: flex; align-items: center; gap: 2px; font-size: 12px; color: var(--fg-dim); }
 .ve-find-status { font-size: 12px; color: var(--fg-dim); min-width: 90px; }
 

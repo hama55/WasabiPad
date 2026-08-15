@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 // 検索窓は IPC も設定の保存先も知らない (条件は渡されたものを使う) ため、
 // ./api のモックは要らない。要るようになったら依存が逆流している。
 import { WorkspaceSearchPanel, type WorkspaceSearchPorts } from "./workspace-search-panel";
+import { CHEVRON_DOWN, CHEVRON_RIGHT } from "./icon-button";
 import type { WorkspaceSearchOptions, WorkspaceSearchOutcome, WorkspaceSearchResult } from "./api";
 import { DEFAULT_SEARCH_OPTIONS } from "./workspace-search-options";
 
@@ -51,7 +52,7 @@ describe("Feature: WorkspaceSearchPanel", () => {
     onCancel: WorkspaceSearchPorts["onCancel"] = () => {},
     onError: WorkspaceSearchPorts["onError"] = async () => {},
     onCancelError: WorkspaceSearchPorts["onCancelError"] = undefined,
-    onReplace: NonNullable<WorkspaceSearchPorts["onReplace"]> = () => {},
+    onReplace: WorkspaceSearchPorts["onReplace"] = () => {},
   ) {
     const host = document.createElement("div");
     document.body.appendChild(host);
@@ -95,9 +96,33 @@ describe("Feature: WorkspaceSearchPanel", () => {
     expect(text(host, ".ws-empty-detail")).toContain("バイナリファイル");
     expect(text(host, ".ws-empty-detail")).toContain(".git / .svn / node_modules");
     expect(text(host, ".ws-empty-detail")).toContain("*.min.js");
+    expect(text(host, ".ws-empty-detail")).toContain("\n");
     // 既定は無制限なので、サイズや件数を対象外として読み上げてはいけない
     expect(text(host, ".ws-empty-detail")).not.toContain("MB超");
     expect(text(host, ".ws-empty-detail")).not.toContain("件目以降");
+  });
+
+  // Given: 本文一致が1件あるフォルダ検索
+  // When: 置換欄のChevronを開閉する
+  // Then: 置換欄と一致行の置換ボタンを同じ状態で表示切替する
+  it("Scenario: 置換欄の開閉に一致行の置換ボタンを連動させる", async () => {
+    vi.useFakeTimers();
+    const host = mount(async () => outcome([hit("a.txt", 0, "needle", [[0, 6]])]));
+    await search(host, "needle");
+    const toggle = host.querySelector<HTMLButtonElement>(".ws-replace-toggle")!;
+    const replaceRow = host.querySelector<HTMLElement>(".ws-replace-row")!;
+
+    expect(toggle.textContent).toBe(CHEVRON_RIGHT);
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(replaceRow.hidden).toBe(true);
+    expect(host.querySelector<HTMLButtonElement>(".ws-replace-button")?.hidden).toBe(true);
+
+    toggle.click();
+
+    expect(toggle.textContent).toBe(CHEVRON_DOWN);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(replaceRow.hidden).toBe(false);
+    expect(host.querySelector<HTMLButtonElement>(".ws-replace-button")?.hidden).toBe(false);
   });
 
   // Given: onSearch が非同期に Error("IPC disconnected") を reject し、onError を spy する
@@ -198,10 +223,76 @@ describe("Feature: WorkspaceSearchPanel", () => {
     await search(host, "needle");
     const replacement = host.querySelector<HTMLInputElement>(".ws-replace-row > input")!;
     replacement.value = "wasabi";
+    host.querySelector<HTMLButtonElement>(".ws-replace-toggle")!.click();
 
     host.querySelector<HTMLButtonElement>(".ws-replace-button")!.click();
 
     expect(onReplace).toHaveBeenCalledWith(result, "wasabi");
+  });
+
+  // Scenario: ファイル名だけが一致する
+  // Given: ファイル名一致の検索結果を表示している
+  // When: 結果行を描画する
+  // Then: 本文を持たないため置換ボタンを出さない
+  it("Scenario: ファイル名一致は置換対象にしない", async () => {
+    vi.useFakeTimers();
+    const result = { ...hit("needle.txt", 0, "needle.txt"), is_filename: true };
+    const host = mount(async () => outcome([result]));
+    await search(host, "needle");
+
+    expect(host.querySelector(".ws-replace-button")).toBeNull();
+  });
+
+  // Scenario: 置換ボタンを完了前に連打する
+  // Given: 1件目の置換依頼が完了待ち
+  // When: 同じ一致の置換ボタンをもう一度押す
+  // Then: 同じ位置への置換依頼は1回だけになる
+  it("Scenario: 置換中の連打は二重置換しない", async () => {
+    vi.useFakeTimers();
+    const result = hit("a.txt", 2, "before needle after", [[7, 6]]);
+    let completeReplace!: (result: boolean) => void;
+    const onReplace = vi.fn(() => new Promise<boolean>((resolve) => { completeReplace = resolve; }));
+    const host = mount(async () => outcome([result]), () => {}, () => {}, async () => {}, undefined, onReplace);
+    await search(host, "needle");
+    const replace = host.querySelector<HTMLButtonElement>(".ws-replace-button")!;
+
+    replace.click();
+    replace.click();
+
+    expect(onReplace).toHaveBeenCalledOnce();
+    completeReplace(true);
+    await vi.runAllTimersAsync();
+  });
+
+  // Scenario: 同じ行の前側を短く置換する
+  // Given: `aa aa` の前後2件を検索している
+  // When: 前側を1文字へ置換し、編集通知を受ける
+  // Then: ディスクを再検索せず、後側だけを補正後の列で開く
+  it("Scenario: 置換後も後続一致を補正済み位置で開く", async () => {
+    vi.useFakeTimers();
+    const first = hit("a.txt", 0, "aa aa", [[0, 2]]);
+    const second = { ...hit("a.txt", 0, "aa aa", [[3, 2]]), col: 3 };
+    const onSearch = vi.fn(async () => outcome([first, second]));
+    const onOpen = vi.fn();
+    const onReplace = vi.fn(async () => {
+      mounted.refreshAfterDocumentChange("a.txt", [{
+        start: { line: 0, col: 0 },
+        end: { line: 0, col: 2 },
+        text: "x",
+      }]);
+      return true;
+    });
+    const host = mount(onSearch, onOpen, () => {}, async () => {}, undefined, onReplace);
+    await search(host, "aa");
+
+    host.querySelector<HTMLButtonElement>(".ws-replace-button")!.click();
+    await Promise.resolve();
+    await Promise.resolve();
+    const match = host.querySelector<HTMLElement>(".ws-match")!;
+    match.click();
+
+    expect(onSearch).toHaveBeenCalledOnce();
+    expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ rel_path: "a.txt", line: 0, col: 2 }), false);
   });
 
   // Feature: 編集後のフォルダ検索位置

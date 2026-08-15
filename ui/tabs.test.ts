@@ -150,8 +150,8 @@ describe("Feature: TabManager", () => {
 
   // Feature: フォルダ検索結果からの連続操作
   // Scenario: 変更中の同じファイルを再選択する
-  // Given: folder tab が memo.txt を選択中で dirty
-  // When: 同じ memo.txt へ navigateEntry する
+  // Given: folder tab が sub/memo.txt を選択中で dirty
+  // When: 区切りだけ異なる sub\\memo.txt へ navigateEntry する
   // Then: 確認と再読込を行わず dirty の本文を維持する
   it("Scenario: 同じフォルダ内ファイルへの再移動は未保存確認を出さない", async () => {
     const { doc, host } = fixture();
@@ -161,12 +161,12 @@ describe("Feature: TabManager", () => {
       activeId: "folder",
     }, null, null);
     doc.current.folderRoot = "C:\\work";
-    doc.current.selectedRelPath = "memo.txt";
+    doc.current.selectedRelPath = "sub/memo.txt";
     doc.current.dirty = true;
     vi.mocked(doc.confirmDiscard).mockClear();
     vi.mocked(doc.selectEntry).mockClear();
 
-    await expect(manager.navigateEntry("memo.txt")).resolves.toBe(true);
+    await expect(manager.navigateEntry("sub\\memo.txt")).resolves.toBe(true);
 
     expect(doc.confirmDiscard).not.toHaveBeenCalled();
     expect(doc.selectEntry).not.toHaveBeenCalled();
@@ -189,6 +189,22 @@ describe("Feature: TabManager", () => {
 
     expect(doc.confirmDiscard).toHaveBeenCalledOnce();
     expect(doc.save).not.toHaveBeenCalled();
+  });
+
+  // Given: 終了確認が継続処理を受け入れる
+  // When: saveForExit に設定保存処理を渡す
+  // Then: 確認後に1回だけ実行して終了を許可する
+  it("Scenario: 終了確認後に渡された継続処理を実行する", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    const onProceed = vi.fn();
+    await manager.init(stored, null, null);
+    vi.mocked(doc.confirmDiscard).mockClear();
+
+    await expect(manager.saveForExit(onProceed)).resolves.toBe(true);
+
+    expect(doc.confirmDiscard).toHaveBeenCalledOnce();
+    expect(onProceed).toHaveBeenCalledOnce();
   });
 
   // Given: activeId=a の stored があり、confirmDiscard は true を返す

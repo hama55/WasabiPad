@@ -195,15 +195,7 @@ export class DocumentController {
   // フォルダ内の移動後は本文を読み直さず、保存先と表示パスだけ追従させる。
   // dirty は維持する。
   applyMoved(info: api.DocInfo, selectedRelPath: string) {
-    this.view.hideExternalBanner();
-    this.session.displayPath = info.path;
-    if (this.session.savePath) this.session.savePath = info.path;
-    if (this.session.archivePath) this.session.archivePath = info.path;
-    this.session.selectedRelPath = selectedRelPath;
-    this.view.addressbar.render(info.path);
-    this.view.editor.setExternalFilePath(externalFilePathOf(info), markdownForSession(this.session));
-    this.view.statusbar.setModifiedAt(info.modified_at);
-    this.updateTitle();
+    this.applyPathChange(info, selectedRelPath, false);
   }
 
   async openPath(path: string, confirm = true): Promise<boolean> {
@@ -453,8 +445,8 @@ export class DocumentController {
     }
     const choice = await this.services.confirmSaveDiscard();
     if (choice === "discard") {
-      this.session.dirty = false;
       await onProceed?.();
+      this.session.dirty = false;
       return true;
     }
     if (choice !== "save") return false;
@@ -559,10 +551,17 @@ export class DocumentController {
 
   // フォルダビューでの名前変更後、開いている文書のパスを追従させる
   applyRenamed(info: api.DocInfo, selectedRelPath: string) {
-    this.view.addressbar.render(info.path);
+    this.applyPathChange(info, selectedRelPath, true);
+  }
+
+  private applyPathChange(info: api.DocInfo, selectedRelPath: string, replaceSavePath: boolean) {
+    this.view.hideExternalBanner();
     this.session.displayPath = info.path;
-    this.session.savePath = this.session.readOnly ? null : info.path;
+    if (replaceSavePath) this.session.savePath = this.session.readOnly ? null : info.path;
+    else if (this.session.savePath) this.session.savePath = info.path;
+    if (this.session.archivePath) this.session.archivePath = info.path;
     this.session.selectedRelPath = selectedRelPath;
+    this.view.addressbar.render(info.path);
     this.view.editor.setExternalFilePath(externalFilePathOf(info), markdownForSession(this.session));
     this.view.statusbar.setModifiedAt(info.modified_at);
     this.updateTitle();

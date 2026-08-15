@@ -1,5 +1,5 @@
-const CHEVRON_LEFT = "\uE76B";
-const CHEVRON_RIGHT = "\uE76C";
+import { CHEVRON_LEFT, CHEVRON_RIGHT } from "./icon-button";
+
 const PREVIEW_TOGGLE_RIGHT_INSET = 16;
 
 export type PaneToggleKind = "sidebar" | "preview";

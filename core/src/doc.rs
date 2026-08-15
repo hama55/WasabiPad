@@ -879,19 +879,11 @@ impl Doc {
             .ok_or_else(|| io::Error::other("不正なパスです"))?;
         let new_abs = parent.join(new_name);
         std::fs::rename(&old_abs, &new_abs)?;
-        if self.source.folder_root().is_some() {
-            let current = match &mut self.source.target {
-                Target::File { path, .. } | Target::Archive { path, .. } => path,
+        let current = match &mut self.source.target {
+            Target::File { path, .. } | Target::Archive { path, .. } => path,
             Target::None => return self.info(String::new()),
-            };
-            if let Ok(rest) = current.strip_prefix(&old_abs) {
-                *current = if rest.as_os_str().is_empty() {
-                    new_abs.clone()
-                } else {
-                    new_abs.join(rest)
-                };
-            }
-        }
+        };
+        rebase_path(current, &old_abs, &new_abs);
         let path_str = self
             .source
             .display_path()
@@ -2912,6 +2904,54 @@ mod tests {
 
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
         assert!(root.join("a/memo.txt").is_file());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Feature: フォルダビューのD&D移動の入力検証
+    // Scenario: 親フォルダを指す移動元を渡す
+    // Given: memo.txt を含むフォルダ文書
+    // When: ../memo.txt を移動元に指定する
+    // Then: 操作を拒否し、元ファイルは残る
+    #[test]
+    fn moving_entry_rejects_unsafe_relative_path() {
+        let root = std::env::temp_dir().join(format!("wasabipad_move_unsafe_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("memo.txt"), "memo").unwrap();
+
+        let mut d = Doc::open(&root).unwrap();
+        let error = match d.move_entry("../memo.txt", "") {
+            Ok(_) => panic!("親フォルダを指す移動元を受理した"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(root.join("memo.txt").is_file());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Feature: フォルダビューのD&D移動の衝突検出
+    // Scenario: 移動先に同名ファイルがある
+    // Given: memo.txt と dest/memo.txt があるフォルダ文書
+    // When: memo.txt を dest へ移動する
+    // Then: 操作を拒否し、両方のファイルを残す
+    #[test]
+    fn moving_entry_rejects_existing_destination() {
+        let root = std::env::temp_dir().join(format!("wasabipad_move_collision_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("dest")).unwrap();
+        std::fs::write(root.join("memo.txt"), "source").unwrap();
+        std::fs::write(root.join("dest/memo.txt"), "destination").unwrap();
+
+        let mut d = Doc::open(&root).unwrap();
+        let error = match d.move_entry("memo.txt", "dest") {
+            Ok(_) => panic!("同名ファイルがある移動先を受理した"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read_to_string(root.join("memo.txt")).unwrap(), "source");
+        assert_eq!(std::fs::read_to_string(root.join("dest/memo.txt")).unwrap(), "destination");
         let _ = std::fs::remove_dir_all(&root);
     }
 

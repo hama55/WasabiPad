@@ -11,6 +11,7 @@ export interface WindowControlsPorts {
 export class WindowControls {
   private unlistenResized: AsyncUnlisten = createAsyncUnlisten();
   private unlistenCloseRequested: AsyncUnlisten = createAsyncUnlisten();
+  private closeRequest: Promise<boolean> | null = null;
 
   constructor(
     private host: HTMLElement,
@@ -29,18 +30,32 @@ export class WindowControls {
     }).catch((error) => reportWindowOperationError(this.ports.onError, "ウィンドウサイズ監視を開始できませんでした", error));
     if (this.ports.onCloseRequest) {
       void this.win.onCloseRequested(async (event) => {
-        try {
-          if (!(await this.ports.onCloseRequest!())) event.preventDefault();
-        } catch (error) {
-          // 保存確認に失敗したなら、破棄して閉じるより開いたままにする。
-          event.preventDefault();
-          await reportWindowOperationError(this.ports.onError, "終了処理に失敗しました", error);
-        }
+        if (!(await this.requestClose())) event.preventDefault();
       }).then((unlisten) => {
         this.unlistenCloseRequested.set(unlisten);
       }).catch((error) => reportWindowOperationError(this.ports.onError, "終了確認を開始できませんでした", error));
     }
     void this.syncMaxIcon().catch((error) => reportWindowOperationError(this.ports.onError, "最大化状態を取得できませんでした", error));
+  }
+
+  private requestClose(): Promise<boolean> {
+    if (this.closeRequest) return this.closeRequest;
+    const request = this.evaluateCloseRequest();
+    this.closeRequest = request;
+    void request.finally(() => {
+      if (this.closeRequest === request) this.closeRequest = null;
+    });
+    return request;
+  }
+
+  private async evaluateCloseRequest(): Promise<boolean> {
+    try {
+      return await this.ports.onCloseRequest!();
+    } catch (error) {
+      // 保存確認に失敗したなら、破棄して閉じるより開いたままにする。
+      await reportWindowOperationError(this.ports.onError, "終了処理に失敗しました", error);
+      return false;
+    }
   }
 
   dispose() {

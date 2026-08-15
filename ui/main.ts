@@ -349,7 +349,9 @@ sidebar = new Sidebar(sidebarEl, {
   onExpandFolder: (relDir) => api.listFolderEntries(relDir),
   onMoveEntry: async (sourceRelPath, targetRelDir) => {
     const info = await api.moveEntry(sourceRelPath, targetRelDir);
-    doc.applyMoved(info, movedRelPath(doc.current.selectedRelPath, sourceRelPath, targetRelDir));
+    const selectedRelPath = movedRelPath(doc.current.selectedRelPath, sourceRelPath, targetRelDir);
+    doc.applyMoved(info, selectedRelPath);
+    return selectedRelPath;
   },
   onTreeError: async (error) => {
     if (!isPasswordCancelled(error)) await showError("フォルダを展開できませんでした", error);
@@ -416,7 +418,7 @@ function movedRelPath(currentRelPath: string, sourceRelPath: string, targetRelDi
 
 const windowChrome = new WindowChrome($("titlebar"), win, {
   onCloseRequest: () => canCloseWindow({
-    saveForExit: () => tabs.saveForExit(),
+    saveForExit: (onProceed) => tabs.saveForExit(onProceed),
     flushSettings,
     onSettingsError: (error) => showError("設定を保存できませんでした", error),
   }),

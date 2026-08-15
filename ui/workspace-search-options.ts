@@ -147,5 +147,5 @@ export function searchScopeSummary(
   return [
     `検索対象: ${target}${how.length ? ` (${how.join("・")})` : ""}`,
     `検索対象外: ${skipped.join("、")}`,
-  ].join("／");
+  ].join("\n");
 }

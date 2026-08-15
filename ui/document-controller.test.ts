@@ -459,6 +459,21 @@ describe("Feature: DocumentController", () => {
     expect(proceed).toHaveBeenCalledOnce();
   });
 
+  // Given: 編集済みで確認結果がdiscard、終了前の設定保存が失敗する
+  // When: confirmDiscard に設定保存処理を渡す
+  // Then: 例外を返し、dirty状態は解除しない
+  it("Scenario: 破棄後の終了処理が失敗したらdirtyを維持する", async () => {
+    const { controller } = fakeView();
+    const error = new Error("settings failed");
+    controller.applyDocInfo(info());
+    controller.onEdit(42);
+    vi.mocked(confirmSaveDiscard).mockResolvedValueOnce("discard");
+
+    await expect(controller.confirmDiscard(async () => { throw error; })).rejects.toBe(error);
+
+    expect(controller.current.dirty).toBe(true);
+  });
+
   // Given: 編集済みでsaveFileが`{kind:"saved"}`を返す
   // When: `controller.save()`
   // Then: trueを返し、`setLoading`は未呼出し
@@ -570,6 +585,37 @@ describe("Feature: DocumentController", () => {
     }), "renamed.txt");
 
     expect(view.editor.setExternalFilePath).toHaveBeenCalledWith("C:\\work\\renamed.txt", false);
+  });
+
+  // Given: アーカイブ内エントリを開いている
+  // When: アーカイブ自身が renamed.zip へ改名される
+  // Then: 保存先とアーカイブ参照を同じ新パスへ追従させる
+  it("Scenario: アーカイブのリネーム後も参照パスを揃える", () => {
+    const { controller } = fakeView();
+    controller.setSelectedRelPath("docs/readme.md");
+    controller.applyDocInfo(info({ kind: "archive", path: "C:\\work\\data.zip" }));
+
+    controller.applyRenamed(info({ kind: "archive", path: "C:\\work\\renamed.zip" }), "docs/readme.md");
+
+    expect(controller.current.displayPath).toBe("C:\\work\\renamed.zip");
+    expect(controller.current.savePath).toBe("C:\\work\\renamed.zip");
+    expect(controller.current.archivePath).toBe("C:\\work\\renamed.zip");
+  });
+
+  // Given: dirtyなフォルダ内メモを開いている
+  // When: memo.txt が sub/memo.txt へ移動される
+  // Then: dirtyを保ち、表示先と保存先を新パスへ追従させる
+  it("Scenario: 移動後もdirtyな保存先を新パスへ追従させる", () => {
+    const { controller } = fakeView();
+    controller.applyDocInfo(info({ folder_root: "C:\\work" }));
+    controller.onEdit(42);
+
+    controller.applyMoved(info({ path: "C:\\work\\sub\\memo.txt", folder_root: "C:\\work" }), "sub/memo.txt");
+
+    expect(controller.current.dirty).toBe(true);
+    expect(controller.current.displayPath).toBe("C:\\work\\sub\\memo.txt");
+    expect(controller.current.savePath).toBe("C:\\work\\sub\\memo.txt");
+    expect(controller.current.selectedRelPath).toBe("sub/memo.txt");
   });
 
   // Given: 元文書のencoding=`sjis`/eol=`lf`、別名path選択、保存形式がutf8/crlf、saveFileが失敗

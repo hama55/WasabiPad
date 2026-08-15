@@ -57,7 +57,7 @@ export interface SidebarPorts extends Omit<WorkspaceSearchPorts, "onViewChange" 
   onContextMenu: (x: number, y: number, target: ContextTarget | null) => void;
   onExpandArchive: (relPath: string) => Promise<string[]>;
   onExpandFolder: (relDir: string) => Promise<FolderEntry[]>;
-  onMoveEntry?: (sourceRelPath: string, targetRelDir: string) => Promise<void>;
+  onMoveEntry: (sourceRelPath: string, targetRelDir: string) => Promise<string>;
   onTreeError: (error: unknown) => Promise<void>;
 }
 
@@ -75,7 +75,7 @@ export class Sidebar {
   private onContextMenu: (x: number, y: number, target: ContextTarget | null) => void;
   private onExpandArchive: (relPath: string) => Promise<string[]>;
   private onExpandFolder: (relDir: string) => Promise<FolderEntry[]>;
-  private onMoveEntry: (sourceRelPath: string, targetRelDir: string) => Promise<void>;
+  private onMoveEntry: (sourceRelPath: string, targetRelDir: string) => Promise<string>;
   private onTreeError: (error: unknown) => Promise<void>;
   private dropTarget: HTMLElement | null = null;
   private pointerDrag: PointerDrag | null = null;
@@ -90,7 +90,7 @@ export class Sidebar {
     this.onContextMenu = ports.onContextMenu;
     this.onExpandArchive = ports.onExpandArchive;
     this.onExpandFolder = ports.onExpandFolder;
-    this.onMoveEntry = ports.onMoveEntry ?? (async () => {});
+    this.onMoveEntry = ports.onMoveEntry;
     this.onTreeError = ports.onTreeError;
     this.panel = new WorkspaceSearchPanel(searchOptions, {
       onSearch: ports.onSearch,
@@ -510,10 +510,12 @@ export class Sidebar {
       this.finishPointerDrag(end);
     };
     const onCancel = () => this.clearDragState();
+    const onBlur = () => this.clearDragState();
     const cleanup = () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onEnd);
       window.removeEventListener("pointercancel", onCancel);
+      window.removeEventListener("blur", onBlur);
     };
     this.pointerDrag = {
       sourceRelPath: row.relPath,
@@ -526,6 +528,7 @@ export class Sidebar {
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onEnd);
     window.addEventListener("pointercancel", onCancel);
+    window.addEventListener("blur", onBlur);
   }
 
   private updatePointerDrag(event: PointerEvent) {
@@ -585,10 +588,10 @@ export class Sidebar {
     runAsyncBoundary(
       async () => {
         try {
-          await this.onMoveEntry(sourceRelPath, targetRelDir);
+          const selectedRelPath = await this.onMoveEntry(sourceRelPath, targetRelDir);
           this.lastFolderMove = { sourceRelPath, targetRelDir };
           await this.refreshFolderEntries();
-          await this.selectByRelPath(destinationRelPath(sourceRelPath, targetRelDir));
+          await this.selectByRelPath(selectedRelPath);
         } finally {
           this.entryMoveInProgress = false;
         }
@@ -609,10 +612,13 @@ export class Sidebar {
     if (!move || this.entryMoveInProgress) return false;
     this.entryMoveInProgress = true;
     try {
-      await this.onMoveEntry(destinationRelPath(move.sourceRelPath, move.targetRelDir), parentRelPath(move.sourceRelPath));
+      const selectedRelPath = await this.onMoveEntry(
+        destinationRelPath(move.sourceRelPath, move.targetRelDir),
+        parentRelPath(move.sourceRelPath),
+      );
       this.lastFolderMove = null;
       await this.refreshFolderEntries();
-      await this.selectByRelPath(move.sourceRelPath);
+      await this.selectByRelPath(selectedRelPath);
       return true;
     } catch (error) {
       await this.reportTreeError(error);

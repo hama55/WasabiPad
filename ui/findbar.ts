@@ -1,3 +1,5 @@
+import { CHEVRON_DOWN, CHEVRON_RIGHT } from "./icon-button";
+
 // エディタ右上に重ねる検索/置換バー。実際の検索は backend(mmap 全体走査)へ委譲。
 export class FindBar {
   private root: HTMLElement;
@@ -32,7 +34,7 @@ export class FindBar {
     this.root.hidden = true;
     this.root.innerHTML = `
       <div class="ve-find-row">
-        <button class="ve-find-toggle" title="置換欄の表示切替">▶</button>
+        <button class="ve-find-toggle" title="置換欄の表示切替" aria-expanded="false">${CHEVRON_RIGHT}</button>
         <input class="ve-find-in" placeholder="検索" spellcheck="false" />
         <label class="ve-find-case"><input type="checkbox" /> Aa</label>
         <button class="ve-find-prev" title="前へ (Shift+Enter)">▲</button>
@@ -82,7 +84,8 @@ export class FindBar {
 
   private toggleReplace() {
     const on = this.root.classList.toggle("with-rep");
-    this.toggleBtn.textContent = on ? "▼" : "▶";
+    this.toggleBtn.textContent = on ? CHEVRON_DOWN : CHEVRON_RIGHT;
+    this.toggleBtn.setAttribute("aria-expanded", String(on));
     if (on) this.repIn.focus();
   }
 

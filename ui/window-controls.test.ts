@@ -86,6 +86,28 @@ describe("Feature: WindowControls", () => {
     expect(onError).not.toHaveBeenCalled();
   });
 
+  // Given: 1回目の終了確認が未完了
+  // When: native close requestを続けて2回受ける
+  // Then: 確認処理は1回だけ実行し、両方のcloseを同じ結果で止める
+  it("Scenario: 同時の終了確認を1つにまとめる", async () => {
+    let resolveClose!: (allowed: boolean) => void;
+    const onCloseRequest = vi.fn(() => new Promise<boolean>((resolve) => { resolveClose = resolve; }));
+    const { getCloseHandler } = mountControls(onCloseRequest);
+    const firstPreventDefault = vi.fn();
+    const secondPreventDefault = vi.fn();
+
+    await vi.waitFor(() => expect(getCloseHandler()).toBeDefined());
+    const first = getCloseHandler()!({ preventDefault: firstPreventDefault });
+    const second = getCloseHandler()!({ preventDefault: secondPreventDefault });
+    expect(onCloseRequest).toHaveBeenCalledOnce();
+
+    resolveClose(false);
+    await Promise.all([first, second]);
+
+    expect(firstPreventDefault).toHaveBeenCalledOnce();
+    expect(secondPreventDefault).toHaveBeenCalledOnce();
+  });
+
   // Given: 終了確認が例外を返すwindow controls
   // When: close requestを受け取る
   // Then: closeを取り消し、エラー表示へ渡す

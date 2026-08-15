@@ -406,10 +406,11 @@ export class TabManager {
     }
   }
 
-  async saveForExit(): Promise<boolean> {
-    if (!(await this.doc.confirmDiscard())) return false;
-    this.rememberActiveView();
-    return true;
+  async saveForExit(onProceed: () => void | Promise<void> = () => {}): Promise<boolean> {
+    return this.doc.confirmDiscard(async () => {
+      this.rememberActiveView();
+      await onProceed();
+    });
   }
 
   private async addAndActivate(tab: StoredTab) {

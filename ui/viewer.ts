@@ -367,10 +367,10 @@ async function loadArchiveImages(
         image.src = imageUrlFromPathWithCacheBust(resolved, generation);
         await waitForImageLayout(image);
       }
-    } catch (error) {
+    } catch {
       if (generation !== renderGeneration) return;
       markImageLoadFailure(image);
-      throw error;
+      // 壊れた1枚で、同じ文書内の後続画像まで止めない。
     } finally {
       if (archiveUrl && (!keepArchiveUrl || generation !== renderGeneration)) {
         releaseArchiveAssetUrl(archiveUrl);

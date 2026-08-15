@@ -1,7 +1,7 @@
 import type { EditManyItem, WorkspaceSearchOptions, WorkspaceSearchOutcome, WorkspaceSearchResult } from "./api";
 import type { ContextTarget } from "./context-target";
 import { isMiddleClick } from "./interaction-constants";
-import { iconButton } from "./icon-button";
+import { CHEVRON_DOWN, CHEVRON_RIGHT, iconButton } from "./icon-button";
 import { groupResults, highlightedPreview, searchResultGoto, sortResults, type ResultGroup } from "./search-results";
 import { openSearchSettings } from "./search-settings-dialog";
 import {
@@ -28,8 +28,9 @@ export interface WorkspaceSearchPorts {
   // 一致の範囲は result.highlights が持つ。パターンを渡さないのは、
   // 正規表現や大小の畳み込みで「当たった長さ」がパターンの長さと一致しないため。
   onOpen: (result: WorkspaceSearchResult, newTab: boolean) => void | boolean | Promise<void | boolean>;
-  // 本文一致を検索結果の位置で1件置換する。ファイル名一致では呼ばない。
-  onReplace?: (result: WorkspaceSearchResult, replacement: string) => void | boolean | Promise<void | boolean>;
+  // 本文一致を検索結果の位置で1件置換する。成功時は呼び出し側が
+  // refreshAfterDocumentChange を通知する。ファイル名一致では呼ばない。
+  onReplace: (result: WorkspaceSearchResult, replacement: string) => void | boolean | Promise<void | boolean>;
   onContextMenu: (x: number, y: number, target: ContextTarget) => void;
   // 検索条件が変わった。保存先を知るのは呼び出し側 (ここは永続化を知らない)
   onOptionsChange: (options: WorkspaceSearchOptions) => void;
@@ -70,6 +71,8 @@ export class WorkspaceSearchPanel {
   readonly bar: HTMLElement; // 検索窓 (ヘッダ + 入力欄 + 件数)
   private searchInput: HTMLInputElement;
   private replaceInput: HTMLInputElement;
+  private replaceRow: HTMLElement;
+  private replaceToggle: HTMLButtonElement;
   private searchStop: HTMLButtonElement;
   private summary: HTMLElement;
   private toggleButtons = new Map<ToggleKey, HTMLButtonElement>();
@@ -81,6 +84,8 @@ export class WorkspaceSearchPanel {
   private running: Promise<WorkspaceSearchOutcome> | null = null; // 走行中の検索
   private runningSearchId: number | null = null;
   private openRequest = 0;
+  private replacementInProgress = false;
+  private replaceVisible = false;
   private ports: WorkspaceSearchPorts;
 
   constructor(options: WorkspaceSearchOptions, ports: WorkspaceSearchPorts) {
@@ -92,13 +97,15 @@ export class WorkspaceSearchPanel {
     const header = this.buildHeader();
     const row = this.buildInputRow();
     this.searchInput = row.querySelector("input")!;
-    const replaceRow = this.buildReplaceRow();
-    this.replaceInput = replaceRow.querySelector("input")!;
+    this.replaceToggle = row.querySelector(".ws-replace-toggle")!;
+    this.replaceRow = this.buildReplaceRow();
+    this.replaceRow.hidden = true;
+    this.replaceInput = this.replaceRow.querySelector("input")!;
     this.summary = document.createElement("div");
     this.summary.className = "ws-summary";
     this.summary.hidden = true;
     this.searchStop = header.querySelector(".ws-stop")!;
-    this.bar.append(header, row, replaceRow, this.summary);
+    this.bar.append(header, row, this.replaceRow, this.summary);
     this.searchInput.addEventListener("input", () => this.queueSearch());
   }
 
@@ -188,14 +195,26 @@ export class WorkspaceSearchPanel {
   private buildInputRow(): HTMLElement {
     const row = document.createElement("div");
     row.className = "ws-search-row";
+    const replaceToggle = iconButton("ws-replace-toggle", CHEVRON_RIGHT, "置換欄の表示切替");
+    replaceToggle.setAttribute("aria-expanded", "false");
+    replaceToggle.addEventListener("click", () => this.toggleReplace());
     const input = document.createElement("input");
     input.placeholder = "検索";
     input.spellcheck = false;
     const toggles = document.createElement("span");
     toggles.className = "ws-toggles";
     toggles.append(...MATCH_TOGGLES.map(([icon, key]) => this.targetToggle(icon, key)));
-    row.append(input, toggles);
+    row.append(replaceToggle, input, toggles);
     return row;
+  }
+
+  private toggleReplace() {
+    this.replaceVisible = !this.replaceVisible;
+    this.replaceRow.hidden = !this.replaceVisible;
+    this.replaceToggle.textContent = this.replaceVisible ? CHEVRON_DOWN : CHEVRON_RIGHT;
+    this.replaceToggle.setAttribute("aria-expanded", String(this.replaceVisible));
+    if (this.replaceVisible) this.replaceInput.focus();
+    this.ports.onViewChange();
   }
 
   private buildReplaceRow(): HTMLElement {
@@ -517,10 +536,11 @@ export class WorkspaceSearchPanel {
       replace.type = "button";
       replace.textContent = "置換";
       replace.title = "この一致だけ置換";
+      replace.hidden = !this.replaceVisible;
       replace.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
-        this.invokeReplace(match);
+        void this.invokeReplace(match);
       });
       div.appendChild(replace);
     }
@@ -530,19 +550,19 @@ export class WorkspaceSearchPanel {
     return div;
   }
 
-  private invokeReplace(match: WorkspaceSearchResult) {
-    const onReplace = this.ports.onReplace;
-    if (!onReplace) return;
-    const request = ++this.openRequest;
+  private async invokeReplace(match: WorkspaceSearchResult) {
+    if (this.replacementInProgress) return;
+    this.replacementInProgress = true;
+    this.openRequest++; // 置換開始前の「開く」完了を無効化する
     try {
-      void Promise.resolve(onReplace(match, this.replaceInput.value))
-        .then((replaced) => {
-          if (replaced === false || request !== this.openRequest) return;
-          this.queueSearch(0);
-        })
-        .catch((error) => this.reportUiError(error));
+      const replaced = await this.ports.onReplace(match, this.replaceInput.value);
+      if (replaced === false) return;
+      // 未保存の本文はディスク検索で戻せない。onReplace 側の編集通知で
+      // 既存結果を補正済みなので、ここで古いディスク内容を検索し直さない。
     } catch (error) {
-      void this.reportUiError(error);
+      await this.reportUiError(error);
+    } finally {
+      this.replacementInProgress = false;
     }
   }
 
