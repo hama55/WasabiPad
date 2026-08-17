@@ -375,7 +375,9 @@ export class DocumentController {
     folderDraftRoot: string | null = null,
     format: SaveFormat = this.session,
   ): Promise<boolean> {
-    const savingArchiveEntryInPlace = this.session.archivePath !== null && this.session.savePath === path;
+    const savingSelectedEntryInPlace = (this.session.folderRoot !== null || this.session.archivePath !== null)
+      && this.session.selectedRelPath !== ""
+      && this.session.savePath === path;
     let outcome: api.SaveOutcome;
     try {
       // 7z エントリの書き戻し中にパスワードが要求されたら入力させて再試行する
@@ -402,7 +404,7 @@ export class DocumentController {
     this.session.sourceEncoding = this.session.encoding;
     this.session.sourceEol = this.session.eol;
     this.session.dirty = false;
-    if (!folderDraftRoot && !savingArchiveEntryInPlace) {
+    if (!folderDraftRoot && !savingSelectedEntryInPlace) {
       this.session.selectedRelPath = "";
       this.session.archivePath = null;
       this.session.archiveEntry = null;

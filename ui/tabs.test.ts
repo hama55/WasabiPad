@@ -221,6 +221,42 @@ describe("Feature: TabManager", () => {
     expect(manager.state.activeId).toBe("b");
   });
 
+  // Feature: tab切替の排他
+  // Scenario: 未保存確認中に別のtab切替を開始しない
+  // Given: a/b/c の3tabがあり、aからbへの確認処理が保留されている
+  // When: 確認処理中にcへの切替を呼び、続けてbへの確認を完了する
+  // Then: cへの読込は行わず、最初の要求だけをbへ完了する
+  it("Scenario: tab切替の確認中は後続の切替を実行しない", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    let continueFirst!: () => Promise<void>;
+    vi.mocked(doc.confirmDiscard).mockImplementation((onProceed) => new Promise((resolve) => {
+      continueFirst = async () => {
+        await onProceed?.();
+        resolve(true);
+      };
+    }));
+    await manager.init({
+      tabs: [
+        { id: "a", path: "C:\\work\\a.txt", kind: "file", label: "a.txt" },
+        { id: "b", path: "C:\\work\\b.txt", kind: "file", label: "b.txt" },
+        { id: "c", path: "C:\\work\\c.txt", kind: "file", label: "c.txt" },
+      ],
+      activeId: "a",
+    }, null, null);
+
+    const first = manager.activate("b");
+    await vi.waitFor(() => expect(continueFirst).toBeTypeOf("function"));
+
+    await expect(manager.activate("c")).resolves.toBe(false);
+    await continueFirst();
+    await first;
+
+    expect(manager.state.activeId).toBe("b");
+    expect(doc.openPath).not.toHaveBeenCalledWith("C:\\work\\c.txt", false);
+    expect(doc.confirmDiscard).toHaveBeenCalledOnce();
+  });
+
   // Given: activeId=a で、最初のcaptureViewStateがline4、次がline8を返す
   // When: 編集のUndo/Redoではなく、C:\work\c.txtへ移動してから履歴のgoBack→goForwardを呼ぶ
   // Then: 戻る/進むはそれぞれopenPathとgoToでリンク・キャレット行を復元し、履歴状態も逆方向へ切り替わる
@@ -589,6 +625,24 @@ describe("Feature: TabManager", () => {
     expect(manager.state.activeId).toBe("a");
   });
 
+  // Feature: tab切替失敗からの復帰
+  // Scenario: 未保存確認が例外になった後に再度tabを切り替える
+  // Given: a/b の2tabがあり、最初の確認処理がError("confirm failed")を投げる
+  // When: bへの切替を失敗させ、同じbへの切替を再実行する
+  // Then: 2回目の切替はtransition状態に阻害されず完了する
+  it("Scenario: 未保存確認の例外後もtab切替を再試行できる", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init(stored, null, null);
+    const error = new Error("confirm failed");
+    vi.mocked(doc.confirmDiscard).mockRejectedValueOnce(error);
+
+    await expect(manager.activate("b")).rejects.toBe(error);
+    await expect(manager.activate("b")).resolves.toBe(true);
+
+    expect(manager.state.activeId).toBe("b");
+  });
+
   // Given: active tab a の dirty を true にして syncActive(doc.current) を呼ぶ
   // When: tab label の文字列を取得する
   // Then: labels は ["● a.txt", "b.txt"]
@@ -685,7 +739,7 @@ describe("Feature: TabManager", () => {
 
   // Feature: 未保存フォルダタブの復帰
   // Scenario: 保存して継続した後にフォルダ内の選択ファイルへ戻る
-  // Given: C:\work の folder tab で memo.txt を選択し、保存処理が選択状態を消す
+  // Given: C:\work の folder tab で memo.txt を選択し、保存処理が選択状態を維持する
   // When: b.txt へ移動し、b.txt を編集してから C:\work の tab へ戻る
   // Then: C:\work を開き直し、memo.txt を選択して編集行へ移動する
   it("Scenario: 保存して継続したフォルダタブへ戻ると選択ファイルと編集行を復元する", async () => {
@@ -715,7 +769,6 @@ describe("Feature: TabManager", () => {
     });
     vi.mocked(doc.captureViewState).mockImplementation(() => ({ ...currentView }));
     vi.mocked(doc.save).mockImplementation(async () => {
-      doc.current.selectedRelPath = "";
       manager.syncActive(doc.current);
       currentView = {
         anchor: { line: 0, col: 0 },

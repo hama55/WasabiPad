@@ -488,6 +488,46 @@ describe("Feature: DocumentController", () => {
     expect(view.setLoading).not.toHaveBeenCalled();
   });
 
+  // Feature: フォルダ内ファイルの上書き保存
+  // Scenario: 保存後もフォルダの選択ファイルを現在文書として保持する
+  // Given: C:\work の folderRoot で memo.txt を選択し、本文を編集している
+  // When: memo.txt を上書き保存する
+  // Then: selectedRelPath と folderRoot を保持する
+  it("Scenario: フォルダ内ファイルの上書き保存で選択状態を保持する", async () => {
+    const { controller } = fakeView();
+    controller.setSelectedRelPath("memo.txt");
+    controller.applyDocInfo(info({
+      path: "C:\\work\\memo.txt",
+      folder_root: "C:\\work",
+    }));
+    controller.onEdit(42);
+    vi.spyOn(api, "saveFile").mockResolvedValueOnce({ kind: "saved", modified_at: null });
+
+    expect(await controller.save()).toBe(true);
+    expect(controller.current.folderRoot).toBe("C:\\work");
+    expect(controller.current.selectedRelPath).toBe("memo.txt");
+  });
+
+  // Feature: フォルダ内ファイルの別名保存
+  // Scenario: 別名保存では元のフォルダ選択を現在文書から外す
+  // Given: C:\work の folderRoot で memo.txt を選択している
+  // When: C:\other\memo.txt へ別名保存する
+  // Then: selectedRelPath を空にする
+  it("Scenario: フォルダ内ファイルの別名保存で選択状態を解除する", async () => {
+    const { view, controller } = fakeView();
+    controller.setSelectedRelPath("memo.txt");
+    controller.applyDocInfo(info({
+      path: "C:\\work\\memo.txt",
+      folder_root: "C:\\work",
+    }));
+    view.pickSavePath.mockResolvedValueOnce("C:\\other\\memo.txt");
+    vi.spyOn(saveFormat, "promptSaveFormat").mockResolvedValueOnce({ encoding: "utf8", eol: "crlf" });
+    vi.spyOn(api, "saveFile").mockResolvedValueOnce({ kind: "saved", modified_at: null });
+
+    expect(await controller.saveAs()).toBe(true);
+    expect(controller.current.selectedRelPath).toBe("");
+  });
+
   // Feature: 保存日時の表示
   // Scenario: 保存結果がバックエンドの更新日時を持つ
   // Given: 編集済み文書と保存成功結果

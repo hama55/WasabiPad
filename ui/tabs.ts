@@ -113,28 +113,22 @@ export class TabManager {
       ? stored.activeId
       : this.tabs[0].id);
     await this.loadActive();
-    this.render();
-    this.persist();
+    this.renderAndPersist();
   }
 
   syncActive(session: Readonly<DocumentSession>) {
     const tab = this.active();
     if (!tab) return;
-    // 保存成功時にセッション側の選択が一時的に空になるため、切替中は元タブの選択を保持する。
-    const rememberedRelPath = session.folderRoot && this.transitionTarget
-      ? tab.selectedRelPath
-      : undefined;
     tab.path = session.folderRoot ?? session.savePath ?? (session.readOnly ? session.displayPath : null);
     tab.kind = session.folderRoot ? "folder" : tab.path ? "file" : "blank";
     tab.label = tab.kind === "blank" ? "無題" : basename(tab.path!);
     if (tab.kind !== "blank") delete tab.draftDirectory;
-    tab.selectedRelPath = session.selectedRelPath || rememberedRelPath;
+    tab.selectedRelPath = session.selectedRelPath || undefined;
     if (tab.kind !== "folder" || !tab.selectedRelPath) delete tab.selectedLine;
     // セッション変更通知はタブ切替処理の途中でも届く。ここでDOMを作り直すと、
     // 選択元のクリック処理がまだ継続中なのに操作対象だけが差し替わる。
     if (this.transitionTarget || this.navigationInProgress) return;
-    this.render();
-    this.persist();
+    this.renderAndPersist();
   }
 
   syncCursor(line: number) {
@@ -194,12 +188,11 @@ export class TabManager {
       this.tabs.push(tab);
       known.add(key);
     }
-    this.render();
-    this.persist();
+    this.renderAndPersist();
   }
 
   async activate(id: string): Promise<boolean> {
-    if (this.navigationBusy) return false;
+    if (this.navigationBusy || this.transitionTarget) return false;
     if (id === this.activeId) return true;
     this.transitionTarget = id;
     let proceeded: boolean;
@@ -405,8 +398,7 @@ export class TabManager {
       });
     } else {
       this.tabs.splice(index, 1);
-      this.render();
-      this.persist();
+      this.renderAndPersist();
     }
   }
 
@@ -442,25 +434,20 @@ export class TabManager {
       this.render();
       throw error;
     }
-    this.render();
-    this.persist();
+    this.renderAndPersist();
   }
 
   private async restoreTabs(before: StoredTabs) {
     this.tabs = before.tabs;
     this.activeId = before.activeId ?? before.tabs[0]?.id ?? "";
-    try {
-      if (this.activeId) await this.loadActive();
-    } catch (error) {
-      console.error("元のタブへ復帰できませんでした", error);
-      throw error;
-    }
+    if (this.activeId) await this.loadActive();
   }
 
   private async restoreTabsSafely(before: StoredTabs) {
     try {
       await this.restoreTabs(before);
     } catch (error) {
+      console.error("元のタブへ復帰できませんでした", error);
       await this.reportError(error, "タブを元に戻せませんでした");
     }
   }
@@ -562,6 +549,11 @@ export class TabManager {
     this.ports.onHistoryChange?.(history?.state ?? { canGoBack: false, canGoForward: false });
   }
 
+  private renderAndPersist() {
+    this.render();
+    this.persist();
+  }
+
   private pruneNavigationHistories() {
     const ids = new Set(this.tabs.map((tab) => tab.id));
     for (const id of this.navigationHistory.keys()) {
@@ -572,8 +564,7 @@ export class TabManager {
   private async keepOnly(id: string) {
     if (!await this.activate(id)) return;
     this.tabs = this.tabs.filter((tab) => tab.id === id);
-    this.render();
-    this.persist();
+    this.renderAndPersist();
   }
 
   private async closeRight(id: string) {
@@ -581,14 +572,12 @@ export class TabManager {
     const activeIndex = this.tabs.findIndex((tab) => tab.id === this.activeId);
     if (activeIndex > index && !await this.activate(id)) return;
     this.tabs = this.tabs.slice(0, index + 1);
-    this.render();
-    this.persist();
+    this.renderAndPersist();
   }
 
   private async closeSaved(keepId: string) {
     this.tabs = this.tabs.filter((tab) => tab.id === keepId || tab.id === this.activeId || tab.kind === "blank");
-    this.render();
-    this.persist();
+    this.renderAndPersist();
   }
 
   private persist() {
@@ -604,8 +593,7 @@ export class TabManager {
       ? this.tabs.length
       : this.tabs.findIndex((item) => item.id === spot.targetId) + (spot.after ? 1 : 0);
     this.tabs.splice(Math.max(0, target), 0, tab);
-    this.render();
-    this.persist();
+    this.renderAndPersist();
   }
 
   private async reportError(error: unknown, message = "タブを操作できませんでした") {
@@ -634,8 +622,7 @@ export class TabManager {
     })) return;
     this.tabs.splice(this.tabs.indexOf(tab), 1);
     if (!wasActive) {
-      this.render();
-      this.persist();
+      this.renderAndPersist();
       return;
     }
     if (this.tabs.length === 0) {
@@ -647,8 +634,7 @@ export class TabManager {
       this.activeId = this.tabs[Math.min(index, this.tabs.length - 1)].id;
       await this.loadActive();
     }
-    this.render();
-    this.persist();
+    this.renderAndPersist();
   }
 
   private openTabInNewWindow(tab: StoredTab) {
