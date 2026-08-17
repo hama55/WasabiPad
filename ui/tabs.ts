@@ -120,11 +120,15 @@ export class TabManager {
   syncActive(session: Readonly<DocumentSession>) {
     const tab = this.active();
     if (!tab) return;
+    // 保存成功時にセッション側の選択が一時的に空になるため、切替中は元タブの選択を保持する。
+    const rememberedRelPath = session.folderRoot && this.transitionTarget
+      ? tab.selectedRelPath
+      : undefined;
     tab.path = session.folderRoot ?? session.savePath ?? (session.readOnly ? session.displayPath : null);
     tab.kind = session.folderRoot ? "folder" : tab.path ? "file" : "blank";
     tab.label = tab.kind === "blank" ? "無題" : basename(tab.path!);
     if (tab.kind !== "blank") delete tab.draftDirectory;
-    tab.selectedRelPath = session.selectedRelPath || undefined;
+    tab.selectedRelPath = session.selectedRelPath || rememberedRelPath;
     if (tab.kind !== "folder" || !tab.selectedRelPath) delete tab.selectedLine;
     // セッション変更通知はタブ切替処理の途中でも届く。ここでDOMを作り直すと、
     // 選択元のクリック処理がまだ継続中なのに操作対象だけが差し替わる。
@@ -200,6 +204,8 @@ export class TabManager {
     this.transitionTarget = id;
     let proceeded: boolean;
     try {
+      this.rememberActiveView();
+      this.persist();
       proceeded = await this.doc.confirmDiscard(() => this.switchTo(id));
     } catch (error) {
       this.transitionTarget = null;
@@ -246,8 +252,6 @@ export class TabManager {
   }
 
   private async switchTo(id: string) {
-    this.rememberActiveView();
-    this.persist();
     try {
       await this.commitTransition(async () => {
         this.activeId = id;

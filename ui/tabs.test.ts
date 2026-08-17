@@ -628,6 +628,139 @@ describe("Feature: TabManager", () => {
     expect(host.querySelector<HTMLButtonElement>(".doc-tab.active")?.title).toBe("C:\\work\\b.txt");
   });
 
+  // Feature: 未保存タブの復帰
+  // Scenario: 保存して継続した後に元のタブへ戻る
+  // Given: a.txt が dirty で、保存処理がエディタ表示状態を更新し、a/b それぞれに非ゼロの表示状態がある
+  // When: b.txt へ移動し、b.txt を編集してから a.txt へ戻る
+  // Then: a.txt を開き、保存前に編集していたキャレットと表示位置を復元する
+  it("Scenario: 保存して継続したタブへ戻ると編集位置を復元する", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    const firstView = {
+      anchor: { line: 23, col: 2 },
+      caret: { line: 23, col: 7 },
+      topLine: 18,
+      wrapIntraLinePx: 1,
+      scrollLeft: 24,
+    };
+    const secondView = {
+      anchor: { line: 8, col: 1 },
+      caret: { line: 8, col: 4 },
+      topLine: 3,
+      wrapIntraLinePx: 0,
+      scrollLeft: 12,
+    };
+    let currentView = firstView;
+    vi.mocked(doc.captureViewState).mockImplementation(() => ({ ...currentView }));
+    vi.mocked(doc.save).mockImplementation(async () => {
+      currentView = {
+        anchor: { line: 0, col: 0 },
+        caret: { line: 0, col: 0 },
+        topLine: 0,
+        wrapIntraLinePx: 0,
+        scrollLeft: 0,
+      };
+      return true;
+    });
+    vi.mocked(doc.confirmDiscard).mockImplementation(async (onProceed) => {
+      if (doc.current.dirty) {
+        if (!await doc.save()) return false;
+        doc.current.dirty = false;
+      }
+      await onProceed?.();
+      return true;
+    });
+
+    await manager.init(stored, null, null);
+    doc.current.dirty = true;
+    await manager.activate("b");
+
+    currentView = secondView;
+    doc.current.dirty = true;
+    await manager.activate("a");
+
+    expect(doc.openPath).toHaveBeenLastCalledWith("C:\\work\\a.txt", false);
+    expect(doc.restoreViewState).toHaveBeenLastCalledWith(firstView);
+  });
+
+  // Feature: 未保存フォルダタブの復帰
+  // Scenario: 保存して継続した後にフォルダ内の選択ファイルへ戻る
+  // Given: C:\work の folder tab で memo.txt を選択し、保存処理が選択状態を消す
+  // When: b.txt へ移動し、b.txt を編集してから C:\work の tab へ戻る
+  // Then: C:\work を開き直し、memo.txt を選択して編集行へ移動する
+  it("Scenario: 保存して継続したフォルダタブへ戻ると選択ファイルと編集行を復元する", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    const firstView = {
+      anchor: { line: 23, col: 2 },
+      caret: { line: 23, col: 7 },
+      topLine: 18,
+      wrapIntraLinePx: 1,
+      scrollLeft: 24,
+    };
+    const secondView = {
+      anchor: { line: 8, col: 1 },
+      caret: { line: 8, col: 4 },
+      topLine: 3,
+      wrapIntraLinePx: 0,
+      scrollLeft: 12,
+    };
+    let currentView = firstView;
+    vi.mocked(doc.openPath).mockImplementation(async (path: string) => {
+      doc.current.savePath = path;
+      doc.current.displayPath = path;
+      doc.current.folderRoot = path === "C:\\work" ? path : null;
+      doc.current.selectedRelPath = "";
+      return true;
+    });
+    vi.mocked(doc.captureViewState).mockImplementation(() => ({ ...currentView }));
+    vi.mocked(doc.save).mockImplementation(async () => {
+      doc.current.selectedRelPath = "";
+      manager.syncActive(doc.current);
+      currentView = {
+        anchor: { line: 0, col: 0 },
+        caret: { line: 0, col: 0 },
+        topLine: 0,
+        wrapIntraLinePx: 0,
+        scrollLeft: 0,
+      };
+      return true;
+    });
+    vi.mocked(doc.confirmDiscard).mockImplementation(async (onProceed) => {
+      if (doc.current.dirty) {
+        if (!await doc.save()) return false;
+        doc.current.dirty = false;
+      }
+      await onProceed?.();
+      return true;
+    });
+
+    await manager.init({
+      tabs: [
+        {
+          id: "folder",
+          path: "C:\\work",
+          kind: "folder",
+          label: "work",
+          selectedRelPath: "memo.txt",
+        },
+        { id: "b", path: "C:\\work\\b.txt", kind: "file", label: "b.txt" },
+      ],
+      activeId: "folder",
+    }, null, null);
+    doc.current.dirty = true;
+    await manager.activate("b");
+
+    currentView = secondView;
+    doc.current.dirty = true;
+    await manager.activate("folder");
+
+    expect(doc.openPath).toHaveBeenLastCalledWith("C:\\work", false);
+    expect(doc.selectEntry).toHaveBeenCalledTimes(2);
+    expect(doc.selectEntry).toHaveBeenLastCalledWith("memo.txt");
+    expect(doc.goTo).toHaveBeenLastCalledWith({ line: 23, col: 0 });
+  });
+
   // Given: activeId=a で a.txt と b.txt の2タブがある
   // When: 末尾の .doc-tab-add をクリックする
   // Then: .doc-tab は3個になり、state.tabs[2].kind は blank
