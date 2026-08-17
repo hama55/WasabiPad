@@ -4137,7 +4137,7 @@ dependencies = [
 
 [[package]]
 name = "wasabipad"
-version = "1.5.0"
+version = "1.5.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -4152,7 +4152,7 @@ dependencies = [
 
 [[package]]
 name = "wasabipad-core"
-version = "1.5.0"
+version = "1.5.1"
 dependencies = [
  "encoding_rs",
  "grep-matcher",
