@@ -14,6 +14,7 @@ export class FindBar {
   private onDone: () => void;
   private onError: (message: string, error: unknown) => void | Promise<void>;
   private running: Promise<void> = Promise.resolve();
+  private findRequest = 0;
 
   constructor(
     host: HTMLElement,
@@ -55,20 +56,22 @@ export class FindBar {
     this.status = this.root.querySelector(".ve-find-status")!;
 
     this.toggleBtn.addEventListener("click", () => this.toggleReplace());
+    this.findIn.addEventListener("input", () => this.runFind(true));
     this.findIn.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
         e.preventDefault();
-        this.run(() => this.next(!e.shiftKey));
+        this.runFind(!e.shiftKey);
       } else if (e.key === "Escape") {
         e.preventDefault();
         this.close();
       }
     });
+    this.caseChk.addEventListener("change", () => this.runFind(true));
     this.repIn.addEventListener("keydown", (e) => {
       if (e.key === "Escape") this.close();
     });
-    this.root.querySelector(".ve-find-next")!.addEventListener("click", () => this.run(() => this.next(true)));
-    this.root.querySelector(".ve-find-prev")!.addEventListener("click", () => this.run(() => this.next(false)));
+    this.root.querySelector(".ve-find-next")!.addEventListener("click", () => this.runFind(true));
+    this.root.querySelector(".ve-find-prev")!.addEventListener("click", () => this.runFind(false));
     this.root.querySelector(".ve-find-close")!.addEventListener("click", () => this.close());
     this.root.querySelector(".ve-rep-all")!.addEventListener("click", () => this.run(() => this.replaceAll()));
     this.root.querySelector(".ve-rep-next")!.addEventListener("click", () => this.run(() => this.replaceNext()));
@@ -90,6 +93,7 @@ export class FindBar {
   }
 
   close() {
+    this.findRequest++;
     this.root.hidden = true;
     this.onDone();
   }
@@ -99,13 +103,30 @@ export class FindBar {
   }
 
   private async next(forward: boolean) {
+    const request = ++this.findRequest;
     const pat = this.findIn.value;
-    if (!pat) return;
+    if (!pat) {
+      await this.onFind("", forward, this.caseChk.checked);
+      if (request === this.findRequest) this.status.textContent = "";
+      return;
+    }
     // 後方検索やチャンク検索の最初のIPC往復中は無反応に見えるため、開始直後に表示する
     // (チャンク検索が進捗を報告し始めればこの文言は setProgress() で上書きされる)。
     this.status.textContent = "検索中…";
-    const ok = await this.onFind(pat, forward, this.caseChk.checked);
+    let ok: boolean;
+    try {
+      ok = await this.onFind(pat, forward, this.caseChk.checked);
+    } catch (error) {
+      if (request !== this.findRequest) return;
+      throw error;
+    }
+    if (request !== this.findRequest) return;
     this.status.textContent = ok ? "" : "見つかりません";
+  }
+
+  private runFind(forward: boolean) {
+    void this.next(forward)
+      .catch((error) => this.reportError("検索・置換を実行できませんでした", error));
   }
 
   private async replaceAll() {

@@ -1,4 +1,4 @@
-export type CommandId = "new" | "open" | "openFolder" | "save" | "saveAs" | "refresh" | "quit" | "find";
+export type CommandId = "new" | "open" | "openFolder" | "save" | "saveAs" | "refresh" | "quit" | "find" | "reopenClosedTab";
 
 export interface Command {
   label: string;
@@ -18,6 +18,7 @@ interface CommandDependencies {
   refresh: () => Promise<unknown>;
   quit: () => void;
   find: () => void;
+  reopenClosedTab: () => Promise<unknown>;
 }
 
 export function createCommandRegistry(deps: CommandDependencies): CommandRegistry {
@@ -30,6 +31,12 @@ export function createCommandRegistry(deps: CommandDependencies): CommandRegistr
     refresh: { label: "ファイルを更新", shortcut: "F5", globalShortcut: true, run: deps.refresh },
     quit: { label: "終了", run: deps.quit },
     find: { label: "検索と置換", shortcut: "Ctrl+F", run: deps.find },
+    reopenClosedTab: {
+      label: "閉じたタブを復活",
+      shortcut: "Ctrl+Shift+T",
+      globalShortcut: true,
+      run: deps.reopenClosedTab,
+    },
   };
 }
 

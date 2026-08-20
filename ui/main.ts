@@ -46,13 +46,19 @@ import { searchResultGoto } from "./search-results";
 import { runAsyncBoundary, reportUnhandledRejection } from "./async-boundary";
 import { openPath as openPathInTabs } from "./path-opener";
 import { InlinePreview } from "./inline-preview";
-import { isAssetViewerFormat, sourcePathForViewer, viewerFormatForPath } from "./viewer-formats";
+import {
+  isAssetViewerFormat,
+  sourcePathForViewer,
+  viewerFormatForPath,
+  viewerFormatForPreviewToggle,
+} from "./viewer-formats";
 import { documentPathOf, type DocumentSession } from "./session";
 import {
   isPreviewFullscreen,
   isPreviewShown,
   isPreviewSplitterShown,
   PREVIEW_MIN_WIDTH,
+  shouldKeepPreviewFullscreen,
 } from "./preview-layout";
 import { bindPreviewResize } from "./preview-resize";
 import { paneToggleView, previewToggleLeft, sidebarToggleLeft } from "./pane-toggle";
@@ -95,6 +101,7 @@ let sidebarCollapsed = false;
 let previewAvailable = false;
 let previewCollapsed = false;
 let previewFullscreen = false;
+let previewFullscreenTabId: string | null = null;
 let currentLine = 1;
 let tabs: TabManager;
 let sidebar: Sidebar;
@@ -190,7 +197,7 @@ function updatePreviewVisibility() {
   mainEl.classList.toggle("preview-fullscreen", fullscreen);
   inlinePreview.setFullscreen(fullscreen);
   const view = paneToggleView("preview", shown);
-  previewToggle.hidden = !previewAvailable;
+  previewToggle.hidden = false;
   previewToggle.textContent = view.icon;
   previewToggle.title = view.title;
   previewToggle.setAttribute("aria-label", previewToggle.title);
@@ -207,7 +214,6 @@ function updatePreviewVisibility() {
 const inlinePreview = new InlinePreview(previewEl, {
   onAvailabilityChange: (available) => {
     previewAvailable = available;
-    if (!available) previewFullscreen = false;
     if (!available) statusbar.setPreviewFormat(null);
     if (available) previewCollapsed = false;
     updatePreviewVisibility();
@@ -219,6 +225,7 @@ const inlinePreview = new InlinePreview(previewEl, {
     runBackground("エディタの位置を同期できませんでした", () => editor.goToPreview(selection)),
   onFullscreenChange: () => {
     previewFullscreen = !previewFullscreen;
+    previewFullscreenTabId = previewFullscreen ? tabs.state.activeId : null;
     if (previewFullscreen) previewCollapsed = false;
     updatePreviewVisibility();
   },
@@ -238,21 +245,34 @@ function runPreviewBackground(path: string, title: string, operation: () => void
   });
 }
 
+function openPreviewFormat(session: Readonly<DocumentSession>, path: string, format: api.ViewerFormat) {
+  const sourcePath = sourcePathForViewer(format, session.savePath, session.displayPath);
+  inlinePreview.setSourcePath(sourcePath, session.archivePath, session.archiveEntry);
+  statusbar.setPreviewFormat(format);
+  runPreviewBackground(path, "ビューを表示できませんでした", () => editor.openTextViewer(format));
+}
+
 function syncPreviewDocument(session: Readonly<DocumentSession>, force = false) {
   const path = documentPathOf(session);
   const format = viewerFormatForPath(path);
+  if (previewFullscreen && !shouldKeepPreviewFullscreen(
+    previewFullscreenTabId,
+    tabs?.state.activeId ?? null,
+    format !== null,
+  )) {
+    previewFullscreen = false;
+    previewFullscreenTabId = null;
+  }
   const isAssetPreview = isAssetViewerFormat(format);
-  const sourcePath = sourcePathForViewer(format, session.savePath, session.displayPath);
-  inlinePreview.setSourcePath(sourcePath, session.archivePath, session.archiveEntry);
   if (!force && path === previewDocumentPath && !isAssetPreview) return;
   if (!format) {
+    inlinePreview.setSourcePath(null, session.archivePath, session.archiveEntry);
     previewDocumentPath = path;
     statusbar.setPreviewFormat(null);
     inlinePreview.clear();
     return;
   }
-  statusbar.setPreviewFormat(format);
-  runPreviewBackground(path, "ビューを表示できませんでした", () => editor.openTextViewer(format));
+  openPreviewFormat(session, path, format);
 }
 
 // ---- 部品 ----
@@ -353,6 +373,8 @@ sidebar = new Sidebar(sidebarEl, {
     doc.applyMoved(info, selectedRelPath);
     return selectedRelPath;
   },
+  onCreateFolder: () => folderActions.createFolder(),
+  onCreateNote: () => folderActions.createNote(null),
   onTreeError: async (error) => {
     if (!isPasswordCancelled(error)) await showError("フォルダを展開できませんでした", error);
   },
@@ -582,6 +604,7 @@ const commands = createCommandRegistry({
   refresh: () => externalWatch.refresh(),
   quit: () => win.close(),
   find: () => editor.openSearch(),
+  reopenClosedTab: () => tabs.reopenLastClosed(),
 });
 
 $("toggle-bars").addEventListener("click", () => {
@@ -592,9 +615,17 @@ $("sidebar-toggle").addEventListener("click", () => {
   updateSidebarVisibility();
 });
 previewToggle.addEventListener("click", () => {
+  if (!previewAvailable) {
+    const session = doc.current;
+    const path = documentPathOf(session);
+    const format = viewerFormatForPreviewToggle(path, session.isBinary);
+    if (format) openPreviewFormat(session, path, format);
+    return;
+  }
   previewCollapsed = !previewCollapsed;
   if (previewCollapsed) {
     previewFullscreen = false;
+    previewFullscreenTabId = null;
     previewEl.style.removeProperty("width");
   }
   updatePreviewVisibility();

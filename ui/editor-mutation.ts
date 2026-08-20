@@ -118,7 +118,7 @@ export class EditorMutationController {
     const caret = result.carets[primaryIndex] ?? selection.caret;
     this.ports.applyResult({ caret, line_count: result.line_count }, fromLine, edits);
     selection.block = null;
-    selection.secondary = [];
+    selection.secondary = result.carets.filter((_, index) => index !== primaryIndex);
     selection.anchor = caret;
     selection.caret = caret;
     await this.ports.renderAfterEdit();

@@ -5,8 +5,8 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
-    OnceLock,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+    Arc, OnceLock,
 };
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
@@ -98,7 +98,18 @@ fn join_output(
     Ok((stdout, stderr))
 }
 
-fn run(mut cmd: Command) -> io::Result<Vec<u8>> {
+fn output_too_large_error() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        "アーカイブ内ファイルのサイズが大きすぎます",
+    )
+}
+
+fn run(cmd: Command) -> io::Result<Vec<u8>> {
+    run_with_stdout_limit(cmd, None)
+}
+
+fn run_with_stdout_limit(mut cmd: Command, stdout_limit: Option<usize>) -> io::Result<Vec<u8>> {
     let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
     let stdout = child
         .stdout
@@ -124,9 +135,19 @@ fn run(mut cmd: Command) -> io::Result<Vec<u8>> {
             return Err(error);
         }
     };
+    let limit_exceeded = Arc::new(AtomicBool::new(false));
+    let reader_limit_exceeded = Arc::clone(&limit_exceeded);
     let stdout_reader = thread::spawn(move || {
         let mut bytes = Vec::new();
-        stdout.take(u64::MAX).read_to_end(&mut bytes).map(|_| bytes)
+        let read_limit = stdout_limit
+            .map(|limit| limit.saturating_add(1) as u64)
+            .unwrap_or(u64::MAX);
+        stdout.take(read_limit).read_to_end(&mut bytes).map(|_| {
+            if stdout_limit.is_some_and(|limit| bytes.len() > limit) {
+                reader_limit_exceeded.store(true, Ordering::Release);
+            }
+            bytes
+        })
     });
     let stderr_reader = thread::spawn(move || {
         let mut bytes = Vec::new();
@@ -134,6 +155,12 @@ fn run(mut cmd: Command) -> io::Result<Vec<u8>> {
     });
     let deadline = Instant::now() + COMMAND_TIMEOUT;
     let status = loop {
+        if limit_exceeded.load(Ordering::Acquire) {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = join_output(stdout_reader, stderr_reader);
+            return Err(output_too_large_error());
+        }
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) if Instant::now() >= deadline => {
@@ -155,6 +182,9 @@ fn run(mut cmd: Command) -> io::Result<Vec<u8>> {
         }
     };
     let (stdout, stderr) = join_output(stdout_reader, stderr_reader)?;
+    if stdout_limit.is_some_and(|limit| stdout.len() > limit) {
+        return Err(output_too_large_error());
+    }
     if status.success() {
         return Ok(stdout);
     }
@@ -217,14 +247,19 @@ pub fn list(archive: &Path, password: &str) -> io::Result<Vec<String>> {
 }
 
 // 1エントリの生バイト列を stdout 経由で取得 (一時ファイルを作らない)。
-pub fn extract(archive: &Path, entry: &str, password: &str) -> io::Result<Vec<u8>> {
+fn extract_with_limit(
+    archive: &Path,
+    entry: &str,
+    password: &str,
+    max_size: usize,
+) -> io::Result<Vec<u8>> {
     let mut cmd = base_command()?;
     cmd.arg(read_password_arg(password))
         .arg("e")
         .arg("-so")
         .arg(archive)
         .arg(entry.replace('/', "\\"));
-    let out = run(cmd)?;
+    let out = run_with_stdout_limit(cmd, Some(max_size))?;
     if out.is_empty() {
         // 7z e は該当なしでも成功終了するため、空出力は一覧と突き合わせて実在確認する
         if !list(archive, password)?.iter().any(|n| n == entry) {
@@ -235,6 +270,10 @@ pub fn extract(archive: &Path, entry: &str, password: &str) -> io::Result<Vec<u8
         }
     }
     Ok(out)
+}
+
+pub fn extract(archive: &Path, entry: &str, password: &str) -> io::Result<Vec<u8>> {
+    extract_with_limit(archive, entry, password, crate::ziptext::MAX_ENTRY)
 }
 
 // ヘッダ暗号化 (エントリ名も秘匿) かどうか。パスワード無しの一覧が
@@ -488,6 +527,25 @@ mod tests {
         let root = temp_root("miss");
         let archive = create_archive(&root, "t.7z", "", false);
         assert!(extract(&archive, "nope.txt", "").is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Feature: アーカイブ展開時のメモリ上限
+    // Scenario: 上限を超えるエントリを展開する
+    // Given: 許容量より大きいエントリがある
+    // When: エントリを標準出力から展開する
+    // Then: 全内容を保持せずInvalidDataで打ち切る
+    #[test]
+    fn extract_stops_when_entry_exceeds_limit() {
+        if !have_7z() {
+            return;
+        }
+        let root = temp_root("extract-limit");
+        let archive = create_archive(&root, "t.7z", "", false);
+
+        let error = extract_with_limit(&archive, "a.txt", "", 4).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -22,6 +22,8 @@ function mount(onSearch: SidebarPorts["onSearch"] = vi.fn(async () => ({
     onOpen: vi.fn(),
     onReplace: vi.fn(),
     onMoveEntry,
+    onCreateFolder: vi.fn(),
+    onCreateNote: vi.fn(),
     onOptionsChange: vi.fn(),
   } satisfies SidebarPorts;
   return { host, ports, sidebar: new Sidebar(host, ports, DEFAULT_SEARCH_OPTIONS) };
@@ -33,6 +35,43 @@ describe("Feature: Sidebar", () => {
     vi.restoreAllMocks();
     Reflect.deleteProperty(document, "elementFromPoint");
     document.body.replaceChildren();
+  });
+
+  // Feature: フォルダツリー下部の新規作成ボタン
+  // Scenario: 通常ツリーから新規フォルダと新規メモを作成する
+  // Given: 通常のフォルダツリーを表示している
+  // When: ツリー最下部の2つの作成ボタンを押す
+  // Then: 新規フォルダと新規メモの各依頼を1回ずつ出す
+  it("Scenario: 通常ツリー下部に新規フォルダと新規メモボタンを表示する", () => {
+    const { host, ports, sidebar } = mount();
+    sidebar.setEntries([{ name: "memo.txt", is_dir: false, is_archive: false }]);
+
+    host.querySelector<HTMLButtonElement>(".fv-create-folder")!.click();
+    host.querySelector<HTMLButtonElement>(".fv-create-note")!.click();
+
+    expect(ports.onCreateFolder).toHaveBeenCalledOnce();
+    expect(ports.onCreateNote).toHaveBeenCalledOnce();
+    const tree = host.querySelector<HTMLElement>(".fv-tree");
+    expect(tree?.lastElementChild?.classList.contains("fv-create-actions")).toBe(true);
+    expect(tree?.querySelector<HTMLElement>(".fv-create-actions")?.hidden).toBe(false);
+  });
+
+  // Scenario: フォルダ検索中は新規作成ボタンを隠す
+  // Given: フォルダ検索を利用できる通常ツリー
+  // When: 検索語を入力して検索結果表示へ切り替える
+  // Then: 新規フォルダと新規メモのボタン領域を非表示にする
+  it("Scenario: フォルダ検索表示中は新規作成ボタンを隠す", async () => {
+    vi.useFakeTimers();
+    const { host, sidebar } = mount();
+    sidebar.setWorkspaceSearch("C:\\workspace");
+    sidebar.setEntries([{ name: "memo.txt", is_dir: false, is_archive: false }]);
+    const input = host.querySelector<HTMLInputElement>(".ws-search-row > input")!;
+
+    input.value = "needle";
+    input.dispatchEvent(new Event("input"));
+    await vi.advanceTimersByTimeAsync(150);
+
+    expect(host.querySelector<HTMLElement>(".fv-create-actions")?.hidden).toBe(true);
   });
 
   // Given: `first.txt`と`second.txt`を設定し、tree要素にフォーカス

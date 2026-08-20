@@ -5,6 +5,7 @@ import {
   isAssetViewerFormat,
   isViewerFormat,
   sourcePathForViewer,
+  viewerFormatForPreviewToggle,
   viewerFormatForPath,
   viewerFormatSpec,
 } from "./viewer-formats";
@@ -21,6 +22,18 @@ describe("Feature: viewer formats", () => {
     expect(viewerFormatForPath("manual.PDF")).toBe("pdf");
     expect(viewerFormatForPath("manual.HTML")).toBe("html");
     expect(viewerFormatForPath("notes.txt")).toBeNull();
+  });
+
+  // Feature: 常時表示プレビューボタンの既定形式
+  // Scenario: 未登録拡張子のテキストだけMarkdownとして開く
+  // Given: CSV、GIF、通常テキスト、未知バイナリの各文書
+  // When: プレビューボタン用の表示形式を判定する
+  // Then: 登録形式を優先し、通常テキストだけMarkdown、未知バイナリは非対応にする
+  it("Scenario: 未登録拡張子のテキストをMarkdownビューで開く", () => {
+    expect(viewerFormatForPreviewToggle("data.csv", false)).toBe("csv");
+    expect(viewerFormatForPreviewToggle("animation.gif", true)).toBe("image");
+    expect(viewerFormatForPreviewToggle("notes.txt", false)).toBe("markdown");
+    expect(viewerFormatForPreviewToggle("payload.bin", true)).toBeNull();
   });
 
   // Given: markdown/png/pdf/未指定のデータ

@@ -58,12 +58,15 @@ export interface SidebarPorts extends Omit<WorkspaceSearchPorts, "onViewChange" 
   onExpandArchive: (relPath: string) => Promise<string[]>;
   onExpandFolder: (relDir: string) => Promise<FolderEntry[]>;
   onMoveEntry: (sourceRelPath: string, targetRelDir: string) => Promise<string>;
+  onCreateFolder: () => void | Promise<void>;
+  onCreateNote: () => void | Promise<void>;
   onTreeError: (error: unknown) => Promise<void>;
 }
 
 export class Sidebar {
   private host: HTMLElement;
   private tree: HTMLElement;
+  private createActions: HTMLElement;
   private panel: WorkspaceSearchPanel;
   private rows: Row[] = [];
   private sel: string | null = null; // 選択中の relPath
@@ -104,6 +107,7 @@ export class Sidebar {
       onViewChange: () => this.render(),
     });
     this.tree = document.createElement("div");
+    this.tree.className = "fv-tree";
     this.tree.tabIndex = 0;
     this.tree.addEventListener("keydown", (event) => this.onTreeKeyDown(event));
     this.host.addEventListener("mousedown", (event) => this.onBackButton(event), true);
@@ -121,6 +125,27 @@ export class Sidebar {
       (error) => this.reportTreeError(error),
     ));
     toolbar.append(fold);
+    this.createActions = document.createElement("div");
+    this.createActions.className = "fv-create-actions";
+    const createFolder = document.createElement("button");
+    createFolder.type = "button";
+    createFolder.className = "fv-create-folder";
+    createFolder.textContent = "＋ フォルダ";
+    createFolder.title = "新規フォルダ";
+    createFolder.addEventListener("click", () => runAsyncBoundary(
+      ports.onCreateFolder,
+      (error) => this.reportTreeError(error),
+    ));
+    const createNote = document.createElement("button");
+    createNote.type = "button";
+    createNote.className = "fv-create-note";
+    createNote.textContent = "＋ メモ";
+    createNote.title = "新規メモ";
+    createNote.addEventListener("click", () => runAsyncBoundary(
+      ports.onCreateNote,
+      (error) => this.reportTreeError(error),
+    ));
+    this.createActions.append(createFolder, createNote);
     this.host.append(toolbar, this.panel.bar, this.tree);
     this.host.addEventListener("contextmenu", (e) => {
       if (e.target !== this.host && e.target !== this.tree) return; // 個々の行上は行側のリスナーに任せる
@@ -369,7 +394,11 @@ export class Sidebar {
 
   // ツリーの置き場は1つ。検索中と検索後は結果を出し、それ以外はフォルダを出す
   private render() {
-    this.tree.replaceChildren(this.panel.showing ? this.panel.renderTree() : this.folderTree());
+    this.createActions.hidden = this.panel.showing;
+    this.tree.replaceChildren(
+      this.panel.showing ? this.panel.renderTree() : this.folderTree(),
+      this.createActions,
+    );
   }
 
   private invalidateOpenRequests() {

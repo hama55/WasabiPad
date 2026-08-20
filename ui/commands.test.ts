@@ -11,6 +11,7 @@ const registry = createCommandRegistry({
   refresh: async () => {},
   quit: noop,
   find: noop,
+  reopenClosedTab: async () => true,
 });
 
 function key(key: string, shiftKey = false, defaultPrevented = false): KeyboardEvent {
@@ -40,5 +41,14 @@ describe("Feature: command registry", () => {
   it("Scenario: F5をファイル更新へ割り当てる", () => {
     const event = { key: "F5", ctrlKey: false, shiftKey: false, defaultPrevented: false } as KeyboardEvent;
     expect(globalCommandForEvent(registry, event)).toBe(registry.refresh);
+  });
+
+  // Feature: 閉じたタブの復活ショートカット
+  // Scenario: Ctrl+Shift+Tで閉じたタブを復活する
+  // Given: 閉じたタブの復活commandを持つregistry
+  // When: Ctrl+Shift+Tイベントを判定する
+  // Then: reopenClosedTab commandを返す
+  it("Scenario: Ctrl+Shift+Tを閉じたタブの復活へ割り当てる", () => {
+    expect(globalCommandForEvent(registry, key("t", true))).toBe(registry.reopenClosedTab);
   });
 });

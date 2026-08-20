@@ -5,6 +5,7 @@
 :root, :root[data-theme="dark"] {
   --bg-top: #2d2d2d;
   --sel-row: #094771;
+  --find-hit: #7a641f;
   --editor-fg: #d4d4d4;
   --caret: #aeafad;
 }
@@ -12,6 +13,7 @@
 :root[data-theme="light"] {
   --bg-top: #ececec;
   --sel-row: #add6ff;
+  --find-hit: #ffe46b;
   --editor-fg: #1e1e1e;
   --caret: #333333;
 }
@@ -159,9 +161,10 @@ body {
 #sidebar {
   width: 220px; min-width: 120px;
   background: var(--bg-side);
-  overflow: auto; flex: none;
+  display: flex; flex-direction: column; overflow: hidden; flex: none;
   padding: 4px 0;
 }
+#sidebar[hidden] { display: none; }
 #sidebar-toggle {
   position: absolute; z-index: 8; top: 4px;
   min-width: 28px; height: 24px; padding: 0 5px;
@@ -202,6 +205,23 @@ body.preview-resizing * { cursor: ew-resize !important; user-select: none !impor
   font-size: 14px; line-height: 20px; cursor: default;
 }
 .fv-toolbar button:hover { background: var(--hover); color: var(--fg); }
+.fv-tree {
+  flex: 1; min-height: 0; overflow: auto;
+  display: flex; flex-direction: column;
+}
+.fv-tree > * { flex: none; }
+.fv-create-actions {
+  position: sticky; bottom: 0; z-index: 2; margin-top: auto;
+  display: flex; gap: 6px; padding: 6px 4px 2px;
+  border-top: 1px solid var(--border); background: var(--bg-side);
+}
+.fv-create-actions[hidden] { display: none; }
+.fv-create-actions button {
+  flex: 1; min-width: 0; padding: 4px 6px;
+  border: 1px solid var(--border-strong); border-radius: 4px;
+  background: var(--bg-editor); color: var(--fg); font: 12px var(--font-ui);
+}
+.fv-create-actions button:hover { background: var(--hover); }
 /* ---- フォルダ検索バー ---- */
 /* 結果が長くなるため、入力欄と件数は上端へ貼り付けたままにする */
 .ws-search {
@@ -422,6 +442,10 @@ body.fv-dragging { cursor: grabbing; user-select: none; }
   position: absolute; height: var(--line-h);
   background: var(--sel-row); z-index: 0;
 }
+.ve-find-hit {
+  position: absolute; height: var(--line-h);
+  background: var(--find-hit); z-index: 0; pointer-events: none;
+}
 .ve-caret {
   position: absolute; width: 2px; height: var(--line-h);
   background: var(--caret); z-index: 3; display: none;
@@ -459,7 +483,7 @@ body.fv-dragging { cursor: grabbing; user-select: none; }
 
 /* ---- 検索/置換バー ---- */
 .ve-find {
-  position: absolute; top: 6px; right: 18px; z-index: 10;
+  position: absolute; top: 6px; right: 54px; z-index: 10;
   background: var(--bg-side); border: 1px solid var(--border-strong); border-radius: 5px;
   box-shadow: 0 4px 12px #000a; padding: 6px;
 }

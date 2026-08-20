@@ -125,6 +125,10 @@ export class VirtualEditor {
   private mutation: EditorMutationController;
   private findGen = 0; // 検索ループの世代。closeやEnter連打で古いループを打ち切るため
   private lastFindMatch: { start: Pos; end: Pos; pat: string; matchCase: boolean } | null = null; // 連続置換が対象にしてよい直前の一致
+  private activeFind: { pat: string; matchCase: boolean } | null = null;
+  private findHighlights: api.FindResult[] = [];
+  private findHighlightRequestKey = "";
+  private findHighlightGeneration = 0;
   private busy = false; // 全置換チャンク実行中は入力を無効化 (レジューム状態の破損防止)
 
   private onDocChange: (lineCount: number, edits?: api.EditManyItem[]) => void;
@@ -229,7 +233,12 @@ export class VirtualEditor {
       (pat, forward, mc) => this.doFind(pat, forward, mc),
       (pat, rep, mc) => this.doReplaceAll(pat, rep, mc),
       (pat, rep, mc) => this.doReplaceNext(pat, rep, mc),
-      () => { this.findGen++; this.lastFindMatch = null; this.focus(); },
+      () => {
+        this.findGen++;
+        this.lastFindMatch = null;
+        this.setFindHighlightQuery("", false);
+        this.focus();
+      },
       (message, error) => this.reportActionError(message, error),
     );
 
@@ -332,6 +341,7 @@ export class VirtualEditor {
     this.documentGeneration++;
     this.findGen++;
     this.lastFindMatch = null;
+    this.invalidateFindHighlights();
     if (keepViewers) this.liveViewers.scheduleRefresh();
     else this.liveViewers.clear();
     this.lineCount = Math.max(1, lineCount);
@@ -729,6 +739,7 @@ export class VirtualEditor {
     // 1論理行の最小高はlineHeight→この件数なら折り返し量に関係なく
     // viewportとoverscanを必ず埋められる。
     const last = Math.min(this.lineCount, topLine + visibleRows + OVERSCAN);
+    this.requestFindHighlights(first, last);
 
     // 未取得チャンクを要求
     let needFetch = false;
@@ -757,9 +768,10 @@ export class VirtualEditor {
     this.renderGutter(first, last, top, selectedLines, caretLines, this.liveViewers.previewRange());
 
     // 新しい可視行DOMを基準にRangeを測定する。旧DOMを測るとスクロール後に欠落する。
-    const selectionFrag = document.createDocumentFragment();
-    this.appendSelection(selectionFrag, first, last);
-    this.linesLayer.prepend(selectionFrag);
+    const decorationFrag = document.createDocumentFragment();
+    this.appendSelection(decorationFrag, first, last);
+    this.appendFindHighlights(decorationFrag, first, last);
+    this.linesLayer.prepend(decorationFrag);
 
     // 横スクロール用に inner 幅を可視行の最大幅へ更新
     this.updateWidth();
@@ -772,7 +784,8 @@ export class VirtualEditor {
     const canReuse = current.length === last - first
       && current.every((line, index) => line.dataset.line === String(first + index));
     if (canReuse) {
-      this.linesLayer.querySelectorAll(":scope > .ve-sel").forEach((selection) => selection.remove());
+      this.linesLayer.querySelectorAll(":scope > .ve-sel, :scope > .ve-find-hit")
+        .forEach((decoration) => decoration.remove());
       current.forEach((line, index) => {
         const text = this.lineCache.peek(first + index) ?? "…";
         if (line.textContent !== text) line.textContent = text;
@@ -1128,6 +1141,73 @@ export class VirtualEditor {
     }
   }
 
+  private appendFindHighlights(frag: DocumentFragment, first: number, last: number) {
+    for (const match of this.findHighlights) {
+      if (match.start.line < first || match.start.line >= last) continue;
+      const str = this.lineCache.peek(match.start.line) ?? "";
+      const lineEl = this.lineElem(match.start.line);
+      if (!lineEl) continue;
+      if (this.wrap) {
+        const node = lineEl.firstChild;
+        if (!node) continue;
+        const inner = this.inner.getBoundingClientRect();
+        const range = document.createRange();
+        range.setStart(node, charToU16(str, match.start.col));
+        range.setEnd(node, charToU16(str, match.end.col));
+        for (const rect of range.getClientRects()) {
+          const box = el("div", "ve-find-hit");
+          box.style.top = `${rect.top - inner.top}px`;
+          box.style.left = `${rect.left - inner.left}px`;
+          box.style.width = `${Math.max(2, rect.width)}px`;
+          box.style.height = `${rect.height}px`;
+          frag.insertBefore(box, frag.firstChild);
+        }
+        continue;
+      }
+      const x0 = this.colToX(lineEl, str, match.start.col);
+      const x1 = this.colToX(lineEl, str, match.end.col);
+      const box = el("div", "ve-find-hit");
+      box.style.top = `${this.rowTop(match.start.line)}px`;
+      box.style.left = `${x0}px`;
+      box.style.width = `${Math.max(2, x1 - x0)}px`;
+      frag.insertBefore(box, frag.firstChild);
+    }
+  }
+
+  private setFindHighlightQuery(pat: string, matchCase: boolean) {
+    const next = pat ? { pat, matchCase } : null;
+    if (this.activeFind?.pat === next?.pat && this.activeFind?.matchCase === next?.matchCase) return;
+    this.activeFind = next;
+    this.invalidateFindHighlights();
+    this.schedule();
+  }
+
+  private invalidateFindHighlights() {
+    this.findHighlights = [];
+    this.findHighlightRequestKey = "";
+    this.findHighlightGeneration++;
+  }
+
+  private requestFindHighlights(first: number, last: number) {
+    const query = this.activeFind;
+    if (!query) return;
+    const key = `${this.documentGeneration}:${first}:${last}:${query.matchCase}:${query.pat}`;
+    if (key === this.findHighlightRequestKey) return;
+    this.findHighlightRequestKey = key;
+    const generation = ++this.findHighlightGeneration;
+    void this.doc.findAllInRange(query.pat, first, last, query.matchCase)
+      .then((matches) => {
+        if (generation !== this.findHighlightGeneration || key !== this.findHighlightRequestKey) return;
+        this.findHighlights = matches;
+        this.schedule();
+      })
+      .catch((error) => {
+        if (generation !== this.findHighlightGeneration || key !== this.findHighlightRequestKey) return;
+        this.findHighlights = [];
+        void this.reportActionError("検索結果を強調表示できませんでした", error);
+      });
+  }
+
   // ---- カーソル移動 ----
   private notifyCursor() {
     const [start, end] = this.sel.norm();
@@ -1390,6 +1470,7 @@ export class VirtualEditor {
       && edits.length === 1
       && this.lineCache.applySingleLineEdit(edits[0].start, edits[0].end, edits[0].text);
     if (!cached) this.lineCache.invalidateFrom(fromLine);
+    this.invalidateFindHighlights();
     this.liveViewers.applyEdits(edits);
     this.sel.caret = r.caret;
     this.sel.anchor = r.caret;
@@ -2140,10 +2221,17 @@ export class VirtualEditor {
 
   private async doFind(pat: string, forward: boolean, matchCase: boolean): Promise<boolean> {
     const myGen = ++this.findGen;
-    this.lastFindMatch = null;
+    const previousMatch = this.lastFindMatch;
     const p = unescapePattern(pat);
+    this.setFindHighlightQuery(p, matchCase);
+    this.lastFindMatch = null;
     if (!p) return false;
-    const from = forward ? this.sel.norm()[1] : this.sel.norm()[0];
+    const selectionIsPrevious = previousMatch
+      && cmp(this.sel.anchor, previousMatch.start) === 0
+      && cmp(this.sel.caret, previousMatch.end) === 0;
+    const refiningCurrent = forward && selectionIsPrevious
+      && (previousMatch.pat !== p || previousMatch.matchCase !== matchCase);
+    const from = forward ? (refiningCurrent ? previousMatch.start : this.sel.norm()[1]) : this.sel.norm()[0];
     if (!forward) {
       const r = await this.doc.find(p, from, false, matchCase);
       if (myGen !== this.findGen) return false;

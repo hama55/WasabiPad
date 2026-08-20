@@ -945,6 +945,56 @@ describe("Feature: TabManager", () => {
     expect(doc.newFile).toHaveBeenCalledWith(false, "C:\\Users\\sample\\Desktop");
   });
 
+  // Feature: 同一起動中に閉じたタブを復活する
+  // Scenario: 最後に閉じたタブを元の位置と表示状態で復活する
+  // Given: aタブと、b.mdを表示中のフォルダタブがあり、後者がアクティブ
+  // When: bを閉じてからreopenLastClosedを呼ぶ
+  // Then: bを元の位置へ戻してアクティブにし、表示位置を復元する
+  it("Scenario: 最後に閉じたタブを元の位置と表示状態で復活する", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    const viewState = {
+      anchor: { line: 9, col: 1 }, caret: { line: 9, col: 3 },
+      topLine: 7, wrapIntraLinePx: 0, scrollLeft: 12,
+    };
+    await manager.init({
+      tabs: [
+        stored.tabs[0],
+        {
+          id: "b", path: "C:\\work", kind: "folder", label: "work",
+          selectedRelPath: "notes\\b.md", viewState,
+        },
+      ],
+      activeId: "b",
+    }, null, null);
+    vi.mocked(doc.captureViewState).mockReturnValue(viewState);
+
+    await manager.close("b");
+    await expect(manager.reopenLastClosed()).resolves.toBe(true);
+
+    expect(manager.state.tabs.map((tab) => tab.id)).toEqual(["a", "b"]);
+    expect(manager.state.activeId).toBe("b");
+    expect(doc.selectEntry).toHaveBeenLastCalledWith("notes\\b.md");
+    expect(doc.restoreViewState).toHaveBeenLastCalledWith(expect.objectContaining({
+      caret: { line: 9, col: 3 }, topLine: 7, scrollLeft: 12,
+    }));
+  });
+
+  // Scenario: アプリ再初期化後は閉じたタブを復活しない
+  // Given: bを閉じた後のTabManager
+  // When: initでアプリ状態を再初期化してreopenLastClosedを呼ぶ
+  // Then: 閉じたタブ履歴は破棄されてfalseを返す
+  it("Scenario: 再初期化後は閉じたタブを復活しない", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init(stored, null, null);
+    await manager.close("b");
+
+    await manager.init(stored, null, null);
+
+    await expect(manager.reopenLastClosed()).resolves.toBe(false);
+  });
+
   // Given: activeId=a で a.txt と b.txt があり、addLinks に a.txt(file) と src(folder) を渡す
   // When: addLinks() を呼ぶ
   // Then: activeId は a のまま、path は [C:\work\a.txt,C:\work\b.txt,C:\work\src]、openPath は初期化時の1回だけ

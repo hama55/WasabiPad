@@ -23,6 +23,24 @@ describe("Feature: FindBar", () => {
     expect(host.querySelector(".ve-find")?.classList.contains("with-rep")).toBe(true);
   });
 
+  // Feature: 入力時点での本文検索
+  // Scenario: 検索欄へ1文字入力した時点で最初の一致を検索する
+  // Given: 開いているFindBarと検索処理
+  // When: 検索欄へnを1文字入力する
+  // Then: Enterを待たず前方検索を1回実行する
+  it("Scenario: 検索欄へ1文字入力した時点で検索する", async () => {
+    const onFind = vi.fn(async () => true);
+    const host = document.createElement("div");
+    const bar = new FindBar(host, onFind, async () => 0, async () => true, () => {}, async () => {});
+    bar.open("");
+    const input = host.querySelector<HTMLInputElement>(".ve-find-in")!;
+
+    input.value = "n";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+
+    await vi.waitFor(() => expect(onFind).toHaveBeenCalledWith("n", true, false));
+  });
+
   it("Scenario: 非同期の検索・置換操作をクリック順に直列化する", async () => {
     // Given: 1回目の連続置換が未完了で、2回目の結果を待つFindBarがある
     let releaseFirst!: (found: boolean) => void;

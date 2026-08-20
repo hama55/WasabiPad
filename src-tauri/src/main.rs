@@ -191,6 +191,11 @@ fn create_note(
 }
 
 #[tauri::command]
+fn create_folder(name: String, state: State) -> Result<(), String> {
+    document::create_folder(name, state)
+}
+
+#[tauri::command]
 fn rename_entry(rel_path: String, new_name: String, state: State) -> Result<DocInfo, String> {
     document::rename_entry(rel_path, new_name, state)
 }
@@ -281,6 +286,17 @@ fn find(
     state: State,
 ) -> Result<Option<FindResult>, String> {
     document::find(pat, from, forward, match_case, state)
+}
+
+#[tauri::command]
+fn find_all_in_range(
+    pat: String,
+    first_line: usize,
+    last_line: usize,
+    match_case: bool,
+    state: State,
+) -> Result<Vec<FindResult>, String> {
+    document::find_all_in_range(pat, first_line, last_line, match_case, state)
 }
 
 #[tauri::command]
@@ -404,13 +420,14 @@ async fn read_archive_asset(
     archive_path: String,
     entry: String,
     app: AppHandle,
-) -> Result<Vec<u8>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+) -> Result<tauri::ipc::Response, String> {
+    let bytes = tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Mutex<DocState>>();
         document::read_archive_asset(archive_path, entry, state)
     })
     .await
-    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())??;
+    Ok(tauri::ipc::Response::new(bytes))
 }
 
 #[tauri::command]
@@ -535,6 +552,7 @@ fn main() {
             workspace_search,
             workspace_search_cancel,
             create_note,
+            create_folder,
             rename_entry,
             move_entry,
             delete_entry,
@@ -550,6 +568,7 @@ fn main() {
             undo,
             redo,
             find,
+            find_all_in_range,
             find_step,
             replace_all_chunk,
             replace_all_cancel,

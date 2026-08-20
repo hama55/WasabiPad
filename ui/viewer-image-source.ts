@@ -3,7 +3,7 @@ import { readArchiveAsset } from "./api";
 
 export interface ImageAssetSourcePorts {
   convertFileSrc: (path: string) => string;
-  readArchiveAsset: (archivePath: string, entry: string) => Promise<number[]>;
+  readArchiveAsset: (archivePath: string, entry: string) => Promise<ArrayBuffer>;
   createObjectURL: (blob: Blob) => string;
   revokeObjectURL: (url: string) => void;
 }
@@ -44,7 +44,7 @@ export async function imageUrlFromArchive(
   ports: ImageAssetSourcePorts = defaultPorts,
 ): Promise<string> {
   const bytes = await ports.readArchiveAsset(archivePath, entry);
-  return ports.createObjectURL(new Blob([new Uint8Array(bytes)], { type: mimeType }));
+  return ports.createObjectURL(new Blob([bytes], { type: mimeType }));
 }
 
 export function revokeImageUrl(url: string, ports: ImageAssetSourcePorts = defaultPorts) {

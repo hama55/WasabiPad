@@ -51,6 +51,7 @@ export class TabManager {
   private navigationInProgress = false;
   private navigationBusy = false;
   private navigationHistory = new Map<string, NavigationHistory>();
+  private closedTabs: { tab: StoredTab; index: number }[] = [];
   private view: TabBarView;
 
   constructor(
@@ -96,6 +97,7 @@ export class TabManager {
     initialViewState?: EditorViewState,
   ) {
     this.navigationHistory.clear();
+    this.closedTabs = [];
     const startupTarget = initialPath ?? startupPath;
     const initialTab = stored.tabs.length || startupTarget
       ? this.link(startupTarget, initialPath ? initialGoto : undefined)
@@ -377,6 +379,9 @@ export class TabManager {
 
   async close(id: string) {
     if (this.tabs.length === 1) {
+      if (id !== this.activeId) return;
+      this.rememberActiveView();
+      const closed = { tab: this.state.tabs[0], index: 0 };
       if (id === this.activeId && !(await this.doc.confirmDiscard())) return;
       const replacement = await this.blankTab(null);
       await this.commitTransition(async () => {
@@ -384,21 +389,52 @@ export class TabManager {
         this.activeId = this.tabs[0].id;
         await this.doc.newFile(false, replacement.draftDirectory ?? null);
       });
+      this.closedTabs.push(closed);
       return;
     }
     const index = this.tabs.findIndex((tab) => tab.id === id);
     if (index < 0) return;
     if (id === this.activeId) {
-      if (!(await this.doc.confirmDiscard())) return;
       this.rememberActiveView();
+      const closed = { tab: this.state.tabs[index], index };
+      if (!(await this.doc.confirmDiscard())) return;
       await this.commitTransition(async () => {
         this.tabs.splice(index, 1);
         this.activeId = this.tabs[Math.min(index, this.tabs.length - 1)].id;
         await this.loadActive();
       });
+      this.closedTabs.push(closed);
     } else {
+      const closed = { tab: this.state.tabs[index], index };
       this.tabs.splice(index, 1);
       this.renderAndPersist();
+      this.closedTabs.push(closed);
+    }
+  }
+
+  async reopenLastClosed(): Promise<boolean> {
+    const closed = this.closedTabs.at(-1);
+    if (!closed || this.navigationBusy || this.transitionTarget) return false;
+    this.transitionTarget = closed.tab.id;
+    let reopened = false;
+    try {
+      await this.doc.confirmDiscard(async () => {
+        this.rememberActiveView();
+        await this.commitTransition(async () => {
+          const tab = {
+            ...closed.tab,
+            viewState: closed.tab.viewState ? cloneEditorViewState(closed.tab.viewState) : undefined,
+          };
+          this.tabs.splice(Math.min(closed.index, this.tabs.length), 0, tab);
+          this.activeId = tab.id;
+          await this.loadActive();
+        });
+        reopened = true;
+      });
+      if (reopened) this.closedTabs.pop();
+      return reopened;
+    } finally {
+      this.transitionTarget = null;
     }
   }
 

@@ -31,7 +31,7 @@ export interface FolderActionsSidebarPort {
   expandAllFolder: (relDir: string) => void | Promise<void>;
 }
 
-export type FolderActionsApi = Pick<typeof api, "createNote" | "renameEntry" | "deleteEntry">;
+export type FolderActionsApi = Pick<typeof api, "createNote" | "createFolder" | "renameEntry" | "deleteEntry">;
 
 export interface FolderActionsServices {
   api: FolderActionsApi;
@@ -200,6 +200,37 @@ export class FolderActions {
       await this.ports.sidebar.selectByRelPath(relPath);
     } catch (e) {
       await this.reportError("メモは作成されましたが一覧を更新できませんでした", e);
+    }
+  }
+
+  async createFolder() {
+    if (!this.root) {
+      await this.reportError("新規フォルダを作成できませんでした", new Error("フォルダを開いていません"));
+      return;
+    }
+    let result: string[] | null;
+    try {
+      result = await this.services.promptFields("新規フォルダ", [{
+        label: "フォルダ名",
+        value: "",
+        validate: (value) => value.trim() ? null : "名前を入力してください",
+      }]);
+    } catch (error) {
+      await this.reportError("新規フォルダを作成できませんでした", error);
+      return;
+    }
+    const name = result?.[0].trim();
+    if (!name) return;
+    try {
+      await this.services.api.createFolder(name);
+    } catch (error) {
+      await this.reportError("新規フォルダを作成できませんでした", error);
+      return;
+    }
+    try {
+      await this.ports.sidebar.refreshFolderEntries();
+    } catch (error) {
+      await this.reportError("フォルダは作成されましたが一覧を更新できませんでした", error);
     }
   }
 

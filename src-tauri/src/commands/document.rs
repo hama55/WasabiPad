@@ -105,6 +105,11 @@ pub(crate) fn create_note(
         .map_err(|e| e.to_string())
 }
 
+pub(crate) fn create_folder(name: String, state: State) -> Result<(), String> {
+    with_doc(&state, |doc| doc.create_folder(&name))?
+        .map_err(|e| e.to_string())
+}
+
 pub(crate) fn rename_entry(
     rel_path: String,
     new_name: String,
@@ -193,6 +198,18 @@ pub(crate) fn find(
     state: State,
 ) -> Result<Option<FindResult>, String> {
     with_doc(&state, |doc| doc.find(&pat, from, forward, match_case))
+}
+
+pub(crate) fn find_all_in_range(
+    pat: String,
+    first_line: usize,
+    last_line: usize,
+    match_case: bool,
+    state: State,
+) -> Result<Vec<FindResult>, String> {
+    with_doc(&state, |doc| {
+        doc.find_all_in_range(&pat, first_line, last_line, match_case)
+    })?
 }
 
 pub(crate) fn find_step(

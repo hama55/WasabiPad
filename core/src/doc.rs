@@ -106,6 +106,12 @@ struct PendingExternalMerge {
     byte_len: u64,
 }
 
+struct CachedArchiveAsset {
+    archive: PathBuf,
+    entry: String,
+    bytes: Vec<u8>,
+}
+
 pub struct Doc {
     buf: TextBuffer,
     undo: UndoStack,
@@ -119,6 +125,8 @@ pub struct Doc {
     merge_base: Option<Vec<String>>,
     // プレビューと適用で同じ外部スナップショットを使い、確認後の再変更を検知する。
     pending_merge: Option<PendingExternalMerge>,
+    // 選択時に展開した画像をプレビューへ所有権移譲し、二重展開とテキスト化を避ける。
+    archive_asset: Option<CachedArchiveAsset>,
     // 7z のパスワードをアーカイブ絶対パス単位でメモリ保持する (ディスクへは残さない)。
     // 同じフォルダ内の複数の 7z を行き来しても都度入力し直さずに済む。
     sevenz_passwords: HashMap<PathBuf, String>,
@@ -154,7 +162,7 @@ impl Doc {
         }
     }
 
-    pub fn read_archive_asset(&self, archive: &Path, entry: &str) -> io::Result<Vec<u8>> {
+    pub fn read_archive_asset(&mut self, archive: &Path, entry: &str) -> io::Result<Vec<u8>> {
         let Target::Archive { path, .. } = &self.source.target else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -172,6 +180,12 @@ impl Doc {
                 io::ErrorKind::InvalidInput,
                 "アーカイブ内パスが不正です",
             ));
+        }
+        if let Some(asset) = self.archive_asset.take() {
+            if asset.archive == archive && asset.entry == entry {
+                return Ok(asset.bytes);
+            }
+            self.archive_asset = Some(asset);
         }
         let bytes = self
             .archive_port
@@ -202,6 +216,7 @@ impl Doc {
             is_binary: false,
             merge_base: None,
             pending_merge: None,
+            archive_asset: None,
             sevenz_passwords: HashMap::new(),
             archive_port,
         }
@@ -290,6 +305,7 @@ impl Doc {
                     is_binary: false,
                     merge_base: None,
                     pending_merge: None,
+                    archive_asset: None,
                     sevenz_passwords: HashMap::new(),
                     archive_port,
                 });
@@ -331,6 +347,7 @@ impl Doc {
             is_binary,
             merge_base,
             pending_merge: None,
+            archive_asset: None,
             sevenz_passwords: HashMap::new(),
             archive_port,
         })
@@ -370,6 +387,7 @@ impl Doc {
             is_binary,
             merge_base,
             pending_merge: None,
+            archive_asset: None,
             sevenz_passwords: std::mem::take(&mut self.sevenz_passwords),
             archive_port: Arc::clone(&self.archive_port),
         };
@@ -570,6 +588,7 @@ impl Doc {
     // - 直接開いた (フォルダ非経由) zip/xlsx/xls の1エントリ ("Sheet1"): エントリ名そのもの
     // - 従来の一括展開済みアーカイブ (上記以外の拡張子。docx 等): entries をエントリ名で検索
     pub fn select_entry(&mut self, rel_path: &str) -> io::Result<Option<DocInfo>> {
+        self.archive_asset = None;
         if let Some(root) = self.source.folder_root().map(Path::to_path_buf) {
             if let Some((archive_rel, entry_name)) =
                 rel_path.split_once(crate::folder::ARCHIVE_ENTRY_SEPARATOR)
@@ -592,7 +611,7 @@ impl Doc {
                     self.enc = enc;
                     self.eol = eol;
                 }
-                self.byte_len = text.len() as u64;
+                self.byte_len = self.selected_entry_byte_len(&text);
                 self.is_binary = is_binary;
                 self.buf = TextBuffer::from_text(&text);
                 self.merge_base = None;
@@ -666,7 +685,7 @@ impl Doc {
         if let Target::Archive { editable_entry, .. } = &mut self.source.target {
             *editable_entry = meta.map(|_| rel_path.to_string());
         }
-        self.byte_len = text.len() as u64;
+        self.byte_len = self.selected_entry_byte_len(&text);
         self.is_binary = is_binary;
         self.buf = TextBuffer::from_text(&text);
         self.merge_base = None;
@@ -675,10 +694,16 @@ impl Doc {
         Ok(Some(self.info(archive_path)?))
     }
 
+    fn selected_entry_byte_len(&self, text: &str) -> u64 {
+        self.archive_asset
+            .as_ref()
+            .map_or(text.len() as u64, |asset| asset.bytes.len() as u64)
+    }
+
     // 7z/zip の1エントリを展開してテキスト化する。編集して書き戻せる (=テキストとして
-    // 復元可能な) 場合のみ検出した enc/eol を返す。展開できたバイナリは生表示 + None (閲覧専用)。
+    // 復元可能な) 場合のみ検出した enc/eol を返す。画像はテキスト化せずプレビューへ渡す。
     fn decode_archive_entry(
-        &self,
+        &mut self,
         archive: &Path,
         entry: &str,
     ) -> io::Result<(String, Option<(Encoding, Eol)>, bool)> {
@@ -716,7 +741,15 @@ impl Doc {
                 false,
             ));
         }
-        let is_binary = is_binary_image_path(Path::new(entry)) || fileio::is_binary_bytes(&bytes);
+        if is_binary_image_path(Path::new(entry)) {
+            self.archive_asset = Some(CachedArchiveAsset {
+                archive: archive.to_path_buf(),
+                entry: entry.to_string(),
+                bytes,
+            });
+            return Ok((String::new(), None, true));
+        }
+        let is_binary = fileio::is_binary_bytes(&bytes);
         if is_binary {
             return Ok((fileio::decode(&bytes).0, None, true));
         }
@@ -862,6 +895,16 @@ impl Doc {
         };
         *self = d;
         Ok(info)
+    }
+
+    // フォルダツリー下部の作成ボタン用。ルート直下へ空フォルダを1つ作る。
+    pub fn create_folder(&self, name: &str) -> io::Result<()> {
+        crate::validate_windows_file_name(name)?;
+        let root = self
+            .source
+            .folder_root()
+            .ok_or_else(|| io::Error::other("フォルダを開いていません"))?;
+        std::fs::create_dir(root.join(name))
     }
 
     // サイドバー上のファイル/フォルダ見出しをリネームする。開いている文書自身または
@@ -1404,6 +1447,20 @@ impl Doc {
         })
     }
 
+    pub fn find_all_in_range(
+        &self,
+        pat: &str,
+        first_line: usize,
+        last_line: usize,
+        match_case: bool,
+    ) -> Result<Vec<FindResult>, String> {
+        crate::search::find_all_in_range(&self.buf, pat, first_line, last_line, match_case)
+            .map(|matches| matches.into_iter().map(|(start, end)| FindResult {
+                start: self.to_char(start),
+                end: self.to_char(end),
+            }).collect())
+    }
+
     // チャンク分割前方検索: 1回の呼び出しで最大 budget 行だけ走査する。
     // 続きがあれば FindOutcome::More{cursor} を返すので、呼び出し側 (フロント) は
     // Found/NotFound になるまでこれをループ呼び出しする。巨大ファイルで一致が
@@ -1686,6 +1743,7 @@ impl Doc {
 mod tests {
     use super::*;
     use std::fs::File;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     // Feature: 貼り付け画像の形式判定
     // Scenario: UIが扱う画像MIMEを文書保存側でも拡張子へ変換する
@@ -1700,7 +1758,19 @@ mod tests {
         assert_eq!(crate::protocol::image_extension_for_mime("image/tiff"), None);
     }
 
-    struct FakeArchivePort;
+    struct FakeArchivePort {
+        bytes: Vec<u8>,
+        extract_count: Arc<AtomicUsize>,
+    }
+
+    impl Default for FakeArchivePort {
+        fn default() -> Self {
+            Self {
+                bytes: b"fake".to_vec(),
+                extract_count: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+    }
 
     impl ArchivePort for FakeArchivePort {
         fn supports_path(&self, _: &Path) -> bool {
@@ -1716,7 +1786,8 @@ mod tests {
         }
 
         fn extract(&self, _: &Path, _: &str, _: &str) -> io::Result<Vec<u8>> {
-            Ok(b"fake".to_vec())
+            self.extract_count.fetch_add(1, Ordering::Relaxed);
+            Ok(self.bytes.clone())
         }
 
         fn preserves_header_encryption(&self, _: &Path, _: &str) -> io::Result<bool> {
@@ -1783,8 +1854,9 @@ mod tests {
             is_binary: false,
             merge_base: None,
             pending_merge: None,
+            archive_asset: None,
             sevenz_passwords: HashMap::new(),
-            archive_port: Arc::new(FakeArchivePort),
+            archive_port: Arc::new(FakeArchivePort::default()),
         };
 
         assert_eq!(
@@ -1792,6 +1864,42 @@ mod tests {
             Some(vec!["fake.txt".to_string()])
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    // Feature: 7z内GIFの選択とプレビュー
+    // Scenario: GIFを選択してから画像バイトを読む
+    // Given: 7z内にGIFエントリがある
+    // When: エントリ選択後にプレビュー用バイトを読む
+    // Then: GIFをテキスト化せず、同じエントリを1回だけ展開する
+    #[test]
+    fn archive_gif_is_not_textified_or_extracted_twice() {
+        let archive = PathBuf::from("archive.7z");
+        let gif = b"GIF89a\x01\x00\x01\x00".to_vec();
+        let extract_count = Arc::new(AtomicUsize::new(0));
+        let archive_port = FakeArchivePort {
+            bytes: gif.clone(),
+            extract_count: Arc::clone(&extract_count),
+        };
+        let mut d = Doc::empty_with_archive_port(Arc::new(archive_port));
+        d.source = DocumentSource {
+            root: None,
+            target: Target::Archive {
+                path: archive.clone(),
+                source_file: None,
+                entries: None,
+                editable_entry: None,
+            },
+        };
+
+        let info = d.select_entry("animation.gif").unwrap().unwrap();
+        let bytes = d
+            .read_archive_asset(&archive, "animation.gif")
+            .unwrap();
+
+        assert!(info.is_binary);
+        assert_eq!(d.lines(0, 1), vec![String::new()]);
+        assert_eq!(bytes, gif);
+        assert_eq!(extract_count.load(Ordering::Relaxed), 1);
     }
 
     // 直接開いた パスワード付き 7z: 一覧→パスワード設定→選択→編集→保存→再読込の一巡
@@ -2042,6 +2150,7 @@ mod tests {
             is_binary: false,
             merge_base: None,
             pending_merge: None,
+            archive_asset: None,
             sevenz_passwords: HashMap::new(),
             archive_port: archive_port::system(),
         }
@@ -2192,6 +2301,23 @@ mod tests {
         assert_eq!((r.start.line, r.start.col), (0, 4));
     }
 
+    // Feature: 表示範囲内の検索一致強調
+    // Scenario: 指定した行範囲にある全一致を返す
+    // Given: 3行にneedleが合計3個ある文書
+    // When: 先頭2行だけの全一致を検索する
+    // Then: 範囲内の2個だけを文字位置で返す
+    #[test]
+    fn find_all_in_visible_range_returns_every_match() {
+        let d = doc("needle x needle\nnone\nneedle");
+
+        let found = d.find_all_in_range("needle", 0, 2, true).unwrap();
+
+        let positions: Vec<_> = found.into_iter()
+            .map(|result| (result.start.line, result.start.col, result.end.col))
+            .collect();
+        assert_eq!(positions, vec![(0, 0, 6), (0, 9, 15)]);
+    }
+
     #[test]
     fn consecutive_typing_coalesces_to_single_undo() {
         let mut d = doc("");
@@ -2291,6 +2417,27 @@ mod tests {
 
         assert_eq!(info.enc, crate::fileio::EncodingId::ShiftJis);
         assert_eq!(info.eol, Eol::Lf);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    // Feature: フォルダツリーからの新規フォルダ作成
+    // Scenario: 開いているフォルダのルート直下へ空フォルダを作る
+    // Given: 空のフォルダを開いている
+    // When: notesという新規フォルダを作る
+    // Then: ルート直下にnotesディレクトリが存在する
+    #[test]
+    fn create_folder_at_workspace_root() {
+        let root = std::env::temp_dir().join(format!(
+            "wasabipad_create_folder_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let d = Doc::open(&root).unwrap();
+
+        d.create_folder("notes").unwrap();
+
+        assert!(root.join("notes").is_dir());
         std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -1501,6 +1501,24 @@ describe("Feature: VirtualEditor", () => {
     expect(scroll.scrollTop).toBe(360);
   });
 
+  // Feature: 可視範囲内の検索一致強調
+  // Scenario: 検索欄へ入力すると画面内の全一致へ背景色を付ける
+  // Given: 可視範囲にneedleが3個ある文書
+  // When: 検索欄へneedleを入力する
+  // Then: Enterを待たず3個すべての強調要素を描画する
+  it("Scenario: 入力時点で可視範囲の全一致を強調する", async () => {
+    const { editor, host } = mount("needle x needle\nnone\nneedle");
+    editor.open(3, false);
+    await settle();
+
+    editor.openSearch();
+    const findIn = host.querySelector<HTMLInputElement>(".ve-find-in")!;
+    findIn.value = "needle";
+    findIn.dispatchEvent(new Event("input", { bubbles: true }));
+
+    await vi.waitFor(() => expect(host.querySelectorAll(".ve-find-hit")).toHaveLength(3));
+  });
+
   // Given: 古い40行文書で検索結果が release まで保留され、検索結果が旧文書20行目を指している
   // When: 旧文書を検索中に editor.open(1, false) で新文書へ切り替え、release して settle する
   // Then: 保留されていた旧検索結果で移動せず、キャレットが0行0列、topLine が0のままになる

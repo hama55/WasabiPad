@@ -5,6 +5,7 @@ import {
   isPreviewSplitterShown,
   previewWidthFromPointer,
   PREVIEW_MIN_WIDTH,
+  shouldKeepPreviewFullscreen,
 } from "./preview-layout";
 
 describe("Feature: preview layout", () => {
@@ -46,5 +47,16 @@ describe("Feature: preview layout", () => {
     expect(isPreviewShown({ available: true, collapsed: true, fullscreen: false })).toBe(false);
     expect(isPreviewSplitterShown({ available: true, collapsed: true, fullscreen: true })).toBe(false);
     expect(isPreviewFullscreen({ available: true, collapsed: true, fullscreen: true })).toBe(false);
+  });
+
+  // Feature: プレビュー最大化状態の所有権
+  // Scenario: 同じフォルダタブ内のMarkdown切替では最大化を維持する
+  // Given: folderタブがプレビュー最大化状態の所有者
+  // When: 同じfolderタブで別のMarkdown表示へ切り替える
+  // Then: 最大化状態を維持し、別タブまたは非対応形式では解除する
+  it("Scenario: 同一タブ内のMarkdown切替ではプレビュー最大化を維持する", () => {
+    expect(shouldKeepPreviewFullscreen("folder", "folder", true)).toBe(true);
+    expect(shouldKeepPreviewFullscreen("folder", "other", true)).toBe(false);
+    expect(shouldKeepPreviewFullscreen("folder", "folder", false)).toBe(false);
   });
 });

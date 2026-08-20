@@ -1,5 +1,5 @@
 import type { ViewerFormat } from "./api";
-import { canRenderViewerFormat, VIEWER_FORMATS } from "./viewer-formats";
+import { canRenderViewerFormat, VIEWER_FORMATS, viewerFormatSpec } from "./viewer-formats";
 
 export function createViewerFormatButtons(
   host: HTMLElement,
@@ -27,4 +27,16 @@ export function syncViewerFormatButtons(host: HTMLElement, current: ViewerFormat
     button.setAttribute("aria-disabled", String(!available));
     button.setAttribute("aria-pressed", String(selected));
   });
+}
+
+export function syncViewerActionButtons(host: HTMLElement, current: ViewerFormat) {
+  const spec = viewerFormatSpec(current);
+  const available = {
+    delimiter: spec.supportsDelimiter,
+    chart: spec.supportsChart,
+  };
+  host.querySelectorAll<HTMLButtonElement>("[data-viewer-action]").forEach((button) => {
+    button.hidden = !available[button.dataset.viewerAction as keyof typeof available];
+  });
+  host.hidden = !Object.values(available).some(Boolean);
 }

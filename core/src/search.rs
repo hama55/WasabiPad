@@ -42,6 +42,30 @@ fn line_match(buf: &TextBuffer, matcher: &RegexMatcher, line: usize, col_from: u
         .map(|(s, e)| (Pos { line, col: s }, Pos { line, col: e }))
 }
 
+pub(crate) fn find_all_in_range(
+    buf: &TextBuffer,
+    pat: &str,
+    first_line: usize,
+    last_line: usize,
+    match_case: bool,
+) -> Result<Vec<(Pos, Pos)>, String> {
+    if pat.is_empty() || pat.contains('\n') {
+        return Ok(Vec::new());
+    }
+    let matcher = build_matcher(pat, match_case, false, false)?;
+    let last = last_line.min(buf.line_count());
+    let mut matches = Vec::new();
+    for line in first_line.min(last)..last {
+        let text = buf.line(line);
+        let mut from = 0;
+        while let Some((start, end)) = find_from(&matcher, &text, from) {
+            matches.push((Pos { line, col: start }, Pos { line, col: end }));
+            from = end;
+        }
+    }
+    Ok(matches)
+}
+
 fn bytes_eq(a: &[u8], b: &[u8], case: bool) -> bool {
     a.len() == b.len()
         && if case {

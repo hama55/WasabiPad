@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
 import viewerHtml from "../viewer.html?raw";
-import { createViewerFormatButtons, syncViewerFormatButtons } from "./viewer-format-buttons";
+import { createViewerChartMenuItem, createViewerDelimiterMenuItem } from "./viewer-context-menu";
+import { createViewerFormatButtons, syncViewerActionButtons, syncViewerFormatButtons } from "./viewer-format-buttons";
 
 describe("Feature: viewer format buttons", () => {
   // Given: 表示形式ボタンの置き場と5形式の選択通知
@@ -47,5 +48,32 @@ describe("Feature: viewer format buttons", () => {
   it("Scenario: タイトルバーはプルダウンを使わない", () => {
     expect(viewerHtml).toContain('<div id="viewer-format" role="group" aria-label="表示形式"></div>');
     expect(viewerHtml).not.toContain('<select id="viewer-format"');
+  });
+
+  // Feature: CSV操作の右上ボタン
+  // Scenario: CSV表示中だけ区切り文字変更とグラフ作成を表示する
+  // Given: 2つのCSV操作ボタンを持つタイトルバー
+  // When: 表示形式をCSVからMarkdownへ切り替える
+  // Then: CSVでは2ボタンを表示し、Markdownでは操作領域ごと非表示にする
+  it("Scenario: CSV形式のときだけ2つの操作ボタンを表示する", () => {
+    const host = document.createElement("div");
+    const onDelimiter = vi.fn();
+    const onChart = vi.fn();
+    host.replaceChildren(createViewerDelimiterMenuItem(onDelimiter), createViewerChartMenuItem(onChart));
+
+    syncViewerActionButtons(host, "csv");
+    expect(host.hidden).toBe(false);
+    expect([...host.querySelectorAll<HTMLButtonElement>("button")].every((button) => !button.hidden)).toBe(true);
+    expect(host.textContent).toContain("区切り文字を変更...");
+    expect(host.textContent).toContain("グラフを作成...");
+    expect(viewerHtml).toContain('<div id="viewer-csv-actions" role="group" aria-label="CSV操作" hidden></div>');
+    host.querySelector<HTMLButtonElement>("[data-viewer-action='delimiter']")!.click();
+    host.querySelector<HTMLButtonElement>("[data-viewer-action='chart']")!.click();
+    expect(onDelimiter).toHaveBeenCalledOnce();
+    expect(onChart).toHaveBeenCalledOnce();
+
+    syncViewerActionButtons(host, "markdown");
+    expect(host.hidden).toBe(true);
+    expect([...host.querySelectorAll<HTMLButtonElement>("button")].every((button) => button.hidden)).toBe(true);
   });
 });

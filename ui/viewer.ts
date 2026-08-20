@@ -52,7 +52,7 @@ import {
   viewerSelectionFromDom,
   type ViewerSelectionWithCaret,
 } from "./viewer-selection";
-import { createViewerFormatButtons, syncViewerFormatButtons } from "./viewer-format-buttons";
+import { createViewerFormatButtons, syncViewerActionButtons, syncViewerFormatButtons } from "./viewer-format-buttons";
 import { ViewerAssetTracker } from "./viewer-asset-tracker";
 import {
   MAX_TABLE_COLUMNS,
@@ -69,6 +69,7 @@ const win = isInlineViewer ? null : getCurrentWindow();
 const content = document.getElementById("viewer-content")!;
 const title = document.getElementById("viewer-title-text")!;
 const formatButtons = document.getElementById("viewer-format")!;
+const actionButtons = document.getElementById("viewer-csv-actions")!;
 const fullscreenButton = document.getElementById("viewer-fullscreen") as HTMLButtonElement;
 const summary = document.getElementById("viewer-summary")!;
 const themeButton = document.getElementById("viewer-theme")!;
@@ -279,6 +280,14 @@ const chartController = new ViewerChartController({
     }
   },
 });
+
+const delimiterActionButton = createViewerDelimiterMenuItem(() => {
+  runViewerOperation("区切り文字設定を開けませんでした", openDelimiterDialog);
+});
+const chartActionButton = createViewerChartMenuItem(() => {
+  runViewerOperation("グラフ設定を開けませんでした", () => chartController.openDialog());
+});
+actionButtons.replaceChildren(delimiterActionButton, chartActionButton);
 
 function bindViewerControls() {
   setFullscreenButton(false);
@@ -580,6 +589,7 @@ function renderPayload(payload: ViewerPayload) {
   const handler = VIEWER_HANDLERS[payload.format];
   syncViewerFormatButtons(formatButtons, payload.format, currentArchiveEntry ?? currentSourcePath);
   const formatSpec = viewerFormatSpec(payload.format);
+  syncViewerActionButtons(actionButtons, payload.format);
   title.textContent = formatSpec.title;
   document.title = title.textContent;
   if (!isInlineViewer) runViewerOperation("タイトルを更新できませんでした", () => win!.setTitle(title.textContent));

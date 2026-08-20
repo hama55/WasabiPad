@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const style = readFileSync(new URL("./style.css", import.meta.url), "utf8");
+const indexHtml = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 
 describe("Feature: editor caret style", () => {
   // Given: `style.css`のキャレット描画規則と入力用textarea規則を読み込む
@@ -26,5 +27,26 @@ describe("Feature: pane toggle placement", () => {
     expect(style).not.toMatch(/#sidebar-toggle\s*\{[^}]*bottom:/s);
     expect(style).not.toMatch(/#preview-toggle\s*\{[^}]*bottom:/s);
     expect(style).toMatch(/#preview\s*\{[^}]*min-width:\s*var\(--preview-min-width\);/s);
+  });
+
+  // Feature: エディタ右上コントロールの常時利用
+  // Scenario: 検索欄とプレビュー開閉ボタンを重ねず表示する
+  // Given: エディタのCSSとメイン画面HTML
+  // When: 検索欄の右位置とプレビュー開閉ボタンを検査する
+  // Then: 検索欄はボタン幅ぶん左にあり、プレビュー開閉ボタンは初期状態から非表示ではない
+  it("Scenario: 検索欄を左へずらしプレビュー開閉ボタンを常時表示する", () => {
+    expect(style).toMatch(/\.ve-find\s*\{[^}]*right:\s*54px;/s);
+    expect(indexHtml).toMatch(/<button\s+id="preview-toggle"(?![^>]*\shidden(?:\s|=|>))[^>]*>/s);
+  });
+
+  // Feature: フォルダツリー下端の新規作成操作
+  // Scenario: 項目が少なくても作成ボタンをサイドバー最下端へ固定する
+  // Given: サイドバー・ツリー・作成欄のCSS
+  // When: 残余高と押し下げ規則を検査する
+  // Then: ツリーが残余高を占有し、作成欄が自動マージンで下端へ配置される
+  it("Scenario: 新規作成ボタンを項目数に関係なくサイドバー最下端へ固定する", () => {
+    expect(style).toMatch(/#sidebar\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*overflow:\s*hidden;/s);
+    expect(style).toMatch(/\.fv-tree\s*\{[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow:\s*auto;/s);
+    expect(style).toMatch(/\.fv-create-actions\s*\{[^}]*margin-top:\s*auto;/s);
   });
 });
