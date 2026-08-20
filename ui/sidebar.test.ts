@@ -7,7 +7,7 @@ import type { FolderEntry } from "./api";
 function mount(onSearch: SidebarPorts["onSearch"] = vi.fn(async () => ({
   results: [], scanned_files: 0, skipped_files: 0, hit_file_limit: false, hit_result_limit: false,
   pattern_error: null, file_name_match_mode: "strict" as const,
-}))) {
+})), onMoveEntry: SidebarPorts["onMoveEntry"] = vi.fn(async () => "")) {
   const host = document.createElement("div");
   document.body.replaceChildren(host);
   const ports = {
@@ -20,6 +20,10 @@ function mount(onSearch: SidebarPorts["onSearch"] = vi.fn(async () => ({
     onCancel: vi.fn(),
     onError: vi.fn(async () => {}),
     onOpen: vi.fn(),
+    onReplace: vi.fn(),
+    onMoveEntry,
+    onCreateFolder: vi.fn(),
+    onCreateNote: vi.fn(),
     onOptionsChange: vi.fn(),
   } satisfies SidebarPorts;
   return { host, ports, sidebar: new Sidebar(host, ports, DEFAULT_SEARCH_OPTIONS) };
@@ -28,7 +32,46 @@ function mount(onSearch: SidebarPorts["onSearch"] = vi.fn(async () => ({
 describe("Feature: Sidebar", () => {
   afterEach(() => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
+    Reflect.deleteProperty(document, "elementFromPoint");
     document.body.replaceChildren();
+  });
+
+  // Feature: フォルダツリー下部の新規作成ボタン
+  // Scenario: 通常ツリーから新規フォルダと新規メモを作成する
+  // Given: 通常のフォルダツリーを表示している
+  // When: ツリー最下部の2つの作成ボタンを押す
+  // Then: 新規フォルダと新規メモの各依頼を1回ずつ出す
+  it("Scenario: 通常ツリー下部に新規フォルダと新規メモボタンを表示する", () => {
+    const { host, ports, sidebar } = mount();
+    sidebar.setEntries([{ name: "memo.txt", is_dir: false, is_archive: false }]);
+
+    host.querySelector<HTMLButtonElement>(".fv-create-folder")!.click();
+    host.querySelector<HTMLButtonElement>(".fv-create-note")!.click();
+
+    expect(ports.onCreateFolder).toHaveBeenCalledOnce();
+    expect(ports.onCreateNote).toHaveBeenCalledOnce();
+    const tree = host.querySelector<HTMLElement>(".fv-tree");
+    expect(tree?.lastElementChild?.classList.contains("fv-create-actions")).toBe(true);
+    expect(tree?.querySelector<HTMLElement>(".fv-create-actions")?.hidden).toBe(false);
+  });
+
+  // Scenario: フォルダ検索中は新規作成ボタンを隠す
+  // Given: フォルダ検索を利用できる通常ツリー
+  // When: 検索語を入力して検索結果表示へ切り替える
+  // Then: 新規フォルダと新規メモのボタン領域を非表示にする
+  it("Scenario: フォルダ検索表示中は新規作成ボタンを隠す", async () => {
+    vi.useFakeTimers();
+    const { host, sidebar } = mount();
+    sidebar.setWorkspaceSearch("C:\\workspace");
+    sidebar.setEntries([{ name: "memo.txt", is_dir: false, is_archive: false }]);
+    const input = host.querySelector<HTMLInputElement>(".ws-search-row > input")!;
+
+    input.value = "needle";
+    input.dispatchEvent(new Event("input"));
+    await vi.advanceTimersByTimeAsync(150);
+
+    expect(host.querySelector<HTMLElement>(".fv-create-actions")?.hidden).toBe(true);
   });
 
   // Given: `first.txt`と`second.txt`を設定し、tree要素にフォーカス
@@ -55,6 +98,190 @@ describe("Feature: Sidebar", () => {
       ["second.txt", false],
       ["first.txt", false],
     ]);
+  });
+
+  // Feature: フォルダビューのD&D移動
+  // Scenario: ファイル行をフォルダ行へドロップする
+  // Given: memo.txt と sub フォルダを表示している
+  // When: memo.txt を掴んで sub の上で離す
+  // Then: 移動ポートへ元相対パスと移動先相対パスを渡す
+  it("Scenario: ファイルをフォルダへD&Dして移動を依頼する", async () => {
+    const { host, ports, sidebar } = mount();
+    sidebar.setEntries([
+      { name: "memo.txt", is_dir: false, is_archive: false },
+      { name: "sub", is_dir: true, is_archive: false },
+    ]);
+    const rows = [...host.querySelectorAll<HTMLElement>(".fv-row")];
+    const file = rows.find((row) => row.textContent?.includes("memo.txt"))!;
+    const dir = rows.find((row) => row.textContent?.includes("sub"))!;
+
+    Object.defineProperty(document, "elementFromPoint", { configurable: true, value: () => dir });
+    file.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 4, clientY: 4 }));
+    window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 12, clientY: 12 }));
+    window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 12, clientY: 12 }));
+
+    await vi.waitFor(() => expect(ports.onMoveEntry).toHaveBeenCalledWith("memo.txt", "sub"));
+  });
+
+  // Scenario: フォルダ行を別のフォルダ行へドロップする
+  // Given: source と target フォルダを表示している
+  // When: source を target の上で離す
+  // Then: 移動ポートへ元相対パスと移動先相対パスを渡す
+  it("Scenario: フォルダを別フォルダへD&Dして移動を依頼する", async () => {
+    const { host, ports, sidebar } = mount();
+    sidebar.setEntries([
+      { name: "source", is_dir: true, is_archive: false },
+      { name: "target", is_dir: true, is_archive: false },
+    ]);
+    const rows = [...host.querySelectorAll<HTMLElement>(".fv-row")];
+    const source = rows.find((row) => row.textContent?.includes("source"))!;
+    const target = rows.find((row) => row.textContent?.includes("target"))!;
+
+    Object.defineProperty(document, "elementFromPoint", { configurable: true, value: () => target });
+    source.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 4, clientY: 4 }));
+    window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 12, clientY: 12 }));
+    window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 12, clientY: 12 }));
+
+    await vi.waitFor(() => expect(ports.onMoveEntry).toHaveBeenCalledWith("source", "target"));
+  });
+
+  // Scenario: 子ファイルをフォルダビューの空白へドロップする
+  // Given: sub/memo.txt を表示している
+  // When: memo.txt をフォルダビューの空白へD&Dする
+  // Then: フォルダルートへの移動を依頼する
+  it("Scenario: フォルダ内のファイルをD&Dでルートへ戻す", async () => {
+    const { host, ports, sidebar } = mount();
+    ports.onExpandFolder.mockImplementation(async (relDir: string) => relDir === "sub"
+      ? [{ name: "memo.txt", is_dir: false, is_archive: false }]
+      : []);
+    sidebar.setEntries([{ name: "sub", is_dir: true, is_archive: false }]);
+    host.querySelector<HTMLElement>(".fv-row")!.click();
+    await vi.waitFor(() => expect(host.textContent).toContain("memo.txt"));
+    const file = [...host.querySelectorAll<HTMLElement>(".fv-row")]
+      .find((row) => row.textContent?.includes("memo.txt"))!;
+
+    const rootDrop = host.querySelector<HTMLElement>(".fv-root-drop")!;
+    Object.defineProperty(document, "elementFromPoint", { configurable: true, value: () => rootDrop });
+    file.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 4, clientY: 4 }));
+    window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 12, clientY: 12 }));
+    window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 12, clientY: 12 }));
+
+    await vi.waitFor(() => expect(ports.onMoveEntry).toHaveBeenCalledWith("sub/memo.txt", ""));
+  });
+
+  // Scenario: 開いている文書とは別のファイルを移動する
+  // Given: 移動処理が現在選択中の `open.txt` を返す
+  // When: memo.txt を sub へD&Dする
+  // Then: Sidebarは移動元を再計算せず、返された `open.txt` を選択する
+  it("Scenario: D&D後は文書側が返した選択パスを使う", async () => {
+    const onMoveEntry = vi.fn(async () => "open.txt");
+    const { host, sidebar } = mount(undefined, onMoveEntry);
+    const selectByRelPath = vi.spyOn(sidebar, "selectByRelPath").mockResolvedValue();
+    sidebar.setEntries([
+      { name: "memo.txt", is_dir: false, is_archive: false },
+      { name: "sub", is_dir: true, is_archive: false },
+    ]);
+    const rows = [...host.querySelectorAll<HTMLElement>(".fv-row")];
+    const file = rows.find((row) => row.textContent?.includes("memo.txt"))!;
+    const dir = rows.find((row) => row.textContent?.includes("sub"))!;
+
+    Object.defineProperty(document, "elementFromPoint", { configurable: true, value: () => dir });
+    file.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 4, clientY: 4 }));
+    window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 12, clientY: 12 }));
+    window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 12, clientY: 12 }));
+
+    await vi.waitFor(() => expect(selectByRelPath).toHaveBeenCalledWith("open.txt"));
+  });
+
+  // Scenario: D&D中にアプリがフォーカスを失う
+  // Given: memo.txt を sub へドラッグしている
+  // When: windowのblurを受ける
+  // Then: ドラッグ状態を破棄し、その後のpointerupでは移動しない
+  it("Scenario: フォーカス喪失時はD&D状態を解除する", () => {
+    const { host, ports, sidebar } = mount();
+    sidebar.setEntries([
+      { name: "memo.txt", is_dir: false, is_archive: false },
+      { name: "sub", is_dir: true, is_archive: false },
+    ]);
+    const rows = [...host.querySelectorAll<HTMLElement>(".fv-row")];
+    const file = rows.find((row) => row.textContent?.includes("memo.txt"))!;
+    const dir = rows.find((row) => row.textContent?.includes("sub"))!;
+
+    Object.defineProperty(document, "elementFromPoint", { configurable: true, value: () => dir });
+    file.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 4, clientY: 4 }));
+    window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 12, clientY: 12 }));
+    expect(host.classList.contains("fv-dragging")).toBe(true);
+
+    window.dispatchEvent(new Event("blur"));
+    window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 12, clientY: 12 }));
+
+    expect(host.classList.contains("fv-dragging")).toBe(false);
+    expect(ports.onMoveEntry).not.toHaveBeenCalled();
+  });
+
+  // Feature: フォルダビューD&Dのアンドゥ
+  // Scenario: Ctrl+Zで直前に移動した子ファイルを元のフォルダへ戻す
+  // Given: from/memo.txt を to へD&D済み
+  // When: フォルダツリーでCtrl+Zを押す
+  // Then: to/memo.txt を from へ移動する依頼を出す
+  it("Scenario: Ctrl+ZでD&D移動をアンドゥする", async () => {
+    const { host, ports, sidebar } = mount();
+    ports.onExpandFolder.mockImplementation(async (relDir: string) => relDir === "from"
+      ? [{ name: "memo.txt", is_dir: false, is_archive: false }]
+      : []);
+    sidebar.setWorkspaceSearch("C:\\workspace");
+    sidebar.setEntries([
+      { name: "from", is_dir: true, is_archive: false },
+      { name: "to", is_dir: true, is_archive: false },
+    ]);
+    host.querySelectorAll<HTMLElement>(".fv-row")[0].click();
+    await vi.waitFor(() => expect(host.textContent).toContain("memo.txt"));
+    const source = [...host.querySelectorAll<HTMLElement>(".fv-row")]
+      .find((row) => row.textContent?.includes("memo.txt"))!;
+    const target = [...host.querySelectorAll<HTMLElement>(".fv-row")]
+      .find((row) => row.textContent?.includes("to"))!;
+
+    Object.defineProperty(document, "elementFromPoint", { configurable: true, value: () => target });
+    source.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 4, clientY: 4 }));
+    window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 12, clientY: 12 }));
+    window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 12, clientY: 12 }));
+    await vi.waitFor(() => expect(ports.onMoveEntry).toHaveBeenLastCalledWith("from/memo.txt", "to"));
+    await vi.waitFor(() => expect(host.querySelector(".fv-row")).toBeNull());
+    sidebar.setWorkspaceSearch("C:\\workspace");
+
+    const event = new KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true, cancelable: true });
+    host.lastElementChild!.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    await vi.waitFor(() => expect(ports.onMoveEntry).toHaveBeenLastCalledWith("to/memo.txt", "from"));
+  });
+
+  // Scenario: マウス戻るボタンで直前のD&D移動を戻す
+  // Given: memo.txt を sub へD&D済みで、ポインタはフォルダビュー上にある
+  // When: 戻るボタン(button=3)を押す
+  // Then: sub/memo.txt をフォルダルートへ移動する依頼を出す
+  it("Scenario: 戻るボタンでD&D移動をアンドゥする", async () => {
+    const { host, ports, sidebar } = mount();
+    sidebar.setEntries([
+      { name: "memo.txt", is_dir: false, is_archive: false },
+      { name: "sub", is_dir: true, is_archive: false },
+    ]);
+    const rows = [...host.querySelectorAll<HTMLElement>(".fv-row")];
+    const file = rows.find((row) => row.textContent?.includes("memo.txt"))!;
+    const dir = rows.find((row) => row.textContent?.includes("sub"))!;
+
+    Object.defineProperty(document, "elementFromPoint", { configurable: true, value: () => dir });
+    file.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 4, clientY: 4 }));
+    window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 12, clientY: 12 }));
+    window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 12, clientY: 12 }));
+    await vi.waitFor(() => expect(ports.onMoveEntry).toHaveBeenLastCalledWith("memo.txt", "sub"));
+    await vi.waitFor(() => expect(host.querySelector(".fv-row")).toBeNull());
+
+    const event = new MouseEvent("mousedown", { button: 3, bubbles: true, cancelable: true });
+    host.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    await vi.waitFor(() => expect(ports.onMoveEntry).toHaveBeenLastCalledWith("sub/memo.txt", ""));
   });
 
   // Given: 上下キーで開いたファイルの処理中にエディタへフォーカスが移ろうとする

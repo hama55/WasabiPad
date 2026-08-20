@@ -94,8 +94,8 @@ describe("Feature: TabManager", () => {
 
   // Given: activeId=folder、folderRoot が C:\work、selectedRelPath が sub\memo.txt、viewState の anchor/caret が各 line 10、topLine が8、scrollLeft が20
   // When: manager.init(folderTabs, null, null) を呼ぶ
-  // Then: selectEntry("sub\\memo.txt") が goTo({ line: 10, col: 0 }) より先に呼ばれ、restoreViewState は呼ばれない
-  it("Scenario: folder tabは選択中entryを開いてから選択行を復元する", async () => {
+  // Then: selectEntry("sub\\memo.txt") の後に完全なviewStateを復元する
+  it("Scenario: folder tabは選択中entryを開いてから完全な表示状態を復元する", async () => {
     const { doc, host } = fixture();
     const folderTabs: StoredTabs = {
       tabs: [{
@@ -119,10 +119,10 @@ describe("Feature: TabManager", () => {
     await manager.init(folderTabs, null, null);
 
     expect(doc.selectEntry).toHaveBeenCalledWith("sub\\memo.txt");
-    expect(doc.goTo).toHaveBeenCalledWith({ line: 10, col: 0 });
-    expect(doc.restoreViewState).not.toHaveBeenCalled();
+    expect(doc.goTo).not.toHaveBeenCalled();
+    expect(doc.restoreViewState).toHaveBeenCalledWith(folderTabs.tabs[0].viewState);
     expect(vi.mocked(doc.selectEntry).mock.invocationCallOrder[0])
-      .toBeLessThan(vi.mocked(doc.goTo).mock.invocationCallOrder[0]);
+      .toBeLessThan(vi.mocked(doc.restoreViewState).mock.invocationCallOrder[0]);
   });
 
   // Given: folder tab の selectedRelPath が deleted.txt で、selectEntry が Error("missing") を返す
@@ -148,6 +148,65 @@ describe("Feature: TabManager", () => {
     expect(manager.state.tabs[0].selectedRelPath).toBe("deleted.txt");
   });
 
+  // Feature: フォルダ検索結果からの連続操作
+  // Scenario: 変更中の同じファイルを再選択する
+  // Given: folder tab が sub/memo.txt を選択中で dirty
+  // When: 区切りだけ異なる sub\\memo.txt へ navigateEntry する
+  // Then: 確認と再読込を行わず dirty の本文を維持する
+  it("Scenario: 同じフォルダ内ファイルへの再移動は未保存確認を出さない", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init({
+      tabs: [{ id: "folder", path: "C:\\work", kind: "folder", label: "work" }],
+      activeId: "folder",
+    }, null, null);
+    doc.current.folderRoot = "C:\\work";
+    doc.current.selectedRelPath = "sub/memo.txt";
+    doc.current.dirty = true;
+    vi.mocked(doc.confirmDiscard).mockClear();
+    vi.mocked(doc.selectEntry).mockClear();
+
+    await expect(manager.navigateEntry("sub\\memo.txt")).resolves.toBe(true);
+
+    expect(doc.confirmDiscard).not.toHaveBeenCalled();
+    expect(doc.selectEntry).not.toHaveBeenCalled();
+    expect(doc.current.dirty).toBe(true);
+  });
+
+  // Feature: 終了時の未保存確認
+  // Scenario: dirty なメモを閉じる
+  // Given: active document が dirty で確認処理が false を返す
+  // When: saveForExit を呼ぶ
+  // Then: 終了を止め、save を自動実行しない
+  it("Scenario: 終了前に未保存メモの確認結果を待つ", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init(stored, null, null);
+    doc.current.dirty = true;
+    vi.mocked(doc.confirmDiscard).mockResolvedValue(false);
+
+    await expect(manager.saveForExit()).resolves.toBe(false);
+
+    expect(doc.confirmDiscard).toHaveBeenCalledOnce();
+    expect(doc.save).not.toHaveBeenCalled();
+  });
+
+  // Given: 終了確認が継続処理を受け入れる
+  // When: saveForExit に設定保存処理を渡す
+  // Then: 確認後に1回だけ実行して終了を許可する
+  it("Scenario: 終了確認後に渡された継続処理を実行する", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    const onProceed = vi.fn();
+    await manager.init(stored, null, null);
+    vi.mocked(doc.confirmDiscard).mockClear();
+
+    await expect(manager.saveForExit(onProceed)).resolves.toBe(true);
+
+    expect(doc.confirmDiscard).toHaveBeenCalledOnce();
+    expect(onProceed).toHaveBeenCalledOnce();
+  });
+
   // Given: activeId=a の stored があり、confirmDiscard は true を返す
   // When: init 後に manager.activate("b") を呼ぶ
   // Then: confirmDiscard は1回、openPath の最終呼出しは C:\work\b.txt と false、activeId は b
@@ -160,6 +219,42 @@ describe("Feature: TabManager", () => {
     expect(doc.confirmDiscard).toHaveBeenCalledTimes(1);
     expect(doc.openPath).toHaveBeenLastCalledWith("C:\\work\\b.txt", false);
     expect(manager.state.activeId).toBe("b");
+  });
+
+  // Feature: tab切替の排他
+  // Scenario: 未保存確認中に別のtab切替を開始しない
+  // Given: a/b/c の3tabがあり、aからbへの確認処理が保留されている
+  // When: 確認処理中にcへの切替を呼び、続けてbへの確認を完了する
+  // Then: cへの読込は行わず、最初の要求だけをbへ完了する
+  it("Scenario: tab切替の確認中は後続の切替を実行しない", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    let continueFirst!: () => Promise<void>;
+    vi.mocked(doc.confirmDiscard).mockImplementation((onProceed) => new Promise((resolve) => {
+      continueFirst = async () => {
+        await onProceed?.();
+        resolve(true);
+      };
+    }));
+    await manager.init({
+      tabs: [
+        { id: "a", path: "C:\\work\\a.txt", kind: "file", label: "a.txt" },
+        { id: "b", path: "C:\\work\\b.txt", kind: "file", label: "b.txt" },
+        { id: "c", path: "C:\\work\\c.txt", kind: "file", label: "c.txt" },
+      ],
+      activeId: "a",
+    }, null, null);
+
+    const first = manager.activate("b");
+    await vi.waitFor(() => expect(continueFirst).toBeTypeOf("function"));
+
+    await expect(manager.activate("c")).resolves.toBe(false);
+    await continueFirst();
+    await first;
+
+    expect(manager.state.activeId).toBe("b");
+    expect(doc.openPath).not.toHaveBeenCalledWith("C:\\work\\c.txt", false);
+    expect(doc.confirmDiscard).toHaveBeenCalledOnce();
   });
 
   // Given: activeId=a で、最初のcaptureViewStateがline4、次がline8を返す
@@ -427,6 +522,23 @@ describe("Feature: TabManager", () => {
     expect(doc.goTo).not.toHaveBeenCalledWith({ line: 8, col: 3 });
   });
 
+  // Scenario: 未保存確認で新規tabを開く操作を取り消す
+  // Given: active tab aで未保存確認がfalseを返す
+  // When: c.txtを新規tabで開く
+  // Then: falseを返し、c tabを追加せずaを維持する
+  it("Scenario: 新規tabの作成を取り消した結果を呼び出し元へ返す", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init(stored, null, null);
+    vi.mocked(doc.confirmDiscard).mockResolvedValue(false);
+
+    await expect(manager.open("C:\\work\\c.txt")).resolves.toBe(false);
+
+    expect(manager.state.tabs.map((tab) => tab.id)).toEqual(["a", "b"]);
+    expect(manager.state.activeId).toBe("a");
+    expect(doc.openPath).not.toHaveBeenCalledWith("C:\\work\\c.txt", false);
+  });
+
   // Given: active tab a で、b tab の openPath が Error("load failed") を返し、変更通知配列を空にする
   // When: activate("b") を呼ぶ
   // Then: load failed で reject し、activeId は a、変更通知は空、最終 openPath は C:\work\a.txt と false
@@ -530,6 +642,24 @@ describe("Feature: TabManager", () => {
     expect(manager.state.activeId).toBe("a");
   });
 
+  // Feature: tab切替失敗からの復帰
+  // Scenario: 未保存確認が例外になった後に再度tabを切り替える
+  // Given: a/b の2tabがあり、最初の確認処理がError("confirm failed")を投げる
+  // When: bへの切替を失敗させ、同じbへの切替を再実行する
+  // Then: 2回目の切替はtransition状態に阻害されず完了する
+  it("Scenario: 未保存確認の例外後もtab切替を再試行できる", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init(stored, null, null);
+    const error = new Error("confirm failed");
+    vi.mocked(doc.confirmDiscard).mockRejectedValueOnce(error);
+
+    await expect(manager.activate("b")).rejects.toBe(error);
+    await expect(manager.activate("b")).resolves.toBe(true);
+
+    expect(manager.state.activeId).toBe("b");
+  });
+
   // Given: active tab a の dirty を true にして syncActive(doc.current) を呼ぶ
   // When: tab label の文字列を取得する
   // Then: labels は ["● a.txt", "b.txt"]
@@ -567,6 +697,138 @@ describe("Feature: TabManager", () => {
 
     expect(manager.state.activeId).toBe("b");
     expect(host.querySelector<HTMLButtonElement>(".doc-tab.active")?.title).toBe("C:\\work\\b.txt");
+  });
+
+  // Feature: 未保存タブの復帰
+  // Scenario: 保存して継続した後に元のタブへ戻る
+  // Given: a.txt が dirty で、保存処理がエディタ表示状態を更新し、a/b それぞれに非ゼロの表示状態がある
+  // When: b.txt へ移動し、b.txt を編集してから a.txt へ戻る
+  // Then: a.txt を開き、保存前に編集していたキャレットと表示位置を復元する
+  it("Scenario: 保存して継続したタブへ戻ると編集位置を復元する", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    const firstView = {
+      anchor: { line: 23, col: 2 },
+      caret: { line: 23, col: 7 },
+      topLine: 18,
+      wrapIntraLinePx: 1,
+      scrollLeft: 24,
+    };
+    const secondView = {
+      anchor: { line: 8, col: 1 },
+      caret: { line: 8, col: 4 },
+      topLine: 3,
+      wrapIntraLinePx: 0,
+      scrollLeft: 12,
+    };
+    let currentView = firstView;
+    vi.mocked(doc.captureViewState).mockImplementation(() => ({ ...currentView }));
+    vi.mocked(doc.save).mockImplementation(async () => {
+      currentView = {
+        anchor: { line: 0, col: 0 },
+        caret: { line: 0, col: 0 },
+        topLine: 0,
+        wrapIntraLinePx: 0,
+        scrollLeft: 0,
+      };
+      return true;
+    });
+    vi.mocked(doc.confirmDiscard).mockImplementation(async (onProceed) => {
+      if (doc.current.dirty) {
+        if (!await doc.save()) return false;
+        doc.current.dirty = false;
+      }
+      await onProceed?.();
+      return true;
+    });
+
+    await manager.init(stored, null, null);
+    doc.current.dirty = true;
+    await manager.activate("b");
+
+    currentView = secondView;
+    doc.current.dirty = true;
+    await manager.activate("a");
+
+    expect(doc.openPath).toHaveBeenLastCalledWith("C:\\work\\a.txt", false);
+    expect(doc.restoreViewState).toHaveBeenLastCalledWith(firstView);
+  });
+
+  // Feature: 未保存フォルダタブの復帰
+  // Scenario: 保存して継続した後にフォルダ内の選択ファイルへ戻る
+  // Given: C:\work の folder tab で memo.txt を選択し、保存処理が選択状態を維持する
+  // When: b.txt へ移動し、b.txt を編集してから C:\work の tab へ戻る
+  // Then: C:\work を開き直し、memo.txtを選択してキャレット・選択・中央位置を復元する
+  it("Scenario: 保存して継続したフォルダタブへ戻ると完全な編集位置を復元する", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    const firstView = {
+      anchor: { line: 23, col: 2 },
+      caret: { line: 23, col: 7 },
+      topLine: 18,
+      wrapIntraLinePx: 1,
+      scrollLeft: 24,
+    };
+    const secondView = {
+      anchor: { line: 8, col: 1 },
+      caret: { line: 8, col: 4 },
+      topLine: 3,
+      wrapIntraLinePx: 0,
+      scrollLeft: 12,
+    };
+    let currentView = firstView;
+    vi.mocked(doc.openPath).mockImplementation(async (path: string) => {
+      doc.current.savePath = path;
+      doc.current.displayPath = path;
+      doc.current.folderRoot = path === "C:\\work" ? path : null;
+      doc.current.selectedRelPath = "";
+      return true;
+    });
+    vi.mocked(doc.captureViewState).mockImplementation(() => ({ ...currentView }));
+    vi.mocked(doc.save).mockImplementation(async () => {
+      manager.syncActive(doc.current);
+      currentView = {
+        anchor: { line: 0, col: 0 },
+        caret: { line: 0, col: 0 },
+        topLine: 0,
+        wrapIntraLinePx: 0,
+        scrollLeft: 0,
+      };
+      return true;
+    });
+    vi.mocked(doc.confirmDiscard).mockImplementation(async (onProceed) => {
+      if (doc.current.dirty) {
+        if (!await doc.save()) return false;
+        doc.current.dirty = false;
+      }
+      await onProceed?.();
+      return true;
+    });
+
+    await manager.init({
+      tabs: [
+        {
+          id: "folder",
+          path: "C:\\work",
+          kind: "folder",
+          label: "work",
+          selectedRelPath: "memo.txt",
+        },
+        { id: "b", path: "C:\\work\\b.txt", kind: "file", label: "b.txt" },
+      ],
+      activeId: "folder",
+    }, null, null);
+    doc.current.dirty = true;
+    await manager.activate("b");
+
+    currentView = secondView;
+    doc.current.dirty = true;
+    await manager.activate("folder");
+
+    expect(doc.openPath).toHaveBeenLastCalledWith("C:\\work", false);
+    expect(doc.selectEntry).toHaveBeenCalledTimes(2);
+    expect(doc.selectEntry).toHaveBeenLastCalledWith("memo.txt");
+    expect(doc.restoreViewState).toHaveBeenLastCalledWith(firstView);
   });
 
   // Given: activeId=a で a.txt と b.txt の2タブがある
@@ -698,6 +960,168 @@ describe("Feature: TabManager", () => {
     await manager.close("a");
 
     expect(doc.newFile).toHaveBeenCalledWith(false, "C:\\Users\\sample\\Desktop");
+  });
+
+  // Feature: 同一起動中に閉じたタブを復活する
+  // Scenario: 最後に閉じたタブを元の位置と表示状態で復活する
+  // Given: aタブと、b.mdを表示中のフォルダタブがあり、後者がアクティブ
+  // When: bを閉じてからreopenLastClosedを呼ぶ
+  // Then: bを元の位置へ戻してアクティブにし、表示位置を復元する
+  it("Scenario: 最後に閉じたタブを元の位置と表示状態で復活する", async () => {
+    const { doc, host } = fixture();
+    vi.mocked(doc.openPath).mockImplementation(async (path) => {
+      doc.current.folderRoot = path === "C:\\work" ? path : null;
+      doc.current.savePath = path === "C:\\work" ? null : path;
+      doc.current.displayPath = path;
+      return true;
+    });
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    const viewState = {
+      anchor: { line: 9, col: 1 }, caret: { line: 9, col: 3 },
+      topLine: 7, wrapIntraLinePx: 0, scrollLeft: 12,
+    };
+    await manager.init({
+      tabs: [
+        stored.tabs[0],
+        {
+          id: "b", path: "C:\\work", kind: "folder", label: "work",
+          selectedRelPath: "notes\\b.md", viewState,
+        },
+      ],
+      activeId: "b",
+    }, null, null);
+    vi.mocked(doc.captureViewState).mockReturnValue(viewState);
+
+    await manager.close("b");
+    await expect(manager.reopenLastClosed()).resolves.toBe(true);
+
+    expect(manager.state.tabs.map((tab) => tab.id)).toEqual(["a", "b"]);
+    expect(manager.state.activeId).toBe("b");
+    expect(doc.selectEntry).toHaveBeenLastCalledWith("notes\\b.md");
+    expect(doc.restoreViewState).toHaveBeenLastCalledWith(expect.objectContaining({
+      anchor: { line: 9, col: 1 }, caret: { line: 9, col: 3 }, topLine: 7, scrollLeft: 12,
+    }));
+  });
+
+  // Scenario: 読み込みに失敗した閉じたtabを後から再試行する
+  // Given: b tabを閉じ、b.txtの最初のopenPathだけfalseを返す
+  // When: reopenLastClosedを2回呼ぶ
+  // Then: 1回目は履歴を保持してfalse、2回目はbを復活してtrueを返す
+  it("Scenario: 復活時の一時的な読込失敗で閉じたtab履歴を失わない", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init(stored, null, null);
+    await manager.close("b");
+    let bAttempts = 0;
+    vi.mocked(doc.openPath).mockImplementation(async (path) => {
+      if (path === "C:\\work\\b.txt") return ++bAttempts > 1;
+      doc.current.savePath = path;
+      doc.current.displayPath = path;
+      return true;
+    });
+
+    await expect(manager.reopenLastClosed()).resolves.toBe(false);
+    expect(manager.state.tabs.map((tab) => tab.id)).toEqual(["a"]);
+    expect(manager.state.activeId).toBe("a");
+
+    await expect(manager.reopenLastClosed()).resolves.toBe(true);
+    expect(manager.state.tabs.map((tab) => tab.id)).toEqual(["a", "b"]);
+    expect(manager.state.activeId).toBe("b");
+    expect(bAttempts).toBe(2);
+  });
+
+  // Scenario: 保存して閉じた無題タブを保存先ファイルとして復活する
+  // Given: 未保存の無題タブで「保存して継続」を選び、savePathがmemo.mdへ変わる
+  // When: タブを閉じてreopenLastClosedを呼ぶ
+  // Then: 保存前の無題状態ではなくmemo.mdのファイルタブを復活する
+  it("Scenario: 保存して閉じた無題タブは保存先ファイルとして復活する", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init({
+      tabs: [stored.tabs[0], { id: "draft", path: null, kind: "blank", label: "無題" }],
+      activeId: "draft",
+    }, null, null);
+    doc.current.dirty = true;
+    vi.mocked(doc.confirmDiscard).mockImplementation(async (onProceed) => {
+      doc.current.savePath = "C:\\work\\memo.md";
+      doc.current.displayPath = "C:\\work\\memo.md";
+      doc.current.dirty = false;
+      await onProceed?.();
+      return true;
+    });
+
+    await manager.close("draft");
+    await manager.reopenLastClosed();
+
+    expect(manager.state.tabs.at(-1)).toEqual(expect.objectContaining({
+      id: "draft", path: "C:\\work\\memo.md", kind: "file", label: "memo.md",
+    }));
+  });
+
+  // Scenario: 最後の1タブを閉じて復活する
+  // Given: a.txtタブだけが開いている
+  // When: aを閉じて自動生成された無題タブ上でreopenLastClosedを呼ぶ
+  // Then: 無題タブを残さずaだけを復活する
+  it("Scenario: 最後の1タブを復活すると自動生成した無題タブを置き換える", async () => {
+    const { doc, host } = fixture();
+    vi.mocked(doc.newFile).mockImplementation(async () => {
+      doc.current.folderRoot = null;
+      doc.current.savePath = null;
+      doc.current.displayPath = "";
+      doc.current.selectedRelPath = "";
+      doc.current.dirty = false;
+    });
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init({ tabs: [stored.tabs[0]], activeId: "a" }, null, null);
+
+    await manager.close("a");
+    await manager.reopenLastClosed();
+
+    expect(manager.state.tabs.map((tab) => tab.id)).toEqual(["a"]);
+    expect(manager.state.activeId).toBe("a");
+  });
+
+  // Scenario Outline: 一括クローズで最後に削除したタブを復活する
+  // Given: a、b、cの保存済みタブがありaがアクティブ
+  // When: bのコンテキストメニューから各一括クローズ操作を行いCtrl+Shift+T相当を実行する
+  // Then: 各操作で最後に削除されたcを復活する
+  // Examples: ほかのタブを閉じる | 右側のタブを閉じる | 保存済みのタブを閉じる
+  it.each([
+    "ほかのタブを閉じる",
+    "右側のタブを閉じる",
+    "保存済みのタブを閉じる",
+  ])("Scenario: %sでも閉じたタブ履歴を残す", async (actionLabel) => {
+    const { doc, host } = fixture();
+    document.body.appendChild(Object.assign(document.createElement("div"), { id: "dropdown" }));
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init({
+      tabs: [...stored.tabs, { id: "c", path: "C:\\work\\c.txt", kind: "file", label: "c.txt" }],
+      activeId: "a",
+    }, null, null);
+
+    host.querySelectorAll<HTMLElement>(".doc-tab")[1]
+      .dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+    [...document.querySelectorAll<HTMLElement>("#dropdown .dd-item")]
+      .find((item) => item.textContent === actionLabel)!.click();
+    await vi.waitFor(() => expect(manager.state.tabs.some((tab) => tab.id === "c")).toBe(false));
+
+    await expect(manager.reopenLastClosed()).resolves.toBe(true);
+    expect(manager.state.activeId).toBe("c");
+  });
+
+  // Scenario: アプリ再初期化後は閉じたタブを復活しない
+  // Given: bを閉じた後のTabManager
+  // When: initでアプリ状態を再初期化してreopenLastClosedを呼ぶ
+  // Then: 閉じたタブ履歴は破棄されてfalseを返す
+  it("Scenario: 再初期化後は閉じたタブを復活しない", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init(stored, null, null);
+    await manager.close("b");
+
+    await manager.init(stored, null, null);
+
+    await expect(manager.reopenLastClosed()).resolves.toBe(false);
   });
 
   // Given: activeId=a で a.txt と b.txt があり、addLinks に a.txt(file) と src(folder) を渡す

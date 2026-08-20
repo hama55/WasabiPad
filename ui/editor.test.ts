@@ -146,6 +146,21 @@ describe("Feature: VirtualEditor", () => {
     expect(doc.calls.some((call) => call.startsWith("lines("))).toBe(true);
   });
 
+  // Feature: フォルダ検索の一致単位置換
+  // Scenario: エディタ上の一致範囲を置換する
+  // Given: 「before needle after」を表示している
+  // When: needle の範囲を wasabi へ置換する
+  // Then: 文書本文が置換され、成功を返す
+  it("Scenario: 検索結果から指定範囲だけを置換する", async () => {
+    const { editor, doc } = mount("before needle after");
+    editor.open(1, false);
+    await settle();
+
+    await expect(editor.replaceRange(0, 7, 13, "wasabi")).resolves.toBe(true);
+
+    expect(doc.text()).toBe("before wasabi after");
+  });
+
   // Given: 文書をエディタで表示している
   // When: エディタ上で Ctrl+ホイールを操作する
   // Then: フォントサイズ変更として通知し、フォントファミリー変更とは通知しない
@@ -1484,6 +1499,73 @@ describe("Feature: VirtualEditor", () => {
 
     expect(editor.captureViewState().topLine).toBe(18);
     expect(scroll.scrollTop).toBe(360);
+  });
+
+  // Feature: 可視範囲内の検索一致強調
+  // Scenario: 検索欄へ入力すると画面内の全一致へ背景色を付ける
+  // Given: 可視範囲にneedleが3個ある文書
+  // When: 検索欄へneedleを入力する
+  // Then: Enterを待たず3個すべての強調要素を描画する
+  it("Scenario: 入力時点で可視範囲の全一致を強調する", async () => {
+    const { editor, host } = mount("needle x needle\nnone\nneedle");
+    editor.open(3, false);
+    await settle();
+
+    editor.openSearch();
+    const findIn = host.querySelector<HTMLInputElement>(".ve-find-in")!;
+    findIn.value = "needle";
+    findIn.dispatchEvent(new Event("input", { bubbles: true }));
+
+    await vi.waitFor(() => expect(host.querySelectorAll(".ve-find-hit")).toHaveLength(3));
+  });
+
+  // Feature: フォルダ検索結果を開いたエディタの一致強調
+  // Scenario: フォルダ検索条件で可視範囲の全一致を強調する
+  // Given: 可視範囲に正規表現の一致が3個あり、検索ダイアログは閉じている
+  // When: フォルダ検索由来の検索語と一致条件を設定する
+  // Then: 同じ条件で可視範囲を検索し、3個すべての背景を描画する
+  it("Scenario: フォルダ検索条件で可視範囲の全一致を強調する", async () => {
+    const { editor, doc, host } = mount("note1 note2\nnone\nnote3");
+    const matches = [
+      { start: { line: 0, col: 0 }, end: { line: 0, col: 5 } },
+      { start: { line: 0, col: 6 }, end: { line: 0, col: 11 } },
+      { start: { line: 2, col: 0 }, end: { line: 2, col: 5 } },
+    ];
+    const findAllInRange = vi.fn().mockResolvedValue(matches);
+    doc.client.findAllInRange = findAllInRange;
+    editor.open(3, false);
+    await settle();
+
+    editor.setFindHighlightQuery("note\\d", false, true, false);
+
+    await vi.waitFor(() => expect(findAllInRange).toHaveBeenCalledWith("note\\d", 0, 3, false, true, false));
+    await vi.waitFor(() => expect(host.querySelectorAll(".ve-find-hit")).toHaveLength(3));
+    expect(host.querySelector<HTMLElement>(".ve-find")?.hidden).toBe(true);
+  });
+
+  // Scenario: 可視範囲の強調検索が一度だけ失敗する
+  // Given: 初回のfindAllInRangeが失敗し、次回はneedleの一致を返す
+  // When: 同じ検索語・表示範囲のままスクロールして再描画する
+  // Then: 強調検索を再試行し、一致背景を描画する
+  it("Scenario: 強調検索の一時失敗後に同じ範囲を再試行する", async () => {
+    const { editor, doc, host } = mount("needle");
+    const findAllInRange = vi.fn()
+      .mockRejectedValueOnce(new Error("temporary failure"))
+      .mockResolvedValue([{ start: { line: 0, col: 0 }, end: { line: 0, col: 6 } }]);
+    doc.client.findAllInRange = findAllInRange;
+    editor.open(1, false);
+    await settle();
+
+    editor.openSearch();
+    const findIn = host.querySelector<HTMLInputElement>(".ve-find-in")!;
+    findIn.value = "needle";
+    findIn.dispatchEvent(new Event("input", { bubbles: true }));
+    await vi.waitFor(() => expect(findAllInRange).toHaveBeenCalledTimes(1));
+
+    host.querySelector<HTMLElement>(".ve-scroll")!.dispatchEvent(new Event("scroll"));
+
+    await vi.waitFor(() => expect(findAllInRange).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(host.querySelectorAll(".ve-find-hit")).toHaveLength(1));
   });
 
   // Given: 古い40行文書で検索結果が release まで保留され、検索結果が旧文書20行目を指している

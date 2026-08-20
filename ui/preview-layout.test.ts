@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  effectivePreviewFormat,
   isPreviewFullscreen,
   isPreviewShown,
   isPreviewSplitterShown,
   previewWidthFromPointer,
   PREVIEW_MIN_WIDTH,
+  shouldKeepPreviewFullscreen,
 } from "./preview-layout";
 
 describe("Feature: preview layout", () => {
@@ -46,5 +48,48 @@ describe("Feature: preview layout", () => {
     expect(isPreviewShown({ available: true, collapsed: true, fullscreen: false })).toBe(false);
     expect(isPreviewSplitterShown({ available: true, collapsed: true, fullscreen: true })).toBe(false);
     expect(isPreviewFullscreen({ available: true, collapsed: true, fullscreen: true })).toBe(false);
+  });
+
+  // Feature: プレビュー最大化状態の所有権
+  // Scenario: 同じフォルダタブ内のMarkdown切替では最大化を維持する
+  // Given: folderタブがプレビュー最大化状態の所有者
+  // When: 同じfolderタブで別のMarkdown表示へ切り替える
+  // Then: 最大化状態を維持し、別タブまたは非対応形式では解除する
+  it("Scenario: 同一タブ内のMarkdown切替ではプレビュー最大化を維持する", () => {
+    expect(shouldKeepPreviewFullscreen("folder", "folder", true)).toBe(true);
+    expect(shouldKeepPreviewFullscreen("folder", "other", true)).toBe(false);
+    expect(shouldKeepPreviewFullscreen("folder", "folder", false)).toBe(false);
+  });
+
+  // Scenario: 未知拡張子を手動でMarkdown表示したまま本文を更新する
+  // Given: notes.txtに対してMarkdownプレビューが開いている
+  // When: 拡張子からは形式を検出できない同じ文書を再同期する
+  // Then: 開いているMarkdown形式を実効形式として維持する
+  it("Scenario: 未知拡張子の手動Markdownプレビューを同じ文書内で維持する", () => {
+    expect(effectivePreviewFormat(
+      "C:\\work\\notes.txt",
+      null,
+      "folder-a",
+      { ownerTabId: "folder-a", path: "C:\\work\\notes.txt", format: "markdown" },
+    )).toBe("markdown");
+    expect(effectivePreviewFormat(
+      "C:\\work\\other.txt",
+      null,
+      "folder-a",
+      { ownerTabId: "folder-a", path: "C:\\work\\notes.txt", format: "markdown" },
+    )).toBeNull();
+  });
+
+  // Scenario: 別のフォルダtabにある同名ファイルへ手動形式を漏らさない
+  // Given: folder-aのmemo.txtを手動でMarkdown表示している
+  // When: folder-bの同じ相対pathのmemo.txtへ切り替える
+  // Then: folder-aの手動形式ではなくfolder-bの検出形式を使う
+  it("Scenario: 同じ相対pathでも別tabなら手動プレビュー形式を引き継がない", () => {
+    expect(effectivePreviewFormat(
+      "memo.txt",
+      null,
+      "folder-b",
+      { ownerTabId: "folder-a", path: "memo.txt", format: "markdown" },
+    )).toBeNull();
   });
 });

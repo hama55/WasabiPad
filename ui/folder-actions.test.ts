@@ -430,6 +430,22 @@ describe("Feature: FolderActions", () => {
     );
   });
 
+  // Feature: フォルダツリーからの新規フォルダ作成
+  // Scenario: 入力した名前でルート直下にフォルダを作成して一覧を更新する
+  // Given: C:\workを開き、フォルダ名入力がnotesを返す
+  // When: createFolderを実行する
+  // Then: notesの作成APIを呼び、フォルダ一覧を更新する
+  it("Scenario: 新規フォルダを作成してツリーを更新する", async () => {
+    const { actions, ports } = fixture();
+    vi.mocked(promptFields).mockResolvedValueOnce(["notes"]);
+    const createFolder = vi.spyOn(api, "createFolder").mockResolvedValueOnce(undefined);
+
+    await actions.createFolder();
+
+    expect(createFolder).toHaveBeenCalledWith("notes");
+    expect(ports.sidebar.refreshFolderEntries).toHaveBeenCalledOnce();
+  });
+
   // Feature: 新規メモ名ダイアログのエラー境界
   // Scenario: 初期候補の取得に失敗しても作成APIを呼ばない
   // Given: promptMemoSpecがError("candidate failed")でrejectする

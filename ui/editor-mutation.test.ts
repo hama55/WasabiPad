@@ -103,6 +103,22 @@ describe("Feature: EditorMutationController", () => {
     expect(document.calls).toContain("editMany(2)");
   });
 
+  // Feature: 矩形編集後のマルチキャレット維持
+  // Scenario: 4行を矩形削除した直後の入力を4行すべてへ挿入する
+  // Given: 4行の1〜3列を矩形選択している
+  // When: 選択範囲を削除し、続けてXを入力する
+  // Then: 削除後に残った4個のキャレットすべてへXを挿入する
+  it("Scenario: 矩形削除直後の入力を全キャレットへ挿入する", async () => {
+    const { document, selection, controller } = setup("abcd\nABCD\n1234\nwxyz");
+    selection.setBlock({ line: 0, col: 1 }, { line: 3, col: 3 });
+
+    await controller.deleteSel();
+    await controller.insertText("X");
+
+    expect(document.text()).toBe("aXd\nAXD\n1X4\nwXz");
+    expect(document.calls.filter((call) => call === "editMany(4)")).toHaveLength(2);
+  });
+
   // Given: 0〜1行目の1〜3列を矩形選択している
   // When: 2行の矩形文字列を貼り付ける
   // Then: 選択幅を置換し、行ごとに対応する文字列を挿入する

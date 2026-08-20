@@ -105,12 +105,26 @@ pub(crate) fn create_note(
         .map_err(|e| e.to_string())
 }
 
+pub(crate) fn create_folder(name: String, state: State) -> Result<(), String> {
+    with_doc(&state, |doc| doc.create_folder(&name))?
+        .map_err(|e| e.to_string())
+}
+
 pub(crate) fn rename_entry(
     rel_path: String,
     new_name: String,
     state: State,
 ) -> Result<DocInfo, String> {
     with_doc(&state, |doc| doc.rename_entry(&rel_path, &new_name))?
+        .map_err(|e| e.to_string())
+}
+
+pub(crate) fn move_entry(
+    source_rel_path: String,
+    target_rel_dir: String,
+    state: State,
+) -> Result<DocInfo, String> {
+    with_doc(&state, |doc| doc.move_entry(&source_rel_path, &target_rel_dir))?
         .map_err(|e| e.to_string())
 }
 
@@ -184,6 +198,20 @@ pub(crate) fn find(
     state: State,
 ) -> Result<Option<FindResult>, String> {
     with_doc(&state, |doc| doc.find(&pat, from, forward, match_case))
+}
+
+pub(crate) fn find_all_in_range(
+    pat: String,
+    first_line: usize,
+    last_line: usize,
+    match_case: bool,
+    use_regex: bool,
+    whole_word: bool,
+    state: State,
+) -> Result<Vec<FindResult>, String> {
+    with_doc(&state, |doc| {
+        doc.find_all_in_range(&pat, first_line, last_line, match_case, use_regex, whole_word)
+    })?
 }
 
 pub(crate) fn find_step(

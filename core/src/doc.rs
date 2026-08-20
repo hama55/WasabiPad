@@ -29,7 +29,7 @@ use crate::search_replace::{self, FindStep};
 use crate::undo::UndoStack;
 use std::collections::HashMap;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 fn is_delete_target_affected(
@@ -51,6 +51,35 @@ fn create_empty_file(path: &Path) -> io::Result<()> {
             "同名のファイルが既にあります",
         )),
         Err(error) => Err(error),
+    }
+}
+
+fn normalize_move_path(relative: &str, allow_empty: bool) -> io::Result<String> {
+    if relative.is_empty() {
+        if allow_empty {
+            return Ok(String::new());
+        }
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "移動元が空です"));
+    }
+    let normalized = relative.replace('\\', "/");
+    let path = Path::new(&normalized);
+    if path.is_absolute()
+        || path.components().any(|component| {
+            matches!(component, Component::CurDir | Component::ParentDir | Component::RootDir | Component::Prefix(_))
+        })
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "不正な移動先です"));
+    }
+    Ok(normalized)
+}
+
+fn rebase_path(path: &mut PathBuf, old_root: &Path, new_root: &Path) {
+    if let Ok(rest) = path.strip_prefix(old_root) {
+        *path = if rest.as_os_str().is_empty() {
+            new_root.to_path_buf()
+        } else {
+            new_root.join(rest)
+        };
     }
 }
 
@@ -77,6 +106,12 @@ struct PendingExternalMerge {
     byte_len: u64,
 }
 
+struct CachedArchiveAsset {
+    archive: PathBuf,
+    entry: String,
+    bytes: Vec<u8>,
+}
+
 pub struct Doc {
     buf: TextBuffer,
     undo: UndoStack,
@@ -90,6 +125,8 @@ pub struct Doc {
     merge_base: Option<Vec<String>>,
     // プレビューと適用で同じ外部スナップショットを使い、確認後の再変更を検知する。
     pending_merge: Option<PendingExternalMerge>,
+    // 選択時に展開した画像をプレビューへ所有権移譲し、二重展開とテキスト化を避ける。
+    archive_asset: Option<CachedArchiveAsset>,
     // 7z のパスワードをアーカイブ絶対パス単位でメモリ保持する (ディスクへは残さない)。
     // 同じフォルダ内の複数の 7z を行き来しても都度入力し直さずに済む。
     sevenz_passwords: HashMap<PathBuf, String>,
@@ -125,7 +162,7 @@ impl Doc {
         }
     }
 
-    pub fn read_archive_asset(&self, archive: &Path, entry: &str) -> io::Result<Vec<u8>> {
+    pub fn read_archive_asset(&mut self, archive: &Path, entry: &str) -> io::Result<Vec<u8>> {
         let Target::Archive { path, .. } = &self.source.target else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -143,6 +180,12 @@ impl Doc {
                 io::ErrorKind::InvalidInput,
                 "アーカイブ内パスが不正です",
             ));
+        }
+        if let Some(asset) = self.archive_asset.take() {
+            if asset.archive == archive && asset.entry == entry {
+                return Ok(asset.bytes);
+            }
+            self.archive_asset = Some(asset);
         }
         let bytes = self
             .archive_port
@@ -173,6 +216,7 @@ impl Doc {
             is_binary: false,
             merge_base: None,
             pending_merge: None,
+            archive_asset: None,
             sevenz_passwords: HashMap::new(),
             archive_port,
         }
@@ -261,6 +305,7 @@ impl Doc {
                     is_binary: false,
                     merge_base: None,
                     pending_merge: None,
+                    archive_asset: None,
                     sevenz_passwords: HashMap::new(),
                     archive_port,
                 });
@@ -302,6 +347,7 @@ impl Doc {
             is_binary,
             merge_base,
             pending_merge: None,
+            archive_asset: None,
             sevenz_passwords: HashMap::new(),
             archive_port,
         })
@@ -341,6 +387,7 @@ impl Doc {
             is_binary,
             merge_base,
             pending_merge: None,
+            archive_asset: None,
             sevenz_passwords: std::mem::take(&mut self.sevenz_passwords),
             archive_port: Arc::clone(&self.archive_port),
         };
@@ -541,6 +588,7 @@ impl Doc {
     // - 直接開いた (フォルダ非経由) zip/xlsx/xls の1エントリ ("Sheet1"): エントリ名そのもの
     // - 従来の一括展開済みアーカイブ (上記以外の拡張子。docx 等): entries をエントリ名で検索
     pub fn select_entry(&mut self, rel_path: &str) -> io::Result<Option<DocInfo>> {
+        self.archive_asset = None;
         if let Some(root) = self.source.folder_root().map(Path::to_path_buf) {
             if let Some((archive_rel, entry_name)) =
                 rel_path.split_once(crate::folder::ARCHIVE_ENTRY_SEPARATOR)
@@ -563,7 +611,7 @@ impl Doc {
                     self.enc = enc;
                     self.eol = eol;
                 }
-                self.byte_len = text.len() as u64;
+                self.byte_len = self.selected_entry_byte_len(&text);
                 self.is_binary = is_binary;
                 self.buf = TextBuffer::from_text(&text);
                 self.merge_base = None;
@@ -637,7 +685,7 @@ impl Doc {
         if let Target::Archive { editable_entry, .. } = &mut self.source.target {
             *editable_entry = meta.map(|_| rel_path.to_string());
         }
-        self.byte_len = text.len() as u64;
+        self.byte_len = self.selected_entry_byte_len(&text);
         self.is_binary = is_binary;
         self.buf = TextBuffer::from_text(&text);
         self.merge_base = None;
@@ -646,10 +694,16 @@ impl Doc {
         Ok(Some(self.info(archive_path)?))
     }
 
+    fn selected_entry_byte_len(&self, text: &str) -> u64 {
+        self.archive_asset
+            .as_ref()
+            .map_or(text.len() as u64, |asset| asset.bytes.len() as u64)
+    }
+
     // 7z/zip の1エントリを展開してテキスト化する。編集して書き戻せる (=テキストとして
-    // 復元可能な) 場合のみ検出した enc/eol を返す。展開できたバイナリは生表示 + None (閲覧専用)。
+    // 復元可能な) 場合のみ検出した enc/eol を返す。画像はテキスト化せずプレビューへ渡す。
     fn decode_archive_entry(
-        &self,
+        &mut self,
         archive: &Path,
         entry: &str,
     ) -> io::Result<(String, Option<(Encoding, Eol)>, bool)> {
@@ -678,16 +732,27 @@ impl Doc {
                     is_binary,
                 ));
             }
+            Err(error) if error.kind() == io::ErrorKind::FileTooLarge => {
+                return Ok((
+                    format!(
+                        "(サイズ超過のためスキップ: {} bytes超)",
+                        crate::ziptext::MAX_ENTRY
+                    ),
+                    None,
+                    false,
+                ));
+            }
             Err(error) => return Err(self.annotate_sevenz_error(archive, error)),
         };
-        if bytes.len() > crate::ziptext::MAX_ENTRY {
-            return Ok((
-                format!("(サイズ超過のためスキップ: {} bytes)", bytes.len()),
-                None,
-                false,
-            ));
+        if is_binary_image_path(Path::new(entry)) {
+            self.archive_asset = Some(CachedArchiveAsset {
+                archive: archive.to_path_buf(),
+                entry: entry.to_string(),
+                bytes,
+            });
+            return Ok((String::new(), None, true));
         }
-        let is_binary = is_binary_image_path(Path::new(entry)) || fileio::is_binary_bytes(&bytes);
+        let is_binary = fileio::is_binary_bytes(&bytes);
         if is_binary {
             return Ok((fileio::decode(&bytes).0, None, true));
         }
@@ -835,6 +900,16 @@ impl Doc {
         Ok(info)
     }
 
+    // フォルダツリー下部の作成ボタン用。ルート直下へ空フォルダを1つ作る。
+    pub fn create_folder(&self, name: &str) -> io::Result<()> {
+        crate::validate_windows_file_name(name)?;
+        let root = self
+            .source
+            .folder_root()
+            .ok_or_else(|| io::Error::other("フォルダを開いていません"))?;
+        std::fs::create_dir(root.join(name))
+    }
+
     // サイドバー上のファイル/フォルダ見出しをリネームする。開いている文書自身または
     // その配下がリネーム対象なら、パス表記だけを追従させる (バッファは開き直さない)。
     pub fn rename_entry(&mut self, rel_path: &str, new_name: &str) -> io::Result<DocInfo> {
@@ -850,25 +925,102 @@ impl Doc {
             .ok_or_else(|| io::Error::other("不正なパスです"))?;
         let new_abs = parent.join(new_name);
         std::fs::rename(&old_abs, &new_abs)?;
-        if self.source.folder_root().is_some() {
-            let current = match &mut self.source.target {
-                Target::File { path, .. } | Target::Archive { path, .. } => path,
+        let current = match &mut self.source.target {
+            Target::File { path, .. } | Target::Archive { path, .. } => path,
             Target::None => return self.info(String::new()),
-            };
-            if let Ok(rest) = current.strip_prefix(&old_abs) {
-                *current = if rest.as_os_str().is_empty() {
-                    new_abs.clone()
-                } else {
-                    new_abs.join(rest)
-                };
-            }
-        }
+        };
+        rebase_path(current, &old_abs, &new_abs);
         let path_str = self
             .source
             .display_path()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default();
         self.info(path_str)
+    }
+
+    // フォルダビューからのD&D移動。移動元・移動先とも現在のフォルダ配下に限定し、
+    // 開いている文書のパスだけを追従させる (本文とdirty状態は保持する)。
+    pub fn move_entry(&mut self, source_rel_path: &str, target_rel_dir: &str) -> io::Result<DocInfo> {
+        let source_rel_path = normalize_move_path(source_rel_path, false)?;
+        let target_rel_dir = normalize_move_path(target_rel_dir, true)?;
+        let root = self
+            .source
+            .folder_root()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| io::Error::other("フォルダを開いていません"))?;
+        let source = join_relative(&root, &source_rel_path);
+        let target_dir = join_relative(&root, &target_rel_dir);
+        let source_metadata = std::fs::symlink_metadata(&source)?;
+        if source_metadata.file_type().is_symlink() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "シンボリックリンクは移動できません",
+            ));
+        }
+        let canonical_root = root.canonicalize()?;
+        let canonical_source = source.canonicalize()?;
+        let canonical_target_dir = target_dir.canonicalize()?;
+        if !canonical_source.starts_with(&canonical_root)
+            || !canonical_target_dir.starts_with(&canonical_root)
+            || !canonical_target_dir.is_dir()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "フォルダの外へは移動できません",
+            ));
+        }
+        if source_metadata.is_dir() && canonical_target_dir.starts_with(&canonical_source) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "フォルダ自身やその配下へは移動できません",
+            ));
+        }
+        let name = source.file_name().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "移動元の名前を取得できません")
+        })?;
+        let destination = target_dir.join(name);
+        if destination == source {
+            let path = self
+                .source
+                .display_path()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|| root.to_string_lossy().into_owned());
+            return self.info(path);
+        }
+        if std::fs::symlink_metadata(&destination).is_ok() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "移動先に同名のファイルまたはフォルダがあります",
+            ));
+        }
+
+        let current_path = self.source.display_path().map(Path::to_path_buf);
+        let affected = current_path
+            .as_deref()
+            .is_some_and(|path| path.starts_with(&source));
+        let mut held_target = affected.then(|| std::mem::replace(&mut self.source.target, Target::None));
+        if let Err(error) = std::fs::rename(&source, &destination) {
+            if let Some(target) = held_target.take() {
+                self.source.target = target;
+            }
+            return Err(error);
+        }
+        if let Some(mut target) = held_target {
+            match &mut target {
+                Target::File { path, .. } | Target::Archive { path, .. } => {
+                    rebase_path(path, &source, &destination);
+                }
+                Target::None => {}
+            }
+            self.source.target = target;
+        }
+
+        let path = self
+            .source
+            .display_path()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| root.to_string_lossy().into_owned());
+        self.info(path)
     }
 
     // フォルダビューからの削除は、開いているフォルダの配下だけに限定する。
@@ -1298,6 +1450,30 @@ impl Doc {
         })
     }
 
+    pub fn find_all_in_range(
+        &self,
+        pat: &str,
+        first_line: usize,
+        last_line: usize,
+        match_case: bool,
+        use_regex: bool,
+        whole_word: bool,
+    ) -> Result<Vec<FindResult>, String> {
+        crate::search::find_all_in_range(
+            &self.buf,
+            pat,
+            first_line,
+            last_line,
+            match_case,
+            use_regex,
+            whole_word,
+        )
+            .map(|matches| matches.into_iter().map(|(start, end)| FindResult {
+                start: self.to_char(start),
+                end: self.to_char(end),
+            }).collect())
+    }
+
     // チャンク分割前方検索: 1回の呼び出しで最大 budget 行だけ走査する。
     // 続きがあれば FindOutcome::More{cursor} を返すので、呼び出し側 (フロント) は
     // Found/NotFound になるまでこれをループ呼び出しする。巨大ファイルで一致が
@@ -1580,6 +1756,7 @@ impl Doc {
 mod tests {
     use super::*;
     use std::fs::File;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     // Feature: 貼り付け画像の形式判定
     // Scenario: UIが扱う画像MIMEを文書保存側でも拡張子へ変換する
@@ -1594,7 +1771,21 @@ mod tests {
         assert_eq!(crate::protocol::image_extension_for_mime("image/tiff"), None);
     }
 
-    struct FakeArchivePort;
+    struct FakeArchivePort {
+        bytes: Vec<u8>,
+        extract_count: Arc<AtomicUsize>,
+        extract_error_kind: Option<io::ErrorKind>,
+    }
+
+    impl Default for FakeArchivePort {
+        fn default() -> Self {
+            Self {
+                bytes: b"fake".to_vec(),
+                extract_count: Arc::new(AtomicUsize::new(0)),
+                extract_error_kind: None,
+            }
+        }
+    }
 
     impl ArchivePort for FakeArchivePort {
         fn supports_path(&self, _: &Path) -> bool {
@@ -1610,7 +1801,11 @@ mod tests {
         }
 
         fn extract(&self, _: &Path, _: &str, _: &str) -> io::Result<Vec<u8>> {
-            Ok(b"fake".to_vec())
+            self.extract_count.fetch_add(1, Ordering::Relaxed);
+            if let Some(kind) = self.extract_error_kind {
+                return Err(io::Error::new(kind, "fake extract error"));
+            }
+            Ok(self.bytes.clone())
         }
 
         fn preserves_header_encryption(&self, _: &Path, _: &str) -> io::Result<bool> {
@@ -1677,8 +1872,9 @@ mod tests {
             is_binary: false,
             merge_base: None,
             pending_merge: None,
+            archive_asset: None,
             sevenz_passwords: HashMap::new(),
-            archive_port: Arc::new(FakeArchivePort),
+            archive_port: Arc::new(FakeArchivePort::default()),
         };
 
         assert_eq!(
@@ -1686,6 +1882,78 @@ mod tests {
             Some(vec!["fake.txt".to_string()])
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    // Feature: 7z内GIFの選択とプレビュー
+    // Scenario: GIFを選択してから画像バイトを読む
+    // Given: 7z内にGIFエントリがある
+    // When: エントリ選択後にプレビュー用バイトを読む
+    // Then: GIFをテキスト化せず、同じエントリを1回だけ展開する
+    #[test]
+    fn archive_gif_is_not_textified_or_extracted_twice() {
+        let archive = PathBuf::from("archive.7z");
+        let gif = b"GIF89a\x01\x00\x01\x00".to_vec();
+        let extract_count = Arc::new(AtomicUsize::new(0));
+        let archive_port = FakeArchivePort {
+            bytes: gif.clone(),
+            extract_count: Arc::clone(&extract_count),
+            extract_error_kind: None,
+        };
+        let mut d = Doc::empty_with_archive_port(Arc::new(archive_port));
+        d.source = DocumentSource {
+            root: None,
+            target: Target::Archive {
+                path: archive.clone(),
+                source_file: None,
+                entries: None,
+                editable_entry: None,
+            },
+        };
+
+        let info = d.select_entry("animation.gif").unwrap().unwrap();
+        let bytes = d
+            .read_archive_asset(&archive, "animation.gif")
+            .unwrap();
+
+        assert!(info.is_binary);
+        assert_eq!(d.lines(0, 1), vec![String::new()]);
+        assert_eq!(bytes, gif);
+        assert_eq!(extract_count.load(Ordering::Relaxed), 1);
+    }
+
+    // Feature: 7z内の巨大エントリを安全に選択する
+    // Scenario: 展開上限を超えたテキストを選択する
+    // Given: ArchivePortがFileTooLargeを返す7zエントリ
+    // When: エントリを選択する
+    // Then: エラーで選択を中断せず、サイズ超過メッセージを本文として表示する
+    #[test]
+    fn oversized_sevenz_entry_is_shown_as_skipped() {
+        let archive = PathBuf::from("archive.7z");
+        let mut d = Doc::empty_with_archive_port(Arc::new(FakeArchivePort {
+            bytes: Vec::new(),
+            extract_count: Arc::new(AtomicUsize::new(0)),
+            extract_error_kind: Some(io::ErrorKind::FileTooLarge),
+        }));
+        d.source = DocumentSource {
+            root: None,
+            target: Target::Archive {
+                path: archive,
+                source_file: None,
+                entries: None,
+                editable_entry: None,
+            },
+        };
+
+        let info = d.select_entry("large.txt").unwrap().unwrap();
+
+        assert!(!info.is_binary);
+        assert_eq!(
+            d.lines(0, 1),
+            vec![format!(
+                "(サイズ超過のためスキップ: {} bytes超)",
+                crate::ziptext::MAX_ENTRY
+            )]
+        );
     }
 
     // 直接開いた パスワード付き 7z: 一覧→パスワード設定→選択→編集→保存→再読込の一巡
@@ -1936,6 +2204,7 @@ mod tests {
             is_binary: false,
             merge_base: None,
             pending_merge: None,
+            archive_asset: None,
             sevenz_passwords: HashMap::new(),
             archive_port: archive_port::system(),
         }
@@ -2086,6 +2355,54 @@ mod tests {
         assert_eq!((r.start.line, r.start.col), (0, 4));
     }
 
+    // Feature: 表示範囲内の検索一致強調
+    // Scenario: 指定した行範囲にある全一致を返す
+    // Given: 3行にneedleが合計3個ある文書
+    // When: 先頭2行だけの全一致を検索する
+    // Then: 範囲内の2個だけを文字位置で返す
+    #[test]
+    fn find_all_in_visible_range_returns_every_match() {
+        let d = doc("needle x needle\nnone\nneedle");
+
+        let found = d.find_all_in_range("needle", 0, 2, true, false, false).unwrap();
+
+        let positions: Vec<_> = found.into_iter()
+            .map(|result| (result.start.line, result.start.col, result.end.col))
+            .collect();
+        assert_eq!(positions, vec![(0, 0, 6), (0, 9, 15)]);
+    }
+
+    // Feature: フォルダ検索結果を開いたエディタの一致強調
+    // Scenario: フォルダ検索と同じ正規表現・単語単位条件で可視範囲を検索する
+    // Given: cat1 と cat1x と CAT2 を含む文書
+    // When: 大小文字を区別せず、正規表現 cat\d を単語単位で検索する
+    // Then: cat1 と CAT2 だけを返し、cat1x は返さない
+    #[test]
+    fn find_all_in_visible_range_uses_workspace_match_options() {
+        let d = doc("cat1 cat1x CAT2");
+
+        let found = d.find_all_in_range(r"cat\d", 0, 1, false, true, true).unwrap();
+
+        let positions: Vec<_> = found.into_iter()
+            .map(|result| (result.start.col, result.end.col))
+            .collect();
+        assert_eq!(positions, vec![(0, 4), (11, 15)]);
+    }
+
+    // Feature: 表示範囲検索の一致件数上限
+    // Scenario: 1行に大量の一致がある
+    // Given: 強調表示上限より多いaを含む文書
+    // When: 表示範囲の全一致を検索する
+    // Then: IPCとDOMを肥大化させない上限件数だけ返す
+    #[test]
+    fn find_all_in_visible_range_caps_match_count() {
+        let d = doc(&"a".repeat(crate::search::MAX_FIND_HIGHLIGHTS + 100));
+
+        let found = d.find_all_in_range("a", 0, 1, true, false, false).unwrap();
+
+        assert_eq!(found.len(), crate::search::MAX_FIND_HIGHLIGHTS);
+    }
+
     #[test]
     fn consecutive_typing_coalesces_to_single_undo() {
         let mut d = doc("");
@@ -2185,6 +2502,27 @@ mod tests {
 
         assert_eq!(info.enc, crate::fileio::EncodingId::ShiftJis);
         assert_eq!(info.eol, Eol::Lf);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    // Feature: フォルダツリーからの新規フォルダ作成
+    // Scenario: 開いているフォルダのルート直下へ空フォルダを作る
+    // Given: 空のフォルダを開いている
+    // When: notesという新規フォルダを作る
+    // Then: ルート直下にnotesディレクトリが存在する
+    #[test]
+    fn create_folder_at_workspace_root() {
+        let root = std::env::temp_dir().join(format!(
+            "wasabipad_create_folder_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let d = Doc::open(&root).unwrap();
+
+        d.create_folder("notes").unwrap();
+
+        assert!(root.join("notes").is_dir());
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -2730,6 +3068,122 @@ mod tests {
         assert_eq!(d.line_count(), 1);
         let root_string = root.to_string_lossy().into_owned();
         assert_eq!(info.folder_root.as_deref(), Some(root_string.as_str()));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Feature: フォルダビューのD&D移動
+    // Scenario: 選択中のファイルを別フォルダへ移動する
+    // Given: sub/memo.txt を開いているフォルダ文書
+    // When: memo.txt を sub2 へ移動する
+    // Then: ファイルと開いている文書のパスが移動先へ追従する
+    #[test]
+    fn moving_selected_file_updates_the_open_path() {
+        let root = std::env::temp_dir().join(format!("wasabipad_move_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("sub2")).unwrap();
+        std::fs::write(root.join("memo.txt"), "memo").unwrap();
+
+        let mut d = Doc::open(&root).unwrap();
+        d.select_entry("memo.txt").unwrap().unwrap();
+        let info = d.move_entry("memo.txt", "sub2").unwrap();
+
+        assert!(root.join("sub2/memo.txt").is_file());
+        assert_eq!(d.path(), Some(root.join("sub2/memo.txt").as_path()));
+        assert_eq!(info.path, root.join("sub2").join("memo.txt").to_string_lossy());
+        assert_eq!(d.lines(0, 1), vec!["memo"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Feature: フォルダビューのD&D移動
+    // Scenario: 選択中のファイルを含むフォルダを別フォルダへ移動する
+    // Given: a/memo.txt を開いているフォルダ文書と dest フォルダ
+    // When: a を dest へ移動する
+    // Then: 開いている本文のパスも dest/a/memo.txt へ追従する
+    #[test]
+    fn moving_selected_directory_updates_the_open_path() {
+        let root = std::env::temp_dir().join(format!("wasabipad_move_dir_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("a")).unwrap();
+        std::fs::create_dir_all(root.join("dest")).unwrap();
+        std::fs::write(root.join("a/memo.txt"), "memo").unwrap();
+
+        let mut d = Doc::open(&root).unwrap();
+        d.select_entry("a/memo.txt").unwrap().unwrap();
+        d.move_entry("a", "dest").unwrap();
+
+        assert_eq!(d.path(), Some(root.join("dest/a/memo.txt").as_path()));
+        assert!(root.join("dest/a/memo.txt").is_file());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Feature: フォルダビューのD&D移動
+    // Scenario: フォルダ自身の配下へ移動する操作を拒否する
+    // Given: a/memo.txt を開いているフォルダ文書
+    // When: a を a/inner へ移動しようとする
+    // Then: エラーになり元のフォルダは残る
+    #[test]
+    fn moving_directory_into_itself_is_rejected() {
+        let root = std::env::temp_dir().join(format!("wasabipad_move_desc_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("a/inner")).unwrap();
+        std::fs::write(root.join("a/memo.txt"), "memo").unwrap();
+
+        let mut d = Doc::open(&root).unwrap();
+        let error = match d.move_entry("a", "a/inner") {
+            Ok(_) => panic!("フォルダ自身の配下への移動を受理した"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(root.join("a/memo.txt").is_file());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Feature: フォルダビューのD&D移動の入力検証
+    // Scenario: 親フォルダを指す移動元を渡す
+    // Given: memo.txt を含むフォルダ文書
+    // When: ../memo.txt を移動元に指定する
+    // Then: 操作を拒否し、元ファイルは残る
+    #[test]
+    fn moving_entry_rejects_unsafe_relative_path() {
+        let root = std::env::temp_dir().join(format!("wasabipad_move_unsafe_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("memo.txt"), "memo").unwrap();
+
+        let mut d = Doc::open(&root).unwrap();
+        let error = match d.move_entry("../memo.txt", "") {
+            Ok(_) => panic!("親フォルダを指す移動元を受理した"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(root.join("memo.txt").is_file());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Feature: フォルダビューのD&D移動の衝突検出
+    // Scenario: 移動先に同名ファイルがある
+    // Given: memo.txt と dest/memo.txt があるフォルダ文書
+    // When: memo.txt を dest へ移動する
+    // Then: 操作を拒否し、両方のファイルを残す
+    #[test]
+    fn moving_entry_rejects_existing_destination() {
+        let root = std::env::temp_dir().join(format!("wasabipad_move_collision_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("dest")).unwrap();
+        std::fs::write(root.join("memo.txt"), "source").unwrap();
+        std::fs::write(root.join("dest/memo.txt"), "destination").unwrap();
+
+        let mut d = Doc::open(&root).unwrap();
+        let error = match d.move_entry("memo.txt", "dest") {
+            Ok(_) => panic!("同名ファイルがある移動先を受理した"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read_to_string(root.join("memo.txt")).unwrap(), "source");
+        assert_eq!(std::fs::read_to_string(root.join("dest/memo.txt")).unwrap(), "destination");
         let _ = std::fs::remove_dir_all(&root);
     }
 

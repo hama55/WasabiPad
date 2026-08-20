@@ -126,15 +126,25 @@ fn line_char_len(line: usize, state: State) -> Result<usize, String> {
 }
 
 #[tauri::command]
-fn select_entry(rel_path: String, state: State) -> Result<DocInfo, String> {
-    document::select_entry(rel_path, state)
+async fn select_entry(rel_path: String, app: AppHandle) -> Result<DocInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<DocState>>();
+        document::select_entry(rel_path, state)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 // ツリーの展開ボタン用。アーカイブの中身一覧だけを安価に取得する (本文は読まない)。
 // rel_path が空文字なら直接開いているアーカイブ自身、それ以外はフォルダ内の相対パス。
 #[tauri::command]
-fn list_archive_entries(rel_path: String, state: State) -> Result<Vec<String>, String> {
-    document::list_archive_entries(rel_path, state)
+async fn list_archive_entries(rel_path: String, app: AppHandle) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<DocState>>();
+        document::list_archive_entries(rel_path, state)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 // パスワード付き 7z/zip 用。入力されたパスワードを記憶させ、UI が失敗した操作を再試行する。
@@ -181,8 +191,22 @@ fn create_note(
 }
 
 #[tauri::command]
+fn create_folder(name: String, state: State) -> Result<(), String> {
+    document::create_folder(name, state)
+}
+
+#[tauri::command]
 fn rename_entry(rel_path: String, new_name: String, state: State) -> Result<DocInfo, String> {
     document::rename_entry(rel_path, new_name, state)
+}
+
+#[tauri::command]
+fn move_entry(
+    source_rel_path: String,
+    target_rel_dir: String,
+    state: State,
+) -> Result<DocInfo, String> {
+    document::move_entry(source_rel_path, target_rel_dir, state)
 }
 
 #[tauri::command]
@@ -262,6 +286,27 @@ fn find(
     state: State,
 ) -> Result<Option<FindResult>, String> {
     document::find(pat, from, forward, match_case, state)
+}
+
+#[tauri::command]
+fn find_all_in_range(
+    pat: String,
+    first_line: usize,
+    last_line: usize,
+    match_case: bool,
+    use_regex: bool,
+    whole_word: bool,
+    state: State,
+) -> Result<Vec<FindResult>, String> {
+    document::find_all_in_range(
+        pat,
+        first_line,
+        last_line,
+        match_case,
+        use_regex,
+        whole_word,
+        state,
+    )
 }
 
 #[tauri::command]
@@ -381,12 +426,18 @@ fn initial_window_request() -> Result<WindowRequest, String> {
 }
 
 #[tauri::command]
-fn read_archive_asset(
+async fn read_archive_asset(
     archive_path: String,
     entry: String,
-    state: State,
-) -> Result<Vec<u8>, String> {
-    document::read_archive_asset(archive_path, entry, state)
+    app: AppHandle,
+) -> Result<tauri::ipc::Response, String> {
+    let bytes = tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<DocState>>();
+        document::read_archive_asset(archive_path, entry, state)
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    Ok(tauri::ipc::Response::new(bytes))
 }
 
 #[tauri::command]
@@ -511,7 +562,9 @@ fn main() {
             workspace_search,
             workspace_search_cancel,
             create_note,
+            create_folder,
             rename_entry,
+            move_entry,
             delete_entry,
             save_pasted_image,
             cleanup_unused_images,
@@ -525,6 +578,7 @@ fn main() {
             undo,
             redo,
             find,
+            find_all_in_range,
             find_step,
             replace_all_chunk,
             replace_all_cancel,

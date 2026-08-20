@@ -9,6 +9,8 @@ use crate::doc::FindCursor;
 use grep_matcher::Matcher;
 use grep_regex::{RegexMatcher, RegexMatcherBuilder};
 
+pub(crate) const MAX_FIND_HIGHLIGHTS: usize = 2_000;
+
 // use_regex=false でも grep-regex を通すのは、大小文字無視を ASCII だけに
 // 閉じないため。素の文字列比較だと Ａ と ａ のような全角/合成文字が当たらない。
 pub(crate) fn build_matcher(
@@ -40,6 +42,37 @@ fn find_from(matcher: &RegexMatcher, line: &str, from: usize) -> Option<(usize, 
 fn line_match(buf: &TextBuffer, matcher: &RegexMatcher, line: usize, col_from: usize) -> Option<(Pos, Pos)> {
     find_from(matcher, &buf.line(line), col_from)
         .map(|(s, e)| (Pos { line, col: s }, Pos { line, col: e }))
+}
+
+pub(crate) fn find_all_in_range(
+    buf: &TextBuffer,
+    pat: &str,
+    first_line: usize,
+    last_line: usize,
+    match_case: bool,
+    use_regex: bool,
+    whole_word: bool,
+) -> Result<Vec<(Pos, Pos)>, String> {
+    if pat.is_empty() || pat.contains('\n') {
+        return Ok(Vec::new());
+    }
+    let matcher = build_matcher(pat, match_case, use_regex, whole_word)?;
+    let last = last_line.min(buf.line_count());
+    let mut matches = Vec::new();
+    for line in first_line.min(last)..last {
+        let text = buf.line(line);
+        let _ = matcher.find_iter(text.as_bytes(), |found| {
+            matches.push((
+                Pos { line, col: found.start() },
+                Pos { line, col: found.end() },
+            ));
+            matches.len() < MAX_FIND_HIGHLIGHTS
+        });
+        if matches.len() == MAX_FIND_HIGHLIGHTS {
+            return Ok(matches);
+        }
+    }
+    Ok(matches)
 }
 
 fn bytes_eq(a: &[u8], b: &[u8], case: bool) -> bool {

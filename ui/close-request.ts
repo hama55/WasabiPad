@@ -1,16 +1,23 @@
 export interface CloseRequestPorts {
-  saveForExit: () => Promise<boolean>;
+  saveForExit: (onProceed: () => void | Promise<void>) => Promise<boolean>;
   flushSettings: () => Promise<void>;
   onSettingsError: (error: unknown) => void | Promise<void>;
 }
 
 export async function canCloseWindow(ports: CloseRequestPorts): Promise<boolean> {
-  if (!await ports.saveForExit()) return false;
+  let flushError: unknown;
   try {
-    await ports.flushSettings();
-    return true;
+    return await ports.saveForExit(async () => {
+      try {
+        await ports.flushSettings();
+      } catch (error) {
+        flushError = error;
+        await ports.onSettingsError(error);
+        throw error;
+      }
+    });
   } catch (error) {
-    await ports.onSettingsError(error);
-    return false;
+    if (error === flushError) return false;
+    throw error;
   }
 }

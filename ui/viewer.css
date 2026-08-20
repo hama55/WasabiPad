@@ -47,6 +47,14 @@ body {
 #viewer-format button:hover { background: var(--hover); }
 #viewer-format button:disabled { opacity: .45; }
 #viewer-format button.selected { background: var(--accent); color: #fff; }
+#viewer-csv-actions { display: flex; align-items: stretch; flex: none; }
+#viewer-csv-actions[hidden] { display: none; }
+#viewer-csv-actions button {
+  padding: 0 9px; border: 0; background: none; color: var(--fg);
+  font: 12px var(--font-ui); white-space: nowrap; cursor: default;
+}
+#viewer-csv-actions button:hover { background: var(--hover); }
+#viewer-csv-actions .menu-icon { margin-right: 5px; }
 #wincontrols { display: flex; }
 #wincontrols button {
   width: 46px; border: 0; background: none; color: var(--fg);

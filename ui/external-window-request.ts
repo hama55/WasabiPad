@@ -1,7 +1,7 @@
 import type { Pos, WindowRequest } from "./api";
 
 export interface ExternalWindowRequestPorts {
-  open: (path: string, goto?: Pos) => void | Promise<void>;
+  open: (path: string, goto?: Pos) => void | Promise<boolean | void>;
   show: () => void | Promise<void>;
   focus: () => void | Promise<void>;
   onError: (error: unknown) => void | Promise<void>;

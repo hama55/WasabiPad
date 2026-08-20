@@ -99,6 +99,10 @@ export function viewerFormatForPath(path: string): ViewerFormat | null {
   return format?.id ?? null;
 }
 
+export function viewerFormatForPreviewToggle(path: string, isBinary: boolean): ViewerFormat | null {
+  return viewerFormatForPath(path) ?? (isBinary ? null : "markdown");
+}
+
 export function isAssetViewerFormat(format: ViewerFormat | null): format is "image" | "pdf" {
   return format === "image" || format === "pdf";
 }

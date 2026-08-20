@@ -111,9 +111,14 @@ export const workspaceSearchCancel = (searchId: number) =>
 export const createNote = (dir: string | null, name: string, enc: Encoding, eol: Eol) =>
   invoke<DocInfo>(IPC_COMMANDS.createNote, { dir, name, enc, eol });
 
+export const createFolder = (name: string) =>
+  invoke<void>(IPC_COMMANDS.createFolder, { name });
+
 // サイドバー上のファイル/フォルダをリネームする (relPath はフォルダルートからの相対パス)
 export const renameEntry = (relPath: string, newName: string) =>
   invoke<DocInfo>(IPC_COMMANDS.renameEntry, { relPath, newName });
+export const moveEntry = (sourceRelPath: string, targetRelDir: string) =>
+  invoke<DocInfo>(IPC_COMMANDS.moveEntry, { sourceRelPath, targetRelDir });
 export const deleteEntry = (relPath: string) =>
   invoke<DocInfo>(IPC_COMMANDS.deleteEntry, { relPath });
 
@@ -122,7 +127,7 @@ export const savePastedImage = (bytes: number[], mimeType: string) =>
 export const cleanupUnusedImages = (path: string) =>
   invoke<void>(IPC_COMMANDS.cleanupUnusedImages, { path });
 export const readArchiveAsset = (archivePath: string, entry: string) =>
-  invoke<number[]>(IPC_COMMANDS.readArchiveAsset, { archivePath, entry });
+  invoke<ArrayBuffer>(IPC_COMMANDS.readArchiveAsset, { archivePath, entry });
 
 export const revealInExplorer = (path: string, isDir: boolean) =>
   invoke<void>(IPC_COMMANDS.revealInExplorer, { path, isDir });
@@ -154,6 +159,22 @@ export const redo = () => invoke<EditResult | null>(IPC_COMMANDS.redo);
 // 後方検索 (前へ / Shift+Enter) 用。単発フルスキャン
 export const find = (pat: string, from: Pos, forward: boolean, matchCase: boolean) =>
   invoke<FindResult | null>(IPC_COMMANDS.find, { pat, from, forward, matchCase });
+
+export const findAllInRange = (
+  pat: string,
+  firstLine: number,
+  lastLine: number,
+  matchCase: boolean,
+  useRegex = false,
+  wholeWord = false,
+) => invoke<FindResult[]>(IPC_COMMANDS.findAllInRange, {
+  pat,
+  firstLine,
+  lastLine,
+  matchCase,
+  useRegex,
+  wholeWord,
+});
 
 // 前方検索 (次へ) 用。1回で最大 budget 行だけ走査し、続きがあれば cursor を返す。
 // Found/NotFound になるまで cursor を渡して呼び出し側でループする。
@@ -216,6 +237,7 @@ export interface DocumentClient {
   undo: typeof undo;
   redo: typeof redo;
   find: typeof find;
+  findAllInRange: typeof findAllInRange;
   findStep: typeof findStep;
   replaceAllChunk: typeof replaceAllChunk;
   replaceAllCancel: typeof replaceAllCancel;
@@ -229,6 +251,7 @@ export const documentClient: DocumentClient = {
   undo,
   redo,
   find,
+  findAllInRange,
   findStep,
   replaceAllChunk,
   replaceAllCancel,

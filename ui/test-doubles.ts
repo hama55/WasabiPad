@@ -94,6 +94,25 @@ export function fakeDocument(initial = ""): FakeDocument {
       return result(entry.caretAfter);
     },
     find: async () => null,
+    findAllInRange: async (pat, firstLine, lastLine, matchCase) => {
+      const needle = matchCase ? pat : pat.toLocaleLowerCase();
+      if (!needle) return [];
+      const matches: { start: Pos; end: Pos }[] = [];
+      for (let line = firstLine; line < Math.min(lastLine, lines.length); line += 1) {
+        const original = lines[line];
+        const text = matchCase ? original : original.toLocaleLowerCase();
+        let from = 0;
+        for (;;) {
+          const index = text.indexOf(needle, from);
+          if (index < 0) break;
+          const start = [...original.slice(0, index)].length;
+          const end = start + [...original.slice(index, index + needle.length)].length;
+          matches.push({ start: { line, col: start }, end: { line, col: end } });
+          from = index + needle.length;
+        }
+      }
+      return matches;
+    },
     findStep: async () => ({ kind: "NotFound" }),
     replaceAllChunk: async () => ({ done: true, count: 0, caret: { line: 0, col: 0 }, line_count: lines.length }),
     replaceAllCancel: async () => result({ line: 0, col: 0 }),

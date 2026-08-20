@@ -51,6 +51,7 @@ export class TabManager {
   private navigationInProgress = false;
   private navigationBusy = false;
   private navigationHistory = new Map<string, NavigationHistory>();
+  private closedTabs: { tab: StoredTab; index: number; replacementId?: string }[] = [];
   private view: TabBarView;
 
   constructor(
@@ -96,6 +97,7 @@ export class TabManager {
     initialViewState?: EditorViewState,
   ) {
     this.navigationHistory.clear();
+    this.closedTabs = [];
     const startupTarget = initialPath ?? startupPath;
     const initialTab = stored.tabs.length || startupTarget
       ? this.link(startupTarget, initialPath ? initialGoto : undefined)
@@ -113,8 +115,7 @@ export class TabManager {
       ? stored.activeId
       : this.tabs[0].id);
     await this.loadActive();
-    this.render();
-    this.persist();
+    this.renderAndPersist();
   }
 
   syncActive(session: Readonly<DocumentSession>) {
@@ -129,8 +130,7 @@ export class TabManager {
     // セッション変更通知はタブ切替処理の途中でも届く。ここでDOMを作り直すと、
     // 選択元のクリック処理がまだ継続中なのに操作対象だけが差し替わる。
     if (this.transitionTarget || this.navigationInProgress) return;
-    this.render();
-    this.persist();
+    this.renderAndPersist();
   }
 
   syncCursor(line: number) {
@@ -147,7 +147,7 @@ export class TabManager {
     await this.addAndActivate(await this.blankTab());
   }
 
-  async open(path: string, goto?: Pos) {
+  async open(path: string, goto?: Pos): Promise<boolean> {
     const existing = this.tabs.find((tab) => tab.path?.toLocaleLowerCase("en-US") === path.toLocaleLowerCase("en-US"));
     if (existing) {
       if (goto) existing.goto = goto;
@@ -162,7 +162,7 @@ export class TabManager {
       }
       if (!activated) {
         delete existing.goto;
-        return;
+        return false;
       }
       // activate() は既にactiveなtabでは即時終了するため、その経路だけは
       // loadActive()に任せず、要求した飛び先をここで消費する。
@@ -173,9 +173,9 @@ export class TabManager {
           delete existing.goto;
         }
       }
-      return;
+      return true;
     }
-    await this.addAndActivate(this.link(path, goto));
+    return this.addAndActivate(this.link(path, goto));
   }
 
   addLinks(items: { path: string; kind: "file" | "folder" }[]) {
@@ -190,16 +190,17 @@ export class TabManager {
       this.tabs.push(tab);
       known.add(key);
     }
-    this.render();
-    this.persist();
+    this.renderAndPersist();
   }
 
   async activate(id: string): Promise<boolean> {
-    if (this.navigationBusy) return false;
+    if (this.navigationBusy || this.transitionTarget) return false;
     if (id === this.activeId) return true;
     this.transitionTarget = id;
     let proceeded: boolean;
     try {
+      this.rememberActiveView();
+      this.persist();
       proceeded = await this.doc.confirmDiscard(() => this.switchTo(id));
     } catch (error) {
       this.transitionTarget = null;
@@ -218,6 +219,12 @@ export class TabManager {
   }
 
   navigateEntry(relPath: string): Promise<boolean> {
+    // 同じファイルを検索結果から再度選んだだけなら、再読込も確認も不要。
+    // dirty と編集中のバッファを維持したまま、呼び出し側が一致位置を扱う。
+    if (this.doc.current.folderRoot
+      && this.doc.current.selectedRelPath.replace(/\\/g, "/") === relPath.replace(/\\/g, "/")) {
+      return Promise.resolve(true);
+    }
     return this.runNavigationCommand(() =>
       this.navigateCurrent(async () => (await this.doc.selectEntry(relPath)) === true)
     );
@@ -240,12 +247,10 @@ export class TabManager {
   }
 
   private async switchTo(id: string) {
-    this.rememberActiveView();
-    this.persist();
     try {
       await this.commitTransition(async () => {
         this.activeId = id;
-        await this.loadActive();
+        return this.loadActive(false);
       });
     } finally {
       if (this.transitionTarget === id) this.transitionTarget = null;
@@ -374,96 +379,139 @@ export class TabManager {
 
   async close(id: string) {
     if (this.tabs.length === 1) {
+      if (id !== this.activeId) return;
+      this.rememberActiveView();
       if (id === this.activeId && !(await this.doc.confirmDiscard())) return;
+      this.syncActive(this.doc.current);
+      const closed = { tab: this.state.tabs[0], index: 0 };
       const replacement = await this.blankTab(null);
       await this.commitTransition(async () => {
         this.tabs = [replacement];
         this.activeId = this.tabs[0].id;
         await this.doc.newFile(false, replacement.draftDirectory ?? null);
       });
+      this.closedTabs.push({ ...closed, replacementId: replacement.id });
       return;
     }
     const index = this.tabs.findIndex((tab) => tab.id === id);
     if (index < 0) return;
     if (id === this.activeId) {
-      if (!(await this.doc.confirmDiscard())) return;
       this.rememberActiveView();
+      if (!(await this.doc.confirmDiscard())) return;
+      this.syncActive(this.doc.current);
+      const closed = { tab: this.state.tabs[index], index };
       await this.commitTransition(async () => {
         this.tabs.splice(index, 1);
         this.activeId = this.tabs[Math.min(index, this.tabs.length - 1)].id;
         await this.loadActive();
       });
+      this.closedTabs.push(closed);
     } else {
+      const closed = { tab: this.state.tabs[index], index };
       this.tabs.splice(index, 1);
-      this.render();
-      this.persist();
+      this.renderAndPersist();
+      this.closedTabs.push(closed);
     }
   }
 
-  async saveForExit(): Promise<boolean> {
-    if (this.doc.current.dirty && !await this.doc.save()) return false;
-    this.rememberActiveView();
-    return true;
-  }
-
-  private async addAndActivate(tab: StoredTab) {
-    this.transitionTarget = tab.id;
+  async reopenLastClosed(): Promise<boolean> {
+    const closed = this.closedTabs.at(-1);
+    if (!closed || this.navigationBusy || this.transitionTarget) return false;
+    this.transitionTarget = closed.tab.id;
+    let reopened = false;
     try {
       await this.doc.confirmDiscard(async () => {
         this.rememberActiveView();
-        await this.commitTransition(async () => {
-          this.tabs.push(tab);
+        reopened = await this.commitTransition(async () => {
+          const tab = {
+            ...closed.tab,
+            viewState: closed.tab.viewState ? cloneEditorViewState(closed.tab.viewState) : undefined,
+          };
+          const replacementIndex = closed.replacementId
+            ? this.tabs.findIndex((candidate) => candidate.id === closed.replacementId && candidate.kind === "blank")
+            : -1;
+          if (replacementIndex >= 0) this.tabs.splice(replacementIndex, 1);
+          this.tabs.splice(Math.min(closed.index, this.tabs.length), 0, tab);
           this.activeId = tab.id;
-          await this.loadActive();
+          return this.loadActive(false);
         });
       });
+      if (reopened) this.closedTabs.pop();
+      return reopened;
     } finally {
       this.transitionTarget = null;
     }
   }
 
-  private async commitTransition(operation: () => Promise<void>) {
+  async saveForExit(onProceed: () => void | Promise<void> = () => {}): Promise<boolean> {
+    return this.doc.confirmDiscard(async () => {
+      this.rememberActiveView();
+      await onProceed();
+    });
+  }
+
+  private async addAndActivate(tab: StoredTab): Promise<boolean> {
+    this.transitionTarget = tab.id;
+    let activated = false;
+    try {
+      const proceeded = await this.doc.confirmDiscard(async () => {
+        this.rememberActiveView();
+        activated = await this.commitTransition(async () => {
+          this.tabs.push(tab);
+          this.activeId = tab.id;
+          return this.loadActive(false);
+        });
+      });
+      return proceeded && activated;
+    } finally {
+      this.transitionTarget = null;
+    }
+  }
+
+  private async commitTransition(operation: () => Promise<boolean | void>): Promise<boolean> {
     const before = this.state;
     try {
-      await operation();
+      if (await operation() === false) {
+        await this.restoreTabsSafely(before);
+        this.render();
+        return false;
+      }
     } catch (error) {
       await this.restoreTabsSafely(before);
       this.render();
       throw error;
     }
-    this.render();
-    this.persist();
+    this.renderAndPersist();
+    return true;
   }
 
   private async restoreTabs(before: StoredTabs) {
     this.tabs = before.tabs;
     this.activeId = before.activeId ?? before.tabs[0]?.id ?? "";
-    try {
-      if (this.activeId) await this.loadActive();
-    } catch (error) {
-      console.error("元のタブへ復帰できませんでした", error);
-      throw error;
-    }
+    if (this.activeId) await this.loadActive();
   }
 
   private async restoreTabsSafely(before: StoredTabs) {
     try {
       await this.restoreTabs(before);
     } catch (error) {
+      console.error("元のタブへ復帰できませんでした", error);
       await this.reportError(error, "タブを元に戻せませんでした");
     }
   }
 
-  private async loadActive() {
+  private async loadActive(fallbackToBlank = true): Promise<boolean> {
     this.loadingActive = true;
     try {
       const tab = this.active()!;
       const rememberedRelPath = tab.selectedRelPath;
-      const rememberedLine = tab.selectedLine ?? (tab.kind === "folder" ? tab.viewState?.caret.line : undefined);
+      const rememberedViewState = tab.viewState ? cloneEditorViewState(tab.viewState) : undefined;
+      const rememberedLine = tab.selectedLine ?? (tab.kind === "folder" ? rememberedViewState?.caret.line : undefined);
       let selectionRestored = false;
       if (tab.path) {
         const opened = await this.doc.openPath(tab.path, false);
         if (!opened) {
+          if (!fallbackToBlank) return false;
           tab.path = null;
           tab.kind = "blank";
           tab.label = "無題";
@@ -477,16 +525,20 @@ export class TabManager {
           }
           // 選択に失敗しても記録は保持する。項目削除と一時的な読込失敗を区別できないため、
           // 次回タブを開いたときに再試行できる状態を優先する。
-          if (!selectionRestored) delete tab.selectedLine;
         }
         const selectedLine = rememberedLine;
         if (opened && tab.goto) {
           this.doc.goTo(tab.goto);
           delete tab.goto;
-        } else if (opened && tab.kind === "folder" && selectionRestored && tab.selectedRelPath && selectedLine !== undefined) {
-          tab.selectedLine = selectedLine;
-          delete tab.viewState;
-          this.doc.goTo({ line: selectedLine, col: 0 });
+        } else if (opened && tab.kind === "folder" && selectionRestored && tab.selectedRelPath) {
+          if (rememberedViewState) {
+            await this.doc.restoreViewState(rememberedViewState);
+            tab.selectedLine = rememberedViewState.caret.line;
+            delete tab.viewState;
+          } else if (selectedLine !== undefined) {
+            tab.selectedLine = selectedLine;
+            this.doc.goTo({ line: selectedLine, col: 0 });
+          }
         } else if (opened && tab.kind !== "folder" && tab.viewState) {
           await this.doc.restoreViewState(tab.viewState);
         }
@@ -494,6 +546,7 @@ export class TabManager {
         await this.doc.newFile(false, tab.draftDirectory ?? null);
         if (tab.viewState) await this.doc.restoreViewState(tab.viewState);
       }
+      return true;
     } finally {
       this.loadingActive = false;
     }
@@ -505,9 +558,13 @@ export class TabManager {
     if (!tab) return;
     const view = this.doc.captureViewState();
     if (tab.kind === "folder") {
-      if (tab.selectedRelPath) tab.selectedLine = view.caret.line;
-      else delete tab.selectedLine;
-      delete tab.viewState;
+      if (tab.selectedRelPath) {
+        tab.selectedLine = view.caret.line;
+        tab.viewState = view;
+      } else {
+        delete tab.selectedLine;
+        delete tab.viewState;
+      }
     } else {
       tab.viewState = view;
     }
@@ -551,6 +608,11 @@ export class TabManager {
     this.ports.onHistoryChange?.(history?.state ?? { canGoBack: false, canGoForward: false });
   }
 
+  private renderAndPersist() {
+    this.render();
+    this.persist();
+  }
+
   private pruneNavigationHistories() {
     const ids = new Set(this.tabs.map((tab) => tab.id));
     for (const id of this.navigationHistory.keys()) {
@@ -560,24 +622,31 @@ export class TabManager {
 
   private async keepOnly(id: string) {
     if (!await this.activate(id)) return;
-    this.tabs = this.tabs.filter((tab) => tab.id === id);
-    this.render();
-    this.persist();
+    this.closeMatchingTabs((tab) => tab.id !== id);
   }
 
   private async closeRight(id: string) {
     const index = this.tabs.findIndex((tab) => tab.id === id);
     const activeIndex = this.tabs.findIndex((tab) => tab.id === this.activeId);
     if (activeIndex > index && !await this.activate(id)) return;
-    this.tabs = this.tabs.slice(0, index + 1);
-    this.render();
-    this.persist();
+    this.closeMatchingTabs((_tab, candidateIndex) => candidateIndex > index);
   }
 
   private async closeSaved(keepId: string) {
-    this.tabs = this.tabs.filter((tab) => tab.id === keepId || tab.id === this.activeId || tab.kind === "blank");
-    this.render();
-    this.persist();
+    this.closeMatchingTabs((tab) => tab.id !== keepId && tab.id !== this.activeId && tab.kind !== "blank");
+  }
+
+  private closeMatchingTabs(remove: (tab: StoredTab, index: number) => boolean) {
+    const snapshots = this.state.tabs;
+    const kept: StoredTab[] = [];
+    const closed: { tab: StoredTab; index: number }[] = [];
+    this.tabs.forEach((tab, index) => {
+      if (remove(tab, index)) closed.push({ tab: snapshots[index], index });
+      else kept.push(tab);
+    });
+    this.tabs = kept;
+    this.closedTabs.push(...closed);
+    this.renderAndPersist();
   }
 
   private persist() {
@@ -593,8 +662,7 @@ export class TabManager {
       ? this.tabs.length
       : this.tabs.findIndex((item) => item.id === spot.targetId) + (spot.after ? 1 : 0);
     this.tabs.splice(Math.max(0, target), 0, tab);
-    this.render();
-    this.persist();
+    this.renderAndPersist();
   }
 
   private async reportError(error: unknown, message = "タブを操作できませんでした") {
@@ -623,8 +691,7 @@ export class TabManager {
     })) return;
     this.tabs.splice(this.tabs.indexOf(tab), 1);
     if (!wasActive) {
-      this.render();
-      this.persist();
+      this.renderAndPersist();
       return;
     }
     if (this.tabs.length === 0) {
@@ -636,8 +703,7 @@ export class TabManager {
       this.activeId = this.tabs[Math.min(index, this.tabs.length - 1)].id;
       await this.loadActive();
     }
-    this.render();
-    this.persist();
+    this.renderAndPersist();
   }
 
   private openTabInNewWindow(tab: StoredTab) {

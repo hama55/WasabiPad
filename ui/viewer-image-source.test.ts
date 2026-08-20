@@ -11,7 +11,7 @@ import {
 function ports(overrides: Partial<ImageAssetSourcePorts> = {}): ImageAssetSourcePorts {
   return {
     convertFileSrc: (path) => `asset://${path}`,
-    readArchiveAsset: vi.fn(async () => [1, 2, 3]),
+    readArchiveAsset: vi.fn(async () => new Uint8Array([1, 2, 3]).buffer),
     createObjectURL: vi.fn(() => "blob:test"),
     revokeObjectURL: vi.fn(),
     ...overrides,
@@ -60,17 +60,20 @@ describe("Feature: viewer image asset source", () => {
     expect(createObjectURL).toHaveBeenCalledWith(expect.objectContaining({ type: "image/svg+xml" }));
   });
 
-  // Given: アーカイブ画像の読込ポートがある
+  // Given: アーカイブ画像を生バイナリで返す読込ポートがある
   // When: アーカイブ画像のURLを作る
-  // Then: 読み込んだバイト列をBlob URL生成ポートへ渡す
+  // Then: JSON数値配列へ変換せずArrayBufferをBlob URL生成ポートへ渡す
   it("Scenario: creates a URL for an archive image", async () => {
-    const readArchiveAsset = vi.fn(async () => [1, 2, 3]);
-    const createObjectURL = vi.fn(() => "blob:test");
+    const bytes = new Uint8Array([1, 2, 3]).buffer;
+    const readArchiveAsset = vi.fn(async () => bytes);
+    const createObjectURL = vi.fn((_blob: Blob) => "blob:test");
     const source = ports({ readArchiveAsset, createObjectURL });
 
     await expect(imageUrlFromArchive("data.zip", "photo.png", "image/png", source)).resolves.toBe("blob:test");
     expect(readArchiveAsset).toHaveBeenCalledWith("data.zip", "photo.png");
-    expect(createObjectURL).toHaveBeenCalledWith(expect.objectContaining({ type: "image/png" }));
+    const blob = createObjectURL.mock.calls[0]?.[0];
+    expect(blob).toEqual(expect.objectContaining({ type: "image/png" }));
+    await expect(blob?.arrayBuffer()).resolves.toEqual(bytes);
   });
 
   // Given: アーカイブ内のPDFを読むポートがある
