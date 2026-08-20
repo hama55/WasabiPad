@@ -147,7 +147,7 @@ export class TabManager {
     await this.addAndActivate(await this.blankTab());
   }
 
-  async open(path: string, goto?: Pos) {
+  async open(path: string, goto?: Pos): Promise<boolean> {
     const existing = this.tabs.find((tab) => tab.path?.toLocaleLowerCase("en-US") === path.toLocaleLowerCase("en-US"));
     if (existing) {
       if (goto) existing.goto = goto;
@@ -162,7 +162,7 @@ export class TabManager {
       }
       if (!activated) {
         delete existing.goto;
-        return;
+        return false;
       }
       // activate() は既にactiveなtabでは即時終了するため、その経路だけは
       // loadActive()に任せず、要求した飛び先をここで消費する。
@@ -173,9 +173,9 @@ export class TabManager {
           delete existing.goto;
         }
       }
-      return;
+      return true;
     }
-    await this.addAndActivate(this.link(path, goto));
+    return this.addAndActivate(this.link(path, goto));
   }
 
   addLinks(items: { path: string; kind: "file" | "folder" }[]) {
@@ -250,7 +250,7 @@ export class TabManager {
     try {
       await this.commitTransition(async () => {
         this.activeId = id;
-        await this.loadActive();
+        return this.loadActive(false);
       });
     } finally {
       if (this.transitionTarget === id) this.transitionTarget = null;
@@ -422,7 +422,7 @@ export class TabManager {
     try {
       await this.doc.confirmDiscard(async () => {
         this.rememberActiveView();
-        await this.commitTransition(async () => {
+        reopened = await this.commitTransition(async () => {
           const tab = {
             ...closed.tab,
             viewState: closed.tab.viewState ? cloneEditorViewState(closed.tab.viewState) : undefined,
@@ -433,9 +433,8 @@ export class TabManager {
           if (replacementIndex >= 0) this.tabs.splice(replacementIndex, 1);
           this.tabs.splice(Math.min(closed.index, this.tabs.length), 0, tab);
           this.activeId = tab.id;
-          await this.loadActive();
+          return this.loadActive(false);
         });
-        reopened = true;
       });
       if (reopened) this.closedTabs.pop();
       return reopened;
@@ -451,32 +450,39 @@ export class TabManager {
     });
   }
 
-  private async addAndActivate(tab: StoredTab) {
+  private async addAndActivate(tab: StoredTab): Promise<boolean> {
     this.transitionTarget = tab.id;
+    let activated = false;
     try {
-      await this.doc.confirmDiscard(async () => {
+      const proceeded = await this.doc.confirmDiscard(async () => {
         this.rememberActiveView();
-        await this.commitTransition(async () => {
+        activated = await this.commitTransition(async () => {
           this.tabs.push(tab);
           this.activeId = tab.id;
-          await this.loadActive();
+          return this.loadActive(false);
         });
       });
+      return proceeded && activated;
     } finally {
       this.transitionTarget = null;
     }
   }
 
-  private async commitTransition(operation: () => Promise<void>) {
+  private async commitTransition(operation: () => Promise<boolean | void>): Promise<boolean> {
     const before = this.state;
     try {
-      await operation();
+      if (await operation() === false) {
+        await this.restoreTabsSafely(before);
+        this.render();
+        return false;
+      }
     } catch (error) {
       await this.restoreTabsSafely(before);
       this.render();
       throw error;
     }
     this.renderAndPersist();
+    return true;
   }
 
   private async restoreTabs(before: StoredTabs) {
@@ -494,7 +500,7 @@ export class TabManager {
     }
   }
 
-  private async loadActive() {
+  private async loadActive(fallbackToBlank = true): Promise<boolean> {
     this.loadingActive = true;
     try {
       const tab = this.active()!;
@@ -505,6 +511,7 @@ export class TabManager {
       if (tab.path) {
         const opened = await this.doc.openPath(tab.path, false);
         if (!opened) {
+          if (!fallbackToBlank) return false;
           tab.path = null;
           tab.kind = "blank";
           tab.label = "無題";
@@ -539,6 +546,7 @@ export class TabManager {
         await this.doc.newFile(false, tab.draftDirectory ?? null);
         if (tab.viewState) await this.doc.restoreViewState(tab.viewState);
       }
+      return true;
     } finally {
       this.loadingActive = false;
     }

@@ -57,10 +57,4 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          $installer = Get-ChildItem release/*-setup.exe | Select-Object -First 1
-          gh release create $env:GITHUB_REF_NAME `
-            release/wasabipad.exe `
-            $installer.FullName `
-            --title $env:GITHUB_REF_NAME `
-            --generate-notes
+        run: node scripts/publish-release.mjs $env:GITHUB_REF_NAME

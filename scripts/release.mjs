@@ -1,10 +1,10 @@
 import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { read, root, workspaceVersion } from "./version.mjs";
+import { read, root, VERSION_PATTERN, workspaceVersion } from "./version.mjs";
 
 const version = process.argv[2];
-if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version ?? "")) {
+if (!VERSION_PATTERN.test(version ?? "")) {
   throw new Error("Usage: npm run release -- <major.minor.patch>");
 }
 

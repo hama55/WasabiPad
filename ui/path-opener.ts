@@ -1,5 +1,5 @@
 export interface PathOpener {
-  open: (path: string) => Promise<void>;
+  open: (path: string) => Promise<boolean>;
   navigatePath: (path: string) => Promise<boolean>;
 }
 

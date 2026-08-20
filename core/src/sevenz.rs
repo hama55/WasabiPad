@@ -100,7 +100,7 @@ fn join_output(
 
 fn output_too_large_error() -> io::Error {
     io::Error::new(
-        io::ErrorKind::InvalidData,
+        io::ErrorKind::FileTooLarge,
         "アーカイブ内ファイルのサイズが大きすぎます",
     )
 }
@@ -534,7 +534,7 @@ mod tests {
     // Scenario: 上限を超えるエントリを展開する
     // Given: 許容量より大きいエントリがある
     // When: エントリを標準出力から展開する
-    // Then: 全内容を保持せずInvalidDataで打ち切る
+    // Then: 全内容を保持せずFileTooLargeで打ち切る
     #[test]
     fn extract_stops_when_entry_exceeds_limit() {
         if !have_7z() {
@@ -545,7 +545,7 @@ mod tests {
 
         let error = extract_with_limit(&archive, "a.txt", "", 4).unwrap_err();
 
-        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(error.kind(), io::ErrorKind::FileTooLarge);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

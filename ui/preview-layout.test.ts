@@ -69,12 +69,27 @@ describe("Feature: preview layout", () => {
     expect(effectivePreviewFormat(
       "C:\\work\\notes.txt",
       null,
-      { path: "C:\\work\\notes.txt", format: "markdown" },
+      "folder-a",
+      { ownerTabId: "folder-a", path: "C:\\work\\notes.txt", format: "markdown" },
     )).toBe("markdown");
     expect(effectivePreviewFormat(
       "C:\\work\\other.txt",
       null,
-      { path: "C:\\work\\notes.txt", format: "markdown" },
+      "folder-a",
+      { ownerTabId: "folder-a", path: "C:\\work\\notes.txt", format: "markdown" },
+    )).toBeNull();
+  });
+
+  // Scenario: 別のフォルダtabにある同名ファイルへ手動形式を漏らさない
+  // Given: folder-aのmemo.txtを手動でMarkdown表示している
+  // When: folder-bの同じ相対pathのmemo.txtへ切り替える
+  // Then: folder-aの手動形式ではなくfolder-bの検出形式を使う
+  it("Scenario: 同じ相対pathでも別tabなら手動プレビュー形式を引き継がない", () => {
+    expect(effectivePreviewFormat(
+      "memo.txt",
+      null,
+      "folder-b",
+      { ownerTabId: "folder-a", path: "memo.txt", format: "markdown" },
     )).toBeNull();
   });
 });

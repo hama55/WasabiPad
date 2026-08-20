@@ -55,6 +55,7 @@ import {
 import { documentPathOf, type DocumentSession } from "./session";
 import {
   effectivePreviewFormat,
+  isCurrentPreviewDocument,
   isPreviewFullscreen,
   isPreviewShown,
   isPreviewSplitterShown,
@@ -258,12 +259,13 @@ function openPreviewFormat(session: Readonly<DocumentSession>, path: string, for
   const sourcePath = sourcePathForViewer(format, session.savePath, session.displayPath);
   inlinePreview.setSourcePath(sourcePath, session.archivePath, session.archiveEntry);
   statusbar.setPreviewFormat(format);
-  runPreviewBackground({ path, format }, "ビューを表示できませんでした", () => editor.openTextViewer(format));
+  runPreviewBackground({ ownerTabId: tabs?.state.activeId ?? null, path, format }, "ビューを表示できませんでした", () => editor.openTextViewer(format));
 }
 
 function syncPreviewDocument(session: Readonly<DocumentSession>, force = false) {
   const path = documentPathOf(session);
-  const format = effectivePreviewFormat(path, viewerFormatForPath(path), previewDocument);
+  const activeTabId = tabs?.state.activeId ?? null;
+  const format = effectivePreviewFormat(path, viewerFormatForPath(path), activeTabId, previewDocument);
   if (previewFullscreen && !shouldKeepPreviewFullscreen(
     previewFullscreenTabId,
     tabs?.state.activeId ?? null,
@@ -273,7 +275,7 @@ function syncPreviewDocument(session: Readonly<DocumentSession>, force = false) 
     previewFullscreenTabId = null;
   }
   const isAssetPreview = isAssetViewerFormat(format);
-  if (!force && path === previewDocument?.path && !isAssetPreview) return;
+  if (!force && isCurrentPreviewDocument(previewDocument, activeTabId, path) && !isAssetPreview) return;
   if (!format) {
     inlinePreview.setSourcePath(null, session.archivePath, session.archiveEntry);
     previewDocument = null;
@@ -351,7 +353,9 @@ const editor: VirtualEditor = new VirtualEditor(editorHost, {
     const path = documentPathOf(doc.current);
     statusbar.setPreviewFormat(format);
     const label = await inlinePreview.open(format, text, selection);
-    if (previewDocument?.path === path) previewDocument.format = format;
+    if (isCurrentPreviewDocument(previewDocument, tabs?.state.activeId ?? null, path)) {
+      previewDocument.format = format;
+    }
     return label;
   },
   updateViewer: (label, text, selection) => inlinePreview.update(label, text, selection),
@@ -369,10 +373,7 @@ editor.setTabSize(statusbar.setIndent(getSetting("indentSize")));
 
 sidebar = new Sidebar(sidebarEl, {
   onSelect: async (relPath, newTab) => {
-    if (newTab) {
-      await openInNewTab(relPath);
-      return true;
-    }
+    if (newTab) return openInNewTab(relPath);
     return tabs.navigateEntry(relPath);
   },
   onContextMenu: (x, y, target) => folderActions.showContextMenu(x, y, target),
@@ -397,7 +398,7 @@ sidebar = new Sidebar(sidebarEl, {
   onOptionsChange: saveSearchOptions,
   onOpen: async (result, newTab, query) => {
     if (newTab) {
-      await openInNewTab(result.rel_path, searchResultGoto(result));
+      if (!(await openInNewTab(result.rel_path, searchResultGoto(result)))) return false;
     } else if (!(await tabs.navigateEntry(result.rel_path))) {
       return false;
     }
@@ -436,9 +437,10 @@ void api.onDocumentLoadProgress((progress) => {
   .then((unlisten) => documentLoadListener.set(unlisten))
   .catch((error) => reportBackgroundError("読み込み進捗の受信を開始できませんでした", error));
 
-async function openInNewTab(relPath: string, goto?: api.Pos) {
+async function openInNewTab(relPath: string, goto?: api.Pos): Promise<boolean> {
   const root = doc.current.folderRoot;
-  if (root) await tabs.open(joinWindowsRoot(root, relPath), goto);
+  if (!root) return false;
+  return tabs.open(joinWindowsRoot(root, relPath), goto);
 }
 
 function movedRelPath(currentRelPath: string, sourceRelPath: string, targetRelDir: string): string {

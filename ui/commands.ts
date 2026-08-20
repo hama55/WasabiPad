@@ -53,6 +53,8 @@ export function globalCommandForEvent(
   event: KeyboardEvent
 ): Command | undefined {
   if (event.defaultPrevented) return undefined;
+  const target = event.target as (EventTarget & { closest?: (selector: string) => Element | null }) | null;
+  if (target?.closest?.(".pf-overlay")) return undefined;
   const shortcut = shortcutFromEvent(event);
   return Object.values(registry).find(
     (command) => command.globalShortcut && command.shortcut === shortcut

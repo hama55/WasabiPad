@@ -3,6 +3,7 @@ import type { ViewerFormat } from "./api";
 export const PREVIEW_MIN_WIDTH = 260;
 
 export interface PreviewDocument {
+  ownerTabId: string | null;
   path: string;
   format: ViewerFormat;
 }
@@ -33,12 +34,23 @@ export function shouldKeepPreviewFullscreen(
   return hasPreviewFormat && ownerTabId !== null && ownerTabId === activeTabId;
 }
 
+export function isCurrentPreviewDocument(
+  openedDocument: PreviewDocument | null,
+  activeTabId: string | null,
+  documentPath: string,
+): openedDocument is PreviewDocument {
+  return openedDocument?.ownerTabId === activeTabId && openedDocument.path === documentPath;
+}
+
 export function effectivePreviewFormat(
   documentPath: string,
   detectedFormat: ViewerFormat | null,
+  activeTabId: string | null,
   openedDocument: PreviewDocument | null,
 ): ViewerFormat | null {
-  return openedDocument?.path === documentPath ? openedDocument.format : detectedFormat;
+  return isCurrentPreviewDocument(openedDocument, activeTabId, documentPath)
+    ? openedDocument.format
+    : detectedFormat;
 }
 
 export function previewWidthFromPointer(mainRight: number, clientX: number, mainLeft = 0): number {

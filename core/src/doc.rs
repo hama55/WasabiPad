@@ -732,15 +732,18 @@ impl Doc {
                     is_binary,
                 ));
             }
+            Err(error) if error.kind() == io::ErrorKind::FileTooLarge => {
+                return Ok((
+                    format!(
+                        "(サイズ超過のためスキップ: {} bytes超)",
+                        crate::ziptext::MAX_ENTRY
+                    ),
+                    None,
+                    false,
+                ));
+            }
             Err(error) => return Err(self.annotate_sevenz_error(archive, error)),
         };
-        if bytes.len() > crate::ziptext::MAX_ENTRY {
-            return Ok((
-                format!("(サイズ超過のためスキップ: {} bytes)", bytes.len()),
-                None,
-                false,
-            ));
-        }
         if is_binary_image_path(Path::new(entry)) {
             self.archive_asset = Some(CachedArchiveAsset {
                 archive: archive.to_path_buf(),
@@ -1771,6 +1774,7 @@ mod tests {
     struct FakeArchivePort {
         bytes: Vec<u8>,
         extract_count: Arc<AtomicUsize>,
+        extract_error_kind: Option<io::ErrorKind>,
     }
 
     impl Default for FakeArchivePort {
@@ -1778,6 +1782,7 @@ mod tests {
             Self {
                 bytes: b"fake".to_vec(),
                 extract_count: Arc::new(AtomicUsize::new(0)),
+                extract_error_kind: None,
             }
         }
     }
@@ -1797,6 +1802,9 @@ mod tests {
 
         fn extract(&self, _: &Path, _: &str, _: &str) -> io::Result<Vec<u8>> {
             self.extract_count.fetch_add(1, Ordering::Relaxed);
+            if let Some(kind) = self.extract_error_kind {
+                return Err(io::Error::new(kind, "fake extract error"));
+            }
             Ok(self.bytes.clone())
         }
 
@@ -1889,6 +1897,7 @@ mod tests {
         let archive_port = FakeArchivePort {
             bytes: gif.clone(),
             extract_count: Arc::clone(&extract_count),
+            extract_error_kind: None,
         };
         let mut d = Doc::empty_with_archive_port(Arc::new(archive_port));
         d.source = DocumentSource {
@@ -1910,6 +1919,41 @@ mod tests {
         assert_eq!(d.lines(0, 1), vec![String::new()]);
         assert_eq!(bytes, gif);
         assert_eq!(extract_count.load(Ordering::Relaxed), 1);
+    }
+
+    // Feature: 7z内の巨大エントリを安全に選択する
+    // Scenario: 展開上限を超えたテキストを選択する
+    // Given: ArchivePortがFileTooLargeを返す7zエントリ
+    // When: エントリを選択する
+    // Then: エラーで選択を中断せず、サイズ超過メッセージを本文として表示する
+    #[test]
+    fn oversized_sevenz_entry_is_shown_as_skipped() {
+        let archive = PathBuf::from("archive.7z");
+        let mut d = Doc::empty_with_archive_port(Arc::new(FakeArchivePort {
+            bytes: Vec::new(),
+            extract_count: Arc::new(AtomicUsize::new(0)),
+            extract_error_kind: Some(io::ErrorKind::FileTooLarge),
+        }));
+        d.source = DocumentSource {
+            root: None,
+            target: Target::Archive {
+                path: archive,
+                source_file: None,
+                entries: None,
+                editable_entry: None,
+            },
+        };
+
+        let info = d.select_entry("large.txt").unwrap().unwrap();
+
+        assert!(!info.is_binary);
+        assert_eq!(
+            d.lines(0, 1),
+            vec![format!(
+                "(サイズ超過のためスキップ: {} bytes超)",
+                crate::ziptext::MAX_ENTRY
+            )]
+        );
     }
 
     // 直接開いた パスワード付き 7z: 一覧→パスワード設定→選択→編集→保存→再読込の一巡

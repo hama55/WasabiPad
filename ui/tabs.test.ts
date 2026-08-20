@@ -522,6 +522,23 @@ describe("Feature: TabManager", () => {
     expect(doc.goTo).not.toHaveBeenCalledWith({ line: 8, col: 3 });
   });
 
+  // Scenario: 未保存確認で新規tabを開く操作を取り消す
+  // Given: active tab aで未保存確認がfalseを返す
+  // When: c.txtを新規tabで開く
+  // Then: falseを返し、c tabを追加せずaを維持する
+  it("Scenario: 新規tabの作成を取り消した結果を呼び出し元へ返す", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init(stored, null, null);
+    vi.mocked(doc.confirmDiscard).mockResolvedValue(false);
+
+    await expect(manager.open("C:\\work\\c.txt")).resolves.toBe(false);
+
+    expect(manager.state.tabs.map((tab) => tab.id)).toEqual(["a", "b"]);
+    expect(manager.state.activeId).toBe("a");
+    expect(doc.openPath).not.toHaveBeenCalledWith("C:\\work\\c.txt", false);
+  });
+
   // Given: active tab a で、b tab の openPath が Error("load failed") を返し、変更通知配列を空にする
   // When: activate("b") を呼ぶ
   // Then: load failed で reject し、activeId は a、変更通知は空、最終 openPath は C:\work\a.txt と false
@@ -984,6 +1001,33 @@ describe("Feature: TabManager", () => {
     expect(doc.restoreViewState).toHaveBeenLastCalledWith(expect.objectContaining({
       anchor: { line: 9, col: 1 }, caret: { line: 9, col: 3 }, topLine: 7, scrollLeft: 12,
     }));
+  });
+
+  // Scenario: 読み込みに失敗した閉じたtabを後から再試行する
+  // Given: b tabを閉じ、b.txtの最初のopenPathだけfalseを返す
+  // When: reopenLastClosedを2回呼ぶ
+  // Then: 1回目は履歴を保持してfalse、2回目はbを復活してtrueを返す
+  it("Scenario: 復活時の一時的な読込失敗で閉じたtab履歴を失わない", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init(stored, null, null);
+    await manager.close("b");
+    let bAttempts = 0;
+    vi.mocked(doc.openPath).mockImplementation(async (path) => {
+      if (path === "C:\\work\\b.txt") return ++bAttempts > 1;
+      doc.current.savePath = path;
+      doc.current.displayPath = path;
+      return true;
+    });
+
+    await expect(manager.reopenLastClosed()).resolves.toBe(false);
+    expect(manager.state.tabs.map((tab) => tab.id)).toEqual(["a"]);
+    expect(manager.state.activeId).toBe("a");
+
+    await expect(manager.reopenLastClosed()).resolves.toBe(true);
+    expect(manager.state.tabs.map((tab) => tab.id)).toEqual(["a", "b"]);
+    expect(manager.state.activeId).toBe("b");
+    expect(bAttempts).toBe(2);
   });
 
   // Scenario: 保存して閉じた無題タブを保存先ファイルとして復活する

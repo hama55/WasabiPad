@@ -51,4 +51,17 @@ describe("Feature: command registry", () => {
   it("Scenario: Ctrl+Shift+Tを閉じたタブの復活へ割り当てる", () => {
     expect(globalCommandForEvent(registry, key("t", true))).toBe(registry.reopenClosedTab);
   });
+
+  // Scenario: モーダル表示中は背後のglobal shortcutを実行しない
+  // Given: .pf-overlay内の入力欄から発生したCtrl+Shift+Tイベント
+  // When: globalCommandForEventでcommandを判定する
+  // Then: 閉じたタブの復活commandを返さない
+  it("Scenario: モーダル内のキー操作を背後のcommandへ漏らさない", () => {
+    const event = {
+      ...key("t", true),
+      target: { closest: (selector: string) => selector === ".pf-overlay" ? {} : null },
+    } as unknown as KeyboardEvent;
+
+    expect(globalCommandForEvent(registry, event)).toBeUndefined();
+  });
 });
