@@ -195,19 +195,29 @@ describe("Feature: WorkspaceSearchPanel", () => {
     expect(opened).toEqual([false, true]);
   });
 
-  // Given: a.txt の本文一致が20行目0列目に1件あり、onOpen が受け取った結果を記録する
+  // Feature: フォルダ検索結果を開いたエディタの一致強調
+  // Scenario: 検索結果を開くときに現在の検索条件を渡す
+  // Given: 大文字小文字を区別する正規表現 need.le で a.txt の本文一致を表示している
   // When: 検索結果の本文行を通常クリックする
-  // Then: onOpen は newTab=false と、行/列を含む元の検索結果を渡す
-  it("Scenario: 本文一致のクリックは該当行を失わずメモビューへ開く依頼を出す", async () => {
+  // Then: onOpen は元の結果・newTab=false・検索語と一致条件のスナップショットを渡す
+  it("Scenario: 本文一致のクリックは検索条件を失わずメモビューへ開く依頼を出す", async () => {
     vi.useFakeTimers();
     const result = hit("a.txt", 19, "needle");
     const onOpen = vi.fn();
     const host = mount(async () => outcome([result]), onOpen);
-    await search(host, "needle");
+    const toggles = [...host.querySelectorAll<HTMLButtonElement>(".ws-toggle")];
+    toggles.find((button) => button.textContent === "Aa")!.click();
+    toggles.find((button) => button.textContent === ".*")!.click();
+    await search(host, "need.le");
 
     host.querySelector<HTMLElement>(".ws-match")!.click();
 
-    expect(onOpen).toHaveBeenCalledWith(result, false);
+    expect(onOpen).toHaveBeenCalledWith(result, false, {
+      pat: "need.le",
+      matchCase: true,
+      useRegex: true,
+      wholeWord: false,
+    });
   });
 
   // Feature: フォルダ検索の置換
@@ -292,7 +302,11 @@ describe("Feature: WorkspaceSearchPanel", () => {
     match.click();
 
     expect(onSearch).toHaveBeenCalledOnce();
-    expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ rel_path: "a.txt", line: 0, col: 2 }), false);
+    expect(onOpen).toHaveBeenCalledWith(
+      expect.objectContaining({ rel_path: "a.txt", line: 0, col: 2 }),
+      false,
+      expect.anything(),
+    );
   });
 
   // Feature: 編集後のフォルダ検索位置
@@ -313,7 +327,11 @@ describe("Feature: WorkspaceSearchPanel", () => {
     }]);
     host.querySelector<HTMLElement>(".ws-match")!.click();
 
-    expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ line: 0, col: 2 }), false);
+    expect(onOpen).toHaveBeenCalledWith(
+      expect.objectContaining({ line: 0, col: 2 }),
+      false,
+      expect.anything(),
+    );
   });
 
   // Given: a.txt と b.txt に各1件の検索結果がある

@@ -1519,6 +1519,55 @@ describe("Feature: VirtualEditor", () => {
     await vi.waitFor(() => expect(host.querySelectorAll(".ve-find-hit")).toHaveLength(3));
   });
 
+  // Feature: フォルダ検索結果を開いたエディタの一致強調
+  // Scenario: フォルダ検索条件で可視範囲の全一致を強調する
+  // Given: 可視範囲に正規表現の一致が3個あり、検索ダイアログは閉じている
+  // When: フォルダ検索由来の検索語と一致条件を設定する
+  // Then: 同じ条件で可視範囲を検索し、3個すべての背景を描画する
+  it("Scenario: フォルダ検索条件で可視範囲の全一致を強調する", async () => {
+    const { editor, doc, host } = mount("note1 note2\nnone\nnote3");
+    const matches = [
+      { start: { line: 0, col: 0 }, end: { line: 0, col: 5 } },
+      { start: { line: 0, col: 6 }, end: { line: 0, col: 11 } },
+      { start: { line: 2, col: 0 }, end: { line: 2, col: 5 } },
+    ];
+    const findAllInRange = vi.fn().mockResolvedValue(matches);
+    doc.client.findAllInRange = findAllInRange;
+    editor.open(3, false);
+    await settle();
+
+    editor.setFindHighlightQuery("note\\d", false, true, false);
+
+    await vi.waitFor(() => expect(findAllInRange).toHaveBeenCalledWith("note\\d", 0, 3, false, true, false));
+    await vi.waitFor(() => expect(host.querySelectorAll(".ve-find-hit")).toHaveLength(3));
+    expect(host.querySelector<HTMLElement>(".ve-find")?.hidden).toBe(true);
+  });
+
+  // Scenario: 可視範囲の強調検索が一度だけ失敗する
+  // Given: 初回のfindAllInRangeが失敗し、次回はneedleの一致を返す
+  // When: 同じ検索語・表示範囲のままスクロールして再描画する
+  // Then: 強調検索を再試行し、一致背景を描画する
+  it("Scenario: 強調検索の一時失敗後に同じ範囲を再試行する", async () => {
+    const { editor, doc, host } = mount("needle");
+    const findAllInRange = vi.fn()
+      .mockRejectedValueOnce(new Error("temporary failure"))
+      .mockResolvedValue([{ start: { line: 0, col: 0 }, end: { line: 0, col: 6 } }]);
+    doc.client.findAllInRange = findAllInRange;
+    editor.open(1, false);
+    await settle();
+
+    editor.openSearch();
+    const findIn = host.querySelector<HTMLInputElement>(".ve-find-in")!;
+    findIn.value = "needle";
+    findIn.dispatchEvent(new Event("input", { bubbles: true }));
+    await vi.waitFor(() => expect(findAllInRange).toHaveBeenCalledTimes(1));
+
+    host.querySelector<HTMLElement>(".ve-scroll")!.dispatchEvent(new Event("scroll"));
+
+    await vi.waitFor(() => expect(findAllInRange).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(host.querySelectorAll(".ve-find-hit")).toHaveLength(1));
+  });
+
   // Given: 古い40行文書で検索結果が release まで保留され、検索結果が旧文書20行目を指している
   // When: 旧文書を検索中に editor.open(1, false) で新文書へ切り替え、release して settle する
   // Then: 保留されていた旧検索結果で移動せず、キャレットが0行0列、topLine が0のままになる

@@ -49,4 +49,15 @@ describe("Feature: pane toggle placement", () => {
     expect(style).toMatch(/\.fv-tree\s*\{[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow:\s*auto;/s);
     expect(style).toMatch(/\.fv-create-actions\s*\{[^}]*margin-top:\s*auto;/s);
   });
+
+  // Feature: フォルダ検索の検索欄と置換欄の整列
+  // Scenario: 置換欄の左端を検索欄の左端へ揃える
+  // Given: 検索欄の左に置換開閉ボタンがある
+  // When: 検索バーのCSSを検査する
+  // Then: 開閉ボタン幅と置換行の左余白が同じCSS変数を参照する
+  it("Scenario: 置換欄を検索欄と同じ左端へ配置する", () => {
+    expect(style).toMatch(/\.ws-search\s*\{[^}]*--ws-input-indent:\s*\d+px;/s);
+    expect(style).toMatch(/\.ws-replace-toggle\s*\{[^}]*width:\s*var\(--ws-input-indent\);/s);
+    expect(style).toMatch(/\.ws-replace-row\s*\{[^}]*padding-left:\s*var\(--ws-input-indent\);/s);
+  });
 });

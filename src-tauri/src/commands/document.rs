@@ -205,10 +205,12 @@ pub(crate) fn find_all_in_range(
     first_line: usize,
     last_line: usize,
     match_case: bool,
+    use_regex: bool,
+    whole_word: bool,
     state: State,
 ) -> Result<Vec<FindResult>, String> {
     with_doc(&state, |doc| {
-        doc.find_all_in_range(&pat, first_line, last_line, match_case)
+        doc.find_all_in_range(&pat, first_line, last_line, match_case, use_regex, whole_word)
     })?
 }
 

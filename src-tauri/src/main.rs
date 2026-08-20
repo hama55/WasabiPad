@@ -294,9 +294,19 @@ fn find_all_in_range(
     first_line: usize,
     last_line: usize,
     match_case: bool,
+    use_regex: bool,
+    whole_word: bool,
     state: State,
 ) -> Result<Vec<FindResult>, String> {
-    document::find_all_in_range(pat, first_line, last_line, match_case, state)
+    document::find_all_in_range(
+        pat,
+        first_line,
+        last_line,
+        match_case,
+        use_regex,
+        whole_word,
+        state,
+    )
 }
 
 #[tauri::command]

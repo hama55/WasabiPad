@@ -94,8 +94,8 @@ describe("Feature: TabManager", () => {
 
   // Given: activeId=folder、folderRoot が C:\work、selectedRelPath が sub\memo.txt、viewState の anchor/caret が各 line 10、topLine が8、scrollLeft が20
   // When: manager.init(folderTabs, null, null) を呼ぶ
-  // Then: selectEntry("sub\\memo.txt") が goTo({ line: 10, col: 0 }) より先に呼ばれ、restoreViewState は呼ばれない
-  it("Scenario: folder tabは選択中entryを開いてから選択行を復元する", async () => {
+  // Then: selectEntry("sub\\memo.txt") の後に完全なviewStateを復元する
+  it("Scenario: folder tabは選択中entryを開いてから完全な表示状態を復元する", async () => {
     const { doc, host } = fixture();
     const folderTabs: StoredTabs = {
       tabs: [{
@@ -119,10 +119,10 @@ describe("Feature: TabManager", () => {
     await manager.init(folderTabs, null, null);
 
     expect(doc.selectEntry).toHaveBeenCalledWith("sub\\memo.txt");
-    expect(doc.goTo).toHaveBeenCalledWith({ line: 10, col: 0 });
-    expect(doc.restoreViewState).not.toHaveBeenCalled();
+    expect(doc.goTo).not.toHaveBeenCalled();
+    expect(doc.restoreViewState).toHaveBeenCalledWith(folderTabs.tabs[0].viewState);
     expect(vi.mocked(doc.selectEntry).mock.invocationCallOrder[0])
-      .toBeLessThan(vi.mocked(doc.goTo).mock.invocationCallOrder[0]);
+      .toBeLessThan(vi.mocked(doc.restoreViewState).mock.invocationCallOrder[0]);
   });
 
   // Given: folder tab の selectedRelPath が deleted.txt で、selectEntry が Error("missing") を返す
@@ -741,8 +741,8 @@ describe("Feature: TabManager", () => {
   // Scenario: 保存して継続した後にフォルダ内の選択ファイルへ戻る
   // Given: C:\work の folder tab で memo.txt を選択し、保存処理が選択状態を維持する
   // When: b.txt へ移動し、b.txt を編集してから C:\work の tab へ戻る
-  // Then: C:\work を開き直し、memo.txt を選択して編集行へ移動する
-  it("Scenario: 保存して継続したフォルダタブへ戻ると選択ファイルと編集行を復元する", async () => {
+  // Then: C:\work を開き直し、memo.txtを選択してキャレット・選択・中央位置を復元する
+  it("Scenario: 保存して継続したフォルダタブへ戻ると完全な編集位置を復元する", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
     const firstView = {
@@ -811,7 +811,7 @@ describe("Feature: TabManager", () => {
     expect(doc.openPath).toHaveBeenLastCalledWith("C:\\work", false);
     expect(doc.selectEntry).toHaveBeenCalledTimes(2);
     expect(doc.selectEntry).toHaveBeenLastCalledWith("memo.txt");
-    expect(doc.goTo).toHaveBeenLastCalledWith({ line: 23, col: 0 });
+    expect(doc.restoreViewState).toHaveBeenLastCalledWith(firstView);
   });
 
   // Given: activeId=a で a.txt と b.txt の2タブがある
@@ -952,6 +952,12 @@ describe("Feature: TabManager", () => {
   // Then: bを元の位置へ戻してアクティブにし、表示位置を復元する
   it("Scenario: 最後に閉じたタブを元の位置と表示状態で復活する", async () => {
     const { doc, host } = fixture();
+    vi.mocked(doc.openPath).mockImplementation(async (path) => {
+      doc.current.folderRoot = path === "C:\\work" ? path : null;
+      doc.current.savePath = path === "C:\\work" ? null : path;
+      doc.current.displayPath = path;
+      return true;
+    });
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
     const viewState = {
       anchor: { line: 9, col: 1 }, caret: { line: 9, col: 3 },
@@ -976,8 +982,87 @@ describe("Feature: TabManager", () => {
     expect(manager.state.activeId).toBe("b");
     expect(doc.selectEntry).toHaveBeenLastCalledWith("notes\\b.md");
     expect(doc.restoreViewState).toHaveBeenLastCalledWith(expect.objectContaining({
-      caret: { line: 9, col: 3 }, topLine: 7, scrollLeft: 12,
+      anchor: { line: 9, col: 1 }, caret: { line: 9, col: 3 }, topLine: 7, scrollLeft: 12,
     }));
+  });
+
+  // Scenario: 保存して閉じた無題タブを保存先ファイルとして復活する
+  // Given: 未保存の無題タブで「保存して継続」を選び、savePathがmemo.mdへ変わる
+  // When: タブを閉じてreopenLastClosedを呼ぶ
+  // Then: 保存前の無題状態ではなくmemo.mdのファイルタブを復活する
+  it("Scenario: 保存して閉じた無題タブは保存先ファイルとして復活する", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init({
+      tabs: [stored.tabs[0], { id: "draft", path: null, kind: "blank", label: "無題" }],
+      activeId: "draft",
+    }, null, null);
+    doc.current.dirty = true;
+    vi.mocked(doc.confirmDiscard).mockImplementation(async (onProceed) => {
+      doc.current.savePath = "C:\\work\\memo.md";
+      doc.current.displayPath = "C:\\work\\memo.md";
+      doc.current.dirty = false;
+      await onProceed?.();
+      return true;
+    });
+
+    await manager.close("draft");
+    await manager.reopenLastClosed();
+
+    expect(manager.state.tabs.at(-1)).toEqual(expect.objectContaining({
+      id: "draft", path: "C:\\work\\memo.md", kind: "file", label: "memo.md",
+    }));
+  });
+
+  // Scenario: 最後の1タブを閉じて復活する
+  // Given: a.txtタブだけが開いている
+  // When: aを閉じて自動生成された無題タブ上でreopenLastClosedを呼ぶ
+  // Then: 無題タブを残さずaだけを復活する
+  it("Scenario: 最後の1タブを復活すると自動生成した無題タブを置き換える", async () => {
+    const { doc, host } = fixture();
+    vi.mocked(doc.newFile).mockImplementation(async () => {
+      doc.current.folderRoot = null;
+      doc.current.savePath = null;
+      doc.current.displayPath = "";
+      doc.current.selectedRelPath = "";
+      doc.current.dirty = false;
+    });
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init({ tabs: [stored.tabs[0]], activeId: "a" }, null, null);
+
+    await manager.close("a");
+    await manager.reopenLastClosed();
+
+    expect(manager.state.tabs.map((tab) => tab.id)).toEqual(["a"]);
+    expect(manager.state.activeId).toBe("a");
+  });
+
+  // Scenario Outline: 一括クローズで最後に削除したタブを復活する
+  // Given: a、b、cの保存済みタブがありaがアクティブ
+  // When: bのコンテキストメニューから各一括クローズ操作を行いCtrl+Shift+T相当を実行する
+  // Then: 各操作で最後に削除されたcを復活する
+  // Examples: ほかのタブを閉じる | 右側のタブを閉じる | 保存済みのタブを閉じる
+  it.each([
+    "ほかのタブを閉じる",
+    "右側のタブを閉じる",
+    "保存済みのタブを閉じる",
+  ])("Scenario: %sでも閉じたタブ履歴を残す", async (actionLabel) => {
+    const { doc, host } = fixture();
+    document.body.appendChild(Object.assign(document.createElement("div"), { id: "dropdown" }));
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init({
+      tabs: [...stored.tabs, { id: "c", path: "C:\\work\\c.txt", kind: "file", label: "c.txt" }],
+      activeId: "a",
+    }, null, null);
+
+    host.querySelectorAll<HTMLElement>(".doc-tab")[1]
+      .dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+    [...document.querySelectorAll<HTMLElement>("#dropdown .dd-item")]
+      .find((item) => item.textContent === actionLabel)!.click();
+    await vi.waitFor(() => expect(manager.state.tabs.some((tab) => tab.id === "c")).toBe(false));
+
+    await expect(manager.reopenLastClosed()).resolves.toBe(true);
+    expect(manager.state.activeId).toBe("c");
   });
 
   // Scenario: アプリ再初期化後は閉じたタブを復活しない

@@ -1453,8 +1453,18 @@ impl Doc {
         first_line: usize,
         last_line: usize,
         match_case: bool,
+        use_regex: bool,
+        whole_word: bool,
     ) -> Result<Vec<FindResult>, String> {
-        crate::search::find_all_in_range(&self.buf, pat, first_line, last_line, match_case)
+        crate::search::find_all_in_range(
+            &self.buf,
+            pat,
+            first_line,
+            last_line,
+            match_case,
+            use_regex,
+            whole_word,
+        )
             .map(|matches| matches.into_iter().map(|(start, end)| FindResult {
                 start: self.to_char(start),
                 end: self.to_char(end),
@@ -2310,12 +2320,43 @@ mod tests {
     fn find_all_in_visible_range_returns_every_match() {
         let d = doc("needle x needle\nnone\nneedle");
 
-        let found = d.find_all_in_range("needle", 0, 2, true).unwrap();
+        let found = d.find_all_in_range("needle", 0, 2, true, false, false).unwrap();
 
         let positions: Vec<_> = found.into_iter()
             .map(|result| (result.start.line, result.start.col, result.end.col))
             .collect();
         assert_eq!(positions, vec![(0, 0, 6), (0, 9, 15)]);
+    }
+
+    // Feature: フォルダ検索結果を開いたエディタの一致強調
+    // Scenario: フォルダ検索と同じ正規表現・単語単位条件で可視範囲を検索する
+    // Given: cat1 と cat1x と CAT2 を含む文書
+    // When: 大小文字を区別せず、正規表現 cat\d を単語単位で検索する
+    // Then: cat1 と CAT2 だけを返し、cat1x は返さない
+    #[test]
+    fn find_all_in_visible_range_uses_workspace_match_options() {
+        let d = doc("cat1 cat1x CAT2");
+
+        let found = d.find_all_in_range(r"cat\d", 0, 1, false, true, true).unwrap();
+
+        let positions: Vec<_> = found.into_iter()
+            .map(|result| (result.start.col, result.end.col))
+            .collect();
+        assert_eq!(positions, vec![(0, 4), (11, 15)]);
+    }
+
+    // Feature: 表示範囲検索の一致件数上限
+    // Scenario: 1行に大量の一致がある
+    // Given: 強調表示上限より多いaを含む文書
+    // When: 表示範囲の全一致を検索する
+    // Then: IPCとDOMを肥大化させない上限件数だけ返す
+    #[test]
+    fn find_all_in_visible_range_caps_match_count() {
+        let d = doc(&"a".repeat(crate::search::MAX_FIND_HIGHLIGHTS + 100));
+
+        let found = d.find_all_in_range("a", 0, 1, true, false, false).unwrap();
+
+        assert_eq!(found.len(), crate::search::MAX_FIND_HIGHLIGHTS);
     }
 
     #[test]

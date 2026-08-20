@@ -51,7 +51,7 @@ export class TabManager {
   private navigationInProgress = false;
   private navigationBusy = false;
   private navigationHistory = new Map<string, NavigationHistory>();
-  private closedTabs: { tab: StoredTab; index: number }[] = [];
+  private closedTabs: { tab: StoredTab; index: number; replacementId?: string }[] = [];
   private view: TabBarView;
 
   constructor(
@@ -381,23 +381,25 @@ export class TabManager {
     if (this.tabs.length === 1) {
       if (id !== this.activeId) return;
       this.rememberActiveView();
-      const closed = { tab: this.state.tabs[0], index: 0 };
       if (id === this.activeId && !(await this.doc.confirmDiscard())) return;
+      this.syncActive(this.doc.current);
+      const closed = { tab: this.state.tabs[0], index: 0 };
       const replacement = await this.blankTab(null);
       await this.commitTransition(async () => {
         this.tabs = [replacement];
         this.activeId = this.tabs[0].id;
         await this.doc.newFile(false, replacement.draftDirectory ?? null);
       });
-      this.closedTabs.push(closed);
+      this.closedTabs.push({ ...closed, replacementId: replacement.id });
       return;
     }
     const index = this.tabs.findIndex((tab) => tab.id === id);
     if (index < 0) return;
     if (id === this.activeId) {
       this.rememberActiveView();
-      const closed = { tab: this.state.tabs[index], index };
       if (!(await this.doc.confirmDiscard())) return;
+      this.syncActive(this.doc.current);
+      const closed = { tab: this.state.tabs[index], index };
       await this.commitTransition(async () => {
         this.tabs.splice(index, 1);
         this.activeId = this.tabs[Math.min(index, this.tabs.length - 1)].id;
@@ -425,6 +427,10 @@ export class TabManager {
             ...closed.tab,
             viewState: closed.tab.viewState ? cloneEditorViewState(closed.tab.viewState) : undefined,
           };
+          const replacementIndex = closed.replacementId
+            ? this.tabs.findIndex((candidate) => candidate.id === closed.replacementId && candidate.kind === "blank")
+            : -1;
+          if (replacementIndex >= 0) this.tabs.splice(replacementIndex, 1);
           this.tabs.splice(Math.min(closed.index, this.tabs.length), 0, tab);
           this.activeId = tab.id;
           await this.loadActive();
@@ -493,7 +499,8 @@ export class TabManager {
     try {
       const tab = this.active()!;
       const rememberedRelPath = tab.selectedRelPath;
-      const rememberedLine = tab.selectedLine ?? (tab.kind === "folder" ? tab.viewState?.caret.line : undefined);
+      const rememberedViewState = tab.viewState ? cloneEditorViewState(tab.viewState) : undefined;
+      const rememberedLine = tab.selectedLine ?? (tab.kind === "folder" ? rememberedViewState?.caret.line : undefined);
       let selectionRestored = false;
       if (tab.path) {
         const opened = await this.doc.openPath(tab.path, false);
@@ -511,16 +518,20 @@ export class TabManager {
           }
           // 選択に失敗しても記録は保持する。項目削除と一時的な読込失敗を区別できないため、
           // 次回タブを開いたときに再試行できる状態を優先する。
-          if (!selectionRestored) delete tab.selectedLine;
         }
         const selectedLine = rememberedLine;
         if (opened && tab.goto) {
           this.doc.goTo(tab.goto);
           delete tab.goto;
-        } else if (opened && tab.kind === "folder" && selectionRestored && tab.selectedRelPath && selectedLine !== undefined) {
-          tab.selectedLine = selectedLine;
-          delete tab.viewState;
-          this.doc.goTo({ line: selectedLine, col: 0 });
+        } else if (opened && tab.kind === "folder" && selectionRestored && tab.selectedRelPath) {
+          if (rememberedViewState) {
+            await this.doc.restoreViewState(rememberedViewState);
+            tab.selectedLine = rememberedViewState.caret.line;
+            delete tab.viewState;
+          } else if (selectedLine !== undefined) {
+            tab.selectedLine = selectedLine;
+            this.doc.goTo({ line: selectedLine, col: 0 });
+          }
         } else if (opened && tab.kind !== "folder" && tab.viewState) {
           await this.doc.restoreViewState(tab.viewState);
         }
@@ -539,9 +550,13 @@ export class TabManager {
     if (!tab) return;
     const view = this.doc.captureViewState();
     if (tab.kind === "folder") {
-      if (tab.selectedRelPath) tab.selectedLine = view.caret.line;
-      else delete tab.selectedLine;
-      delete tab.viewState;
+      if (tab.selectedRelPath) {
+        tab.selectedLine = view.caret.line;
+        tab.viewState = view;
+      } else {
+        delete tab.selectedLine;
+        delete tab.viewState;
+      }
     } else {
       tab.viewState = view;
     }
@@ -599,20 +614,30 @@ export class TabManager {
 
   private async keepOnly(id: string) {
     if (!await this.activate(id)) return;
-    this.tabs = this.tabs.filter((tab) => tab.id === id);
-    this.renderAndPersist();
+    this.closeMatchingTabs((tab) => tab.id !== id);
   }
 
   private async closeRight(id: string) {
     const index = this.tabs.findIndex((tab) => tab.id === id);
     const activeIndex = this.tabs.findIndex((tab) => tab.id === this.activeId);
     if (activeIndex > index && !await this.activate(id)) return;
-    this.tabs = this.tabs.slice(0, index + 1);
-    this.renderAndPersist();
+    this.closeMatchingTabs((_tab, candidateIndex) => candidateIndex > index);
   }
 
   private async closeSaved(keepId: string) {
-    this.tabs = this.tabs.filter((tab) => tab.id === keepId || tab.id === this.activeId || tab.kind === "blank");
+    this.closeMatchingTabs((tab) => tab.id !== keepId && tab.id !== this.activeId && tab.kind !== "blank");
+  }
+
+  private closeMatchingTabs(remove: (tab: StoredTab, index: number) => boolean) {
+    const snapshots = this.state.tabs;
+    const kept: StoredTab[] = [];
+    const closed: { tab: StoredTab; index: number }[] = [];
+    this.tabs.forEach((tab, index) => {
+      if (remove(tab, index)) closed.push({ tab: snapshots[index], index });
+      else kept.push(tab);
+    });
+    this.tabs = kept;
+    this.closedTabs.push(...closed);
     this.renderAndPersist();
   }
 

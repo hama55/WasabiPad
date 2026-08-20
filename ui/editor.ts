@@ -125,7 +125,7 @@ export class VirtualEditor {
   private mutation: EditorMutationController;
   private findGen = 0; // 検索ループの世代。closeやEnter連打で古いループを打ち切るため
   private lastFindMatch: { start: Pos; end: Pos; pat: string; matchCase: boolean } | null = null; // 連続置換が対象にしてよい直前の一致
-  private activeFind: { pat: string; matchCase: boolean } | null = null;
+  private activeFind: { pat: string; matchCase: boolean; useRegex: boolean; wholeWord: boolean } | null = null;
   private findHighlights: api.FindResult[] = [];
   private findHighlightRequestKey = "";
   private findHighlightGeneration = 0;
@@ -1174,9 +1174,12 @@ export class VirtualEditor {
     }
   }
 
-  private setFindHighlightQuery(pat: string, matchCase: boolean) {
-    const next = pat ? { pat, matchCase } : null;
-    if (this.activeFind?.pat === next?.pat && this.activeFind?.matchCase === next?.matchCase) return;
+  setFindHighlightQuery(pat: string, matchCase: boolean, useRegex = false, wholeWord = false) {
+    const next = pat ? { pat, matchCase, useRegex, wholeWord } : null;
+    if (this.activeFind?.pat === next?.pat
+      && this.activeFind?.matchCase === next?.matchCase
+      && this.activeFind?.useRegex === next?.useRegex
+      && this.activeFind?.wholeWord === next?.wholeWord) return;
     this.activeFind = next;
     this.invalidateFindHighlights();
     this.schedule();
@@ -1191,11 +1194,18 @@ export class VirtualEditor {
   private requestFindHighlights(first: number, last: number) {
     const query = this.activeFind;
     if (!query) return;
-    const key = `${this.documentGeneration}:${first}:${last}:${query.matchCase}:${query.pat}`;
+    const key = `${this.documentGeneration}:${first}:${last}:${query.matchCase}:${query.useRegex}:${query.wholeWord}:${query.pat}`;
     if (key === this.findHighlightRequestKey) return;
     this.findHighlightRequestKey = key;
     const generation = ++this.findHighlightGeneration;
-    void this.doc.findAllInRange(query.pat, first, last, query.matchCase)
+    void this.doc.findAllInRange(
+      query.pat,
+      first,
+      last,
+      query.matchCase,
+      query.useRegex,
+      query.wholeWord,
+    )
       .then((matches) => {
         if (generation !== this.findHighlightGeneration || key !== this.findHighlightRequestKey) return;
         this.findHighlights = matches;
@@ -1204,6 +1214,7 @@ export class VirtualEditor {
       .catch((error) => {
         if (generation !== this.findHighlightGeneration || key !== this.findHighlightRequestKey) return;
         this.findHighlights = [];
+        this.findHighlightRequestKey = "";
         void this.reportActionError("検索結果を強調表示できませんでした", error);
       });
   }

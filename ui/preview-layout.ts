@@ -1,4 +1,11 @@
+import type { ViewerFormat } from "./api";
+
 export const PREVIEW_MIN_WIDTH = 260;
+
+export interface PreviewDocument {
+  path: string;
+  format: ViewerFormat;
+}
 
 export interface PreviewLayoutState {
   available: boolean;
@@ -24,6 +31,14 @@ export function shouldKeepPreviewFullscreen(
   hasPreviewFormat: boolean,
 ): boolean {
   return hasPreviewFormat && ownerTabId !== null && ownerTabId === activeTabId;
+}
+
+export function effectivePreviewFormat(
+  documentPath: string,
+  detectedFormat: ViewerFormat | null,
+  openedDocument: PreviewDocument | null,
+): ViewerFormat | null {
+  return openedDocument?.path === documentPath ? openedDocument.format : detectedFormat;
 }
 
 export function previewWidthFromPointer(mainRight: number, clientX: number, mainLeft = 0): number {

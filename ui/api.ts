@@ -160,8 +160,21 @@ export const redo = () => invoke<EditResult | null>(IPC_COMMANDS.redo);
 export const find = (pat: string, from: Pos, forward: boolean, matchCase: boolean) =>
   invoke<FindResult | null>(IPC_COMMANDS.find, { pat, from, forward, matchCase });
 
-export const findAllInRange = (pat: string, firstLine: number, lastLine: number, matchCase: boolean) =>
-  invoke<FindResult[]>(IPC_COMMANDS.findAllInRange, { pat, firstLine, lastLine, matchCase });
+export const findAllInRange = (
+  pat: string,
+  firstLine: number,
+  lastLine: number,
+  matchCase: boolean,
+  useRegex = false,
+  wholeWord = false,
+) => invoke<FindResult[]>(IPC_COMMANDS.findAllInRange, {
+  pat,
+  firstLine,
+  lastLine,
+  matchCase,
+  useRegex,
+  wholeWord,
+});
 
 // 前方検索 (次へ) 用。1回で最大 budget 行だけ走査し、続きがあれば cursor を返す。
 // Found/NotFound になるまで cursor を渡して呼び出し側でループする。

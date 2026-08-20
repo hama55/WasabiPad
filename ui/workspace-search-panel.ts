@@ -25,9 +25,13 @@ export interface WorkspaceSearchPorts {
   onCancel: (searchId: number) => void | Promise<void>;
   onCancelError?: (error: unknown) => void | Promise<void>;
   onError: (error: unknown) => Promise<void>;
-  // 一致の範囲は result.highlights が持つ。パターンを渡さないのは、
-  // 正規表現や大小の畳み込みで「当たった長さ」がパターンの長さと一致しないため。
-  onOpen: (result: WorkspaceSearchResult, newTab: boolean) => void | boolean | Promise<void | boolean>;
+  // 選択範囲は result.highlights、画面内の全一致強調は query を使う。
+  // 正規表現ではパターン長と一致長が異なるため、両者を混同しない。
+  onOpen: (
+    result: WorkspaceSearchResult,
+    newTab: boolean,
+    query: WorkspaceSearchHighlightQuery,
+  ) => void | boolean | Promise<void | boolean>;
   // 本文一致を検索結果の位置で1件置換する。成功時は呼び出し側が
   // refreshAfterDocumentChange を通知する。ファイル名一致では呼ばない。
   onReplace: (result: WorkspaceSearchResult, replacement: string) => void | boolean | Promise<void | boolean>;
@@ -36,6 +40,13 @@ export interface WorkspaceSearchPorts {
   onOptionsChange: (options: WorkspaceSearchOptions) => void;
   // 出すべき中身が変わった → 器の描き替えを頼む
   onViewChange: () => void;
+}
+
+export interface WorkspaceSearchHighlightQuery {
+  pat: string;
+  matchCase: boolean;
+  useRegex: boolean;
+  wholeWord: boolean;
 }
 
 // DOM の行数だけは有限にしないと画面が固まる。超えた分は隠さず「ここまで」と告げる
@@ -569,8 +580,14 @@ export class WorkspaceSearchPanel {
   private invokeOpen(match: WorkspaceSearchResult, newTab: boolean) {
     const request = ++this.openRequest;
     const key = searchResultKey(match);
+    const query: WorkspaceSearchHighlightQuery = {
+      pat: this.state.pattern,
+      matchCase: this.options.match_case,
+      useRegex: this.options.use_regex,
+      wholeWord: this.options.whole_word,
+    };
     try {
-      void Promise.resolve(this.ports.onOpen(match, newTab))
+      void Promise.resolve(this.ports.onOpen(match, newTab, query))
         .then((opened) => {
           if (opened === false || request !== this.openRequest) return;
           this.state.selected = key;

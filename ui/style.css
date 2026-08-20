@@ -225,6 +225,7 @@ body.preview-resizing * { cursor: ew-resize !important; user-select: none !impor
 /* ---- フォルダ検索バー ---- */
 /* 結果が長くなるため、入力欄と件数は上端へ貼り付けたままにする */
 .ws-search {
+  --ws-input-indent: 20px;
   position: sticky; top: 20px; z-index: 1;
   padding: 4px; background: var(--bg-side);
 }
@@ -233,14 +234,17 @@ body.preview-resizing * { cursor: ew-resize !important; user-select: none !impor
 .ws-title { flex: 1; min-width: 0; color: var(--fg-dim); font-size: 12px; }
 /* 一致のしかたのトグルは VSCode と同じく入力欄の内側へ重ねる */
 .ws-search-row { position: relative; display: flex; align-items: center; }
-.ws-replace-toggle { flex: none; }
+.ws-replace-toggle { flex: none; width: var(--ws-input-indent); }
 .ws-search-row > input {
   min-width: 0; flex: 1; background: var(--bg-editor); color: var(--fg);
   border: 1px solid var(--border-strong); padding: 3px 74px 3px 5px; font: 12px var(--font-ui);
 }
 .ws-search-row .ws-toggles { position: absolute; right: 3px; }
 .ws-toggles { display: flex; gap: 1px; flex: none; }
-.ws-replace-row { display: flex; align-items: center; gap: 5px; margin-top: 3px; }
+.ws-replace-row {
+  display: flex; align-items: center; gap: 5px; margin-top: 3px;
+  padding-left: var(--ws-input-indent);
+}
 .ws-replace-row > input {
   min-width: 0; flex: 1; background: var(--bg-editor); color: var(--fg);
   border: 1px solid var(--border-strong); padding: 3px 5px; font: 12px var(--font-ui);

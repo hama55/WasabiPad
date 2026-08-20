@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  effectivePreviewFormat,
   isPreviewFullscreen,
   isPreviewShown,
   isPreviewSplitterShown,
@@ -58,5 +59,22 @@ describe("Feature: preview layout", () => {
     expect(shouldKeepPreviewFullscreen("folder", "folder", true)).toBe(true);
     expect(shouldKeepPreviewFullscreen("folder", "other", true)).toBe(false);
     expect(shouldKeepPreviewFullscreen("folder", "folder", false)).toBe(false);
+  });
+
+  // Scenario: 未知拡張子を手動でMarkdown表示したまま本文を更新する
+  // Given: notes.txtに対してMarkdownプレビューが開いている
+  // When: 拡張子からは形式を検出できない同じ文書を再同期する
+  // Then: 開いているMarkdown形式を実効形式として維持する
+  it("Scenario: 未知拡張子の手動Markdownプレビューを同じ文書内で維持する", () => {
+    expect(effectivePreviewFormat(
+      "C:\\work\\notes.txt",
+      null,
+      { path: "C:\\work\\notes.txt", format: "markdown" },
+    )).toBe("markdown");
+    expect(effectivePreviewFormat(
+      "C:\\work\\other.txt",
+      null,
+      { path: "C:\\work\\notes.txt", format: "markdown" },
+    )).toBeNull();
   });
 });
