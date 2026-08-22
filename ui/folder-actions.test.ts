@@ -172,6 +172,26 @@ describe("Feature: FolderActions", () => {
     ));
   });
 
+  // Feature: フォルダ右クリックからの新規フォルダ作成
+  // Scenario: 右クリックしたフォルダの配下へ新規フォルダを作る
+  // Given: `docs`フォルダを対象にし、フォルダ名入力が`notes`を返す
+  // When: フォルダメニューの「新規フォルダ」をクリックする
+  // Then: `docs`を作成先としてAPIへ渡す
+  it("Scenario: フォルダメニューから対象フォルダ配下へ新規フォルダを作成する", async () => {
+    const { actions, dropdown, ports } = fixture();
+    vi.mocked(promptFields).mockResolvedValueOnce(["notes"]);
+    const createFolder = vi.spyOn(api, "createFolder").mockResolvedValueOnce();
+    actions.showContextMenu(0, 0, { relPath: "docs", isDir: true });
+
+    const item = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((element) => element.textContent === "新規フォルダ");
+    expect(item?.querySelector(`.${MENU_ICON.newFolder}`)).not.toBeNull();
+    item!.click();
+
+    await vi.waitFor(() => expect(createFolder).toHaveBeenCalledWith("docs", "notes"));
+    expect(ports.sidebar.refreshFolderEntries).toHaveBeenCalledOnce();
+  });
+
   // Given: ファイル、フォルダ、空白部の右クリックメニューを表示する
   // When: 各メニューの表示項目を調べる
   // Then: すべての項目にメニューアイコンが付いている
@@ -206,22 +226,24 @@ describe("Feature: FolderActions", () => {
 
   // Given: rootが`C:\work`で対象がない
   // When: フォルダ空白部のコンテキストメニューを表示する
-  // Then: Explorerが先頭にあり、新規作成とお気に入り追加が残り、rootをフォルダとして開く
+  // Then: Explorerが先頭にあり、新規メモ・全展開・お気に入り追加が残る
   it("Scenario: 対象なしのフォルダメニューでもExplorerを先頭にする", async () => {
     const reveal = vi.spyOn(api, "revealInExplorer").mockResolvedValue();
     try {
-      const { actions, dropdown } = fixture();
+      const { actions, dropdown, expandAllFolder } = fixture();
       actions.showContextMenu(0, 0, null);
 
       expect([...dropdown.querySelectorAll(".dd-label")].map((label) => label.textContent)).toEqual([
         "エクスプローラで開く",
         "新規メモ作成...",
+        "フォルダを全展開",
         "お気に入りに追加",
       ]);
       expect(dropdown.querySelectorAll(".dd-sep")).toHaveLength(2);
       for (const [label, icon] of [
         ["エクスプローラで開く", MENU_ICON.explorer],
         ["新規メモ作成...", MENU_ICON.newMemo],
+        ["フォルダを全展開", MENU_ICON.expandFolder],
         ["お気に入りに追加", MENU_ICON.favorite],
       ] as const) {
         const item = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
@@ -231,6 +253,10 @@ describe("Feature: FolderActions", () => {
       dropdown.querySelector<HTMLElement>(".dd-item:first-child")!.click();
 
       await vi.waitFor(() => expect(reveal).toHaveBeenCalledWith("C:\\work", true));
+      actions.showContextMenu(0, 0, null);
+      [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+        .find((item) => item.textContent === "フォルダを全展開")!.click();
+      expect(expandAllFolder).toHaveBeenCalledWith("");
     } finally {
       reveal.mockRestore();
     }
@@ -372,9 +398,10 @@ describe("Feature: FolderActions", () => {
 
   // Given: 対象が`memo.txt`、delete APIは成功
   // When: その他→削除をクリック
-  // Then: `deleteEntry("memo.txt")`、確認文言表示、一覧更新
+  // Then: `deleteEntry("memo.txt")`、確認文言表示、選択解除、展開状態を壊さない更新
   it("Scenario: 削除はその他サブメニューを経由する", async () => {
-    const { actions, dropdown, ports } = fixture();
+    const { actions, dropdown, ports, doc } = fixture();
+    doc.current.selectedRelPath = "memo.txt";
     vi.spyOn(api, "deleteEntry").mockResolvedValueOnce({} as api.DocInfo);
     actions.showContextMenu(0, 0, { relPath: "memo.txt", isDir: false });
 
@@ -391,6 +418,7 @@ describe("Feature: FolderActions", () => {
       "「memo.txt」ファイルを削除します。元に戻せません。",
       "削除",
     );
+    expect(doc.applyDocInfo).toHaveBeenCalledWith({}, false, false);
     expect(ports.sidebar.refreshFolderEntries).toHaveBeenCalled();
   });
 
@@ -431,7 +459,7 @@ describe("Feature: FolderActions", () => {
   });
 
   // Feature: フォルダツリーからの新規フォルダ作成
-  // Scenario: 入力した名前でルート直下にフォルダを作成して一覧を更新する
+  // Scenario: 入力した名前で指定ディレクトリ直下にフォルダを作成して一覧を更新する
   // Given: C:\workを開き、フォルダ名入力がnotesを返す
   // When: createFolderを実行する
   // Then: notesの作成APIを呼び、フォルダ一覧を更新する
@@ -440,9 +468,9 @@ describe("Feature: FolderActions", () => {
     vi.mocked(promptFields).mockResolvedValueOnce(["notes"]);
     const createFolder = vi.spyOn(api, "createFolder").mockResolvedValueOnce(undefined);
 
-    await actions.createFolder();
+    await actions.createFolder("docs");
 
-    expect(createFolder).toHaveBeenCalledWith("notes");
+    expect(createFolder).toHaveBeenCalledWith("docs", "notes");
     expect(ports.sidebar.refreshFolderEntries).toHaveBeenCalledOnce();
   });
 
@@ -464,11 +492,11 @@ describe("Feature: FolderActions", () => {
   });
 
   // Feature: フォルダ内の新規メモ採番
-  // Scenario: 初期名が存在すると空いている連番名で作成する
-  // Given: 名前入力ダイアログが初期値`memo1`を返す
+  // Scenario: 入力名が重複すると作成後の実パスを選択する
+  // Given: 入力名が`memo`、作成APIが`memo1.txt`を返す
   // When: ルート直下で`createNote(null)`を実行する
-  // Then: `createNote`へ`memo1.txt`を渡し、作成後の選択先も同じ名前にする
-  it("Scenario: 同名メモがあると1から連番を付ける", async () => {
+  // Then: `memo.txt`を作成APIへ渡し、作成後は`memo1.txt`を選択する
+  it("Scenario: 同名メモの作成後は採番された実パスを選択する", async () => {
     const { actions, doc } = fixture();
     const docInfo = {
       kind: "text",
@@ -486,7 +514,7 @@ describe("Feature: FolderActions", () => {
       modified_at: null,
     } satisfies api.DocInfo;
     doc.promptMemoSpec.mockResolvedValueOnce({
-      memo: { stem: "memo1", extension: "txt" },
+      memo: { stem: "memo", extension: "txt" },
       format: { encoding: "sjis", eol: "lf" },
     });
     vi.spyOn(api, "createNote").mockResolvedValueOnce(docInfo);
@@ -494,7 +522,7 @@ describe("Feature: FolderActions", () => {
     await actions.createNote(null);
 
     expect(doc.promptMemoSpec).toHaveBeenCalledWith("C:\\work");
-    expect(api.createNote).toHaveBeenCalledWith(null, "memo1.txt", "sjis", "lf");
+    expect(api.createNote).toHaveBeenCalledWith(null, "memo.txt", "sjis", "lf");
     expect(doc.setSelectedRelPath).toHaveBeenCalledWith("memo1.txt");
   });
 });

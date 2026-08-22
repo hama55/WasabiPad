@@ -469,8 +469,7 @@ export class DocumentController {
     return this.view.editor.restoreViewState(state);
   }
 
-  private memoFields(directory: string | null, initialStem: string) {
-    let request = 0;
+  private memoFields(initialStem: string) {
     return [
       {
         label: "ファイル名",
@@ -484,19 +483,6 @@ export class DocumentController {
           ...SAVE_EXTENSIONS.map(({ extension }) => ({ label: `.${extension}`, value: extension })),
           { label: "拡張子なし", value: "" },
         ],
-        onChange: directory ? async (
-          extension: string,
-          _values: string[],
-          setValue: (index: number, value: string) => void,
-        ) => {
-          const current = ++request;
-          try {
-            const path = await this.services.api.nextMemoPath(directory, DEFAULT_MEMO_STEM, extension);
-            if (current === request) setValue(0, memoStemOf(path, extension));
-          } catch (error) {
-            if (current === request) throw error;
-          }
-        } : undefined,
       },
     ];
   }
@@ -520,7 +506,7 @@ export class DocumentController {
   ): Promise<string[] | null> {
     const stem = await this.initialMemoStem(directory, DEFAULT_MEMO_EXTENSION);
     return this.services.promptFields(title, [
-      ...this.memoFields(directory, stem),
+      ...this.memoFields(stem),
       ...extraFields,
     ], this.memoPromptOptions(directory));
   }

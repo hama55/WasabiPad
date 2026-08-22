@@ -7,6 +7,7 @@ export const MENU_LABELS = {
   address: "アドレスバーに設定",
   favorite: "お気に入りに追加",
   newMemo: "新規メモ作成...",
+  newFolder: "新規フォルダ",
   rename: "名前を変更...",
   more: "その他",
   delete: "削除",

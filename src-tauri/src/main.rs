@@ -191,8 +191,8 @@ fn create_note(
 }
 
 #[tauri::command]
-fn create_folder(name: String, state: State) -> Result<(), String> {
-    document::create_folder(name, state)
+fn create_folder(rel_dir: String, name: String, state: State) -> Result<(), String> {
+    document::create_folder(rel_dir, name, state)
 }
 
 #[tauri::command]

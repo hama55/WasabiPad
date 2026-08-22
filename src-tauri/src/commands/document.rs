@@ -105,8 +105,8 @@ pub(crate) fn create_note(
         .map_err(|e| e.to_string())
 }
 
-pub(crate) fn create_folder(name: String, state: State) -> Result<(), String> {
-    with_doc(&state, |doc| doc.create_folder(&name))?
+pub(crate) fn create_folder(rel_dir: String, name: String, state: State) -> Result<(), String> {
+    with_doc(&state, |doc| doc.create_folder(&rel_dir, &name))?
         .map_err(|e| e.to_string())
 }
 

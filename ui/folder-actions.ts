@@ -105,6 +105,11 @@ export class FolderActions {
           sep: true,
           action: () => this.run(`${MENU_LABELS.expandFolder}できませんでした`, () => this.ports.sidebar.expandAllFolder(target.relPath)),
         });
+        items.push({
+          label: MENU_LABELS.newFolder,
+          iconClass: MENU_ICON.newFolder,
+          action: () => this.run("新規フォルダを作成できませんでした", () => this.createFolder(target.relPath)),
+        });
       }
       if (!target.isDir) {
         items.push({
@@ -134,6 +139,13 @@ export class FolderActions {
       action: () => this.run("新規メモを作成できませんでした", () => this.createNote(target?.isDir ? target.relPath : null)),
       sep: true,
     });
+    if (!target) {
+      items.push({
+        label: MENU_LABELS.expandFolder,
+        iconClass: MENU_ICON.expandFolder,
+        action: () => this.run(`${MENU_LABELS.expandFolder}できませんでした`, () => this.ports.sidebar.expandAllFolder("")),
+      });
+    }
     if (target) {
       items.push({
         label: MENU_LABELS.rename,
@@ -179,15 +191,17 @@ export class FolderActions {
       return;
     }
     if (!spec) return;
-    const name = fileNameOf(spec.memo);
+    const requestedName = fileNameOf(spec.memo);
     let info: api.DocInfo;
     try {
-      info = await this.services.api.createNote(relDir, name, spec.format.encoding, spec.format.eol);
+      info = await this.services.api.createNote(relDir, requestedName, spec.format.encoding, spec.format.eol);
     } catch (e) {
       await this.reportError("新規メモを作成できませんでした", e);
       return;
     }
-    const relPath = relDir ? `${relDir}/${name}` : name;
+    const relPath = info.path && root
+      ? relativePathFromRoot(root, info.path)
+      : relDir ? `${relDir}/${requestedName}` : requestedName;
     try {
       this.doc.setSelectedRelPath(relPath);
       this.doc.applyDocInfo(info);
@@ -203,7 +217,7 @@ export class FolderActions {
     }
   }
 
-  async createFolder() {
+  async createFolder(relDir = "") {
     if (!this.root) {
       await this.reportError("新規フォルダを作成できませんでした", new Error("フォルダを開いていません"));
       return;
@@ -222,7 +236,7 @@ export class FolderActions {
     const name = result?.[0].trim();
     if (!name) return;
     try {
-      await this.services.api.createFolder(name);
+      await this.services.api.createFolder(relDir, name);
     } catch (error) {
       await this.reportError("新規フォルダを作成できませんでした", error);
       return;
@@ -288,7 +302,7 @@ export class FolderActions {
         || isArchiveEntryUnder(selected, target.relPath);
       if (deletedSelection) {
         this.doc.setSelectedRelPath("");
-        this.doc.applyDocInfo(info, false, true);
+        this.doc.applyDocInfo(info, false, false);
       }
       await this.ports.sidebar.refreshFolderEntries();
     } catch (e) {

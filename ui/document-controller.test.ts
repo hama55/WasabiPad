@@ -174,15 +174,14 @@ describe("Feature: DocumentController", () => {
   });
 
   // Feature: 新規メモ名の初期採番
-  // Scenario: ダイアログ表示前に空き名を確定し、拡張子変更時に再計算する
-  // Given: `memo.txt`が存在し、`nextMemoPath`が初期値`memo1.txt`と変更後`memo.md`を返す
-  // When: フォルダを指定して`promptMemoSpec`を呼ぶ
-  // Then: ダイアログ初期値は`memo1`、拡張子変更後は`memo`になる
-  it("Scenario: ダイアログ表示時に採番し拡張子変更で再計算する", async () => {
+  // Scenario: ダイアログ表示後に拡張子だけを変更しても入力名を保持する
+  // Given: `nextMemoPath`が初期値`memo1.txt`を返す
+  // When: フォルダを指定して拡張子を`md`へ変更する
+  // Then: ダイアログのファイル名は`memo1`のまま、作成仕様も`memo1.md`になる
+  it("Scenario: 拡張子変更で入力済みのメモ名を保持する", async () => {
     const { view } = fakeView();
     const nextMemoPath = vi.spyOn(api, "nextMemoPath")
-      .mockResolvedValueOnce("C:\\work\\memo1.txt")
-      .mockResolvedValueOnce("C:\\work\\memo.md");
+      .mockResolvedValueOnce("C:\\work\\memo1.txt");
     const promptFieldsMock = vi.fn(async (
       _title: string,
       fields: Parameters<typeof promptFields>[1],
@@ -190,17 +189,17 @@ describe("Feature: DocumentController", () => {
       expect(fields[0].value).toBe("memo1");
       const setValue = (index: number, value: string) => { fields[index].value = value; };
       await fields[1].onChange?.("md", ["memo1", "md"], setValue);
-      expect(fields[0].value).toBe("memo");
-      return ["memo", "md", "utf8", "crlf"];
+      expect(fields[0].value).toBe("memo1");
+      return ["memo1", "md", "utf8", "crlf"];
     });
     const controller = new DocumentController(view, { ...services(), promptFields: promptFieldsMock });
 
     await expect(controller.promptMemoSpec("C:\\work")).resolves.toEqual({
-      memo: { stem: "memo", extension: "md" },
+      memo: { stem: "memo1", extension: "md" },
       format: { encoding: "utf8", eol: "crlf" },
     });
-    expect(nextMemoPath).toHaveBeenNthCalledWith(1, "C:\\work", "memo", "txt");
-    expect(nextMemoPath).toHaveBeenNthCalledWith(2, "C:\\work", "memo", "md");
+    expect(nextMemoPath).toHaveBeenCalledOnce();
+    expect(nextMemoPath).toHaveBeenCalledWith("C:\\work", "memo", "txt");
   });
 
   // Feature: 無題メモの既定保存先
@@ -279,15 +278,14 @@ describe("Feature: DocumentController", () => {
   });
 
   // Feature: 保存用新規メモの拡張子変更
-  // Scenario: 保存ダイアログで拡張子を変更した候補名をそのまま保存する
-  // Given: 初期候補`memo1.txt`と、変更後候補`memo.md`が返る
+  // Scenario: 保存ダイアログで拡張子を変更しても入力名をそのまま保存する
+  // Given: 初期候補`memo1.txt`が返る
   // When: フォルダ内の無題文書で拡張子を`md`へ変更して保存する
-  // Then: `memo.md`へ保存し、採番を2回だけ行う
-  it("Scenario: 保存ダイアログの拡張子変更を保存先へ反映する", async () => {
+  // Then: `memo1.md`へ保存し、採番は初期候補の1回だけ行う
+  it("Scenario: 保存ダイアログの拡張子変更で入力名を保持する", async () => {
     const { view } = fakeView();
     const nextMemoPath = vi.spyOn(api, "nextMemoPath")
-      .mockResolvedValueOnce("C:\\work\\memo1.txt")
-      .mockResolvedValueOnce("C:\\work\\memo.md");
+      .mockResolvedValueOnce("C:\\work\\memo1.txt");
     vi.spyOn(api, "saveFile").mockResolvedValueOnce({ kind: "saved", modified_at: null });
     vi.spyOn(api, "listFolderEntries").mockResolvedValueOnce([]);
     const promptFieldsMock = vi.fn(async (
@@ -296,8 +294,8 @@ describe("Feature: DocumentController", () => {
     ) => {
       const setValue = (index: number, value: string) => { fields[index].value = value; };
       await fields[1].onChange?.("md", ["memo1", "md"], setValue);
-      expect(fields[0].value).toBe("memo");
-      return ["memo", "md", "utf8", "crlf"];
+      expect(fields[0].value).toBe("memo1");
+      return ["memo1", "md", "utf8", "crlf"];
     });
     const controller = new DocumentController(view, { ...services(), promptFields: promptFieldsMock });
     controller.applyDocInfo(info({ path: "C:\\work", folder_root: "C:\\work", folder_entries: [] }));
@@ -305,8 +303,8 @@ describe("Feature: DocumentController", () => {
 
     expect(await controller.saveAs()).toBe(true);
 
-    expect(nextMemoPath).toHaveBeenCalledTimes(2);
-    expect(api.saveFile).toHaveBeenCalledWith("C:\\work\\memo.md", "utf8", "crlf");
+    expect(nextMemoPath).toHaveBeenCalledTimes(1);
+    expect(api.saveFile).toHaveBeenCalledWith("C:\\work\\memo1.md", "utf8", "crlf");
   });
 
   // Given: `info()`がpath=`C:\\work\\memo.txt`、enc=`sjis`、line_count=42、byte_len=1234

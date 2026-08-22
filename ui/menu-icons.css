@@ -63,9 +63,11 @@
 .menu-icon-new-tab::before { content: "▱"; font-size: 15px; }
 .menu-icon-new-window::before { content: "□"; font-size: 16px; }
 .menu-icon-new-memo::before { content: "▤"; font-size: 15px; }
+.menu-icon-new-folder::before { content: "▰"; font-size: 14px; }
 .menu-icon-new-tab::after,
 .menu-icon-new-window::after,
-.menu-icon-new-memo::after {
+.menu-icon-new-memo::after,
+.menu-icon-new-folder::after {
   content: "+";
   right: -1px;
   bottom: -3px;

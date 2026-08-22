@@ -29,6 +29,8 @@ interface PointerDrag {
   sourceRelPath: string;
   startX: number;
   startY: number;
+  clientX: number;
+  clientY: number;
   moved: boolean;
   targetRelDir: string | null;
   cleanup: () => void;
@@ -38,6 +40,10 @@ interface FolderMove {
   sourceRelPath: string;
   targetRelDir: string;
 }
+
+const DRAG_SCROLL_EDGE = 40;
+const DRAG_SCROLL_STEP = 12;
+const DRAG_SCROLL_INTERVAL = 16;
 
 // 行頭の記号 [閉じているとき, 開いているとき]。種別を足したらここも足りなくなる
 // (Record なので、足し忘れは型が落とす)。
@@ -58,7 +64,7 @@ export interface SidebarPorts extends Omit<WorkspaceSearchPorts, "onViewChange" 
   onExpandArchive: (relPath: string) => Promise<string[]>;
   onExpandFolder: (relDir: string) => Promise<FolderEntry[]>;
   onMoveEntry: (sourceRelPath: string, targetRelDir: string) => Promise<string>;
-  onCreateFolder: () => void | Promise<void>;
+  onCreateFolder: (relDir: string) => void | Promise<void>;
   onCreateNote: () => void | Promise<void>;
   onTreeError: (error: unknown) => Promise<void>;
 }
@@ -86,6 +92,7 @@ export class Sidebar {
   private lastFolderMove: FolderMove | null = null;
   private entryMoveInProgress = false;
   private workspaceRoot: string | null = null;
+  private dragScrollTimer: number | null = null;
 
   constructor(host: HTMLElement, ports: SidebarPorts, searchOptions: WorkspaceSearchOptions) {
     this.host = host;
@@ -133,7 +140,7 @@ export class Sidebar {
     createFolder.textContent = "＋ フォルダ";
     createFolder.title = "新規フォルダ";
     createFolder.addEventListener("click", () => runAsyncBoundary(
-      ports.onCreateFolder,
+      () => ports.onCreateFolder(this.selectedFolderRelDir()),
       (error) => this.reportTreeError(error),
     ));
     const createNote = document.createElement("button");
@@ -248,7 +255,7 @@ export class Sidebar {
     const rows = await rebuild(await this.onExpandFolder(""), 0, "");
     if (request !== this.selectionRequest) return;
     this.rows = rows;
-    if (this.sel && !this.rows.some((row) => row.kind !== "dir" && row.relPath === this.sel)) this.sel = null;
+    if (this.sel && !this.rows.some((row) => row.relPath === this.sel)) this.sel = null;
     this.render();
   }
 
@@ -288,16 +295,26 @@ export class Sidebar {
     this.render();
   }
 
+  private selectedFolderRelDir(): string {
+    if (!this.sel) return "";
+    const selected = this.rows.find((row) => row.relPath === this.sel);
+    if (selected?.kind === "dir") return selected.relPath;
+    if (selected && (selected.kind === "file" || selected.kind === "archive")) return parentRelPath(selected.relPath);
+    return "";
+  }
+
   async expandAllFolder(relDir: string) {
     if (this.panel.showing) return;
-    const row = this.rows.find((candidate) => candidate.kind === "dir" && candidate.relPath === relDir);
-    if (!row) return;
+    const row = relDir
+      ? this.rows.find((candidate) => candidate.kind === "dir" && candidate.relPath === relDir)
+      : undefined;
+    if (relDir && !row) return;
     const request = ++this.selectionRequest;
-    const start = this.rows.indexOf(row);
+    const start = row ? this.rows.indexOf(row) : 0;
     try {
       for (let i = start; i < this.rows.length; i++) {
         const current = this.rows[i];
-        if (current !== row && current.depth <= row.depth) break;
+        if (row && current !== row && current.depth <= row.depth) break;
         if (!isExpandable(current)) continue;
         if (!await this.ensureChildrenLoaded(current, request)) return;
         if (request !== this.selectionRequest) return;
@@ -545,11 +562,14 @@ export class Sidebar {
       window.removeEventListener("pointerup", onEnd);
       window.removeEventListener("pointercancel", onCancel);
       window.removeEventListener("blur", onBlur);
+      this.stopDragAutoScroll();
     };
     this.pointerDrag = {
       sourceRelPath: row.relPath,
       startX: event.clientX,
       startY: event.clientY,
+      clientX: event.clientX,
+      clientY: event.clientY,
       moved: false,
       targetRelDir: null,
       cleanup,
@@ -560,15 +580,57 @@ export class Sidebar {
     window.addEventListener("blur", onBlur);
   }
 
+  private startDragAutoScroll() {
+    if (this.dragScrollTimer !== null) return;
+    this.dragScrollTimer = window.setInterval(
+      () => this.autoScrollDuringDrag(),
+      DRAG_SCROLL_INTERVAL,
+    );
+  }
+
+  private stopDragAutoScroll() {
+    if (this.dragScrollTimer === null) return;
+    window.clearInterval(this.dragScrollTimer);
+    this.dragScrollTimer = null;
+  }
+
+  private autoScrollDuringDrag() {
+    const drag = this.pointerDrag;
+    if (!drag?.moved) return;
+    const rect = this.tree.getBoundingClientRect();
+    const maxScrollTop = Math.max(0, this.tree.scrollHeight - this.tree.clientHeight);
+    if (!maxScrollTop) return;
+    const delta = drag.clientY < rect.top + DRAG_SCROLL_EDGE
+      ? -DRAG_SCROLL_STEP
+      : drag.clientY > rect.bottom - DRAG_SCROLL_EDGE
+        ? DRAG_SCROLL_STEP
+        : 0;
+    if (!delta) return;
+    const previous = this.tree.scrollTop;
+    this.tree.scrollTop = Math.max(0, Math.min(maxScrollTop, previous + delta));
+    if (this.tree.scrollTop !== previous) {
+      this.updateDropTarget(drag.clientX, drag.clientY, drag.sourceRelPath);
+    }
+  }
+
   private updatePointerDrag(event: PointerEvent) {
     const drag = this.pointerDrag;
     if (!drag) return;
     if (!drag.moved && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 5) return;
+    drag.clientX = event.clientX;
+    drag.clientY = event.clientY;
     drag.moved = true;
     event.preventDefault();
     document.body.classList.add("fv-dragging");
     this.host.classList.add("fv-dragging");
-    const target = this.pointerDropTarget(event.clientX, event.clientY, drag.sourceRelPath);
+    if (this.dragScrollTimer === null) this.startDragAutoScroll();
+    this.updateDropTarget(event.clientX, event.clientY, drag.sourceRelPath);
+  }
+
+  private updateDropTarget(x: number, y: number, sourceRelPath: string) {
+    const drag = this.pointerDrag;
+    if (!drag) return;
+    const target = this.pointerDropTarget(x, y, sourceRelPath);
     drag.targetRelDir = target?.relPath ?? null;
     if (!target) {
       this.clearDropTarget();
@@ -682,6 +744,7 @@ export class Sidebar {
           return;
         }
         if (r.kind === "dir") {
+          this.sel = r.relPath;
           void this.expandFolderRow(r).catch((error) => this.reportTreeError(error));
         } else if (r.kind === "archive") {
           void this.expandArchiveRow(r).catch((error) => this.reportTreeError(error));

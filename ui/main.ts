@@ -386,7 +386,7 @@ sidebar = new Sidebar(sidebarEl, {
     doc.applyMoved(info, selectedRelPath);
     return selectedRelPath;
   },
-  onCreateFolder: () => folderActions.createFolder(),
+  onCreateFolder: (relDir) => folderActions.createFolder(relDir),
   onCreateNote: () => folderActions.createNote(null),
   onTreeError: async (error) => {
     if (!isPasswordCancelled(error)) await showError("フォルダを展開できませんでした", error);

@@ -38,22 +38,59 @@ describe("Feature: Sidebar", () => {
   });
 
   // Feature: フォルダツリー下部の新規作成ボタン
-  // Scenario: 通常ツリーから新規フォルダと新規メモを作成する
-  // Given: 通常のフォルダツリーを表示している
-  // When: ツリー最下部の2つの作成ボタンを押す
-  // Then: 新規フォルダと新規メモの各依頼を1回ずつ出す
-  it("Scenario: 通常ツリー下部に新規フォルダと新規メモボタンを表示する", () => {
+  // Scenario: 選択中フォルダの配下へ新規フォルダを作成する
+  // Given: `docs`フォルダを含む通常ツリーを表示している
+  // When: `docs`を選択してツリー最下部の作成ボタンを押す
+  // Then: 新規フォルダの作成先として`docs`を渡す
+  it("Scenario: 通常ツリー下部の新規フォルダ作成先に選択フォルダを渡す", () => {
     const { host, ports, sidebar } = mount();
-    sidebar.setEntries([{ name: "memo.txt", is_dir: false, is_archive: false }]);
+    sidebar.setEntries([
+      { name: "docs", is_dir: true, is_archive: false },
+      { name: "memo.txt", is_dir: false, is_archive: false },
+    ]);
+    host.querySelector<HTMLElement>(".fv-row")!.click();
 
     host.querySelector<HTMLButtonElement>(".fv-create-folder")!.click();
     host.querySelector<HTMLButtonElement>(".fv-create-note")!.click();
 
-    expect(ports.onCreateFolder).toHaveBeenCalledOnce();
+    expect(ports.onCreateFolder).toHaveBeenCalledWith("docs");
     expect(ports.onCreateNote).toHaveBeenCalledOnce();
     const tree = host.querySelector<HTMLElement>(".fv-tree");
     expect(tree?.lastElementChild?.classList.contains("fv-create-actions")).toBe(true);
     expect(tree?.querySelector<HTMLElement>(".fv-create-actions")?.hidden).toBe(false);
+  });
+
+  // Feature: 選択項目に応じた新規フォルダ作成先
+  // Scenario: ファイル選択時はその親フォルダへ作成する
+  // Given: `docs/memo.txt`を選択している
+  // When: `＋フォルダ`を押す
+  // Then: `docs`を作成先として渡す
+  it("Scenario: ファイル選択時は親フォルダを新規フォルダ作成先にする", async () => {
+    const { host, ports, sidebar } = mount();
+    ports.onExpandFolder.mockResolvedValueOnce([
+      { name: "memo.txt", is_dir: false, is_archive: false },
+    ]);
+    sidebar.setEntries([{ name: "docs", is_dir: true, is_archive: false }]);
+    host.querySelector<HTMLElement>(".fv-row")!.click();
+    await vi.waitFor(() => expect(host.querySelectorAll(".fv-row")).toHaveLength(2));
+    host.querySelectorAll<HTMLElement>(".fv-row")[1].click();
+
+    host.querySelector<HTMLButtonElement>(".fv-create-folder")!.click();
+
+    expect(ports.onCreateFolder).toHaveBeenCalledWith("docs");
+  });
+
+  // Scenario: 未選択時はワークスペースのルートへ作成する
+  // Given: ファイルツリーを表示しているが、どの行も選択していない
+  // When: `＋フォルダ`を押す
+  // Then: 空の相対パスを作成先として渡す
+  it("Scenario: 未選択時はルートを新規フォルダ作成先にする", () => {
+    const { host, ports, sidebar } = mount();
+    sidebar.setEntries([{ name: "memo.txt", is_dir: false, is_archive: false }]);
+
+    host.querySelector<HTMLButtonElement>(".fv-create-folder")!.click();
+
+    expect(ports.onCreateFolder).toHaveBeenCalledWith("");
   });
 
   // Scenario: フォルダ検索中は新規作成ボタンを隠す
@@ -121,6 +158,39 @@ describe("Feature: Sidebar", () => {
     window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 12, clientY: 12 }));
 
     await vi.waitFor(() => expect(ports.onMoveEntry).toHaveBeenCalledWith("memo.txt", "sub"));
+  });
+
+  // Feature: フォルダビューD&Dの自動スクロール
+  // Scenario: ドラッグ中にツリー下端へ到達すると表示範囲を送る
+  // Given: スクロール可能なツリーでファイルをドラッグしている
+  // When: ポインタを表示領域の下端40px以内に置く
+  // Then: ドロップを待たずにツリーが下へスクロールする
+  it("Scenario: D&D中にツリー上下端へ到達すると自動スクロールする", () => {
+    vi.useFakeTimers();
+    const { host, sidebar } = mount();
+    sidebar.setEntries([
+      { name: "memo.txt", is_dir: false, is_archive: false },
+      { name: "sub", is_dir: true, is_archive: false },
+    ]);
+    const tree = host.querySelector<HTMLElement>(".fv-tree")!;
+    Object.defineProperty(tree, "clientHeight", { configurable: true, value: 100 });
+    Object.defineProperty(tree, "scrollHeight", { configurable: true, value: 500 });
+    Object.defineProperty(tree, "scrollTop", { configurable: true, writable: true, value: 0 });
+    vi.spyOn(tree, "getBoundingClientRect").mockReturnValue({
+      top: 0, bottom: 100, left: 0, right: 200, width: 200, height: 100, x: 0, y: 0,
+      toJSON: () => ({}),
+    } as DOMRect);
+    const rows = [...host.querySelectorAll<HTMLElement>(".fv-row")];
+    const file = rows.find((row) => row.textContent?.includes("memo.txt"))!;
+    const dir = rows.find((row) => row.textContent?.includes("sub"))!;
+    Object.defineProperty(document, "elementFromPoint", { configurable: true, value: () => dir });
+
+    file.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 4, clientY: 4 }));
+    window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 12, clientY: 95 }));
+    vi.advanceTimersByTime(48);
+
+    expect(tree.scrollTop).toBeGreaterThan(0);
+    window.dispatchEvent(new Event("pointercancel"));
   });
 
   // Scenario: フォルダ行を別のフォルダ行へドロップする
@@ -599,6 +669,59 @@ describe("Feature: Sidebar", () => {
       "🗂️nested",
       "📄deep.txt",
       "📁other",
+    ]);
+  });
+
+  // Feature: フォルダ一覧更新後の展開状態
+  // Scenario: 削除などで一覧を更新しても既存の展開を閉じない
+  // Given: `docs`を展開して子ファイルを表示している
+  // When: フォルダ一覧を再取得する
+  // Then: `docs`は開いたままで子ファイルを表示する
+  it("Scenario: フォルダ一覧更新後も展開状態を保持する", async () => {
+    const { host, ports, sidebar } = mount();
+    ports.onExpandFolder.mockImplementation(async (relDir) => relDir === ""
+      ? [{ name: "docs", is_dir: true, is_archive: false }]
+      : [{ name: "memo.txt", is_dir: false, is_archive: false }]);
+    sidebar.setEntries([{ name: "docs", is_dir: true, is_archive: false }]);
+    host.querySelector<HTMLElement>(".fv-row")!.click();
+    await vi.waitFor(() => expect(host.querySelectorAll(".fv-row")).toHaveLength(2));
+
+    await sidebar.refreshFolderEntries();
+
+    expect(host.querySelectorAll(".fv-row")).toHaveLength(2);
+    expect(host.querySelector(".fv-row .fv-arrow")?.textContent).toBe("🗂️");
+    expect(host.querySelectorAll<HTMLElement>(".fv-row")[1].textContent).toContain("memo.txt");
+  });
+
+  // Feature: フォルダツリー全体の展開
+  // Scenario: 空白部メニューから全ルートを展開する
+  // Given: `dir`と`other`の2つの閉じたフォルダがある
+  // When: 空文字の相対パスで全展開を依頼する
+  // Then: すべてのルート配下を再帰取得して表示する
+  it("Scenario: 空白部の全展開でツリー全体を展開する", async () => {
+    const { host, ports, sidebar } = mount();
+    ports.onExpandFolder.mockImplementation(async (relDir) => {
+      if (relDir === "dir") return [{ name: "memo.txt", is_dir: false, is_archive: false }];
+      if (relDir === "other") return [{ name: "nested", is_dir: true, is_archive: false }];
+      if (relDir === "other/nested") return [{ name: "deep.txt", is_dir: false, is_archive: false }];
+      return [];
+    });
+    sidebar.setEntries([
+      { name: "dir", is_dir: true, is_archive: false },
+      { name: "other", is_dir: true, is_archive: false },
+    ]);
+
+    await sidebar.expandAllFolder("");
+
+    expect(ports.onExpandFolder.mock.calls.map(([relDir]) => relDir)).toEqual([
+      "dir", "other", "other/nested",
+    ]);
+    expect([...host.querySelectorAll<HTMLElement>(".fv-row")].map((row) => row.textContent)).toEqual([
+      "🗂️dir",
+      "📄memo.txt",
+      "🗂️other",
+      "🗂️nested",
+      "📄deep.txt",
     ]);
   });
 

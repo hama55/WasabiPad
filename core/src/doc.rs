@@ -876,7 +876,14 @@ impl Doc {
             Some(r) if !r.is_empty() => join_relative(&root, r),
             _ => root.clone(),
         };
-        let path = dir.join(name);
+        let path = if dir.join(name).exists() {
+            let requested = dir.join(name);
+            let stem = requested.file_stem().and_then(|value| value.to_str()).unwrap_or(name);
+            let extension = requested.extension().and_then(|value| value.to_str()).unwrap_or("");
+            next_available_path(&dir, stem, extension)?
+        } else {
+            dir.join(name)
+        };
         create_empty_file(&path)?;
         let mut d = match Doc::open_file(&path, Arc::clone(&self.archive_port)) {
             Ok(doc) => doc,
@@ -900,14 +907,15 @@ impl Doc {
         Ok(info)
     }
 
-    // フォルダツリー下部の作成ボタン用。ルート直下へ空フォルダを1つ作る。
-    pub fn create_folder(&self, name: &str) -> io::Result<()> {
+    // フォルダツリーの作成ボタン/右クリック用。指定ディレクトリ直下へ空フォルダを1つ作る。
+    pub fn create_folder(&self, rel_dir: &str, name: &str) -> io::Result<()> {
         crate::validate_windows_file_name(name)?;
         let root = self
             .source
             .folder_root()
             .ok_or_else(|| io::Error::other("フォルダを開いていません"))?;
-        std::fs::create_dir(root.join(name))
+        let dir = if rel_dir.is_empty() { root.to_path_buf() } else { join_relative(root, rel_dir) };
+        std::fs::create_dir(dir.join(name))
     }
 
     // サイドバー上のファイル/フォルダ見出しをリネームする。開いている文書自身または
@@ -2505,24 +2513,51 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    // Feature: フォルダツリーからの新規フォルダ作成
-    // Scenario: 開いているフォルダのルート直下へ空フォルダを作る
-    // Given: 空のフォルダを開いている
-    // When: notesという新規フォルダを作る
-    // Then: ルート直下にnotesディレクトリが存在する
+    // Feature: 新規メモの重複名採番
+    // Scenario: 入力名が存在するとベース名を保持して末尾へ数字を付ける
+    // Given: `memo.txt`と`memo1.txt`が存在する
+    // When: `memo.txt`を新規メモ名として作成する
+    // Then: `memo2.txt`を作成して開く
     #[test]
-    fn create_folder_at_workspace_root() {
+    fn create_note_appends_number_to_the_requested_stem_when_taken() {
+        let root = std::env::temp_dir().join(format!(
+            "wasabipad_create_note_duplicate_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("memo.txt"), "").unwrap();
+        std::fs::write(root.join("memo1.txt"), "").unwrap();
+
+        let mut d = Doc::open(&root).unwrap();
+        let info = d
+            .create_note(None, "memo.txt", Encoding::Utf8 { bom: false }, Eol::Crlf)
+            .unwrap();
+
+        assert_eq!(info.path, root.join("memo2.txt").to_string_lossy());
+        assert!(root.join("memo2.txt").is_file());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    // Feature: フォルダツリーからの新規フォルダ作成
+    // Scenario: 開いているフォルダの指定先直下へ空フォルダを作る
+    // Given: 空のフォルダを開いている
+    // When: `docs`配下にnotesという新規フォルダを作る
+    // Then: `docs`直下にnotesディレクトリが存在する
+    #[test]
+    fn create_folder_at_requested_directory() {
         let root = std::env::temp_dir().join(format!(
             "wasabipad_create_folder_{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir(root.join("docs")).unwrap();
         let d = Doc::open(&root).unwrap();
 
-        d.create_folder("notes").unwrap();
+        d.create_folder("docs", "notes").unwrap();
 
-        assert!(root.join("notes").is_dir());
+        assert!(root.join("docs/notes").is_dir());
         std::fs::remove_dir_all(root).unwrap();
     }
 
