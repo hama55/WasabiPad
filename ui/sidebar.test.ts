@@ -4,15 +4,24 @@ import { Sidebar, type SidebarPorts } from "./sidebar";
 import { DEFAULT_SEARCH_OPTIONS } from "./workspace-search-options";
 import type { FolderEntry } from "./api";
 
-function mount(onSearch: SidebarPorts["onSearch"] = vi.fn(async () => ({
+function mount(
+  onSearch: SidebarPorts["onSearch"] = vi.fn(async () => ({
   results: [], scanned_files: 0, skipped_files: 0, hit_file_limit: false, hit_result_limit: false,
   pattern_error: null, file_name_match_mode: "strict" as const,
-})), onMoveEntry: SidebarPorts["onMoveEntry"] = vi.fn(async () => "")) {
+  })),
+  onMoveEntry: SidebarPorts["onMoveEntry"] = vi.fn(async () => ""),
+  onFileCommand: SidebarPorts["onFileCommand"] = undefined,
+  onRenameEntry: SidebarPorts["onRenameEntry"] = undefined,
+  onCopyEntry: SidebarPorts["onCopyEntry"] = undefined,
+) {
   const host = document.createElement("div");
   document.body.replaceChildren(host);
   const ports = {
     onSelect: vi.fn(),
     onContextMenu: vi.fn(),
+    onFileCommand,
+    onRenameEntry,
+    isCut: vi.fn((_relPath: string) => false),
     onExpandArchive: vi.fn(async (_relPath: string): Promise<string[]> => []),
     onExpandFolder: vi.fn(async (_relDir: string): Promise<FolderEntry[]> => []),
     onTreeError: vi.fn(async () => {}),
@@ -22,6 +31,7 @@ function mount(onSearch: SidebarPorts["onSearch"] = vi.fn(async () => ({
     onOpen: vi.fn(),
     onReplace: vi.fn(),
     onMoveEntry,
+    onCopyEntry,
     onCreateFolder: vi.fn(),
     onCreateNote: vi.fn(),
     onOptionsChange: vi.fn(),
@@ -37,7 +47,7 @@ describe("Feature: Sidebar", () => {
     document.body.replaceChildren();
   });
 
-  // Feature: フォルダツリー下部の新規作成ボタン
+  // Feature: ファイルツリー下部の新規作成ボタン
   // Scenario: 選択中フォルダの配下へ新規フォルダを作成する
   // Given: `docs`フォルダを含む通常ツリーを表示している
   // When: `docs`を選択してツリー最下部の作成ボタンを押す
@@ -150,6 +160,151 @@ describe("Feature: Sidebar", () => {
     ]);
   });
 
+  // Feature: ファイルツリーの複数選択
+  // Scenario: Ctrlクリックでファイルを開かず選択へ追加する
+  // Given: first.txtを開いた後、second.txtが同じツリーに表示されている
+  // When: second.txtをCtrlクリックする
+  // Then: 2行が選択状態になり、second.txtのオープン通知は発生しない
+  it("Scenario: Ctrlクリックはファイルを開かず複数選択へ追加する", () => {
+    const { host, ports, sidebar } = mount();
+    sidebar.setEntries([
+      { name: "first.txt", is_dir: false, is_archive: false },
+      { name: "second.txt", is_dir: false, is_archive: false },
+    ]);
+    const rows = [...host.querySelectorAll<HTMLElement>(".fv-row")];
+
+    rows[0].click();
+    rows[1].dispatchEvent(new MouseEvent("click", { bubbles: true, ctrlKey: true }));
+
+    expect(host.querySelectorAll(".fv-row.sel")).toHaveLength(2);
+    expect(ports.onSelect).toHaveBeenCalledTimes(1);
+    expect(ports.onSelect).toHaveBeenCalledWith("first.txt", false);
+  });
+
+  // Feature: ファイルツリーの複数選択
+  // Scenario: Shiftクリックで選択範囲を広げる
+  // Given: first.txtをCtrlクリックで選択している
+  // When: third.txtをShiftクリックする
+  // Then: first.txtからthird.txtまでが選択状態になり、ファイルは開かない
+  it("Scenario: Shiftクリックはアンカーから範囲選択する", () => {
+    const { host, ports, sidebar } = mount();
+    sidebar.setEntries([
+      { name: "first.txt", is_dir: false, is_archive: false },
+      { name: "second.txt", is_dir: false, is_archive: false },
+      { name: "third.txt", is_dir: false, is_archive: false },
+    ]);
+    const rows = [...host.querySelectorAll<HTMLElement>(".fv-row")];
+
+    rows[0].dispatchEvent(new MouseEvent("click", { bubbles: true, ctrlKey: true }));
+    rows[2].dispatchEvent(new MouseEvent("click", { bubbles: true, shiftKey: true }));
+
+    expect(host.querySelectorAll(".fv-row.sel")).toHaveLength(3);
+    expect(ports.onSelect).not.toHaveBeenCalled();
+  });
+
+  // Feature: ファイルツリーの右クリック選択
+  // Scenario: 未選択行の右クリックで対象を単独選択する
+  // Given: first.txtが選択され、second.txtは未選択である
+  // When: second.txtを右クリックする
+  // Then: second.txtだけを選択した状態でコンテキストメニューへ渡す
+  it("Scenario: 未選択行の右クリックは対象だけを選択する", () => {
+    const { host, ports, sidebar } = mount();
+    sidebar.setEntries([
+      { name: "first.txt", is_dir: false, is_archive: false },
+      { name: "second.txt", is_dir: false, is_archive: false },
+    ]);
+    const rows = [...host.querySelectorAll<HTMLElement>(".fv-row")];
+    rows[0].dispatchEvent(new MouseEvent("click", { bubbles: true, ctrlKey: true }));
+    rows[1].dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 10, clientY: 20 }));
+
+    expect([...host.querySelectorAll<HTMLElement>(".fv-row.sel")].map((row) => row.dataset.relPath))
+      .toEqual(["second.txt"]);
+    expect(ports.onContextMenu).toHaveBeenCalledWith(
+      10,
+      20,
+      { relPath: "second.txt", isDir: false },
+      [{ relPath: "second.txt", isDir: false }],
+    );
+  });
+
+  // Feature: ファイルツリーのファイル操作ショートカット
+  // Scenario: ツリーにフォーカスがあるときCtrl+Cをファイル操作へ渡す
+  // Given: memo.txtを選択したツリーにフォーカスがある
+  // When: Ctrl+Cを押す
+  // Then: 本文操作ではなくmemo.txtのコピーを依頼する
+  it("Scenario: ツリーのCtrl+Cは選択中のファイルコピーを依頼する", () => {
+    const onFileCommand = vi.fn();
+    const { host, sidebar } = mount(undefined, undefined, onFileCommand);
+    sidebar.setEntries([{ name: "memo.txt", is_dir: false, is_archive: false }]);
+    const row = host.querySelector<HTMLElement>(".fv-row")!;
+    row.dispatchEvent(new MouseEvent("click", { bubbles: true, ctrlKey: true }));
+    const tree = host.querySelector<HTMLElement>(".fv-tree")!;
+    tree.focus();
+    tree.dispatchEvent(new KeyboardEvent("keydown", { key: "c", ctrlKey: true, bubbles: true, cancelable: true }));
+
+    expect(onFileCommand).toHaveBeenCalledWith(
+      "copy",
+      [{ relPath: "memo.txt", isDir: false }],
+    );
+  });
+
+  // Feature: ファイルツリーの切り取り表示
+  // Scenario: 切り取り対象を薄く表示する
+  // Given: memo.txtが切り取り状態である
+  // When: ファイル操作状態を再描画する
+  // Then: memo.txtの行に切り取り表示クラスが付く
+  it("Scenario: 切り取り対象を薄く表示する", () => {
+    const { host, ports, sidebar } = mount();
+    ports.isCut.mockImplementation((relPath: string) => relPath === "memo.txt");
+    sidebar.setEntries([{ name: "memo.txt", is_dir: false, is_archive: false }]);
+    sidebar.refreshFileOperationState();
+
+    expect(host.querySelector(".fv-row.fv-cut")?.textContent).toContain("memo.txt");
+  });
+
+  // Feature: ファイルツリーのインライン名前変更
+  // Scenario: F2で拡張子を除いた名前だけを選択して変更する
+  // Given: `memo.txt`を選択したツリーにフォーカスがある
+  // When: F2で`renamed.txt`を入力してEnterを押す
+  // Then: 新しい名前を名前変更ポートへ渡す
+  it("Scenario: F2は拡張子を選択せずインライン名前変更する", async () => {
+    const onRenameEntry = vi.fn();
+    const { host, sidebar } = mount(undefined, undefined, undefined, onRenameEntry);
+    sidebar.setWorkspaceSearch("C:\\work");
+    sidebar.setEntries([{ name: "memo.txt", is_dir: false, is_archive: false }]);
+    host.querySelector<HTMLElement>(".fv-row")!.click();
+    const tree = host.querySelector<HTMLElement>(".fv-tree")!;
+    tree.dispatchEvent(new KeyboardEvent("keydown", { key: "F2", bubbles: true, cancelable: true }));
+
+    const input = host.querySelector<HTMLInputElement>(".fv-rename-input")!;
+    expect(input.selectionStart).toBe(0);
+    expect(input.selectionEnd).toBe(4);
+    input.value = "renamed.txt";
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+
+    await vi.waitFor(() => expect(onRenameEntry).toHaveBeenCalledWith("memo.txt", "renamed.txt"));
+    expect(host.querySelector(".fv-rename-input")).toBeNull();
+  });
+
+  // Scenario: インライン名前変更をEscで取り消す
+  // Given: `memo.txt`の名前変更入力を表示している
+  // When: Escを押す
+  // Then: 名前変更ポートを呼ばず入力を閉じる
+  it("Scenario: インライン名前変更はEscで取り消せる", () => {
+    const onRenameEntry = vi.fn();
+    const { host, sidebar } = mount(undefined, undefined, undefined, onRenameEntry);
+    sidebar.setWorkspaceSearch("C:\\work");
+    sidebar.setEntries([{ name: "memo.txt", is_dir: false, is_archive: false }]);
+    host.querySelector<HTMLElement>(".fv-row")!.click();
+    const tree = host.querySelector<HTMLElement>(".fv-tree")!;
+    tree.dispatchEvent(new KeyboardEvent("keydown", { key: "F2", bubbles: true, cancelable: true }));
+    host.querySelector<HTMLInputElement>(".fv-rename-input")!
+      .dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+
+    expect(onRenameEntry).not.toHaveBeenCalled();
+    expect(host.querySelector(".fv-rename-input")).toBeNull();
+  });
+
   // Feature: フォルダビューのD&D移動
   // Scenario: ファイル行をフォルダ行へドロップする
   // Given: memo.txt と sub フォルダを表示している
@@ -163,14 +318,71 @@ describe("Feature: Sidebar", () => {
     ]);
     const rows = [...host.querySelectorAll<HTMLElement>(".fv-row")];
     const file = rows.find((row) => row.textContent?.includes("memo.txt"))!;
-    const dir = rows.find((row) => row.textContent?.includes("sub"))!;
 
-    Object.defineProperty(document, "elementFromPoint", { configurable: true, value: () => dir });
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: () => host.querySelector<HTMLElement>('[data-rel-path="sub"]'),
+    });
     file.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 4, clientY: 4 }));
     window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 12, clientY: 12 }));
     window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 12, clientY: 12 }));
 
     await vi.waitFor(() => expect(ports.onMoveEntry).toHaveBeenCalledWith("memo.txt", "sub"));
+  });
+
+  // Feature: フォルダビューのD&Dコピー
+  // Scenario: Ctrlを押しながらファイル行をフォルダへドロップする
+  // Given: memo.txt と sub フォルダを表示している
+  // When: memo.txt をCtrl+D&Dする
+  // Then: コピーポートへ元相対パスとコピー先相対パスを渡す
+  it("Scenario: Ctrl+D&Dでファイルをコピーする", async () => {
+    const onCopyEntry = vi.fn(async () => "sub/memo.txt");
+    const { host, sidebar } = mount(undefined, undefined, undefined, undefined, onCopyEntry);
+    sidebar.setEntries([
+      { name: "memo.txt", is_dir: false, is_archive: false },
+      { name: "sub", is_dir: true, is_archive: false },
+    ]);
+    const rows = [...host.querySelectorAll<HTMLElement>(".fv-row")];
+    const file = rows.find((row) => row.textContent?.includes("memo.txt"))!;
+    const dir = rows.find((row) => row.textContent?.includes("sub"))!;
+
+    Object.defineProperty(document, "elementFromPoint", { configurable: true, value: () => dir });
+    file.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 4, clientY: 4 }));
+    window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 12, clientY: 12 }));
+    window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 12, clientY: 12, ctrlKey: true }));
+
+    await vi.waitFor(() => expect(onCopyEntry).toHaveBeenCalledWith("memo.txt", "sub"));
+  });
+
+  // Feature: ファイルツリーの複数選択D&D
+  // Scenario: 複数選択したファイルをフォルダへ移動する
+  // Given: memo.txt と note.txt を選択している
+  // When: memo.txt を sub フォルダへD&Dする
+  // Then: 選択した2項目を同じ移動先へ依頼する
+  it("Scenario: 複数選択したファイルをまとめてD&Dする", async () => {
+    const { host, ports, sidebar } = mount();
+    sidebar.setEntries([
+      { name: "memo.txt", is_dir: false, is_archive: false },
+      { name: "note.txt", is_dir: false, is_archive: false },
+      { name: "sub", is_dir: true, is_archive: false },
+    ]);
+    const rows = [...host.querySelectorAll<HTMLElement>(".fv-row")];
+    const memo = rows.find((row) => row.textContent?.includes("memo.txt"))!;
+    const note = rows.find((row) => row.textContent?.includes("note.txt"))!;
+    memo.click();
+    note.dispatchEvent(new MouseEvent("click", { bubbles: true, ctrlKey: true }));
+
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: () => host.querySelector<HTMLElement>('[data-rel-path="sub"]'),
+    });
+    memo.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 4, clientY: 4 }));
+    window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 12, clientY: 12 }));
+    window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 12, clientY: 12 }));
+
+    await vi.waitFor(() => expect(ports.onMoveEntry).toHaveBeenCalledTimes(2));
+    expect(ports.onMoveEntry).toHaveBeenNthCalledWith(1, "memo.txt", "sub");
+    expect(ports.onMoveEntry).toHaveBeenNthCalledWith(2, "note.txt", "sub");
   });
 
   // Feature: フォルダビューD&Dの自動スクロール
@@ -305,7 +517,7 @@ describe("Feature: Sidebar", () => {
   // Feature: フォルダビューD&Dのアンドゥ
   // Scenario: Ctrl+Zで直前に移動した子ファイルを元のフォルダへ戻す
   // Given: from/memo.txt を to へD&D済み
-  // When: フォルダツリーでCtrl+Zを押す
+  // When: ファイルツリーでCtrl+Zを押す
   // Then: to/memo.txt を from へ移動する依頼を出す
   it("Scenario: Ctrl+ZでD&D移動をアンドゥする", async () => {
     const { host, ports, sidebar } = mount();
@@ -621,10 +833,10 @@ describe("Feature: Sidebar", () => {
     expect(host.querySelector(".fv-row")?.textContent).toContain("other.txt");
   });
 
-  // Given: dir と、その配下に nested を持つフォルダツリーを開いて表示する
+  // Given: dir と、その配下に nested を持つファイルツリーを開いて表示する
   // When: 共通操作のボタンを押す
   // Then: ルート直下だけの表示へ戻り、閉じたフォルダの取得は開始しない
-  it("Scenario: 共通の折りたたみボタンがフォルダツリー全体を畳む", async () => {
+  it("Scenario: 共通の折りたたみボタンがファイルツリー全体を畳む", async () => {
     const { host, ports, sidebar } = mount();
     ports.onExpandFolder.mockImplementation(async (relDir) => relDir === "dir"
       ? [{ name: "nested", is_dir: true, is_archive: false }]
@@ -659,7 +871,7 @@ describe("Feature: Sidebar", () => {
     expect(host.querySelectorAll(".fv-row")[2].textContent).toContain("file.txt");
   });
 
-  // Given: dir と、その配下に nested/deep.txt を持つフォルダツリーを表示する
+  // Given: dir と、その配下に nested/deep.txt を持つファイルツリーを表示する
   // When: dir の全展開を依頼する
   // Then: dir 以下だけを再帰取得して全階層を表示する
   it("Scenario: 指定フォルダと配下を全展開する", async () => {
@@ -706,7 +918,7 @@ describe("Feature: Sidebar", () => {
     expect(host.querySelectorAll<HTMLElement>(".fv-row")[1].textContent).toContain("memo.txt");
   });
 
-  // Feature: フォルダツリー全体の展開
+  // Feature: ファイルツリー全体の展開
   // Scenario: 空白部メニューから全ルートを展開する
   // Given: `dir`と`other`の2つの閉じたフォルダがある
   // When: 空文字の相対パスで全展開を依頼する
@@ -762,7 +974,7 @@ describe("Feature: Sidebar", () => {
     ]);
   });
 
-  // Given: dir が閉じた状態のフォルダツリーを表示する
+  // Given: dir が閉じた状態のファイルツリーを表示する
   // When: 上部の共通ボタンを押す
   // Then: ボタンは全展開せず、フォルダ一覧取得も開始しない
   it("Scenario: 共通ボタンは全折りたたみだけを実行する", () => {

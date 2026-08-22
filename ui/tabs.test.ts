@@ -92,6 +92,36 @@ describe("Feature: TabManager", () => {
     expect(doc.openPath).toHaveBeenCalledWith("C:\\work\\a.txt", false);
   });
 
+  // Feature: ファイル操作後のタブパス追従
+  // Scenario: フォルダを移動すると開いている複数タブのパスをまとめて更新する
+  // Given: `docs/memo.txt`のファイルタブと`docs/memo.txt`を選択したフォルダタブがある
+  // When: `docs`を`archive`へ移動した通知を受ける
+  // Then: 絶対パスとフォルダ内相対パスの両方を追従させる
+  it("Scenario: ファイル操作で複数タブのパスを追従させる", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init({
+      tabs: [
+        { id: "a", path: "C:\\work\\docs\\memo.txt", kind: "file", label: "memo.txt" },
+        {
+          id: "b", path: "C:\\work", kind: "folder", label: "work",
+          selectedRelPath: "docs/memo.txt",
+        },
+      ],
+      activeId: "a",
+    }, null, null);
+
+    manager.rebasePaths(
+      "C:\\work\\docs",
+      "C:\\work\\archive",
+      "docs",
+      "archive",
+    );
+
+    expect(manager.state.tabs[0].path).toBe("C:\\work\\archive\\memo.txt");
+    expect(manager.state.tabs[1].selectedRelPath).toBe("archive/memo.txt");
+  });
+
   // Given: activeId=folder、folderRoot が C:\work、selectedRelPath が sub\memo.txt、viewState の anchor/caret が各 line 10、topLine が8、scrollLeft が20
   // When: manager.init(folderTabs, null, null) を呼ぶ
   // Then: selectEntry("sub\\memo.txt") の後に完全なviewStateを復元する

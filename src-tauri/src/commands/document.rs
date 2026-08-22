@@ -33,7 +33,7 @@ pub(crate) fn open_path(path: String, state: State, app: AppHandle) -> Result<Do
             eprintln!("文書読み込み進捗の通知に失敗しました: {error}");
         }
     };
-    let d = Doc::open_with_progress(&PathBuf::from(&path), Some(&mut report))
+    let mut d = Doc::open_with_progress(&PathBuf::from(&path), Some(&mut report))
         .map_err(|e| e.to_string())?;
     // フォルダを開いた場合 d.path は先頭の実ファイルを指す (フォルダ自体は保存先を持たない)
     let info_path = d
@@ -41,7 +41,10 @@ pub(crate) fn open_path(path: String, state: State, app: AppHandle) -> Result<Do
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or(path);
     let info = d.info(info_path).map_err(|error| error.to_string())?;
-    with_doc(&state, |doc| *doc = d)?;
+    with_doc(&state, |doc| {
+        d.take_deleted_entries_from(doc);
+        *doc = d;
+    })?;
     Ok(info)
 }
 
@@ -128,8 +131,48 @@ pub(crate) fn move_entry(
         .map_err(|e| e.to_string())
 }
 
+pub(crate) fn copy_entry(
+    source_rel_path: String,
+    target_rel_dir: String,
+    state: State,
+) -> Result<DocInfo, String> {
+    with_doc(&state, |doc| doc.copy_entry(&source_rel_path, &target_rel_dir))?
+        .map_err(|e| e.to_string())
+}
+
+pub(crate) fn copy_entry_as(
+    source_rel_path: String,
+    target_rel_dir: String,
+    target_name: String,
+    overwrite: bool,
+    state: State,
+) -> Result<DocInfo, String> {
+    with_doc(&state, |doc| {
+        doc.copy_entry_as(&source_rel_path, &target_rel_dir, &target_name, overwrite)
+    })?
+    .map_err(|e| e.to_string())
+}
+
+pub(crate) fn move_entry_as(
+    source_rel_path: String,
+    target_rel_dir: String,
+    target_name: String,
+    overwrite: bool,
+    state: State,
+) -> Result<DocInfo, String> {
+    with_doc(&state, |doc| {
+        doc.move_entry_as(&source_rel_path, &target_rel_dir, &target_name, overwrite)
+    })?
+    .map_err(|e| e.to_string())
+}
+
 pub(crate) fn delete_entry(rel_path: String, state: State) -> Result<DocInfo, String> {
     with_doc(&state, |doc| doc.delete_entry(&rel_path))?
+        .map_err(|e| e.to_string())
+}
+
+pub(crate) fn restore_deleted_entry(rel_path: String, state: State) -> Result<DocInfo, String> {
+    with_doc(&state, |doc| doc.restore_deleted_entry(&rel_path))?
         .map_err(|e| e.to_string())
 }
 

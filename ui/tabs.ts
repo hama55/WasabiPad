@@ -1,7 +1,7 @@
 import type { Pos, WindowRequest } from "./api";
 import type { DocumentSession } from "./session";
 import { cloneEditorViewState, type EditorViewState } from "./editor-view-state";
-import { basename } from "./path";
+import { basename, rebaseWindowsPath } from "./path";
 import { TabBarView, type TabDropSpot } from "./tab-view";
 import type { RegisteredCommandMenuPorts } from "./registered-command-menu";
 import {
@@ -36,6 +36,17 @@ interface TabPorts {
 }
 
 const newId = () => `tab-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+function rebaseRelativePath(path: string, oldPrefix: string, newPrefix: string): string | null {
+  const normalizedPath = path.replace(/\\/g, "/").replace(/\/$/, "");
+  const normalizedOld = oldPrefix.replace(/\\/g, "/").replace(/\/$/, "");
+  const normalizedNew = newPrefix.replace(/\\/g, "/").replace(/\/$/, "");
+  const comparablePath = normalizedPath.toLocaleLowerCase("en-US");
+  const comparableOld = normalizedOld.toLocaleLowerCase("en-US");
+  if (comparablePath !== comparableOld && !comparablePath.startsWith(`${comparableOld}/`)) return null;
+  return `${normalizedNew}${normalizedPath.slice(normalizedOld.length)}`.replace(/^\//, "");
+}
+
 type NavigationRun<T> = {
   proceeded: boolean;
   result?: T;
@@ -131,6 +142,28 @@ export class TabManager {
     // 選択元のクリック処理がまだ継続中なのに操作対象だけが差し替わる。
     if (this.transitionTarget || this.navigationInProgress) return;
     this.renderAndPersist();
+  }
+
+  rebasePaths(oldAbsolute: string, newAbsolute: string, oldRelPath = "", newRelPath = "") {
+    let changed = false;
+    for (const tab of this.tabs) {
+      if (tab.path) {
+        const rebased = rebaseWindowsPath(tab.path, oldAbsolute, newAbsolute);
+        if (rebased && rebased !== tab.path) {
+          tab.path = rebased;
+          tab.label = basename(rebased);
+          changed = true;
+        }
+      }
+      if (tab.selectedRelPath && oldRelPath) {
+        const rebased = rebaseRelativePath(tab.selectedRelPath, oldRelPath, newRelPath);
+        if (rebased !== null && rebased !== tab.selectedRelPath) {
+          tab.selectedRelPath = rebased;
+          changed = true;
+        }
+      }
+    }
+    if (changed) this.renderAndPersist();
   }
 
   syncCursor(line: number) {

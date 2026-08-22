@@ -356,6 +356,7 @@ body.preview-resizing * { cursor: ew-resize !important; user-select: none !impor
 }
 .fv-row:hover { background: var(--hover); }
 .fv-row.sel { background: var(--sel-row); }
+.fv-row.fv-cut { opacity: .55; }
 .fv-row.fv-drop-target { background: color-mix(in srgb, var(--accent) 25%, transparent); }
 #sidebar.fv-drop-root { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent); }
 .fv-root-drop {
@@ -368,6 +369,11 @@ body.preview-resizing * { cursor: ew-resize !important; user-select: none !impor
 body.fv-dragging .fv-row.fv-draggable { cursor: grabbing; }
 body.fv-dragging { cursor: grabbing; user-select: none; }
 .fv-arrow { width: 22px; text-align: center; color: var(--fg-dim); flex: none; font-size: 16px; }
+.fv-rename-input {
+  min-width: 0; width: min(100%, 320px); height: 19px; box-sizing: border-box;
+  padding: 0 3px; border: 1px solid var(--accent); border-radius: 2px;
+  background: var(--bg-editor); color: var(--fg); font: inherit;
+}
 
 /* ---- 仮想スクロールエディタ ---- */
 #editorhost { position: relative; flex: 1; min-width: 0; }

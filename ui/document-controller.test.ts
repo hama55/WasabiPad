@@ -102,6 +102,46 @@ describe("Feature: DocumentController", () => {
     expect(openPath).toHaveBeenCalledWith("C:\\work\\memo.txt");
   });
 
+  // Feature: 削除後も編集中の本文を保持する
+  // Scenario: 開いているファイルがごみ箱へ移動される
+  // Given: フォルダ内の`memo.txt`を選択している
+  // When: DocumentControllerへ削除済みを通知する
+  // Then: 保存先を外し、本文表示を壊さず名前を付けて保存へ進める状態にする
+  it("Scenario: 削除後は保存先を外して本文を保持する", () => {
+    const { view, controller } = fakeView();
+    Object.assign(controller.current, {
+      folderRoot: "C:\\work",
+      displayPath: "C:\\work\\memo.txt",
+      selectedRelPath: "memo.txt",
+      savePath: "C:\\work\\memo.txt",
+    });
+
+    controller.markDeleted();
+
+    expect(controller.current.savePath).toBeNull();
+    expect(controller.current.selectedRelPath).toBe("");
+    expect(controller.current.dirty).toBe(true);
+    expect(view.editor.setExternalFilePath).toHaveBeenLastCalledWith(null, false);
+  });
+
+  // Feature: 削除のセッション内アンドゥ
+  // Scenario: 復元したファイルを保存対象へ戻す
+  // Given: 削除済みとして保存先を失った文書がある
+  // When: `markRestored`へ元の相対パスと絶対パスを渡す
+  // Then: 保存先・表示パス・選択パスを復元する
+  it("Scenario: 復元後は元の保存先へ戻す", () => {
+    const { view, controller } = fakeView();
+    controller.markDeleted();
+
+    controller.markRestored("memo.txt", "C:\\work\\memo.txt");
+
+    expect(controller.current.savePath).toBe("C:\\work\\memo.txt");
+    expect(controller.current.displayPath).toBe("C:\\work\\memo.txt");
+    expect(controller.current.selectedRelPath).toBe("memo.txt");
+    expect(view.addressbar.render).toHaveBeenLastCalledWith("C:\\work\\memo.txt");
+    expect(view.editor.setExternalFilePath).toHaveBeenLastCalledWith("C:\\work\\memo.txt", false);
+  });
+
   // Given: first.txtとsecond.txtのopen結果が未解決
   // When: 両方を開き、firstの結果を先に解決してからsecondを解決
   // Then: firstはfalse、secondはtrue、current.savePathは`C:\\work\\second.txt`

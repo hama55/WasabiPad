@@ -31,3 +31,21 @@ export function rebaseWindowsPath(path: string, oldPrefix: string, newPrefix: st
   if (rel === null) return null;
   return rel ? joinWindowsRoot(newPrefix, rel) : newPrefix;
 }
+
+export function movedRelativePath(
+  currentRelPath: string,
+  sourceRelPath: string,
+  targetRelDir: string,
+  targetName = basename(sourceRelPath),
+): string {
+  const current = currentRelPath.replace(/\\/g, "/");
+  const source = sourceRelPath.replace(/\\/g, "/").replace(/\/$/, "");
+  const target = targetRelDir.replace(/\\/g, "/").replace(/\/$/, "");
+  const suffix = current === source
+    ? ""
+    : current.startsWith(`${source}/`) || current.startsWith(`${source}::`)
+      ? current.slice(source.length)
+      : null;
+  if (suffix === null) return currentRelPath;
+  return `${target ? `${target}/` : ""}${targetName}${suffix}`;
+}

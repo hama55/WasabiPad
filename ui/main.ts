@@ -4,6 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { desktopDir } from "@tauri-apps/api/path";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { writeText as writeClipboardText } from "@tauri-apps/plugin-clipboard-manager";
 import * as api from "./api";
 import { applyDocumentLoadProgress } from "./document-load-progress";
 import { VirtualEditor } from "./editor";
@@ -30,7 +31,7 @@ import { confirmMessage, confirmSaveDiscard, promptFields } from "./prompt";
 import { promptSaveFormat, saveFormatFields, saveFormatFromValues } from "./save-format";
 import { isPasswordCancelled, withArchivePassword } from "./archive-password";
 import { archiveRelOf } from "./archive-path";
-import { joinWindowsRoot } from "./path";
+import { joinWindowsRoot, movedRelativePath } from "./path";
 import { createCommandRegistry, globalCommandForEvent } from "./commands";
 import { TabManager } from "./tabs";
 import {
@@ -433,15 +434,30 @@ sidebar = new Sidebar(sidebarEl, {
     if (newTab) return openInNewTab(relPath);
     return tabs.navigateEntry(relPath);
   },
-  onContextMenu: (x, y, target) => folderActions.showContextMenu(x, y, target),
+  onContextMenu: (x, y, target, selected) => folderActions.showContextMenu(x, y, target, selected),
+  onFileCommand: (command, selected) => folderActions.executeCommand(command, selected),
+  onRenameEntry: (relPath, newName) => folderActions.renameEntry(relPath, newName),
+  isCut: (relPath) => folderActions.isCut(relPath),
   onExpandArchive: (relPath) =>
     withArchivePassword(relPath, () => api.listArchiveEntries(relPath)),
   onExpandFolder: (relDir) => api.listFolderEntries(relDir),
   onMoveEntry: async (sourceRelPath, targetRelDir) => {
     const info = await api.moveEntry(sourceRelPath, targetRelDir);
-    const selectedRelPath = movedRelPath(doc.current.selectedRelPath, sourceRelPath, targetRelDir);
+    const selectedRelPath = movedRelativePath(doc.current.selectedRelPath, sourceRelPath, targetRelDir);
+    const root = doc.current.folderRoot;
+    const destination = movedRelativePath(sourceRelPath, sourceRelPath, targetRelDir);
+    if (root) tabs?.rebasePaths(
+      joinWindowsRoot(root, sourceRelPath),
+      joinWindowsRoot(root, destination),
+      sourceRelPath,
+      destination,
+    );
     doc.applyMoved(info, selectedRelPath);
     return selectedRelPath;
+  },
+  onCopyEntry: async (sourceRelPath, targetRelDir) => {
+    await api.copyEntry(sourceRelPath, targetRelDir);
+    return movedRelativePath(sourceRelPath, sourceRelPath, targetRelDir);
   },
   onCreateFolder: (relDir) => folderActions.createFolder(relDir),
   onCreateNote: () => folderActions.createNote(null),
@@ -498,20 +514,6 @@ async function openInNewTab(relPath: string, goto?: api.Pos): Promise<boolean> {
   const root = doc.current.folderRoot;
   if (!root) return false;
   return tabs.open(joinWindowsRoot(root, relPath), goto);
-}
-
-function movedRelPath(currentRelPath: string, sourceRelPath: string, targetRelDir: string): string {
-  const current = currentRelPath.replace(/\\/g, "/");
-  const source = sourceRelPath.replace(/\\/g, "/").replace(/\/$/, "");
-  const target = targetRelDir.replace(/\\/g, "/").replace(/\/$/, "");
-  const suffix = current === source
-    ? ""
-    : current.startsWith(`${source}/`) || current.startsWith(`${source}::`)
-      ? current.slice(source.length)
-      : null;
-  if (suffix === null) return currentRelPath;
-  const name = source.split("/").at(-1) ?? source;
-  return `${target ? `${target}/` : ""}${name}${suffix}`;
 }
 
 const windowChrome = new WindowChrome($("titlebar"), win, {
@@ -651,6 +653,10 @@ const folderActions = new FolderActions(doc, {
   getStartupPath: () => getSetting("startupPath"),
   revealInExplorer,
   openInOtherApp,
+  onClipboardChange: () => sidebar.refreshFileOperationState(),
+  writeClipboardText,
+  onRebasePath: (oldAbsolute, newAbsolute, oldRelPath, newRelPath) =>
+    tabs?.rebasePaths(oldAbsolute, newAbsolute, oldRelPath, newRelPath),
 } satisfies FolderActionsServices);
 
 // ---- 配線 ----

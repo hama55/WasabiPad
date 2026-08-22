@@ -36,7 +36,7 @@ const registeredCommandPorts: RegisteredCommandMenuPorts = {
   runExternalCommand: vi.mocked(api.runExternalCommand),
 };
 
-function fixture() {
+function fixture(writeClipboardText?: (text: string) => Promise<void>) {
   const dropdown = document.createElement("div");
   dropdown.id = "dropdown";
   document.body.replaceChildren(dropdown);
@@ -48,6 +48,9 @@ function fixture() {
     promptMemoSpec: vi.fn(async (): Promise<MemoCreationSpec | null> => null),
     setSelectedRelPath: vi.fn(),
     applyDocInfo: vi.fn(),
+    applyMoved: vi.fn(),
+    markDeleted: vi.fn(),
+    markRestored: vi.fn(),
     applyRenamed: vi.fn(),
   } satisfies FolderDocumentPort;
   const sidebar = {
@@ -74,6 +77,7 @@ function fixture() {
       getStartupPath: () => null,
       revealInExplorer,
       openInOtherApp,
+      writeClipboardText,
     }),
     doc,
     dropdown,
@@ -102,6 +106,8 @@ describe("Feature: FolderActions", () => {
 
     expect([...dropdown.querySelectorAll(".dd-label")].map((label) => label.textContent)).toEqual([
       "エクスプローラで開く",
+      "切り取り",
+      "コピー",
       "新規タブで開く",
       "新規ウィンドウで開く",
       "アプリで開く",
@@ -115,6 +121,8 @@ describe("Feature: FolderActions", () => {
     expect(dropdown.querySelectorAll(".dd-sep")).toHaveLength(4);
     const expectedIcons = [
       ["エクスプローラで開く", MENU_ICON.explorer],
+      ["切り取り", MENU_ICON.cut],
+      ["コピー", MENU_ICON.copy],
       ["新規タブで開く", MENU_ICON.newTab],
       ["新規ウィンドウで開く", MENU_ICON.newWindow],
       ["アプリで開く", MENU_ICON.external],
@@ -134,6 +142,152 @@ describe("Feature: FolderActions", () => {
     [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
       .find((item) => item.textContent === "新規ウィンドウで開く")!.click();
     expect(ports.onOpenInNewWindow).toHaveBeenCalledWith("C:\\work\\memo.txt", goto);
+  });
+
+  // Feature: ファイルツリーの内部クリップボード
+  // Scenario: ファイルをコピーするとフォルダの貼り付けメニューが有効になる
+  // Given: memo.txtを対象にコンテキストメニューを表示している
+  // When: 「コピー」を選ぶ
+  // Then: docsフォルダのメニューに「貼り付け」が表示される
+  it("Scenario: コピー後はフォルダへ貼り付けできる", () => {
+    const { actions, dropdown } = fixture();
+    actions.showContextMenu(0, 0, { relPath: "memo.txt", isDir: false });
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "コピー")
+      ?.click();
+
+    actions.showContextMenu(0, 0, { relPath: "docs", isDir: true });
+
+    expect([...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .some((item) => item.textContent === "貼り付け")).toBe(true);
+  });
+
+  // Feature: 実ファイル項目のパスコピー
+  // Scenario: コンテキストメニューから絶対パスをOSクリップボードへコピーする
+  // Given: `memo.txt`を対象にメニューを表示している
+  // When: 「パスをコピー」を選ぶ
+  // Then: フォルダルートを含む絶対パスを渡す
+  it("Scenario: ファイル項目の絶対パスをコピーできる", async () => {
+    const writeClipboardText = vi.fn(async (_text: string) => {});
+    const { actions, dropdown } = fixture(writeClipboardText);
+    actions.showContextMenu(0, 0, { relPath: "memo.txt", isDir: false });
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "パスをコピー")!.click();
+
+    await vi.waitFor(() => expect(writeClipboardText).toHaveBeenCalledWith("C:\\work\\memo.txt"));
+  });
+
+  // Feature: ファイルツリーの内部クリップボード
+  // Scenario: フォルダを切り替えたら前のフォルダの貼り付け対象を破棄する
+  // Given: C:\work の memo.txt をコピーしている
+  // When: C:\other の docs フォルダでコンテキストメニューを表示する
+  // Then: 前のフォルダの項目を貼り付けるメニューは表示しない
+  it("Scenario: フォルダ切り替え後は内部クリップボードを持ち越さない", () => {
+    const { actions, dropdown, doc } = fixture();
+    actions.showContextMenu(0, 0, { relPath: "memo.txt", isDir: false });
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "コピー")!.click();
+
+    doc.current.folderRoot = "C:\\other";
+    actions.showContextMenu(0, 0, { relPath: "docs", isDir: true });
+
+    expect([...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .some((item) => item.textContent === "貼り付け")).toBe(false);
+  });
+
+  // Feature: ファイルツリーの貼り付け
+  // Scenario: コピーしたファイルを選択フォルダへ貼り付ける
+  // Given: memo.txtをコピーし、docsフォルダのメニューを表示している
+  // When: 「貼り付け」を選ぶ
+  // Then: コピーAPIへ元パスとdocsを渡し、一覧を更新する
+  it("Scenario: コピーしたファイルを選択フォルダへ貼り付ける", async () => {
+    const copyEntry = vi.spyOn(api, "copyEntry").mockResolvedValue({} as api.DocInfo);
+    const { actions, dropdown, ports } = fixture();
+    actions.showContextMenu(0, 0, { relPath: "memo.txt", isDir: false });
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "コピー")!.click();
+    actions.showContextMenu(0, 0, { relPath: "docs", isDir: true });
+
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "貼り付け")!.click();
+
+    await vi.waitFor(() => expect(copyEntry).toHaveBeenCalledWith("memo.txt", "docs"));
+    await vi.waitFor(() => expect(ports.sidebar.refreshFolderEntries).toHaveBeenCalled());
+  });
+
+  // Feature: ファイルツリーの切り取りと貼り付け
+  // Scenario: 切り取ったファイルを選択フォルダへ移動する
+  // Given: memo.txtを切り取り、docsフォルダのメニューを表示している
+  // When: 「貼り付け」を選ぶ
+  // Then: 移動APIへ元パスとdocsを渡し、貼り付け後は切り取り状態を解除する
+  it("Scenario: 切り取ったファイルを選択フォルダへ移動する", async () => {
+    const moveEntry = vi.spyOn(api, "moveEntry").mockResolvedValue({} as api.DocInfo);
+    const { actions, dropdown, ports } = fixture();
+    actions.showContextMenu(0, 0, { relPath: "memo.txt", isDir: false });
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "切り取り")!.click();
+    actions.showContextMenu(0, 0, { relPath: "docs", isDir: true });
+
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "貼り付け")!.click();
+
+    await vi.waitFor(() => expect(moveEntry).toHaveBeenCalledWith("memo.txt", "docs"));
+    await vi.waitFor(() => expect(ports.sidebar.refreshFolderEntries).toHaveBeenCalled());
+    actions.showContextMenu(0, 0, { relPath: "docs", isDir: true });
+    expect([...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .some((item) => item.textContent === "貼り付け")).toBe(false);
+  });
+
+  // Feature: 貼り付け時の同名競合
+  // Scenario: 自動リネームを選ぶと空いている連番名へ貼り付ける
+  // Given: `memo.txt`のコピー先に同名項目がある
+  // When: 競合ダイアログで「自動で名前を変更」を選ぶ
+  // Then: `memo (1).txt`を指定したコピーAPIを呼ぶ
+  it("Scenario: 貼り付けの同名競合を自動リネームで解決する", async () => {
+    const copyEntry = vi.spyOn(api, "copyEntry")
+      .mockRejectedValueOnce(new Error("コピー先に同名のファイルまたはフォルダがあります"));
+    const copyEntryAs = vi.spyOn(api, "copyEntryAs").mockResolvedValue({} as api.DocInfo);
+    vi.spyOn(api, "listFolderEntries").mockResolvedValue([
+      { name: "memo.txt", is_dir: false, is_archive: false },
+    ]);
+    vi.mocked(promptFields).mockResolvedValueOnce(["rename", "one"]);
+    const { actions, dropdown } = fixture();
+    actions.showContextMenu(0, 0, { relPath: "memo.txt", isDir: false });
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "コピー")!.click();
+    actions.showContextMenu(0, 0, { relPath: "docs", isDir: true });
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "貼り付け")!.click();
+
+    await vi.waitFor(() => expect(copyEntry).toHaveBeenCalledWith("memo.txt", "docs"));
+    await vi.waitFor(() => expect(copyEntryAs).toHaveBeenCalledWith(
+      "memo.txt",
+      "docs",
+      "memo (1).txt",
+      false,
+    ));
+  });
+
+  // Feature: ファイル操作のセッション内アンドゥ
+  // Scenario: コピー貼り付けをCtrl+Zで元に戻す
+  // Given: `memo.txt`を`docs`へコピー貼り付け済み
+  // When: undoコマンドを実行する
+  // Then: コピー先を削除するAPIを呼ぶ
+  it("Scenario: コピー貼り付けをセッション内で元に戻せる", async () => {
+    const copyEntry = vi.spyOn(api, "copyEntry").mockResolvedValue({} as api.DocInfo);
+    const deleteEntry = vi.spyOn(api, "deleteEntry").mockResolvedValue({} as api.DocInfo);
+    const { actions, dropdown, ports } = fixture();
+    actions.showContextMenu(0, 0, { relPath: "memo.txt", isDir: false });
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "コピー")!.click();
+    actions.showContextMenu(0, 0, { relPath: "docs", isDir: true });
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "貼り付け")!.click();
+    await vi.waitFor(() => expect(copyEntry).toHaveBeenCalledWith("memo.txt", "docs"));
+    await vi.waitFor(() => expect(ports.sidebar.refreshFolderEntries).toHaveBeenCalled());
+
+    actions.executeCommand("undo", []);
+    await vi.waitFor(() => expect(deleteEntry).toHaveBeenCalledWith("docs/memo.txt"));
   });
 
   // Given: rootが`C:\\work`、対象が`docs`フォルダ
@@ -211,9 +365,9 @@ describe("Feature: FolderActions", () => {
   });
 
   // Given: CSV/Markdown/Image/PDF/HTMLのファイルを対象にする
-  // When: フォルダツリーのコンテキストメニューを表示する
+  // When: ファイルツリーのコンテキストメニューを表示する
   // Then: プレビュー形式の項目は表示しない
-  it("Scenario: フォルダツリーの右クリックメニューからプレビュー項目を除く", () => {
+  it("Scenario: ファイルツリーの右クリックメニューからプレビュー項目を除く", () => {
     const { actions, dropdown } = fixture();
     for (const relPath of ["table.csv", "notes.md", "photo.png", "manual.pdf", "index.html"]) {
       actions.showContextMenu(0, 0, { relPath, isDir: false });
@@ -415,11 +569,70 @@ describe("Feature: FolderActions", () => {
 
     expect(confirmMessage).toHaveBeenCalledWith(
       "削除",
-      "「memo.txt」ファイルを削除します。元に戻せません。",
+      "「memo.txt」ファイルをごみ箱へ移動します。元に戻せます。",
       "削除",
     );
-    expect(doc.applyDocInfo).toHaveBeenCalledWith({}, false, false);
+    expect(doc.markDeleted).toHaveBeenCalledOnce();
     expect(ports.sidebar.refreshFolderEntries).toHaveBeenCalled();
+  });
+
+  // Feature: ファイルツリーの複数選択削除
+  // Scenario: 選択中の複数項目をコンテキストメニューから削除する
+  // Given: memo.txt と notes.txt を選択している
+  // When: その他→削除をクリックする
+  // Then: 選択した2項目を確認後に削除する
+  it("Scenario: コンテキストメニューの削除は複数選択へ適用する", async () => {
+    const deleteEntry = vi.spyOn(api, "deleteEntry").mockResolvedValue({} as api.DocInfo);
+    const { actions, dropdown } = fixture();
+    actions.showContextMenu(
+      0,
+      0,
+      { relPath: "memo.txt", isDir: false },
+      [
+        { relPath: "memo.txt", isDir: false },
+        { relPath: "notes.txt", isDir: false },
+      ],
+    );
+
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent?.includes("その他"))!.click();
+    dropdown.querySelector<HTMLElement>(".dd-submenu .dd-item")!.click();
+
+    await vi.waitFor(() => expect(deleteEntry).toHaveBeenCalledTimes(2));
+    expect(confirmMessage).toHaveBeenCalledWith(
+      "削除",
+      "2項目をごみ箱へ移動します。元に戻せます。",
+      "削除",
+    );
+  });
+
+  // Feature: 削除のセッション内アンドゥ/リドゥ
+  // Scenario: 削除をCtrl+Zで戻し、Ctrl+Yで再実行する
+  // Given: 選択中の`memo.txt`を削除済み
+  // When: undoとredoを順に実行する
+  // Then: 復元APIと削除APIを順に呼ぶ
+  it("Scenario: 削除をセッション内で元に戻してやり直せる", async () => {
+    const deleteEntry = vi.spyOn(api, "deleteEntry").mockResolvedValue({} as api.DocInfo);
+    const restoreDeletedEntry = vi.spyOn(api, "restoreDeletedEntry").mockResolvedValue({} as api.DocInfo);
+    const { actions, dropdown, doc, ports } = fixture();
+    doc.current.selectedRelPath = "memo.txt";
+    doc.markDeleted.mockImplementation(() => { doc.current.selectedRelPath = ""; });
+    const deleteCallsBefore = deleteEntry.mock.calls.length;
+    actions.showContextMenu(0, 0, { relPath: "memo.txt", isDir: false });
+    const other = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent?.includes("その他"));
+    other!.click();
+    dropdown.querySelector<HTMLElement>(".dd-submenu .dd-item")!.click();
+    await vi.waitFor(() => expect(deleteEntry).toHaveBeenCalledWith("memo.txt"));
+    await vi.waitFor(() => expect(ports.sidebar.refreshFolderEntries).toHaveBeenCalledOnce());
+
+    actions.executeCommand("undo", []);
+    await vi.waitFor(() => expect(restoreDeletedEntry).toHaveBeenCalledWith("memo.txt"));
+    expect(doc.markRestored).toHaveBeenCalledWith("memo.txt", "C:\\work\\memo.txt");
+    await vi.waitFor(() => expect(ports.sidebar.refreshFolderEntries).toHaveBeenCalledTimes(2));
+
+    actions.executeCommand("redo", []);
+    await vi.waitFor(() => expect(deleteEntry).toHaveBeenCalledTimes(deleteCallsBefore + 2));
   });
 
   // Given: createNoteは成功、一覧更新だけ`refresh failed`でreject
@@ -458,7 +671,7 @@ describe("Feature: FolderActions", () => {
     );
   });
 
-  // Feature: フォルダツリーからの新規フォルダ作成
+  // Feature: ファイルツリーからの新規フォルダ作成
   // Scenario: 入力した名前で指定ディレクトリ直下にフォルダを作成して一覧を更新する
   // Given: C:\workを開き、フォルダ名入力がnotesを返す
   // When: createFolderを実行する

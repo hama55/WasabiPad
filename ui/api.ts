@@ -119,8 +119,16 @@ export const renameEntry = (relPath: string, newName: string) =>
   invoke<DocInfo>(IPC_COMMANDS.renameEntry, { relPath, newName });
 export const moveEntry = (sourceRelPath: string, targetRelDir: string) =>
   invoke<DocInfo>(IPC_COMMANDS.moveEntry, { sourceRelPath, targetRelDir });
+export const copyEntry = (sourceRelPath: string, targetRelDir: string) =>
+  invoke<DocInfo>(IPC_COMMANDS.copyEntry, { sourceRelPath, targetRelDir });
+export const copyEntryAs = (sourceRelPath: string, targetRelDir: string, targetName: string, overwrite = false) =>
+  invoke<DocInfo>(IPC_COMMANDS.copyEntryAs, { sourceRelPath, targetRelDir, targetName, overwrite });
+export const moveEntryAs = (sourceRelPath: string, targetRelDir: string, targetName: string, overwrite = false) =>
+  invoke<DocInfo>(IPC_COMMANDS.moveEntryAs, { sourceRelPath, targetRelDir, targetName, overwrite });
 export const deleteEntry = (relPath: string) =>
   invoke<DocInfo>(IPC_COMMANDS.deleteEntry, { relPath });
+export const restoreDeletedEntry = (relPath: string) =>
+  invoke<DocInfo>(IPC_COMMANDS.restoreDeletedEntry, { relPath });
 
 export const savePastedImage = (bytes: number[], mimeType: string) =>
   invoke<string>(IPC_COMMANDS.savePastedImage, { bytes, mimeType });

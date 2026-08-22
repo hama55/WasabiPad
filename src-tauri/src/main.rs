@@ -210,8 +210,44 @@ fn move_entry(
 }
 
 #[tauri::command]
+fn copy_entry(
+    source_rel_path: String,
+    target_rel_dir: String,
+    state: State,
+) -> Result<DocInfo, String> {
+    document::copy_entry(source_rel_path, target_rel_dir, state)
+}
+
+#[tauri::command]
+fn copy_entry_as(
+    source_rel_path: String,
+    target_rel_dir: String,
+    target_name: String,
+    overwrite: bool,
+    state: State,
+) -> Result<DocInfo, String> {
+    document::copy_entry_as(source_rel_path, target_rel_dir, target_name, overwrite, state)
+}
+
+#[tauri::command]
+fn move_entry_as(
+    source_rel_path: String,
+    target_rel_dir: String,
+    target_name: String,
+    overwrite: bool,
+    state: State,
+) -> Result<DocInfo, String> {
+    document::move_entry_as(source_rel_path, target_rel_dir, target_name, overwrite, state)
+}
+
+#[tauri::command]
 fn delete_entry(rel_path: String, state: State) -> Result<DocInfo, String> {
     document::delete_entry(rel_path, state)
+}
+
+#[tauri::command]
+fn restore_deleted_entry(rel_path: String, state: State) -> Result<DocInfo, String> {
+    document::restore_deleted_entry(rel_path, state)
 }
 
 #[tauri::command]
@@ -565,7 +601,11 @@ fn main() {
             create_folder,
             rename_entry,
             move_entry,
+            copy_entry,
+            copy_entry_as,
+            move_entry_as,
             delete_entry,
+            restore_deleted_entry,
             save_pasted_image,
             cleanup_unused_images,
             read_archive_asset,
