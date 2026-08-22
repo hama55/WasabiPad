@@ -1272,7 +1272,7 @@ describe("Feature: VirtualEditor", () => {
 
     await vi.waitFor(() => expect(promptFields).toHaveBeenCalled());
     const fields = (promptFields.mock.calls[0] as unknown as [string, { label: string }[]])[1];
-    expect(fields[2].label).toBe("コマンド（{string}=対象文字列、引用符不要）");
+    expect(fields[2].label).toBe("コマンド（{string}=対象文字列、{string_in_url}=URL用エンコード文字列、引用符不要）");
 
     showContextMenu();
     [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]

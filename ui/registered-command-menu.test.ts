@@ -31,14 +31,14 @@ describe("Feature: shared registered-command context menu", () => {
   });
 
   // Given: memo.mdを対象にし、選択文字列を現在値として返す共通メニューと入力値
-  // When: 「コマンドを登録...」で登録した後、選択文字列を変更して登録コマンドを実行する
-  // Then: 登録時の入力欄は`{string}`を示し、実行時は最新の選択文字列だけをコマンドへ渡し、対象パスは変えない
-  it("Scenario: メモビューとフォルダビューで共有するメニューは対象値だけを差し替える", async () => {
+  // When: 「コマンドを登録...」で登録した後、複数行の選択文字列を変更して登録コマンドを実行する
+  // Then: 登録時の入力欄は通常文字列とURL用文字列を示し、実行時は最新の選択文字列をURL用に変換し、対象パスは変えない
+  it("Scenario: メモビューとフォルダビューで共有するメニューはURL用対象値を差し替える", async () => {
     let selected = "https://first.example";
     const promptFields = vi.fn(async (...args: Parameters<typeof promptFieldsImpl>) => {
       const fields = args[1];
-      expect(fields[2].label).toBe("コマンド（{string}=対象文字列、引用符不要）");
-      return ["Browser", "", "open {string}"];
+      expect(fields[2].label).toBe("コマンド（{string}=対象文字列、{string_in_url}=URL用エンコード文字列、引用符不要）");
+      return ["Browser", "", "open {string_in_url}"];
     });
     const runExternalCommand = vi.fn(async () => {});
     const run = vi.fn<RegisteredCommandMenuServices["run"]>((_title, operation) => {
@@ -58,7 +58,7 @@ describe("Feature: shared registered-command context menu", () => {
       .find((item) => item.textContent === "コマンドを登録...")!.click();
     await vi.waitFor(() => expect(commandsForPath(target.path, "string")).toHaveLength(1));
 
-    selected = "https://second.example";
+    selected = "line 1 & line 2\nnext";
     showMenu(0, 0, [createRegisteredCommandMenu(target, services)]);
     [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
       .find((item) => item.textContent === "登録コマンド ▸")!.click();
@@ -67,7 +67,7 @@ describe("Feature: shared registered-command context menu", () => {
     dropdown.querySelector<HTMLElement>(".dd-submenu .dd-item")!.click();
 
     await vi.waitFor(() => expect(runExternalCommand).toHaveBeenCalledWith(
-      'open "https://second.example"',
+      'open "line%201%20%26%20line%202%0Anext"',
       target.path,
     ));
     expect(promptFields).toHaveBeenCalledOnce();

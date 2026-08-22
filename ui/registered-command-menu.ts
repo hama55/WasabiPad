@@ -13,6 +13,7 @@ import {
   DEFAULT_COMMAND_PREFIX,
   extensionOf,
   removeRegisteredCommand,
+  STRING_IN_URL_PLACEHOLDER,
   updateRegisteredCommand,
   type CommandValueKind,
   type RegisteredCommand,
@@ -68,6 +69,9 @@ function promptCommandWithValue(
   const extension = extensionOf(path);
   const extensionLabel = extension || "拡張子なし";
   const valueTarget = COMMAND_VALUE_TARGETS[commandValueKind(target)];
+  const commandHelp = commandValueKind(target) === "string"
+    ? `${valueTarget.placeholder}=${valueTarget.label}、${STRING_IN_URL_PLACEHOLDER}=URL用エンコード文字列、引用符不要`
+    : `${valueTarget.placeholder}=${valueTarget.label}、引用符不要`;
   return services.promptFields(title, [
     {
       label: `表示名（${extensionLabel}用）`,
@@ -80,7 +84,7 @@ function promptCommandWithValue(
       validate: () => null,
     },
     {
-      label: `コマンド（${valueTarget.placeholder}=${valueTarget.label}、引用符不要）`,
+      label: `コマンド（${commandHelp}）`,
       value: initial?.command ?? "",
       validate: (value) => value.trim() ? null : "コマンドを入力してください",
     },

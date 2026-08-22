@@ -17,6 +17,7 @@ export const COMMAND_VALUE_TARGETS = {
   file: { placeholder: "{file}", label: "対象ファイル" },
   string: { placeholder: "{string}", label: "対象文字列" },
 } as const;
+export const STRING_IN_URL_PLACEHOLDER = "{string_in_url}";
 
 export function extensionOf(path: string): string {
   const name = path.replace(/\\/g, "/").split("/").pop() ?? "";
@@ -30,7 +31,14 @@ export function commandLineForValue(
   value: string,
   kind: CommandValueKind = DEFAULT_COMMAND_VALUE_KIND,
 ): string {
-  const commandWithValue = command.trim().replaceAll(
+  let commandWithValue = command.trim();
+  if (kind === "string") {
+    commandWithValue = commandWithValue.replaceAll(
+      STRING_IN_URL_PLACEHOLDER,
+      () => quoteCommandValue(encodeURIComponent(value)),
+    );
+  }
+  commandWithValue = commandWithValue.replaceAll(
     COMMAND_VALUE_TARGETS[kind].placeholder,
     () => quoteCommandValue(value),
   );

@@ -70,6 +70,20 @@ describe("Feature: registered commands", () => {
       .toBe('open "a$&b"');
   });
 
+  // Given: 改行とURL上で予約される`&`を含む選択文字列
+  // When: `{string_in_url}`を置換する
+  // Then: 選択文字列全体をURLクエリ値としてパーセントエンコードする
+  it("Scenario: URL用プレースホルダーは複数行の選択文字列をエンコードする", () => {
+    expect(commandLineForValue(
+      'cmd.exe /D /C start ""',
+      "https://translate.google.com/?op=translate^&sl=en^&tl=ja^&text={string_in_url}",
+      "line 1 & line 2\nnext",
+      "string",
+    )).toBe(
+      'cmd.exe /D /C start "" https://translate.google.com/?op=translate^&sl=en^&tl=ja^&text="line%201%20%26%20line%202%0Anext"',
+    );
+  });
+
   // Given: `.HTML`/`html`の同一Chromeと`.txt`メモ帳を登録
   // When: html/txtのcommand一覧を取得
   // Then: 重複なしで各拡張子のcommandだけ返す
