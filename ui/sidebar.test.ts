@@ -111,6 +111,19 @@ describe("Feature: Sidebar", () => {
     expect(host.querySelector<HTMLElement>(".fv-create-actions")?.hidden).toBe(true);
   });
 
+  // Given: ワークスペース検索を表示している
+  // When: 外部から検索条件を差し替える
+  // Then: サイドバー内の検索トグルへ新しい条件が反映される
+  it("Scenario: 外部から検索条件をサイドバーへ反映する", () => {
+    const { host, sidebar } = mount();
+    sidebar.setWorkspaceSearch("C:\\workspace");
+
+    sidebar.setSearchOptions({ ...DEFAULT_SEARCH_OPTIONS, match_case: true });
+
+    const toggles = host.querySelectorAll<HTMLButtonElement>(".ws-toggle");
+    expect(toggles[2].classList.contains("on")).toBe(true);
+  });
+
   // Given: `first.txt`と`second.txt`を設定し、tree要素にフォーカス
   // When: ArrowDown、ArrowDown、ArrowUpを順に送る
   // Then: 選択行と開く通知は`first.txt`→`second.txt`→`first.txt`

@@ -211,6 +211,28 @@ describe("Feature: inline preview", () => {
     });
   });
 
+  // Given: インラインプレビューの文字サイズを変更する
+  // When: iframeの準備完了通知を受け取る
+  // Then: 保留していた文字サイズをプレビューへ送る
+  it("Scenario: sends a queued preview font size after the iframe is ready", async () => {
+    const { host, preview } = mount();
+    const frame = host.querySelector("iframe")!;
+    const postMessage = vi.spyOn(frame.contentWindow!, "postMessage");
+    await preview.open("markdown", "# memo", null);
+    preview.setFontSize(20);
+
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
+    }));
+
+    expect(postMessage).toHaveBeenCalledWith({
+      type: INLINE_PREVIEW_MESSAGES.FONT_SIZE_MESSAGE,
+      size: 20,
+    }, window.location.origin);
+  });
+
   // Given: iframeから負の行番号を含む選択通知が届く
   // When: selection-changeメッセージを処理する
   // Then: 不正な座標はエディタ同期ポートへ渡さない

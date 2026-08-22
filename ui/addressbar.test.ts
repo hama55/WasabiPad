@@ -8,7 +8,7 @@ function addressBarFixture() {
   host.innerHTML = [
     "addressbar", "addressbar-breadcrumb",
     "addressbar-fav", "addressbar-save", "addressbar-save-as", "addressbar-new",
-    "addressbar-find", "addressbar-open",
+    "addressbar-find", "addressbar-open", "addressbar-settings",
   ].map((id) => id === "addressbar" ? `<input id="${id}">` : `<button id="${id}"></button>`).join("");
   const ports = {
     onOpen: vi.fn(),
@@ -18,6 +18,7 @@ function addressBarFixture() {
     onFind: vi.fn(),
     onPick: vi.fn(),
     onFavorite: vi.fn(),
+    onSettings: vi.fn(),
   };
   return { host, ports };
 }
@@ -113,6 +114,18 @@ describe("Feature: AddressBar breadcrumbs", () => {
     expect(ports.onFavorite).toHaveBeenCalledOnce();
   });
 
+  // Given: AddressBarと設定ギアを生成する
+  // When: アドレスバー右側の設定ギアをクリックする
+  // Then: 設定入口の処理をportへ1回委譲する
+  it("Scenario: 設定ギアのクリックを委譲する", () => {
+    const { host, ports } = addressBarFixture();
+    new AddressBar(host, ports);
+
+    host.querySelector<HTMLButtonElement>("#addressbar-settings")!.click();
+
+    expect(ports.onSettings).toHaveBeenCalledOnce();
+  });
+
   // Given: ドライブ直下/末尾/非ドライブ形式のパンくず
   // When: 指定位置を通常クリックする
   // Then: どのパスでも新規タブ指定で対象パスを通知する
@@ -152,15 +165,20 @@ describe("Feature: AddressBar breadcrumbs", () => {
 describe("Feature: AddressBar layout", () => {
   // Given: the application's topbar markup
   // When: the address bar child order is inspected
-  // Then: the favorite button is immediately to the left of the address bar
+  // Then: the favorite button is immediately to the left of the address bar and
+  // the settings button is immediately to the right
   it("Scenario: places the favorite button beside the address bar", () => {
     const page = new DOMParser().parseFromString(indexHtml, "text/html");
     const topbar = page.querySelector("#topbar")!;
     const children = [...topbar.children].map((child) => child.id);
     const favoriteIndex = children.indexOf("addressbar-fav");
     const shellIndex = children.indexOf("addressbar-shell");
+    const settingsIndex = children.indexOf("addressbar-settings");
 
     expect(favoriteIndex).toBe(shellIndex - 1);
+    expect(settingsIndex).toBe(shellIndex + 1);
+    expect(page.querySelector<HTMLButtonElement>("#addressbar-settings")?.getAttribute("aria-label"))
+      .toBe("設定");
     expect(page.querySelector("#addressbar-back")).toBeNull();
     expect(page.querySelector("#addressbar-forward")).toBeNull();
   });

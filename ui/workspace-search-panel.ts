@@ -88,6 +88,7 @@ export class WorkspaceSearchPanel {
   private summary: HTMLElement;
   private toggleButtons = new Map<ToggleKey, HTMLButtonElement>();
   private options: WorkspaceSearchOptions;
+  private searchOptionsChangedWhileHidden = false;
   private folderRoot: string | null = null;
   private states = new Map<string, SearchViewState>();
   private searchGen = 0;
@@ -135,7 +136,13 @@ export class WorkspaceSearchPanel {
     }
     this.folderRoot = folderRoot;
     this.bar.hidden = folderRoot === null;
-    if (folderRoot) this.searchInput.value = this.state.pattern;
+    if (folderRoot) {
+      this.searchInput.value = this.state.pattern;
+      if (this.searchOptionsChangedWhileHidden) {
+        this.searchOptionsChangedWhileHidden = false;
+        if (this.searchInput.value) this.queueSearch(0);
+      }
+    }
     this.ports.onViewChange();
   }
 
@@ -253,6 +260,17 @@ export class WorkspaceSearchPanel {
     });
     this.toggleButtons.set(key, button);
     return button;
+  }
+
+  setSearchOptions(options: WorkspaceSearchOptions) {
+    this.options = clampSearchOptions(options);
+    this.syncTargetToggles();
+    if (!this.folderRoot) {
+      this.searchOptionsChangedWhileHidden = true;
+      return;
+    }
+    if (this.searchInput.value) this.queueSearch(0);
+    else this.ports.onViewChange();
   }
 
   private openSettings() {

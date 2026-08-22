@@ -173,6 +173,10 @@ export class Sidebar {
     this.panel.refreshAfterDocumentChange(relPath, edits);
   }
 
+  setSearchOptions(options: WorkspaceSearchOptions) {
+    this.panel.setSearchOptions(options);
+  }
+
   acceptSearchBatch(searchId: number, results: WorkspaceSearchResult[]) {
     this.panel.acceptBatch(searchId, results);
   }

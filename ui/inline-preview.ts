@@ -11,6 +11,7 @@ const {
   FORMAT_CHANGE_MESSAGE,
   DELIMITER_MESSAGE,
   FONT_MESSAGE,
+  FONT_SIZE_MESSAGE,
   FONT_CHANGE_MESSAGE,
   FULLSCREEN_CHANGE_MESSAGE,
   FULLSCREEN_STATE_MESSAGE,
@@ -37,6 +38,7 @@ export class InlinePreview {
   private archiveEntry: string | null = null;
   private delimiter = DEFAULT_CSV_DELIMITER;
   private fontFamily: string | null = null;
+  private fontSize: number | null = null;
   private fullscreen = false;
 
   constructor(
@@ -97,6 +99,11 @@ export class InlinePreview {
   setFontFamily(family: string) {
     this.fontFamily = family;
     this.sendFontFamily();
+  }
+
+  setFontSize(size: number) {
+    this.fontSize = size;
+    this.sendFontSize();
   }
 
   setFullscreen(fullscreen: boolean) {
@@ -166,6 +173,7 @@ export class InlinePreview {
       delimiter: this.delimiter,
     }, window.location.origin);
     this.sendFontFamily();
+    this.sendFontSize();
   }
 
   private sendFontFamily() {
@@ -173,6 +181,14 @@ export class InlinePreview {
     this.frame.contentWindow?.postMessage({
       type: FONT_MESSAGE,
       family: this.fontFamily,
+    }, window.location.origin);
+  }
+
+  private sendFontSize() {
+    if (!this.ready || this.fontSize === null) return;
+    this.frame.contentWindow?.postMessage({
+      type: FONT_SIZE_MESSAGE,
+      size: this.fontSize,
     }, window.location.origin);
   }
 

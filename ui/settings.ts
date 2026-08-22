@@ -133,6 +133,18 @@ export function setSetting<K extends keyof Settings>(key: K, value: Settings[K])
     });
 }
 
+// アプリ設定だけを既定値へ戻す。openTabs は作業再開に必要なセッション状態なので触らない。
+export function resetUserSettings(): void {
+  setSetting("indentSize", DEFAULTS.indentSize);
+  setSetting("fontFamily", DEFAULTS.fontFamily);
+  setSetting("fontSize", DEFAULTS.fontSize);
+  setSetting("previewFontSize", DEFAULTS.previewFontSize);
+  setSetting("startupPath", DEFAULTS.startupPath);
+  setSetting("registeredStrings", []);
+  setSetting("registeredCommands", []);
+  setSetting("workspaceSearchOptions", DEFAULTS.workspaceSearchOptions);
+}
+
 export async function flushSettings(): Promise<void> {
   for (;;) {
     const current = pendingSave;

@@ -715,6 +715,11 @@ async function start() {
           applyFontFamily(event.data.family, false);
           return;
         }
+        if (event.data?.type === INLINE_PREVIEW_MESSAGES.FONT_SIZE_MESSAGE) {
+          if (typeof event.data.size !== "number") return;
+          applyFontSize(event.data.size, false);
+          return;
+        }
         if (event.data?.type === INLINE_PREVIEW_MESSAGES.FULLSCREEN_STATE_MESSAGE) {
           if (typeof event.data.fullscreen !== "boolean") return;
           setFullscreenButton(event.data.fullscreen);

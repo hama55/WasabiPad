@@ -4,13 +4,12 @@ import { readEncodingOf } from "./session";
 import { formatByteSize, formatCursor, formatFontFamily, formatLineCount, formatModifiedAt } from "./format";
 import { DEFAULT_INDENT_SIZE, INDENT_SIZES, promptFontFamily, promptFontSize } from "./font-controls";
 import { confirmMessage, promptFields } from "./prompt";
-import { normalizeTheme, THEME_STORAGE_KEY, THEMES, type Theme } from "./theme";
+import { normalizeTheme, THEME_LABELS, THEME_STORAGE_KEY, THEMES, type Theme } from "./theme";
 import { runAsyncBoundary } from "./async-boundary";
 import { viewerFormatSpec } from "./viewer-formats";
 import { reportErrorSafely } from "./report-error";
 import { ENCODING_LABELS } from "./generated/Protocol";
 
-const THEME_LABELS: Record<Theme, string> = { dark: "ダーク", light: "ライト" };
 function option(value: string, label: string): HTMLOptionElement {
   const element = document.createElement("option");
   element.value = value;

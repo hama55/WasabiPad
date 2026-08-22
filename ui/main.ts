@@ -38,10 +38,12 @@ import {
   flushSettings,
   initSettings,
   loadSearchOptions,
+  resetUserSettings,
   saveSearchOptions,
   setSetting,
 } from "./settings";
-import { THEME_STORAGE_KEY } from "./theme";
+import { normalizeTheme, THEME_STORAGE_KEY } from "./theme";
+import { openSettingsMenu, openSettingsModal, type SettingsCloseHandle, type SettingsPanelPorts } from "./settings-panel";
 import { searchResultGoto } from "./search-results";
 import { runAsyncBoundary, reportUnhandledRejection } from "./async-boundary";
 import { openPath as openPathInTabs } from "./path-opener";
@@ -108,6 +110,8 @@ let previewFullscreenTabId: string | null = null;
 let currentLine = 1;
 let tabs: TabManager;
 let sidebar: Sidebar;
+let settingsMenu: SettingsCloseHandle | null = null;
+let settingsPorts: SettingsPanelPorts;
 let restoringEditorFont = true;
 let imageCleanupTimer: number | undefined;
 let externalRequestChain = Promise.resolve();
@@ -316,6 +320,7 @@ const addressbar = new AddressBar($("topbar"), {
   onFind: () => editor.openSearch(),
   onPick: () => runBackground("ファイルを開けませんでした", () => pickAndOpen(false)),
   onFavorite: () => runBackground("お気に入りに追加できませんでした", () => favbar.addCurrent()),
+  onSettings: () => openSettings(),
 });
 
 const registeredCommandPorts = {
@@ -367,9 +372,61 @@ const editor: VirtualEditor = new VirtualEditor(editorHost, {
     );
   },
 });
-editor.setFont(getSetting("fontFamily"), getSetting("fontSize"));
-restoringEditorFont = false;
-editor.setTabSize(statusbar.setIndent(getSetting("indentSize")));
+function applySettingsToUi() {
+  restoringEditorFont = true;
+  editor.setFont(getSetting("fontFamily"), getSetting("fontSize"));
+  restoringEditorFont = false;
+  editor.setTabSize(statusbar.setIndent(getSetting("indentSize")));
+  inlinePreview.setFontFamily(getSetting("fontFamily"));
+  inlinePreview.setFontSize(getSetting("previewFontSize"));
+  sidebar?.setSearchOptions(loadSearchOptions());
+}
+
+applySettingsToUi();
+
+settingsPorts = {
+  getTheme: () => normalizeTheme(document.documentElement.getAttribute("data-theme")),
+  setTheme: (theme) => statusbar.restoreTheme(theme),
+  getSetting,
+  setSetting,
+  applyFontFamily: (family) => editor.setFont(family, getSetting("fontSize"), "family"),
+  applyFontSize: (size) => editor.setFont(getSetting("fontFamily"), size, "size"),
+  applyIndent: (size) => {
+    editor.setTabSize(size);
+    statusbar.setIndent(size);
+  },
+  applyPreviewFontSize: (size) => inlinePreview.setFontSize(size),
+  getSearchOptions: loadSearchOptions,
+  updateSearchOptions: (options) => {
+    saveSearchOptions(options);
+    sidebar?.setSearchOptions(options);
+  },
+  confirmReset: () => confirmMessage(
+    "設定を初期化",
+    "アプリ設定を初期値へ戻します。再開タブは保持されます。",
+    "初期化",
+  ),
+  resetSettings: () => {
+    resetUserSettings();
+    statusbar.restoreTheme("dark");
+    applySettingsToUi();
+  },
+};
+
+function openSettings() {
+  if (settingsMenu) {
+    settingsMenu.close();
+    settingsMenu = null;
+    return;
+  }
+  settingsMenu = openSettingsMenu($("addressbar-settings"), settingsPorts, () => {
+    settingsMenu?.close();
+    settingsMenu = null;
+    openSettingsModal(settingsPorts);
+  }, () => {
+    settingsMenu = null;
+  });
+}
 
 sidebar = new Sidebar(sidebarEl, {
   onSelect: async (relPath, newTab) => {

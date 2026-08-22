@@ -48,6 +48,69 @@
 .pf-btns .pf-ok { background: var(--accent); border-color: var(--accent); color: #fff; }
 .pf-btns .pf-ok:hover { background: var(--bg-status); }
 .pf-btns .pf-ok:disabled { opacity: .5; pointer-events: none; }
+
+/* ---- 設定 ---- */
+.settings-popover {
+  position: fixed; z-index: 2100; width: 280px; padding: 12px;
+  display: flex; flex-direction: column; gap: 8px;
+  background: var(--bg-side); border: 1px solid var(--border-strong); border-radius: 6px;
+  box-shadow: 0 8px 24px #000a;
+}
+.settings-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.settings-field > span, .settings-section > h2, .settings-list-group > h3 {
+  color: var(--fg-dim); font-size: 12px; font-weight: 400;
+}
+.settings-field input, .settings-field select {
+  width: 100%; min-width: 0; background: var(--bg-editor); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: 5px 7px; font: 13px var(--font-ui); outline: none;
+}
+.settings-field input:focus, .settings-field select:focus { border-color: var(--bg-status); }
+.settings-popover > button, .settings-section > button {
+  align-self: stretch; background: var(--bg-editor); color: var(--fg);
+  border: 1px solid var(--border-strong); border-radius: 4px;
+  padding: 5px 8px; font: 13px var(--font-ui); cursor: default;
+}
+.settings-popover > button:hover, .settings-section > button:hover { background: var(--hover); }
+.settings-box {
+  width: min(760px, calc(100vw - 32px));
+  max-height: min(760px, calc(100vh - 32px));
+  overflow: auto;
+}
+.settings-content {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px;
+}
+.settings-section {
+  display: flex; flex-direction: column; gap: 8px; min-width: 0;
+  padding: 10px; border: 1px solid var(--border); border-radius: 5px;
+  background: color-mix(in srgb, var(--bg-editor) 35%, transparent);
+}
+.settings-section > h2 {
+  margin-bottom: 2px; color: var(--fg); font-size: 13px; font-weight: 600;
+}
+.settings-section[data-settings-section="検索"] { grid-column: 1 / -1; }
+.settings-section[data-settings-section="検索"] .ss-columns { gap: 12px; }
+.settings-list-group { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.settings-list-group > h3 { margin-top: 2px; }
+.settings-list-row {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  padding: 4px 0; border-bottom: 1px solid var(--border);
+}
+.settings-list-row:last-child { border-bottom: 0; }
+.settings-list-row > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
+.settings-list-row button {
+  flex: none; background: var(--bg-editor); color: var(--fg-dim);
+  border: 1px solid var(--border); border-radius: 3px; padding: 3px 6px;
+  font: 12px var(--font-ui); cursor: default;
+}
+.settings-list-row button:hover { background: var(--hover); color: var(--fg); }
+.settings-empty { color: var(--fg-dim); font-size: 12px; }
+.settings-actions { justify-content: space-between; }
+.settings-actions .settings-reset { margin-right: auto; }
+@media (max-width: 640px) {
+  .settings-content { grid-template-columns: 1fr; }
+  .settings-section[data-settings-section="検索"] .ss-columns { flex-direction: column; }
+}
 .em-changes {
   min-height: 120px; max-height: 440px; overflow: auto;
   border: 1px solid var(--border); border-radius: 4px;

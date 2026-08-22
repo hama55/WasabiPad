@@ -26,18 +26,53 @@ export function openSearchSettings(
   current: WorkspaceSearchOptions,
   ports: SearchSettingsPorts
 ): void {
-  let options = { ...current };
-  const commit = () => {
-    options = clampSearchOptions(options);
-    ports.onChange(options);
-  };
-
   // Enter は渡さない (除外リストの入力欄が自前で使う)
   const { box, close: teardown } = openModal({ onCancel: () => finish() }, "ss-box");
 
   const title = document.createElement("div");
   title.className = "pf-title";
   title.textContent = "検索の設定";
+
+  const buttons = document.createElement("div");
+  buttons.className = "pf-btns";
+  const reset = document.createElement("button");
+  reset.textContent = "既定に戻す";
+  const close = document.createElement("button");
+  close.className = "pf-ok";
+  close.textContent = "閉じる";
+  buttons.append(reset, close);
+
+  const editor = createSearchSettingsEditor(current, ports.onChange);
+  box.append(title, editor, buttons);
+
+  const finish = () => {
+    teardown();
+    ports.onClose();
+  };
+  // 既定に戻したら入力欄を作り直す (閉じた扱いにはしないので onClose は呼ばない)
+  reset.addEventListener("click", () => {
+    const defaults = clampSearchOptions({ ...DEFAULT_SEARCH_OPTIONS });
+    ports.onChange(defaults);
+    teardown();
+    openSearchSettings(defaults, ports);
+  });
+  close.addEventListener("click", finish);
+  close.focus();
+}
+
+export function createSearchSettingsEditor(
+  current: WorkspaceSearchOptions,
+  onChange: (options: WorkspaceSearchOptions) => void,
+): HTMLElement {
+  let options = {
+    ...current,
+    exclude_dirs: [...current.exclude_dirs],
+    exclude_globs: [...current.exclude_globs],
+  };
+  const commit = () => {
+    options = clampSearchOptions(options);
+    onChange(options);
+  };
 
   const columns = document.createElement("div");
   columns.className = "ss-columns";
@@ -91,31 +126,7 @@ export function openSearchSettings(
       list("exclude_dirs", "フォルダ名を追加"),
     ])
   );
-
-  const buttons = document.createElement("div");
-  buttons.className = "pf-btns";
-  const reset = document.createElement("button");
-  reset.textContent = "既定に戻す";
-  const close = document.createElement("button");
-  close.className = "pf-ok";
-  close.textContent = "閉じる";
-  buttons.append(reset, close);
-
-  box.append(title, columns, buttons);
-
-  const finish = () => {
-    teardown();
-    ports.onClose();
-  };
-  // 既定に戻したら入力欄を作り直す (閉じた扱いにはしないので onClose は呼ばない)
-  reset.addEventListener("click", () => {
-    options = { ...DEFAULT_SEARCH_OPTIONS };
-    commit();
-    teardown();
-    openSearchSettings(options, ports);
-  });
-  close.addEventListener("click", finish);
-  close.focus();
+  return columns;
 }
 
 function section(heading: string, fields: HTMLElement[]): HTMLElement {
