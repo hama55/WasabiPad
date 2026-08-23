@@ -191,8 +191,8 @@ fn create_note(
 }
 
 #[tauri::command]
-fn create_folder(name: String, state: State) -> Result<(), String> {
-    document::create_folder(name, state)
+fn create_folder(rel_dir: String, name: String, state: State) -> Result<(), String> {
+    document::create_folder(rel_dir, name, state)
 }
 
 #[tauri::command]
@@ -210,8 +210,49 @@ fn move_entry(
 }
 
 #[tauri::command]
+fn copy_entry(
+    source_rel_path: String,
+    target_rel_dir: String,
+    state: State,
+) -> Result<DocInfo, String> {
+    document::copy_entry(source_rel_path, target_rel_dir, state)
+}
+
+#[tauri::command]
+fn copy_entry_as(
+    source_rel_path: String,
+    target_rel_dir: String,
+    target_name: String,
+    overwrite: bool,
+    state: State,
+) -> Result<DocInfo, String> {
+    document::copy_entry_as(source_rel_path, target_rel_dir, target_name, overwrite, state)
+}
+
+#[tauri::command]
+fn move_entry_as(
+    source_rel_path: String,
+    target_rel_dir: String,
+    target_name: String,
+    overwrite: bool,
+    state: State,
+) -> Result<DocInfo, String> {
+    document::move_entry_as(source_rel_path, target_rel_dir, target_name, overwrite, state)
+}
+
+#[tauri::command]
 fn delete_entry(rel_path: String, state: State) -> Result<DocInfo, String> {
     document::delete_entry(rel_path, state)
+}
+
+#[tauri::command]
+fn delete_entry_without_backup(rel_path: String, state: State) -> Result<DocInfo, String> {
+    document::delete_entry_without_backup(rel_path, state)
+}
+
+#[tauri::command]
+fn restore_deleted_entry(rel_path: String, state: State) -> Result<DocInfo, String> {
+    document::restore_deleted_entry(rel_path, state)
 }
 
 #[tauri::command]
@@ -238,6 +279,11 @@ fn open_in_other_app(path: String) -> Result<(), String> {
 #[tauri::command]
 fn open_in_default_browser(path: String) -> Result<(), String> {
     system::open_in_default_browser(path)
+}
+
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    system::open_external_url(url)
 }
 
 #[tauri::command]
@@ -565,13 +611,19 @@ fn main() {
             create_folder,
             rename_entry,
             move_entry,
+            copy_entry,
+            copy_entry_as,
+            move_entry_as,
             delete_entry,
+            delete_entry_without_backup,
+            restore_deleted_entry,
             save_pasted_image,
             cleanup_unused_images,
             read_archive_asset,
             reveal_in_explorer,
             open_in_other_app,
             open_in_default_browser,
+            open_external_url,
             run_external_command,
             edit,
             edit_many,

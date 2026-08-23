@@ -7,12 +7,14 @@ import type { promptFields } from "./prompt";
 import {
   addRegisteredCommand,
   COMMAND_VALUE_TARGETS,
+  commandLineForValueWithClipboard,
   commandLineForValue,
   commandsForPath,
-  COMMAND_PREFIX_FIELD_LABEL,
-  DEFAULT_COMMAND_PREFIX,
+  COPY_STRING_CLIPBOARD_PLACEHOLDER,
   extensionOf,
   removeRegisteredCommand,
+  STRING_ONE_LINE_PLACEHOLDER,
+  STRING_IN_URL_PLACEHOLDER,
   updateRegisteredCommand,
   type CommandValueKind,
   type RegisteredCommand,
@@ -23,6 +25,7 @@ import { flushSettings } from "./settings";
 export interface RegisteredCommandMenuPorts {
   promptFields: typeof promptFields;
   runExternalCommand: typeof api.runExternalCommand;
+  writeClipboardText?: (text: string) => Promise<void>;
 }
 
 export interface RegisteredCommandMenuServices extends RegisteredCommandMenuPorts {
@@ -68,6 +71,9 @@ function promptCommandWithValue(
   const extension = extensionOf(path);
   const extensionLabel = extension || "拡張子なし";
   const valueTarget = COMMAND_VALUE_TARGETS[commandValueKind(target)];
+  const commandHelp = commandValueKind(target) === "string"
+    ? `${valueTarget.placeholder}=${valueTarget.label}、${STRING_ONE_LINE_PLACEHOLDER}=改行をスペース化、${COPY_STRING_CLIPBOARD_PLACEHOLDER}=クリップボードへコピー、${STRING_IN_URL_PLACEHOLDER}=URL用エンコード文字列、引用符不要`
+    : `${valueTarget.placeholder}=${valueTarget.label}、引用符不要`;
   return services.promptFields(title, [
     {
       label: `表示名（${extensionLabel}用）`,
@@ -75,26 +81,22 @@ function promptCommandWithValue(
       validate: (value) => value.trim() ? null : "表示名を入力してください",
     },
     {
-      label: COMMAND_PREFIX_FIELD_LABEL,
-      value: initial?.prefix ?? DEFAULT_COMMAND_PREFIX,
-      validate: () => null,
-    },
-    {
-      label: `コマンド（${valueTarget.placeholder}=${valueTarget.label}、引用符不要）`,
-      value: initial?.command ?? "",
+      label: `コマンド（${commandHelp}）`,
+      value: initial ? [initial.prefix, initial.command].filter(Boolean).join(" ") : "",
+      multiline: true,
       validate: (value) => value.trim() ? null : "コマンドを入力してください",
     },
   ], {
     preview: {
       label: "実行文字列（確認用）",
       render: (values) => commandLineForValue(
+        "",
         values[1] ?? "",
-        values[2] ?? "",
         value,
         commandValueKind(target),
       ),
     },
-  }).then((values) => values ? { label: values[0], prefix: values[1], command: values[2] } : null);
+  }).then((values) => values ? { label: values[0], prefix: "", command: values[1] } : null);
 }
 
 async function registerCommand(services: RegisteredCommandMenuServices, target: RegisteredCommandTarget) {
@@ -140,11 +142,12 @@ export function createRegisteredCommandMenu(
         action: () => services.run(
           "登録コマンドを実行できませんでした",
           async () => services.runExternalCommand(
-            commandLineForValue(
+            await commandLineForValueWithClipboard(
               command.prefix,
               command.command,
               await valueOf(target),
               commandValueKind(target),
+              services.writeClipboardText,
             ),
             target.path,
           ),

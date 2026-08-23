@@ -94,4 +94,28 @@ describe("Feature: statusbar preview controls", () => {
     statusbar.setModifiedAt(null);
     expect(modified.textContent).toBe("");
   });
+
+  // Feature: ステータスバーの保存日時
+  // Scenario: 時間経過に合わせて保存日時を更新する
+  // Given: 保存直後の日時をステータスバーへ設定する
+  // When: 1分経過させて表示を更新する
+  // Then: 「たった今」から「1分前」へ変わる
+  it("Scenario: 経過時間に合わせて保存日時を更新する", () => {
+    vi.useFakeTimers();
+    try {
+      const now = Date.UTC(2026, 0, 1, 0, 0, 0);
+      vi.setSystemTime(now);
+      const { host, statusbar } = mount();
+      const modified = host.querySelector<HTMLElement>("#st-modified")!;
+
+      statusbar.setModifiedAt(now);
+      expect(modified.textContent).toBe("保存: たった今");
+
+      vi.setSystemTime(now + 60 * 1000);
+      statusbar.refreshModifiedAt();
+      expect(modified.textContent).toBe("保存: 1分前");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

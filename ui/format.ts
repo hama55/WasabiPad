@@ -26,18 +26,26 @@ export function formatByteSize(bytes: number): string {
 
 export const formatLineCount = (count: number) => `${count.toLocaleString("ja-JP")} 行`;
 export const formatCursor = (line: number, column: number) => `${line}行 ${column}列`;
-export function formatModifiedAt(timestamp: number | null): string {
+export function formatModifiedAt(timestamp: number | null, now = Date.now()): string {
   if (timestamp === null) return "";
   const date = new Date(timestamp);
   if (Number.isNaN(date.getTime())) return "";
-  return `保存: ${date.toLocaleString("ja-JP", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  })}`;
+  const elapsed = Math.max(0, now - timestamp);
+  const minute = 60 * 1000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  const relative = elapsed < minute
+    ? "たった今"
+    : elapsed < hour
+      ? `${Math.floor(elapsed / minute)}分前`
+      : elapsed < day
+        ? `${Math.floor(elapsed / hour)}時間前`
+        : elapsed < 30 * day
+          ? `${Math.floor(elapsed / day)}日前`
+          : elapsed < 365 * day
+            ? `${Math.floor(elapsed / (30 * day))}ヶ月前`
+            : `${Math.floor(elapsed / (365 * day))}年前`;
+  return `保存: ${relative}`;
 }
 export const formatFontFamily = (family: string) => family.split(",")[0].replaceAll("\"", "").trim();
 export const formatTitleBar = (subject: string) => `${subject} — ${APP_NAME}`;

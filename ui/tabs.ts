@@ -1,7 +1,7 @@
 import type { Pos, WindowRequest } from "./api";
 import type { DocumentSession } from "./session";
 import { cloneEditorViewState, type EditorViewState } from "./editor-view-state";
-import { basename } from "./path";
+import { basename, rebaseWindowsPath, type PathRebase } from "./path";
 import { TabBarView, type TabDropSpot } from "./tab-view";
 import type { RegisteredCommandMenuPorts } from "./registered-command-menu";
 import {
@@ -36,6 +36,21 @@ interface TabPorts {
 }
 
 const newId = () => `tab-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+function rebaseRelativePath(path: string, oldPrefix: string, newPrefix: string): string | null {
+  const normalizedPath = path.replace(/\\/g, "/").replace(/\/$/, "");
+  const normalizedOld = oldPrefix.replace(/\\/g, "/").replace(/\/$/, "");
+  const normalizedNew = newPrefix.replace(/\\/g, "/").replace(/\/$/, "");
+  const comparablePath = normalizedPath.toLocaleLowerCase("en-US");
+  const comparableOld = normalizedOld.toLocaleLowerCase("en-US");
+  if (
+    comparablePath !== comparableOld
+    && !comparablePath.startsWith(`${comparableOld}/`)
+    && !comparablePath.startsWith(`${comparableOld}::`)
+  ) return null;
+  return `${normalizedNew}${normalizedPath.slice(normalizedOld.length)}`.replace(/^\//, "");
+}
+
 type NavigationRun<T> = {
   proceeded: boolean;
   result?: T;
@@ -133,6 +148,28 @@ export class TabManager {
     this.renderAndPersist();
   }
 
+  rebasePaths({ oldAbsolute, newAbsolute, oldRelPath, newRelPath }: PathRebase) {
+    let changed = false;
+    for (const tab of this.tabs) {
+      if (tab.path) {
+        const rebased = rebaseWindowsPath(tab.path, oldAbsolute, newAbsolute);
+        if (rebased && rebased !== tab.path) {
+          tab.path = rebased;
+          tab.label = basename(rebased);
+          changed = true;
+        }
+      }
+      if (tab.selectedRelPath && oldRelPath) {
+        const rebased = rebaseRelativePath(tab.selectedRelPath, oldRelPath, newRelPath);
+        if (rebased !== null && rebased !== tab.selectedRelPath) {
+          tab.selectedRelPath = rebased;
+          changed = true;
+        }
+      }
+    }
+    if (changed) this.renderAndPersist();
+  }
+
   syncCursor(line: number) {
     if (this.transitionTarget || this.loadingActive || this.navigationInProgress) return;
     const tab = this.active();
@@ -141,6 +178,15 @@ export class TabManager {
     if (tab.selectedLine === selectedLine) return;
     tab.selectedLine = selectedLine;
     this.persist();
+  }
+
+  takeActiveFragment(): string | null {
+    const tab = this.active();
+    if (!tab || tab.fragment === undefined) return null;
+    const fragment = tab.fragment;
+    delete tab.fragment;
+    this.persist();
+    return fragment;
   }
 
   async newBlank() {
@@ -176,6 +222,14 @@ export class TabManager {
       return true;
     }
     return this.addAndActivate(this.link(path, goto));
+  }
+
+  async openMarkdownLink(path: string, sourceTabId: string | null, fragment: string | null): Promise<boolean> {
+    const anchorId = sourceTabId ?? this.activeId;
+    return this.addAndActivateAfter(
+      this.link(path, undefined, undefined, fragment ?? undefined),
+      anchorId,
+    );
   }
 
   addLinks(items: { path: string; kind: "file" | "folder" }[]) {
@@ -402,7 +456,7 @@ export class TabManager {
       const closed = { tab: this.state.tabs[index], index };
       await this.commitTransition(async () => {
         this.tabs.splice(index, 1);
-        this.activeId = this.tabs[Math.min(index, this.tabs.length - 1)].id;
+        this.activateTabAfterRemoval(index);
         await this.loadActive();
       });
       this.closedTabs.push(closed);
@@ -450,14 +504,35 @@ export class TabManager {
     });
   }
 
-  private async addAndActivate(tab: StoredTab): Promise<boolean> {
+  private async addAndActivate(
+    tab: StoredTab,
+  ): Promise<boolean> {
+    return this.addAndActivateWith(tab, (tabs) => {
+      tabs.push(tab);
+      return true;
+    });
+  }
+
+  private async addAndActivateAfter(tab: StoredTab, sourceTabId: string): Promise<boolean> {
+    return this.addAndActivateWith(tab, (tabs) => {
+      const sourceIndex = tabs.findIndex((candidate) => candidate.id === sourceTabId);
+      if (sourceIndex < 0) return false;
+      tabs.splice(sourceIndex + 1, 0, tab);
+      return true;
+    });
+  }
+
+  private async addAndActivateWith(
+    tab: StoredTab,
+    insert: (tabs: StoredTab[]) => boolean,
+  ): Promise<boolean> {
     this.transitionTarget = tab.id;
     let activated = false;
     try {
       const proceeded = await this.doc.confirmDiscard(async () => {
         this.rememberActiveView();
         activated = await this.commitTransition(async () => {
-          this.tabs.push(tab);
+          if (!insert(this.tabs)) return false;
           this.activeId = tab.id;
           return this.loadActive(false);
         });
@@ -590,7 +665,12 @@ export class TabManager {
     }
   }
 
-  private link(path: string | null, goto?: Pos, draftDirectory?: string | null): StoredTab {
+  private link(
+    path: string | null,
+    goto?: Pos,
+    draftDirectory?: string | null,
+    fragment?: string,
+  ): StoredTab {
     return {
       id: newId(),
       path,
@@ -598,6 +678,7 @@ export class TabManager {
       label: path ? basename(path) : "無題",
       ...(draftDirectory ? { draftDirectory } : {}),
       goto,
+      ...(fragment !== undefined ? { fragment } : {}),
     };
   }
 
@@ -700,10 +781,14 @@ export class TabManager {
       this.activeId = blank.id;
       await this.doc.newFile(false);
     } else {
-      this.activeId = this.tabs[Math.min(index, this.tabs.length - 1)].id;
+      this.activateTabAfterRemoval(index);
       await this.loadActive();
     }
     this.renderAndPersist();
+  }
+
+  private activateTabAfterRemoval(index: number) {
+    this.activeId = this.tabs[Math.max(0, index - 1)].id;
   }
 
   private openTabInNewWindow(tab: StoredTab) {

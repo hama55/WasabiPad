@@ -10,6 +10,7 @@ export interface AddressBarPorts {
   onFind: () => void;
   onPick: () => void;
   onFavorite: () => void;
+  onSettings: () => void;
 }
 
 // ドライブ文字は "C:\" で1区切り、以降は各フォルダ名。パンくずの各項目が
@@ -51,6 +52,7 @@ export class AddressBar {
     this.pick("addressbar-new").addEventListener("click", ports.onNew);
     this.pick("addressbar-find").addEventListener("click", ports.onFind);
     this.pick("addressbar-open").addEventListener("click", ports.onPick);
+    this.pick("addressbar-settings").addEventListener("click", ports.onSettings);
   }
 
   private pick<T extends HTMLElement>(id: string): T {

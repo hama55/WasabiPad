@@ -561,6 +561,47 @@ describe("Feature: WorkspaceSearchPanel", () => {
     expect(calls, "条件が同じなら検索し直さない").toBe(1);
   });
 
+  // Given: needle を現在の検索条件で検索している
+  // When: 外部から検索条件を既定値へ差し替える
+  // Then: 表示中の検索を新しい条件で引き直す
+  it("Scenario: 外部から差し替えた検索条件を現在の検索へ反映する", async () => {
+    vi.useFakeTimers();
+    const calls: WorkspaceSearchOptions[] = [];
+    const host = mount(async (_pat, options) => {
+      calls.push(options);
+      return outcome([]);
+    });
+    await search(host, "needle");
+
+    mounted.setSearchOptions({ ...DEFAULT_SEARCH_OPTIONS, match_case: true });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(calls.at(-1)?.match_case).toBe(true);
+    const toggles = host.querySelectorAll<HTMLButtonElement>(".ws-toggle");
+    expect(toggles[0].classList.contains("on")).toBe(true);
+    expect(toggles[2].classList.contains("on")).toBe(true);
+  });
+
+  // Given: needle の検索後にフォルダ検索の表示を閉じている
+  // When: 非表示中に検索条件を差し替えてから同じフォルダを再表示する
+  // Then: 例外を出さず、新しい条件で再検索する
+  it("Scenario: 非表示中の検索条件変更を再表示後の検索へ反映する", async () => {
+    vi.useFakeTimers();
+    const calls: WorkspaceSearchOptions[] = [];
+    const host = mount(async (_pat, options) => {
+      calls.push(options);
+      return outcome([]);
+    });
+    await search(host, "needle");
+    mounted.setFolderRoot(null);
+
+    mounted.setSearchOptions({ ...DEFAULT_SEARCH_OPTIONS, match_case: true });
+    mounted.setFolderRoot("C:\\workspace");
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(calls.at(-1)?.match_case).toBe(true);
+  });
+
   // Given: 未完了検索があり、searchId に a.txt の途中結果を受け取っている
   // When: 停止ボタンをクリックする
   // Then: onCancel は searchId を渡して1回呼ばれ、group は1個、summary に「検索を中止」、empty に「検索を中止しました」が表示される

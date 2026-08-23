@@ -1,6 +1,6 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
-import { EVENT_NAMES, openInDefaultBrowser, takeViewerPayload, type ViewerFormat, type ViewerPayload, type ViewerSelection } from "./api";
+import { EVENT_NAMES, openExternalUrl, openInDefaultBrowser, takeViewerPayload, type ViewerFormat, type ViewerPayload, type ViewerSelection } from "./api";
 import { formatFontFamily } from "./format";
 import { basename } from "./path";
 import { createViewerFormatHandlers, isViewerFormat, viewerFormatSpec } from "./viewer-formats";
@@ -12,13 +12,21 @@ import {
   csvSourcePositionAtOffset,
 } from "./csv-viewer";
 import { startCsvColumnResize as bindCsvColumnResize } from "./csv-column-resize";
-import { resolveArchiveAssetEntry, resolveAssetPath } from "./viewer-assets";
+import {
+  isExternalMarkdownLink,
+  isLocalMarkdownLinkCandidate,
+  isSameDocumentMarkdownLink,
+  markdownFragmentOf,
+  resolveArchiveAssetEntry,
+  resolveAssetPath,
+} from "./viewer-assets";
 import { normalizeTheme, THEME_STORAGE_KEY } from "./theme";
 import { showError } from "./dialogs";
 import { WindowControls } from "./window-controls";
 import { reportWindowOperationError, runWindowOperation } from "./window-operation";
 import { imageExtensionOf, imageMimeType } from "./image-formats";
 import {
+  scrollMarkdownFragment,
   scrollMarkdownCaret,
 } from "./viewer-markdown";
 import { scrollViewerCaret, scrollViewerCell } from "./viewer-scroll";
@@ -90,6 +98,8 @@ let currentSelection: ViewerSelectionWithCaret | null = null;
 let currentSourcePath: string | null = null;
 let currentArchivePath: string | null = null;
 let currentArchiveEntry: string | null = null;
+let pendingMarkdownFragment: string | null = null;
+let markdownReadyForFragment = false;
 let renderGeneration = 0;
 let imageZoom = DEFAULT_IMAGE_ZOOM;
 let disposeImagePan: (() => void) | null = null;
@@ -126,6 +136,37 @@ function notifyParentOfSelection() {
   postToParent({
     type: INLINE_PREVIEW_MESSAGES.SELECTION_CHANGE_MESSAGE,
     selection,
+  });
+}
+
+function notifyMarkdownLink(event: MouseEvent) {
+  if (currentFormat !== "markdown") return;
+  const target = event.target instanceof Element ? event.target : null;
+  const link = target?.closest<HTMLAnchorElement>("a");
+  const href = link?.getAttribute("href") ?? "";
+  if (!href) return;
+  const fragment = markdownFragmentOf(href);
+  if (fragment !== null && isSameDocumentMarkdownLink(currentSourcePath, href)) {
+    event.preventDefault();
+    const article = content.querySelector<HTMLElement>("article");
+    if (article) scrollMarkdownFragment(article, fragment);
+    return;
+  }
+  if (!event.ctrlKey && !event.metaKey) return;
+  const external = isExternalMarkdownLink(href);
+  if (!isInlineViewer) {
+    if (!external) return;
+    event.preventDefault();
+    runViewerOperation("既定のブラウザで開けませんでした", () => openExternalUrl(href));
+    return;
+  }
+  if (currentArchivePath && !external) return;
+  if (!external && !isLocalMarkdownLinkCandidate(href)) return;
+  event.preventDefault();
+  postToParent({
+    type: INLINE_PREVIEW_MESSAGES.MARKDOWN_LINK_MESSAGE,
+    href,
+    newTab: true,
   });
 }
 
@@ -306,6 +347,7 @@ function bindViewerControls() {
   document.addEventListener("selectionchange", notifySelection);
   content.addEventListener("mouseup", notifySelection);
   content.addEventListener("keyup", notifySelection);
+  content.addEventListener("click", notifyMarkdownLink);
 }
 
 function renderTable(text: string) {
@@ -550,14 +592,28 @@ async function renderMarkdown(text: string) {
   revokeArchiveAssetUrls();
   currentRows = [];
   chartController.clear();
-  const { article, highlightTargets } = renderMarkdownDocument(text, selection);
+  markdownReadyForFragment = false;
+  const initialFragment = pendingMarkdownFragment;
+  pendingMarkdownFragment = null;
+  const { article, highlightTargets } = renderMarkdownDocument(text, selection, {
+    sourcePath: currentSourcePath,
+    archivePath,
+  });
   content.replaceChildren(article);
   summary.classList.remove("warning");
   summary.title = "";
   summary.textContent = `${text.length.toLocaleString()}文字`;
   await loadArchiveImages(article, generation, archivePath, archiveEntry);
   // 画像の高さが確定する前にスクロールすると、読込後のレイアウト変化で中央位置が崩れる。
-  if (generation === renderGeneration) scrollMarkdownCaret(highlightTargets, selection);
+  if (generation === renderGeneration) {
+    scrollMarkdownCaret(highlightTargets, selection);
+    const fragment = pendingMarkdownFragment ?? initialFragment;
+    if (fragment !== null) {
+      scrollMarkdownFragment(article, fragment);
+      pendingMarkdownFragment = null;
+    }
+    markdownReadyForFragment = true;
+  }
 }
 
 const VIEWER_HANDLERS = createViewerFormatHandlers({
@@ -578,6 +634,8 @@ function renderPayload(payload: ViewerPayload) {
     csvColumnWidths = [];
   }
   if (sourceChanged) imageZoom = DEFAULT_IMAGE_ZOOM;
+  markdownReadyForFragment = false;
+  if (payload.format !== "markdown") pendingMarkdownFragment = null;
   currentFormat = payload.format;
   currentText = payload.text;
   currentSelection = payload.selection as ViewerSelectionWithCaret | null;
@@ -703,6 +761,19 @@ async function start() {
           runViewerOperation("ビューを更新できませんでした", () => renderPayload(event.data.payload));
           return;
         }
+        if (event.data?.type === INLINE_PREVIEW_MESSAGES.MARKDOWN_FRAGMENT_MESSAGE) {
+          if (typeof event.data.fragment !== "string") return;
+          const fragment = event.data.fragment;
+          pendingMarkdownFragment = fragment;
+          if (currentFormat === "markdown" && markdownReadyForFragment) {
+            const article = content.querySelector<HTMLElement>("article");
+            if (article) {
+              scrollMarkdownFragment(article, fragment);
+              pendingMarkdownFragment = null;
+            }
+          }
+          return;
+        }
         if (event.data?.type === INLINE_PREVIEW_MESSAGES.DELIMITER_MESSAGE) {
           if (typeof event.data.delimiter !== "string") return;
           delimiterInput.value = event.data.delimiter;
@@ -713,6 +784,11 @@ async function start() {
         if (event.data?.type === INLINE_PREVIEW_MESSAGES.FONT_MESSAGE) {
           if (typeof event.data.family !== "string") return;
           applyFontFamily(event.data.family, false);
+          return;
+        }
+        if (event.data?.type === INLINE_PREVIEW_MESSAGES.FONT_SIZE_MESSAGE) {
+          if (typeof event.data.size !== "number") return;
+          applyFontSize(event.data.size, false);
           return;
         }
         if (event.data?.type === INLINE_PREVIEW_MESSAGES.FULLSCREEN_STATE_MESSAGE) {

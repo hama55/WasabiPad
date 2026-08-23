@@ -92,6 +92,65 @@ describe("Feature: TabManager", () => {
     expect(doc.openPath).toHaveBeenCalledWith("C:\\work\\a.txt", false);
   });
 
+  // Feature: ファイル操作後のタブパス追従
+  // Scenario: フォルダを移動すると開いている複数タブのパスをまとめて更新する
+  // Given: `docs/memo.txt`のファイルタブと`docs/memo.txt`を選択したフォルダタブがある
+  // When: `docs`を`archive`へ移動した通知を受ける
+  // Then: 絶対パスとフォルダ内相対パスの両方を追従させる
+  it("Scenario: ファイル操作で複数タブのパスを追従させる", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init({
+      tabs: [
+        { id: "a", path: "C:\\work\\docs\\memo.txt", kind: "file", label: "memo.txt" },
+        {
+          id: "b", path: "C:\\work", kind: "folder", label: "work",
+          selectedRelPath: "docs/memo.txt",
+        },
+      ],
+      activeId: "a",
+    }, null, null);
+
+    manager.rebasePaths({
+      oldAbsolute: "C:\\work\\docs",
+      newAbsolute: "C:\\work\\archive",
+      oldRelPath: "docs",
+      newRelPath: "archive",
+    });
+
+    expect(manager.state.tabs[0].path).toBe("C:\\work\\archive\\memo.txt");
+    expect(manager.state.tabs[1].selectedRelPath).toBe("archive/memo.txt");
+  });
+
+  // Feature: ファイル操作後のアーカイブ内選択追従
+  // Scenario: アーカイブファイルを移動すると内部エントリの選択も追従する
+  // Given: folder tab が `docs/data.zip::Sheet1` を選択中である
+  // When: `docs/data.zip`を`archive/data.zip`へ移動した通知を受ける
+  // Then: 選択中の内部エントリも`archive/data.zip::Sheet1`になる
+  it("Scenario: アーカイブ内の選択パスもファイル操作に追従する", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init({
+      tabs: [{
+        id: "folder",
+        path: "C:\\work",
+        kind: "folder",
+        label: "work",
+        selectedRelPath: "docs/data.zip::Sheet1",
+      }],
+      activeId: "folder",
+    }, null, null);
+
+    manager.rebasePaths({
+      oldAbsolute: "C:\\work\\docs\\data.zip",
+      newAbsolute: "C:\\work\\archive\\data.zip",
+      oldRelPath: "docs/data.zip",
+      newRelPath: "archive/data.zip",
+    });
+
+    expect(manager.state.tabs[0].selectedRelPath).toBe("archive/data.zip::Sheet1");
+  });
+
   // Given: activeId=folder、folderRoot が C:\work、selectedRelPath が sub\memo.txt、viewState の anchor/caret が各 line 10、topLine が8、scrollLeft が20
   // When: manager.init(folderTabs, null, null) を呼ぶ
   // Then: selectEntry("sub\\memo.txt") の後に完全なviewStateを復元する
@@ -490,6 +549,56 @@ describe("Feature: TabManager", () => {
     expect(manager.state.tabs).toHaveLength(2);
     expect(manager.state.activeId).toBe("b");
     expect(doc.openPath).toHaveBeenLastCalledWith("C:\\work\\b.txt", false);
+  });
+
+  // Given: a tabがactiveで、同じパスのa.txtが既に開かれている
+  // When: Markdownリンクからa.txtを起点タブの直後へ開く
+  // Then: 重複を許可した新規タブが直後へ入り、fragmentを保持してactiveになる
+  it("Scenario: Markdownリンクを起点タブの直後へ重複タブとして開く", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init(stored, null, null);
+
+    await expect(manager.openMarkdownLink("C:\\work\\a.txt", "a", "install")).resolves.toBe(true);
+
+    expect(manager.state.tabs.map((tab) => tab.id)).toEqual(["a", expect.any(String), "b"]);
+    const opened = manager.state.tabs[1];
+    expect(opened.path).toBe("C:\\work\\a.txt");
+    expect(opened.fragment).toBe("install");
+    expect(manager.state.activeId).toBe(opened.id);
+    expect(manager.takeActiveFragment()).toBe("install");
+    expect(manager.takeActiveFragment()).toBeNull();
+  });
+
+  // Given: a tabがactiveで、リンク先のopenPathが失敗する
+  // When: Markdownリンク用の新規タブを開く
+  // Then: タブを増やさずfalseを返す
+  it("Scenario: Markdownリンク先が存在しない場合はタブを増やさない", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init(stored, null, null);
+    vi.mocked(doc.openPath).mockResolvedValueOnce(false);
+    const before = manager.state;
+
+    await expect(manager.openMarkdownLink("C:\\work\\missing.md", "a", "install")).resolves.toBe(false);
+
+    expect(manager.state.tabs.map((tab) => tab.id)).toEqual(before.tabs.map((tab) => tab.id));
+    expect(manager.state.activeId).toBe(before.activeId);
+  });
+
+  // Given: 起点タブIDが現在のタブ一覧に存在しない
+  // When: Markdownリンク用の新規タブを開く
+  // Then: タブを増やさずfalseを返す
+  it("Scenario: 起点タブが消えたMarkdownリンクはタブを増やさない", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init(stored, null, null);
+    const before = manager.state;
+
+    await expect(manager.openMarkdownLink("C:\\work\\missing.md", "gone", null)).resolves.toBe(false);
+
+    expect(manager.state.tabs.map((tab) => tab.id)).toEqual(before.tabs.map((tab) => tab.id));
+    expect(manager.state.activeId).toBe(before.activeId);
   });
 
   // Given: active tab が a で、doc.goTo が Error("invalid position") を投げる
@@ -962,6 +1071,35 @@ describe("Feature: TabManager", () => {
     expect(doc.newFile).toHaveBeenCalledWith(false, "C:\\Users\\sample\\Desktop");
   });
 
+  // Feature: タブ削除後のアクティブタブ
+  // Scenario Outline: アクティブタブを削除したら左隣をアクティブにする
+  // Given: a、b、cの3タブがあり、指定タブがアクティブ
+  // When: 指定タブを閉じる
+  // Then: 残った左隣のタブがアクティブになる
+  // Examples:
+  // | 閉じるタブ | アクティブタブ |
+  // | b | a |
+  // | c | b |
+  it.each([
+    ["b", "a"],
+    ["c", "b"],
+  ])("Scenario: %sを閉じた後は左隣をアクティブにする", async (closedId, expectedActiveId) => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init({
+      tabs: [
+        { id: "a", path: "C:\\work\\a.txt", kind: "file", label: "a.txt" },
+        { id: "b", path: "C:\\work\\b.txt", kind: "file", label: "b.txt" },
+        { id: "c", path: "C:\\work\\c.txt", kind: "file", label: "c.txt" },
+      ],
+      activeId: closedId,
+    }, null, null);
+
+    await manager.close(closedId);
+
+    expect(manager.state.activeId).toBe(expectedActiveId);
+  });
+
   // Feature: 同一起動中に閉じたタブを復活する
   // Scenario: 最後に閉じたタブを元の位置と表示状態で復活する
   // Given: aタブと、b.mdを表示中のフォルダタブがあり、後者がアクティブ
@@ -1217,9 +1355,9 @@ describe("Feature: TabManager", () => {
     expect(manager.state.tabs.map((tab) => tab.id)).toEqual(["a", "b"]);
   });
 
-  // Given: C:\work\memo.txt の file tab があり、登録入力が ["メモ帳","","notepad {file}"] を返す
+  // Given: C:\work\memo.txt の file tab があり、登録入力が ["メモ帳","notepad {file}"] を返す
   // When: コンテキストメニューから登録し、登録コマンドの submenu 項目を実行する
-  // Then: commandsForPath は extension=.txt,label=メモ帳,prefix="",command=notepad {file} を返し、runExternalCommand は `notepad "C:\work\memo.txt"` と path を渡される
+  // Then: commandsForPath は extension=.txt,label=メモ帳,prefix="",command=notepad {file} を返し、runExternalCommand は `notepad C:\work\memo.txt` と path を渡される
   it("Scenario: ファイルタブから登録し、登録コマンドを実行できる", async () => {
     const { doc, host } = fixture();
     document.body.appendChild(Object.assign(document.createElement("div"), { id: "dropdown" }));
@@ -1229,7 +1367,7 @@ describe("Feature: TabManager", () => {
       activeId: "file",
     }, null, null);
 
-    registeredCommandPorts.promptFields.mockResolvedValueOnce(["メモ帳", "", "notepad {file}"]);
+    registeredCommandPorts.promptFields.mockResolvedValueOnce(["メモ帳", "notepad {file}"]);
     const tab = host.querySelector<HTMLElement>(".doc-tab")!;
     tab.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
     [...document.querySelectorAll<HTMLElement>("#dropdown .dd-item")]
@@ -1245,7 +1383,7 @@ describe("Feature: TabManager", () => {
     document.querySelector<HTMLElement>("#dropdown .dd-submenu .dd-item")!.click();
 
     await vi.waitFor(() => expect(registeredCommandPorts.runExternalCommand).toHaveBeenCalledWith(
-      'notepad "C:\\work\\memo.txt"',
+      "notepad C:\\work\\memo.txt",
       "C:\\work\\memo.txt",
     ));
   });

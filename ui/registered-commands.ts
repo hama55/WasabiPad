@@ -11,12 +11,13 @@ import {
 
 export { DEFAULT_COMMAND_VALUE_KIND, type CommandValueKind, type RegisteredCommand };
 
-export const DEFAULT_COMMAND_PREFIX = "";
-export const COMMAND_PREFIX_FIELD_LABEL = "プレフィックス（任意。必要時の例: cmd.exe /D /C）";
 export const COMMAND_VALUE_TARGETS = {
   file: { placeholder: "{file}", label: "対象ファイル" },
   string: { placeholder: "{string}", label: "対象文字列" },
 } as const;
+export const STRING_IN_URL_PLACEHOLDER = "{string_in_url}";
+export const STRING_ONE_LINE_PLACEHOLDER = "{string_one_line}";
+export const COPY_STRING_CLIPBOARD_PLACEHOLDER = "{copy_string_clipboard}";
 
 export function extensionOf(path: string): string {
   const name = path.replace(/\\/g, "/").split("/").pop() ?? "";
@@ -30,11 +31,37 @@ export function commandLineForValue(
   value: string,
   kind: CommandValueKind = DEFAULT_COMMAND_VALUE_KIND,
 ): string {
-  const commandWithValue = command.trim().replaceAll(
+  let commandWithValue = command.trim();
+  if (kind === "string") {
+    commandWithValue = commandWithValue.replaceAll(
+      STRING_IN_URL_PLACEHOLDER,
+      () => encodeURIComponent(value),
+    );
+    commandWithValue = commandWithValue.replaceAll(
+      STRING_ONE_LINE_PLACEHOLDER,
+      () => value.replace(/\r\n|\r|\n/g, " "),
+    );
+    commandWithValue = commandWithValue.replaceAll(COPY_STRING_CLIPBOARD_PLACEHOLDER, "");
+  }
+  commandWithValue = commandWithValue.replaceAll(
     COMMAND_VALUE_TARGETS[kind].placeholder,
-    () => quoteCommandValue(value),
+    () => value,
   );
   return [prefix.trim(), commandWithValue].filter(Boolean).join(" ");
+}
+
+export async function commandLineForValueWithClipboard(
+  prefix: string,
+  command: string,
+  value: string,
+  kind: CommandValueKind = DEFAULT_COMMAND_VALUE_KIND,
+  writeClipboardText?: (text: string) => Promise<void>,
+): Promise<string> {
+  if (kind === "string" && command.includes(COPY_STRING_CLIPBOARD_PLACEHOLDER)) {
+    if (!writeClipboardText) throw new Error("クリップボードへコピーできません");
+    await writeClipboardText(value);
+  }
+  return commandLineForValue(prefix, command, value, kind);
 }
 
 export function commandLineForFile(prefix: string, command: string, path: string): string {
@@ -49,27 +76,6 @@ export function commandsForPath(
   return getSetting("registeredCommands").filter((command) =>
     normalizeExtension(command.extension) === extension && commandValueKind(command) === kind
   );
-}
-
-// CreateProcessWには生のコマンドラインを渡すため、Windowsの引数解析で
-// 引用符と末尾バックスラッシュが値の一部として残るようエスケープする。
-function quoteCommandValue(value: string): string {
-  let quoted = '"';
-  let backslashes = 0;
-  for (const char of value) {
-    if (char === "\\") {
-      backslashes += 1;
-      continue;
-    }
-    if (char === '"') {
-      quoted += "\\".repeat(backslashes * 2 + 1) + '"';
-      backslashes = 0;
-      continue;
-    }
-    quoted += "\\".repeat(backslashes) + char;
-    backslashes = 0;
-  }
-  return quoted + "\\".repeat(backslashes * 2) + '"';
 }
 
 export function addRegisteredCommand(command: RegisteredCommand): void {

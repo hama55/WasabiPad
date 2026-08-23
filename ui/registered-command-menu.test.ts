@@ -31,14 +31,18 @@ describe("Feature: shared registered-command context menu", () => {
   });
 
   // Given: memo.mdを対象にし、選択文字列を現在値として返す共通メニューと入力値
-  // When: 「コマンドを登録...」で登録した後、選択文字列を変更して登録コマンドを実行する
-  // Then: 登録時の入力欄は`{string}`を示し、実行時は最新の選択文字列だけをコマンドへ渡し、対象パスは変えない
-  it("Scenario: メモビューとフォルダビューで共有するメニューは対象値だけを差し替える", async () => {
+  // When: 「コマンドを登録...」で登録した後、複数行の選択文字列を変更して登録コマンドを実行する
+  // Then: 登録時の入力欄は1つの広いコマンド欄で通常文字列とURL用文字列を示し、実行時は最新の選択文字列をURL用に変換し、対象パスは変えない
+  it("Scenario: メモビューとフォルダビューで共有するメニューはURL用対象値を差し替える", async () => {
     let selected = "https://first.example";
     const promptFields = vi.fn(async (...args: Parameters<typeof promptFieldsImpl>) => {
       const fields = args[1];
-      expect(fields[2].label).toBe("コマンド（{string}=対象文字列、引用符不要）");
-      return ["Browser", "", "open {string}"];
+      expect(fields).toHaveLength(2);
+      expect(fields[1].label).toBe(
+        "コマンド（{string}=対象文字列、{string_one_line}=改行をスペース化、{copy_string_clipboard}=クリップボードへコピー、{string_in_url}=URL用エンコード文字列、引用符不要）",
+      );
+      expect(fields[1].multiline).toBe(true);
+      return ["Browser", "open {string_in_url}"];
     });
     const runExternalCommand = vi.fn(async () => {});
     const run = vi.fn<RegisteredCommandMenuServices["run"]>((_title, operation) => {
@@ -57,8 +61,9 @@ describe("Feature: shared registered-command context menu", () => {
     [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
       .find((item) => item.textContent === "コマンドを登録...")!.click();
     await vi.waitFor(() => expect(commandsForPath(target.path, "string")).toHaveLength(1));
+    expect(commandsForPath(target.path, "string")[0]).toMatchObject({ prefix: "", command: "open {string_in_url}" });
 
-    selected = "https://second.example";
+    selected = "line 1 & line 2\nnext";
     showMenu(0, 0, [createRegisteredCommandMenu(target, services)]);
     [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
       .find((item) => item.textContent === "登録コマンド ▸")!.click();
@@ -67,9 +72,40 @@ describe("Feature: shared registered-command context menu", () => {
     dropdown.querySelector<HTMLElement>(".dd-submenu .dd-item")!.click();
 
     await vi.waitFor(() => expect(runExternalCommand).toHaveBeenCalledWith(
-      'open "https://second.example"',
+      "open line%201%20%26%20line%202%0Anext",
       target.path,
     ));
     expect(promptFields).toHaveBeenCalledOnce();
+  });
+
+  // Given: 複数行の選択文字列と`{copy_string_clipboard}`を含む登録コマンド
+  // When: 登録コマンドを実行する
+  // Then: 実行前に元の文字列をOSクリップボードへコピーし、placeholderを空文字にしたcommandを渡す
+  it("Scenario: 登録コマンドが選択文字列をクリップボード経由で渡す", async () => {
+    const selected = "line 1\nline 2";
+    const promptFields = vi.fn(async () => ["Filter", "filter {copy_string_clipboard}"]);
+    const writeClipboardText = vi.fn(async () => {});
+    const runExternalCommand = vi.fn(async () => {});
+    const run = vi.fn<RegisteredCommandMenuServices["run"]>((_title, operation) => {
+      void operation();
+    });
+    const services = { promptFields, runExternalCommand, run, writeClipboardText } satisfies RegisteredCommandMenuServices;
+    const target = {
+      path: "C:\\work\\memo.md",
+      value: () => selected,
+      valueKind: "string" as const,
+    };
+    const dropdown = document.getElementById("dropdown")!;
+
+    showMenu(0, 0, [createRegisteredCommandMenu(target, services)]);
+    dropdown.querySelector<HTMLElement>(".dd-item")!.click();
+    await vi.waitFor(() => expect(commandsForPath(target.path, "string")).toHaveLength(1));
+
+    showMenu(0, 0, [createRegisteredCommandMenu(target, services)]);
+    dropdown.querySelector<HTMLElement>(".dd-item")!.click();
+    dropdown.querySelector<HTMLElement>(".dd-submenu .dd-item")!.click();
+
+    await vi.waitFor(() => expect(writeClipboardText).toHaveBeenCalledWith(selected));
+    await vi.waitFor(() => expect(runExternalCommand).toHaveBeenCalledWith("filter ", target.path));
   });
 });

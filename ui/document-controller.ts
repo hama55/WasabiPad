@@ -198,6 +198,31 @@ export class DocumentController {
     this.applyPathChange(info, selectedRelPath, false);
   }
 
+  // 選択中の実ファイルがごみ箱へ移動された後も、編集中の本文を保持する。
+  // 保存先だけを外しておくことで、次回保存時は名前を付けて保存へ進む。
+  markDeleted() {
+    this.view.hideExternalBanner();
+    this.session.savePath = null;
+    this.session.selectedRelPath = "";
+    this.session.archivePath = null;
+    this.session.archiveEntry = null;
+    this.session.dirty = true;
+    this.view.editor.setExternalFilePath(null, markdownForSession(this.session));
+    this.view.statusbar.setModifiedAt(null);
+    this.updateTitle();
+  }
+
+  markRestored(relPath: string, absolutePath: string) {
+    this.view.hideExternalBanner();
+    this.session.savePath = absolutePath;
+    this.session.displayPath = absolutePath;
+    this.session.selectedRelPath = relPath;
+    this.session.dirty = true;
+    this.view.editor.setExternalFilePath(absolutePath, markdownForSession(this.session));
+    this.view.addressbar.render(absolutePath);
+    this.updateTitle();
+  }
+
   async openPath(path: string, confirm = true): Promise<boolean> {
     if (confirm && !(await this.confirmDiscard())) return false;
     const request = ++this.loadRequest;
@@ -469,8 +494,7 @@ export class DocumentController {
     return this.view.editor.restoreViewState(state);
   }
 
-  private memoFields(directory: string | null, initialStem: string) {
-    let request = 0;
+  private memoFields(initialStem: string) {
     return [
       {
         label: "ファイル名",
@@ -484,19 +508,6 @@ export class DocumentController {
           ...SAVE_EXTENSIONS.map(({ extension }) => ({ label: `.${extension}`, value: extension })),
           { label: "拡張子なし", value: "" },
         ],
-        onChange: directory ? async (
-          extension: string,
-          _values: string[],
-          setValue: (index: number, value: string) => void,
-        ) => {
-          const current = ++request;
-          try {
-            const path = await this.services.api.nextMemoPath(directory, DEFAULT_MEMO_STEM, extension);
-            if (current === request) setValue(0, memoStemOf(path, extension));
-          } catch (error) {
-            if (current === request) throw error;
-          }
-        } : undefined,
       },
     ];
   }
@@ -520,7 +531,7 @@ export class DocumentController {
   ): Promise<string[] | null> {
     const stem = await this.initialMemoStem(directory, DEFAULT_MEMO_EXTENSION);
     return this.services.promptFields(title, [
-      ...this.memoFields(directory, stem),
+      ...this.memoFields(stem),
       ...extraFields,
     ], this.memoPromptOptions(directory));
   }

@@ -19,7 +19,41 @@ describe("Feature: Markdown viewer drawing boundary", () => {
     expect(article.querySelector(".viewer-markdown-caret")).not.toBeNull();
     expect(article.querySelector("a")?.target).toBe("_blank");
     expect(article.querySelector("a")?.rel).toBe("noreferrer");
+    expect(article.querySelector("a")?.title).toBe("Ctrl+クリックで既定のブラウザで開く");
     expect(highlightTargets).toHaveLength(2);
+  });
+
+  // Given: 同一文書fragment、別文書fragment、外部URLのリンクと見出し
+  // When: 元パス付きでMarkdownを描画する
+  // Then: 見出しIDとリンク種別ごとのツールチップを設定する
+  it("Scenario: Markdownリンクの種類ごとに移動方法を表示する", () => {
+    const { article } = renderMarkdownDocument(
+      "# Install Guide!\n\n[same](#install-guide) [other](manual.md#install) [web](https://example.com)",
+      null,
+      { sourcePath: "C:\\work\\readme.md" },
+    );
+
+    expect(article.querySelector("h1")?.id).toBe("install-guide");
+    const links = [...article.querySelectorAll<HTMLAnchorElement>("a")];
+    expect(links.map((link) => link.title)).toEqual([
+      "クリックで同じ文書内を移動",
+      "Ctrl+クリックで新規タブを開いて該当箇所へ移動",
+      "Ctrl+クリックで既定のブラウザで開く",
+    ]);
+  });
+
+  // Given: Markdownの見出しと明示的な空アンカー
+  // When: Markdownを描画する
+  // Then: 見出しと明示アンカーの両方をfragmentの移動先として残す
+  it("Scenario: Markdownの見出しと明示アンカーをfragment対象にする", () => {
+    const { article } = renderMarkdownDocument(
+      "<a id=\"legacy\"></a>\n\n## Install",
+      null,
+      { sourcePath: "C:\\work\\readme.md" },
+    );
+
+    expect(article.querySelector("a#legacy")).not.toBeNull();
+    expect(article.querySelector("h2")?.id).toBe("install");
   });
 
   // Given: 単一改行・末尾半角スペース2つ・`<br>`・空行と、未完了/完了のGFMタスクリスト

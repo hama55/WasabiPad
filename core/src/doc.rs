@@ -31,6 +31,9 @@ use std::collections::HashMap;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_DELETE_BACKUP: AtomicU64 = AtomicU64::new(0);
 
 fn is_delete_target_affected(
     current_path: Option<&Path>,
@@ -73,6 +76,226 @@ fn normalize_move_path(relative: &str, allow_empty: bool) -> io::Result<String> 
     Ok(normalized)
 }
 
+struct MarkdownAssetMovePlan {
+    source: PathBuf,
+    destination: PathBuf,
+    destination_parent: PathBuf,
+}
+
+struct MarkdownAssetMove {
+    source: PathBuf,
+    destination: PathBuf,
+    destination_parent: PathBuf,
+    created_destination_parent: bool,
+}
+
+fn markdown_asset_dir(path: &Path) -> Option<PathBuf> {
+    let extension = path.extension()?.to_str()?;
+    if !extension.eq_ignore_ascii_case("md") && !extension.eq_ignore_ascii_case("markdown") {
+        return None;
+    }
+    let stem = path.file_stem()?.to_str()?;
+    if stem.is_empty() {
+        return None;
+    }
+    Some(path.parent()?.join("image_markdown").join(stem))
+}
+
+fn equivalent_existing_path(left: &Path, right: &Path) -> bool {
+    left == right || std::fs::canonicalize(left).ok() == std::fs::canonicalize(right).ok()
+}
+
+fn markdown_asset_move_plan(source: &Path, destination: &Path) -> io::Result<Option<MarkdownAssetMovePlan>> {
+    if !std::fs::symlink_metadata(source)?.is_file() {
+        return Ok(None);
+    }
+    let (Some(source_asset), Some(destination_asset)) = (markdown_asset_dir(source), markdown_asset_dir(destination))
+    else {
+        return Ok(None);
+    };
+    let source_metadata = match std::fs::symlink_metadata(&source_asset) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if !source_metadata.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "文書画像フォルダの場所にフォルダ以外の項目があります",
+        ));
+    }
+    match std::fs::symlink_metadata(&destination_asset) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "移動先に同名の文書画像フォルダがあります",
+            ));
+        }
+        Ok(_) if !equivalent_existing_path(&source_asset, &destination_asset) => {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "移動先に同名の文書画像フォルダがあります",
+            ));
+        }
+        Ok(_) => return Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    let destination_parent = destination_asset
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "文書画像フォルダの移動先が不正です"))?
+        .to_path_buf();
+    Ok(Some(MarkdownAssetMovePlan {
+        source: source_asset,
+        destination: destination_asset,
+        destination_parent,
+    }))
+}
+
+fn execute_markdown_asset_move(plan: MarkdownAssetMovePlan) -> io::Result<MarkdownAssetMove> {
+    let created_destination_parent = match std::fs::symlink_metadata(&plan.destination_parent) {
+        Ok(_) => false,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            std::fs::create_dir_all(&plan.destination_parent)?;
+            true
+        }
+        Err(error) => return Err(error),
+    };
+    if let Err(error) = std::fs::rename(&plan.source, &plan.destination) {
+        if created_destination_parent {
+            let _ = remove_empty_dir(&plan.destination_parent);
+        }
+        return Err(error);
+    }
+    Ok(MarkdownAssetMove {
+        source: plan.source,
+        destination: plan.destination,
+        destination_parent: plan.destination_parent,
+        created_destination_parent,
+    })
+}
+
+fn rollback_markdown_asset_move(move_result: &MarkdownAssetMove) {
+    let _ = std::fs::rename(&move_result.destination, &move_result.source);
+    if move_result.created_destination_parent {
+        let _ = remove_empty_dir(&move_result.destination_parent);
+    }
+}
+
+fn cleanup_markdown_asset_source_parent(move_result: &MarkdownAssetMove) {
+    if let Some(parent) = move_result.source.parent() {
+        let _ = remove_empty_dir(parent);
+    }
+}
+
+fn with_markdown_asset_move<T>(
+    asset_plan: Option<MarkdownAssetMovePlan>,
+    operation: impl FnOnce() -> io::Result<T>,
+) -> io::Result<T> {
+    let asset_move = asset_plan.map(execute_markdown_asset_move).transpose()?;
+    let result = operation();
+    match result {
+        Ok(value) => {
+            if let Some(asset_move) = asset_move.as_ref() {
+                cleanup_markdown_asset_source_parent(asset_move);
+            }
+            Ok(value)
+        }
+        Err(error) => {
+            if let Some(asset_move) = asset_move.as_ref() {
+                rollback_markdown_asset_move(asset_move);
+            }
+            Err(error)
+        }
+    }
+}
+
+fn copy_entry_recursive(source: &Path, destination: &Path) -> io::Result<()> {
+    let metadata = std::fs::symlink_metadata(source)?;
+    if metadata.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "シンボリックリンクはコピーできません",
+        ));
+    }
+    if metadata.is_dir() {
+        std::fs::create_dir(destination)?;
+        for entry in std::fs::read_dir(source)? {
+            let entry = entry?;
+            copy_entry_recursive(&entry.path(), &destination.join(entry.file_name()))?;
+        }
+    } else {
+        std::fs::copy(source, destination)?;
+    }
+    Ok(())
+}
+
+struct EntryPaths {
+    source: PathBuf,
+    target_dir: PathBuf,
+    canonical_source: PathBuf,
+}
+
+fn resolve_entry_paths(
+    root: &Path,
+    source_rel_path: &str,
+    target_rel_dir: &str,
+    operation: &str,
+) -> io::Result<EntryPaths> {
+    let source_rel_path = normalize_move_path(source_rel_path, false)?;
+    let target_rel_dir = normalize_move_path(target_rel_dir, true)?;
+    let source = join_relative(root, &source_rel_path);
+    let target_dir = join_relative(root, &target_rel_dir);
+    let source_metadata = std::fs::symlink_metadata(&source)?;
+    if source_metadata.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("シンボリックリンクは{operation}できません"),
+        ));
+    }
+    let canonical_root = root.canonicalize()?;
+    let canonical_source = source.canonicalize()?;
+    let canonical_target_dir = target_dir.canonicalize()?;
+    if !canonical_source.starts_with(&canonical_root)
+        || !canonical_target_dir.starts_with(&canonical_root)
+        || !canonical_target_dir.is_dir()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("フォルダの外へは{operation}できません"),
+        ));
+    }
+    if source_metadata.is_dir() && canonical_target_dir.starts_with(&canonical_source) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("フォルダ自身やその配下へは{operation}できません"),
+        ));
+    }
+    Ok(EntryPaths {
+        source,
+        target_dir,
+        canonical_source,
+    })
+}
+
+fn create_delete_backup(source: &Path) -> io::Result<PathBuf> {
+    let id = NEXT_DELETE_BACKUP.fetch_add(1, Ordering::Relaxed);
+    let root = std::env::temp_dir().join(format!("wasabipad-delete-{}-{id}", std::process::id()));
+    std::fs::create_dir_all(&root)?;
+    let backup = root.join("entry");
+    if let Err(error) = copy_entry_recursive(source, &backup) {
+        let _ = std::fs::remove_dir_all(&root);
+        return Err(error);
+    }
+    Ok(backup)
+}
+
+fn remove_delete_backup(backup: &Path) {
+    if let Some(root) = backup.parent() {
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
 fn rebase_path(path: &mut PathBuf, old_root: &Path, new_root: &Path) {
     if let Ok(rest) = path.strip_prefix(old_root) {
         *path = if rest.as_os_str().is_empty() {
@@ -81,6 +304,34 @@ fn rebase_path(path: &mut PathBuf, old_root: &Path, new_root: &Path) {
             new_root.join(rest)
         };
     }
+}
+
+fn release_target_file(target: &mut Target) -> bool {
+    match target {
+        Target::File { source_file, .. } | Target::Archive { source_file, .. } => source_file.take().is_some(),
+        Target::None => false,
+    }
+}
+
+fn restore_target_file(target: &mut Target, released: bool) {
+    if !released {
+        return;
+    }
+    match target {
+        Target::File { path, source_file, .. } | Target::Archive { path, source_file, .. } => {
+            if source_file.is_none() {
+                *source_file = fileio::open_exclusive(path).ok();
+            }
+        }
+        Target::None => {}
+    }
+}
+
+fn relative_entry_path(root: &Path, entry: &Path) -> io::Result<String> {
+    entry
+        .strip_prefix(root)
+        .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+        .map_err(|_| io::Error::new(io::ErrorKind::PermissionDenied, "フォルダの外の項目です"))
 }
 
 fn buffer_lines(buf: &TextBuffer) -> Vec<String> {
@@ -112,6 +363,11 @@ struct CachedArchiveAsset {
     bytes: Vec<u8>,
 }
 
+struct DeletedEntry {
+    relative_path: String,
+    backup: PathBuf,
+}
+
 pub struct Doc {
     buf: TextBuffer,
     undo: UndoStack,
@@ -130,6 +386,7 @@ pub struct Doc {
     // 7z のパスワードをアーカイブ絶対パス単位でメモリ保持する (ディスクへは残さない)。
     // 同じフォルダ内の複数の 7z を行き来しても都度入力し直さずに済む。
     sevenz_passwords: HashMap<PathBuf, String>,
+    deleted_entries: Vec<DeletedEntry>,
     archive_port: Arc<dyn ArchivePort>,
 }
 
@@ -218,6 +475,7 @@ impl Doc {
             pending_merge: None,
             archive_asset: None,
             sevenz_passwords: HashMap::new(),
+            deleted_entries: Vec::new(),
             archive_port,
         }
     }
@@ -307,6 +565,7 @@ impl Doc {
                     pending_merge: None,
                     archive_asset: None,
                     sevenz_passwords: HashMap::new(),
+                    deleted_entries: Vec::new(),
                     archive_port,
                 });
             }
@@ -349,6 +608,7 @@ impl Doc {
             pending_merge: None,
             archive_asset: None,
             sevenz_passwords: HashMap::new(),
+            deleted_entries: Vec::new(),
             archive_port,
         })
     }
@@ -389,6 +649,7 @@ impl Doc {
             pending_merge: None,
             archive_asset: None,
             sevenz_passwords: std::mem::take(&mut self.sevenz_passwords),
+            deleted_entries: std::mem::take(&mut self.deleted_entries),
             archive_port: Arc::clone(&self.archive_port),
         };
         let info = replacement.info(path.to_string_lossy().into_owned())?;
@@ -636,6 +897,7 @@ impl Doc {
             let path_str = path.to_string_lossy().into_owned();
             d.source.root = Some(root);
             d.sevenz_passwords = std::mem::take(&mut self.sevenz_passwords);
+            d.deleted_entries = std::mem::take(&mut self.deleted_entries);
             let info = d.info(path_str)?;
             *self = d;
             return Ok(Some(info));
@@ -876,7 +1138,14 @@ impl Doc {
             Some(r) if !r.is_empty() => join_relative(&root, r),
             _ => root.clone(),
         };
-        let path = dir.join(name);
+        let path = if dir.join(name).exists() {
+            let requested = dir.join(name);
+            let stem = requested.file_stem().and_then(|value| value.to_str()).unwrap_or(name);
+            let extension = requested.extension().and_then(|value| value.to_str()).unwrap_or("");
+            next_available_path(&dir, stem, extension)?
+        } else {
+            dir.join(name)
+        };
         create_empty_file(&path)?;
         let mut d = match Doc::open_file(&path, Arc::clone(&self.archive_port)) {
             Ok(doc) => doc,
@@ -888,6 +1157,7 @@ impl Doc {
         d.source.root = Some(root);
         d.enc = enc;
         d.eol = eol;
+        d.deleted_entries = std::mem::take(&mut self.deleted_entries);
         let path_str = path.to_string_lossy().into_owned();
         let info = match d.info(path_str) {
             Ok(info) => info,
@@ -900,14 +1170,47 @@ impl Doc {
         Ok(info)
     }
 
-    // フォルダツリー下部の作成ボタン用。ルート直下へ空フォルダを1つ作る。
-    pub fn create_folder(&self, name: &str) -> io::Result<()> {
+    // ファイルツリーの作成ボタン/右クリック用。指定ディレクトリ直下へ空フォルダを1つ作る。
+    pub fn create_folder(&self, rel_dir: &str, name: &str) -> io::Result<()> {
         crate::validate_windows_file_name(name)?;
         let root = self
             .source
             .folder_root()
             .ok_or_else(|| io::Error::other("フォルダを開いていません"))?;
-        std::fs::create_dir(root.join(name))
+        let dir = if rel_dir.is_empty() { root.to_path_buf() } else { join_relative(root, rel_dir) };
+        std::fs::create_dir(dir.join(name))
+    }
+
+    fn prepare_destination(
+        &mut self,
+        root: &Path,
+        destination: &Path,
+        overwrite: bool,
+        collision_message: &str,
+    ) -> io::Result<Option<String>> {
+        let destination_rel_path = relative_entry_path(root, destination)?;
+        let exists = match std::fs::symlink_metadata(destination) {
+            Ok(_) => true,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error),
+        };
+        if !exists {
+            return Ok(None);
+        }
+        if !overwrite {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                collision_message,
+            ));
+        }
+        self.delete_entry(&destination_rel_path)?;
+        Ok(Some(destination_rel_path))
+    }
+
+    fn restore_replaced_destination(&mut self, destination_rel_path: Option<&str>) {
+        if let Some(rel_path) = destination_rel_path {
+            let _ = self.restore_deleted_entry(rel_path);
+        }
     }
 
     // サイドバー上のファイル/フォルダ見出しをリネームする。開いている文書自身または
@@ -924,7 +1227,8 @@ impl Doc {
             .parent()
             .ok_or_else(|| io::Error::other("不正なパスです"))?;
         let new_abs = parent.join(new_name);
-        std::fs::rename(&old_abs, &new_abs)?;
+        let asset_plan = markdown_asset_move_plan(&old_abs, &new_abs)?;
+        with_markdown_asset_move(asset_plan, || std::fs::rename(&old_abs, &new_abs))?;
         let current = match &mut self.source.target {
             Target::File { path, .. } | Target::Archive { path, .. } => path,
             Target::None => return self.info(String::new()),
@@ -938,48 +1242,106 @@ impl Doc {
         self.info(path_str)
     }
 
-    // フォルダビューからのD&D移動。移動元・移動先とも現在のフォルダ配下に限定し、
-    // 開いている文書のパスだけを追従させる (本文とdirty状態は保持する)。
-    pub fn move_entry(&mut self, source_rel_path: &str, target_rel_dir: &str) -> io::Result<DocInfo> {
-        let source_rel_path = normalize_move_path(source_rel_path, false)?;
-        let target_rel_dir = normalize_move_path(target_rel_dir, true)?;
+    // ファイルツリーからのコピー。コピー元・コピー先とも現在のフォルダ配下に限定し、
+    // 既存項目の上書きとシンボリックリンクのコピーは拒否する。
+    pub fn copy_entry(&mut self, source_rel_path: &str, target_rel_dir: &str) -> io::Result<DocInfo> {
+        self.copy_entry_as(source_rel_path, target_rel_dir, "", false)
+    }
+
+    pub fn copy_entry_as(
+        &mut self,
+        source_rel_path: &str,
+        target_rel_dir: &str,
+        target_name: &str,
+        overwrite: bool,
+    ) -> io::Result<DocInfo> {
         let root = self
             .source
             .folder_root()
             .map(Path::to_path_buf)
             .ok_or_else(|| io::Error::other("フォルダを開いていません"))?;
-        let source = join_relative(&root, &source_rel_path);
-        let target_dir = join_relative(&root, &target_rel_dir);
-        let source_metadata = std::fs::symlink_metadata(&source)?;
-        if source_metadata.file_type().is_symlink() {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "シンボリックリンクは移動できません",
-            ));
-        }
-        let canonical_root = root.canonicalize()?;
-        let canonical_source = source.canonicalize()?;
-        let canonical_target_dir = target_dir.canonicalize()?;
-        if !canonical_source.starts_with(&canonical_root)
-            || !canonical_target_dir.starts_with(&canonical_root)
-            || !canonical_target_dir.is_dir()
+        let EntryPaths {
+            source,
+            target_dir,
+            canonical_source,
+        } = resolve_entry_paths(&root, source_rel_path, target_rel_dir, "コピー")?;
+        let source_name = source.file_name().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "コピー元の名前を取得できません")
+        })?;
+        let name = if target_name.is_empty() {
+            source_name.to_os_string()
+        } else {
+            crate::validate_windows_file_name(target_name)?;
+            std::ffi::OsString::from(target_name)
+        };
+        let destination = target_dir.join(name);
+        if destination == source
+            || std::fs::canonicalize(&destination).ok().is_some_and(|path| path == canonical_source)
         {
             return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "フォルダの外へは移動できません",
+                io::ErrorKind::AlreadyExists,
+                "コピー先に同名のファイルまたはフォルダがあります",
             ));
         }
-        if source_metadata.is_dir() && canonical_target_dir.starts_with(&canonical_source) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "フォルダ自身やその配下へは移動できません",
-            ));
+        let replaced = self.prepare_destination(
+            &root,
+            &destination,
+            overwrite,
+            "コピー先に同名のファイルまたはフォルダがあります",
+        )?;
+        if let Err(error) = copy_entry_recursive(&source, &destination) {
+            if std::fs::symlink_metadata(&destination).is_ok() {
+                let _ = self.delete_entry_without_backup(
+                    &relative_entry_path(&root, &destination)?,
+                );
+            }
+            self.restore_replaced_destination(replaced.as_deref());
+            return Err(error);
         }
-        let name = source.file_name().ok_or_else(|| {
+        let path = self
+            .source
+            .display_path()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| root.to_string_lossy().into_owned());
+        self.info(path)
+    }
+
+    // フォルダビューからのD&D移動。移動元・移動先とも現在のフォルダ配下に限定し、
+    // 開いている文書のパスだけを追従させる (本文とdirty状態は保持する)。
+    pub fn move_entry(&mut self, source_rel_path: &str, target_rel_dir: &str) -> io::Result<DocInfo> {
+        self.move_entry_as(source_rel_path, target_rel_dir, "", false)
+    }
+
+    pub fn move_entry_as(
+        &mut self,
+        source_rel_path: &str,
+        target_rel_dir: &str,
+        target_name: &str,
+        overwrite: bool,
+    ) -> io::Result<DocInfo> {
+        let root = self
+            .source
+            .folder_root()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| io::Error::other("フォルダを開いていません"))?;
+        let EntryPaths {
+            source,
+            target_dir,
+            canonical_source,
+        } = resolve_entry_paths(&root, source_rel_path, target_rel_dir, "移動")?;
+        let source_name = source.file_name().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "移動元の名前を取得できません")
         })?;
+        let name = if target_name.is_empty() {
+            source_name.to_os_string()
+        } else {
+            crate::validate_windows_file_name(target_name)?;
+            std::ffi::OsString::from(target_name)
+        };
         let destination = target_dir.join(name);
-        if destination == source {
+        if destination == source
+            || std::fs::canonicalize(&destination).ok().is_some_and(|path| path == canonical_source)
+        {
             let path = self
                 .source
                 .display_path()
@@ -987,32 +1349,48 @@ impl Doc {
                 .unwrap_or_else(|| root.to_string_lossy().into_owned());
             return self.info(path);
         }
-        if std::fs::symlink_metadata(&destination).is_ok() {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "移動先に同名のファイルまたはフォルダがあります",
-            ));
-        }
-
+        let asset_plan = markdown_asset_move_plan(&source, &destination)?;
         let current_path = self.source.display_path().map(Path::to_path_buf);
-        let affected = current_path
-            .as_deref()
-            .is_some_and(|path| path.starts_with(&source));
-        let mut held_target = affected.then(|| std::mem::replace(&mut self.source.target, Target::None));
-        if let Err(error) = std::fs::rename(&source, &destination) {
-            if let Some(target) = held_target.take() {
-                self.source.target = target;
-            }
-            return Err(error);
-        }
-        if let Some(mut target) = held_target {
-            match &mut target {
-                Target::File { path, .. } | Target::Archive { path, .. } => {
-                    rebase_path(path, &source, &destination);
+        let affected = is_delete_target_affected(current_path.as_deref(), &canonical_source)?;
+        let replaced = self.prepare_destination(
+            &root,
+            &destination,
+            overwrite,
+            "移動先に同名のファイルまたはフォルダがあります",
+        )?;
+        let move_result = with_markdown_asset_move(asset_plan, || {
+            let mut held_target = affected.then(|| std::mem::replace(&mut self.source.target, Target::None));
+            let released_handle = held_target
+                .as_mut()
+                .map(release_target_file)
+                .unwrap_or(false);
+            let rename_result = std::fs::rename(&source, &destination);
+            match rename_result {
+                Ok(()) => {
+                    if let Some(mut target) = held_target {
+                        match &mut target {
+                            Target::File { path, .. } | Target::Archive { path, .. } => {
+                                rebase_path(path, &source, &destination);
+                            }
+                            Target::None => {}
+                        }
+                        restore_target_file(&mut target, released_handle);
+                        self.source.target = target;
+                    }
+                    Ok(())
                 }
-                Target::None => {}
+                Err(error) => {
+                    if let Some(mut target) = held_target {
+                        restore_target_file(&mut target, released_handle);
+                        self.source.target = target;
+                    }
+                    Err(error)
+                }
             }
-            self.source.target = target;
+        });
+        if let Err(error) = move_result {
+            self.restore_replaced_destination(replaced.as_deref());
+            return Err(error);
         }
 
         let path = self
@@ -1026,18 +1404,27 @@ impl Doc {
     // フォルダビューからの削除は、開いているフォルダの配下だけに限定する。
     // 巨大ファイルを選択中でも削除できるよう、削除対象なら保持中のハンドルを先に解放する。
     pub fn delete_entry(&mut self, rel_path: &str) -> io::Result<DocInfo> {
+        self.delete_entry_internal(rel_path, true)
+    }
+
+    pub fn delete_entry_without_backup(&mut self, rel_path: &str) -> io::Result<DocInfo> {
+        self.delete_entry_internal(rel_path, false)
+    }
+
+    fn delete_entry_internal(&mut self, rel_path: &str, record_backup: bool) -> io::Result<DocInfo> {
         if rel_path.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "フォルダ自体は削除できません",
             ));
         }
+        let rel_path = normalize_move_path(rel_path, false)?;
         let root = self
             .source
             .folder_root()
             .map(Path::to_path_buf)
             .ok_or_else(|| io::Error::other("フォルダを開いていません"))?;
-        let target = join_relative(&root, rel_path);
+        let target = join_relative(&root, &rel_path);
         let metadata = std::fs::symlink_metadata(&target)?;
         if metadata.file_type().is_symlink() {
             return Err(io::Error::new(
@@ -1056,32 +1443,54 @@ impl Doc {
 
         let current_path = self.source.display_path().map(Path::to_path_buf);
         let affected = is_delete_target_affected(current_path.as_deref(), &canonical_target)?;
-        let held_target = if affected {
+        let mut held_target = if affected {
             Some(std::mem::replace(&mut self.source.target, Target::None))
         } else {
             None
         };
-        let delete_result = if metadata.is_dir() {
-            std::fs::remove_dir_all(&target)
+        let released_handle = held_target
+            .as_mut()
+            .map(release_target_file)
+            .unwrap_or(false);
+        let backup = if record_backup {
+            match create_delete_backup(&target) {
+                Ok(backup) => Some(backup),
+                Err(error) => {
+                    if let Some(mut target) = held_target.take() {
+                        restore_target_file(&mut target, released_handle);
+                        self.source.target = target;
+                    }
+                    return Err(error);
+                }
+            }
         } else {
-            std::fs::remove_file(&target)
+            None
         };
+        let delete_result = Self::delete_entry_to_recycle_bin(&target);
         if let Err(error) = delete_result {
-            if let Some(target) = held_target {
+            if let Some(backup) = backup.as_deref() {
+                remove_delete_backup(backup);
+            }
+            if let Some(mut target) = held_target.take() {
+                restore_target_file(&mut target, released_handle);
                 self.source.target = target;
             }
             return Err(error);
         }
+        if let Some(backup) = backup {
+            self.deleted_entries.push(DeletedEntry {
+                relative_path: rel_path,
+                backup,
+            });
+        }
 
         if affected {
             drop(held_target);
-            self.buf = TextBuffer::new();
-            self.undo.clear();
-            self.enc = Encoding::Utf8 { bom: false };
-            self.eol = Eol::Crlf;
-            self.replace_progress = None;
-            self.byte_len = 0;
             self.source.target = Target::None;
+            self.merge_base = None;
+            self.pending_merge = None;
+            self.archive_asset = None;
+            self.replace_progress = None;
             return self.info(root.to_string_lossy().into_owned());
         }
 
@@ -1091,6 +1500,126 @@ impl Doc {
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|| root.to_string_lossy().into_owned());
         self.info(path)
+    }
+
+    // セッション内の直近の削除を元の場所へ戻す。バックアップはアプリ終了まで保持し、
+    // 再度削除した場合は新しい履歴として積み直す。
+    pub fn restore_deleted_entry(&mut self, rel_path: &str) -> io::Result<DocInfo> {
+        let rel_path = normalize_move_path(rel_path, false)?;
+        let index = self
+            .deleted_entries
+            .iter()
+            .rposition(|entry| entry.relative_path.eq_ignore_ascii_case(&rel_path))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "元に戻す削除履歴がありません"))?;
+        let entry = self.deleted_entries.remove(index);
+        let root = self
+            .source
+            .folder_root()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| io::Error::other("フォルダを開いていません"))?;
+        let target = join_relative(&root, &rel_path);
+        if std::fs::symlink_metadata(&target).is_ok() {
+            self.deleted_entries.insert(index, entry);
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "元の場所に同名のファイルまたはフォルダがあります",
+            ));
+        }
+        let parent = target
+            .parent()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "元の場所が不正です"))?;
+        let canonical_root = match root.canonicalize() {
+            Ok(path) => path,
+            Err(error) => {
+                self.deleted_entries.insert(index, entry);
+                return Err(error);
+            }
+        };
+        let canonical_parent = match parent.canonicalize() {
+            Ok(path) => path,
+            Err(error) => {
+                self.deleted_entries.insert(index, entry);
+                return Err(error);
+            }
+        };
+        if !canonical_parent.starts_with(&canonical_root) {
+            self.deleted_entries.insert(index, entry);
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "フォルダの外へは戻せません",
+            ));
+        }
+        if let Err(error) = copy_entry_recursive(&entry.backup, &target) {
+            self.deleted_entries.insert(index, entry);
+            return Err(error);
+        }
+        remove_delete_backup(&entry.backup);
+        let path = self
+            .source
+            .display_path()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| root.to_string_lossy().into_owned());
+        self.info(path)
+    }
+
+    // 同じフォルダを再オープンしたときだけ、セッション内削除の復元履歴を引き継ぐ。
+    // 別フォルダへ移る場合は相対パスが別の対象を指すため引き継がない。
+    pub fn take_deleted_entries_from(&mut self, previous: &mut Doc) {
+        let Some(root) = self.source.folder_root() else {
+            return;
+        };
+        let Some(previous_root) = previous.source.folder_root() else {
+            return;
+        };
+        let same_root = root == previous_root
+            || root.canonicalize().ok() == previous_root.canonicalize().ok();
+        if same_root {
+            self.deleted_entries = std::mem::take(&mut previous.deleted_entries);
+        }
+    }
+
+    fn delete_entry_to_recycle_bin(path: &Path) -> io::Result<()> {
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStrExt;
+            use windows_sys::Win32::UI::Shell::{
+                SHFileOperationW, SHFILEOPSTRUCTW, FOF_ALLOWUNDO, FOF_NOERRORUI,
+                FOF_NOCONFIRMATION, FOF_SILENT, FO_DELETE,
+            };
+
+            // SHFileOperationW は複数パスを受け取る形式で、終端のNULが2つ必要。
+            let mut from: Vec<u16> = path.as_os_str().encode_wide().collect();
+            from.extend([0, 0]);
+            let mut operation = SHFILEOPSTRUCTW {
+                hwnd: std::ptr::null_mut(),
+                wFunc: FO_DELETE,
+                pFrom: from.as_ptr(),
+                pTo: std::ptr::null(),
+                fFlags: (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT) as u16,
+                fAnyOperationsAborted: 0,
+                hNameMappings: std::ptr::null_mut(),
+                lpszProgressTitle: std::ptr::null(),
+            };
+            let result = unsafe { SHFileOperationW(&mut operation) };
+            if result != 0 {
+                return Err(io::Error::from_raw_os_error(result));
+            }
+            if operation.fAnyOperationsAborted != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "削除が中止されました",
+                ));
+            }
+            Ok(())
+        }
+        #[cfg(not(windows))]
+        {
+            if path.is_dir() {
+                std::fs::remove_dir_all(path)
+            } else {
+                std::fs::remove_file(path)
+            }
+        }
     }
 
     // メモごとに画像を分けないと、同じフォルダ内のメモ同士で画像の持ち主が分からなくなる。
@@ -1750,6 +2279,14 @@ impl Doc {
     }
 }
 
+impl Drop for Doc {
+    fn drop(&mut self) {
+        for entry in &self.deleted_entries {
+            remove_delete_backup(&entry.backup);
+        }
+    }
+}
+
 // ---- 検索 ----
 // 単一行に収まるパターンの1行内マッチ判定
 #[cfg(test)]
@@ -1874,6 +2411,7 @@ mod tests {
             pending_merge: None,
             archive_asset: None,
             sevenz_passwords: HashMap::new(),
+            deleted_entries: Vec::new(),
             archive_port: Arc::new(FakeArchivePort::default()),
         };
 
@@ -2206,6 +2744,7 @@ mod tests {
             pending_merge: None,
             archive_asset: None,
             sevenz_passwords: HashMap::new(),
+            deleted_entries: Vec::new(),
             archive_port: archive_port::system(),
         }
     }
@@ -2505,24 +3044,51 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    // Feature: フォルダツリーからの新規フォルダ作成
-    // Scenario: 開いているフォルダのルート直下へ空フォルダを作る
-    // Given: 空のフォルダを開いている
-    // When: notesという新規フォルダを作る
-    // Then: ルート直下にnotesディレクトリが存在する
+    // Feature: 新規メモの重複名採番
+    // Scenario: 入力名が存在するとベース名を保持して末尾へ数字を付ける
+    // Given: `memo.txt`と`memo1.txt`が存在する
+    // When: `memo.txt`を新規メモ名として作成する
+    // Then: `memo2.txt`を作成して開く
     #[test]
-    fn create_folder_at_workspace_root() {
+    fn create_note_appends_number_to_the_requested_stem_when_taken() {
+        let root = std::env::temp_dir().join(format!(
+            "wasabipad_create_note_duplicate_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("memo.txt"), "").unwrap();
+        std::fs::write(root.join("memo1.txt"), "").unwrap();
+
+        let mut d = Doc::open(&root).unwrap();
+        let info = d
+            .create_note(None, "memo.txt", Encoding::Utf8 { bom: false }, Eol::Crlf)
+            .unwrap();
+
+        assert_eq!(info.path, root.join("memo2.txt").to_string_lossy());
+        assert!(root.join("memo2.txt").is_file());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    // Feature: ファイルツリーからの新規フォルダ作成
+    // Scenario: 開いているフォルダの指定先直下へ空フォルダを作る
+    // Given: 空のフォルダを開いている
+    // When: `docs`配下にnotesという新規フォルダを作る
+    // Then: `docs`直下にnotesディレクトリが存在する
+    #[test]
+    fn create_folder_at_requested_directory() {
         let root = std::env::temp_dir().join(format!(
             "wasabipad_create_folder_{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir(root.join("docs")).unwrap();
         let d = Doc::open(&root).unwrap();
 
-        d.create_folder("notes").unwrap();
+        d.create_folder("docs", "notes").unwrap();
 
-        assert!(root.join("notes").is_dir());
+        assert!(root.join("docs/notes").is_dir());
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -2990,6 +3556,86 @@ mod tests {
         (root, d)
     }
 
+    // Feature: 文書画像フォルダの改名追従
+    // Scenario: Markdown文書の名前変更に対応する画像フォルダを追従させる
+    // Given: memo.md と image_markdown/memo/pasted-image.png がある
+    // When: memo.md を renamed.md へ改名する
+    // Then: 文書と画像フォルダが同じ新しいstemへ移る
+    #[test]
+    fn renaming_markdown_file_moves_its_image_directory() {
+        let root = std::env::temp_dir().join(format!("wasabipad_rename_image_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("image_markdown/memo")).unwrap();
+        std::fs::write(root.join("memo.md"), "memo").unwrap();
+        std::fs::write(root.join("image_markdown/memo/pasted-image.png"), [1, 2, 3]).unwrap();
+
+        let mut d = Doc::open(&root).unwrap();
+        d.rename_entry("memo.md", "renamed.md").unwrap();
+
+        assert!(root.join("renamed.md").is_file());
+        assert!(!root.join("memo.md").exists());
+        assert!(root.join("image_markdown/renamed/pasted-image.png").is_file());
+        assert!(!root.join("image_markdown/memo").exists());
+        drop(d);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Feature: 文書画像フォルダの移動追従
+    // Scenario: Markdown文書を別フォルダへ移動すると対応する画像フォルダも移す
+    // Given: memo.md、image_markdown/memo、destフォルダがある
+    // When: memo.md を dest へ移動する
+    // Then: dest/memo.md と dest/image_markdown/memo が作られる
+    #[test]
+    fn moving_markdown_file_moves_its_image_directory() {
+        let root = std::env::temp_dir().join(format!("wasabipad_move_image_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("dest")).unwrap();
+        std::fs::create_dir_all(root.join("image_markdown/memo")).unwrap();
+        std::fs::write(root.join("memo.md"), "memo").unwrap();
+        std::fs::write(root.join("image_markdown/memo/pasted-image.png"), [1, 2, 3]).unwrap();
+
+        let mut d = Doc::open(&root).unwrap();
+        d.move_entry("memo.md", "dest").unwrap();
+
+        assert!(root.join("dest/memo.md").is_file());
+        assert!(!root.join("memo.md").exists());
+        assert!(root.join("dest/image_markdown/memo/pasted-image.png").is_file());
+        assert!(!root.join("image_markdown/memo").exists());
+        drop(d);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Feature: 文書画像フォルダの衝突保護
+    // Scenario: 移動先に同名の文書画像フォルダがある移動を拒否する
+    // Given: 元のmemo.md/画像フォルダと、移動先のmemo.md/画像フォルダがある
+    // When: memo.md を dest へ移動する
+    // Then: AlreadyExistsを返し、元と移動先の両方を保持する
+    #[test]
+    fn moving_markdown_file_rejects_an_existing_image_directory() {
+        let root = std::env::temp_dir().join(format!("wasabipad_move_image_collision_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("dest/image_markdown/memo")).unwrap();
+        std::fs::create_dir_all(root.join("image_markdown/memo")).unwrap();
+        std::fs::write(root.join("memo.md"), "source").unwrap();
+        std::fs::write(root.join("dest/memo.md"), "destination").unwrap();
+        std::fs::write(root.join("image_markdown/memo/source.png"), [1]).unwrap();
+        std::fs::write(root.join("dest/image_markdown/memo/destination.png"), [2]).unwrap();
+
+        let mut d = Doc::open(&root).unwrap();
+        let error = match d.move_entry("memo.md", "dest") {
+            Ok(_) => panic!("同名の文書画像フォルダがある移動を受理した"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read_to_string(root.join("memo.md")).unwrap(), "source");
+        assert_eq!(std::fs::read_to_string(root.join("dest/memo.md")).unwrap(), "destination");
+        assert!(root.join("image_markdown/memo/source.png").is_file());
+        assert!(root.join("dest/image_markdown/memo/destination.png").is_file());
+        drop(d);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn pasted_image_is_saved_under_the_memo_specific_directory() {
         let (root, mut d) = image_fixture("path");
@@ -3053,8 +3699,13 @@ mod tests {
         assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
     }
 
+    // Feature: ファイル項目のごみ箱移動
+    // Scenario: 選択中のファイルを削除しても編集中の本文を保持する
+    // Given: フォルダ内の`memo.txt`を選択している
+    // When: `delete_entry`で`memo.txt`を削除する
+    // Then: 本文を保持したまま保存先を失った文書情報を返す
     #[test]
-    fn deleting_selected_folder_entry_resets_the_document_to_the_folder() {
+    fn deleting_selected_folder_entry_preserves_the_document_buffer() {
         let root = std::env::temp_dir().join(format!("wasabipad_delete_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
@@ -3066,8 +3717,78 @@ mod tests {
         assert!(!root.join("memo.txt").exists());
         assert!(d.path().is_none());
         assert_eq!(d.line_count(), 1);
+        assert_eq!(d.lines(0, 1), vec!["memo"]);
         let root_string = root.to_string_lossy().into_owned();
         assert_eq!(info.folder_root.as_deref(), Some(root_string.as_str()));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Feature: 削除のセッション内アンドゥ
+    // Scenario: ごみ箱へ移動したファイルを元の場所へ戻す
+    // Given: フォルダ内に`memo.txt`がある
+    // When: 削除してから同じセッションで復元する
+    // Then: 元の内容とパスが復元される
+    #[test]
+    fn deleted_folder_entry_can_be_restored_in_the_same_session() {
+        let root = std::env::temp_dir().join(format!("wasabipad_restore_delete_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("memo.txt"), "memo").unwrap();
+
+        let mut d = Doc::open(&root).unwrap();
+        d.select_entry("memo.txt").unwrap().unwrap();
+        d.delete_entry("memo.txt").unwrap();
+        assert!(!root.join("memo.txt").exists());
+
+        d.restore_deleted_entry("memo.txt").unwrap();
+        assert_eq!(std::fs::read_to_string(root.join("memo.txt")).unwrap(), "memo");
+        assert_eq!(d.lines(0, 1), vec!["memo"]);
+        drop(d);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Feature: 削除のセッション内アンドゥ
+    // Scenario: 新規メモ作成後も削除したファイルを復元する
+    // Given: `memo.txt`を削除したフォルダ文書がある
+    // When: 同じフォルダで新規メモを作成してから削除履歴を復元する
+    // Then: `memo.txt`が元の内容で復元される
+    #[test]
+    fn deleted_folder_entry_can_be_restored_after_creating_another_note() {
+        let root = std::env::temp_dir().join(format!("wasabipad_restore_after_note_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("memo.txt"), "memo").unwrap();
+
+        let mut d = Doc::open(&root).unwrap();
+        d.delete_entry("memo.txt").unwrap();
+        d.create_note(None, "other.txt", Encoding::Utf8 { bom: false }, Eol::Lf).unwrap();
+        d.restore_deleted_entry("memo.txt").unwrap();
+
+        assert_eq!(std::fs::read_to_string(root.join("memo.txt")).unwrap(), "memo");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Feature: 削除のセッション内アンドゥ
+    // Scenario: 同じフォルダを開き直しても削除履歴を復元する
+    // Given: `memo.txt`を削除したフォルダ文書がある
+    // When: 同じフォルダを開き直して削除履歴を引き継ぎ、復元する
+    // Then: `memo.txt`が元の内容で復元される
+    #[test]
+    fn deleted_folder_entry_can_be_restored_after_reopening_the_same_folder() {
+        let root = std::env::temp_dir().join(format!("wasabipad_restore_reopen_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("memo.txt"), "memo").unwrap();
+
+        let mut original = Doc::open(&root).unwrap();
+        original.delete_entry("memo.txt").unwrap();
+        let mut reopened = Doc::open(&root).unwrap();
+        reopened.take_deleted_entries_from(&mut original);
+
+        reopened.restore_deleted_entry("memo.txt").unwrap();
+        assert_eq!(std::fs::read_to_string(root.join("memo.txt")).unwrap(), "memo");
+        drop(original);
+        drop(reopened);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -3091,6 +3812,185 @@ mod tests {
         assert_eq!(d.path(), Some(root.join("sub2/memo.txt").as_path()));
         assert_eq!(info.path, root.join("sub2").join("memo.txt").to_string_lossy());
         assert_eq!(d.lines(0, 1), vec!["memo"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Feature: ファイルツリーのルート直下への移動
+    // Scenario: 選択中の子ファイルをワークスペース直下へ移動する
+    // Given: folderA/fileA.txt を開いているフォルダ文書
+    // When: 空の相対パスを移動先に指定する
+    // Then: fileA.txt がルート直下へ移動し、開いているパスも追従する
+    #[test]
+    fn moving_selected_nested_file_to_workspace_root_updates_the_open_path() {
+        let root = std::env::temp_dir().join(format!("wasabipad_move_root_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("folderA")).unwrap();
+        std::fs::write(root.join("folderA/fileA.txt"), "file A").unwrap();
+
+        let mut document = Doc::open(&root).unwrap();
+        document.select_entry("folderA/fileA.txt").unwrap().unwrap();
+        let info = document.move_entry("folderA/fileA.txt", "").unwrap();
+
+        assert!(root.join("fileA.txt").is_file());
+        assert!(!root.join("folderA/fileA.txt").exists());
+        assert_eq!(document.path(), Some(root.join("fileA.txt").as_path()));
+        assert_eq!(info.path, root.join("fileA.txt").to_string_lossy());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Feature: ファイルツリーからのコピー
+    // Scenario: ファイルを別フォルダへコピーする
+    // Given: memo.txt と dest フォルダがあるフォルダ文書
+    // When: memo.txt を dest へコピーする
+    // Then: 元ファイルを残したまま dest/memo.txt を作成する
+    #[test]
+    fn copying_file_keeps_the_source_and_creates_the_destination() {
+        let root = std::env::temp_dir().join(format!("wasabipad_copy_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("dest")).unwrap();
+        std::fs::write(root.join("memo.txt"), "memo").unwrap();
+
+        let mut d = Doc::open(&root).unwrap();
+        d.copy_entry("memo.txt", "dest").unwrap();
+
+        assert_eq!(std::fs::read_to_string(root.join("memo.txt")).unwrap(), "memo");
+        assert_eq!(std::fs::read_to_string(root.join("dest/memo.txt")).unwrap(), "memo");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Feature: ファイルツリーからのコピー
+    // Scenario: フォルダを別フォルダへ再帰コピーする
+    // Given: source フォルダと配下の memo.txt、dest フォルダがある
+    // When: source を dest へコピーする
+    // Then: 配下のファイルを含む dest/source を作成し、元フォルダを残す
+    #[test]
+    fn copying_directory_recursively_keeps_the_source() {
+        let root = std::env::temp_dir().join(format!("wasabipad_copy_dir_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("source/nested")).unwrap();
+        std::fs::create_dir(root.join("dest")).unwrap();
+        std::fs::write(root.join("source/nested/memo.txt"), "memo").unwrap();
+
+        let mut d = Doc::open(&root).unwrap();
+        d.copy_entry("source", "dest").unwrap();
+
+        assert!(root.join("source/nested/memo.txt").is_file());
+        assert_eq!(
+            std::fs::read_to_string(root.join("dest/source/nested/memo.txt")).unwrap(),
+            "memo",
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Feature: ファイルツリーからのコピー
+    // Scenario: コピー先の同名項目を上書きしない
+    // Given: memo.txt と dest/memo.txt がある
+    // When: memo.txt を dest へコピーする
+    // Then: AlreadyExistsを返し、両方の内容を保持する
+    #[test]
+    fn copying_entry_rejects_an_existing_destination() {
+        let root = std::env::temp_dir().join(format!("wasabipad_copy_collision_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("dest")).unwrap();
+        std::fs::write(root.join("memo.txt"), "source").unwrap();
+        std::fs::write(root.join("dest/memo.txt"), "destination").unwrap();
+
+        let mut d = Doc::open(&root).unwrap();
+        let error = match d.copy_entry("memo.txt", "dest") {
+            Ok(_) => panic!("同名ファイルがあるコピー先を受理した"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read_to_string(root.join("memo.txt")).unwrap(), "source");
+        assert_eq!(std::fs::read_to_string(root.join("dest/memo.txt")).unwrap(), "destination");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Feature: ファイルツリーの競合処理
+    // Scenario: 指定した別名でファイルをコピーする
+    // Given: memo.txt と dest フォルダがある
+    // When: memo.txt を dest/memo-copy.txt としてコピーする
+    // Then: 指定名のコピーを作成し、元ファイルを残す
+    #[test]
+    fn copying_entry_as_creates_the_requested_name() {
+        let root = std::env::temp_dir().join(format!("wasabipad_copy_as_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("dest")).unwrap();
+        std::fs::write(root.join("memo.txt"), "source").unwrap();
+
+        let mut d = Doc::open(&root).unwrap();
+        d.copy_entry_as("memo.txt", "dest", "memo-copy.txt", false).unwrap();
+
+        assert!(root.join("memo.txt").is_file());
+        assert_eq!(std::fs::read_to_string(root.join("dest/memo-copy.txt")).unwrap(), "source");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Feature: ファイルツリーの置換とUndo
+    // Scenario: コピーで置き換えた項目を元の内容へ戻す
+    // Given: memo.txt と、別内容の dest/memo.txt がある
+    // When: memo.txt を dest/memo.txt へ上書きコピーし、新しい項目を履歴なし削除する
+    // Then: 削除履歴から元の dest/memo.txt を復元できる
+    #[test]
+    fn copying_entry_overwrite_keeps_the_replaced_entry_restorable() {
+        let root = std::env::temp_dir().join(format!("wasabipad_copy_overwrite_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("dest")).unwrap();
+        std::fs::write(root.join("memo.txt"), "source").unwrap();
+        std::fs::write(root.join("dest/memo.txt"), "destination").unwrap();
+
+        let mut d = Doc::open(&root).unwrap();
+        d.copy_entry_as("memo.txt", "dest", "memo.txt", true).unwrap();
+        assert_eq!(std::fs::read_to_string(root.join("dest/memo.txt")).unwrap(), "source");
+
+        d.delete_entry_without_backup("dest/memo.txt").unwrap();
+        d.restore_deleted_entry("dest/memo.txt").unwrap();
+        assert_eq!(std::fs::read_to_string(root.join("dest/memo.txt")).unwrap(), "destination");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Feature: ファイルツリーの競合処理
+    // Scenario: 切り取り項目を指定した別名で移動する
+    // Given: memo.txt と dest フォルダがある
+    // When: memo.txt を dest/memo-copy.txt として移動する
+    // Then: 元パスを消し、指定名のファイルを作成する
+    #[test]
+    fn moving_entry_as_uses_the_requested_name() {
+        let root = std::env::temp_dir().join(format!("wasabipad_move_as_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("dest")).unwrap();
+        std::fs::write(root.join("memo.txt"), "source").unwrap();
+
+        let mut d = Doc::open(&root).unwrap();
+        d.move_entry_as("memo.txt", "dest", "memo-copy.txt", false).unwrap();
+
+        assert!(!root.join("memo.txt").exists());
+        assert_eq!(std::fs::read_to_string(root.join("dest/memo-copy.txt")).unwrap(), "source");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Feature: ファイルツリーの置換とUndo
+    // Scenario: 移動で置き換えた項目を元の内容へ戻す
+    // Given: memo.txt と、別内容の dest/memo.txt がある
+    // When: memo.txt を dest/memo.txt へ上書き移動し、新しい項目を履歴なし削除する
+    // Then: 削除履歴から元の dest/memo.txt を復元できる
+    #[test]
+    fn moving_entry_overwrite_keeps_the_replaced_entry_restorable() {
+        let root = std::env::temp_dir().join(format!("wasabipad_move_overwrite_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("dest")).unwrap();
+        std::fs::write(root.join("memo.txt"), "source").unwrap();
+        std::fs::write(root.join("dest/memo.txt"), "destination").unwrap();
+
+        let mut d = Doc::open(&root).unwrap();
+        d.move_entry_as("memo.txt", "dest", "memo.txt", true).unwrap();
+        assert!(!root.join("memo.txt").exists());
+        assert_eq!(std::fs::read_to_string(root.join("dest/memo.txt")).unwrap(), "source");
+
+        d.delete_entry_without_backup("dest/memo.txt").unwrap();
+        d.restore_deleted_entry("dest/memo.txt").unwrap();
+        assert_eq!(std::fs::read_to_string(root.join("dest/memo.txt")).unwrap(), "destination");
         let _ = std::fs::remove_dir_all(&root);
     }
 

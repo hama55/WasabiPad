@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { resolveArchiveAssetEntry, resolveAssetPath } from "./viewer-assets";
+import {
+  isExternalMarkdownLink,
+  isLocalMarkdownLinkCandidate,
+  isSameDocumentMarkdownLink,
+  markdownFragmentOf,
+  markdownLinkTargetOf,
+  resolveArchiveAssetEntry,
+  resolveAssetPath,
+  resolveMarkdownLinkPath,
+} from "./viewer-assets";
 
 const SOURCE = "C:\\work\\docs\\readme.md";
 
@@ -48,5 +57,52 @@ describe("Feature: resolveArchiveAssetEntry", () => {
   it("Scenario: 外部URLとアーカイブ外への移動は触らない", () => {
     expect(resolveArchiveAssetEntry("readme.md", "https://example.com/a.png")).toBeNull();
     expect(resolveArchiveAssetEntry("readme.md", "../../a.png")).toBeNull();
+  });
+});
+
+describe("Feature: resolveMarkdownLinkPath", () => {
+  // Given: C:\work\notes\readme.md と `../manual.md#install`
+  // When: Markdownリンクを実パスへ解決する
+  // Then: C:\work\manual.mdを返し、外部URLとfragmentだけのリンクは対象外にする
+  it("Scenario: Markdownリンクを新規タブ用のローカルパスへ解決する", () => {
+    expect(resolveMarkdownLinkPath("C:\\work\\notes\\readme.md", "../manual.md#install"))
+      .toBe("C:\\work\\manual.md");
+    expect(resolveMarkdownLinkPath("C:\\work\\notes\\readme.md", "https://example.com"))
+      .toBeNull();
+    expect(resolveMarkdownLinkPath("C:\\work\\notes\\readme.md", "//example.com/manual.md"))
+      .toBeNull();
+    expect(resolveMarkdownLinkPath("C:\\work\\notes\\readme.md", "#install"))
+      .toBeNull();
+  });
+
+  // Given: HTTPS/HTTP、mailto、相対パス、同一文書fragmentを含むリンク
+  // When: Markdownリンクの種類とfragmentを判定する
+  // Then: HTTP系だけを外部URL、mailtoは対象外、fragmentはURLデコードして返す
+  it("Scenario: Markdownリンクの外部URLとfragmentを判定する", () => {
+    expect(isExternalMarkdownLink("https://zenn.dev/more_tech_blog/articles/76af481ab3816d?lang=ja#本文"))
+      .toBe(true);
+    expect(isExternalMarkdownLink("HTTP://example.com/manual#top")).toBe(true);
+    expect(isExternalMarkdownLink("mailto:user@example.com")).toBe(false);
+    expect(isLocalMarkdownLinkCandidate("../manual.md#install")).toBe(true);
+    expect(isLocalMarkdownLinkCandidate("mailto:user@example.com")).toBe(false);
+    expect(isLocalMarkdownLinkCandidate("//example.com/manual.md")).toBe(false);
+    expect(markdownLinkTargetOf("../manual.md?print=1#%E3%83%88%E3%83%83%E3%83%97")).toEqual({
+      path: "../manual.md",
+      fragment: "トップ",
+    });
+    expect(markdownFragmentOf("../manual.md#%E3%83%88%E3%83%83%E3%83%97")).toBe("トップ");
+    expect(markdownFragmentOf("#")).toBe("");
+    expect(markdownFragmentOf("../manual.md")).toBeNull();
+  });
+
+  // Given: 元文書が`C:\\work\\notes\\readme.md`
+  // When: 同じ文書を指すfragmentリンクと別文書fragmentリンクを判定する
+  // Then: 空パスまたは同じ絶対パスだけを同一文書として扱う
+  it("Scenario: 同一文書fragmentだけを現在のMarkdownへ結び付ける", () => {
+    expect(isSameDocumentMarkdownLink(SOURCE, "#install")).toBe(true);
+    expect(isSameDocumentMarkdownLink(SOURCE, "readme.md#install")).toBe(true);
+    expect(isSameDocumentMarkdownLink(SOURCE, "../manual.md#install")).toBe(false);
+    expect(isSameDocumentMarkdownLink(SOURCE, "https://example.com/#install")).toBe(false);
+    expect(isSameDocumentMarkdownLink(null, "#install")).toBe(true);
   });
 });

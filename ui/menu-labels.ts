@@ -1,5 +1,9 @@
 export const MENU_LABELS = {
   explorer: "エクスプローラで開く",
+  cut: "切り取り",
+  copy: "コピー",
+  paste: "貼り付け",
+  copyPath: "パスをコピー",
   newTab: "新規タブで開く",
   newWindow: "新規ウィンドウで開く",
   expandFolder: "フォルダを全展開",
@@ -7,6 +11,7 @@ export const MENU_LABELS = {
   address: "アドレスバーに設定",
   favorite: "お気に入りに追加",
   newMemo: "新規メモ作成...",
+  newFolder: "新規フォルダ",
   rename: "名前を変更...",
   more: "その他",
   delete: "削除",

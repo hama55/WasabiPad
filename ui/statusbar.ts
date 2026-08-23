@@ -4,13 +4,12 @@ import { readEncodingOf } from "./session";
 import { formatByteSize, formatCursor, formatFontFamily, formatLineCount, formatModifiedAt } from "./format";
 import { DEFAULT_INDENT_SIZE, INDENT_SIZES, promptFontFamily, promptFontSize } from "./font-controls";
 import { confirmMessage, promptFields } from "./prompt";
-import { normalizeTheme, THEME_STORAGE_KEY, THEMES, type Theme } from "./theme";
+import { normalizeTheme, THEME_LABELS, THEME_STORAGE_KEY, THEMES, type Theme } from "./theme";
 import { runAsyncBoundary } from "./async-boundary";
 import { viewerFormatSpec } from "./viewer-formats";
 import { reportErrorSafely } from "./report-error";
 import { ENCODING_LABELS } from "./generated/Protocol";
 
-const THEME_LABELS: Record<Theme, string> = { dark: "ダーク", light: "ライト" };
 function option(value: string, label: string): HTMLOptionElement {
   const element = document.createElement("option");
   element.value = value;
@@ -38,6 +37,7 @@ export class StatusBar {
   private wrap = false;
   private fontFamily = "";
   private fontSize = 0;
+  private modifiedAt: number | null = null;
   // change 後の select からは元の値が読めないため、直近に表示した値を控えておく
   private shownReadEncoding: ReadEncoding = "utf8";
 
@@ -147,7 +147,13 @@ export class StatusBar {
   }
 
   setModifiedAt(timestamp: number | null) {
-    this.pick("st-modified").textContent = formatModifiedAt(timestamp);
+    this.modifiedAt = timestamp;
+    this.refreshModifiedAt();
+  }
+
+  // 相対時刻は時間経過で変わるため、メイン画面の定期更新から呼び出す。
+  refreshModifiedAt() {
+    this.pick("st-modified").textContent = formatModifiedAt(this.modifiedAt);
   }
 
   setMode(label: string) {

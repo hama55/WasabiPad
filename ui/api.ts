@@ -111,16 +111,26 @@ export const workspaceSearchCancel = (searchId: number) =>
 export const createNote = (dir: string | null, name: string, enc: Encoding, eol: Eol) =>
   invoke<DocInfo>(IPC_COMMANDS.createNote, { dir, name, enc, eol });
 
-export const createFolder = (name: string) =>
-  invoke<void>(IPC_COMMANDS.createFolder, { name });
+export const createFolder = (relDir: string, name: string) =>
+  invoke<void>(IPC_COMMANDS.createFolder, { relDir, name });
 
 // サイドバー上のファイル/フォルダをリネームする (relPath はフォルダルートからの相対パス)
 export const renameEntry = (relPath: string, newName: string) =>
   invoke<DocInfo>(IPC_COMMANDS.renameEntry, { relPath, newName });
 export const moveEntry = (sourceRelPath: string, targetRelDir: string) =>
   invoke<DocInfo>(IPC_COMMANDS.moveEntry, { sourceRelPath, targetRelDir });
+export const copyEntry = (sourceRelPath: string, targetRelDir: string) =>
+  invoke<DocInfo>(IPC_COMMANDS.copyEntry, { sourceRelPath, targetRelDir });
+export const copyEntryAs = (sourceRelPath: string, targetRelDir: string, targetName: string, overwrite = false) =>
+  invoke<DocInfo>(IPC_COMMANDS.copyEntryAs, { sourceRelPath, targetRelDir, targetName, overwrite });
+export const moveEntryAs = (sourceRelPath: string, targetRelDir: string, targetName: string, overwrite = false) =>
+  invoke<DocInfo>(IPC_COMMANDS.moveEntryAs, { sourceRelPath, targetRelDir, targetName, overwrite });
 export const deleteEntry = (relPath: string) =>
   invoke<DocInfo>(IPC_COMMANDS.deleteEntry, { relPath });
+export const deleteEntryWithoutBackup = (relPath: string) =>
+  invoke<DocInfo>(IPC_COMMANDS.deleteEntryWithoutBackup, { relPath });
+export const restoreDeletedEntry = (relPath: string) =>
+  invoke<DocInfo>(IPC_COMMANDS.restoreDeletedEntry, { relPath });
 
 export const savePastedImage = (bytes: number[], mimeType: string) =>
   invoke<string>(IPC_COMMANDS.savePastedImage, { bytes, mimeType });
@@ -136,6 +146,8 @@ export const openInOtherApp = (path: string) =>
   invoke<void>(IPC_COMMANDS.openInOtherApp, { path });
 export const openInDefaultBrowser = (path: string) =>
   invoke<void>(IPC_COMMANDS.openInDefaultBrowser, { path });
+export const openExternalUrl = (url: string) =>
+  invoke<void>(IPC_COMMANDS.openExternalUrl, { url });
 export const runExternalCommand = (command: string, path: string) =>
   invoke<void>(IPC_COMMANDS.runExternalCommand, { command, path });
 

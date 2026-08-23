@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
 import {
+  markdownHeadingSlug,
   markdownBlockSelected,
   markdownHighlightTargets,
   placeMarkdownCaret,
   renderRawHtml,
+  scrollMarkdownFragment,
   scrollMarkdownCaret,
 } from "./viewer-markdown";
 
@@ -46,6 +48,51 @@ describe("Feature: Markdown viewer specifications", () => {
   // Then: 安全な改行要素としてそのまま描画する
   it("Scenario: br要素をMarkdownの改行として許可する", () => {
     expect(renderRawHtml("<br>", escape)).toBe("<br>");
+  });
+
+  // Given: 空のa要素と、スクリプト要素を含む生HTML
+  // When: `renderRawHtml`を呼ぶ
+  // Then: id付きの安全なアンカーだけをHTMLとして残し、スクリプトは文字列化する
+  it("Scenario: 明示アンカーだけを安全な生HTMLとして許可する", () => {
+    expect(renderRawHtml('<a id="install"></a>', escape)).toBe('<a id="install"></a>');
+    expect(renderRawHtml('<span name="legacy">インストール</span>', escape))
+      .toBe('<span name="legacy">インストール</span>');
+    expect(renderRawHtml('<script id="bad">alert(1)</script>', escape))
+      .toBe("&lt;script id=\"bad\"&gt;alert(1)&lt;/script&gt;");
+  });
+
+  // Given: `Install Guide v2!`というMarkdown見出し
+  // When: 見出しのfragment IDを生成する
+  // Then: 小文字化し、句読点を除き、空白をハイフンへ変換する
+  it("Scenario: Markdown見出しからfragment用スラッグを作る", () => {
+    expect(markdownHeadingSlug("Install Guide v2!")).toBe("install-guide-v2");
+    expect(markdownHeadingSlug("日本語の 見出し")).toBe("日本語の-見出し");
+  });
+
+  // Given: id付きの対象要素、name付きの対象要素、スクロール可能な本文
+  // When: fragmentへ移動する
+  // Then: 最初に一致した要素を先頭へスクロールし、空fragmentは本文先頭へ戻す
+  it("Scenario: Markdown fragmentを対象要素へスクロールする", () => {
+    const article = document.createElement("article");
+    const byId = document.createElement("h2");
+    byId.id = "install";
+    const byName = document.createElement("a");
+    byName.setAttribute("name", "legacy");
+    const articleScroll = vi.fn();
+    const idScroll = vi.fn();
+    const nameScroll = vi.fn();
+    article.scrollIntoView = articleScroll;
+    byId.scrollIntoView = idScroll;
+    byName.scrollIntoView = nameScroll;
+    article.append(byId, byName);
+
+    expect(scrollMarkdownFragment(article, "install")).toBe(true);
+    expect(idScroll).toHaveBeenCalledWith({ block: "start", inline: "nearest" });
+    expect(scrollMarkdownFragment(article, "legacy")).toBe(true);
+    expect(nameScroll).toHaveBeenCalledWith({ block: "start", inline: "nearest" });
+    expect(scrollMarkdownFragment(article, "missing")).toBe(false);
+    expect(scrollMarkdownFragment(article, "")).toBe(true);
+    expect(articleScroll).toHaveBeenCalledWith({ block: "start", inline: "nearest" });
   });
 
   // Given: outer範囲`0..3`内にinner範囲`1..2`とnext範囲`3..4`を配置

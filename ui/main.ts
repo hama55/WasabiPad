@@ -4,6 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { desktopDir } from "@tauri-apps/api/path";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { writeText as writeClipboardText } from "@tauri-apps/plugin-clipboard-manager";
 import * as api from "./api";
 import { applyDocumentLoadProgress } from "./document-load-progress";
 import { VirtualEditor } from "./editor";
@@ -38,10 +39,12 @@ import {
   flushSettings,
   initSettings,
   loadSearchOptions,
+  resetUserSettings,
   saveSearchOptions,
   setSetting,
 } from "./settings";
-import { THEME_STORAGE_KEY } from "./theme";
+import { normalizeTheme, THEME_STORAGE_KEY } from "./theme";
+import { openSettingsMenu, openSettingsModal, type SettingsCloseHandle, type SettingsPanelPorts } from "./settings-panel";
 import { searchResultGoto } from "./search-results";
 import { runAsyncBoundary, reportUnhandledRejection } from "./async-boundary";
 import { openPath as openPathInTabs } from "./path-opener";
@@ -69,6 +72,7 @@ import { reportErrorSafely } from "./report-error";
 import { processExternalWindowRequests } from "./external-window-request";
 import { canCloseWindow } from "./close-request";
 import { createAsyncUnlisten } from "./async-unlisten";
+import { markdownLinkActionOf } from "./markdown-link-navigation";
 
 const win = getCurrentWindow();
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -108,6 +112,8 @@ let previewFullscreenTabId: string | null = null;
 let currentLine = 1;
 let tabs: TabManager;
 let sidebar: Sidebar;
+let settingsMenu: SettingsCloseHandle | null = null;
+let settingsPorts: SettingsPanelPorts;
 let restoringEditorFont = true;
 let imageCleanupTimer: number | undefined;
 let externalRequestChain = Promise.resolve();
@@ -229,6 +235,33 @@ const inlinePreview = new InlinePreview(previewEl, {
   onFontFamilyChange: (family) => editor.setFont(family, getSetting("fontSize"), "family"),
   onSelectionChange: (selection) =>
     runBackground("エディタの位置を同期できませんでした", () => editor.goToPreview(selection)),
+  onMarkdownLink: (href, newTab) => {
+    const sourceTabId = previewDocument?.ownerTabId ?? tabs?.state.activeId ?? null;
+    return runBackground(
+      "Markdownリンクを開けませんでした",
+      async () => {
+        const sourcePath = previewDocument?.ownerTabId === sourceTabId
+          ? sourcePathForViewer(previewDocument.format, doc.current.savePath, doc.current.displayPath)
+          : doc.current.savePath;
+        const action = markdownLinkActionOf(sourcePath, href, newTab);
+        if (action.kind === "external") {
+          await api.openExternalUrl(action.href);
+          return;
+        }
+        if (action.kind === "unchanged") return;
+        if (action.kind === "unresolved") throw new Error(action.message);
+        if (!action.newTab) {
+          if (!await openPathInTabs(tabs, action.path, false)) {
+            throw new Error("リンク先ファイルが見つかりません");
+          }
+          return;
+        }
+        if (!await tabs.openMarkdownLink(action.path, sourceTabId, action.fragment)) {
+          throw new Error("リンク先ファイルが見つかりません");
+        }
+      },
+    );
+  },
   onFullscreenChange: () => {
     previewFullscreen = !previewFullscreen;
     previewFullscreenTabId = previewFullscreen ? tabs.state.activeId : null;
@@ -255,14 +288,26 @@ function runPreviewBackground(
   });
 }
 
-function openPreviewFormat(session: Readonly<DocumentSession>, path: string, format: api.ViewerFormat) {
+function openPreviewFormat(
+  session: Readonly<DocumentSession>,
+  path: string,
+  format: api.ViewerFormat,
+  fragment: string | null = null,
+) {
   const sourcePath = sourcePathForViewer(format, session.savePath, session.displayPath);
   inlinePreview.setSourcePath(sourcePath, session.archivePath, session.archiveEntry);
   statusbar.setPreviewFormat(format);
-  runPreviewBackground({ ownerTabId: tabs?.state.activeId ?? null, path, format }, "ビューを表示できませんでした", () => editor.openTextViewer(format));
+  runPreviewBackground(
+    { ownerTabId: tabs?.state.activeId ?? null, path, format },
+    "ビューを表示できませんでした",
+    async () => {
+      await editor.openTextViewer(format);
+      if (fragment !== null && format === "markdown") inlinePreview.setMarkdownFragment(fragment);
+    },
+  );
 }
 
-function syncPreviewDocument(session: Readonly<DocumentSession>, force = false) {
+function syncPreviewDocument(session: Readonly<DocumentSession>, force = false, fragment: string | null = null) {
   const path = documentPathOf(session);
   const activeTabId = tabs?.state.activeId ?? null;
   const format = effectivePreviewFormat(path, viewerFormatForPath(path), activeTabId, previewDocument);
@@ -283,7 +328,7 @@ function syncPreviewDocument(session: Readonly<DocumentSession>, force = false) 
     inlinePreview.clear();
     return;
   }
-  openPreviewFormat(session, path, format);
+  openPreviewFormat(session, path, format, fragment);
 }
 
 // ---- 部品 ----
@@ -316,11 +361,13 @@ const addressbar = new AddressBar($("topbar"), {
   onFind: () => editor.openSearch(),
   onPick: () => runBackground("ファイルを開けませんでした", () => pickAndOpen(false)),
   onFavorite: () => runBackground("お気に入りに追加できませんでした", () => favbar.addCurrent()),
+  onSettings: () => openSettings(),
 });
 
 const registeredCommandPorts = {
   promptFields,
   runExternalCommand: api.runExternalCommand,
+  writeClipboardText,
 };
 
 // 部品どうしが相互に参照するため、型注釈で推論の循環を切る
@@ -367,26 +414,77 @@ const editor: VirtualEditor = new VirtualEditor(editorHost, {
     );
   },
 });
-editor.setFont(getSetting("fontFamily"), getSetting("fontSize"));
-restoringEditorFont = false;
-editor.setTabSize(statusbar.setIndent(getSetting("indentSize")));
+function applySettingsToUi() {
+  restoringEditorFont = true;
+  editor.setFont(getSetting("fontFamily"), getSetting("fontSize"));
+  restoringEditorFont = false;
+  editor.setTabSize(statusbar.setIndent(getSetting("indentSize")));
+  inlinePreview.setFontFamily(getSetting("fontFamily"));
+  inlinePreview.setFontSize(getSetting("previewFontSize"));
+  sidebar?.setSearchOptions(loadSearchOptions());
+}
+
+applySettingsToUi();
+
+settingsPorts = {
+  getTheme: () => normalizeTheme(document.documentElement.getAttribute("data-theme")),
+  setTheme: (theme) => statusbar.restoreTheme(theme),
+  getSetting,
+  setSetting,
+  applyFontFamily: (family) => editor.setFont(family, getSetting("fontSize"), "family"),
+  applyFontSize: (size) => editor.setFont(getSetting("fontFamily"), size, "size"),
+  applyIndent: (size) => {
+    editor.setTabSize(size);
+    statusbar.setIndent(size);
+  },
+  applyPreviewFontSize: (size) => inlinePreview.setFontSize(size),
+  getSearchOptions: loadSearchOptions,
+  updateSearchOptions: (options) => {
+    saveSearchOptions(options);
+    sidebar?.setSearchOptions(options);
+  },
+  confirmReset: () => confirmMessage(
+    "設定を初期化",
+    "アプリ設定を初期値へ戻します。再開タブは保持されます。",
+    "初期化",
+  ),
+  resetSettings: () => {
+    resetUserSettings();
+    statusbar.restoreTheme("dark");
+    applySettingsToUi();
+  },
+};
+
+function openSettings() {
+  if (settingsMenu) {
+    settingsMenu.close();
+    settingsMenu = null;
+    return;
+  }
+  settingsMenu = openSettingsMenu($("addressbar-settings"), settingsPorts, () => {
+    settingsMenu?.close();
+    settingsMenu = null;
+    openSettingsModal(settingsPorts);
+  }, () => {
+    settingsMenu = null;
+  });
+}
 
 sidebar = new Sidebar(sidebarEl, {
   onSelect: async (relPath, newTab) => {
     if (newTab) return openInNewTab(relPath);
     return tabs.navigateEntry(relPath);
   },
-  onContextMenu: (x, y, target) => folderActions.showContextMenu(x, y, target),
+  onContextMenu: (x, y, target, selected) => folderActions.showContextMenu(x, y, target, selected),
+  onFileCommand: (command, selected) => folderActions.executeCommand(command, selected),
+  onRenameEntry: (relPath, newName) => folderActions.renameEntry(relPath, newName),
+  isCut: (relPath) => folderActions.isCut(relPath),
   onExpandArchive: (relPath) =>
     withArchivePassword(relPath, () => api.listArchiveEntries(relPath)),
   onExpandFolder: (relDir) => api.listFolderEntries(relDir),
-  onMoveEntry: async (sourceRelPath, targetRelDir) => {
-    const info = await api.moveEntry(sourceRelPath, targetRelDir);
-    const selectedRelPath = movedRelPath(doc.current.selectedRelPath, sourceRelPath, targetRelDir);
-    doc.applyMoved(info, selectedRelPath);
-    return selectedRelPath;
-  },
-  onCreateFolder: () => folderActions.createFolder(),
+  onDropEntries: (request) => folderActions.dropEntries(request),
+  onUndoLastDrop: () => folderActions.undoLastDrop(),
+  onCreateFolder: (relDir) => folderActions.createFolder(relDir),
   onCreateNote: () => folderActions.createNote(null),
   onTreeError: async (error) => {
     if (!isPasswordCancelled(error)) await showError("フォルダを展開できませんでした", error);
@@ -443,20 +541,6 @@ async function openInNewTab(relPath: string, goto?: api.Pos): Promise<boolean> {
   return tabs.open(joinWindowsRoot(root, relPath), goto);
 }
 
-function movedRelPath(currentRelPath: string, sourceRelPath: string, targetRelDir: string): string {
-  const current = currentRelPath.replace(/\\/g, "/");
-  const source = sourceRelPath.replace(/\\/g, "/").replace(/\/$/, "");
-  const target = targetRelDir.replace(/\\/g, "/").replace(/\/$/, "");
-  const suffix = current === source
-    ? ""
-    : current.startsWith(`${source}/`) || current.startsWith(`${source}::`)
-      ? current.slice(source.length)
-      : null;
-  if (suffix === null) return currentRelPath;
-  const name = source.split("/").at(-1) ?? source;
-  return `${target ? `${target}/` : ""}${name}${suffix}`;
-}
-
 const windowChrome = new WindowChrome($("titlebar"), win, {
   onCloseRequest: () => canCloseWindow({
     saveForExit: (onProceed) => tabs.saveForExit(onProceed),
@@ -477,7 +561,7 @@ const doc: DocumentController = new DocumentController({
   setTitle: (title) => windowChrome.setTitle(title),
   onDocumentChange: (session, keepViewers = false) => {
     tabs?.syncActive(session);
-    syncPreviewDocument(session, !keepViewers);
+    syncPreviewDocument(session, !keepViewers, tabs?.takeActiveFragment() ?? null);
   },
   onSessionChange: (session) => {
     tabs?.syncActive(session);
@@ -590,10 +674,14 @@ const folderActions = new FolderActions(doc, {
   promptFields,
   registeredCommandPorts: {
     runExternalCommand: api.runExternalCommand,
+    writeClipboardText,
   },
   getStartupPath: () => getSetting("startupPath"),
   revealInExplorer,
   openInOtherApp,
+  onClipboardChange: () => sidebar.refreshFileOperationState(),
+  writeClipboardText,
+  onRebasePath: (rebase) => tabs?.rebasePaths(rebase),
 } satisfies FolderActionsServices);
 
 // ---- 配線 ----
@@ -709,6 +797,7 @@ void getCurrentWebview().onDragDropEvent((ev) => {
 let folderRefreshRunning = false;
 let folderRefreshErrorReported = false;
 window.setInterval(async () => {
+  statusbar.refreshModifiedAt();
   if (!doc.current.folderRoot || folderRefreshRunning) return;
   folderRefreshRunning = true;
   try {

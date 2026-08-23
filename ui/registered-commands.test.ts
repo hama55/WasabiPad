@@ -29,45 +29,71 @@ describe("Feature: registered commands", () => {
 
   // Given: prefixと`{file}`付きcommandを用意
   // When: `commandLineForValue`を呼ぶ
-  // Then: prefix連結、対象pathだけ引用符付き置換
-  it("Scenario: プレフィックスを連結し、対象ファイルを指定した場所だけ置換する", () => {
+  // Then: prefix連結、対象pathだけ生値で置換
+  it("Scenario: プレフィックスを連結し、対象ファイルを指定した場所だけ生値で置換する", () => {
     expect(commandLineForValue("cmd.exe /D /C", "powershell.exe -File {file}", "C:\\work\\page.ps1"))
-      .toBe('cmd.exe /D /C powershell.exe -File "C:\\work\\page.ps1"');
+      .toBe("cmd.exe /D /C powershell.exe -File C:\\work\\page.ps1");
     expect(commandLineForValue("", "powershell.exe", "C:\\work\\page.ps1"))
       .toBe("powershell.exe");
   });
 
   // Given: 実行ファイルpathに空白があり、prefixなし
   // When: `{file}`を置換
-  // Then: 実行ファイルと対象pathをそれぞれ引用符付きで出力
+  // Then: 実行ファイルと対象pathをそれぞれ登録値のまま出力
   it("Scenario: 実行ファイルはプレフィックスなしで対象ファイルを渡す", () => {
     expect(commandLineForValue(
       "",
       '"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" {file}',
       "C:\\work\\index.html",
-    )).toBe('"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" "C:\\work\\index.html"');
+    )).toBe('"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" C:\\work\\index.html');
   });
 
   // Given: valueKind=`string`、`{string}`または`{file}`を含むcommand
   // When: 文字列値で置換
-  // Then: `{string}`だけ置換し、`{file}`は残す
+  // Then: `{string}`だけ生値で置換し、`{file}`は残す
   it("Scenario: メモビューは対象文字列用プレースホルダだけを置換する", () => {
     expect(commandLineForValue("", "open {string}", "https://example.com", "string"))
-      .toBe('open "https://example.com"');
+      .toBe("open https://example.com");
     expect(commandLineForValue("", "open {file}", "https://example.com", "string"))
       .toBe("open {file}");
   });
 
   // Given: 値に引用符・末尾`\`・改行・`$&`がある
   // When: 文字列placeholderを置換
-  // Then: 各文字を保持した引用符付きcommandを生成
+  // Then: 各文字を保持した引用符なしcommandを生成
   it("Scenario: 対象値の引用符・改行・末尾バックスラッシュを保持する", () => {
     expect(commandLineForValue("", "open {string}", "a\"b\\", "string"))
-      .toBe(String.raw`open "a\"b\\"`);
+      .toBe('open a"b\\');
     expect(commandLineForValue("", "open {string}", "line1\nline2", "string"))
-      .toBe('open "line1\nline2"');
+      .toBe("open line1\nline2");
     expect(commandLineForValue("", "open {string}", "a$&b", "string"))
-      .toBe('open "a$&b"');
+      .toBe("open a$&b");
+  });
+
+  // Given: 複数行の対象文字列と1行化・クリップボード用placeholderを含むcommand
+  // When: `commandLineForValue`を呼ぶ
+  // Then: `{string_one_line}`は改行をスペースへ変換し、`{copy_string_clipboard}`は空文字へ置換する
+  it("Scenario: 改行を安全に1行化し、クリップボードplaceholderをコマンドから外す", () => {
+    const value = "line 1\r\nline 2\nline 3\rline 4";
+
+    expect(commandLineForValue("", "open {string_one_line}", value, "string"))
+      .toBe("open line 1 line 2 line 3 line 4");
+    expect(commandLineForValue("", "open {copy_string_clipboard}", value, "string"))
+      .toBe("open ");
+  });
+
+  // Given: 改行とURL上で予約される`&`を含む選択文字列
+  // When: `{string_in_url}`を置換する
+  // Then: 選択文字列全体をURLクエリ値としてパーセントエンコードする
+  it("Scenario: URL用プレースホルダーは複数行の選択文字列をエンコードする", () => {
+    expect(commandLineForValue(
+      'cmd.exe /D /C start ""',
+      "https://translate.google.com/?op=translate^&sl=en^&tl=ja^&text={string_in_url}",
+      "line 1 & line 2\nnext",
+      "string",
+    )).toBe(
+      'cmd.exe /D /C start "" https://translate.google.com/?op=translate^&sl=en^&tl=ja^&text=line%201%20%26%20line%202%0Anext',
+    );
   });
 
   // Given: `.HTML`/`html`の同一Chromeと`.txt`メモ帳を登録

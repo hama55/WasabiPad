@@ -2,6 +2,14 @@ import type { ViewerSelection } from "./api";
 import { scrollViewerCaret } from "./viewer-scroll";
 
 const IMG_ATTRIBUTES = ["src", "alt", "title", "width", "height"];
+const ANCHOR_ATTRIBUTES = ["id", "name"];
+
+type SafeAnchor = HTMLAnchorElement | HTMLSpanElement;
+
+function isSafeAnchor(node: Node): node is SafeAnchor {
+  return (node instanceof HTMLAnchorElement || node instanceof HTMLSpanElement)
+    && node.children.length === 0;
+}
 
 export function renderRawHtml(raw: string, escape: (text: string) => string): string {
   // template の中身は不活性なので、この時点で画像取得もハンドラ実行も起きない
@@ -10,20 +18,40 @@ export function renderRawHtml(raw: string, escape: (text: string) => string): st
   const nodes = [...template.content.childNodes];
   if (!nodes.length || nodes.some((node) => {
     if (node.nodeType === Node.TEXT_NODE) return !!node.textContent?.trim();
-    return !(node instanceof HTMLImageElement || node instanceof HTMLBRElement);
+    return !(node instanceof HTMLImageElement || node instanceof HTMLBRElement || isSafeAnchor(node));
   })) return escape(raw);
   return nodes
-    .filter((node): node is HTMLImageElement | HTMLBRElement =>
-      node instanceof HTMLImageElement || node instanceof HTMLBRElement,
+    .filter((node): node is HTMLImageElement | HTMLBRElement | SafeAnchor =>
+      node instanceof HTMLImageElement || node instanceof HTMLBRElement || isSafeAnchor(node),
     )
     .map((node) => {
       if (node instanceof HTMLBRElement) return "<br>";
+      const allowed = isSafeAnchor(node) ? ANCHOR_ATTRIBUTES : IMG_ATTRIBUTES;
       for (const name of node.getAttributeNames()) {
-        if (!IMG_ATTRIBUTES.includes(name.toLowerCase())) node.removeAttribute(name);
+        if (!allowed.includes(name.toLowerCase())) node.removeAttribute(name);
       }
       return node.outerHTML;
     })
     .join("\n");
+}
+
+export function markdownHeadingSlug(text: string): string {
+  return text
+    .normalize("NFKC")
+    .toLocaleLowerCase("en-US")
+    .replace(/[^\p{L}\p{N}\s-]/gu, "")
+    .trim()
+    .replace(/\s+/gu, "-");
+}
+
+export function scrollMarkdownFragment(article: HTMLElement, fragment: string): boolean {
+  const target = fragment
+    ? [...article.querySelectorAll<HTMLElement>("[id], [name]")]
+      .find((element) => element.id === fragment || element.getAttribute("name") === fragment)
+    : article;
+  if (!target) return false;
+  target.scrollIntoView?.({ block: "start", inline: "nearest" });
+  return true;
 }
 
 export function markdownHighlightTargets(sourceElements: HTMLElement[]): HTMLElement[] {

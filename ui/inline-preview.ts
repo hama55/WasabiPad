@@ -11,9 +11,11 @@ const {
   FORMAT_CHANGE_MESSAGE,
   DELIMITER_MESSAGE,
   FONT_MESSAGE,
+  FONT_SIZE_MESSAGE,
   FONT_CHANGE_MESSAGE,
   FULLSCREEN_CHANGE_MESSAGE,
   FULLSCREEN_STATE_MESSAGE,
+  MARKDOWN_FRAGMENT_MESSAGE,
 } = INLINE_PREVIEW_MESSAGES;
 
 export interface InlinePreviewPorts {
@@ -23,6 +25,7 @@ export interface InlinePreviewPorts {
   onFontFamilyChange?: (family: string) => void;
   onFullscreenChange?: () => void | Promise<void>;
   onSelectionChange?: (selection: ViewerSelection) => void | Promise<void>;
+  onMarkdownLink?: (href: string, newTab: boolean) => void | Promise<void>;
   onError?: (error: unknown) => void | Promise<void>;
 }
 
@@ -37,7 +40,9 @@ export class InlinePreview {
   private archiveEntry: string | null = null;
   private delimiter = DEFAULT_CSV_DELIMITER;
   private fontFamily: string | null = null;
+  private fontSize: number | null = null;
   private fullscreen = false;
+  private pendingMarkdownFragment: string | null = null;
 
   constructor(
     private host: HTMLElement,
@@ -79,6 +84,11 @@ export class InlinePreview {
       if (event.data?.type === INLINE_PREVIEW_MESSAGES.SELECTION_CHANGE_MESSAGE) {
         if (!isViewerSelection(event.data.selection)) return;
         this.notifyPort(() => this.ports.onSelectionChange?.(event.data.selection));
+        return;
+      }
+      if (event.data?.type === INLINE_PREVIEW_MESSAGES.MARKDOWN_LINK_MESSAGE) {
+        if (typeof event.data.href !== "string" || typeof event.data.newTab !== "boolean") return;
+        this.notifyPort(() => this.ports.onMarkdownLink?.(event.data.href, event.data.newTab));
       }
     });
   }
@@ -99,8 +109,18 @@ export class InlinePreview {
     this.sendFontFamily();
   }
 
+  setFontSize(size: number) {
+    this.fontSize = size;
+    this.sendFontSize();
+  }
+
   setFullscreen(fullscreen: boolean) {
     this.fullscreen = fullscreen;
+    this.send();
+  }
+
+  setMarkdownFragment(fragment: string) {
+    this.pendingMarkdownFragment = fragment;
     this.send();
   }
 
@@ -124,6 +144,7 @@ export class InlinePreview {
     if (label !== this.label) return;
     this.payload = null;
     this.label = "";
+    this.pendingMarkdownFragment = null;
     this.host.hidden = true;
     this.notifyPort(() => this.ports.onAvailabilityChange?.(false));
   }
@@ -161,11 +182,19 @@ export class InlinePreview {
     }, window.location.origin);
     if (!this.payload) return;
     this.frame.contentWindow?.postMessage({ type: PAYLOAD_MESSAGE, payload: this.payload }, window.location.origin);
+    if (this.pendingMarkdownFragment !== null) {
+      this.frame.contentWindow?.postMessage({
+        type: MARKDOWN_FRAGMENT_MESSAGE,
+        fragment: this.pendingMarkdownFragment,
+      }, window.location.origin);
+      this.pendingMarkdownFragment = null;
+    }
     this.frame.contentWindow?.postMessage({
       type: DELIMITER_MESSAGE,
       delimiter: this.delimiter,
     }, window.location.origin);
     this.sendFontFamily();
+    this.sendFontSize();
   }
 
   private sendFontFamily() {
@@ -173,6 +202,14 @@ export class InlinePreview {
     this.frame.contentWindow?.postMessage({
       type: FONT_MESSAGE,
       family: this.fontFamily,
+    }, window.location.origin);
+  }
+
+  private sendFontSize() {
+    if (!this.ready || this.fontSize === null) return;
+    this.frame.contentWindow?.postMessage({
+      type: FONT_SIZE_MESSAGE,
+      size: this.fontSize,
     }, window.location.origin);
   }
 

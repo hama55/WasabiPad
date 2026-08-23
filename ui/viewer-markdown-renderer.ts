@@ -3,14 +3,25 @@ import type { ViewerSelection } from "./api";
 import {
   markdownBlockSelected,
   markdownHighlightTargets,
+  markdownHeadingSlug,
   placeMarkdownCaret,
   renderRawHtml,
 } from "./viewer-markdown";
 import { isCollapsedViewerSelection } from "./viewer-selection";
+import {
+  isExternalMarkdownLink,
+  isSameDocumentMarkdownLink,
+  markdownFragmentOf,
+} from "./viewer-assets";
 
 export interface MarkdownRenderResult {
   article: HTMLElement;
   highlightTargets: HTMLElement[];
+}
+
+export interface MarkdownRenderOptions {
+  sourcePath?: string | null;
+  archivePath?: string | null;
 }
 
 function decorateTaskListItems(article: HTMLElement) {
@@ -33,7 +44,47 @@ function decorateTaskListItems(article: HTMLElement) {
   });
 }
 
-export function renderMarkdownDocument(text: string, selection: ViewerSelection | null): MarkdownRenderResult {
+function assignMarkdownHeadingIds(article: HTMLElement) {
+  const used = new Set([...article.querySelectorAll<HTMLElement>("[id]")]
+    .map((element) => element.id)
+    .filter(Boolean));
+  const counts = new Map<string, number>();
+  article.querySelectorAll<HTMLElement>("h1, h2, h3, h4, h5, h6").forEach((heading) => {
+    const base = markdownHeadingSlug(heading.textContent ?? "");
+    if (!base) return;
+    let suffix = counts.get(base) ?? 0;
+    let id = suffix ? `${base}-${suffix}` : base;
+    while (used.has(id)) {
+      suffix += 1;
+      id = `${base}-${suffix}`;
+    }
+    counts.set(base, suffix + 1);
+    heading.id = id;
+    used.add(id);
+  });
+}
+
+function markdownLinkTitle(
+  href: string,
+  options: MarkdownRenderOptions,
+): string {
+  if (isSameDocumentMarkdownLink(options.sourcePath ?? null, href)) {
+    return "クリックで同じ文書内を移動";
+  }
+  if (isExternalMarkdownLink(href)) {
+    return "Ctrl+クリックで既定のブラウザで開く";
+  }
+  if (markdownFragmentOf(href) !== null && !options.archivePath) {
+    return "Ctrl+クリックで新規タブを開いて該当箇所へ移動";
+  }
+  return "Ctrl+クリックで新規タブで開く";
+}
+
+export function renderMarkdownDocument(
+  text: string,
+  selection: ViewerSelection | null,
+  options: MarkdownRenderOptions = {},
+): MarkdownRenderResult {
   const article = document.createElement("article");
   const sourceLines = text.split(/\r?\n/);
   const markdown = new MarkdownIt({ breaks: false, html: true, linkify: true, typographer: false });
@@ -51,6 +102,7 @@ export function renderMarkdownDocument(text: string, selection: ViewerSelection 
   });
   article.innerHTML = markdown.renderer.render(tokens, markdown.options, {});
   decorateTaskListItems(article);
+  assignMarkdownHeadingIds(article);
   const sourceElements = [...article.querySelectorAll<HTMLElement>("[data-source-start]")];
   const highlightTargets = markdownHighlightTargets(sourceElements);
   highlightTargets.forEach((element) => {
@@ -64,6 +116,7 @@ export function renderMarkdownDocument(text: string, selection: ViewerSelection 
   article.querySelectorAll("a").forEach((link) => {
     link.target = "_blank";
     link.rel = "noreferrer";
+    link.title = markdownLinkTitle(link.getAttribute("href") ?? "", options);
   });
   return { article, highlightTargets };
 }

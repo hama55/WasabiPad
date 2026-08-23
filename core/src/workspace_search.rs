@@ -1,10 +1,11 @@
 // フォルダ全体の検索。本文は ripgrep のエンジン (ignore + grep-*) を
-// ライブラリとして使い、ファイル名は fuzzy の DP スコアで当てる。
+// ライブラリとして使い、ファイル名は fuzzy の DP スコアで候補を出した後、
+// 連続一致を再確認する。
 //
 // 外部 rg.exe を同梱せずクレートを組み込むのは、配布物を1つに保ちたいのと、
 // 検索条件を JSON へ組み立て直さずそのまま渡せるため。
 use crate::doc::WorkspaceSearchResult;
-use crate::fuzzy::{match_path, to_ranges};
+use crate::fuzzy::{has_contiguous_match, match_path, to_ranges};
 use grep_matcher::Matcher;
 use grep_regex::RegexMatcher;
 use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkMatch};
@@ -444,8 +445,9 @@ impl<'a> Engine<'a> {
     }
 }
 
-// ファイル名の一致。matcher があれば厳密に、無ければファジーで当てる。
-// 行は 1つのファイルにつき 1つで、複数当たった分は強調範囲として並べる。
+// ファイル名の一致。matcher があれば厳密に、無ければファジーで候補を出して
+// 連続一致を再確認する。行は 1つのファイルにつき 1つで、複数当たった分は
+// 強調範囲として並べる。
 fn name_hit(
     matcher: Option<&RegexMatcher>,
     pattern: &str,
@@ -469,6 +471,14 @@ fn name_hit(
         }
         None => {
             let found = match_path(pattern, relative, match_case)?;
+            let filename_pattern = pattern
+                .rsplit(|character| character == '/' || character == '\\')
+                .next()
+                .unwrap_or(pattern);
+            let filename = relative.rsplit('/').next().unwrap_or(relative);
+            if !has_contiguous_match(filename_pattern, filename, match_case) {
+                return None;
+            }
             let spans = to_ranges(&found.positions)
                 .into_iter()
                 .map(|[at, len]| [at + prefix, len])
@@ -608,6 +618,7 @@ fn probe_head(file: &mut File) -> io::Result<Probe> {
 #[cfg(test)]
 mod tests {
     use super::{search_workspace, SearchOptions};
+    use std::path::{Path, PathBuf};
     use std::sync::atomic::AtomicBool;
 
     fn options() -> SearchOptions {
@@ -625,6 +636,45 @@ mod tests {
             search_file_names: false,
             search_contents: true,
             workers: 1,
+        }
+    }
+
+    fn filename_options() -> SearchOptions {
+        let mut search_options = options();
+        search_options.search_contents = false;
+        search_options.search_file_names = true;
+        search_options
+    }
+
+    struct FilenameWorkspace {
+        root: PathBuf,
+    }
+
+    impl FilenameWorkspace {
+        fn new(tag: &str, files: &[(&str, &str)]) -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "wasabipad_ws_{}_filename_fixture_{tag}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&root);
+            for (relative, contents) in files {
+                let path = root.join(relative);
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent).unwrap();
+                }
+                std::fs::write(path, contents).unwrap();
+            }
+            Self { root }
+        }
+
+        fn path(&self) -> &Path {
+            &self.root
+        }
+    }
+
+    impl Drop for FilenameWorkspace {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
         }
     }
 
@@ -679,12 +729,15 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    // Feature: ファイルツリーのバイナリ検索
+    // Scenario: バイナリ除外設定に応じてファイル名と本文を検索する
+    // Given: バイナリファイルを含むワークスペースがある
+    // When: バイナリ除外設定を切り替えて検索する
+    // Then: 除外時は本文を除外し、許可時は本文も検索する
     #[test]
     fn binary_files_are_excluded_only_when_asked() {
         let root = workspace("binary");
-        let mut opts = options();
-        opts.search_contents = false;
-        opts.search_file_names = true;
+        let mut opts = filename_options();
         assert!(run(&root, "blob", &opts).results.is_empty());
 
         opts.exclude_binary = false;
@@ -829,24 +882,27 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    // 正規表現/単語単位は「厳密に当てたい」という指定なので、ファイル名も
-    // ファジーをやめる。指定が無いときだけファジーで当てる。
+    // Feature: ファイルツリーのファイル名検索モード
+    // Scenario: ファジー候補の連続一致を検証する
+    // Given: needle.txtを検索対象にし、本文検索を無効にする
+    // When: ndlとneedでファイル名を検索する
+    // Then: 非連続の候補は除外し、連続一致は返す
     #[test]
     fn strict_options_switch_file_names_off_fuzzy() {
         let root = workspace("strict");
-        let mut opts = options();
-        opts.search_contents = false;
-        opts.search_file_names = true;
+        let mut opts = filename_options();
         let names = |found: &super::WorkspaceSearchOutcome| -> Vec<String> {
             found.results.iter().map(|r| r.rel_path.clone()).collect()
         };
 
         let found = run(&root, "ndl", &opts);
-        assert_eq!(names(&found), vec!["needle.txt"], "既定はファジー");
+        assert!(found.results.is_empty(), "連続しないファジー候補は表示しない");
         assert!(matches!(
             found.file_name_match_mode,
             super::FileNameMatchMode::Fuzzy
         ));
+
+        assert_eq!(names(&run(&root, "need", &opts)), vec!["needle.txt"]);
 
         opts.whole_word = true;
         let found = run(&root, "ndl", &opts);
@@ -876,16 +932,17 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    // 並べ替えは表示側 (ui/search-results.ts) が持つので、ここで見るのは
-    // 「当たったか」と「並べ替えの鍵になるスコアの差が付いているか」まで。
+    // Feature: ファイルツリーのファイル名検索結果の並べ替え
+    // Scenario: 連続一致した候補をスコア順に評価する
+    // Given: 短いファイル名と長いファイル名を検索対象にする
+    // When: 連続一致するneedでファイル名を検索する
+    // Then: 短いファイル名のスコアが高く、強調範囲も返す
     #[test]
-    fn file_names_are_matched_fuzzily_and_scored() {
+    fn verified_file_name_candidates_are_scored() {
         let root = workspace("fuzzy");
         std::fs::write(root.join("sub/needless-extra.txt"), "").unwrap();
-        let mut opts = options();
-        opts.search_contents = false;
-        opts.search_file_names = true;
-        let found = run(&root, "ndl", &opts);
+        let opts = filename_options();
+        let found = run(&root, "need", &opts);
         let by_path: std::collections::HashMap<&str, &super::WorkspaceSearchResult> = found
             .results
             .iter()
@@ -897,6 +954,53 @@ mod tests {
         assert!(short.score > long.score, "当てはまりの良いほうが高い");
         assert!(!short.highlights.is_empty());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    // Feature: ファイルツリーのファイル名検索
+    // Scenario: ファジー候補の文字が連続していない項目を除外する
+    // Given: `folderA/fileA.txt` と `fa.txt` が検索対象にある
+    // When: ファイル名だけを `fa` で検索する
+    // Then: ファイル名内で連続一致する `fa.txt` だけを返す
+    #[test]
+    fn filename_candidates_are_verified_by_contiguous_match() {
+        let workspace = FilenameWorkspace::new(
+            "filename_verify",
+            &[("folderA/fileA.txt", ""), ("fa.txt", "")],
+        );
+
+        let opts = filename_options();
+        let found = run(workspace.path(), "fa", &opts);
+
+        assert_eq!(
+            found.results.iter().map(|result| result.rel_path.as_str()).collect::<Vec<_>>(),
+            vec!["fa.txt"],
+            "ファジー候補だけでファイル名を一致扱いしない",
+        );
+    }
+
+    // Feature: ファイルツリーのファイル名検索
+    // Scenario: パス部分だけの連続一致をファイル名一致にしない
+    // Given: `folderA/fileA.txt` と `folderA/fileA/target.txt` が検索対象にある
+    // When: パスを含む `folderA/fileA` でファイル名を検索する
+    // Then: ファイル名に `fileA` を含む項目だけを返す
+    #[test]
+    fn filename_verification_uses_the_filename_part_of_a_path_query() {
+        let workspace = FilenameWorkspace::new(
+            "filename_path_verify",
+            &[
+                ("folderA/fileA.txt", ""),
+                ("folderA/fileA/target.txt", ""),
+            ],
+        );
+
+        let opts = filename_options();
+        let found = run(workspace.path(), "folderA/fileA", &opts);
+
+        assert_eq!(
+            found.results.iter().map(|result| result.rel_path.as_str()).collect::<Vec<_>>(),
+            vec!["folderA/fileA.txt"],
+            "親フォルダの一致だけではファイル名一致にしない",
+        );
     }
 
     // 位置は char 単位で返す。バイト位置のまま返すと、多バイト文字のある行で

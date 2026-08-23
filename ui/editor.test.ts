@@ -1213,11 +1213,11 @@ describe("Feature: VirtualEditor", () => {
       .not.toContain("エクスプローラで開く");
   });
 
-  // Given: 文書が「https://example.com」、選択範囲がURL全体、promptFields が「ブラウザ」「」「open {string}」を返し、外部パスが「C:\work\memo.txt」
+  // Given: 文書が「https://example.com」、選択範囲がURL全体、promptFields が「ブラウザ」「open {string}」を返し、外部パスが「C:\work\memo.txt」
   // When: 「コマンドを登録...」を選び、登録されたコマンドを選んで実行し、その後実行失敗も発生させる
-  // Then: 第3入力欄のラベルが「コマンド（{string}=対象文字列、引用符不要）」で、成功時に runExternalCommand('open "https://example.com"', 'C:\work\memo.txt') が呼ばれ、失敗時に「登録コマンドを実行できませんでした」と Error を含むイベントが通知される
+  // Then: 第2入力欄のラベルがplaceholderの説明付きで、成功時に runExternalCommand('open https://example.com', 'C:\work\memo.txt') が呼ばれ、失敗時に「登録コマンドを実行できませんでした」と Error を含むイベントが通知される
   it("Scenario: メモビューの登録コマンドへ選択文字列を渡す", async () => {
-    const promptFields = vi.fn(async () => ["ブラウザ", "", "open {string}"]);
+    const promptFields = vi.fn(async () => ["ブラウザ", "open {string}"]);
     const runExternalCommand = vi.fn(async () => {});
     const registeredCommandPorts: RegisteredCommandMenuPorts = { promptFields, runExternalCommand };
     const { editor, host, events } = mount("https://example.com", undefined, {
@@ -1272,7 +1272,7 @@ describe("Feature: VirtualEditor", () => {
 
     await vi.waitFor(() => expect(promptFields).toHaveBeenCalled());
     const fields = (promptFields.mock.calls[0] as unknown as [string, { label: string }[]])[1];
-    expect(fields[2].label).toBe("コマンド（{string}=対象文字列、引用符不要）");
+    expect(fields[1].label).toBe("コマンド（{string}=対象文字列、{string_one_line}=改行をスペース化、{copy_string_clipboard}=クリップボードへコピー、{string_in_url}=URL用エンコード文字列、引用符不要）");
 
     showContextMenu();
     [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
@@ -1281,7 +1281,7 @@ describe("Feature: VirtualEditor", () => {
     commandItem?.click();
 
     await vi.waitFor(() => expect(runExternalCommand).toHaveBeenCalledWith(
-      'open "https://example.com"',
+      "open https://example.com",
       "C:\\work\\memo.txt",
     ));
 
@@ -1300,7 +1300,7 @@ describe("Feature: VirtualEditor", () => {
   // When: contextmenu から「コマンドを登録...」をクリックする
   // Then: 「コマンドを登録できませんでした」と Error を含むイベントが通知される
   it("Scenario: メモビューの登録コマンド保存失敗を通知する", async () => {
-    const promptFields = vi.fn(async () => ["ブラウザ", "", "open {string}"]);
+    const promptFields = vi.fn(async () => ["ブラウザ", "open {string}"]);
     const registeredCommandPorts: RegisteredCommandMenuPorts = {
       promptFields,
       runExternalCommand: vi.fn(async () => {}),

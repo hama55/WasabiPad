@@ -117,4 +117,27 @@ describe("Feature: promptFields", () => {
     document.querySelector<HTMLButtonElement>(".pf-ok")!.click();
     await expect(result).resolves.toEqual(["md"]);
   });
+
+  // Feature: コマンド登録用の入力欄
+  // Scenario: コマンド本文を改行可能なtextareaで表示する
+  // Given: multiline指定のコマンド本文
+  // When: モーダルを表示してOKを押す
+  // Then: 広いモーダルのtextareaから改行を含む値を返す
+  it("Scenario: multiline指定の入力欄をtextareaとして表示する", async () => {
+    const result = promptFields("コマンドを登録", [
+      { label: "表示名", value: "Filter" },
+      { label: "コマンド", value: "filter {copy_string_clipboard}", multiline: true },
+    ]);
+
+    const box = document.querySelector<HTMLElement>(".pf-box")!;
+    const command = document.querySelector<HTMLTextAreaElement>("textarea.pf-multiline-value")!;
+    expect(box.classList.contains("pf-command-box")).toBe(true);
+    expect(command.rows).toBe(6);
+    expect(command.wrap).toBe("soft");
+
+    command.value = "filter {copy_string_clipboard}\n--verbose";
+    command.dispatchEvent(new Event("input", { bubbles: true }));
+    document.querySelector<HTMLButtonElement>(".pf-ok")!.click();
+    await expect(result).resolves.toEqual(["Filter", "filter {copy_string_clipboard}\n--verbose"]);
+  });
 });

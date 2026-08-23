@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { basename, dirname, joinWindowsRoot, rebaseWindowsPath, relativePathFromRoot, relativePathWithinRoot } from "./path";
+import {
+  basename,
+  dirname,
+  joinWindowsRoot,
+  movedRelativePath,
+  rebaseWindowsPath,
+  relativePathFromRoot,
+  relativePathWithinRoot,
+} from "./path";
 
 describe("Feature: path rules", () => {
   // Given: `C:\a/b.txt`,`a/b.txt`,`b.txt`を入力
@@ -33,5 +41,16 @@ describe("Feature: path rules", () => {
   it("Scenario: rebases defaults after file or directory renames", () => {
     expect(rebaseWindowsPath("C:\\work\\old\\a.txt", "C:\\work\\old", "C:\\work\\new")).toBe("C:\\work\\new\\a.txt");
     expect(rebaseWindowsPath("C:\\work2\\a.txt", "C:\\work", "C:\\new")).toBeNull();
+  });
+
+  // Given: `docs/memo.txt`を`archive`へ移動し、開いている相対パスが`docs/memo.txt::Sheet1`
+  // When: 移動後の相対パスを計算
+  // Then: `archive/memo.txt::Sheet1`へ一括で追従する
+  it("Scenario: moves selected files and descendants to the requested directory", () => {
+    expect(movedRelativePath("docs/memo.txt::Sheet1", "docs/memo.txt", "archive"))
+      .toBe("archive/memo.txt::Sheet1");
+    expect(movedRelativePath("docs/memo.txt", "docs/memo.txt", "archive", "renamed.txt"))
+      .toBe("archive/renamed.txt");
+    expect(movedRelativePath("other.txt", "docs/memo.txt", "archive")).toBe("other.txt");
   });
 });

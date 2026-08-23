@@ -9,7 +9,15 @@ vi.mock("./api", () => ({
   updateSetting: updateSettingMock,
 }));
 
-import { flushSettings, getSetting, initSettings, parseSettings, parseSettingsResult, setSetting } from "./settings";
+import {
+  flushSettings,
+  getSetting,
+  initSettings,
+  parseSettings,
+  parseSettingsResult,
+  resetUserSettings,
+  setSetting,
+} from "./settings";
 
 describe("Feature: settings", () => {
   beforeEach(async () => {
@@ -104,6 +112,31 @@ describe("Feature: settings", () => {
     const saved = parseSettings(JSON.stringify({ fontSize: 16, previewFontSize: 20 }));
     expect(saved.fontSize).toBe(16);
     expect(saved.previewFontSize).toBe(20);
+  });
+
+  // Given: フォント・起動パス・登録項目を変更し、再開タブも保存済み
+  // When: アプリ設定だけを初期化する
+  // Then: ユーザー設定は既定値へ戻り、再開タブは保持する
+  it("Scenario: アプリ設定の初期化はセッション状態を保持する", async () => {
+    const openTabs = {
+      tabs: [{ id: "tab-1", path: "memo.txt", kind: "file" as const, label: "memo" }],
+      activeId: "tab-1",
+    };
+    setSetting("openTabs", openTabs);
+    setSetting("fontSize", 20);
+    setSetting("startupPath", "C:\\work");
+    setSetting("registeredStrings", ["snippet"]);
+    await flushSettings();
+    updateSettingMock.mockClear();
+
+    resetUserSettings();
+    await flushSettings();
+
+    expect(getSetting("fontSize")).toBe(14);
+    expect(getSetting("startupPath")).toBeNull();
+    expect(getSetting("registeredStrings")).toEqual([]);
+    expect(getSetting("openTabs")).toEqual(openTabs);
+    expect(updateSettingMock).not.toHaveBeenCalledWith("openTabs", expect.anything());
   });
 
   // Given: プレビュー用文字サイズを20へ変更する

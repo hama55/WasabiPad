@@ -88,8 +88,6 @@ pub(crate) fn open_in_other_app(path: String) -> Result<(), String> {
 pub(crate) fn open_in_default_browser(path: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        use std::os::windows::ffi::OsStrExt;
-
         let target = PathBuf::from(path);
         let extension = target.extension().and_then(|value| value.to_str());
         if !target.is_file()
@@ -100,35 +98,78 @@ pub(crate) fn open_in_default_browser(path: String) -> Result<(), String> {
         {
             return Err("HTMLファイルが見つかりません".to_string());
         }
-        let operation: Vec<u16> = "open".encode_utf16().chain(std::iter::once(0)).collect();
-        let wide: Vec<u16> = target
-            .as_os_str()
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-        let result = unsafe {
-            shell_execute_w(
-                std::ptr::null_mut(),
-                operation.as_ptr(),
-                wide.as_ptr(),
-                std::ptr::null(),
-                std::ptr::null(),
-                1,
-            )
-        };
-        if result > 32 {
-            Ok(())
-        } else {
-            Err(format!(
-                "既定のブラウザで開けませんでした (HRESULT: 0x{result:08X})"
-            ))
-        }
+        shell_execute_open(&target.to_string_lossy())
     }
     #[cfg(not(target_os = "windows"))]
     {
         let _ = path;
         Err("この機能はWindowsでのみ使用できます".to_string())
     }
+}
+
+pub(crate) fn is_external_url(url: &str) -> bool {
+    let trimmed = url.trim();
+    if trimmed.is_empty() || trimmed.chars().any(char::is_whitespace) {
+        return false;
+    }
+    let Some((scheme, rest)) = trimmed.split_once("://") else {
+        return false;
+    };
+    (scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https"))
+        && !rest.is_empty()
+}
+
+fn open_external_url_with<F>(url: String, open: F) -> Result<(), String>
+where
+    F: FnOnce(&str) -> Result<(), String>,
+{
+    let trimmed = url.trim();
+    if !is_external_url(trimmed) {
+        return Err("HTTPまたはHTTPSのURLではありません".to_string());
+    }
+    open(trimmed)
+}
+
+#[cfg(target_os = "windows")]
+fn shell_execute_open(target: &str) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let operation: Vec<u16> = "open".encode_utf16().chain(std::iter::once(0)).collect();
+    let wide: Vec<u16> = std::ffi::OsStr::new(target)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let result = unsafe {
+        shell_execute_w(
+            std::ptr::null_mut(),
+            operation.as_ptr(),
+            wide.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            1,
+        )
+    };
+    if result > 32 {
+        Ok(())
+    } else {
+        Err(format!(
+            "既定のブラウザで開けませんでした (HRESULT: 0x{result:08X})"
+        ))
+    }
+}
+
+pub(crate) fn open_external_url(url: String) -> Result<(), String> {
+    open_external_url_with(url, |trimmed| {
+        #[cfg(target_os = "windows")]
+        {
+            shell_execute_open(trimmed)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = trimmed;
+            Err("この機能はWindowsでのみ使用できます".to_string())
+        }
+    })
 }
 
 #[cfg(target_os = "windows")]
@@ -272,6 +313,53 @@ mod tests {
     #[test]
     fn runs_the_complete_command_line_without_adding_a_shell() {
         super::spawn_command_line("cmd.exe /D /C exit 0").unwrap();
+    }
+
+    // Feature: Markdown外部URLの既定ブラウザ起動
+    // Scenario: HTTP/HTTPSだけを外部URLとして受け付ける
+    // Given: HTTP、HTTPS、mailto、javascript、プロトコル相対URLがある
+    // When: 外部URLの許可判定を行う
+    // Then: HTTP/HTTPSだけがtrueになる
+    #[test]
+    fn accepts_only_http_and_https_external_urls() {
+        assert!(super::is_external_url("https://zenn.dev/article?lang=ja#top"));
+        assert!(super::is_external_url("HTTP://example.com/manual"));
+        assert!(!super::is_external_url("mailto:user@example.com"));
+        assert!(!super::is_external_url("javascript:alert(1)"));
+        assert!(!super::is_external_url("//example.com/manual"));
+    }
+
+    // Feature: Markdown外部URLの既定ブラウザ起動
+    // Scenario: HTTP/HTTPS以外を起動しない
+    // Given: mailto URLが指定される
+    // When: 外部URL起動を要求する
+    // Then: ブラウザ起動前にエラーを返す
+    #[test]
+    fn rejects_non_web_urls_before_opening_browser() {
+        assert_eq!(
+            super::open_external_url("mailto:user@example.com".to_string()).unwrap_err(),
+            "HTTPまたはHTTPSのURLではありません",
+        );
+    }
+
+    // Feature: Markdown外部URLの既定ブラウザ起動
+    // Scenario: 有効なURLを既定ブラウザ起動へ渡す
+    // Given: 前後に空白のあるHTTPS URLが指定される
+    // When: 外部URL起動を要求する
+    // Then: 空白を除いた完全なURLがブラウザ起動処理へ渡される
+    #[test]
+    fn passes_a_valid_external_url_to_the_browser_opener() {
+        let mut opened = None;
+        super::open_external_url_with(
+            "  https://example.com/manual?lang=ja#top  ".to_string(),
+            |url| {
+                opened = Some(url.to_string());
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(opened.as_deref(), Some("https://example.com/manual?lang=ja#top"));
     }
 }
 
