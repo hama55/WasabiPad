@@ -193,7 +193,7 @@ body {
 #preview-toggle:hover { background: var(--hover); color: var(--fg); }
 body.preview-resizing,
 body.preview-resizing * { cursor: ew-resize !important; user-select: none !important; }
-/* ---- フォルダツリー共通操作 ---- */
+/* ---- ファイルツリー共通操作 ---- */
 .fv-toolbar {
   position: sticky; top: -4px; z-index: 2;
   display: flex; justify-content: flex-start; gap: 2px;

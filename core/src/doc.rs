@@ -3815,6 +3815,29 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    // Feature: ファイルツリーのルート直下への移動
+    // Scenario: 選択中の子ファイルをワークスペース直下へ移動する
+    // Given: folderA/fileA.txt を開いているフォルダ文書
+    // When: 空の相対パスを移動先に指定する
+    // Then: fileA.txt がルート直下へ移動し、開いているパスも追従する
+    #[test]
+    fn moving_selected_nested_file_to_workspace_root_updates_the_open_path() {
+        let root = std::env::temp_dir().join(format!("wasabipad_move_root_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("folderA")).unwrap();
+        std::fs::write(root.join("folderA/fileA.txt"), "file A").unwrap();
+
+        let mut document = Doc::open(&root).unwrap();
+        document.select_entry("folderA/fileA.txt").unwrap().unwrap();
+        let info = document.move_entry("folderA/fileA.txt", "").unwrap();
+
+        assert!(root.join("fileA.txt").is_file());
+        assert!(!root.join("folderA/fileA.txt").exists());
+        assert_eq!(document.path(), Some(root.join("fileA.txt").as_path()));
+        assert_eq!(info.path, root.join("fileA.txt").to_string_lossy());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     // Feature: ファイルツリーからのコピー
     // Scenario: ファイルを別フォルダへコピーする
     // Given: memo.txt と dest フォルダがあるフォルダ文書

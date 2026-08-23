@@ -456,7 +456,7 @@ export class TabManager {
       const closed = { tab: this.state.tabs[index], index };
       await this.commitTransition(async () => {
         this.tabs.splice(index, 1);
-        this.activeId = this.tabs[Math.min(index, this.tabs.length - 1)].id;
+        this.activateTabAfterRemoval(index);
         await this.loadActive();
       });
       this.closedTabs.push(closed);
@@ -781,10 +781,14 @@ export class TabManager {
       this.activeId = blank.id;
       await this.doc.newFile(false);
     } else {
-      this.activeId = this.tabs[Math.min(index, this.tabs.length - 1)].id;
+      this.activateTabAfterRemoval(index);
       await this.loadActive();
     }
     this.renderAndPersist();
+  }
+
+  private activateTabAfterRemoval(index: number) {
+    this.activeId = this.tabs[Math.max(0, index - 1)].id;
   }
 
   private openTabInNewWindow(tab: StoredTab) {

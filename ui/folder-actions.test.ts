@@ -242,6 +242,25 @@ describe("Feature: FolderActions", () => {
       .some((item) => item.textContent === "貼り付け")).toBe(false);
   });
 
+  // Feature: ファイルツリーのルート貼り付け
+  // Scenario: 切り取った子ファイルをワークスペース直下へ移動する
+  // Given: `folderA/fileA`を切り取り、選択状態がファイルのまま残っている
+  // When: ワークスペースルートでCtrl+V相当の貼り付けを実行する
+  // Then: 空の相対パスを移動先として移動APIを呼ぶ
+  it("Scenario: 切り取った子ファイルをワークスペース直下へ移動する", async () => {
+    const moveEntry = vi.spyOn(api, "moveEntry").mockResolvedValue({} as api.DocInfo);
+    const { actions, dropdown, ports } = fixture();
+    const source = { relPath: "folderA/fileA", isDir: false };
+    actions.showContextMenu(0, 0, source);
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "切り取り")!.click();
+
+    actions.executeCommand("paste", [source]);
+
+    await vi.waitFor(() => expect(moveEntry).toHaveBeenCalledWith("folderA/fileA", ""));
+    await vi.waitFor(() => expect(ports.sidebar.refreshFolderEntries).toHaveBeenCalled());
+  });
+
   // Feature: 貼り付け時の同名競合
   // Scenario: 自動リネームを選ぶと空いている連番名へ貼り付ける
   // Given: `memo.txt`のコピー先に同名項目がある

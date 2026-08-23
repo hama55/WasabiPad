@@ -13,7 +13,7 @@ import {
 } from "./workspace-search-options";
 
 // フォルダ検索の窓と結果ツリー。検索条件の保持・実行・打ち切り・途中経過の
-// 取り込みまでを持ち、フォルダツリー (Sidebar) とは状態を共有しない。
+// 取り込みまでを持ち、ファイルツリー (Sidebar) とは状態を共有しない。
 // 器 (どこに描くか) は持たない: 結果ツリーは断片として返し、置き場は Sidebar が決める。
 
 export interface WorkspaceSearchPorts {

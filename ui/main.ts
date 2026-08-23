@@ -797,6 +797,7 @@ void getCurrentWebview().onDragDropEvent((ev) => {
 let folderRefreshRunning = false;
 let folderRefreshErrorReported = false;
 window.setInterval(async () => {
+  statusbar.refreshModifiedAt();
   if (!doc.current.folderRoot || folderRefreshRunning) return;
   folderRefreshRunning = true;
   try {

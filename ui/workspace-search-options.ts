@@ -63,6 +63,8 @@ const LIMITS = {
 const cleanList = (list: string[]) =>
   [...new Set((list ?? []).map((item) => item.trim()).filter(Boolean))];
 
+const FILE_NAME_MATCH_RULE = "ファジー候補を連続一致で確認する";
+
 export function clampSearchOptions(options: WorkspaceSearchOptions): WorkspaceSearchOptions {
   const clamp = (key: keyof typeof LIMITS) =>
     Math.min(LIMITS[key].max, Math.max(LIMITS[key].min, Math.round(Number(options[key]) || 0)));
@@ -103,7 +105,7 @@ export const OPTION_TEXTS: Record<BoolOptionKey, { label: string; hint: string }
     label: "正規表現として扱う",
     hint: "Rust regex 構文。ファイル名もファジーをやめる。壊れている間は理由を結果欄に出す",
   },
-  search_file_names: { label: "ファイル名", hint: "ファジー一致 (wsopt → workspace-search-options.ts)" },
+  search_file_names: { label: "ファイル名", hint: FILE_NAME_MATCH_RULE },
   search_contents: { label: "本文", hint: "ripgrep のエンジンで走査する" },
   exclude_binary: { label: "バイナリファイル", hint: ".pyc / .exe / 画像など (先頭にNULを含むもの)" },
   respect_gitignore: { label: ".gitignore を尊重する", hint: ".ignore と親フォルダの設定もたどる" },
@@ -133,7 +135,7 @@ export function searchScopeSummary(
     options.match_case ? "大文字小文字を区別" : null,
     options.use_regex ? "正規表現" : null,
     options.whole_word ? "単語単位" : null,
-    fileNameMatchMode === "fuzzy" ? "ファイル名はファジー一致" : null,
+    fileNameMatchMode === "fuzzy" ? `ファイル名は${FILE_NAME_MATCH_RULE}` : null,
   ].filter(Boolean);
   const skipped = ["読み取れないファイル"];
   if (options.exclude_binary) skipped.push("バイナリファイル");

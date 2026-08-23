@@ -37,6 +37,7 @@ export class StatusBar {
   private wrap = false;
   private fontFamily = "";
   private fontSize = 0;
+  private modifiedAt: number | null = null;
   // change 後の select からは元の値が読めないため、直近に表示した値を控えておく
   private shownReadEncoding: ReadEncoding = "utf8";
 
@@ -146,7 +147,13 @@ export class StatusBar {
   }
 
   setModifiedAt(timestamp: number | null) {
-    this.pick("st-modified").textContent = formatModifiedAt(timestamp);
+    this.modifiedAt = timestamp;
+    this.refreshModifiedAt();
+  }
+
+  // 相対時刻は時間経過で変わるため、メイン画面の定期更新から呼び出す。
+  refreshModifiedAt() {
+    this.pick("st-modified").textContent = formatModifiedAt(this.modifiedAt);
   }
 
   setMode(label: string) {

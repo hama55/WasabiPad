@@ -67,12 +67,32 @@ fn is_subsequence(pattern: &[char], word: &[char], match_case: bool) -> bool {
     pattern.iter().all(|&p| chars.any(|&w| same(w, p, match_case)))
 }
 
+fn match_chars(pattern: &str, word: &str) -> (Vec<char>, Vec<char>) {
+    (
+        pattern.chars().filter(|c| !c.is_whitespace()).collect(),
+        word.chars().collect(),
+    )
+}
+
+/// pattern が word の中に連続して含まれるかを確認する。
+/// 候補抽出のファジー一致とは別に、表示してよいファイル名かを検証するために使う。
+pub fn has_contiguous_match(pattern: &str, word: &str, match_case: bool) -> bool {
+    let (pat, target) = match_chars(pattern, word);
+    !pat.is_empty()
+        && pat.len() <= target.len()
+        && target.windows(pat.len()).any(|window| {
+            window
+                .iter()
+                .zip(&pat)
+                .all(|(&word_char, &pattern_char)| same(word_char, pattern_char, match_case))
+        })
+}
+
 /// pattern が word に順序を保って含まれるなら、最良の配置とそのスコアを返す。
 /// 大小文字の扱いは DP の中で決める。配置を1つ選んでから後段で大小を検めると、
 /// "abAB" から "AB" を探したときにスコアの高い "ab" 側が選ばれて落ちてしまう。
 pub fn fuzzy_match(pattern: &str, word: &str, match_case: bool) -> Option<FuzzyMatch> {
-    let pat: Vec<char> = pattern.chars().filter(|c| !c.is_whitespace()).collect();
-    let target: Vec<char> = word.chars().collect();
+    let (pat, target) = match_chars(pattern, word);
     if pat.is_empty()
         || pat.len() > target.len()
         || pat.len() > MAX_PATTERN_CHARS

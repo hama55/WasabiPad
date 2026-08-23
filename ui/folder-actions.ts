@@ -291,8 +291,13 @@ export class FolderActions {
         this.copyToClipboard("cut", targets);
         return;
       case "paste":
-        if (selected.length && (selected.length !== 1 || !selected[0].isDir)) return;
-        this.run("貼り付けできませんでした", () => this.paste(selected[0] ?? null));
+        if (selected.length > 1) return;
+        // ファイルツリーのルートは行として選択できないため、ファイル行が
+        // 選択されたままのCtrl+Vはワークスペース直下への貼り付けとみなす。
+        this.run(
+          "貼り付けできませんでした",
+          () => this.paste(selected[0]?.isDir ? selected[0] : null),
+        );
         return;
       case "undo":
         this.run("ファイル操作を元に戻せませんでした", () => this.undoFileOperation());

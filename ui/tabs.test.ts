@@ -1071,6 +1071,35 @@ describe("Feature: TabManager", () => {
     expect(doc.newFile).toHaveBeenCalledWith(false, "C:\\Users\\sample\\Desktop");
   });
 
+  // Feature: タブ削除後のアクティブタブ
+  // Scenario Outline: アクティブタブを削除したら左隣をアクティブにする
+  // Given: a、b、cの3タブがあり、指定タブがアクティブ
+  // When: 指定タブを閉じる
+  // Then: 残った左隣のタブがアクティブになる
+  // Examples:
+  // | 閉じるタブ | アクティブタブ |
+  // | b | a |
+  // | c | b |
+  it.each([
+    ["b", "a"],
+    ["c", "b"],
+  ])("Scenario: %sを閉じた後は左隣をアクティブにする", async (closedId, expectedActiveId) => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init({
+      tabs: [
+        { id: "a", path: "C:\\work\\a.txt", kind: "file", label: "a.txt" },
+        { id: "b", path: "C:\\work\\b.txt", kind: "file", label: "b.txt" },
+        { id: "c", path: "C:\\work\\c.txt", kind: "file", label: "c.txt" },
+      ],
+      activeId: closedId,
+    }, null, null);
+
+    await manager.close(closedId);
+
+    expect(manager.state.activeId).toBe(expectedActiveId);
+  });
+
   // Feature: 同一起動中に閉じたタブを復活する
   // Scenario: 最後に閉じたタブを元の位置と表示状態で復活する
   // Given: aタブと、b.mdを表示中のフォルダタブがあり、後者がアクティブ

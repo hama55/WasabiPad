@@ -39,7 +39,7 @@ describe("Feature: pane toggle placement", () => {
     expect(indexHtml).toMatch(/<button\s+id="preview-toggle"(?![^>]*\shidden(?:\s|=|>))[^>]*>/s);
   });
 
-  // Feature: フォルダツリー下端の新規作成操作
+  // Feature: ファイルツリー下端の新規作成操作
   // Scenario: 項目が少なくても作成ボタンをサイドバー最下端へ固定する
   // Given: サイドバー・ツリー・作成欄のCSS
   // When: 残余高と押し下げ規則を検査する
