@@ -4,6 +4,7 @@ import {
   isLocalMarkdownLinkCandidate,
   isSameDocumentMarkdownLink,
   markdownFragmentOf,
+  markdownLinkTargetOf,
   resolveArchiveAssetEntry,
   resolveAssetPath,
   resolveMarkdownLinkPath,
@@ -84,6 +85,11 @@ describe("Feature: resolveMarkdownLinkPath", () => {
     expect(isExternalMarkdownLink("mailto:user@example.com")).toBe(false);
     expect(isLocalMarkdownLinkCandidate("../manual.md#install")).toBe(true);
     expect(isLocalMarkdownLinkCandidate("mailto:user@example.com")).toBe(false);
+    expect(isLocalMarkdownLinkCandidate("//example.com/manual.md")).toBe(false);
+    expect(markdownLinkTargetOf("../manual.md?print=1#%E3%83%88%E3%83%83%E3%83%97")).toEqual({
+      path: "../manual.md",
+      fragment: "トップ",
+    });
     expect(markdownFragmentOf("../manual.md#%E3%83%88%E3%83%83%E3%83%97")).toBe("トップ");
     expect(markdownFragmentOf("#")).toBe("");
     expect(markdownFragmentOf("../manual.md")).toBeNull();

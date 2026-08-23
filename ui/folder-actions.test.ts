@@ -665,9 +665,9 @@ describe("Feature: FolderActions", () => {
     ));
   });
 
-  // Given: promptが`Chrome`,`chrome {file}`を返す
+  // Given: promptが表示名`Chrome`と統合済みのコマンド`chrome {file}`を返す
   // When: `index.HTML`でコマンド登録
-  // Then: 拡張子`.html`で登録、各promptラベルと空prefixを表示
+  // Then: 拡張子`.html`で登録し、表示名とコマンドの2項目を表示する
   it("Scenario: 登録時は選択ファイルの拡張子をコマンドへ紐付ける", async () => {
     vi.mocked(promptFields).mockResolvedValueOnce(["Chrome", "chrome {file}"]);
     const { actions, dropdown } = fixture();
@@ -676,9 +676,10 @@ describe("Feature: FolderActions", () => {
     [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
       .find((item) => item.textContent === "コマンドを登録...")!.click();
 
-    expect(vi.mocked(promptFields).mock.calls[0][1][1]).toMatchObject({
-      label: "コマンド（{file}=対象ファイル、引用符不要）",
-    });
+    expect(vi.mocked(promptFields).mock.calls[0][1].map((field) => field.label)).toEqual([
+      "表示名（.html用）",
+      "コマンド（{file}=対象ファイル、引用符不要）",
+    ]);
 
     await vi.waitFor(() => expect(commandsForPath("index.html")).toEqual([
       { extension: ".html", label: "Chrome", prefix: "", command: "chrome {file}" },

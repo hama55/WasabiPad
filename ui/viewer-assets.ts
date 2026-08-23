@@ -14,20 +14,32 @@ export function isExternalMarkdownLink(href: string): boolean {
   }
 }
 
+export interface MarkdownLinkTarget {
+  path: string;
+  fragment: string | null;
+}
+
+export function markdownLinkTargetOf(href: string): MarkdownLinkTarget {
+  const hash = href.indexOf("#");
+  const beforeFragment = hash < 0 ? href : href.slice(0, hash);
+  const query = beforeFragment.indexOf("?");
+  const path = query < 0 ? beforeFragment : beforeFragment.slice(0, query);
+  if (hash < 0) return { path, fragment: null };
+  const rawFragment = href.slice(hash + 1);
+  try {
+    return { path, fragment: decodeURIComponent(rawFragment) };
+  } catch {
+    return { path, fragment: rawFragment };
+  }
+}
+
 export function isLocalMarkdownLinkCandidate(href: string): boolean {
-  const path = href.split(/[?#]/, 1)[0];
-  return !!path && (!SCHEME.test(path) || ABSOLUTE.test(path));
+  const { path } = markdownLinkTargetOf(href);
+  return !!path && !path.startsWith("//") && (!SCHEME.test(path) || ABSOLUTE.test(path));
 }
 
 export function markdownFragmentOf(href: string): string | null {
-  const hash = href.indexOf("#");
-  if (hash < 0) return null;
-  const fragment = href.slice(hash + 1);
-  try {
-    return decodeURIComponent(fragment);
-  } catch {
-    return fragment;
-  }
+  return markdownLinkTargetOf(href).fragment;
 }
 
 export function resolveAssetPath(sourcePath: string | null, src: string): string | null {
@@ -42,7 +54,7 @@ export function resolveAssetPath(sourcePath: string | null, src: string): string
 }
 
 export function resolveMarkdownLinkPath(sourcePath: string | null, href: string): string | null {
-  const path = href.split(/[?#]/, 1)[0];
+  const { path } = markdownLinkTargetOf(href);
   if (!path) return null;
   if (path.startsWith("//") || (SCHEME.test(path) && !ABSOLUTE.test(path))) return null;
   return resolveAssetPath(sourcePath, path);
@@ -50,7 +62,7 @@ export function resolveMarkdownLinkPath(sourcePath: string | null, href: string)
 
 export function isSameDocumentMarkdownLink(sourcePath: string | null, href: string): boolean {
   if (markdownFragmentOf(href) === null || isExternalMarkdownLink(href)) return false;
-  const path = href.split(/[?#]/, 1)[0];
+  const { path } = markdownLinkTargetOf(href);
   if (!path) return true;
   if (!sourcePath) return false;
   const resolved = resolveMarkdownLinkPath(sourcePath, href);

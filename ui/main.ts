@@ -72,7 +72,7 @@ import { reportErrorSafely } from "./report-error";
 import { processExternalWindowRequests } from "./external-window-request";
 import { canCloseWindow } from "./close-request";
 import { createAsyncUnlisten } from "./async-unlisten";
-import { isExternalMarkdownLink, markdownFragmentOf, resolveMarkdownLinkPath } from "./viewer-assets";
+import { markdownLinkActionOf } from "./markdown-link-navigation";
 
 const win = getCurrentWindow();
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -240,22 +240,23 @@ const inlinePreview = new InlinePreview(previewEl, {
     return runBackground(
       "Markdownリンクを開けませんでした",
       async () => {
-        if (isExternalMarkdownLink(href)) {
-          await api.openExternalUrl(href);
+        const sourcePath = previewDocument?.ownerTabId === sourceTabId
+          ? sourcePathForViewer(previewDocument.format, doc.current.savePath, doc.current.displayPath)
+          : doc.current.savePath;
+        const action = markdownLinkActionOf(sourcePath, href, newTab);
+        if (action.kind === "external") {
+          await api.openExternalUrl(action.href);
           return;
         }
-        const sourcePath = previewDocument?.ownerTabId === sourceTabId
-          ? previewDocument.path || null
-          : doc.current.savePath;
-        const path = resolveMarkdownLinkPath(sourcePath, href);
-        if (!path) throw new Error("ローカルMarkdownリンクを解決できません");
-        if (!newTab) {
-          if (!await openPathInTabs(tabs, path, false)) {
+        if (action.kind === "unchanged") return;
+        if (action.kind === "unresolved") throw new Error(action.message);
+        if (!action.newTab) {
+          if (!await openPathInTabs(tabs, action.path, false)) {
             throw new Error("リンク先ファイルが見つかりません");
           }
           return;
         }
-        if (!await tabs.openMarkdownLink(path, sourceTabId, markdownFragmentOf(href))) {
+        if (!await tabs.openMarkdownLink(action.path, sourceTabId, action.fragment)) {
           throw new Error("リンク先ファイルが見つかりません");
         }
       },

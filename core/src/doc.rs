@@ -188,6 +188,28 @@ fn cleanup_markdown_asset_source_parent(move_result: &MarkdownAssetMove) {
     }
 }
 
+fn with_markdown_asset_move<T>(
+    asset_plan: Option<MarkdownAssetMovePlan>,
+    operation: impl FnOnce() -> io::Result<T>,
+) -> io::Result<T> {
+    let asset_move = asset_plan.map(execute_markdown_asset_move).transpose()?;
+    let result = operation();
+    match result {
+        Ok(value) => {
+            if let Some(asset_move) = asset_move.as_ref() {
+                cleanup_markdown_asset_source_parent(asset_move);
+            }
+            Ok(value)
+        }
+        Err(error) => {
+            if let Some(asset_move) = asset_move.as_ref() {
+                rollback_markdown_asset_move(asset_move);
+            }
+            Err(error)
+        }
+    }
+}
+
 fn copy_entry_recursive(source: &Path, destination: &Path) -> io::Result<()> {
     let metadata = std::fs::symlink_metadata(source)?;
     if metadata.file_type().is_symlink() {
@@ -1206,16 +1228,7 @@ impl Doc {
             .ok_or_else(|| io::Error::other("不正なパスです"))?;
         let new_abs = parent.join(new_name);
         let asset_plan = markdown_asset_move_plan(&old_abs, &new_abs)?;
-        let asset_move = asset_plan.map(execute_markdown_asset_move).transpose()?;
-        if let Err(error) = std::fs::rename(&old_abs, &new_abs) {
-            if let Some(asset_move) = asset_move.as_ref() {
-                rollback_markdown_asset_move(asset_move);
-            }
-            return Err(error);
-        }
-        if let Some(asset_move) = asset_move.as_ref() {
-            cleanup_markdown_asset_source_parent(asset_move);
-        }
+        with_markdown_asset_move(asset_plan, || std::fs::rename(&old_abs, &new_abs))?;
         let current = match &mut self.source.target {
             Target::File { path, .. } | Target::Archive { path, .. } => path,
             Target::None => return self.info(String::new()),
@@ -1345,42 +1358,39 @@ impl Doc {
             overwrite,
             "移動先に同名のファイルまたはフォルダがあります",
         )?;
-        let asset_move = match asset_plan.map(execute_markdown_asset_move).transpose() {
-            Ok(asset_move) => asset_move,
-            Err(error) => {
-                self.restore_replaced_destination(replaced.as_deref());
-                return Err(error);
-            }
-        };
-
-        let mut held_target = affected.then(|| std::mem::replace(&mut self.source.target, Target::None));
-        let released_handle = held_target
-            .as_mut()
-            .map(release_target_file)
-            .unwrap_or(false);
-        if let Err(error) = std::fs::rename(&source, &destination) {
-            if let Some(asset_move) = asset_move.as_ref() {
-                rollback_markdown_asset_move(asset_move);
-            }
-            self.restore_replaced_destination(replaced.as_deref());
-            if let Some(mut target) = held_target.take() {
-                restore_target_file(&mut target, released_handle);
-                self.source.target = target;
-            }
-            return Err(error);
-        }
-        if let Some(asset_move) = asset_move.as_ref() {
-            cleanup_markdown_asset_source_parent(asset_move);
-        }
-        if let Some(mut target) = held_target {
-            match &mut target {
-                Target::File { path, .. } | Target::Archive { path, .. } => {
-                    rebase_path(path, &source, &destination);
+        let move_result = with_markdown_asset_move(asset_plan, || {
+            let mut held_target = affected.then(|| std::mem::replace(&mut self.source.target, Target::None));
+            let released_handle = held_target
+                .as_mut()
+                .map(release_target_file)
+                .unwrap_or(false);
+            let rename_result = std::fs::rename(&source, &destination);
+            match rename_result {
+                Ok(()) => {
+                    if let Some(mut target) = held_target {
+                        match &mut target {
+                            Target::File { path, .. } | Target::Archive { path, .. } => {
+                                rebase_path(path, &source, &destination);
+                            }
+                            Target::None => {}
+                        }
+                        restore_target_file(&mut target, released_handle);
+                        self.source.target = target;
+                    }
+                    Ok(())
                 }
-                Target::None => {}
+                Err(error) => {
+                    if let Some(mut target) = held_target {
+                        restore_target_file(&mut target, released_handle);
+                        self.source.target = target;
+                    }
+                    Err(error)
+                }
             }
-            restore_target_file(&mut target, released_handle);
-            self.source.target = target;
+        });
+        if let Err(error) = move_result {
+            self.restore_replaced_destination(replaced.as_deref());
+            return Err(error);
         }
 
         let path = self

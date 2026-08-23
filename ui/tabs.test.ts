@@ -586,6 +586,21 @@ describe("Feature: TabManager", () => {
     expect(manager.state.activeId).toBe(before.activeId);
   });
 
+  // Given: 起点タブIDが現在のタブ一覧に存在しない
+  // When: Markdownリンク用の新規タブを開く
+  // Then: タブを増やさずfalseを返す
+  it("Scenario: 起点タブが消えたMarkdownリンクはタブを増やさない", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init(stored, null, null);
+    const before = manager.state;
+
+    await expect(manager.openMarkdownLink("C:\\work\\missing.md", "gone", null)).resolves.toBe(false);
+
+    expect(manager.state.tabs.map((tab) => tab.id)).toEqual(before.tabs.map((tab) => tab.id));
+    expect(manager.state.activeId).toBe(before.activeId);
+  });
+
   // Given: active tab が a で、doc.goTo が Error("invalid position") を投げる
   // When: a.txt に { line: 8, col: 3 } を付けて open() を呼ぶ
   // Then: invalid position で reject し、tab の goto は undefined
@@ -1311,9 +1326,9 @@ describe("Feature: TabManager", () => {
     expect(manager.state.tabs.map((tab) => tab.id)).toEqual(["a", "b"]);
   });
 
-  // Given: C:\work\memo.txt の file tab があり、登録入力が ["メモ帳","","notepad {file}"] を返す
+  // Given: C:\work\memo.txt の file tab があり、登録入力が ["メモ帳","notepad {file}"] を返す
   // When: コンテキストメニューから登録し、登録コマンドの submenu 項目を実行する
-  // Then: commandsForPath は extension=.txt,label=メモ帳,prefix="",command=notepad {file} を返し、runExternalCommand は `notepad "C:\work\memo.txt"` と path を渡される
+  // Then: commandsForPath は extension=.txt,label=メモ帳,prefix="",command=notepad {file} を返し、runExternalCommand は `notepad C:\work\memo.txt` と path を渡される
   it("Scenario: ファイルタブから登録し、登録コマンドを実行できる", async () => {
     const { doc, host } = fixture();
     document.body.appendChild(Object.assign(document.createElement("div"), { id: "dropdown" }));

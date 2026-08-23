@@ -226,11 +226,8 @@ export class TabManager {
 
   async openMarkdownLink(path: string, sourceTabId: string | null, fragment: string | null): Promise<boolean> {
     const anchorId = sourceTabId ?? this.activeId;
-    const sourceIndex = this.tabs.findIndex((tab) => tab.id === anchorId);
-    if (sourceIndex < 0) return false;
-    return this.addAndActivate(
+    return this.addAndActivateAfter(
       this.link(path, undefined, undefined, fragment ?? undefined),
-      this.tabs.length,
       anchorId,
     );
   }
@@ -509,8 +506,25 @@ export class TabManager {
 
   private async addAndActivate(
     tab: StoredTab,
-    insertAt = this.tabs.length,
-    insertAfterId?: string,
+  ): Promise<boolean> {
+    return this.addAndActivateWith(tab, (tabs) => {
+      tabs.push(tab);
+      return true;
+    });
+  }
+
+  private async addAndActivateAfter(tab: StoredTab, sourceTabId: string): Promise<boolean> {
+    return this.addAndActivateWith(tab, (tabs) => {
+      const sourceIndex = tabs.findIndex((candidate) => candidate.id === sourceTabId);
+      if (sourceIndex < 0) return false;
+      tabs.splice(sourceIndex + 1, 0, tab);
+      return true;
+    });
+  }
+
+  private async addAndActivateWith(
+    tab: StoredTab,
+    insert: (tabs: StoredTab[]) => boolean,
   ): Promise<boolean> {
     this.transitionTarget = tab.id;
     let activated = false;
@@ -518,11 +532,7 @@ export class TabManager {
       const proceeded = await this.doc.confirmDiscard(async () => {
         this.rememberActiveView();
         activated = await this.commitTransition(async () => {
-          const afterIndex = insertAfterId === undefined
-            ? insertAt - 1
-            : this.tabs.findIndex((candidate) => candidate.id === insertAfterId);
-          if (insertAfterId !== undefined && afterIndex < 0) return false;
-          this.tabs.splice(Math.max(0, Math.min(afterIndex + 1, this.tabs.length)), 0, tab);
+          if (!insert(this.tabs)) return false;
           this.activeId = tab.id;
           return this.loadActive(false);
         });

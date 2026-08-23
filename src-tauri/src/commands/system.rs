@@ -119,6 +119,17 @@ pub(crate) fn is_external_url(url: &str) -> bool {
         && !rest.is_empty()
 }
 
+fn open_external_url_with<F>(url: String, open: F) -> Result<(), String>
+where
+    F: FnOnce(&str) -> Result<(), String>,
+{
+    let trimmed = url.trim();
+    if !is_external_url(trimmed) {
+        return Err("HTTPまたはHTTPSのURLではありません".to_string());
+    }
+    open(trimmed)
+}
+
 #[cfg(target_os = "windows")]
 fn shell_execute_open(target: &str) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
@@ -148,18 +159,17 @@ fn shell_execute_open(target: &str) -> Result<(), String> {
 }
 
 pub(crate) fn open_external_url(url: String) -> Result<(), String> {
-    if !is_external_url(&url) {
-        return Err("HTTPまたはHTTPSのURLではありません".to_string());
-    }
-    #[cfg(target_os = "windows")]
-    {
-        shell_execute_open(url.trim())
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = url;
-        Err("この機能はWindowsでのみ使用できます".to_string())
-    }
+    open_external_url_with(url, |trimmed| {
+        #[cfg(target_os = "windows")]
+        {
+            shell_execute_open(trimmed)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = trimmed;
+            Err("この機能はWindowsでのみ使用できます".to_string())
+        }
+    })
 }
 
 #[cfg(target_os = "windows")]
@@ -330,6 +340,26 @@ mod tests {
             super::open_external_url("mailto:user@example.com".to_string()).unwrap_err(),
             "HTTPまたはHTTPSのURLではありません",
         );
+    }
+
+    // Feature: Markdown外部URLの既定ブラウザ起動
+    // Scenario: 有効なURLを既定ブラウザ起動へ渡す
+    // Given: 前後に空白のあるHTTPS URLが指定される
+    // When: 外部URL起動を要求する
+    // Then: 空白を除いた完全なURLがブラウザ起動処理へ渡される
+    #[test]
+    fn passes_a_valid_external_url_to_the_browser_opener() {
+        let mut opened = None;
+        super::open_external_url_with(
+            "  https://example.com/manual?lang=ja#top  ".to_string(),
+            |url| {
+                opened = Some(url.to_string());
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(opened.as_deref(), Some("https://example.com/manual?lang=ja#top"));
     }
 }
 
