@@ -494,7 +494,7 @@ export class FolderActions {
         });
       }
     }
-    if (overwrite) {
+    if (overwrite && this.pathContains(selectedBefore, targetRelPath)) {
       const selectedAfter = mode === "cut"
         ? movedRelativePath(selectedBefore, entry.relPath, targetRelDir, name)
         : selectedBefore;
@@ -583,7 +583,7 @@ export class FolderActions {
         const selectedBefore = this.doc.current.selectedRelPath;
         await this.services.api.deleteEntryWithoutBackup(operation.targetRelPath);
         if (operation.overwrite) await this.services.api.restoreDeletedEntry(operation.targetRelPath);
-        if (operation.overwrite) {
+        if (operation.overwrite && this.pathContains(selectedBefore, operation.targetRelPath)) {
           await this.reloadSelectedEntry(selectedBefore, operation.targetRelPath);
         }
       } else {
@@ -594,7 +594,7 @@ export class FolderActions {
           operation.targetName,
           operation.overwrite,
         );
-        if (operation.overwrite) {
+        if (operation.overwrite && this.pathContains(selectedBefore, operation.targetRelPath)) {
           await this.reloadSelectedEntry(selectedBefore, operation.targetRelPath);
         }
       }
@@ -615,7 +615,7 @@ export class FolderActions {
           movedRelativePath(selectedBefore, operation.targetRelPath, sourceRelDir, basename(operation.sourceRelPath)),
         );
         if (operation.overwrite) await this.services.api.restoreDeletedEntry(operation.targetRelPath);
-        if (operation.overwrite) {
+        if (operation.overwrite && this.pathContains(selectedBefore, operation.targetRelPath)) {
           await this.reloadSelectedEntry(selectedBefore, operation.targetRelPath);
         }
       } else {
@@ -631,7 +631,7 @@ export class FolderActions {
           info,
           movedRelativePath(selectedBefore, operation.sourceRelPath, operation.targetRelDir, operation.targetName),
         );
-        if (operation.overwrite) {
+        if (operation.overwrite && this.pathContains(selectedBefore, operation.targetRelPath)) {
           await this.reloadSelectedEntry(selectedBefore, operation.targetRelPath);
         }
       }
