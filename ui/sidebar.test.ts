@@ -4,18 +4,24 @@ import { Sidebar, type SidebarPorts } from "./sidebar";
 import { DEFAULT_SEARCH_OPTIONS } from "./workspace-search-options";
 import type { FolderEntry } from "./api";
 
-function mount(
-  onSearch: SidebarPorts["onSearch"] = vi.fn(async () => ({
-  results: [], scanned_files: 0, skipped_files: 0, hit_file_limit: false, hit_result_limit: false,
-  pattern_error: null, file_name_match_mode: "strict" as const,
+interface MountOptions {
+  onSearch?: SidebarPorts["onSearch"];
+  onFileCommand?: SidebarPorts["onFileCommand"];
+  onRenameEntry?: SidebarPorts["onRenameEntry"];
+  onDropEntries?: SidebarPorts["onDropEntries"];
+  onUndoLastDrop?: SidebarPorts["onUndoLastDrop"];
+}
+
+function mount({
+  onSearch = vi.fn(async () => ({
+    results: [], scanned_files: 0, skipped_files: 0, hit_file_limit: false, hit_result_limit: false,
+    pattern_error: null, file_name_match_mode: "strict" as const,
   })),
-  onMoveEntry: SidebarPorts["onMoveEntry"] = vi.fn(async () => ""),
-  onFileCommand: SidebarPorts["onFileCommand"] = undefined,
-  onRenameEntry: SidebarPorts["onRenameEntry"] = undefined,
-  onCopyEntry: SidebarPorts["onCopyEntry"] = undefined,
-  onDropEntries: SidebarPorts["onDropEntries"] = undefined,
-  onUndoLastDrop: SidebarPorts["onUndoLastDrop"] = undefined,
-) {
+  onFileCommand,
+  onRenameEntry,
+  onDropEntries = vi.fn(async () => ({ undoable: true })),
+  onUndoLastDrop = vi.fn(async () => true),
+}: MountOptions = {}) {
   const host = document.createElement("div");
   document.body.replaceChildren(host);
   const ports = {
@@ -32,8 +38,6 @@ function mount(
     onError: vi.fn(async () => {}),
     onOpen: vi.fn(),
     onReplace: vi.fn(),
-    onMoveEntry,
-    onCopyEntry,
     onDropEntries,
     onUndoLastDrop,
     onCreateFolder: vi.fn(),
@@ -238,7 +242,7 @@ describe("Feature: Sidebar", () => {
   // Then: 本文操作ではなくmemo.txtのコピーを依頼する
   it("Scenario: ツリーのCtrl+Cは選択中のファイルコピーを依頼する", () => {
     const onFileCommand = vi.fn();
-    const { host, sidebar } = mount(undefined, undefined, onFileCommand);
+    const { host, sidebar } = mount({ onFileCommand });
     sidebar.setEntries([{ name: "memo.txt", is_dir: false, is_archive: false }]);
     const row = host.querySelector<HTMLElement>(".fv-row")!;
     row.dispatchEvent(new MouseEvent("click", { bubbles: true, ctrlKey: true }));
@@ -273,7 +277,7 @@ describe("Feature: Sidebar", () => {
   // Then: 新しい名前を名前変更ポートへ渡す
   it("Scenario: F2は拡張子を選択せずインライン名前変更する", async () => {
     const onRenameEntry = vi.fn();
-    const { host, sidebar } = mount(undefined, undefined, undefined, onRenameEntry);
+    const { host, sidebar } = mount({ onRenameEntry });
     sidebar.setWorkspaceSearch("C:\\work");
     sidebar.setEntries([{ name: "memo.txt", is_dir: false, is_archive: false }]);
     host.querySelector<HTMLElement>(".fv-row")!.click();
@@ -296,7 +300,7 @@ describe("Feature: Sidebar", () => {
   // Then: 名前変更ポートを呼ばず入力を閉じる
   it("Scenario: インライン名前変更はEscで取り消せる", () => {
     const onRenameEntry = vi.fn();
-    const { host, sidebar } = mount(undefined, undefined, undefined, onRenameEntry);
+    const { host, sidebar } = mount({ onRenameEntry });
     sidebar.setWorkspaceSearch("C:\\work");
     sidebar.setEntries([{ name: "memo.txt", is_dir: false, is_archive: false }]);
     host.querySelector<HTMLElement>(".fv-row")!.click();
@@ -331,7 +335,11 @@ describe("Feature: Sidebar", () => {
     window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 12, clientY: 12 }));
     window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 12, clientY: 12 }));
 
-    await vi.waitFor(() => expect(ports.onMoveEntry).toHaveBeenCalledWith("memo.txt", "sub"));
+    await vi.waitFor(() => expect(ports.onDropEntries).toHaveBeenCalledWith({
+      sourceRelPaths: ["memo.txt"],
+      targetRelDir: "sub",
+      mode: "move",
+    }));
   });
 
   // Feature: フォルダビューのD&Dコピー
@@ -340,8 +348,8 @@ describe("Feature: Sidebar", () => {
   // When: memo.txt をCtrl+D&Dする
   // Then: コピーポートへ元相対パスとコピー先相対パスを渡す
   it("Scenario: Ctrl+D&Dでファイルをコピーする", async () => {
-    const onCopyEntry = vi.fn(async () => "sub/memo.txt");
-    const { host, sidebar } = mount(undefined, undefined, undefined, undefined, onCopyEntry);
+    const onDropEntries = vi.fn(async () => ({ undoable: true }));
+    const { host, sidebar } = mount({ onDropEntries });
     sidebar.setEntries([
       { name: "memo.txt", is_dir: false, is_archive: false },
       { name: "sub", is_dir: true, is_archive: false },
@@ -355,7 +363,11 @@ describe("Feature: Sidebar", () => {
     window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 12, clientY: 12 }));
     window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 12, clientY: 12, ctrlKey: true }));
 
-    await vi.waitFor(() => expect(onCopyEntry).toHaveBeenCalledWith("memo.txt", "sub"));
+    await vi.waitFor(() => expect(onDropEntries).toHaveBeenCalledWith({
+      sourceRelPaths: ["memo.txt"],
+      targetRelDir: "sub",
+      mode: "copy",
+    }));
   });
 
   // Feature: ファイルツリーの複数選択D&D
@@ -384,9 +396,12 @@ describe("Feature: Sidebar", () => {
     window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 12, clientY: 12 }));
     window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 12, clientY: 12 }));
 
-    await vi.waitFor(() => expect(ports.onMoveEntry).toHaveBeenCalledTimes(2));
-    expect(ports.onMoveEntry).toHaveBeenNthCalledWith(1, "memo.txt", "sub");
-    expect(ports.onMoveEntry).toHaveBeenNthCalledWith(2, "note.txt", "sub");
+    await vi.waitFor(() => expect(ports.onDropEntries).toHaveBeenCalledOnce());
+    expect(ports.onDropEntries).toHaveBeenCalledWith({
+      sourceRelPaths: ["memo.txt", "note.txt"],
+      targetRelDir: "sub",
+      mode: "move",
+    });
   });
 
   // Feature: フォルダビューのD&D競合処理
@@ -395,9 +410,9 @@ describe("Feature: Sidebar", () => {
   // When: memo.txtをsubへドロップする
   // Then: 競合処理を持つ一括ポートへ移動依頼を渡し、Undoも同じポートへ渡す
   it("Scenario: D&Dは一括操作ポートとUndoポートを利用する", async () => {
-    const onDropEntries = vi.fn(async () => ({ selectedRelPath: "sub/memo.txt", completed: 1, undoable: true }));
+    const onDropEntries = vi.fn(async () => ({ undoable: true }));
     const onUndoLastDrop = vi.fn(async () => true);
-    const { host, sidebar } = mount(undefined, undefined, undefined, undefined, undefined, onDropEntries, onUndoLastDrop);
+    const { host, sidebar } = mount({ onDropEntries, onUndoLastDrop });
     sidebar.setEntries([
       { name: "memo.txt", is_dir: false, is_archive: false },
       { name: "sub", is_dir: true, is_archive: false },
@@ -412,7 +427,11 @@ describe("Feature: Sidebar", () => {
     window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 12, clientY: 12 }));
     window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 12, clientY: 12 }));
 
-    await vi.waitFor(() => expect(onDropEntries).toHaveBeenCalledWith(["memo.txt"], "sub", false));
+    await vi.waitFor(() => expect(onDropEntries).toHaveBeenCalledWith({
+      sourceRelPaths: ["memo.txt"],
+      targetRelDir: "sub",
+      mode: "move",
+    }));
     const tree = host.querySelector<HTMLElement>(".fv-tree")!;
     tree.focus();
     tree.dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true, cancelable: true }));
@@ -471,7 +490,11 @@ describe("Feature: Sidebar", () => {
     window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 12, clientY: 12 }));
     window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 12, clientY: 12 }));
 
-    await vi.waitFor(() => expect(ports.onMoveEntry).toHaveBeenCalledWith("source", "target"));
+    await vi.waitFor(() => expect(ports.onDropEntries).toHaveBeenCalledWith({
+      sourceRelPaths: ["source"],
+      targetRelDir: "target",
+      mode: "move",
+    }));
   });
 
   // Scenario: 子ファイルをフォルダビューの空白へドロップする
@@ -495,17 +518,20 @@ describe("Feature: Sidebar", () => {
     window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 12, clientY: 12 }));
     window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 12, clientY: 12 }));
 
-    await vi.waitFor(() => expect(ports.onMoveEntry).toHaveBeenCalledWith("sub/memo.txt", ""));
+    await vi.waitFor(() => expect(ports.onDropEntries).toHaveBeenCalledWith({
+      sourceRelPaths: ["sub/memo.txt"],
+      targetRelDir: "",
+      mode: "move",
+    }));
   });
 
-  // Scenario: 開いている文書とは別のファイルを移動する
-  // Given: 移動処理が現在選択中の `open.txt` を返す
+  // Scenario: D&D後の選択は一括操作ポート側で更新する
+  // Given: memo.txt と sub フォルダを表示している
   // When: memo.txt を sub へD&Dする
-  // Then: Sidebarは移動元を再計算せず、返された `open.txt` を選択する
-  it("Scenario: D&D後は文書側が返した選択パスを使う", async () => {
-    const onMoveEntry = vi.fn(async () => "open.txt");
-    const { host, sidebar } = mount(undefined, onMoveEntry);
-    const selectByRelPath = vi.spyOn(sidebar, "selectByRelPath").mockResolvedValue();
+  // Then: Sidebarは選択パスを推測せず、一括依頼だけを渡す
+  it("Scenario: D&D後の選択更新を一括操作ポートへ委譲する", async () => {
+    const onDropEntries = vi.fn(async () => ({ undoable: true }));
+    const { host, sidebar } = mount({ onDropEntries });
     sidebar.setEntries([
       { name: "memo.txt", is_dir: false, is_archive: false },
       { name: "sub", is_dir: true, is_archive: false },
@@ -519,7 +545,11 @@ describe("Feature: Sidebar", () => {
     window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 12, clientY: 12 }));
     window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 12, clientY: 12 }));
 
-    await vi.waitFor(() => expect(selectByRelPath).toHaveBeenCalledWith("open.txt"));
+    await vi.waitFor(() => expect(onDropEntries).toHaveBeenCalledWith({
+      sourceRelPaths: ["memo.txt"],
+      targetRelDir: "sub",
+      mode: "move",
+    }));
   });
 
   // Scenario: D&D中にアプリがフォーカスを失う
@@ -545,7 +575,7 @@ describe("Feature: Sidebar", () => {
     window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 12, clientY: 12 }));
 
     expect(host.classList.contains("fv-dragging")).toBe(false);
-    expect(ports.onMoveEntry).not.toHaveBeenCalled();
+    expect(ports.onDropEntries).not.toHaveBeenCalled();
   });
 
   // Feature: フォルダビューD&Dのアンドゥ
@@ -574,15 +604,18 @@ describe("Feature: Sidebar", () => {
     source.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 4, clientY: 4 }));
     window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 12, clientY: 12 }));
     window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 12, clientY: 12 }));
-    await vi.waitFor(() => expect(ports.onMoveEntry).toHaveBeenLastCalledWith("from/memo.txt", "to"));
-    await vi.waitFor(() => expect(host.querySelector(".fv-row")).toBeNull());
+    await vi.waitFor(() => expect(ports.onDropEntries).toHaveBeenLastCalledWith({
+      sourceRelPaths: ["from/memo.txt"],
+      targetRelDir: "to",
+      mode: "move",
+    }));
     sidebar.setWorkspaceSearch("C:\\workspace");
 
     const event = new KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true, cancelable: true });
     host.lastElementChild!.dispatchEvent(event);
 
     expect(event.defaultPrevented).toBe(true);
-    await vi.waitFor(() => expect(ports.onMoveEntry).toHaveBeenLastCalledWith("to/memo.txt", "from"));
+    await vi.waitFor(() => expect(ports.onUndoLastDrop).toHaveBeenCalledOnce());
   });
 
   // Scenario: マウス戻るボタンで直前のD&D移動を戻す
@@ -603,14 +636,16 @@ describe("Feature: Sidebar", () => {
     file.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 4, clientY: 4 }));
     window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 12, clientY: 12 }));
     window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 12, clientY: 12 }));
-    await vi.waitFor(() => expect(ports.onMoveEntry).toHaveBeenLastCalledWith("memo.txt", "sub"));
-    await vi.waitFor(() => expect(host.querySelector(".fv-row")).toBeNull());
-
+    await vi.waitFor(() => expect(ports.onDropEntries).toHaveBeenLastCalledWith({
+      sourceRelPaths: ["memo.txt"],
+      targetRelDir: "sub",
+      mode: "move",
+    }));
     const event = new MouseEvent("mousedown", { button: 3, bubbles: true, cancelable: true });
     host.dispatchEvent(event);
 
     expect(event.defaultPrevented).toBe(true);
-    await vi.waitFor(() => expect(ports.onMoveEntry).toHaveBeenLastCalledWith("sub/memo.txt", ""));
+    await vi.waitFor(() => expect(ports.onUndoLastDrop).toHaveBeenCalledOnce());
   });
 
   // Given: 上下キーで開いたファイルの処理中にエディタへフォーカスが移ろうとする

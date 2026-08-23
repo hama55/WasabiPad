@@ -1,3 +1,5 @@
+import type { Encoding, Eol } from "./api";
+
 export type FileOperation =
   | {
     kind: "move" | "copy";
@@ -16,6 +18,18 @@ export type FileOperation =
     kind: "delete";
     relPath: string;
     restoreRelPath: string | null;
+  }
+  | {
+    kind: "create";
+    relPath: string;
+    isDir: true;
+  }
+  | {
+    kind: "create";
+    relPath: string;
+    isDir: false;
+    encoding: Encoding;
+    eol: Eol;
   };
 
 export class FileOperationHistory {

@@ -23,6 +23,7 @@ import { runAsyncBoundary } from "./async-boundary";
 import { reportErrorSafely } from "./report-error";
 import type { MemoCreationSpec } from "./document-controller";
 import { FileOperationHistory, type FileOperation } from "./file-operation-history";
+import type { FileTreeDropRequest, FileTreeDropResult } from "./file-tree-drop";
 export { isImagePath } from "./image-formats";
 
 type PasteConflictAction = "rename" | "replace" | "skip" | "cancel";
@@ -68,6 +69,7 @@ export type FolderActionsApi = Pick<
   | "moveEntryAs"
   | "deleteEntryWithoutBackup"
   | "restoreDeletedEntry"
+  | "selectEntry"
 >;
 
 export interface FolderActionsServices {
@@ -82,12 +84,6 @@ export interface FolderActionsServices {
   onClipboardChange?: () => void;
   writeClipboardText?: (text: string) => Promise<void>;
   onRebasePath?: (rebase: PathRebase) => void;
-}
-
-export interface FolderDropResult {
-  selectedRelPath: string;
-  completed: number;
-  undoable: boolean;
 }
 
 export interface FolderDocumentPort {
@@ -134,6 +130,21 @@ export class FolderActions {
 
   private toAbsolute(relPath: string): string {
     return joinWindowsRoot(this.root!, relPath);
+  }
+
+  private pathContains(selectedRelPath: string, relPath: string): boolean {
+    const selected = selectedRelPath.replace(/\\/g, "/").replace(/\/$/, "").toLocaleLowerCase("en-US");
+    const target = relPath.replace(/\\/g, "/").replace(/\/$/, "").toLocaleLowerCase("en-US");
+    return !!target && (selected === target
+      || selected.startsWith(`${target}/`)
+      || selected.startsWith(`${target}::`));
+  }
+
+  private async reloadSelectedEntry(selectedRelPath: string, affectedRelPath: string): Promise<void> {
+    if (!this.pathContains(selectedRelPath, affectedRelPath)) return;
+    this.doc.setSelectedRelPath(selectedRelPath);
+    const info = await this.services.api.selectEntry(selectedRelPath);
+    this.doc.applyDocInfo(info, true);
   }
 
   private run(title: string, operation: () => void | Promise<unknown>) {
@@ -423,11 +434,15 @@ export class FolderActions {
     this.ports.sidebar.clearFolderMoveUndo?.();
   }
 
-  async dropEntries(sourceRelPaths: string[], targetRelDir: string, copy: boolean): Promise<FolderDropResult> {
+  async dropEntries(request: FileTreeDropRequest): Promise<FileTreeDropResult> {
     this.syncOperationRoot();
-    if (!this.root) return { selectedRelPath: "", completed: 0, undoable: false };
-    const entries = sourceRelPaths.map((relPath) => ({ relPath }));
-    const result = await this.pasteEntries(copy ? "copy" : "cut", entries, targetRelDir);
+    if (!this.root) return { undoable: false };
+    const entries = request.sourceRelPaths.map((relPath) => ({ relPath }));
+    const result = await this.pasteEntries(
+      request.mode === "copy" ? "copy" : "cut",
+      entries,
+      request.targetRelDir,
+    );
     this.recordOperations(result.operations, true);
     await this.ports.sidebar.refreshFolderEntries();
     const selectedRelPath = [...result.operations]
@@ -435,11 +450,7 @@ export class FolderActions {
       .find((operation): operation is Extract<FileOperation, { kind: "copy" | "move" }> =>
         operation.kind === "copy" || operation.kind === "move")?.targetRelPath ?? "";
     if (selectedRelPath) await this.ports.sidebar.selectByRelPath(selectedRelPath);
-    return {
-      selectedRelPath,
-      completed: result.completedSources.size,
-      undoable: result.operations.length > 0,
-    };
+    return { undoable: result.operations.length > 0 };
   }
 
   async undoLastDrop(): Promise<boolean> {
@@ -457,6 +468,7 @@ export class FolderActions {
   ): Promise<FileOperation> {
     const name = targetName ?? basename(entry.relPath);
     const targetRelPath = targetRelDir ? `${targetRelDir}/${name}` : name;
+    const selectedBefore = this.doc.current.selectedRelPath;
     let info: api.DocInfo;
     if (targetName) {
       if (mode === "copy") {
@@ -470,7 +482,8 @@ export class FolderActions {
       info = await this.services.api.moveEntry(entry.relPath, targetRelDir);
     }
     if (mode === "cut") {
-      this.doc.applyMoved(info, movedRelativePath(this.doc.current.selectedRelPath, entry.relPath, targetRelDir, name));
+      const selectedAfter = movedRelativePath(selectedBefore, entry.relPath, targetRelDir, name);
+      this.doc.applyMoved(info, selectedAfter);
       const root = this.root;
       if (root) {
         this.services.onRebasePath?.({
@@ -480,6 +493,12 @@ export class FolderActions {
           newRelPath: targetRelPath,
         });
       }
+    }
+    if (overwrite) {
+      const selectedAfter = mode === "cut"
+        ? movedRelativePath(selectedBefore, entry.relPath, targetRelDir, name)
+        : selectedBefore;
+      await this.reloadSelectedEntry(selectedAfter, targetRelPath);
     }
     return {
       kind: mode === "cut" ? "move" : "copy",
@@ -513,7 +532,7 @@ export class FolderActions {
     if (!operations) return;
     this.replayingHistory = true;
     try {
-      for (const operation of [...operations].reverse()) await this.undoOperation(operation);
+      for (const operation of [...operations].reverse()) await this.replayOperation(operation, "undo");
       this.history.completeUndo(operations);
     } catch (error) {
       this.history.restoreUndo(operations);
@@ -534,7 +553,7 @@ export class FolderActions {
     if (!operations) return;
     this.replayingHistory = true;
     try {
-      for (const operation of operations) await this.redoOperation(operation);
+      for (const operation of operations) await this.replayOperation(operation, "redo");
       this.history.completeRedo(operations);
     } catch (error) {
       this.history.restoreRedo(operations);
@@ -543,14 +562,6 @@ export class FolderActions {
       this.replayingHistory = false;
     }
     await this.ports.sidebar.refreshFolderEntries();
-  }
-
-  private async undoOperation(operation: FileOperation) {
-    await this.replayOperation(operation, "undo");
-  }
-
-  private async redoOperation(operation: FileOperation) {
-    await this.replayOperation(operation, "redo");
   }
 
   private async replayOperation(operation: FileOperation, direction: "undo" | "redo") {
@@ -569,20 +580,29 @@ export class FolderActions {
     }
     if (operation.kind === "copy") {
       if (undo) {
+        const selectedBefore = this.doc.current.selectedRelPath;
         await this.services.api.deleteEntryWithoutBackup(operation.targetRelPath);
         if (operation.overwrite) await this.services.api.restoreDeletedEntry(operation.targetRelPath);
+        if (operation.overwrite) {
+          await this.reloadSelectedEntry(selectedBefore, operation.targetRelPath);
+        }
       } else {
+        const selectedBefore = this.doc.current.selectedRelPath;
         await this.services.api.copyEntryAs(
           operation.sourceRelPath,
           operation.targetRelDir,
           operation.targetName,
           operation.overwrite,
         );
+        if (operation.overwrite) {
+          await this.reloadSelectedEntry(selectedBefore, operation.targetRelPath);
+        }
       }
       return;
     }
     if (operation.kind === "move") {
       if (undo) {
+        const selectedBefore = this.doc.current.selectedRelPath;
         const sourceRelDir = parentRelPath(operation.sourceRelPath);
         const info = await this.services.api.moveEntryAs(
           operation.targetRelPath,
@@ -592,10 +612,14 @@ export class FolderActions {
         this.rebaseTabs(operation.targetRelPath, operation.sourceRelPath);
         this.doc.applyMoved(
           info,
-          movedRelativePath(this.doc.current.selectedRelPath, operation.targetRelPath, sourceRelDir, basename(operation.sourceRelPath)),
+          movedRelativePath(selectedBefore, operation.targetRelPath, sourceRelDir, basename(operation.sourceRelPath)),
         );
         if (operation.overwrite) await this.services.api.restoreDeletedEntry(operation.targetRelPath);
+        if (operation.overwrite) {
+          await this.reloadSelectedEntry(selectedBefore, operation.targetRelPath);
+        }
       } else {
+        const selectedBefore = this.doc.current.selectedRelPath;
         const info = await this.services.api.moveEntryAs(
           operation.sourceRelPath,
           operation.targetRelDir,
@@ -605,8 +629,38 @@ export class FolderActions {
         this.rebaseTabs(operation.sourceRelPath, operation.targetRelPath);
         this.doc.applyMoved(
           info,
-          movedRelativePath(this.doc.current.selectedRelPath, operation.sourceRelPath, operation.targetRelDir, operation.targetName),
+          movedRelativePath(selectedBefore, operation.sourceRelPath, operation.targetRelDir, operation.targetName),
         );
+        if (operation.overwrite) {
+          await this.reloadSelectedEntry(selectedBefore, operation.targetRelPath);
+        }
+      }
+      return;
+    }
+    if (operation.kind === "create") {
+      if (undo) {
+        const selectedBefore = this.doc.current.selectedRelPath;
+        await this.services.api.deleteEntryWithoutBackup(operation.relPath);
+        if (this.pathContains(selectedBefore, operation.relPath)) {
+          this.doc.setSelectedRelPath("");
+          this.doc.markDeleted();
+        }
+      } else if (operation.isDir) {
+        await this.services.api.createFolder(parentRelPath(operation.relPath), basename(operation.relPath));
+      } else {
+        const info = await this.services.api.createNote(
+          parentRelPath(operation.relPath) || null,
+          basename(operation.relPath),
+          operation.encoding,
+          operation.eol,
+        );
+        const root = this.root;
+        const actualRelPath = info.path && root
+          ? relativePathFromRoot(root, info.path)
+          : operation.relPath;
+        operation.relPath = actualRelPath;
+        this.doc.setSelectedRelPath(actualRelPath);
+        this.doc.applyDocInfo(info);
       }
       return;
     }
@@ -651,6 +705,13 @@ export class FolderActions {
     const relPath = info.path && root
       ? relativePathFromRoot(root, info.path)
       : relDir ? `${relDir}/${requestedName}` : requestedName;
+    this.recordOperations([{
+      kind: "create",
+      relPath,
+      isDir: false,
+      encoding: spec.format.encoding,
+      eol: spec.format.eol,
+    }]);
     try {
       this.doc.setSelectedRelPath(relPath);
       this.doc.applyDocInfo(info);
@@ -690,6 +751,11 @@ export class FolderActions {
       await this.reportError("新規フォルダを作成できませんでした", error);
       return;
     }
+    this.recordOperations([{
+      kind: "create",
+      relPath: relDir ? `${relDir}/${name}` : name,
+      isDir: true,
+    }]);
     try {
       await this.ports.sidebar.refreshFolderEntries();
     } catch (error) {
@@ -715,9 +781,14 @@ export class FolderActions {
     const current = basename(relPath);
     if (!newName.trim() || newName.trim() === current) return;
     newName = newName.trim();
-    const oldAbsolute = this.toAbsolute(relPath);
     const separator = relPath.lastIndexOf("/");
-    const newAbsolute = this.toAbsolute(separator < 0 ? newName : `${relPath.slice(0, separator + 1)}${newName}`);
+    const newRelPath = separator < 0 ? newName : `${relPath.slice(0, separator + 1)}${newName}`;
+    const rebase: PathRebase = {
+      oldAbsolute: this.toAbsolute(relPath),
+      newAbsolute: this.toAbsolute(newRelPath),
+      oldRelPath: relPath,
+      newRelPath,
+    };
     let info: api.DocInfo;
     try {
       info = await this.services.api.renameEntry(relPath, newName);
@@ -729,30 +800,29 @@ export class FolderActions {
       this.recordOperations([{
         kind: "rename",
         sourceRelPath: relPath,
-        targetRelPath: separator < 0 ? newName : `${relPath.slice(0, separator + 1)}${newName}`,
+        targetRelPath: newRelPath,
       }]);
     }
-    this.services.onRebasePath?.({
-      oldAbsolute,
-      newAbsolute,
-      oldRelPath: relPath,
-      newRelPath: separator < 0 ? newName : `${relPath.slice(0, separator + 1)}${newName}`,
-    });
+    this.services.onRebasePath?.(rebase);
     try {
-      await this.applyRenameInfo(info, oldAbsolute, newAbsolute);
+      await this.applyRenameInfo(info, rebase);
     } catch (e) {
       await this.reportError("名前は変更されましたが画面を更新できませんでした", e);
     }
   }
 
   private async renameEntryForHistory(relPath: string, newName: string) {
-    const oldAbsolute = this.toAbsolute(relPath);
     const separator = relPath.lastIndexOf("/");
-    const newAbsolute = this.toAbsolute(separator < 0 ? newName : `${relPath.slice(0, separator + 1)}${newName}`);
-    const info = await this.services.api.renameEntry(relPath, newName);
     const newRelPath = separator < 0 ? newName : `${relPath.slice(0, separator + 1)}${newName}`;
+    const rebase: PathRebase = {
+      oldAbsolute: this.toAbsolute(relPath),
+      newAbsolute: this.toAbsolute(newRelPath),
+      oldRelPath: relPath,
+      newRelPath,
+    };
+    const info = await this.services.api.renameEntry(relPath, newName);
     this.rebaseTabs(relPath, newRelPath);
-    await this.applyRenameInfo(info, oldAbsolute, newAbsolute);
+    await this.applyRenameInfo(info, rebase);
   }
 
   private rebaseTabs(oldRelPath: string, newRelPath: string) {
@@ -768,19 +838,26 @@ export class FolderActions {
 
   private async applyRenameInfo(
     info: api.DocInfo,
-    oldAbsolute: string,
-    newAbsolute: string,
+    rebase: PathRebase,
   ) {
     this.ports.sidebar.setEntries(info.folder_entries ?? []);
     const root = this.root;
     if (info.path && root) {
-      const rel = relativePathFromRoot(root, info.path);
-      this.doc.applyRenamed(info, rel);
-      await this.ports.sidebar.selectByRelPath(rel);
+      const infoRelPath = relativePathFromRoot(root, info.path);
+      const currentSelected = this.doc.current.selectedRelPath;
+      const rebasedSelected = movedRelativePath(
+        currentSelected,
+        rebase.oldRelPath,
+        parentRelPath(rebase.newRelPath),
+        basename(rebase.newRelPath),
+      );
+      const selectedRelPath = rebasedSelected !== currentSelected ? rebasedSelected : infoRelPath;
+      this.doc.applyRenamed(info, selectedRelPath);
+      await this.ports.sidebar.selectByRelPath(selectedRelPath);
     }
     // 起動時に開く既定パスが改名対象の下にあると、次回起動で開けなくなる
     const startupPath = this.services.getStartupPath();
-    const rebased = startupPath && rebaseWindowsPath(startupPath, oldAbsolute, newAbsolute);
+    const rebased = startupPath && rebaseWindowsPath(startupPath, rebase.oldAbsolute, rebase.newAbsolute);
     if (rebased) this.ports.onSetStartupPath(rebased);
   }
 

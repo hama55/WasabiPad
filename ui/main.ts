@@ -31,7 +31,7 @@ import { confirmMessage, confirmSaveDiscard, promptFields } from "./prompt";
 import { promptSaveFormat, saveFormatFields, saveFormatFromValues } from "./save-format";
 import { isPasswordCancelled, withArchivePassword } from "./archive-password";
 import { archiveRelOf } from "./archive-path";
-import { joinWindowsRoot, movedRelativePath } from "./path";
+import { joinWindowsRoot } from "./path";
 import { createCommandRegistry, globalCommandForEvent } from "./commands";
 import { TabManager } from "./tabs";
 import {
@@ -441,26 +441,7 @@ sidebar = new Sidebar(sidebarEl, {
   onExpandArchive: (relPath) =>
     withArchivePassword(relPath, () => api.listArchiveEntries(relPath)),
   onExpandFolder: (relDir) => api.listFolderEntries(relDir),
-  onMoveEntry: async (sourceRelPath, targetRelDir) => {
-    const info = await api.moveEntry(sourceRelPath, targetRelDir);
-    const selectedRelPath = movedRelativePath(doc.current.selectedRelPath, sourceRelPath, targetRelDir);
-    const root = doc.current.folderRoot;
-    const destination = movedRelativePath(sourceRelPath, sourceRelPath, targetRelDir);
-    if (root) tabs?.rebasePaths({
-      oldAbsolute: joinWindowsRoot(root, sourceRelPath),
-      newAbsolute: joinWindowsRoot(root, destination),
-      oldRelPath: sourceRelPath,
-      newRelPath: destination,
-    });
-    doc.applyMoved(info, selectedRelPath);
-    return selectedRelPath;
-  },
-  onCopyEntry: async (sourceRelPath, targetRelDir) => {
-    await api.copyEntry(sourceRelPath, targetRelDir);
-    return movedRelativePath(sourceRelPath, sourceRelPath, targetRelDir);
-  },
-  onDropEntries: (sourceRelPaths, targetRelDir, copy) =>
-    folderActions.dropEntries(sourceRelPaths, targetRelDir, copy),
+  onDropEntries: (request) => folderActions.dropEntries(request),
   onUndoLastDrop: () => folderActions.undoLastDrop(),
   onCreateFolder: (relDir) => folderActions.createFolder(relDir),
   onCreateNote: () => folderActions.createNote(null),

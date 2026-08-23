@@ -300,6 +300,41 @@ describe("Feature: FolderActions", () => {
     await vi.waitFor(() => expect(restoreDeletedEntry).toHaveBeenCalledWith("docs/memo.txt"));
   });
 
+  // Feature: 開いている文書を置き換える貼り付け
+  // Scenario: 置換先を開いている状態で貼り付けとUndoを行う
+  // Given: `docs/memo.txt`を開いており、コピー先に同名項目がある
+  // When: 置き換えを実行してからUndoする
+  // Then: 置換後と復元後の両方で文書セッションを同じパスへ再接続する
+  it("Scenario: 開いている置換先を貼り付け後もUndo後も再接続する", async () => {
+    const copyEntry = vi.spyOn(api, "copyEntry")
+      .mockRejectedValueOnce(new Error("コピー先に同名のファイルまたはフォルダがあります"));
+    const copiedInfo = { path: "C:\\work", folder_root: "C:\\work" } as api.DocInfo;
+    vi.spyOn(api, "copyEntryAs").mockResolvedValue(copiedInfo);
+    const deleteEntryWithoutBackup = vi.spyOn(api, "deleteEntryWithoutBackup").mockResolvedValue(copiedInfo);
+    const restoreDeletedEntry = vi.spyOn(api, "restoreDeletedEntry").mockResolvedValue(copiedInfo);
+    const selectEntry = vi.spyOn(api, "selectEntry").mockResolvedValue(copiedInfo);
+    vi.mocked(promptFields).mockResolvedValueOnce(["replace", "one"]);
+    const { actions, doc } = fixture();
+    doc.current.selectedRelPath = "docs/memo.txt";
+
+    const result = await actions.dropEntries({
+      sourceRelPaths: ["memo.txt"],
+      targetRelDir: "docs",
+      mode: "copy",
+    });
+
+    expect(result.undoable).toBe(true);
+    await vi.waitFor(() => expect(selectEntry).toHaveBeenCalledWith("docs/memo.txt"));
+    expect(doc.applyDocInfo).toHaveBeenCalledWith(copiedInfo, true);
+
+    actions.executeCommand("undo", []);
+    await vi.waitFor(() => expect(deleteEntryWithoutBackup).toHaveBeenCalledWith("docs/memo.txt"));
+    await vi.waitFor(() => expect(restoreDeletedEntry).toHaveBeenCalledWith("docs/memo.txt"));
+    await vi.waitFor(() => expect(selectEntry).toHaveBeenCalledTimes(2));
+    expect(selectEntry).toHaveBeenLastCalledWith("docs/memo.txt");
+    expect(copyEntry).toHaveBeenCalledWith("memo.txt", "docs");
+  });
+
   // Feature: 貼り付け時の同名競合
   // Scenario: スキップを全項目へ適用する
   // Given: 2つのコピー元で同名競合が起きる
@@ -361,9 +396,13 @@ describe("Feature: FolderActions", () => {
     vi.mocked(promptFields).mockResolvedValueOnce(["skip", "all"]);
     const { actions, ports } = fixture();
 
-    const result = await actions.dropEntries(["memo.txt", "note.txt"], "docs", false);
+    const result = await actions.dropEntries({
+      sourceRelPaths: ["memo.txt", "note.txt"],
+      targetRelDir: "docs",
+      mode: "move",
+    });
 
-    expect(result.completed).toBe(0);
+    expect(result.undoable).toBe(false);
     expect(moveEntry).toHaveBeenCalledTimes(2);
     expect(moveEntryAs).not.toHaveBeenCalled();
     expect(promptFields).toHaveBeenCalledOnce();
@@ -381,9 +420,12 @@ describe("Feature: FolderActions", () => {
       .mockRejectedValueOnce(new Error("アクセスできません"));
     const { actions, ports } = fixture();
 
-    const result = await actions.dropEntries(["memo.txt", "note.txt"], "docs", false);
+    const result = await actions.dropEntries({
+      sourceRelPaths: ["memo.txt", "note.txt"],
+      targetRelDir: "docs",
+      mode: "move",
+    });
 
-    expect(result.completed).toBe(1);
     expect(result.undoable).toBe(true);
     expect(moveEntry).toHaveBeenNthCalledWith(1, "memo.txt", "docs");
     expect(moveEntry).toHaveBeenNthCalledWith(2, "note.txt", "docs");
@@ -400,7 +442,11 @@ describe("Feature: FolderActions", () => {
     const moveEntryAs = vi.spyOn(api, "moveEntryAs").mockResolvedValue({} as api.DocInfo);
     const { actions } = fixture();
 
-    const result = await actions.dropEntries(["memo.txt"], "docs", false);
+    const result = await actions.dropEntries({
+      sourceRelPaths: ["memo.txt"],
+      targetRelDir: "docs",
+      mode: "move",
+    });
     const undone = await actions.undoLastDrop();
 
     expect(result.undoable).toBe(true);
@@ -485,6 +531,27 @@ describe("Feature: FolderActions", () => {
 
     await vi.waitFor(() => expect(createFolder).toHaveBeenCalledWith("docs", "notes"));
     expect(ports.sidebar.refreshFolderEntries).toHaveBeenCalledOnce();
+  });
+
+  // Feature: ファイルツリー操作のセッション内アンドゥ
+  // Scenario: 新規フォルダの作成をUndo/Redoする
+  // Given: docs配下にnotesフォルダを作成している
+  // When: ファイル操作のUndoとRedoを実行する
+  // Then: 作成した相対パスを削除・再作成する
+  it("Scenario: 新規フォルダの作成をUndoとRedoで戻せる", async () => {
+    const createFolder = vi.spyOn(api, "createFolder").mockResolvedValue();
+    const deleteEntryWithoutBackup = vi.spyOn(api, "deleteEntryWithoutBackup").mockResolvedValue({} as api.DocInfo);
+    vi.mocked(promptFields).mockResolvedValueOnce(["notes"]);
+    const { actions, ports } = fixture();
+
+    await actions.createFolder("docs");
+    actions.executeCommand("undo", []);
+    await vi.waitFor(() => expect(deleteEntryWithoutBackup).toHaveBeenCalledWith("docs/notes"));
+    await vi.waitFor(() => expect(ports.sidebar.refreshFolderEntries).toHaveBeenCalled());
+
+    actions.executeCommand("redo", []);
+    await vi.waitFor(() => expect(createFolder).toHaveBeenCalledTimes(2));
+    expect(createFolder).toHaveBeenLastCalledWith("docs", "notes");
   });
 
   // Given: ファイル、フォルダ、空白部の右クリックメニューを表示する
@@ -878,5 +945,76 @@ describe("Feature: FolderActions", () => {
     expect(doc.promptMemoSpec).toHaveBeenCalledWith("C:\\work");
     expect(api.createNote).toHaveBeenCalledWith(null, "memo.txt", "sjis", "lf");
     expect(doc.setSelectedRelPath).toHaveBeenCalledWith("memo1.txt");
+  });
+
+  // Feature: ファイルツリー操作のセッション内アンドゥ
+  // Scenario: 新規メモの作成をUndo/Redoする
+  // Given: memo.txtを作成している
+  // When: ファイル操作のUndoとRedoを実行する
+  // Then: 作成したファイルを削除・同じ形式で再作成する
+  it("Scenario: 新規メモの作成をUndoとRedoで戻せる", async () => {
+    const docInfo = {
+      kind: "text",
+      line_count: 1,
+      enc: "sjis",
+      eol: "lf",
+      path: "C:\\work\\memo.txt",
+      entries: null,
+      folder_entries: [],
+      folder_root: "C:\\work",
+      view_only: false,
+      is_binary: false,
+      byte_len: 0,
+      is_huge: false,
+      modified_at: null,
+    } satisfies api.DocInfo;
+    const createNote = vi.spyOn(api, "createNote").mockResolvedValue(docInfo);
+    const deleteEntryWithoutBackup = vi.spyOn(api, "deleteEntryWithoutBackup").mockResolvedValue(docInfo);
+    vi.mocked(promptFields).mockResolvedValueOnce(null);
+    const { actions, doc, ports } = fixture();
+    doc.promptMemoSpec.mockResolvedValueOnce({
+      memo: { stem: "memo", extension: "txt" },
+      format: { encoding: "sjis", eol: "lf" },
+    });
+
+    await actions.createNote(null);
+    actions.executeCommand("undo", []);
+    await vi.waitFor(() => expect(deleteEntryWithoutBackup).toHaveBeenCalledWith("memo.txt"));
+    await vi.waitFor(() => expect(ports.sidebar.refreshFolderEntries).toHaveBeenCalled());
+
+    actions.executeCommand("redo", []);
+    await vi.waitFor(() => expect(createNote).toHaveBeenCalledTimes(2));
+    expect(createNote).toHaveBeenLastCalledWith(null, "memo.txt", "sjis", "lf");
+  });
+
+  // Feature: アーカイブ内選択のパス追従
+  // Scenario: アーカイブファイルをリネームする
+  // Given: data.zip::Sheet1を選択している
+  // When: data.zipをrenamed.zipへリネームする
+  // Then: アーカイブ内の選択もrenamed.zip::Sheet1へ移す
+  it("Scenario: アーカイブファイルのリネームで内部選択を維持する", async () => {
+    const info = {
+      kind: "archive",
+      line_count: 1,
+      enc: "utf8",
+      eol: "crlf",
+      path: "C:\\work\\renamed.zip",
+      entries: [],
+      folder_entries: [],
+      folder_root: "C:\\work",
+      view_only: false,
+      is_binary: false,
+      byte_len: 0,
+      is_huge: false,
+      modified_at: null,
+    } satisfies api.DocInfo;
+    vi.spyOn(api, "renameEntry").mockResolvedValue(info);
+    const { actions, doc, ports } = fixture();
+    doc.current.selectedRelPath = "data.zip::Sheet1";
+
+    await actions.renameEntry("data.zip", "renamed.zip");
+
+    expect(doc.applyRenamed).toHaveBeenCalledWith(info, "renamed.zip::Sheet1");
+    expect(ports.sidebar.selectByRelPath).toHaveBeenCalledWith("renamed.zip::Sheet1");
   });
 });

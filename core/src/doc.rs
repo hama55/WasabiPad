@@ -1047,6 +1047,38 @@ impl Doc {
         std::fs::create_dir(dir.join(name))
     }
 
+    fn prepare_destination(
+        &mut self,
+        root: &Path,
+        destination: &Path,
+        overwrite: bool,
+        collision_message: &str,
+    ) -> io::Result<Option<String>> {
+        let destination_rel_path = relative_entry_path(root, destination)?;
+        let exists = match std::fs::symlink_metadata(destination) {
+            Ok(_) => true,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error),
+        };
+        if !exists {
+            return Ok(None);
+        }
+        if !overwrite {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                collision_message,
+            ));
+        }
+        self.delete_entry(&destination_rel_path)?;
+        Ok(Some(destination_rel_path))
+    }
+
+    fn restore_replaced_destination(&mut self, destination_rel_path: Option<&str>) {
+        if let Some(rel_path) = destination_rel_path {
+            let _ = self.restore_deleted_entry(rel_path);
+        }
+    }
+
     // サイドバー上のファイル/フォルダ見出しをリネームする。開いている文書自身または
     // その配下がリネーム対象なら、パス表記だけを追従させる (バッファは開き直さない)。
     pub fn rename_entry(&mut self, rel_path: &str, new_name: &str) -> io::Result<DocInfo> {
@@ -1116,26 +1148,19 @@ impl Doc {
                 "コピー先に同名のファイルまたはフォルダがあります",
             ));
         }
-        let destination_rel_path = relative_entry_path(&root, &destination)?;
-        let replaced = if let Ok(_metadata) = std::fs::symlink_metadata(&destination) {
-            if !overwrite {
-                return Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    "コピー先に同名のファイルまたはフォルダがあります",
-                ));
-            }
-            self.delete_entry(&destination_rel_path)?;
-            true
-        } else {
-            false
-        };
+        let replaced = self.prepare_destination(
+            &root,
+            &destination,
+            overwrite,
+            "コピー先に同名のファイルまたはフォルダがあります",
+        )?;
         if let Err(error) = copy_entry_recursive(&source, &destination) {
             if std::fs::symlink_metadata(&destination).is_ok() {
-                let _ = self.delete_entry_without_backup(&destination_rel_path);
+                let _ = self.delete_entry_without_backup(
+                    &relative_entry_path(&root, &destination)?,
+                );
             }
-            if replaced {
-                let _ = self.restore_deleted_entry(&destination_rel_path);
-            }
+            self.restore_replaced_destination(replaced.as_deref());
             return Err(error);
         }
         let path = self
@@ -1189,19 +1214,12 @@ impl Doc {
                 .unwrap_or_else(|| root.to_string_lossy().into_owned());
             return self.info(path);
         }
-        let destination_rel_path = relative_entry_path(&root, &destination)?;
-        let replaced = if std::fs::symlink_metadata(&destination).is_ok() {
-            if !overwrite {
-                return Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    "移動先に同名のファイルまたはフォルダがあります",
-                ));
-            }
-            self.delete_entry(&destination_rel_path)?;
-            true
-        } else {
-            false
-        };
+        let replaced = self.prepare_destination(
+            &root,
+            &destination,
+            overwrite,
+            "移動先に同名のファイルまたはフォルダがあります",
+        )?;
 
         let current_path = self.source.display_path().map(Path::to_path_buf);
         let affected = is_delete_target_affected(current_path.as_deref(), &canonical_source)?;
@@ -1211,9 +1229,7 @@ impl Doc {
             .map(release_target_file)
             .unwrap_or(false);
         if let Err(error) = std::fs::rename(&source, &destination) {
-            if replaced {
-                let _ = self.restore_deleted_entry(&destination_rel_path);
-            }
+            self.restore_replaced_destination(replaced.as_deref());
             if let Some(mut target) = held_target.take() {
                 restore_target_file(&mut target, released_handle);
                 self.source.target = target;
