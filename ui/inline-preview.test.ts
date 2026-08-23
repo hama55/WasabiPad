@@ -10,6 +10,7 @@ function mount(
   onFullscreenChange?: () => void | Promise<void>,
   onSelectionChange?: (selection: { start: { line: number; col: number }; end: { line: number; col: number } }) =>
     void | Promise<void>,
+  onMarkdownLink?: (href: string, newTab: boolean) => void | Promise<void>,
 ) {
   const host = document.createElement("div");
   host.appendChild(document.createElement("iframe"));
@@ -21,6 +22,7 @@ function mount(
     onFontFamilyChange,
     onFullscreenChange,
     onSelectionChange,
+    onMarkdownLink,
     onError,
   });
   return { host, preview, onAvailabilityChange };
@@ -209,6 +211,72 @@ describe("Feature: inline preview", () => {
       start: { line: 2, col: 3 },
       end: { line: 2, col: 5 },
     });
+  });
+
+  // Feature: Markdownリンクの新規タブ通知
+  // Scenario: MarkdownビューからCtrl+クリックされたローカルリンクを親へ渡す
+  // Given: インラインプレビューのMarkdownリンク通知ポート
+  // When: iframeからMarkdownリンクメッセージを受け取る
+  // Then: hrefと新規タブ指定を親ポートへ渡す
+  it("Scenario: forwards a Markdown link new-tab request", () => {
+    const onMarkdownLink = vi.fn();
+    const { host } = mount(undefined, undefined, undefined, undefined, undefined, onMarkdownLink);
+    const frame = host.querySelector("iframe")!;
+
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: window.location.origin,
+      data: {
+        type: INLINE_PREVIEW_MESSAGES.MARKDOWN_LINK_MESSAGE,
+        href: "../manual.md#install",
+        newTab: true,
+      },
+    }));
+
+    expect(onMarkdownLink).toHaveBeenCalledWith("../manual.md#install", true);
+  });
+
+  // Given: Markdownプレビューが開いている
+  // When: 親がfragment移動を要求する
+  // Then: iframeへfragment移動メッセージを送る
+  it("Scenario: Markdown fragment移動をプレビューへ送る", async () => {
+    const { host, preview } = mount();
+    const frame = host.querySelector("iframe")!;
+    const postMessage = vi.spyOn(frame.contentWindow!, "postMessage");
+    await preview.open("markdown", "# install", null);
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
+    }));
+
+    preview.setMarkdownFragment("install");
+
+    expect(postMessage).toHaveBeenCalledWith({
+      type: INLINE_PREVIEW_MESSAGES.MARKDOWN_FRAGMENT_MESSAGE,
+      fragment: "install",
+    }, window.location.origin);
+  });
+
+  // Given: 次に開くMarkdownビューへfragment移動を予約する
+  // When: 新しいプレビューを開く
+  // Then: 新しいpayloadに対してfragment移動を通知する
+  it("Scenario: 新しいMarkdownプレビューへfragment移動を予約する", async () => {
+    const { host, preview } = mount();
+    const frame = host.querySelector("iframe")!;
+    const postMessage = vi.spyOn(frame.contentWindow!, "postMessage");
+    preview.setMarkdownFragment("install");
+    await preview.open("markdown", "# install", null);
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
+    }));
+
+    expect(postMessage).toHaveBeenCalledWith({
+      type: INLINE_PREVIEW_MESSAGES.MARKDOWN_FRAGMENT_MESSAGE,
+      fragment: "install",
+    }, window.location.origin);
   });
 
   // Given: インラインプレビューの文字サイズを変更する

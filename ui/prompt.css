@@ -8,6 +8,11 @@
   background: var(--bg-side); border: 1px solid var(--border-strong); border-radius: 6px;
   box-shadow: 0 8px 24px #000a; padding: 14px; width: 360px;
 }
+.pf-box.pf-command-box {
+  width: min(900px, calc(100vw - 40px));
+  max-height: min(760px, calc(100vh - 40px));
+  overflow: hidden;
+}
 .pf-merge-box {
   width: min(820px, calc(100vw - 40px));
   max-height: min(760px, calc(100vh - 40px));
@@ -27,6 +32,16 @@
 }
 .pf-row input:focus, .pf-row select:focus { border-color: var(--bg-status); }
 .pf-row input[aria-invalid="true"] { border-color: #f48771; }
+.pf-row textarea.pf-multiline-value {
+  width: 100%; min-height: 170px; box-sizing: border-box;
+  background: var(--bg-editor); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: 7px 8px; font: 13px/1.45 var(--font-mono);
+  resize: both; overflow: hidden; white-space: pre-wrap;
+  overflow-wrap: anywhere; outline: none;
+}
+.pf-row textarea.pf-multiline-value:focus { border-color: var(--bg-status); }
+.pf-row textarea.pf-multiline-value[aria-invalid="true"] { border-color: #f48771; }
 .pf-error { min-height: 15px; color: #f48771; font-size: 11px; }
 .pf-preview-row { display: flex; flex-direction: column; gap: 3px; margin-top: 2px; }
 .pf-preview-row label { font-size: 12px; color: var(--fg-dim); }

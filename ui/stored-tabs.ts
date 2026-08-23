@@ -8,6 +8,7 @@ export interface StoredTab {
   label: string;
   draftDirectory?: string;
   goto?: Pos;
+  fragment?: string;
   viewState?: EditorViewState;
   selectedRelPath?: string;
   selectedLine?: number;
@@ -38,6 +39,7 @@ export function isStoredTab(value: unknown): value is StoredTab {
     && typeof candidate.label === "string"
     && (!("draftDirectory" in candidate) || candidate.draftDirectory === undefined || typeof candidate.draftDirectory === "string")
     && (!("goto" in candidate) || candidate.goto === undefined || isPos(candidate.goto))
+    && (!("fragment" in candidate) || candidate.fragment === undefined || typeof candidate.fragment === "string")
     && (!("selectedRelPath" in candidate) || candidate.selectedRelPath === undefined || typeof candidate.selectedRelPath === "string")
     && (!("selectedLine" in candidate) || candidate.selectedLine === undefined
       || (typeof candidate.selectedLine === "number" && Number.isInteger(candidate.selectedLine) && candidate.selectedLine >= 0))

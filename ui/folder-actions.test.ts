@@ -641,7 +641,7 @@ describe("Feature: FolderActions", () => {
     commandItem.click();
 
     await vi.waitFor(() => expect(api.runExternalCommand).toHaveBeenCalledWith(
-      'cmd.exe /D /C chrome "C:\\work\\index.html"',
+      "cmd.exe /D /C chrome C:\\work\\index.html",
       "C:\\work\\index.html",
     ));
   });
@@ -665,23 +665,19 @@ describe("Feature: FolderActions", () => {
     ));
   });
 
-  // Given: promptが`Chrome`,``,`chrome {file}`を返す
+  // Given: promptが`Chrome`,`chrome {file}`を返す
   // When: `index.HTML`でコマンド登録
   // Then: 拡張子`.html`で登録、各promptラベルと空prefixを表示
   it("Scenario: 登録時は選択ファイルの拡張子をコマンドへ紐付ける", async () => {
-    vi.mocked(promptFields).mockResolvedValueOnce(["Chrome", "", "chrome {file}"]);
+    vi.mocked(promptFields).mockResolvedValueOnce(["Chrome", "chrome {file}"]);
     const { actions, dropdown } = fixture();
     actions.showContextMenu(0, 0, { relPath: "index.HTML", isDir: false });
 
     [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
       .find((item) => item.textContent === "コマンドを登録...")!.click();
 
-    expect(vi.mocked(promptFields).mock.calls[0][1][2]).toMatchObject({
-      label: "コマンド（{file}=対象ファイル、引用符不要）",
-    });
     expect(vi.mocked(promptFields).mock.calls[0][1][1]).toMatchObject({
-      label: "プレフィックス（任意。必要時の例: cmd.exe /D /C）",
-      value: "",
+      label: "コマンド（{file}=対象ファイル、引用符不要）",
     });
 
     await vi.waitFor(() => expect(commandsForPath("index.html")).toEqual([
@@ -699,10 +695,10 @@ describe("Feature: FolderActions", () => {
     [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
       .find((item) => item.textContent === "登録コマンド ▸")!.click();
 
-    vi.mocked(promptFields).mockResolvedValueOnce(["Chrome Dev", "cmd.exe /D /C", "chrome --incognito {file}"]);
+    vi.mocked(promptFields).mockResolvedValueOnce(["Chrome Dev", "cmd.exe /D /C chrome --incognito {file}"]);
     dropdown.querySelectorAll<HTMLButtonElement>(".dd-submenu .dd-trailing")[0].click();
     await vi.waitFor(() => expect(commandsForPath("index.html")).toEqual([
-      { extension: ".html", label: "Chrome Dev", prefix: "cmd.exe /D /C", command: "chrome --incognito {file}" },
+      { extension: ".html", label: "Chrome Dev", prefix: "", command: "cmd.exe /D /C chrome --incognito {file}" },
     ]));
 
     actions.showContextMenu(0, 0, { relPath: "index.html", isDir: false });

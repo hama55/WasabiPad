@@ -5,6 +5,31 @@
 const SCHEME = /^[a-z][a-z0-9+.-]*:/i;
 const ABSOLUTE = /^(?:[a-z]:[\\/]|[\\/])/i;
 
+export function isExternalMarkdownLink(href: string): boolean {
+  try {
+    const url = new URL(href);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+export function isLocalMarkdownLinkCandidate(href: string): boolean {
+  const path = href.split(/[?#]/, 1)[0];
+  return !!path && (!SCHEME.test(path) || ABSOLUTE.test(path));
+}
+
+export function markdownFragmentOf(href: string): string | null {
+  const hash = href.indexOf("#");
+  if (hash < 0) return null;
+  const fragment = href.slice(hash + 1);
+  try {
+    return decodeURIComponent(fragment);
+  } catch {
+    return fragment;
+  }
+}
+
 export function resolveAssetPath(sourcePath: string | null, src: string): string | null {
   if (!src) return null;
   const decoded = decodeSrc(src).replace(/\//g, "\\");
@@ -14,6 +39,22 @@ export function resolveAssetPath(sourcePath: string | null, src: string): string
   if (!sourcePath) return null;
   const dir = sourcePath.replace(/\//g, "\\").replace(/\\[^\\]*$/, "");
   return normalize(`${dir}\\${decoded}`);
+}
+
+export function resolveMarkdownLinkPath(sourcePath: string | null, href: string): string | null {
+  const path = href.split(/[?#]/, 1)[0];
+  if (!path) return null;
+  if (path.startsWith("//") || (SCHEME.test(path) && !ABSOLUTE.test(path))) return null;
+  return resolveAssetPath(sourcePath, path);
+}
+
+export function isSameDocumentMarkdownLink(sourcePath: string | null, href: string): boolean {
+  if (markdownFragmentOf(href) === null || isExternalMarkdownLink(href)) return false;
+  const path = href.split(/[?#]/, 1)[0];
+  if (!path) return true;
+  if (!sourcePath) return false;
+  const resolved = resolveMarkdownLinkPath(sourcePath, href);
+  return !!resolved && comparableWindowsPath(resolved) === comparableWindowsPath(sourcePath);
 }
 
 export function resolveArchiveAssetEntry(sourceEntry: string | null, src: string): string | null {
@@ -51,4 +92,8 @@ function normalize(path: string): string {
     else segments.push(segment);
   }
   return segments.join("\\");
+}
+
+function comparableWindowsPath(path: string): string {
+  return path.replace(/\//g, "\\").replace(/\\+$/, "").toLocaleLowerCase("en-US");
 }

@@ -26,6 +26,7 @@ export const IPC_COMMANDS = {
   revealInExplorer: "reveal_in_explorer",
   openInOtherApp: "open_in_other_app",
   openInDefaultBrowser: "open_in_default_browser",
+  openExternalUrl: "open_external_url",
   runExternalCommand: "run_external_command",
   edit: "edit",
   editMany: "edit_many",

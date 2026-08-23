@@ -15,6 +15,7 @@ const {
   FONT_CHANGE_MESSAGE,
   FULLSCREEN_CHANGE_MESSAGE,
   FULLSCREEN_STATE_MESSAGE,
+  MARKDOWN_FRAGMENT_MESSAGE,
 } = INLINE_PREVIEW_MESSAGES;
 
 export interface InlinePreviewPorts {
@@ -24,6 +25,7 @@ export interface InlinePreviewPorts {
   onFontFamilyChange?: (family: string) => void;
   onFullscreenChange?: () => void | Promise<void>;
   onSelectionChange?: (selection: ViewerSelection) => void | Promise<void>;
+  onMarkdownLink?: (href: string, newTab: boolean) => void | Promise<void>;
   onError?: (error: unknown) => void | Promise<void>;
 }
 
@@ -40,6 +42,7 @@ export class InlinePreview {
   private fontFamily: string | null = null;
   private fontSize: number | null = null;
   private fullscreen = false;
+  private pendingMarkdownFragment: string | null = null;
 
   constructor(
     private host: HTMLElement,
@@ -81,6 +84,11 @@ export class InlinePreview {
       if (event.data?.type === INLINE_PREVIEW_MESSAGES.SELECTION_CHANGE_MESSAGE) {
         if (!isViewerSelection(event.data.selection)) return;
         this.notifyPort(() => this.ports.onSelectionChange?.(event.data.selection));
+        return;
+      }
+      if (event.data?.type === INLINE_PREVIEW_MESSAGES.MARKDOWN_LINK_MESSAGE) {
+        if (typeof event.data.href !== "string" || typeof event.data.newTab !== "boolean") return;
+        this.notifyPort(() => this.ports.onMarkdownLink?.(event.data.href, event.data.newTab));
       }
     });
   }
@@ -111,6 +119,11 @@ export class InlinePreview {
     this.send();
   }
 
+  setMarkdownFragment(fragment: string) {
+    this.pendingMarkdownFragment = fragment;
+    this.send();
+  }
+
   async open(format: ViewerFormat, text: string, selection: ViewerSelection | null): Promise<string> {
     this.label = `inline-preview-${++this.nextLabel}`;
     this.payload = this.createPayload(format, text, selection);
@@ -131,6 +144,7 @@ export class InlinePreview {
     if (label !== this.label) return;
     this.payload = null;
     this.label = "";
+    this.pendingMarkdownFragment = null;
     this.host.hidden = true;
     this.notifyPort(() => this.ports.onAvailabilityChange?.(false));
   }
@@ -168,6 +182,13 @@ export class InlinePreview {
     }, window.location.origin);
     if (!this.payload) return;
     this.frame.contentWindow?.postMessage({ type: PAYLOAD_MESSAGE, payload: this.payload }, window.location.origin);
+    if (this.pendingMarkdownFragment !== null) {
+      this.frame.contentWindow?.postMessage({
+        type: MARKDOWN_FRAGMENT_MESSAGE,
+        fragment: this.pendingMarkdownFragment,
+      }, window.location.origin);
+      this.pendingMarkdownFragment = null;
+    }
     this.frame.contentWindow?.postMessage({
       type: DELIMITER_MESSAGE,
       delimiter: this.delimiter,

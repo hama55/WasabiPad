@@ -76,6 +76,118 @@ fn normalize_move_path(relative: &str, allow_empty: bool) -> io::Result<String> 
     Ok(normalized)
 }
 
+struct MarkdownAssetMovePlan {
+    source: PathBuf,
+    destination: PathBuf,
+    destination_parent: PathBuf,
+}
+
+struct MarkdownAssetMove {
+    source: PathBuf,
+    destination: PathBuf,
+    destination_parent: PathBuf,
+    created_destination_parent: bool,
+}
+
+fn markdown_asset_dir(path: &Path) -> Option<PathBuf> {
+    let extension = path.extension()?.to_str()?;
+    if !extension.eq_ignore_ascii_case("md") && !extension.eq_ignore_ascii_case("markdown") {
+        return None;
+    }
+    let stem = path.file_stem()?.to_str()?;
+    if stem.is_empty() {
+        return None;
+    }
+    Some(path.parent()?.join("image_markdown").join(stem))
+}
+
+fn equivalent_existing_path(left: &Path, right: &Path) -> bool {
+    left == right || std::fs::canonicalize(left).ok() == std::fs::canonicalize(right).ok()
+}
+
+fn markdown_asset_move_plan(source: &Path, destination: &Path) -> io::Result<Option<MarkdownAssetMovePlan>> {
+    if !std::fs::symlink_metadata(source)?.is_file() {
+        return Ok(None);
+    }
+    let (Some(source_asset), Some(destination_asset)) = (markdown_asset_dir(source), markdown_asset_dir(destination))
+    else {
+        return Ok(None);
+    };
+    let source_metadata = match std::fs::symlink_metadata(&source_asset) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if !source_metadata.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "文書画像フォルダの場所にフォルダ以外の項目があります",
+        ));
+    }
+    match std::fs::symlink_metadata(&destination_asset) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "移動先に同名の文書画像フォルダがあります",
+            ));
+        }
+        Ok(_) if !equivalent_existing_path(&source_asset, &destination_asset) => {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "移動先に同名の文書画像フォルダがあります",
+            ));
+        }
+        Ok(_) => return Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    let destination_parent = destination_asset
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "文書画像フォルダの移動先が不正です"))?
+        .to_path_buf();
+    Ok(Some(MarkdownAssetMovePlan {
+        source: source_asset,
+        destination: destination_asset,
+        destination_parent,
+    }))
+}
+
+fn execute_markdown_asset_move(plan: MarkdownAssetMovePlan) -> io::Result<MarkdownAssetMove> {
+    let created_destination_parent = match std::fs::symlink_metadata(&plan.destination_parent) {
+        Ok(_) => false,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            std::fs::create_dir_all(&plan.destination_parent)?;
+            true
+        }
+        Err(error) => return Err(error),
+    };
+    if let Err(error) = std::fs::rename(&plan.source, &plan.destination) {
+        if created_destination_parent {
+            let _ = remove_empty_dir(&plan.destination_parent);
+        }
+        return Err(error);
+    }
+    Ok(MarkdownAssetMove {
+        source: plan.source,
+        destination: plan.destination,
+        destination_parent: plan.destination_parent,
+        created_destination_parent,
+    })
+}
+
+fn rollback_markdown_asset_move(move_result: &MarkdownAssetMove) {
+    let _ = std::fs::rename(&move_result.destination, &move_result.source);
+    if move_result.created_destination_parent {
+        let _ = remove_empty_dir(&move_result.destination_parent);
+    }
+}
+
+fn cleanup_markdown_asset_source_parent(move_result: &MarkdownAssetMove) {
+    if let Some(parent) = move_result.source.parent() {
+        let _ = remove_empty_dir(parent);
+    }
+}
+
 fn copy_entry_recursive(source: &Path, destination: &Path) -> io::Result<()> {
     let metadata = std::fs::symlink_metadata(source)?;
     if metadata.file_type().is_symlink() {
@@ -1093,7 +1205,17 @@ impl Doc {
             .parent()
             .ok_or_else(|| io::Error::other("不正なパスです"))?;
         let new_abs = parent.join(new_name);
-        std::fs::rename(&old_abs, &new_abs)?;
+        let asset_plan = markdown_asset_move_plan(&old_abs, &new_abs)?;
+        let asset_move = asset_plan.map(execute_markdown_asset_move).transpose()?;
+        if let Err(error) = std::fs::rename(&old_abs, &new_abs) {
+            if let Some(asset_move) = asset_move.as_ref() {
+                rollback_markdown_asset_move(asset_move);
+            }
+            return Err(error);
+        }
+        if let Some(asset_move) = asset_move.as_ref() {
+            cleanup_markdown_asset_source_parent(asset_move);
+        }
         let current = match &mut self.source.target {
             Target::File { path, .. } | Target::Archive { path, .. } => path,
             Target::None => return self.info(String::new()),
@@ -1214,27 +1336,41 @@ impl Doc {
                 .unwrap_or_else(|| root.to_string_lossy().into_owned());
             return self.info(path);
         }
+        let asset_plan = markdown_asset_move_plan(&source, &destination)?;
+        let current_path = self.source.display_path().map(Path::to_path_buf);
+        let affected = is_delete_target_affected(current_path.as_deref(), &canonical_source)?;
         let replaced = self.prepare_destination(
             &root,
             &destination,
             overwrite,
             "移動先に同名のファイルまたはフォルダがあります",
         )?;
+        let asset_move = match asset_plan.map(execute_markdown_asset_move).transpose() {
+            Ok(asset_move) => asset_move,
+            Err(error) => {
+                self.restore_replaced_destination(replaced.as_deref());
+                return Err(error);
+            }
+        };
 
-        let current_path = self.source.display_path().map(Path::to_path_buf);
-        let affected = is_delete_target_affected(current_path.as_deref(), &canonical_source)?;
         let mut held_target = affected.then(|| std::mem::replace(&mut self.source.target, Target::None));
         let released_handle = held_target
             .as_mut()
             .map(release_target_file)
             .unwrap_or(false);
         if let Err(error) = std::fs::rename(&source, &destination) {
+            if let Some(asset_move) = asset_move.as_ref() {
+                rollback_markdown_asset_move(asset_move);
+            }
             self.restore_replaced_destination(replaced.as_deref());
             if let Some(mut target) = held_target.take() {
                 restore_target_file(&mut target, released_handle);
                 self.source.target = target;
             }
             return Err(error);
+        }
+        if let Some(asset_move) = asset_move.as_ref() {
+            cleanup_markdown_asset_source_parent(asset_move);
         }
         if let Some(mut target) = held_target {
             match &mut target {
@@ -3408,6 +3544,86 @@ mod tests {
         let mut d = Doc::open(&root).unwrap();
         d.select_entry("memo.md").unwrap().unwrap();
         (root, d)
+    }
+
+    // Feature: 文書画像フォルダの改名追従
+    // Scenario: Markdown文書の名前変更に対応する画像フォルダを追従させる
+    // Given: memo.md と image_markdown/memo/pasted-image.png がある
+    // When: memo.md を renamed.md へ改名する
+    // Then: 文書と画像フォルダが同じ新しいstemへ移る
+    #[test]
+    fn renaming_markdown_file_moves_its_image_directory() {
+        let root = std::env::temp_dir().join(format!("wasabipad_rename_image_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("image_markdown/memo")).unwrap();
+        std::fs::write(root.join("memo.md"), "memo").unwrap();
+        std::fs::write(root.join("image_markdown/memo/pasted-image.png"), [1, 2, 3]).unwrap();
+
+        let mut d = Doc::open(&root).unwrap();
+        d.rename_entry("memo.md", "renamed.md").unwrap();
+
+        assert!(root.join("renamed.md").is_file());
+        assert!(!root.join("memo.md").exists());
+        assert!(root.join("image_markdown/renamed/pasted-image.png").is_file());
+        assert!(!root.join("image_markdown/memo").exists());
+        drop(d);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Feature: 文書画像フォルダの移動追従
+    // Scenario: Markdown文書を別フォルダへ移動すると対応する画像フォルダも移す
+    // Given: memo.md、image_markdown/memo、destフォルダがある
+    // When: memo.md を dest へ移動する
+    // Then: dest/memo.md と dest/image_markdown/memo が作られる
+    #[test]
+    fn moving_markdown_file_moves_its_image_directory() {
+        let root = std::env::temp_dir().join(format!("wasabipad_move_image_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("dest")).unwrap();
+        std::fs::create_dir_all(root.join("image_markdown/memo")).unwrap();
+        std::fs::write(root.join("memo.md"), "memo").unwrap();
+        std::fs::write(root.join("image_markdown/memo/pasted-image.png"), [1, 2, 3]).unwrap();
+
+        let mut d = Doc::open(&root).unwrap();
+        d.move_entry("memo.md", "dest").unwrap();
+
+        assert!(root.join("dest/memo.md").is_file());
+        assert!(!root.join("memo.md").exists());
+        assert!(root.join("dest/image_markdown/memo/pasted-image.png").is_file());
+        assert!(!root.join("image_markdown/memo").exists());
+        drop(d);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Feature: 文書画像フォルダの衝突保護
+    // Scenario: 移動先に同名の文書画像フォルダがある移動を拒否する
+    // Given: 元のmemo.md/画像フォルダと、移動先のmemo.md/画像フォルダがある
+    // When: memo.md を dest へ移動する
+    // Then: AlreadyExistsを返し、元と移動先の両方を保持する
+    #[test]
+    fn moving_markdown_file_rejects_an_existing_image_directory() {
+        let root = std::env::temp_dir().join(format!("wasabipad_move_image_collision_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("dest/image_markdown/memo")).unwrap();
+        std::fs::create_dir_all(root.join("image_markdown/memo")).unwrap();
+        std::fs::write(root.join("memo.md"), "source").unwrap();
+        std::fs::write(root.join("dest/memo.md"), "destination").unwrap();
+        std::fs::write(root.join("image_markdown/memo/source.png"), [1]).unwrap();
+        std::fs::write(root.join("dest/image_markdown/memo/destination.png"), [2]).unwrap();
+
+        let mut d = Doc::open(&root).unwrap();
+        let error = match d.move_entry("memo.md", "dest") {
+            Ok(_) => panic!("同名の文書画像フォルダがある移動を受理した"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read_to_string(root.join("memo.md")).unwrap(), "source");
+        assert_eq!(std::fs::read_to_string(root.join("dest/memo.md")).unwrap(), "destination");
+        assert!(root.join("image_markdown/memo/source.png").is_file());
+        assert!(root.join("dest/image_markdown/memo/destination.png").is_file());
+        drop(d);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -72,6 +72,7 @@ import { reportErrorSafely } from "./report-error";
 import { processExternalWindowRequests } from "./external-window-request";
 import { canCloseWindow } from "./close-request";
 import { createAsyncUnlisten } from "./async-unlisten";
+import { isExternalMarkdownLink, markdownFragmentOf, resolveMarkdownLinkPath } from "./viewer-assets";
 
 const win = getCurrentWindow();
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -234,6 +235,32 @@ const inlinePreview = new InlinePreview(previewEl, {
   onFontFamilyChange: (family) => editor.setFont(family, getSetting("fontSize"), "family"),
   onSelectionChange: (selection) =>
     runBackground("エディタの位置を同期できませんでした", () => editor.goToPreview(selection)),
+  onMarkdownLink: (href, newTab) => {
+    const sourceTabId = previewDocument?.ownerTabId ?? tabs?.state.activeId ?? null;
+    return runBackground(
+      "Markdownリンクを開けませんでした",
+      async () => {
+        if (isExternalMarkdownLink(href)) {
+          await api.openExternalUrl(href);
+          return;
+        }
+        const sourcePath = previewDocument?.ownerTabId === sourceTabId
+          ? previewDocument.path || null
+          : doc.current.savePath;
+        const path = resolveMarkdownLinkPath(sourcePath, href);
+        if (!path) throw new Error("ローカルMarkdownリンクを解決できません");
+        if (!newTab) {
+          if (!await openPathInTabs(tabs, path, false)) {
+            throw new Error("リンク先ファイルが見つかりません");
+          }
+          return;
+        }
+        if (!await tabs.openMarkdownLink(path, sourceTabId, markdownFragmentOf(href))) {
+          throw new Error("リンク先ファイルが見つかりません");
+        }
+      },
+    );
+  },
   onFullscreenChange: () => {
     previewFullscreen = !previewFullscreen;
     previewFullscreenTabId = previewFullscreen ? tabs.state.activeId : null;
@@ -260,14 +287,26 @@ function runPreviewBackground(
   });
 }
 
-function openPreviewFormat(session: Readonly<DocumentSession>, path: string, format: api.ViewerFormat) {
+function openPreviewFormat(
+  session: Readonly<DocumentSession>,
+  path: string,
+  format: api.ViewerFormat,
+  fragment: string | null = null,
+) {
   const sourcePath = sourcePathForViewer(format, session.savePath, session.displayPath);
   inlinePreview.setSourcePath(sourcePath, session.archivePath, session.archiveEntry);
   statusbar.setPreviewFormat(format);
-  runPreviewBackground({ ownerTabId: tabs?.state.activeId ?? null, path, format }, "ビューを表示できませんでした", () => editor.openTextViewer(format));
+  runPreviewBackground(
+    { ownerTabId: tabs?.state.activeId ?? null, path, format },
+    "ビューを表示できませんでした",
+    async () => {
+      await editor.openTextViewer(format);
+      if (fragment !== null && format === "markdown") inlinePreview.setMarkdownFragment(fragment);
+    },
+  );
 }
 
-function syncPreviewDocument(session: Readonly<DocumentSession>, force = false) {
+function syncPreviewDocument(session: Readonly<DocumentSession>, force = false, fragment: string | null = null) {
   const path = documentPathOf(session);
   const activeTabId = tabs?.state.activeId ?? null;
   const format = effectivePreviewFormat(path, viewerFormatForPath(path), activeTabId, previewDocument);
@@ -288,7 +327,7 @@ function syncPreviewDocument(session: Readonly<DocumentSession>, force = false) 
     inlinePreview.clear();
     return;
   }
-  openPreviewFormat(session, path, format);
+  openPreviewFormat(session, path, format, fragment);
 }
 
 // ---- 部品 ----
@@ -327,6 +366,7 @@ const addressbar = new AddressBar($("topbar"), {
 const registeredCommandPorts = {
   promptFields,
   runExternalCommand: api.runExternalCommand,
+  writeClipboardText,
 };
 
 // 部品どうしが相互に参照するため、型注釈で推論の循環を切る
@@ -520,7 +560,7 @@ const doc: DocumentController = new DocumentController({
   setTitle: (title) => windowChrome.setTitle(title),
   onDocumentChange: (session, keepViewers = false) => {
     tabs?.syncActive(session);
-    syncPreviewDocument(session, !keepViewers);
+    syncPreviewDocument(session, !keepViewers, tabs?.takeActiveFragment() ?? null);
   },
   onSessionChange: (session) => {
     tabs?.syncActive(session);
@@ -633,6 +673,7 @@ const folderActions = new FolderActions(doc, {
   promptFields,
   registeredCommandPorts: {
     runExternalCommand: api.runExternalCommand,
+    writeClipboardText,
   },
   getStartupPath: () => getSetting("startupPath"),
   revealInExplorer,

@@ -282,6 +282,11 @@ fn open_in_default_browser(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    system::open_external_url(url)
+}
+
+#[tauri::command]
 fn run_external_command(command: String, path: String) -> Result<(), String> {
     system::run_external_command(command, path)
 }
@@ -618,6 +623,7 @@ fn main() {
             reveal_in_explorer,
             open_in_other_app,
             open_in_default_browser,
+            open_external_url,
             run_external_command,
             edit,
             edit_many,

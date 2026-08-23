@@ -180,6 +180,15 @@ export class TabManager {
     this.persist();
   }
 
+  takeActiveFragment(): string | null {
+    const tab = this.active();
+    if (!tab || tab.fragment === undefined) return null;
+    const fragment = tab.fragment;
+    delete tab.fragment;
+    this.persist();
+    return fragment;
+  }
+
   async newBlank() {
     await this.addAndActivate(await this.blankTab());
   }
@@ -213,6 +222,17 @@ export class TabManager {
       return true;
     }
     return this.addAndActivate(this.link(path, goto));
+  }
+
+  async openMarkdownLink(path: string, sourceTabId: string | null, fragment: string | null): Promise<boolean> {
+    const anchorId = sourceTabId ?? this.activeId;
+    const sourceIndex = this.tabs.findIndex((tab) => tab.id === anchorId);
+    if (sourceIndex < 0) return false;
+    return this.addAndActivate(
+      this.link(path, undefined, undefined, fragment ?? undefined),
+      this.tabs.length,
+      anchorId,
+    );
   }
 
   addLinks(items: { path: string; kind: "file" | "folder" }[]) {
@@ -487,14 +507,22 @@ export class TabManager {
     });
   }
 
-  private async addAndActivate(tab: StoredTab): Promise<boolean> {
+  private async addAndActivate(
+    tab: StoredTab,
+    insertAt = this.tabs.length,
+    insertAfterId?: string,
+  ): Promise<boolean> {
     this.transitionTarget = tab.id;
     let activated = false;
     try {
       const proceeded = await this.doc.confirmDiscard(async () => {
         this.rememberActiveView();
         activated = await this.commitTransition(async () => {
-          this.tabs.push(tab);
+          const afterIndex = insertAfterId === undefined
+            ? insertAt - 1
+            : this.tabs.findIndex((candidate) => candidate.id === insertAfterId);
+          if (insertAfterId !== undefined && afterIndex < 0) return false;
+          this.tabs.splice(Math.max(0, Math.min(afterIndex + 1, this.tabs.length)), 0, tab);
           this.activeId = tab.id;
           return this.loadActive(false);
         });
@@ -627,7 +655,12 @@ export class TabManager {
     }
   }
 
-  private link(path: string | null, goto?: Pos, draftDirectory?: string | null): StoredTab {
+  private link(
+    path: string | null,
+    goto?: Pos,
+    draftDirectory?: string | null,
+    fragment?: string,
+  ): StoredTab {
     return {
       id: newId(),
       path,
@@ -635,6 +668,7 @@ export class TabManager {
       label: path ? basename(path) : "無題",
       ...(draftDirectory ? { draftDirectory } : {}),
       goto,
+      ...(fragment !== undefined ? { fragment } : {}),
     };
   }
 

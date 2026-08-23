@@ -10,4 +10,6 @@ export const INLINE_PREVIEW_MESSAGES = {
   FULLSCREEN_CHANGE_MESSAGE: "wasabipad-viewer-fullscreen-change",
   FULLSCREEN_STATE_MESSAGE: "wasabipad-viewer-fullscreen-state",
   SELECTION_CHANGE_MESSAGE: "wasabipad-viewer-selection-change",
+  MARKDOWN_LINK_MESSAGE: "wasabipad-viewer-markdown-link",
+  MARKDOWN_FRAGMENT_MESSAGE: "wasabipad-viewer-markdown-fragment",
 } as const;

@@ -551,6 +551,41 @@ describe("Feature: TabManager", () => {
     expect(doc.openPath).toHaveBeenLastCalledWith("C:\\work\\b.txt", false);
   });
 
+  // Given: a tabがactiveで、同じパスのa.txtが既に開かれている
+  // When: Markdownリンクからa.txtを起点タブの直後へ開く
+  // Then: 重複を許可した新規タブが直後へ入り、fragmentを保持してactiveになる
+  it("Scenario: Markdownリンクを起点タブの直後へ重複タブとして開く", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init(stored, null, null);
+
+    await expect(manager.openMarkdownLink("C:\\work\\a.txt", "a", "install")).resolves.toBe(true);
+
+    expect(manager.state.tabs.map((tab) => tab.id)).toEqual(["a", expect.any(String), "b"]);
+    const opened = manager.state.tabs[1];
+    expect(opened.path).toBe("C:\\work\\a.txt");
+    expect(opened.fragment).toBe("install");
+    expect(manager.state.activeId).toBe(opened.id);
+    expect(manager.takeActiveFragment()).toBe("install");
+    expect(manager.takeActiveFragment()).toBeNull();
+  });
+
+  // Given: a tabがactiveで、リンク先のopenPathが失敗する
+  // When: Markdownリンク用の新規タブを開く
+  // Then: タブを増やさずfalseを返す
+  it("Scenario: Markdownリンク先が存在しない場合はタブを増やさない", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init(stored, null, null);
+    vi.mocked(doc.openPath).mockResolvedValueOnce(false);
+    const before = manager.state;
+
+    await expect(manager.openMarkdownLink("C:\\work\\missing.md", "a", "install")).resolves.toBe(false);
+
+    expect(manager.state.tabs.map((tab) => tab.id)).toEqual(before.tabs.map((tab) => tab.id));
+    expect(manager.state.activeId).toBe(before.activeId);
+  });
+
   // Given: active tab が a で、doc.goTo が Error("invalid position") を投げる
   // When: a.txt に { line: 8, col: 3 } を付けて open() を呼ぶ
   // Then: invalid position で reject し、tab の goto は undefined
@@ -1288,7 +1323,7 @@ describe("Feature: TabManager", () => {
       activeId: "file",
     }, null, null);
 
-    registeredCommandPorts.promptFields.mockResolvedValueOnce(["メモ帳", "", "notepad {file}"]);
+    registeredCommandPorts.promptFields.mockResolvedValueOnce(["メモ帳", "notepad {file}"]);
     const tab = host.querySelector<HTMLElement>(".doc-tab")!;
     tab.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
     [...document.querySelectorAll<HTMLElement>("#dropdown .dd-item")]
@@ -1304,7 +1339,7 @@ describe("Feature: TabManager", () => {
     document.querySelector<HTMLElement>("#dropdown .dd-submenu .dd-item")!.click();
 
     await vi.waitFor(() => expect(registeredCommandPorts.runExternalCommand).toHaveBeenCalledWith(
-      'notepad "C:\\work\\memo.txt"',
+      "notepad C:\\work\\memo.txt",
       "C:\\work\\memo.txt",
     ));
   });

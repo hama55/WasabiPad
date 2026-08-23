@@ -13,6 +13,7 @@ export interface PromptField {
   label: string;
   value: string;
   type?: "password";
+  multiline?: boolean;
   options?: { label: string; value: string }[];
   validate?: (value: string, values: string[]) => string | null;
   onChange?: (
@@ -34,6 +35,7 @@ export function promptFields(
       onCancel: () => finish(null),
       onAccept: () => submit(),
     });
+    if (fields.some((field) => field.multiline)) box.classList.add("pf-command-box");
 
     const h = document.createElement("div");
     h.className = "pf-title";
@@ -46,7 +48,11 @@ export function promptFields(
       row.className = "pf-row";
       const label = document.createElement("label");
       label.textContent = f.label;
-      const input = f.options ? document.createElement("select") : document.createElement("input");
+      const input = f.options
+        ? document.createElement("select")
+        : f.multiline
+          ? document.createElement("textarea")
+          : document.createElement("input");
       if (f.options) {
         for (const option of f.options) {
           const el = document.createElement("option");
@@ -55,8 +61,16 @@ export function promptFields(
           input.appendChild(el);
         }
       } else {
-        input.spellcheck = false;
-        if (f.type) (input as HTMLInputElement).type = f.type;
+        const editable = input as HTMLInputElement | HTMLTextAreaElement;
+        editable.spellcheck = false;
+        if (f.multiline) {
+          const textarea = input as HTMLTextAreaElement;
+          textarea.className = "pf-multiline-value";
+          textarea.rows = 6;
+          textarea.wrap = "soft";
+        } else if (f.type) {
+          (input as HTMLInputElement).type = f.type;
+        }
       }
       input.value = f.value;
       row.appendChild(label);
