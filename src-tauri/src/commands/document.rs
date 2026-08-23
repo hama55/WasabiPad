@@ -171,6 +171,14 @@ pub(crate) fn delete_entry(rel_path: String, state: State) -> Result<DocInfo, St
         .map_err(|e| e.to_string())
 }
 
+pub(crate) fn delete_entry_without_backup(
+    rel_path: String,
+    state: State,
+) -> Result<DocInfo, String> {
+    with_doc(&state, |doc| doc.delete_entry_without_backup(&rel_path))?
+        .map_err(|e| e.to_string())
+}
+
 pub(crate) fn restore_deleted_entry(rel_path: String, state: State) -> Result<DocInfo, String> {
     with_doc(&state, |doc| doc.restore_deleted_entry(&rel_path))?
         .map_err(|e| e.to_string())

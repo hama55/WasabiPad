@@ -19,6 +19,7 @@ export const IPC_COMMANDS = {
   copyEntryAs: "copy_entry_as",
   moveEntryAs: "move_entry_as",
   deleteEntry: "delete_entry",
+  deleteEntryWithoutBackup: "delete_entry_without_backup",
   restoreDeletedEntry: "restore_deleted_entry",
   savePastedImage: "save_pasted_image",
   cleanupUnusedImages: "cleanup_unused_images",

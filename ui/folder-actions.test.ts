@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "./api";
 import { showError } from "./dialogs";
 import { initialSession } from "./session";
@@ -87,6 +87,10 @@ function fixture(writeClipboardText?: (text: string) => Promise<void>) {
 }
 
 describe("Feature: FolderActions", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   beforeEach(async () => {
     document.body.replaceChildren();
     await initSettings();
@@ -268,6 +272,143 @@ describe("Feature: FolderActions", () => {
     ));
   });
 
+  // Feature: 貼り付け時の同名競合
+  // Scenario: 置き換えた項目をセッション内Undoで元に戻す
+  // Given: `memo.txt`のコピー先に同名項目がある
+  // When: 競合ダイアログで「置き換える」を選び、Undoする
+  // Then: 置換先の新しい項目を消して、元の項目を復元する
+  it("Scenario: 貼り付けの置換をUndoで元に戻す", async () => {
+    const copyEntry = vi.spyOn(api, "copyEntry")
+      .mockRejectedValueOnce(new Error("コピー先に同名のファイルまたはフォルダがあります"));
+    const copyEntryAs = vi.spyOn(api, "copyEntryAs").mockResolvedValue({} as api.DocInfo);
+    const deleteEntryWithoutBackup = vi.spyOn(api, "deleteEntryWithoutBackup").mockResolvedValue({} as api.DocInfo);
+    const restoreDeletedEntry = vi.spyOn(api, "restoreDeletedEntry").mockResolvedValue({} as api.DocInfo);
+    vi.mocked(promptFields).mockResolvedValueOnce(["replace", "one"]);
+    const { actions, dropdown } = fixture();
+    actions.showContextMenu(0, 0, { relPath: "memo.txt", isDir: false });
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "コピー")!.click();
+    actions.showContextMenu(0, 0, { relPath: "docs", isDir: true });
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "貼り付け")!.click();
+
+    await vi.waitFor(() => expect(copyEntry).toHaveBeenCalledWith("memo.txt", "docs"));
+    await vi.waitFor(() => expect(copyEntryAs).toHaveBeenCalledWith("memo.txt", "docs", "memo.txt", true));
+
+    actions.executeCommand("undo", []);
+    await vi.waitFor(() => expect(deleteEntryWithoutBackup).toHaveBeenCalledWith("docs/memo.txt"));
+    await vi.waitFor(() => expect(restoreDeletedEntry).toHaveBeenCalledWith("docs/memo.txt"));
+  });
+
+  // Feature: 貼り付け時の同名競合
+  // Scenario: スキップを全項目へ適用する
+  // Given: 2つのコピー元で同名競合が起きる
+  // When: 競合ダイアログで「スキップ」と「以後すべて」を選ぶ
+  // Then: 2項目とも上書きせず、コピー先APIを再試行しない
+  it("Scenario: 貼り付けのスキップを全項目へ適用する", async () => {
+    const copyEntry = vi.spyOn(api, "copyEntry")
+      .mockRejectedValue(new Error("コピー先に同名のファイルまたはフォルダがあります"));
+    const copyEntryAs = vi.spyOn(api, "copyEntryAs").mockResolvedValue({} as api.DocInfo);
+    vi.mocked(promptFields).mockResolvedValueOnce(["skip", "all"]);
+    const { actions, dropdown } = fixture();
+    const first = { relPath: "memo.txt", isDir: false };
+    const second = { relPath: "note.txt", isDir: false };
+    actions.showContextMenu(0, 0, first, [first, second]);
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "コピー")!.click();
+    actions.showContextMenu(0, 0, { relPath: "docs", isDir: true });
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "貼り付け")!.click();
+
+    await vi.waitFor(() => expect(copyEntry).toHaveBeenCalledTimes(2));
+    expect(copyEntryAs).not.toHaveBeenCalled();
+    expect(promptFields).toHaveBeenCalledOnce();
+  });
+
+  // Feature: 貼り付け時の同名競合
+  // Scenario: キャンセルを選んだ時点で処理を止める
+  // Given: 2つのコピー元があり、先頭で同名競合が起きる
+  // When: 競合ダイアログで「キャンセル」を選ぶ
+  // Then: 先頭項目以外へ貼り付けを進めない
+  it("Scenario: 貼り付けのキャンセルで残りの項目を処理しない", async () => {
+    const copyEntry = vi.spyOn(api, "copyEntry")
+      .mockRejectedValue(new Error("コピー先に同名のファイルまたはフォルダがあります"));
+    const { actions, dropdown } = fixture();
+    vi.mocked(promptFields).mockResolvedValueOnce(["cancel", "one"]);
+    const first = { relPath: "memo.txt", isDir: false };
+    const second = { relPath: "note.txt", isDir: false };
+    actions.showContextMenu(0, 0, first, [first, second]);
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "コピー")!.click();
+    actions.showContextMenu(0, 0, { relPath: "docs", isDir: true });
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "貼り付け")!.click();
+
+    await vi.waitFor(() => expect(promptFields).toHaveBeenCalledOnce());
+    expect(copyEntry).toHaveBeenCalledOnce();
+    expect(copyEntry).toHaveBeenCalledWith("memo.txt", "docs");
+  });
+
+  // Feature: ファイルツリーのD&D競合処理
+  // Scenario: D&Dの同名競合でスキップを全項目へ適用する
+  // Given: 2項目をdocsへ移動し、移動先に同名項目がある
+  // When: 「スキップ」と「以後すべて」を選ぶ
+  // Then: 2項目を順に確認し、後続項目の処理も継続する
+  it("Scenario: D&Dの同名競合を全項目スキップできる", async () => {
+    const moveEntry = vi.spyOn(api, "moveEntry")
+      .mockRejectedValue(new Error("移動先に同名のファイルまたはフォルダがあります"));
+    const moveEntryAs = vi.spyOn(api, "moveEntryAs").mockResolvedValue({} as api.DocInfo);
+    vi.mocked(promptFields).mockResolvedValueOnce(["skip", "all"]);
+    const { actions, ports } = fixture();
+
+    const result = await actions.dropEntries(["memo.txt", "note.txt"], "docs", false);
+
+    expect(result.completed).toBe(0);
+    expect(moveEntry).toHaveBeenCalledTimes(2);
+    expect(moveEntryAs).not.toHaveBeenCalled();
+    expect(promptFields).toHaveBeenCalledOnce();
+    expect(ports.sidebar.refreshFolderEntries).toHaveBeenCalledOnce();
+  });
+
+  // Feature: ファイルツリーのD&D一括処理
+  // Scenario: 1項目の失敗後も残りの項目を処理する
+  // Given: 先頭項目の移動は成功し、次の項目は別のエラーになる
+  // When: 2項目を同じフォルダへD&Dする
+  // Then: 成功した項目を履歴対象にし、一覧更新まで完了する
+  it("Scenario: D&Dは途中の非競合エラー後も後続項目を処理する", async () => {
+    const moveEntry = vi.spyOn(api, "moveEntry")
+      .mockResolvedValueOnce({} as api.DocInfo)
+      .mockRejectedValueOnce(new Error("アクセスできません"));
+    const { actions, ports } = fixture();
+
+    const result = await actions.dropEntries(["memo.txt", "note.txt"], "docs", false);
+
+    expect(result.completed).toBe(1);
+    expect(result.undoable).toBe(true);
+    expect(moveEntry).toHaveBeenNthCalledWith(1, "memo.txt", "docs");
+    expect(moveEntry).toHaveBeenNthCalledWith(2, "note.txt", "docs");
+    expect(ports.sidebar.refreshFolderEntries).toHaveBeenCalledOnce();
+  });
+
+  // Feature: ファイルツリーのD&Dアンドゥ
+  // Scenario: D&D直後のUndoで移動を元に戻す
+  // Given: memo.txtをdocsへ移動した
+  // When: 直後にD&D専用Undoを実行する
+  // Then: docs/memo.txtを元の親へ戻す
+  it("Scenario: D&D直後のUndoで移動を元に戻せる", async () => {
+    const moveEntry = vi.spyOn(api, "moveEntry").mockResolvedValue({} as api.DocInfo);
+    const moveEntryAs = vi.spyOn(api, "moveEntryAs").mockResolvedValue({} as api.DocInfo);
+    const { actions } = fixture();
+
+    const result = await actions.dropEntries(["memo.txt"], "docs", false);
+    const undone = await actions.undoLastDrop();
+
+    expect(result.undoable).toBe(true);
+    expect(undone).toBe(true);
+    expect(moveEntry).toHaveBeenCalledWith("memo.txt", "docs");
+    expect(moveEntryAs).toHaveBeenCalledWith("docs/memo.txt", "", "memo.txt");
+  });
+
   // Feature: ファイル操作のセッション内アンドゥ
   // Scenario: コピー貼り付けをCtrl+Zで元に戻す
   // Given: `memo.txt`を`docs`へコピー貼り付け済み
@@ -275,7 +416,7 @@ describe("Feature: FolderActions", () => {
   // Then: コピー先を削除するAPIを呼ぶ
   it("Scenario: コピー貼り付けをセッション内で元に戻せる", async () => {
     const copyEntry = vi.spyOn(api, "copyEntry").mockResolvedValue({} as api.DocInfo);
-    const deleteEntry = vi.spyOn(api, "deleteEntry").mockResolvedValue({} as api.DocInfo);
+    const deleteEntryWithoutBackup = vi.spyOn(api, "deleteEntryWithoutBackup").mockResolvedValue({} as api.DocInfo);
     const { actions, dropdown, ports } = fixture();
     actions.showContextMenu(0, 0, { relPath: "memo.txt", isDir: false });
     [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
@@ -287,7 +428,7 @@ describe("Feature: FolderActions", () => {
     await vi.waitFor(() => expect(ports.sidebar.refreshFolderEntries).toHaveBeenCalled());
 
     actions.executeCommand("undo", []);
-    await vi.waitFor(() => expect(deleteEntry).toHaveBeenCalledWith("docs/memo.txt"));
+    await vi.waitFor(() => expect(deleteEntryWithoutBackup).toHaveBeenCalledWith("docs/memo.txt"));
   });
 
   // Given: rootが`C:\\work`、対象が`docs`フォルダ

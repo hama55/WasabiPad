@@ -446,12 +446,12 @@ sidebar = new Sidebar(sidebarEl, {
     const selectedRelPath = movedRelativePath(doc.current.selectedRelPath, sourceRelPath, targetRelDir);
     const root = doc.current.folderRoot;
     const destination = movedRelativePath(sourceRelPath, sourceRelPath, targetRelDir);
-    if (root) tabs?.rebasePaths(
-      joinWindowsRoot(root, sourceRelPath),
-      joinWindowsRoot(root, destination),
-      sourceRelPath,
-      destination,
-    );
+    if (root) tabs?.rebasePaths({
+      oldAbsolute: joinWindowsRoot(root, sourceRelPath),
+      newAbsolute: joinWindowsRoot(root, destination),
+      oldRelPath: sourceRelPath,
+      newRelPath: destination,
+    });
     doc.applyMoved(info, selectedRelPath);
     return selectedRelPath;
   },
@@ -459,6 +459,9 @@ sidebar = new Sidebar(sidebarEl, {
     await api.copyEntry(sourceRelPath, targetRelDir);
     return movedRelativePath(sourceRelPath, sourceRelPath, targetRelDir);
   },
+  onDropEntries: (sourceRelPaths, targetRelDir, copy) =>
+    folderActions.dropEntries(sourceRelPaths, targetRelDir, copy),
+  onUndoLastDrop: () => folderActions.undoLastDrop(),
   onCreateFolder: (relDir) => folderActions.createFolder(relDir),
   onCreateNote: () => folderActions.createNote(null),
   onTreeError: async (error) => {
@@ -655,8 +658,7 @@ const folderActions = new FolderActions(doc, {
   openInOtherApp,
   onClipboardChange: () => sidebar.refreshFileOperationState(),
   writeClipboardText,
-  onRebasePath: (oldAbsolute, newAbsolute, oldRelPath, newRelPath) =>
-    tabs?.rebasePaths(oldAbsolute, newAbsolute, oldRelPath, newRelPath),
+  onRebasePath: (rebase) => tabs?.rebasePaths(rebase),
 } satisfies FolderActionsServices);
 
 // ---- 配線 ----

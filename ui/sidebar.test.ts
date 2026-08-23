@@ -13,6 +13,8 @@ function mount(
   onFileCommand: SidebarPorts["onFileCommand"] = undefined,
   onRenameEntry: SidebarPorts["onRenameEntry"] = undefined,
   onCopyEntry: SidebarPorts["onCopyEntry"] = undefined,
+  onDropEntries: SidebarPorts["onDropEntries"] = undefined,
+  onUndoLastDrop: SidebarPorts["onUndoLastDrop"] = undefined,
 ) {
   const host = document.createElement("div");
   document.body.replaceChildren(host);
@@ -32,6 +34,8 @@ function mount(
     onReplace: vi.fn(),
     onMoveEntry,
     onCopyEntry,
+    onDropEntries,
+    onUndoLastDrop,
     onCreateFolder: vi.fn(),
     onCreateNote: vi.fn(),
     onOptionsChange: vi.fn(),
@@ -383,6 +387,36 @@ describe("Feature: Sidebar", () => {
     await vi.waitFor(() => expect(ports.onMoveEntry).toHaveBeenCalledTimes(2));
     expect(ports.onMoveEntry).toHaveBeenNthCalledWith(1, "memo.txt", "sub");
     expect(ports.onMoveEntry).toHaveBeenNthCalledWith(2, "note.txt", "sub");
+  });
+
+  // Feature: フォルダビューのD&D競合処理
+  // Scenario: 管理されたD&D処理へ複数項目をまとめて渡す
+  // Given: memo.txt と sub フォルダを表示している
+  // When: memo.txtをsubへドロップする
+  // Then: 競合処理を持つ一括ポートへ移動依頼を渡し、Undoも同じポートへ渡す
+  it("Scenario: D&Dは一括操作ポートとUndoポートを利用する", async () => {
+    const onDropEntries = vi.fn(async () => ({ selectedRelPath: "sub/memo.txt", completed: 1, undoable: true }));
+    const onUndoLastDrop = vi.fn(async () => true);
+    const { host, sidebar } = mount(undefined, undefined, undefined, undefined, undefined, onDropEntries, onUndoLastDrop);
+    sidebar.setEntries([
+      { name: "memo.txt", is_dir: false, is_archive: false },
+      { name: "sub", is_dir: true, is_archive: false },
+    ]);
+
+    const file = [...host.querySelectorAll<HTMLElement>(".fv-row")]
+      .find((row) => row.textContent?.includes("memo.txt"))!;
+    const dir = [...host.querySelectorAll<HTMLElement>(".fv-row")]
+      .find((row) => row.textContent?.includes("sub"))!;
+    Object.defineProperty(document, "elementFromPoint", { configurable: true, value: () => dir });
+    file.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 4, clientY: 4 }));
+    window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 12, clientY: 12 }));
+    window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 12, clientY: 12 }));
+
+    await vi.waitFor(() => expect(onDropEntries).toHaveBeenCalledWith(["memo.txt"], "sub", false));
+    const tree = host.querySelector<HTMLElement>(".fv-tree")!;
+    tree.focus();
+    tree.dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(onUndoLastDrop).toHaveBeenCalledOnce());
   });
 
   // Feature: フォルダビューD&Dの自動スクロール

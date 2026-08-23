@@ -1,7 +1,7 @@
 import type { Pos, WindowRequest } from "./api";
 import type { DocumentSession } from "./session";
 import { cloneEditorViewState, type EditorViewState } from "./editor-view-state";
-import { basename, rebaseWindowsPath } from "./path";
+import { basename, rebaseWindowsPath, type PathRebase } from "./path";
 import { TabBarView, type TabDropSpot } from "./tab-view";
 import type { RegisteredCommandMenuPorts } from "./registered-command-menu";
 import {
@@ -43,7 +43,11 @@ function rebaseRelativePath(path: string, oldPrefix: string, newPrefix: string):
   const normalizedNew = newPrefix.replace(/\\/g, "/").replace(/\/$/, "");
   const comparablePath = normalizedPath.toLocaleLowerCase("en-US");
   const comparableOld = normalizedOld.toLocaleLowerCase("en-US");
-  if (comparablePath !== comparableOld && !comparablePath.startsWith(`${comparableOld}/`)) return null;
+  if (
+    comparablePath !== comparableOld
+    && !comparablePath.startsWith(`${comparableOld}/`)
+    && !comparablePath.startsWith(`${comparableOld}::`)
+  ) return null;
   return `${normalizedNew}${normalizedPath.slice(normalizedOld.length)}`.replace(/^\//, "");
 }
 
@@ -144,7 +148,7 @@ export class TabManager {
     this.renderAndPersist();
   }
 
-  rebasePaths(oldAbsolute: string, newAbsolute: string, oldRelPath = "", newRelPath = "") {
+  rebasePaths({ oldAbsolute, newAbsolute, oldRelPath, newRelPath }: PathRebase) {
     let changed = false;
     for (const tab of this.tabs) {
       if (tab.path) {

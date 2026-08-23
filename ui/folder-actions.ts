@@ -6,7 +6,15 @@ import type { DocumentSession } from "./session";
 import { showMenu, MenuItem } from "./menu";
 import type { confirmMessage, promptFields } from "./prompt";
 import type { showError } from "./dialogs";
-import { basename, joinWindowsRoot, movedRelativePath, rebaseWindowsPath, relativePathFromRoot } from "./path";
+import {
+  basename,
+  isDescendantPath,
+  joinWindowsRoot,
+  movedRelativePath,
+  rebaseWindowsPath,
+  relativePathFromRoot,
+  type PathRebase,
+} from "./path";
 import { isArchiveEntryUnder } from "./archive-path";
 import { createRegisteredCommandMenu, type RegisteredCommandMenuPorts } from "./registered-command-menu";
 import { MENU_ICON } from "./menu-icons";
@@ -14,29 +22,12 @@ import { MENU_LABELS } from "./menu-labels";
 import { runAsyncBoundary } from "./async-boundary";
 import { reportErrorSafely } from "./report-error";
 import type { MemoCreationSpec } from "./document-controller";
+import { FileOperationHistory, type FileOperation } from "./file-operation-history";
 export { isImagePath } from "./image-formats";
 
 type PasteConflictAction = "rename" | "replace" | "skip" | "cancel";
 
-type FileOperation =
-  | {
-    kind: "move" | "copy";
-    sourceRelPath: string;
-    targetRelPath: string;
-    targetRelDir: string;
-    targetName: string;
-    overwrite: boolean;
-  }
-  | {
-    kind: "rename";
-    sourceRelPath: string;
-    targetRelPath: string;
-  }
-  | {
-    kind: "delete";
-    relPath: string;
-    restoreRelPath: string | null;
-  };
+type FileEntryRef = Pick<ContextTarget, "relPath">;
 
 function isPasteConflictAction(value: string | undefined): value is PasteConflictAction {
   return value === "rename" || value === "replace" || value === "skip" || value === "cancel";
@@ -75,6 +66,7 @@ export type FolderActionsApi = Pick<
   | "copyEntryAs"
   | "moveEntry"
   | "moveEntryAs"
+  | "deleteEntryWithoutBackup"
   | "restoreDeletedEntry"
 >;
 
@@ -89,7 +81,13 @@ export interface FolderActionsServices {
   openInOtherApp: typeof openInOtherApp;
   onClipboardChange?: () => void;
   writeClipboardText?: (text: string) => Promise<void>;
-  onRebasePath?: (oldAbsolute: string, newAbsolute: string, oldRelPath: string, newRelPath: string) => void;
+  onRebasePath?: (rebase: PathRebase) => void;
+}
+
+export interface FolderDropResult {
+  selectedRelPath: string;
+  completed: number;
+  undoable: boolean;
 }
 
 export interface FolderDocumentPort {
@@ -106,8 +104,7 @@ export interface FolderDocumentPort {
 // フォルダビュー上のファイル操作 (右クリックメニューとその実行)。
 export class FolderActions {
   private clipboard: { mode: "copy" | "cut"; entries: ContextTarget[] } | null = null;
-  private undoStack: FileOperation[][] = [];
-  private redoStack: FileOperation[][] = [];
+  private history = new FileOperationHistory();
   private replayingHistory = false;
   private operationRoot: string | null | undefined;
 
@@ -130,8 +127,7 @@ export class FolderActions {
     if (sameWindowsPath(this.operationRoot, root)) return;
     this.operationRoot = root;
     this.clipboard = null;
-    this.undoStack = [];
-    this.redoStack = [];
+    this.history.clear();
     this.ports.sidebar.clearFolderMoveUndo?.();
     if (notify) this.services.onClipboardChange?.();
   }
@@ -340,15 +336,33 @@ export class FolderActions {
     if (!this.clipboard || (target && !target.isDir)) return;
     const clipboard = this.clipboard;
     const targetRelDir = target?.relPath ?? "";
+    const result = await this.pasteEntries(clipboard.mode, clipboard.entries, targetRelDir);
+    this.recordOperations(result.operations);
+    if (clipboard.mode === "cut" && result.completedSources.size) {
+      clipboard.entries = clipboard.entries.filter((entry) => !result.completedSources.has(entry.relPath));
+      if (!clipboard.entries.length) this.clipboard = null;
+      this.services.onClipboardChange?.();
+    }
+    await this.ports.sidebar.refreshFolderEntries();
+  }
+
+  private async pasteEntries(
+    mode: "copy" | "cut",
+    entries: FileEntryRef[],
+    targetRelDir: string,
+  ): Promise<{
+    operations: FileOperation[];
+    completedSources: Set<string>;
+  }> {
     let applyToAll = false;
     let conflictAction: PasteConflictAction | null = null;
-    const completedCutEntries = new Set<string>();
+    const completedSources = new Set<string>();
     const operations: FileOperation[] = [];
-    for (const entry of clipboard.entries) {
+    for (const entry of entries) {
       try {
-        const operation = await this.performPaste(clipboard.mode, entry, targetRelDir);
-        if (!("overwrite" in operation) || !operation.overwrite) operations.push(operation);
-        if (clipboard.mode === "cut") completedCutEntries.add(entry.relPath);
+        const operation = await this.performPaste(mode, entry, targetRelDir);
+        operations.push(operation);
+        completedSources.add(entry.relPath);
       } catch (error) {
         if (!isAlreadyExistsError(error)) {
           await this.reportError("貼り付けできませんでした", error);
@@ -380,46 +394,63 @@ export class FolderActions {
           applyToAll = choice?.[1] === "all";
           conflictAction = action;
         }
-        if (action === "cancel") {
-          break;
-        }
-        if (action === "skip") {
-          continue;
-        }
+        if (action === "cancel") break;
+        if (action === "skip") continue;
         try {
           const name = action === "rename"
             ? await this.nextAvailableName(entry.relPath, targetRelDir)
             : basename(entry.relPath);
           const operation = await this.performPaste(
-            clipboard.mode,
+            mode,
             entry,
             targetRelDir,
             name,
             action === "replace",
           );
-          if (!("overwrite" in operation) || !operation.overwrite) operations.push(operation);
-          if (clipboard.mode === "cut") completedCutEntries.add(entry.relPath);
+          operations.push(operation);
+          completedSources.add(entry.relPath);
         } catch (retryError) {
           await this.reportError("貼り付けできませんでした", retryError);
         }
       }
     }
-    if (operations.length && !this.replayingHistory) {
-      this.undoStack.push(operations);
-      this.redoStack = [];
-      this.ports.sidebar.clearFolderMoveUndo?.();
-    }
-    if (clipboard.mode === "cut" && completedCutEntries.size) {
-      clipboard.entries = clipboard.entries.filter((entry) => !completedCutEntries.has(entry.relPath));
-      if (!clipboard.entries.length) this.clipboard = null;
-      this.services.onClipboardChange?.();
-    }
+    return { operations, completedSources };
+  }
+
+  private recordOperations(operations: FileOperation[], drop = false) {
+    if (!operations.length || this.replayingHistory) return;
+    this.history.record(operations, drop);
+    this.ports.sidebar.clearFolderMoveUndo?.();
+  }
+
+  async dropEntries(sourceRelPaths: string[], targetRelDir: string, copy: boolean): Promise<FolderDropResult> {
+    this.syncOperationRoot();
+    if (!this.root) return { selectedRelPath: "", completed: 0, undoable: false };
+    const entries = sourceRelPaths.map((relPath) => ({ relPath }));
+    const result = await this.pasteEntries(copy ? "copy" : "cut", entries, targetRelDir);
+    this.recordOperations(result.operations, true);
     await this.ports.sidebar.refreshFolderEntries();
+    const selectedRelPath = [...result.operations]
+      .reverse()
+      .find((operation): operation is Extract<FileOperation, { kind: "copy" | "move" }> =>
+        operation.kind === "copy" || operation.kind === "move")?.targetRelPath ?? "";
+    if (selectedRelPath) await this.ports.sidebar.selectByRelPath(selectedRelPath);
+    return {
+      selectedRelPath,
+      completed: result.completedSources.size,
+      undoable: result.operations.length > 0,
+    };
+  }
+
+  async undoLastDrop(): Promise<boolean> {
+    if (!this.history.lastDropUndo()) return false;
+    await this.undoFileOperation();
+    return true;
   }
 
   private async performPaste(
     mode: "copy" | "cut",
-    entry: ContextTarget,
+    entry: FileEntryRef,
     targetRelDir: string,
     targetName?: string,
     overwrite = false,
@@ -442,12 +473,12 @@ export class FolderActions {
       this.doc.applyMoved(info, movedRelativePath(this.doc.current.selectedRelPath, entry.relPath, targetRelDir, name));
       const root = this.root;
       if (root) {
-        this.services.onRebasePath?.(
-          this.toAbsolute(entry.relPath),
-          this.toAbsolute(targetRelPath),
-          entry.relPath,
-          targetRelPath,
-        );
+        this.services.onRebasePath?.({
+          oldAbsolute: this.toAbsolute(entry.relPath),
+          newAbsolute: this.toAbsolute(targetRelPath),
+          oldRelPath: entry.relPath,
+          newRelPath: targetRelPath,
+        });
       }
     }
     return {
@@ -478,14 +509,14 @@ export class FolderActions {
   }
 
   private async undoFileOperation() {
-    const operations = this.undoStack.pop();
+    const operations = this.history.takeUndo();
     if (!operations) return;
     this.replayingHistory = true;
     try {
       for (const operation of [...operations].reverse()) await this.undoOperation(operation);
-      this.redoStack.push(operations);
+      this.history.completeUndo(operations);
     } catch (error) {
-      this.undoStack.push(operations);
+      this.history.restoreUndo(operations);
       throw error;
     } finally {
       this.replayingHistory = false;
@@ -499,14 +530,14 @@ export class FolderActions {
   }
 
   private async redoFileOperation() {
-    const operations = this.redoStack.pop();
+    const operations = this.history.takeRedo();
     if (!operations) return;
     this.replayingHistory = true;
     try {
       for (const operation of operations) await this.redoOperation(operation);
-      this.undoStack.push(operations);
+      this.history.completeRedo(operations);
     } catch (error) {
-      this.redoStack.push(operations);
+      this.history.restoreRedo(operations);
       throw error;
     } finally {
       this.replayingHistory = false;
@@ -515,64 +546,74 @@ export class FolderActions {
   }
 
   private async undoOperation(operation: FileOperation) {
+    await this.replayOperation(operation, "undo");
+  }
+
+  private async redoOperation(operation: FileOperation) {
+    await this.replayOperation(operation, "redo");
+  }
+
+  private async replayOperation(operation: FileOperation, direction: "undo" | "redo") {
+    const undo = direction === "undo";
     if (operation.kind === "delete") {
-      await this.services.api.restoreDeletedEntry(operation.relPath);
-      if (operation.restoreRelPath && !this.doc.current.selectedRelPath) {
-        this.doc.markRestored(operation.restoreRelPath, this.toAbsolute(operation.restoreRelPath));
+      if (undo) {
+        await this.services.api.restoreDeletedEntry(operation.relPath);
+        if (operation.restoreRelPath && !this.doc.current.selectedRelPath) {
+          this.doc.markRestored(operation.restoreRelPath, this.toAbsolute(operation.restoreRelPath));
+        }
+      } else {
+        await this.services.api.deleteEntry(operation.relPath);
+        if (operation.restoreRelPath) this.doc.markDeleted();
       }
       return;
     }
     if (operation.kind === "copy") {
-      await this.services.api.deleteEntry(operation.targetRelPath);
+      if (undo) {
+        await this.services.api.deleteEntryWithoutBackup(operation.targetRelPath);
+        if (operation.overwrite) await this.services.api.restoreDeletedEntry(operation.targetRelPath);
+      } else {
+        await this.services.api.copyEntryAs(
+          operation.sourceRelPath,
+          operation.targetRelDir,
+          operation.targetName,
+          operation.overwrite,
+        );
+      }
       return;
     }
     if (operation.kind === "move") {
-      const sourceRelDir = parentRelPath(operation.sourceRelPath);
-      const info = await this.services.api.moveEntryAs(
-        operation.targetRelPath,
-        sourceRelDir,
-        basename(operation.sourceRelPath),
-      );
-      this.rebaseTabs(operation.targetRelPath, operation.sourceRelPath);
-      this.doc.applyMoved(
-        info,
-        movedRelativePath(this.doc.current.selectedRelPath, operation.targetRelPath, sourceRelDir, basename(operation.sourceRelPath)),
-      );
+      if (undo) {
+        const sourceRelDir = parentRelPath(operation.sourceRelPath);
+        const info = await this.services.api.moveEntryAs(
+          operation.targetRelPath,
+          sourceRelDir,
+          basename(operation.sourceRelPath),
+        );
+        this.rebaseTabs(operation.targetRelPath, operation.sourceRelPath);
+        this.doc.applyMoved(
+          info,
+          movedRelativePath(this.doc.current.selectedRelPath, operation.targetRelPath, sourceRelDir, basename(operation.sourceRelPath)),
+        );
+        if (operation.overwrite) await this.services.api.restoreDeletedEntry(operation.targetRelPath);
+      } else {
+        const info = await this.services.api.moveEntryAs(
+          operation.sourceRelPath,
+          operation.targetRelDir,
+          operation.targetName,
+          operation.overwrite,
+        );
+        this.rebaseTabs(operation.sourceRelPath, operation.targetRelPath);
+        this.doc.applyMoved(
+          info,
+          movedRelativePath(this.doc.current.selectedRelPath, operation.sourceRelPath, operation.targetRelDir, operation.targetName),
+        );
+      }
       return;
     }
-    await this.renameEntryForHistory(operation.targetRelPath, basename(operation.sourceRelPath));
-  }
-
-  private async redoOperation(operation: FileOperation) {
-    if (operation.kind === "delete") {
-      await this.services.api.deleteEntry(operation.relPath);
-      if (operation.restoreRelPath) this.doc.markDeleted();
-      return;
-    }
-    if (operation.kind === "copy") {
-      await this.services.api.copyEntryAs(
-        operation.sourceRelPath,
-        operation.targetRelDir,
-        operation.targetName,
-        operation.overwrite,
-      );
-      return;
-    }
-    if (operation.kind === "move") {
-      const info = await this.services.api.moveEntryAs(
-        operation.sourceRelPath,
-        operation.targetRelDir,
-        operation.targetName,
-        operation.overwrite,
-      );
-      this.rebaseTabs(operation.sourceRelPath, operation.targetRelPath);
-      this.doc.applyMoved(
-        info,
-        movedRelativePath(this.doc.current.selectedRelPath, operation.sourceRelPath, operation.targetRelDir, operation.targetName),
-      );
-      return;
-    }
-    await this.renameEntryForHistory(operation.sourceRelPath, basename(operation.targetRelPath));
+    await this.renameEntryForHistory(
+      undo ? operation.targetRelPath : operation.sourceRelPath,
+      undo ? basename(operation.sourceRelPath) : basename(operation.targetRelPath),
+    );
   }
 
   private registeredCommandMenu(relPath: string): MenuItem {
@@ -685,15 +726,18 @@ export class FolderActions {
       return;
     }
     if (!this.replayingHistory) {
-      this.undoStack.push([{
+      this.recordOperations([{
         kind: "rename",
         sourceRelPath: relPath,
         targetRelPath: separator < 0 ? newName : `${relPath.slice(0, separator + 1)}${newName}`,
       }]);
-      this.redoStack = [];
-      this.ports.sidebar.clearFolderMoveUndo?.();
     }
-    this.services.onRebasePath?.(oldAbsolute, newAbsolute, relPath, separator < 0 ? newName : `${relPath.slice(0, separator + 1)}${newName}`);
+    this.services.onRebasePath?.({
+      oldAbsolute,
+      newAbsolute,
+      oldRelPath: relPath,
+      newRelPath: separator < 0 ? newName : `${relPath.slice(0, separator + 1)}${newName}`,
+    });
     try {
       await this.applyRenameInfo(info, oldAbsolute, newAbsolute);
     } catch (e) {
@@ -714,12 +758,12 @@ export class FolderActions {
   private rebaseTabs(oldRelPath: string, newRelPath: string) {
     const root = this.root;
     if (!root) return;
-    this.services.onRebasePath?.(
-      this.toAbsolute(oldRelPath),
-      this.toAbsolute(newRelPath),
+    this.services.onRebasePath?.({
+      oldAbsolute: this.toAbsolute(oldRelPath),
+      newAbsolute: this.toAbsolute(newRelPath),
       oldRelPath,
       newRelPath,
-    );
+    });
   }
 
   private async applyRenameInfo(
@@ -777,11 +821,7 @@ export class FolderActions {
       }
     }
     if (!changed) return;
-    if (operations.length && !this.replayingHistory) {
-      this.undoStack.push(operations);
-      this.redoStack = [];
-    }
-    this.ports.sidebar.clearFolderMoveUndo?.();
+    this.recordOperations(operations);
     try {
       await this.ports.sidebar.refreshFolderEntries();
     } catch (error) {
@@ -794,12 +834,6 @@ function parentRelPath(relPath: string): string {
   const normalized = relPath.replace(/\\/g, "/").replace(/\/$/, "");
   const separator = normalized.lastIndexOf("/");
   return separator < 0 ? "" : normalized.slice(0, separator);
-}
-
-function isDescendantPath(path: string, parent: string): boolean {
-  const normalizedPath = path.replace(/\\/g, "/").replace(/\/$/, "").toLocaleLowerCase("en-US");
-  const normalizedParent = parent.replace(/\\/g, "/").replace(/\/$/, "").toLocaleLowerCase("en-US");
-  return normalizedPath.startsWith(`${normalizedParent}/`);
 }
 
 function sameWindowsPath(left: string | null, right: string | null): boolean {

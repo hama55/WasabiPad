@@ -127,6 +127,8 @@ export const moveEntryAs = (sourceRelPath: string, targetRelDir: string, targetN
   invoke<DocInfo>(IPC_COMMANDS.moveEntryAs, { sourceRelPath, targetRelDir, targetName, overwrite });
 export const deleteEntry = (relPath: string) =>
   invoke<DocInfo>(IPC_COMMANDS.deleteEntry, { relPath });
+export const deleteEntryWithoutBackup = (relPath: string) =>
+  invoke<DocInfo>(IPC_COMMANDS.deleteEntryWithoutBackup, { relPath });
 export const restoreDeletedEntry = (relPath: string) =>
   invoke<DocInfo>(IPC_COMMANDS.restoreDeletedEntry, { relPath });
 

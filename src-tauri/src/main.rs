@@ -246,6 +246,11 @@ fn delete_entry(rel_path: String, state: State) -> Result<DocInfo, String> {
 }
 
 #[tauri::command]
+fn delete_entry_without_backup(rel_path: String, state: State) -> Result<DocInfo, String> {
+    document::delete_entry_without_backup(rel_path, state)
+}
+
+#[tauri::command]
 fn restore_deleted_entry(rel_path: String, state: State) -> Result<DocInfo, String> {
     document::restore_deleted_entry(rel_path, state)
 }
@@ -605,6 +610,7 @@ fn main() {
             copy_entry_as,
             move_entry_as,
             delete_entry,
+            delete_entry_without_backup,
             restore_deleted_entry,
             save_pasted_image,
             cleanup_unused_images,

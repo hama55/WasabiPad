@@ -111,15 +111,44 @@ describe("Feature: TabManager", () => {
       activeId: "a",
     }, null, null);
 
-    manager.rebasePaths(
-      "C:\\work\\docs",
-      "C:\\work\\archive",
-      "docs",
-      "archive",
-    );
+    manager.rebasePaths({
+      oldAbsolute: "C:\\work\\docs",
+      newAbsolute: "C:\\work\\archive",
+      oldRelPath: "docs",
+      newRelPath: "archive",
+    });
 
     expect(manager.state.tabs[0].path).toBe("C:\\work\\archive\\memo.txt");
     expect(manager.state.tabs[1].selectedRelPath).toBe("archive/memo.txt");
+  });
+
+  // Feature: ファイル操作後のアーカイブ内選択追従
+  // Scenario: アーカイブファイルを移動すると内部エントリの選択も追従する
+  // Given: folder tab が `docs/data.zip::Sheet1` を選択中である
+  // When: `docs/data.zip`を`archive/data.zip`へ移動した通知を受ける
+  // Then: 選択中の内部エントリも`archive/data.zip::Sheet1`になる
+  it("Scenario: アーカイブ内の選択パスもファイル操作に追従する", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init({
+      tabs: [{
+        id: "folder",
+        path: "C:\\work",
+        kind: "folder",
+        label: "work",
+        selectedRelPath: "docs/data.zip::Sheet1",
+      }],
+      activeId: "folder",
+    }, null, null);
+
+    manager.rebasePaths({
+      oldAbsolute: "C:\\work\\docs\\data.zip",
+      newAbsolute: "C:\\work\\archive\\data.zip",
+      oldRelPath: "docs/data.zip",
+      newRelPath: "archive/data.zip",
+    });
+
+    expect(manager.state.tabs[0].selectedRelPath).toBe("archive/data.zip::Sheet1");
   });
 
   // Given: activeId=folder、folderRoot が C:\work、selectedRelPath が sub\memo.txt、viewState の anchor/caret が各 line 10、topLine が8、scrollLeft が20

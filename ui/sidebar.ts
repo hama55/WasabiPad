@@ -5,6 +5,7 @@ import type { ContextTarget } from "./context-target";
 import { isMiddleClick } from "./interaction-constants";
 import { iconButton } from "./icon-button";
 import { runAsyncBoundary } from "./async-boundary";
+import { isDescendantPath } from "./path";
 export type { ContextTarget } from "./context-target";
 export type SidebarFileCommand = "copy" | "cut" | "paste" | "rename" | "delete" | "undo" | "redo";
 
@@ -42,6 +43,12 @@ interface FolderMove {
   targetRelDir: string;
 }
 
+interface ManagedDropResult {
+  selectedRelPath: string;
+  completed: number;
+  undoable: boolean;
+}
+
 const DRAG_SCROLL_EDGE = 40;
 const DRAG_SCROLL_STEP = 12;
 const DRAG_SCROLL_INTERVAL = 16;
@@ -69,6 +76,8 @@ export interface SidebarPorts extends Omit<WorkspaceSearchPorts, "onViewChange" 
   onExpandFolder: (relDir: string) => Promise<FolderEntry[]>;
   onMoveEntry: (sourceRelPath: string, targetRelDir: string) => Promise<string>;
   onCopyEntry?: (sourceRelPath: string, targetRelDir: string) => Promise<string>;
+  onDropEntries?: (sourceRelPaths: string[], targetRelDir: string, copy: boolean) => Promise<ManagedDropResult>;
+  onUndoLastDrop?: () => Promise<boolean>;
   onCreateFolder: (relDir: string) => void | Promise<void>;
   onCreateNote: () => void | Promise<void>;
   onTreeError: (error: unknown) => Promise<void>;
@@ -96,11 +105,14 @@ export class Sidebar {
   private onExpandFolder: (relDir: string) => Promise<FolderEntry[]>;
   private onMoveEntry: (sourceRelPath: string, targetRelDir: string) => Promise<string>;
   private onCopyEntry?: (sourceRelPath: string, targetRelDir: string) => Promise<string>;
+  private onDropEntries?: (sourceRelPaths: string[], targetRelDir: string, copy: boolean) => Promise<ManagedDropResult>;
+  private onUndoLastDrop?: () => Promise<boolean>;
   private onTreeError: (error: unknown) => Promise<void>;
   private dropTarget: HTMLElement | null = null;
   private pointerDrag: PointerDrag | null = null;
   private suppressRowClick = false;
   private lastFolderMove: FolderMove[] | null = null;
+  private managedDropUndo = false;
   private entryMoveInProgress = false;
   private workspaceRoot: string | null = null;
   private dragScrollTimer: number | null = null;
@@ -117,6 +129,8 @@ export class Sidebar {
     this.onExpandFolder = ports.onExpandFolder;
     this.onMoveEntry = ports.onMoveEntry;
     this.onCopyEntry = ports.onCopyEntry;
+    this.onDropEntries = ports.onDropEntries;
+    this.onUndoLastDrop = ports.onUndoLastDrop;
     this.onTreeError = ports.onTreeError;
     this.panel = new WorkspaceSearchPanel(searchOptions, {
       onSearch: ports.onSearch,
@@ -180,7 +194,10 @@ export class Sidebar {
   setWorkspaceSearch(folderRoot: string | null) {
     this.selectionRequest++;
     this.invalidateOpenRequests();
-    if (folderRoot !== this.workspaceRoot) this.lastFolderMove = null;
+    if (folderRoot !== this.workspaceRoot) {
+      this.lastFolderMove = null;
+      this.managedDropUndo = false;
+    }
     this.workspaceRoot = folderRoot;
     this.panel.setFolderRoot(folderRoot);
   }
@@ -199,6 +216,7 @@ export class Sidebar {
 
   clearFolderMoveUndo() {
     this.lastFolderMove = null;
+    this.managedDropUndo = false;
   }
 
   acceptSearchBatch(searchId: number, results: WorkspaceSearchResult[]) {
@@ -541,7 +559,7 @@ export class Sidebar {
   }
 
   private onTreeKeyDown(event: KeyboardEvent) {
-    if (isUndoShortcut(event) && (this.lastFolderMove || this.entryMoveInProgress)) {
+    if (isUndoShortcut(event) && (this.lastFolderMove || this.managedDropUndo || this.entryMoveInProgress)) {
       event.preventDefault();
       event.stopPropagation();
       void this.undoLastFolderMove();
@@ -854,6 +872,12 @@ export class Sidebar {
     runAsyncBoundary(
       async () => {
         try {
+          if (this.onDropEntries) {
+            const result = await this.onDropEntries(sourceRelPaths, targetRelDir, copy);
+            this.lastFolderMove = null;
+            this.managedDropUndo = result.undoable;
+            return;
+          }
           let selectedRelPath = "";
           const moves: FolderMove[] = [];
           for (const sourceRelPath of sourceRelPaths) {
@@ -874,13 +898,26 @@ export class Sidebar {
   }
 
   private onBackButton(event: MouseEvent) {
-    if (event.button !== 3 || (!this.lastFolderMove && !this.entryMoveInProgress)) return;
+    if (event.button !== 3 || (!this.lastFolderMove && !this.managedDropUndo && !this.entryMoveInProgress)) return;
     event.preventDefault();
     event.stopPropagation();
     void this.undoLastFolderMove();
   }
 
   private async undoLastFolderMove(): Promise<boolean> {
+    if (this.managedDropUndo && this.onUndoLastDrop && !this.entryMoveInProgress) {
+      this.entryMoveInProgress = true;
+      try {
+        const undone = await this.onUndoLastDrop();
+        if (undone) this.managedDropUndo = false;
+        return undone;
+      } catch (error) {
+        await this.reportTreeError(error);
+        return false;
+      } finally {
+        this.entryMoveInProgress = false;
+      }
+    }
     const moves = this.lastFolderMove;
     if (!moves?.length || this.entryMoveInProgress) return false;
     this.entryMoveInProgress = true;
@@ -1049,12 +1086,6 @@ function parentRelPath(relPath: string): string {
   const path = relPath.replace(/\\/g, "/").replace(/\/$/, "");
   const slash = path.lastIndexOf("/");
   return slash < 0 ? "" : path.slice(0, slash);
-}
-
-function isDescendantPath(path: string, parent: string): boolean {
-  const normalizedPath = path.replace(/\\/g, "/").replace(/\/$/, "").toLocaleLowerCase("en-US");
-  const normalizedParent = parent.replace(/\\/g, "/").replace(/\/$/, "").toLocaleLowerCase("en-US");
-  return normalizedPath.startsWith(`${normalizedParent}/`);
 }
 
 function fileCommandForEvent(event: KeyboardEvent): SidebarFileCommand | null {
