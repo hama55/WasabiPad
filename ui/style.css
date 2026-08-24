@@ -213,7 +213,7 @@ body.preview-resizing * { cursor: ew-resize !important; user-select: none !impor
 .fv-tree > * { flex: none; }
 .fv-tree-bottom-padding { flex: none; height: calc(var(--fv-row-height) * 3); }
 .fv-create-actions {
-  position: sticky; bottom: 0; z-index: 2; margin-top: auto;
+  flex: none;
   display: flex; gap: 6px; padding: 6px 4px 2px;
   border-top: 1px solid var(--border); background: var(--bg-side);
 }

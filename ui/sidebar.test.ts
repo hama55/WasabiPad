@@ -113,8 +113,30 @@ describe("Feature: Sidebar", () => {
     expect(ports.onCreateFolder).toHaveBeenCalledWith("docs");
     expect(ports.onCreateNote).toHaveBeenCalledOnce();
     const tree = host.querySelector<HTMLElement>(".fv-tree");
-    expect(tree?.lastElementChild?.classList.contains("fv-create-actions")).toBe(true);
-    expect(tree?.querySelector<HTMLElement>(".fv-create-actions")?.hidden).toBe(false);
+    const actions = host.querySelector<HTMLElement>(".fv-create-actions");
+    expect(tree?.contains(actions)).toBe(false);
+    expect(actions?.parentElement).toBe(host);
+    expect(actions?.hidden).toBe(false);
+  });
+
+  // Feature: ファイルツリーの表示範囲
+  // Scenario: 下部の新規作成領域をファイルツリーのスクロール範囲から分離する
+  // Given: ファイルツリーと下部の新規作成ボタンを表示している
+  // When: サイドバーのDOMを描画する
+  // Then: 新規作成領域はファイルツリーのスクロール対象外に置かれる
+  it("Scenario: 新規作成領域がファイルツリーの表示範囲を覆わない", () => {
+    const { host, sidebar } = mount();
+    sidebar.setEntries([
+      { name: "first.txt", is_dir: false, is_archive: false },
+      { name: "second.txt", is_dir: false, is_archive: false },
+    ]);
+
+    const tree = host.querySelector<HTMLElement>(".fv-tree")!;
+    const actions = host.querySelector<HTMLElement>(".fv-create-actions")!;
+
+    expect(tree.contains(actions)).toBe(false);
+    expect(actions.parentElement).toBe(host);
+    expect(tree.nextElementSibling).toBe(actions);
   });
 
   // Feature: 選択項目に応じた新規フォルダ作成先
@@ -704,7 +726,7 @@ describe("Feature: Sidebar", () => {
     sidebar.setWorkspaceSearch("C:\\workspace");
 
     const event = new KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true, cancelable: true });
-    host.lastElementChild!.dispatchEvent(event);
+    host.querySelector<HTMLElement>(".fv-tree")!.dispatchEvent(event);
 
     expect(event.defaultPrevented).toBe(true);
     await vi.waitFor(() => expect(ports.onUndoLastDrop).toHaveBeenCalledOnce());

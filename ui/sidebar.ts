@@ -169,7 +169,7 @@ export class Sidebar {
       (error) => this.reportTreeError(error),
     ));
     this.createActions.append(createFolder, createNote);
-    this.host.append(toolbar, this.panel.bar, this.tree);
+    this.host.append(toolbar, this.panel.bar, this.tree, this.createActions);
     this.host.addEventListener("contextmenu", (e) => {
       if (e.target !== this.host && e.target !== this.tree
         && !(e.target instanceof Element && e.target.closest(".fv-tree-bottom-padding"))) return;
@@ -490,10 +490,7 @@ export class Sidebar {
   // ツリーの置き場は1つ。検索中と検索後は結果を出し、それ以外はフォルダを出す
   private render() {
     this.createActions.hidden = this.panel.showing;
-    this.tree.replaceChildren(
-      this.panel.showing ? this.panel.renderTree() : this.folderTree(),
-      this.createActions,
-    );
+    this.tree.replaceChildren(this.panel.showing ? this.panel.renderTree() : this.folderTree());
   }
 
   private invalidateOpenRequests() {

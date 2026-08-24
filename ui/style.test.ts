@@ -43,11 +43,11 @@ describe("Feature: pane toggle placement", () => {
   // Scenario: 項目が少なくても作成ボタンをサイドバー最下端へ固定する
   // Given: サイドバー・ツリー・作成欄のCSS
   // When: 残余高と押し下げ規則を検査する
-  // Then: ツリーが残余高を占有し、作成欄が自動マージンで下端へ配置される
+  // Then: ツリーが残余高を占有し、作成欄がツリーの外側で下端へ配置される
   it("Scenario: 新規作成ボタンを項目数に関係なくサイドバー最下端へ固定する", () => {
     expect(style).toMatch(/#sidebar\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*overflow:\s*hidden;/s);
     expect(style).toMatch(/\.fv-tree\s*\{[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow:\s*auto;/s);
-    expect(style).toMatch(/\.fv-create-actions\s*\{[^}]*margin-top:\s*auto;/s);
+    expect(style).toMatch(/\.fv-create-actions\s*\{[^}]*flex:\s*none;/s);
   });
 
   // Feature: フォルダ検索の検索欄と置換欄の整列
