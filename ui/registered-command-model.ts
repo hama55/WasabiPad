@@ -2,7 +2,6 @@ export type CommandValueKind = "file" | "string";
 export const DEFAULT_COMMAND_VALUE_KIND: CommandValueKind = "file";
 
 export interface RegisteredCommand {
-  extension: string;
   label: string;
   prefix: string;
   command: string;
@@ -10,7 +9,8 @@ export interface RegisteredCommand {
 }
 
 export interface RegisteredCommandInput {
-  extension: string;
+  // 旧設定に残った拡張子は読み込めるが、現在の登録単位には使わない。
+  extension?: unknown;
   label: string;
   prefix?: unknown;
   command: string;
@@ -29,7 +29,6 @@ export function normalizeExtension(extension: string): string {
 
 export function normalizeRegisteredCommand(command: RegisteredCommandInput): RegisteredCommand {
   const normalized: RegisteredCommand = {
-    extension: normalizeExtension(command.extension),
     label: command.label.trim(),
     prefix: typeof command.prefix === "string" ? command.prefix.trim() : "",
     command: command.command.trim(),
@@ -41,8 +40,7 @@ export function normalizeRegisteredCommand(command: RegisteredCommandInput): Reg
 export function isRegisteredCommand(value: unknown): value is RegisteredCommandInput {
   if (typeof value !== "object" || value === null) return false;
   const command = value as Partial<RegisteredCommandInput>;
-  return typeof command.extension === "string"
-    && typeof command.label === "string"
+  return typeof command.label === "string"
     && command.label.trim().length > 0
     && typeof command.command === "string"
     && command.command.trim().length > 0

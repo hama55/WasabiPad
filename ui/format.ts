@@ -15,7 +15,7 @@ export const viewerFormatIcon = (format: ViewerFormat) => viewerFormatSpec(forma
 
 export function formatByteSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
-  const units = ["KB", "MB", "GB", "TB"];
+  const units = ["kB", "MB", "GB", "TB"];
   let value = bytes / 1024;
   for (const unit of units) {
     if (value < 1024 || unit === units[units.length - 1]) return `${value.toFixed(1)} ${unit}`;

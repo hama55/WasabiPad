@@ -38,6 +38,7 @@ describe("Feature: shared registered-command context menu", () => {
     const promptFields = vi.fn(async (...args: Parameters<typeof promptFieldsImpl>) => {
       const fields = args[1];
       expect(fields).toHaveLength(2);
+      expect(fields[0].label).toBe("表示名");
       expect(fields[1].label).toBe(
         "コマンド（{string}=対象文字列、{string_one_line}=改行をスペース化、{copy_string_clipboard}=クリップボードへコピー、{string_in_url}=URL用エンコード文字列、引用符不要）",
       );

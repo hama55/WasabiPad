@@ -3,10 +3,10 @@ import { getSetting, setSetting } from "./settings";
 import {
   DEFAULT_COMMAND_VALUE_KIND,
   commandValueKind,
-  normalizeExtension,
   normalizeRegisteredCommand,
   type CommandValueKind,
   type RegisteredCommand,
+  type RegisteredCommandInput,
 } from "./registered-command-model";
 
 export { DEFAULT_COMMAND_VALUE_KIND, type CommandValueKind, type RegisteredCommand };
@@ -69,21 +69,19 @@ export function commandLineForFile(prefix: string, command: string, path: string
 }
 
 export function commandsForPath(
-  path: string,
+  _path: string,
   kind: CommandValueKind = DEFAULT_COMMAND_VALUE_KIND,
 ): RegisteredCommand[] {
-  const extension = extensionOf(path);
   return getSetting("registeredCommands").filter((command) =>
-    normalizeExtension(command.extension) === extension && commandValueKind(command) === kind
+    commandValueKind(command) === kind
   );
 }
 
-export function addRegisteredCommand(command: RegisteredCommand): void {
+export function addRegisteredCommand(command: RegisteredCommandInput): void {
   const normalized = normalizeRegisteredCommand(command);
   if (!normalized.label || !normalized.command) return;
   const commands = getSetting("registeredCommands");
-  if (commands.some((item) => item.extension === normalized.extension
-    && item.label === normalized.label
+  if (commands.some((item) => item.label === normalized.label
     && item.prefix === normalized.prefix
     && item.command === normalized.command
     && commandValueKind(item) === commandValueKind(normalized))) return;
@@ -100,7 +98,6 @@ export function updateRegisteredCommand(
   const index = commands.indexOf(previous);
   if (index < 0) return;
   if (commands.some((item, itemIndex) => itemIndex !== index
-    && item.extension === updated.extension
     && item.label === updated.label
     && item.prefix === updated.prefix
     && item.command === updated.command
@@ -112,8 +109,7 @@ export function updateRegisteredCommand(
 
 export function removeRegisteredCommand(command: RegisteredCommand): void {
   setSetting("registeredCommands", getSetting("registeredCommands").filter((item) =>
-    item.extension !== command.extension
-    || item.label !== command.label
+    item.label !== command.label
     || item.prefix !== command.prefix
     || item.command !== command.command
     || commandValueKind(item) !== commandValueKind(command)));

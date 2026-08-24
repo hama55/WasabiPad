@@ -13,6 +13,7 @@ export class FindBar {
   private onReplaceNext: (pat: string, rep: string, matchCase: boolean) => Promise<boolean>;
   private onDone: () => void;
   private onError: (message: string, error: unknown) => void | Promise<void>;
+  private onInitialQuery?: (pat: string, matchCase: boolean) => void;
   private running: Promise<void> = Promise.resolve();
   private findRequest = 0;
 
@@ -23,12 +24,14 @@ export class FindBar {
     onReplaceNext: (pat: string, rep: string, matchCase: boolean) => Promise<boolean>,
     onDone: () => void,
     onError: (message: string, error: unknown) => void | Promise<void>,
+    onInitialQuery?: (pat: string, matchCase: boolean) => void,
   ) {
     this.onFind = onFind;
     this.onReplaceAll = onReplaceAll;
     this.onReplaceNext = onReplaceNext;
     this.onDone = onDone;
     this.onError = onError;
+    this.onInitialQuery = onInitialQuery;
 
     this.root = document.createElement("div");
     this.root.className = "ve-find";
@@ -81,6 +84,7 @@ export class FindBar {
     this.root.hidden = false;
     if (initial) this.findIn.value = initial;
     this.status.textContent = "";
+    this.onInitialQuery?.(this.findIn.value, this.caseChk.checked);
     this.findIn.focus();
     this.findIn.select();
   }

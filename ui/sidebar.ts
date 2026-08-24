@@ -571,23 +571,13 @@ export class Sidebar {
     const visible = this.visible();
     if (!visible.length) return;
     event.preventDefault();
+    const direction = event.key === "ArrowUp" ? -1 : 1;
     const current = this.sel === null ? -1 : visible.findIndex((index) => this.rows[index].relPath === this.sel);
-    const next = event.key === "ArrowUp"
-      ? visible[Math.max(0, current < 0 ? visible.length - 1 : current - 1)]
-      : visible[Math.min(visible.length - 1, current + 1)];
+    const next = nextKeyboardFileIndex(visible, this.rows, current, direction);
+    if (next === null) return;
     const row = this.rows[next];
     if (row.relPath === this.sel) return;
-    if (row.kind === "file" || row.kind === "archiveEntry") this.openFileRow(row, true);
-    else {
-      const previous = this.sel;
-      try {
-        this.sel = row.relPath;
-        this.render();
-      } catch (error) {
-        this.sel = previous;
-        void this.reportTreeError(error);
-      }
-    }
+    this.openFileRow(row, true);
     this.tree.querySelector<HTMLElement>(".fv-row.sel")?.scrollIntoView?.({ block: "nearest" });
   }
 
@@ -1017,6 +1007,21 @@ export class Sidebar {
 
 function isExpandable(row: Row): boolean {
   return row.kind === "dir" || row.kind === "archive" || row.kind === "archiveDir";
+}
+
+function nextKeyboardFileIndex(
+  visible: readonly number[],
+  rows: readonly Row[],
+  current: number,
+  direction: -1 | 1,
+): number | null {
+  let cursor = current < 0 ? (direction > 0 ? -1 : visible.length) : current;
+  for (;;) {
+    cursor += direction;
+    if (cursor < 0 || cursor >= visible.length) return null;
+    const row = rows[visible[cursor]];
+    if (row.kind === "file" || row.kind === "archiveEntry") return visible[cursor];
+  }
 }
 
 function isMovable(row: Row): boolean {

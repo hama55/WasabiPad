@@ -1357,7 +1357,7 @@ describe("Feature: TabManager", () => {
 
   // Given: C:\work\memo.txt の file tab があり、登録入力が ["メモ帳","notepad {file}"] を返す
   // When: コンテキストメニューから登録し、登録コマンドの submenu 項目を実行する
-  // Then: commandsForPath は extension=.txt,label=メモ帳,prefix="",command=notepad {file} を返し、runExternalCommand は `notepad C:\work\memo.txt` と path を渡される
+  // Then: 拡張子なしの共通登録コマンドを返し、runExternalCommand は `notepad C:\work\memo.txt` と path を渡される
   it("Scenario: ファイルタブから登録し、登録コマンドを実行できる", async () => {
     const { doc, host } = fixture();
     document.body.appendChild(Object.assign(document.createElement("div"), { id: "dropdown" }));
@@ -1374,7 +1374,7 @@ describe("Feature: TabManager", () => {
       .find((item) => item.textContent === "コマンドを登録...")!.click();
 
     await vi.waitFor(() => expect(commandsForPath("C:\\work\\memo.txt")).toEqual([
-      { extension: ".txt", label: "メモ帳", prefix: "", command: "notepad {file}" },
+      { label: "メモ帳", prefix: "", command: "notepad {file}" },
     ]));
 
     tab.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
@@ -1388,11 +1388,11 @@ describe("Feature: TabManager", () => {
     ));
   });
 
-  // Given: .txt の登録コマンドを追加し、実行処理が Error("command failed") を返す
+  // Given: 共通の登録コマンドを追加し、実行処理が Error("command failed") を返す
   // When: memo.txt のコンテキストメニューから登録コマンドを実行する
   // Then: onError は Error と「登録コマンドを実行できませんでした」を引数に1回呼ばれる
   it("Scenario: タブの登録コマンド失敗は専用のエラー文言を渡す", async () => {
-    addRegisteredCommand({ extension: ".txt", label: "メモ帳", prefix: "", command: "notepad {file}" });
+    addRegisteredCommand({ label: "メモ帳", prefix: "", command: "notepad {file}" });
     registeredCommandPorts.runExternalCommand.mockRejectedValueOnce(new Error("command failed"));
     const { doc, host } = fixture();
     const onError = vi.fn(async () => {});

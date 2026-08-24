@@ -168,6 +168,32 @@ describe("Feature: Sidebar", () => {
     ]);
   });
 
+  // Feature: ファイルツリーの上下キーによるファイル間移動
+  // Scenario: すべて展開済みでファイルの間にフォルダがある
+  // Given: first.txt、空のdocsフォルダ、second.txtを表示してdocsを展開している
+  // When: ツリーへフォーカスしてArrowDownを2回押す
+  // Then: フォルダを選択せずfirst.txtからsecond.txtへ移動する
+  it("Scenario: 上下キーはフォルダを飛ばして次のファイルを開く", async () => {
+    const { host, ports, sidebar } = mount();
+    sidebar.setEntries([
+      { name: "first.txt", is_dir: false, is_archive: false },
+      { name: "docs", is_dir: true, is_archive: false },
+      { name: "second.txt", is_dir: false, is_archive: false },
+    ]);
+    await sidebar.expandAllFolder("");
+
+    const tree = host.querySelector<HTMLElement>("[tabindex=\"0\"]")!;
+    tree.focus();
+    tree.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    tree.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+
+    expect(ports.onSelect.mock.calls).toEqual([
+      ["first.txt", false],
+      ["second.txt", false],
+    ]);
+    expect(host.querySelector(".fv-row.sel")?.textContent).toContain("second.txt");
+  });
+
   // Feature: ファイルツリーの複数選択
   // Scenario: Ctrlクリックでファイルを開かず選択へ追加する
   // Given: first.txtを開いた後、second.txtが同じツリーに表示されている

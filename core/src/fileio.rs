@@ -248,7 +248,9 @@ fn open_buffer_impl_with_progress(
             return Ok(opened_from_entries(v, source_file));
         }
         // シグネチャはあるが解析不能 → 通常テキストとして扱う
+        let is_binary = is_binary_bytes(&bytes);
         let (text, enc) = decode(&bytes);
+        let text = if is_binary { sanitize_binary_text(text) } else { text };
         let eol = detect_eol(&text);
         return Ok(Opened {
             buf: TextBuffer::from_text(&text),
@@ -256,7 +258,7 @@ fn open_buffer_impl_with_progress(
             eol,
             entries: None,
             byte_len: len,
-            is_binary: is_binary_bytes(&bytes),
+            is_binary,
             source_file: Some(source_file),
             stamp: None,
         });
@@ -284,7 +286,9 @@ fn open_buffer_impl_with_progress(
         }
     }
     let bytes = read_locked(&source_file)?;
+    let is_binary = is_binary_bytes(&bytes);
     let (text, enc) = decode(&bytes);
+    let text = if is_binary { sanitize_binary_text(text) } else { text };
     let eol = detect_eol(&text);
     Ok(Opened {
         buf: TextBuffer::from_text(&text),
@@ -292,7 +296,7 @@ fn open_buffer_impl_with_progress(
         eol,
         entries: None,
         byte_len: len,
-        is_binary: is_binary_bytes(&bytes),
+        is_binary,
         source_file: Some(source_file),
         stamp: None,
     })
@@ -310,6 +314,7 @@ fn read_released(
     drop(probe);
     let is_binary = is_binary_bytes(&bytes);
     let (text, enc) = decode_fn(&bytes)?;
+    let text = if is_binary { sanitize_binary_text(text) } else { text };
     let eol = detect_eol(&text);
     Ok(Opened {
         buf: TextBuffer::from_text(&text),
@@ -341,6 +346,33 @@ pub(crate) fn decode(bytes: &[u8]) -> (String, Encoding) {
             (cow.into_owned(), Encoding::ShiftJis)
         }
     }
+}
+
+pub(crate) fn sanitize_binary_text(text: String) -> String {
+    text.chars()
+        .map(|ch| {
+            if ch == '\u{FFFD}' || (ch.is_control() && !matches!(ch, '\n' | '\r' | '\t')) {
+                ' '
+            } else {
+                ch
+            }
+        })
+        .collect()
+}
+
+pub(crate) fn format_byte_size(bytes: u64) -> String {
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    let units = ["kB", "MB", "GB", "TB"];
+    let mut value = bytes as f64 / 1024.0;
+    for unit in units {
+        if value < 1024.0 || unit == "TB" {
+            return format!("{value:.1} {unit}");
+        }
+        value /= 1024.0;
+    }
+    unreachable!("byte size units are non-empty")
 }
 
 pub fn open_buffer_as(path: &Path, requested: Encoding) -> io::Result<Opened> {
@@ -729,6 +761,19 @@ mod tests {
     fn eol_detection() {
         assert_eq!(detect_eol("a\r\nb"), Eol::Crlf);
         assert_eq!(detect_eol("a\nb"), Eol::Lf);
+    }
+
+    // Feature: ファイルサイズの可読表示
+    // Scenario: バイト数を単位付きで表示する
+    // Given: B/kB/MB/GBの境界にあるファイルサイズ
+    // When: `format_byte_size`を呼ぶ
+    // Then: 各サイズに対応した単位付き文字列を返す
+    #[test]
+    fn formats_byte_sizes_with_readable_units() {
+        assert_eq!(format_byte_size(1023), "1023 B");
+        assert_eq!(format_byte_size(1024), "1.0 kB");
+        assert_eq!(format_byte_size(1024 * 1024), "1.0 MB");
+        assert_eq!(format_byte_size(1024 * 1024 * 1024), "1.0 GB");
     }
 
     #[test]
