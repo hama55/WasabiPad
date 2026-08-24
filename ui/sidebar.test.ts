@@ -72,6 +72,28 @@ describe("Feature: Sidebar", () => {
     expect(padding?.nextElementSibling?.classList.contains("fv-root-drop")).toBe(true);
   });
 
+  // Feature: ファイルツリー空白部のコンテキストメニュー
+  // Scenario: 末尾の3行分の空白を右クリックするとルートメニューを開く
+  // Given: ファイルツリー末尾の空白領域を表示している
+  // When: 空白領域を右クリックする
+  // Then: 既定メニューを抑止し、対象なしのコンテキストメニューを通知する
+  it("Scenario: ファイルツリー末尾の空白を右クリックできる", () => {
+    const { host, ports, sidebar } = mount();
+    sidebar.setEntries([{ name: "memo.txt", is_dir: false, is_archive: false }]);
+    const padding = host.querySelector<HTMLElement>(".fv-tree-bottom-padding")!;
+    const event = new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+      clientX: 30,
+      clientY: 40,
+    });
+
+    padding.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(ports.onContextMenu).toHaveBeenCalledWith(30, 40, null, []);
+  });
+
   // Feature: ファイルツリー下部の新規作成ボタン
   // Scenario: 選択中フォルダの配下へ新規フォルダを作成する
   // Given: `docs`フォルダを含む通常ツリーを表示している

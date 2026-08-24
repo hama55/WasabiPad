@@ -171,7 +171,8 @@ export class Sidebar {
     this.createActions.append(createFolder, createNote);
     this.host.append(toolbar, this.panel.bar, this.tree);
     this.host.addEventListener("contextmenu", (e) => {
-      if (e.target !== this.host && e.target !== this.tree) return; // 個々の行上は行側のリスナーに任せる
+      if (e.target !== this.host && e.target !== this.tree
+        && !(e.target instanceof Element && e.target.closest(".fv-tree-bottom-padding"))) return;
       e.preventDefault();
       this.onContextMenu(e.clientX, e.clientY, null, []);
     });
