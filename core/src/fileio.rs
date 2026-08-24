@@ -248,9 +248,7 @@ fn open_buffer_impl_with_progress(
             return Ok(opened_from_entries(v, source_file));
         }
         // シグネチャはあるが解析不能 → 通常テキストとして扱う
-        let is_binary = is_binary_bytes(&bytes);
-        let (text, enc) = decode(&bytes);
-        let text = if is_binary { sanitize_binary_text(text) } else { text };
+        let (text, enc, is_binary) = decode_with_binary_state(&bytes, |bytes| Ok(decode(bytes)))?;
         let eol = detect_eol(&text);
         return Ok(Opened {
             buf: TextBuffer::from_text(&text),
@@ -287,9 +285,7 @@ fn open_buffer_impl_with_progress(
         }
     }
     let bytes = read_locked(&source_file)?;
-    let is_binary = is_binary_bytes(&bytes);
-    let (text, enc) = decode(&bytes);
-    let text = if is_binary { sanitize_binary_text(text) } else { text };
+    let (text, enc, is_binary) = decode_with_binary_state(&bytes, |bytes| Ok(decode(bytes)))?;
     let eol = detect_eol(&text);
     Ok(Opened {
         buf: TextBuffer::from_text(&text),
@@ -313,9 +309,7 @@ fn read_released(
     let stamp = stamp_of(&probe)?;
     let bytes = read_locked(&probe)?;
     drop(probe);
-    let is_binary = is_binary_bytes(&bytes);
-    let (text, enc) = decode_fn(&bytes)?;
-    let text = if is_binary { sanitize_binary_text(text) } else { text };
+    let (text, enc, is_binary) = decode_with_binary_state(&bytes, decode_fn)?;
     let eol = detect_eol(&text);
     Ok(Opened {
         buf: TextBuffer::from_text(&text),
@@ -359,6 +353,16 @@ pub(crate) fn sanitize_binary_text(text: String) -> String {
             }
         })
         .collect()
+}
+
+fn decode_with_binary_state(
+    bytes: &[u8],
+    decode_fn: impl FnOnce(&[u8]) -> io::Result<(String, Encoding)>,
+) -> io::Result<(String, Encoding, bool)> {
+    let is_binary = is_binary_bytes(bytes);
+    let (text, enc) = decode_fn(bytes)?;
+    let text = if is_binary { sanitize_binary_text(text) } else { text };
+    Ok((text, enc, is_binary))
 }
 
 pub fn open_buffer_as(path: &Path, requested: Encoding) -> io::Result<Opened> {
@@ -418,9 +422,8 @@ fn open_buffer_as_impl_with_progress(
         });
     }
     let bytes = read_locked(&source_file)?;
-    let is_binary = is_binary_bytes(&bytes);
-    let (text, enc) = decode_as(&bytes, requested)?;
-    let text = if is_binary { sanitize_binary_text(text) } else { text };
+    let (text, enc, is_binary) =
+        decode_with_binary_state(&bytes, |bytes| decode_as(bytes, requested))?;
     let eol = detect_eol(&text);
     Ok(Opened {
         buf: TextBuffer::from_text(&text),

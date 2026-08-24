@@ -99,7 +99,7 @@ export function viewerFormatForPath(path: string): ViewerFormat | null {
   return format?.id ?? null;
 }
 
-export function viewerFormatForPreviewToggle(path: string, _isBinary: boolean): ViewerFormat | null {
+export function viewerFormatForPreviewToggle(path: string): ViewerFormat | null {
   return viewerFormatForPath(path) ?? "markdown";
 }
 

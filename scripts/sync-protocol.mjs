@@ -61,25 +61,60 @@ function rustLabelFunction(name, labels) {
   ].join("\n");
 }
 
+const byteSizeProgram = ["returnSmall", "initialize", "scale", "format"];
+const byteSizeRenderers = {
+  typescript: {
+    signature: "export function formatByteSize(bytes: number): string {",
+    returnSmall: "  if (bytes < BYTE_SIZE_BASE) return `${bytes} ${BYTE_SIZE_UNITS[0]}`;",
+    initialize: [
+      "  let unitIndex = 1;",
+      "  let value = bytes / BYTE_SIZE_BASE;",
+    ],
+    scale: [
+      `  while (value >= BYTE_SIZE_BASE && unitIndex < ${byteSize.units.length - 1}) {`,
+      "    value /= BYTE_SIZE_BASE;",
+      "    unitIndex += 1;",
+      "  }",
+    ],
+    format: "  return `${value.toFixed(BYTE_SIZE_FRACTION_DIGITS)} ${BYTE_SIZE_UNITS[unitIndex]}`;",
+  },
+  rust: {
+    signature: "pub(crate) fn format_byte_size(bytes: u64) -> String {",
+    returnSmall: "    if bytes < BYTE_SIZE_BASE {",
+    initialize: [
+      "        return format!(\"{bytes} {}\", BYTE_SIZE_UNITS[0]);",
+      "    }",
+      "    let mut unit_index = 1usize;",
+      "    let mut value = bytes as f64 / BYTE_SIZE_BASE as f64;",
+    ],
+    scale: [
+      `    while value >= BYTE_SIZE_BASE as f64 && unit_index < ${byteSize.units.length - 1} {`,
+      "        value /= BYTE_SIZE_BASE as f64;",
+      "        unit_index += 1;",
+      "    }",
+    ],
+    format: `    format!(\"{value:.${byteSize.fractionDigits}} {}\", BYTE_SIZE_UNITS[unit_index])`,
+  },
+};
+
+function renderByteSizeFunction(language) {
+  const renderer = byteSizeRenderers[language];
+  return [
+    renderer.signature,
+    ...byteSizeProgram.flatMap((operation) => {
+      const lines = renderer[operation];
+      return Array.isArray(lines) ? lines : [lines];
+    }),
+    "}",
+  ].join("\n");
+}
+
 function rustByteSizeFunction() {
-  const units = JSON.stringify(byteSize.units);
-  const lastUnitIndex = byteSize.units.length - 1;
   return [
     `pub(crate) const BYTE_SIZE_BASE: u64 = ${byteSize.base};`,
-    `pub(crate) const BYTE_SIZE_UNITS: [&str; ${byteSize.units.length}] = ${units};`,
+    `pub(crate) const BYTE_SIZE_UNITS: [&str; ${byteSize.units.length}] = ${JSON.stringify(byteSize.units)};`,
     "",
-    "pub(crate) fn format_byte_size(bytes: u64) -> String {",
-    "    if bytes < BYTE_SIZE_BASE {",
-    "        return format!(\"{bytes} {}\", BYTE_SIZE_UNITS[0]);",
-    "    }",
-    "    let mut unit_index = 1usize;",
-    "    let mut value = bytes as f64 / BYTE_SIZE_BASE as f64;",
-    `    while value >= BYTE_SIZE_BASE as f64 && unit_index < ${lastUnitIndex} {`,
-    "        value /= BYTE_SIZE_BASE as f64;",
-    "        unit_index += 1;",
-    "    }",
-    `    format!(\"{value:.${byteSize.fractionDigits}} {}\", BYTE_SIZE_UNITS[unit_index])`,
-    "}",
+    renderByteSizeFunction("rust"),
   ].join("\n");
 }
 
@@ -95,16 +130,7 @@ const ts = [
   `export const BYTE_SIZE_FRACTION_DIGITS = ${byteSize.fractionDigits} as const;`,
   `export const BYTE_SIZE_UNITS = ${JSON.stringify(byteSize.units)} as const;`,
   "",
-  "export function formatByteSize(bytes: number): string {",
-  "  if (bytes < BYTE_SIZE_BASE) return `${bytes} ${BYTE_SIZE_UNITS[0]}`;",
-  "  let unitIndex = 1;",
-  "  let value = bytes / BYTE_SIZE_BASE;",
-  `  while (value >= BYTE_SIZE_BASE && unitIndex < ${byteSize.units.length - 1}) {`,
-  "    value /= BYTE_SIZE_BASE;",
-  "    unitIndex += 1;",
-  "  }",
-  "  return `${value.toFixed(BYTE_SIZE_FRACTION_DIGITS)} ${BYTE_SIZE_UNITS[unitIndex]}`;",
-  "}",
+  renderByteSizeFunction("typescript"),
   "",
 ].join("\n");
 
