@@ -273,13 +273,14 @@ fn open_buffer_impl_with_progress(
             HugeBuf::open(source_file.try_clone()?)?
         };
         if let Some((h, enc, eol)) = huge {
+            let is_binary = h.is_binary();
             return Ok(Opened {
                 buf: TextBuffer::from_huge(h),
                 enc,
                 eol,
                 entries: None,
                 byte_len: len,
-                is_binary: false,
+                is_binary,
                 source_file: Some(source_file),
                 stamp: None,
             });
@@ -360,21 +361,6 @@ pub(crate) fn sanitize_binary_text(text: String) -> String {
         .collect()
 }
 
-pub(crate) fn format_byte_size(bytes: u64) -> String {
-    if bytes < 1024 {
-        return format!("{bytes} B");
-    }
-    let units = ["kB", "MB", "GB", "TB"];
-    let mut value = bytes as f64 / 1024.0;
-    for unit in units {
-        if value < 1024.0 || unit == "TB" {
-            return format!("{value:.1} {unit}");
-        }
-        value /= 1024.0;
-    }
-    unreachable!("byte size units are non-empty")
-}
-
 pub fn open_buffer_as(path: &Path, requested: Encoding) -> io::Result<Opened> {
     open_buffer_as_with_progress(path, requested, None)
 }
@@ -382,6 +368,15 @@ pub fn open_buffer_as(path: &Path, requested: Encoding) -> io::Result<Opened> {
 pub fn open_buffer_as_with_progress(
     path: &Path,
     requested: Encoding,
+    progress: Option<&mut LoadProgress<'_>>,
+) -> io::Result<Opened> {
+    open_buffer_as_impl_with_progress(path, requested, MMAP_THRESHOLD, progress)
+}
+
+fn open_buffer_as_impl_with_progress(
+    path: &Path,
+    requested: Encoding,
+    threshold: u64,
     mut progress: Option<&mut LoadProgress<'_>>,
 ) -> io::Result<Opened> {
     const MAX_UTF16_BYTES: u64 = 256 * 1024 * 1024;
@@ -399,7 +394,7 @@ pub fn open_buffer_as_with_progress(
             "256MBを超えるUTF-16LEファイルは指定再読込できません",
         ));
     }
-    if len == 0 || len < MMAP_THRESHOLD {
+    if len == 0 || len < threshold {
         return read_released(probe, len, |b| decode_as(b, requested));
     }
     drop(probe);
@@ -410,19 +405,22 @@ pub fn open_buffer_as_with_progress(
         HugeBuf::open_as(source_file.try_clone()?, requested)?
     };
     if let Some((h, enc, eol)) = huge {
+        let is_binary = h.is_binary();
         return Ok(Opened {
             buf: TextBuffer::from_huge(h),
             enc,
             eol,
             entries: None,
             byte_len: len,
-            is_binary: false,
+            is_binary,
             source_file: Some(source_file),
             stamp: None,
         });
     }
     let bytes = read_locked(&source_file)?;
+    let is_binary = is_binary_bytes(&bytes);
     let (text, enc) = decode_as(&bytes, requested)?;
+    let text = if is_binary { sanitize_binary_text(text) } else { text };
     let eol = detect_eol(&text);
     Ok(Opened {
         buf: TextBuffer::from_text(&text),
@@ -430,7 +428,7 @@ pub fn open_buffer_as_with_progress(
         eol,
         entries: None,
         byte_len: len,
-        is_binary: is_binary_bytes(&bytes),
+        is_binary,
         source_file: Some(source_file),
         stamp: None,
     })
@@ -770,10 +768,10 @@ mod tests {
     // Then: 各サイズに対応した単位付き文字列を返す
     #[test]
     fn formats_byte_sizes_with_readable_units() {
-        assert_eq!(format_byte_size(1023), "1023 B");
-        assert_eq!(format_byte_size(1024), "1.0 kB");
-        assert_eq!(format_byte_size(1024 * 1024), "1.0 MB");
-        assert_eq!(format_byte_size(1024 * 1024 * 1024), "1.0 GB");
+        assert_eq!(crate::protocol::format_byte_size(1023), "1023 B");
+        assert_eq!(crate::protocol::format_byte_size(1024), "1.0 kB");
+        assert_eq!(crate::protocol::format_byte_size(1024 * 1024), "1.0 MB");
+        assert_eq!(crate::protocol::format_byte_size(1024 * 1024 * 1024), "1.0 GB");
     }
 
     #[test]
@@ -889,6 +887,56 @@ mod tests {
         assert!(!o.buf.is_huge());
         assert_eq!(o.buf.line_count(), 1);
         assert_released(&path, &o);
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    // Feature: 巨大バイナリの閲覧専用表示
+    // Scenario: mmap経路でもバイナリ制御文字を空白化する
+    // Given: 閾値0でmmap経路になる、NULを含むUTF-8バイト列
+    // When: ファイルを開く
+    // Then: バイナリとして判定し、表示時に制御文字を空白へ変換する
+    #[test]
+    fn mmap_binary_content_is_sanitized_and_view_only() {
+        let path = unique_temp_path("mmap_binary");
+        std::fs::write(&path, b"A\0B\n").unwrap();
+
+        let opened = open_buffer_impl(&path, 0).unwrap();
+
+        assert!(opened.buf.is_huge());
+        assert!(opened.is_binary);
+        assert_eq!(opened.buf.line(0), "A B");
+        drop(opened);
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    // Feature: 強制文字コード再読込時のバイナリ表示
+    // Scenario: mmap不可の強制指定でもバイナリを空白化する
+    // Given: 閾値0で大ファイル経路になり、UTF-16LE指定ではmmapできないNUL含有バイト列
+    // When: UTF-16LEを指定して再読込する
+    // Then: バイナリとして判定し、表示時に制御文字を空白へ変換する
+    #[test]
+    fn forced_encoding_fallback_sanitizes_binary_content() {
+        let path = unique_temp_path("forced_binary");
+        std::fs::write(&path, [
+            0x41, 0x00, // A
+            0x00, 0x00, // NUL
+            0x42, 0x00, // B
+            0x0A, 0x00, // LF
+        ])
+        .unwrap();
+
+        let opened = open_buffer_as_impl_with_progress(
+            &path,
+            Encoding::Utf16Le,
+            0,
+            None,
+        )
+        .unwrap();
+
+        assert!(!opened.buf.is_huge());
+        assert!(opened.is_binary);
+        assert_eq!(opened.buf.line(0), "A B");
+        drop(opened);
         std::fs::remove_file(&path).unwrap();
     }
 

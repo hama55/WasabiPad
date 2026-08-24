@@ -998,7 +998,7 @@ impl Doc {
                 return Ok((
                     format!(
                         "(サイズ超過のためスキップ: {}超)",
-                        fileio::format_byte_size(crate::ziptext::MAX_ENTRY as u64)
+                        crate::protocol::format_byte_size(crate::ziptext::MAX_ENTRY as u64)
                     ),
                     None,
                     false,
@@ -2493,7 +2493,7 @@ mod tests {
             d.lines(0, 1),
             vec![format!(
                 "(サイズ超過のためスキップ: {}超)",
-                crate::fileio::format_byte_size(crate::ziptext::MAX_ENTRY as u64)
+                crate::protocol::format_byte_size(crate::ziptext::MAX_ENTRY as u64)
             )]
         );
     }

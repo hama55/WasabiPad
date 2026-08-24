@@ -4,7 +4,7 @@ import * as api from "./api";
 import { TabManager, type StoredTabs, type TabDocumentPort } from "./tabs";
 import { initialSession } from "./session";
 import { initSettings } from "./settings";
-import { addRegisteredCommand, commandsForPath } from "./registered-commands";
+import { addRegisteredCommand, commandsForKind } from "./registered-commands";
 import type { RegisteredCommandMenuPorts } from "./registered-command-menu";
 import { MENU_ICON } from "./menu-icons";
 
@@ -1373,7 +1373,7 @@ describe("Feature: TabManager", () => {
     [...document.querySelectorAll<HTMLElement>("#dropdown .dd-item")]
       .find((item) => item.textContent === "コマンドを登録...")!.click();
 
-    await vi.waitFor(() => expect(commandsForPath("C:\\work\\memo.txt")).toEqual([
+    await vi.waitFor(() => expect(commandsForKind()).toEqual([
       { label: "メモ帳", prefix: "", command: "notepad {file}" },
     ]));
 

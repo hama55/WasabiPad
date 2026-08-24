@@ -4,7 +4,7 @@ import * as api from "./api";
 import { showError } from "./dialogs";
 import { initialSession } from "./session";
 import { initSettings } from "./settings";
-import { addRegisteredCommand, commandsForPath } from "./registered-commands";
+import { addRegisteredCommand, commandsForKind } from "./registered-commands";
 import {
   FolderActions,
   isImagePath,
@@ -700,7 +700,7 @@ describe("Feature: FolderActions", () => {
       "コマンド（{file}=対象ファイル、引用符不要）",
     ]);
 
-    await vi.waitFor(() => expect(commandsForPath("index.html")).toEqual([
+    await vi.waitFor(() => expect(commandsForKind()).toEqual([
       { label: "Chrome", prefix: "", command: "chrome {file}" },
     ]));
   });
@@ -717,7 +717,7 @@ describe("Feature: FolderActions", () => {
 
     vi.mocked(promptFields).mockResolvedValueOnce(["Chrome Dev", "cmd.exe /D /C chrome --incognito {file}"]);
     dropdown.querySelectorAll<HTMLButtonElement>(".dd-submenu .dd-trailing")[0].click();
-    await vi.waitFor(() => expect(commandsForPath("index.html")).toEqual([
+    await vi.waitFor(() => expect(commandsForKind()).toEqual([
       { label: "Chrome Dev", prefix: "", command: "cmd.exe /D /C chrome --incognito {file}" },
     ]));
 
@@ -725,7 +725,7 @@ describe("Feature: FolderActions", () => {
     [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
       .find((item) => item.textContent === "登録コマンド ▸")!.click();
     dropdown.querySelectorAll<HTMLButtonElement>(".dd-submenu .dd-trailing")[1].click();
-    expect(commandsForPath("index.html")).toEqual([]);
+    expect(commandsForKind()).toEqual([]);
   });
 
   // Given: Explorer起動spy、対象`memo.txt`

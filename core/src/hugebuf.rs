@@ -2,7 +2,7 @@
 // ファイル本体は RAM に載せず、表示行をオンデマンドでデコードする。
 use crate::buffer::Pos;
 use crate::fileio::{Encoding, Eol};
-use encoding_rs::SHIFT_JIS;
+use encoding_rs::{SHIFT_JIS, UTF_8};
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -59,6 +59,7 @@ pub struct HugeBuf {
     map: Mapping,
     pub enc: Encoding,
     pub orig_eol: Eol,
+    binary: bool,
     checkpoints: Vec<u64>, // chunk c の先頭行のバイトオフセット
     orig_counts: Vec<u32>, // 元ファイルでの chunk 行数 (デコード用、不変)
     counts: Vec<u32>,      // 現在の chunk 行数 (編集で変動)
@@ -125,15 +126,34 @@ impl HugeBuf {
 
         // 行インデックス走査: CHUNK 行ごとのチェックポイントだけ保持
         file.seek(SeekFrom::Start(0))?;
+        let mut decoder = match enc {
+            Encoding::Utf8 { .. } => Some(UTF_8.new_decoder()),
+            Encoding::ShiftJis => Some(SHIFT_JIS.new_decoder()),
+            Encoding::Utf16Le => None,
+        };
+        const SCAN_CHUNK: usize = 4 * 1024 * 1024;
+        // encoding_rsの出力上限はStringのcapacityで決まるため、最大3倍を確保する。
+        let mut decoded = String::with_capacity(SCAN_CHUNK * 3);
+        let mut binary = head.contains(&0);
         let mut checkpoints: Vec<u64> = vec![bom as u64];
         let mut nlines: usize = 1; // 行0 は開始済み
-        let mut buf = vec![0u8; 4 * 1024 * 1024];
+        let mut buf = vec![0u8; SCAN_CHUNK];
         let mut offset: u64 = 0;
         let mut last_percent = 0u8;
         loop {
             let n = file.read(&mut buf)?;
             if n == 0 {
+                if let Some(decoder) = decoder.as_mut() {
+                    let (_, _, had_errors) = decoder.decode_to_string(&[], &mut decoded, true);
+                    binary |= had_errors;
+                }
                 break;
+            }
+            binary |= buf[..n].contains(&0);
+            if let Some(decoder) = decoder.as_mut() {
+                let (_, _, had_errors) = decoder.decode_to_string(&buf[..n], &mut decoded, false);
+                binary |= had_errors;
+                decoded.clear();
             }
             for p in memchr::memchr_iter(b'\n', &buf[..n]) {
                 if nlines.is_multiple_of(CHUNK) {
@@ -165,6 +185,7 @@ impl HugeBuf {
                 map,
                 enc,
                 orig_eol: eol,
+                binary,
                 checkpoints,
                 counts: orig_counts.clone(),
                 orig_counts,
@@ -189,6 +210,10 @@ impl HugeBuf {
 
     pub fn matches_format(&self, enc: Encoding, eol: Eol) -> bool {
         self.enc == enc && self.orig_eol == eol
+    }
+
+    pub fn is_binary(&self) -> bool {
+        self.binary
     }
 
     fn chunk_raw(&self, c: usize) -> &[u8] {
@@ -242,6 +267,12 @@ impl HugeBuf {
         }
         if lines.len() < want {
             lines.push(decode_bytes(self.enc, &raw[start..]));
+        }
+        if self.binary {
+            lines = lines
+                .into_iter()
+                .map(crate::fileio::sanitize_binary_text)
+                .collect();
         }
         let rc = Rc::new(lines);
         let mut cache = self.cache.borrow_mut();

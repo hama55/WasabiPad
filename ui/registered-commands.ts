@@ -1,4 +1,4 @@
-// 外部コマンドの永続化、拡張子判定、対象値の置換。
+// 外部コマンドの永続化、対象値の置換。
 import { getSetting, setSetting } from "./settings";
 import {
   DEFAULT_COMMAND_VALUE_KIND,
@@ -18,12 +18,6 @@ export const COMMAND_VALUE_TARGETS = {
 export const STRING_IN_URL_PLACEHOLDER = "{string_in_url}";
 export const STRING_ONE_LINE_PLACEHOLDER = "{string_one_line}";
 export const COPY_STRING_CLIPBOARD_PLACEHOLDER = "{copy_string_clipboard}";
-
-export function extensionOf(path: string): string {
-  const name = path.replace(/\\/g, "/").split("/").pop() ?? "";
-  const dot = name.lastIndexOf(".");
-  return dot > 0 ? name.slice(dot).toLowerCase() : "";
-}
 
 export function commandLineForValue(
   prefix: string,
@@ -68,8 +62,7 @@ export function commandLineForFile(prefix: string, command: string, path: string
   return commandLineForValue(prefix, command, path, "file");
 }
 
-export function commandsForPath(
-  _path: string,
+export function commandsForKind(
   kind: CommandValueKind = DEFAULT_COMMAND_VALUE_KIND,
 ): RegisteredCommand[] {
   return getSetting("registeredCommands").filter((command) =>

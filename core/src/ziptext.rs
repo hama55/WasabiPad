@@ -178,7 +178,7 @@ fn decode_cd_entry(bytes: &[u8], e: &CdEntry) -> Option<(String, bool)> {
         (
             format!(
                 "(サイズ超過のためスキップ: {})",
-                crate::fileio::format_byte_size(e.uncomp as u64)
+                crate::protocol::format_byte_size(e.uncomp as u64)
             ),
             false,
         )
@@ -219,7 +219,7 @@ pub fn parse(bytes: &[u8]) -> Option<Vec<Entry>> {
                 name: e.name.clone(),
                 text: format!(
                     "(サイズ超過のためスキップ: {})",
-                    crate::fileio::format_byte_size(e.uncomp as u64)
+                    crate::protocol::format_byte_size(e.uncomp as u64)
                 ),
                 is_binary: false,
             });

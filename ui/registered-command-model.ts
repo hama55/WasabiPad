@@ -21,12 +21,6 @@ export function commandValueKind(command: Pick<RegisteredCommand, "valueKind">):
   return command.valueKind ?? DEFAULT_COMMAND_VALUE_KIND;
 }
 
-export function normalizeExtension(extension: string): string {
-  const value = extension.trim().toLowerCase();
-  if (!value) return "";
-  return value.startsWith(".") ? value : `.${value}`;
-}
-
 export function normalizeRegisteredCommand(command: RegisteredCommandInput): RegisteredCommand {
   const normalized: RegisteredCommand = {
     label: command.label.trim(),

@@ -9,7 +9,7 @@ import {
   COMMAND_VALUE_TARGETS,
   commandLineForValueWithClipboard,
   commandLineForValue,
-  commandsForPath,
+  commandsForKind,
   COPY_STRING_CLIPBOARD_PLACEHOLDER,
   removeRegisteredCommand,
   STRING_ONE_LINE_PLACEHOLDER,
@@ -119,7 +119,7 @@ export function createRegisteredCommandMenu(
   services: RegisteredCommandMenuServices,
 ): MenuItem {
   const target = targetOf(input);
-  const commands = commandsForPath(target.path, commandValueKind(target));
+  const commands = commandsForKind(commandValueKind(target));
   const register: MenuItem = {
     label: "コマンドを登録...",
     iconClass: MENU_ICON.command,
