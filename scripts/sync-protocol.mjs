@@ -61,7 +61,15 @@ function rustLabelFunction(name, labels) {
   ].join("\n");
 }
 
-const byteSizeProgram = ["returnSmall", "initialize", "scale", "format"];
+// The algorithm order lives in one template; language entries only provide syntax fragments.
+const byteSizeTemplate = [
+  "{{signature}}",
+  "{{returnSmall}}",
+  "{{initialize}}",
+  "{{scale}}",
+  "{{format}}",
+  "}",
+].join("\n");
 const byteSizeRenderers = {
   typescript: {
     signature: "export function formatByteSize(bytes: number): string {",
@@ -99,14 +107,10 @@ const byteSizeRenderers = {
 
 function renderByteSizeFunction(language) {
   const renderer = byteSizeRenderers[language];
-  return [
-    renderer.signature,
-    ...byteSizeProgram.flatMap((operation) => {
-      const lines = renderer[operation];
-      return Array.isArray(lines) ? lines : [lines];
-    }),
-    "}",
-  ].join("\n");
+  return byteSizeTemplate.replace(/\{\{(\w+)\}\}/g, (_, operation) => {
+    const lines = renderer[operation];
+    return Array.isArray(lines) ? lines.join("\n") : lines;
+  });
 }
 
 function rustByteSizeFunction() {
