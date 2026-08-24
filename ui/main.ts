@@ -725,7 +725,7 @@ previewToggle.addEventListener("click", () => {
   if (!previewAvailable) {
     const session = doc.current;
     const path = documentPathOf(session);
-    const format = viewerFormatForPreviewToggle(path, session.isBinary);
+    const format = viewerFormatForPreviewToggle(path);
     if (format) openPreviewFormat(session, path, format);
     return;
   }

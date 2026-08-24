@@ -4,7 +4,7 @@ import * as api from "./api";
 import { showError } from "./dialogs";
 import { initialSession } from "./session";
 import { initSettings } from "./settings";
-import { addRegisteredCommand, commandsForPath } from "./registered-commands";
+import { addRegisteredCommand, commandsForKind } from "./registered-commands";
 import {
   FolderActions,
   isImagePath,
@@ -643,11 +643,11 @@ describe("Feature: FolderActions", () => {
     }
   });
 
-  // Given: `.html`用Chromeコマンドを登録済み
+  // Given: 共通Chromeコマンドを登録済み
   // When: `index.html`の登録コマンドを開いて実行
   // Then: trailingが`⚙,×`、絶対パス入りコマンドを実行
-  it("Scenario: 拡張子別の登録コマンドを表示して実行できる", async () => {
-    addRegisteredCommand({ extension: ".html", label: "Chrome", prefix: "cmd.exe /D /C", command: "chrome {file}" });
+  it("Scenario: 共通登録コマンドを表示して実行できる", async () => {
+    addRegisteredCommand({ label: "Chrome", prefix: "cmd.exe /D /C", command: "chrome {file}" });
     const { actions, dropdown } = fixture();
     actions.showContextMenu(0, 0, { relPath: "index.html", isDir: false });
 
@@ -665,11 +665,11 @@ describe("Feature: FolderActions", () => {
     ));
   });
 
-  // Given: `.html`用コマンド実行が`command failed`でreject
+  // Given: 共通コマンド実行が`command failed`でreject
   // When: 登録コマンドをクリック
   // Then: `showError("登録コマンドを実行できませんでした", Error)`
   it("Scenario: 登録コマンドの実行失敗を表示する", async () => {
-    addRegisteredCommand({ extension: ".html", label: "Chrome", prefix: "", command: "chrome {file}" });
+    addRegisteredCommand({ label: "Chrome", prefix: "", command: "chrome {file}" });
     vi.mocked(api.runExternalCommand).mockRejectedValueOnce(new Error("command failed"));
     const { actions, dropdown } = fixture();
     actions.showContextMenu(0, 0, { relPath: "index.html", isDir: false });
@@ -686,8 +686,8 @@ describe("Feature: FolderActions", () => {
 
   // Given: promptが表示名`Chrome`と統合済みのコマンド`chrome {file}`を返す
   // When: `index.HTML`でコマンド登録
-  // Then: 拡張子`.html`で登録し、表示名とコマンドの2項目を表示する
-  it("Scenario: 登録時は選択ファイルの拡張子をコマンドへ紐付ける", async () => {
+  // Then: 拡張子を持たない共通コマンドとして、表示名とコマンドの2項目を表示する
+  it("Scenario: 登録時は選択ファイルの拡張子をコマンドへ紐付けない", async () => {
     vi.mocked(promptFields).mockResolvedValueOnce(["Chrome", "chrome {file}"]);
     const { actions, dropdown } = fixture();
     actions.showContextMenu(0, 0, { relPath: "index.HTML", isDir: false });
@@ -696,12 +696,12 @@ describe("Feature: FolderActions", () => {
       .find((item) => item.textContent === "コマンドを登録...")!.click();
 
     expect(vi.mocked(promptFields).mock.calls[0][1].map((field) => field.label)).toEqual([
-      "表示名（.html用）",
+      "表示名",
       "コマンド（{file}=対象ファイル、引用符不要）",
     ]);
 
-    await vi.waitFor(() => expect(commandsForPath("index.html")).toEqual([
-      { extension: ".html", label: "Chrome", prefix: "", command: "chrome {file}" },
+    await vi.waitFor(() => expect(commandsForKind()).toEqual([
+      { label: "Chrome", prefix: "", command: "chrome {file}" },
     ]));
   });
 
@@ -709,7 +709,7 @@ describe("Feature: FolderActions", () => {
   // When: gearで更新後、再表示して×で削除
   // Then: Chrome Devの内容へ更新後、一覧が空になる
   it("Scenario: 登録コマンドを歯車から編集し、×から削除できる", async () => {
-    addRegisteredCommand({ extension: ".html", label: "Chrome", prefix: "", command: "chrome {file}" });
+    addRegisteredCommand({ label: "Chrome", prefix: "", command: "chrome {file}" });
     const { actions, dropdown } = fixture();
     actions.showContextMenu(0, 0, { relPath: "index.html", isDir: false });
     [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
@@ -717,15 +717,15 @@ describe("Feature: FolderActions", () => {
 
     vi.mocked(promptFields).mockResolvedValueOnce(["Chrome Dev", "cmd.exe /D /C chrome --incognito {file}"]);
     dropdown.querySelectorAll<HTMLButtonElement>(".dd-submenu .dd-trailing")[0].click();
-    await vi.waitFor(() => expect(commandsForPath("index.html")).toEqual([
-      { extension: ".html", label: "Chrome Dev", prefix: "", command: "cmd.exe /D /C chrome --incognito {file}" },
+    await vi.waitFor(() => expect(commandsForKind()).toEqual([
+      { label: "Chrome Dev", prefix: "", command: "cmd.exe /D /C chrome --incognito {file}" },
     ]));
 
     actions.showContextMenu(0, 0, { relPath: "index.html", isDir: false });
     [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
       .find((item) => item.textContent === "登録コマンド ▸")!.click();
     dropdown.querySelectorAll<HTMLButtonElement>(".dd-submenu .dd-trailing")[1].click();
-    expect(commandsForPath("index.html")).toEqual([]);
+    expect(commandsForKind()).toEqual([]);
   });
 
   // Given: Explorer起動spy、対象`memo.txt`

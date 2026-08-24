@@ -9,23 +9,13 @@ import { initSettings } from "./settings";
 import {
   addRegisteredCommand,
   commandLineForValue,
-  commandsForPath,
-  extensionOf,
+  commandsForKind,
   removeRegisteredCommand,
   updateRegisteredCommand,
 } from "./registered-commands";
 
 describe("Feature: registered commands", () => {
   beforeEach(() => initSettings());
-
-  // Given: `sub/page.HTML`、README、`.config`を入力
-  // When: `extensionOf`を呼ぶ
-  // Then: `.html`、空文字、空文字
-  it("Scenario: ファイル名から拡張子を大文字小文字に関係なく取り出す", () => {
-    expect(extensionOf("sub/page.HTML")).toBe(".html");
-    expect(extensionOf("README")).toBe("");
-    expect(extensionOf("sub/.config")).toBe("");
-  });
 
   // Given: prefixと`{file}`付きcommandを用意
   // When: `commandLineForValue`を呼ぶ
@@ -96,54 +86,52 @@ describe("Feature: registered commands", () => {
     );
   });
 
-  // Given: `.HTML`/`html`の同一Chromeと`.txt`メモ帳を登録
-  // When: html/txtのcommand一覧を取得
-  // Then: 重複なしで各拡張子のcommandだけ返す
-  it("Scenario: 同じ拡張子のコマンドだけを返し、重複登録しない", () => {
-    addRegisteredCommand({ extension: ".HTML", label: "Chrome", prefix: "", command: "chrome {file}" });
-    addRegisteredCommand({ extension: "html", label: "Chrome", prefix: "", command: "chrome {file}" });
-    addRegisteredCommand({ extension: ".txt", label: "メモ帳", prefix: "", command: "notepad {file}" });
+  // Given: HTML用とtxt用の登録コマンドを用意し、HTML用を同じ内容で重複登録する
+  // When: 異なる拡張子のpathからcommand一覧を取得
+  // Then: 拡張子に関係なく同じ一覧を返し、同じ内容は1件にまとめる
+  it("Scenario: 登録コマンドを全拡張子のファイルで共通利用する", () => {
+    addRegisteredCommand({ label: "Chrome", prefix: "", command: "chrome {file}" });
+    addRegisteredCommand({ label: "Chrome", prefix: "", command: "chrome {file}" });
+    addRegisteredCommand({ label: "メモ帳", prefix: "", command: "notepad {file}" });
 
-    expect(commandsForPath("page.html")).toEqual([
-      { extension: ".html", label: "Chrome", prefix: "", command: "chrome {file}" },
-    ]);
-    expect(commandsForPath("page.txt")).toEqual([
-      { extension: ".txt", label: "メモ帳", prefix: "", command: "notepad {file}" },
-    ]);
+    const expected = [
+      { label: "Chrome", prefix: "", command: "chrome {file}" },
+      { label: "メモ帳", prefix: "", command: "notepad {file}" },
+    ];
+    expect(commandsForKind()).toEqual(expected);
   });
 
-  // Given: 同じ`.html`にfile用とstring用を登録
+  // Given: file用とstring用のcommandを登録
   // When: kindなし/kind=`string`で取得
   // Then: それぞれ対応する1件だけ返す
-  it("Scenario: ファイル用と文字列用の登録コマンドを混同しない", () => {
-    addRegisteredCommand({ extension: ".html", label: "Chrome", prefix: "", command: "chrome {file}" });
+  it("Scenario: ファイル用と文字列用の共通登録コマンドを混同しない", () => {
+    addRegisteredCommand({ label: "Chrome", prefix: "", command: "chrome {file}" });
     addRegisteredCommand({
-      extension: ".html",
       label: "Browser",
       prefix: "",
       command: "open {string}",
       valueKind: "string",
     });
 
-    expect(commandsForPath("page.html")).toEqual([
-      { extension: ".html", label: "Chrome", prefix: "", command: "chrome {file}" },
+    expect(commandsForKind()).toEqual([
+      { label: "Chrome", prefix: "", command: "chrome {file}" },
     ]);
-    expect(commandsForPath("page.html", "string")).toEqual([
-      { extension: ".html", label: "Browser", prefix: "", command: "open {string}", valueKind: "string" },
+    expect(commandsForKind("string")).toEqual([
+      { label: "Browser", prefix: "", command: "open {string}", valueKind: "string" },
     ]);
   });
 
-  // Given: `.html`にChromeと別アプリを登録
+  // Given: Chromeと別アプリを登録
   // When: Chromeをremove
   // Then: 別アプリだけ残る
   it("Scenario: 登録解除は対象の1件だけを削除する", () => {
-    addRegisteredCommand({ extension: ".html", label: "Chrome", prefix: "", command: "chrome {file}" });
-    addRegisteredCommand({ extension: ".html", label: "別アプリ", prefix: "", command: "other {file}" });
+    addRegisteredCommand({ label: "Chrome", prefix: "", command: "chrome {file}" });
+    addRegisteredCommand({ label: "別アプリ", prefix: "", command: "other {file}" });
 
-    removeRegisteredCommand(commandsForPath("page.html")[0]);
+    removeRegisteredCommand(commandsForKind()[0]);
 
-    expect(commandsForPath("page.html")).toEqual([
-      { extension: ".html", label: "別アプリ", prefix: "", command: "other {file}" },
+    expect(commandsForKind()).toEqual([
+      { label: "別アプリ", prefix: "", command: "other {file}" },
     ]);
   });
 
@@ -151,13 +139,13 @@ describe("Feature: registered commands", () => {
   // When: label/prefix/commandを更新
   // Then: 更新後のChrome Dev定義を返す
   it("Scenario: 登録コマンドの表示名と本文を更新する", () => {
-    addRegisteredCommand({ extension: ".html", label: "Chrome", prefix: "", command: "chrome {file}" });
-    const command = commandsForPath("page.html")[0];
+    addRegisteredCommand({ label: "Chrome", prefix: "", command: "chrome {file}" });
+    const command = commandsForKind()[0];
 
     updateRegisteredCommand(command, { label: "Chrome Dev", prefix: "cmd.exe /D /C", command: "chrome --incognito {file}" });
 
-    expect(commandsForPath("page.html")).toEqual([
-      { extension: ".html", label: "Chrome Dev", prefix: "cmd.exe /D /C", command: "chrome --incognito {file}" },
+    expect(commandsForKind()).toEqual([
+      { label: "Chrome Dev", prefix: "cmd.exe /D /C", command: "chrome --incognito {file}" },
     ]);
   });
 });

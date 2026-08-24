@@ -68,6 +68,11 @@ fn decode_entry_text(name: &str, bytes: &[u8]) -> (String, bool) {
     let decoded = decode_entry(bytes);
     let is_binary = crate::document_source::is_binary_image_path(Path::new(name)) || decoded.is_none();
     let text = decoded.unwrap_or_else(|| crate::fileio::decode(bytes).0);
+    let text = if is_binary {
+        crate::fileio::sanitize_binary_text(text)
+    } else {
+        text
+    };
     (text.replace("\r\n", "\n").replace('\r', "\n"), is_binary)
 }
 
@@ -170,7 +175,13 @@ fn decode_cd_entry(bytes: &[u8], e: &CdEntry) -> Option<(String, bool)> {
     Some(if e.flags & 1 != 0 {
         ("(暗号化エントリ)".to_string(), false)
     } else if e.uncomp > MAX_ENTRY {
-        (format!("(サイズ超過のためスキップ: {} bytes)", e.uncomp), false)
+        (
+            format!(
+                "(サイズ超過のためスキップ: {})",
+                crate::protocol::format_byte_size(e.uncomp as u64)
+            ),
+            false,
+        )
     } else {
         let raw = match e.method {
             0 => Some(data.to_vec()),
@@ -206,7 +217,10 @@ pub fn parse(bytes: &[u8]) -> Option<Vec<Entry>> {
         if total_out > MAX_TOTAL {
             entries.push(Entry {
                 name: e.name.clone(),
-                text: format!("(サイズ超過のためスキップ: {} bytes)", e.uncomp),
+                text: format!(
+                    "(サイズ超過のためスキップ: {})",
+                    crate::protocol::format_byte_size(e.uncomp as u64)
+                ),
                 is_binary: false,
             });
             continue;
@@ -300,16 +314,16 @@ mod tests {
     }
 
     #[test]
-    // Feature: アーカイブ内バイナリの生表示
+    // Feature: アーカイブ内バイナリの空白化表示
     // Scenario: NULを含むエントリを展開する
-    // Given: バイナリデータを含むZIPがある
+    // Given: 置換文字が発生するバイナリデータを含むZIPがある
     // When: エントリを解析する
-    // Then: 説明文に置換せず、バイナリとして印を付けた内容を返す
-    fn binary_entry_shows_raw_content_and_is_binary() {
-        let z = build_stored_zip(&[("a.bin", &[0u8, 1, 2, 255])]);
+    // Then: 制御文字を空白化し、バイナリとして印を付けた内容を返す
+    fn binary_entry_shows_sanitized_content_and_is_binary() {
+        let z = build_stored_zip(&[("a.bin", &[0u8, 1, 2, 0x81])]);
         let r = parse(&z).unwrap();
         assert!(r[0].is_binary);
-        assert!(r[0].text.contains('\0'));
+        assert_eq!(r[0].text, "    ");
     }
 
     #[test]

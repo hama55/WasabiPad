@@ -15,7 +15,7 @@ import {
   createRegisteredCommandMenu,
   type RegisteredCommandMenuServices,
 } from "./registered-command-menu";
-import { commandsForPath } from "./registered-commands";
+import { commandsForKind } from "./registered-commands";
 import { initSettings } from "./settings";
 import { MENU_ICON } from "./menu-icons";
 
@@ -38,6 +38,7 @@ describe("Feature: shared registered-command context menu", () => {
     const promptFields = vi.fn(async (...args: Parameters<typeof promptFieldsImpl>) => {
       const fields = args[1];
       expect(fields).toHaveLength(2);
+      expect(fields[0].label).toBe("表示名");
       expect(fields[1].label).toBe(
         "コマンド（{string}=対象文字列、{string_one_line}=改行をスペース化、{copy_string_clipboard}=クリップボードへコピー、{string_in_url}=URL用エンコード文字列、引用符不要）",
       );
@@ -60,8 +61,8 @@ describe("Feature: shared registered-command context menu", () => {
     expect(dropdown.querySelector(`.dd-item .${MENU_ICON.command}`)).not.toBeNull();
     [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
       .find((item) => item.textContent === "コマンドを登録...")!.click();
-    await vi.waitFor(() => expect(commandsForPath(target.path, "string")).toHaveLength(1));
-    expect(commandsForPath(target.path, "string")[0]).toMatchObject({ prefix: "", command: "open {string_in_url}" });
+    await vi.waitFor(() => expect(commandsForKind("string")).toHaveLength(1));
+    expect(commandsForKind("string")[0]).toMatchObject({ prefix: "", command: "open {string_in_url}" });
 
     selected = "line 1 & line 2\nnext";
     showMenu(0, 0, [createRegisteredCommandMenu(target, services)]);
@@ -99,7 +100,7 @@ describe("Feature: shared registered-command context menu", () => {
 
     showMenu(0, 0, [createRegisteredCommandMenu(target, services)]);
     dropdown.querySelector<HTMLElement>(".dd-item")!.click();
-    await vi.waitFor(() => expect(commandsForPath(target.path, "string")).toHaveLength(1));
+    await vi.waitFor(() => expect(commandsForKind("string")).toHaveLength(1));
 
     showMenu(0, 0, [createRegisteredCommandMenu(target, services)]);
     dropdown.querySelector<HTMLElement>(".dd-item")!.click();

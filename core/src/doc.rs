@@ -997,8 +997,8 @@ impl Doc {
             Err(error) if error.kind() == io::ErrorKind::FileTooLarge => {
                 return Ok((
                     format!(
-                        "(サイズ超過のためスキップ: {} bytes超)",
-                        crate::ziptext::MAX_ENTRY
+                        "(サイズ超過のためスキップ: {}超)",
+                        crate::protocol::format_byte_size(crate::ziptext::MAX_ENTRY as u64)
                     ),
                     None,
                     false,
@@ -1016,7 +1016,11 @@ impl Doc {
         }
         let is_binary = fileio::is_binary_bytes(&bytes);
         if is_binary {
-            return Ok((fileio::decode(&bytes).0, None, true));
+            return Ok((
+                fileio::sanitize_binary_text(fileio::decode(&bytes).0),
+                None,
+                true,
+            ));
         }
         let (text, enc) = fileio::decode(&bytes);
         let eol = fileio::detect_eol(&text);
@@ -2488,8 +2492,8 @@ mod tests {
         assert_eq!(
             d.lines(0, 1),
             vec![format!(
-                "(サイズ超過のためスキップ: {} bytes超)",
-                crate::ziptext::MAX_ENTRY
+                "(サイズ超過のためスキップ: {}超)",
+                crate::protocol::format_byte_size(crate::ziptext::MAX_ENTRY as u64)
             )]
         );
     }
@@ -2700,9 +2704,9 @@ mod tests {
     // Scenario: 7z内のバイナリエントリを開く
     // Given: NULを含むバイナリエントリがある
     // When: エントリを選択する
-    // Then: 生内容を表示し、編集・保存できない
+    // Then: 制御文字を空白化した内容を表示し、編集・保存できない
     #[test]
-    fn sevenz_binary_entry_shows_raw_content_and_stays_view_only() {
+    fn sevenz_binary_entry_shows_sanitized_content_and_stays_view_only() {
         if !crate::sevenz::available() {
             return;
         }
@@ -2717,7 +2721,7 @@ mod tests {
         let info = d.select_entry("a.bin").unwrap().unwrap();
         assert!(info.view_only);
         assert!(info.is_binary);
-        assert!(d.lines(0, 1)[0].contains('\0'));
+        assert_eq!(d.lines(0, 1), vec!["    "]);
         assert!(d
             .edit(pos(0, 0), pos(0, 0), pos(0, 0), "X", false)
             .is_none());
@@ -3460,7 +3464,7 @@ mod tests {
     // When: そのファイルを文書として開く
     // Then: 内容を表示しつつ、編集・保存はできない
     #[test]
-    fn nul_binary_file_shows_raw_content_and_is_view_only() {
+    fn nul_binary_file_shows_sanitized_content_and_is_view_only() {
         let root = std::env::temp_dir().join(format!("wasabipad_binary_doc_{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join("payload.bin");
@@ -3470,7 +3474,7 @@ mod tests {
         let info = d.info(path.to_string_lossy().into_owned()).unwrap();
         assert!(info.view_only);
         assert!(info.is_binary);
-        assert_eq!(d.lines(0, 2), vec!["A\0B", ""]);
+        assert_eq!(d.lines(0, 2), vec!["A B", ""]);
         assert!(d.edit(p(0, 0), p(0, 0), p(0, 0), "X", false).is_none());
         assert_eq!(
             d.save(&path, Encoding::Utf8 { bom: false }, Eol::Lf)
@@ -3487,9 +3491,9 @@ mod tests {
     // Scenario: UTF-8とShift-JISのどちらとしても不正なデータを開く
     // Given: NULを含まないバイト列`0x81`のファイルがある
     // When: 文書として開く
-    // Then: 文字化けした内容を表示しつつ、バイナリとして編集・保存を拒否する
+    // Then: 制御文字を空白化した内容を表示しつつ、バイナリとして編集・保存を拒否する
     #[test]
-    fn invalid_encoded_binary_shows_lossy_content_and_is_view_only() {
+    fn invalid_encoded_binary_shows_sanitized_content_and_is_view_only() {
         let root = std::env::temp_dir().join(format!(
             "wasabipad_invalid_binary_doc_{}",
             std::process::id()
@@ -3502,7 +3506,7 @@ mod tests {
         let info = d.info(path.to_string_lossy().into_owned()).unwrap();
         assert!(info.view_only);
         assert!(info.is_binary);
-        assert!(!d.lines(0, 1)[0].is_empty());
+        assert_eq!(d.lines(0, 1), vec![" "]);
         assert!(d.edit(p(0, 0), p(0, 0), p(0, 0), "X", false).is_none());
         assert_eq!(
             d.save(&path, Encoding::Utf8 { bom: false }, Eol::Lf)
@@ -4181,9 +4185,9 @@ mod tests {
     // Scenario: NULを含むZIPエントリを選択する
     // Given: `payload.bin`にNULを含むZIPファイル
     // When: エントリを開く
-    // Then: 生内容を表示し、編集・保存を拒否する
+    // Then: 制御文字を空白化した内容を表示し、編集・保存を拒否する
     #[test]
-    fn zip_binary_entry_shows_raw_content_and_is_view_only() {
+    fn zip_binary_entry_shows_sanitized_content_and_is_view_only() {
         let root = std::env::temp_dir().join(format!(
             "wasabipad_zip_binary_doc_{}",
             std::process::id()
@@ -4201,7 +4205,7 @@ mod tests {
 
         assert!(info.view_only);
         assert!(info.is_binary);
-        assert_eq!(d.lines(0, 2), vec!["A\0B", ""]);
+        assert_eq!(d.lines(0, 2), vec!["A B", ""]);
         assert!(d.edit(p(0, 0), p(0, 0), p(0, 0), "X", false).is_none());
         assert_eq!(
             d.save(&zpath, Encoding::Utf8 { bom: false }, Eol::Lf)

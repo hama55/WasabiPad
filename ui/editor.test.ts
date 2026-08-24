@@ -1519,6 +1519,23 @@ describe("Feature: VirtualEditor", () => {
     await vi.waitFor(() => expect(host.querySelectorAll(".ve-find-hit")).toHaveLength(3));
   });
 
+  // Feature: 検索窓を開いた直後の一致強調
+  // Scenario: 選択文字列を初期検索語として検索窓を開く
+  // Given: 可視範囲にneedleが3個あり、先頭のneedleを選択している
+  // When: 検索窓を表示する
+  // Then: 入力イベントや▼操作を待たず3個すべての強調要素を描画する
+  it("Scenario: 検索窓を開いた瞬間に初期検索語を強調する", async () => {
+    const { editor, host } = mount("needle x needle\nnone\nneedle");
+    editor.open(3, false);
+    await settle();
+    await editor.selectRange(0, 0, 6);
+
+    editor.openSearch();
+
+    expect(host.querySelector<HTMLInputElement>(".ve-find-in")?.value).toBe("needle");
+    await vi.waitFor(() => expect(host.querySelectorAll(".ve-find-hit")).toHaveLength(3));
+  });
+
   // Feature: フォルダ検索結果を開いたエディタの一致強調
   // Scenario: フォルダ検索条件で可視範囲の全一致を強調する
   // Given: 可視範囲に正規表現の一致が3個あり、検索ダイアログは閉じている

@@ -3,13 +3,14 @@ import { APP_NAME, formatByteSize, formatModifiedAt, formatWindowTitle } from ".
 import { initialSession } from "./session";
 
 describe("Feature: display formatting", () => {
-  // Given: byte sizeが1023、1024、1048576
+  // Given: byte sizeが1023、1024、1048576、1073741824
   // When: `formatByteSize`
-  // Then: `"1023 B"`、`"1.0 KB"`、`"1.0 MB"`
+  // Then: `"1023 B"`、`"1.0 kB"`、`"1.0 MB"`、`"1.0 GB"`
   it("Scenario: formats byte boundaries", () => {
     expect(formatByteSize(1023)).toBe("1023 B");
-    expect(formatByteSize(1024)).toBe("1.0 KB");
+    expect(formatByteSize(1024)).toBe("1.0 kB");
     expect(formatByteSize(1024 * 1024)).toBe("1.0 MB");
+    expect(formatByteSize(1024 * 1024 * 1024)).toBe("1.0 GB");
   });
 
   // Given: initialSession

@@ -39,3 +39,19 @@ pub(crate) fn eol_label(key: &str) -> &'static str {
         _ => "",
     }
 }
+
+pub(crate) const BYTE_SIZE_BASE: u64 = 1024;
+pub(crate) const BYTE_SIZE_UNITS: [&str; 5] = ["B","kB","MB","GB","TB"];
+
+pub(crate) fn format_byte_size(bytes: u64) -> String {
+    if bytes < BYTE_SIZE_BASE {
+        return format!("{bytes} {}", BYTE_SIZE_UNITS[0]);
+    }
+    let mut unit_index = 1usize;
+    let mut value = bytes as f64 / BYTE_SIZE_BASE as f64;
+    while value >= BYTE_SIZE_BASE as f64 && unit_index < 4 {
+        value /= BYTE_SIZE_BASE as f64;
+        unit_index += 1;
+    }
+    format!("{value:.1} {}", BYTE_SIZE_UNITS[unit_index])
+}

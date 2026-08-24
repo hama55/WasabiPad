@@ -61,3 +61,15 @@ describe("Feature: pane toggle placement", () => {
     expect(style).toMatch(/\.ws-replace-row\s*\{[^}]*padding-left:\s*var\(--ws-input-indent\);/s);
   });
 });
+
+describe("Feature: file tree trailing padding", () => {
+  // Given: ファイルツリーの行高を22pxとして表示規則を読み込む
+  // When: ファイルツリー末尾の空白領域の高さを検査する
+  // Then: 3行分の66pxをスクロール対象として確保する
+  it("Scenario: ファイルツリー末尾に3行分の高さを確保する", () => {
+    expect(style).toMatch(/\.fv-tree\s*\{[^}]*--fv-row-height:\s*22px;/s);
+    expect(style).toMatch(/\.fv-row\s*\{[^}]*height:\s*var\(--fv-row-height\);/s);
+    expect(style).toMatch(/\.fv-tree-bottom-padding\s*\{[^}]*height:\s*calc\(var\(--fv-row-height\)\s*\*\s*3\);/s);
+    expect(style).toMatch(/\.fv-tree-bottom-padding\s*\{[^}]*flex:\s*none;/s);
+  });
+});

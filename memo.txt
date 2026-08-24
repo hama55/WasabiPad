@@ -1,3 +1,0 @@
-# 便利なコマンド登録例:
-## Google翻訳呼び出し
-{copy_string_clipboard} powershell -windowstyle hidden -command  Start-Process 'https://translate.google.com/?op=translate^&sl=en^&tl=ja'; Start-Sleep -s 2; (New-Object -ComObject WScript.Shell).SendKeys('^v')"

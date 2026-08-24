@@ -28,12 +28,12 @@ describe("Feature: viewer formats", () => {
   // Scenario: 未登録拡張子のテキストだけMarkdownとして開く
   // Given: CSV、GIF、通常テキスト、未知バイナリの各文書
   // When: プレビューボタン用の表示形式を判定する
-  // Then: 登録形式を優先し、通常テキストだけMarkdown、未知バイナリは非対応にする
+  // Then: 登録形式を優先し、未登録拡張子はMarkdownで手動表示できる
   it("Scenario: 未登録拡張子のテキストをMarkdownビューで開く", () => {
-    expect(viewerFormatForPreviewToggle("data.csv", false)).toBe("csv");
-    expect(viewerFormatForPreviewToggle("animation.gif", true)).toBe("image");
-    expect(viewerFormatForPreviewToggle("notes.txt", false)).toBe("markdown");
-    expect(viewerFormatForPreviewToggle("payload.bin", true)).toBeNull();
+    expect(viewerFormatForPreviewToggle("data.csv")).toBe("csv");
+    expect(viewerFormatForPreviewToggle("animation.gif")).toBe("image");
+    expect(viewerFormatForPreviewToggle("notes.txt")).toBe("markdown");
+    expect(viewerFormatForPreviewToggle("payload.bin")).toBe("markdown");
   });
 
   // Given: markdown/png/pdf/未指定のデータ

@@ -3,6 +3,7 @@ import type { DocumentSession } from "./session";
 import { displayName } from "./session";
 import { APP_NAME } from "./app-config";
 import { VIEWER_FORMATS, viewerFormatSpec } from "./viewer-formats";
+import { formatByteSize as formatByteSizeFromProtocol } from "./generated/Protocol";
 export { APP_NAME };
 
 // ウィンドウタイトルの体裁はここだけで決める (メモ本体・ビューで共通)。
@@ -13,16 +14,7 @@ export const VIEWER_FORMAT_LABELS: Record<ViewerFormat, string> = Object.fromEnt
 
 export const viewerFormatIcon = (format: ViewerFormat) => viewerFormatSpec(format).iconClass;
 
-export function formatByteSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  const units = ["KB", "MB", "GB", "TB"];
-  let value = bytes / 1024;
-  for (const unit of units) {
-    if (value < 1024 || unit === units[units.length - 1]) return `${value.toFixed(1)} ${unit}`;
-    value /= 1024;
-  }
-  return `${value.toFixed(1)} TB`;
-}
+export const formatByteSize = formatByteSizeFromProtocol;
 
 export const formatLineCount = (count: number) => `${count.toLocaleString("ja-JP")} 行`;
 export const formatCursor = (line: number, column: number) => `${line}行 ${column}列`;

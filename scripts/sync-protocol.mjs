@@ -4,6 +4,14 @@ import { resolve } from "node:path";
 const root = resolve(import.meta.dirname, "..");
 const source = JSON.parse(readFileSync(resolve(root, "shared/protocol.json"), "utf8"));
 
+const byteSize = source.byteSize;
+if (!Number.isInteger(byteSize?.base) || byteSize.base < 2
+  || !Number.isInteger(byteSize?.fractionDigits) || byteSize.fractionDigits < 0
+  || !Array.isArray(byteSize?.units) || byteSize.units.length < 2
+  || byteSize.units.some((unit) => typeof unit !== "string" || unit.length === 0)) {
+  throw new Error("byteSize設定が不正です");
+}
+
 const mimeOwners = new Map();
 for (const format of source.imageFormats) {
   const canonical = format.canonicalExtension ?? format.extensions[0];
@@ -53,6 +61,67 @@ function rustLabelFunction(name, labels) {
   ].join("\n");
 }
 
+// The algorithm order lives in one template; language entries only provide syntax fragments.
+const byteSizeTemplate = [
+  "{{signature}}",
+  "{{returnSmall}}",
+  "{{initialize}}",
+  "{{scale}}",
+  "{{format}}",
+  "}",
+].join("\n");
+const byteSizeRenderers = {
+  typescript: {
+    signature: "export function formatByteSize(bytes: number): string {",
+    returnSmall: "  if (bytes < BYTE_SIZE_BASE) return `${bytes} ${BYTE_SIZE_UNITS[0]}`;",
+    initialize: [
+      "  let unitIndex = 1;",
+      "  let value = bytes / BYTE_SIZE_BASE;",
+    ],
+    scale: [
+      `  while (value >= BYTE_SIZE_BASE && unitIndex < ${byteSize.units.length - 1}) {`,
+      "    value /= BYTE_SIZE_BASE;",
+      "    unitIndex += 1;",
+      "  }",
+    ],
+    format: "  return `${value.toFixed(BYTE_SIZE_FRACTION_DIGITS)} ${BYTE_SIZE_UNITS[unitIndex]}`;",
+  },
+  rust: {
+    signature: "pub(crate) fn format_byte_size(bytes: u64) -> String {",
+    returnSmall: "    if bytes < BYTE_SIZE_BASE {",
+    initialize: [
+      "        return format!(\"{bytes} {}\", BYTE_SIZE_UNITS[0]);",
+      "    }",
+      "    let mut unit_index = 1usize;",
+      "    let mut value = bytes as f64 / BYTE_SIZE_BASE as f64;",
+    ],
+    scale: [
+      `    while value >= BYTE_SIZE_BASE as f64 && unit_index < ${byteSize.units.length - 1} {`,
+      "        value /= BYTE_SIZE_BASE as f64;",
+      "        unit_index += 1;",
+      "    }",
+    ],
+    format: `    format!(\"{value:.${byteSize.fractionDigits}} {}\", BYTE_SIZE_UNITS[unit_index])`,
+  },
+};
+
+function renderByteSizeFunction(language) {
+  const renderer = byteSizeRenderers[language];
+  return byteSizeTemplate.replace(/\{\{(\w+)\}\}/g, (_, operation) => {
+    const lines = renderer[operation];
+    return Array.isArray(lines) ? lines.join("\n") : lines;
+  });
+}
+
+function rustByteSizeFunction() {
+  return [
+    `pub(crate) const BYTE_SIZE_BASE: u64 = ${byteSize.base};`,
+    `pub(crate) const BYTE_SIZE_UNITS: [&str; ${byteSize.units.length}] = ${JSON.stringify(byteSize.units)};`,
+    "",
+    renderByteSizeFunction("rust"),
+  ].join("\n");
+}
+
 const ts = [
   "// This file was generated from shared/protocol.json by scripts/sync-protocol.mjs.",
   `export const ARCHIVE_ENTRY_SEPARATOR = ${JSON.stringify(source.archiveEntrySeparator)} as const;`,
@@ -60,6 +129,12 @@ const ts = [
   `export const IMAGE_MIME_TYPES = ${JSON.stringify(imageMimeTypes, null, 2)} as const;`,
   `export const ENCODING_LABELS = ${JSON.stringify(source.encodingLabels, null, 2)} as const;`,
   `export const EOL_LABELS = ${JSON.stringify(source.eolLabels, null, 2)} as const;`,
+  "",
+  `export const BYTE_SIZE_BASE = ${byteSize.base} as const;`,
+  `export const BYTE_SIZE_FRACTION_DIGITS = ${byteSize.fractionDigits} as const;`,
+  `export const BYTE_SIZE_UNITS = ${JSON.stringify(byteSize.units)} as const;`,
+  "",
+  renderByteSizeFunction("typescript"),
   "",
 ].join("\n");
 
@@ -82,6 +157,8 @@ const rust = [
   rustLabelFunction("encoding_label", source.encodingLabels),
   "",
   rustLabelFunction("eol_label", source.eolLabels),
+  "",
+  rustByteSizeFunction(),
   "",
 ].join("\n");
 

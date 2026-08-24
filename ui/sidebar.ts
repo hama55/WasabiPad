@@ -139,12 +139,15 @@ export class Sidebar {
     }, true);
     const toolbar = document.createElement("div");
     toolbar.className = "fv-toolbar";
-    const fold = iconButton("fv-fold", "⊟", "すべて折りたたむ");
-    fold.addEventListener("click", () => runAsyncBoundary(
-      () => this.collapseAll(),
+    const runToolbarAction = (operation: () => void | Promise<unknown>) => runAsyncBoundary(
+      operation,
       (error) => this.reportTreeError(error),
-    ));
-    toolbar.append(fold);
+    );
+    const fold = iconButton("fv-fold", "⊟", "すべて折りたたむ");
+    fold.addEventListener("click", () => runToolbarAction(() => this.collapseAll()));
+    const unfold = iconButton("fv-unfold", "⊞", "すべて開く");
+    unfold.addEventListener("click", () => runToolbarAction(() => this.expandAllFolder("")));
+    toolbar.append(fold, unfold);
     this.createActions = document.createElement("div");
     this.createActions.className = "fv-create-actions";
     const createFolder = document.createElement("button");
@@ -168,7 +171,8 @@ export class Sidebar {
     this.createActions.append(createFolder, createNote);
     this.host.append(toolbar, this.panel.bar, this.tree);
     this.host.addEventListener("contextmenu", (e) => {
-      if (e.target !== this.host && e.target !== this.tree) return; // 個々の行上は行側のリスナーに任せる
+      if (e.target !== this.host && e.target !== this.tree
+        && !(e.target instanceof Element && e.target.closest(".fv-tree-bottom-padding"))) return;
       e.preventDefault();
       this.onContextMenu(e.clientX, e.clientY, null, []);
     });
@@ -436,11 +440,37 @@ export class Sidebar {
       this.panel.collapseAllGroups();
       return;
     }
+    const previousSelection = this.sel;
     this.selectionRequest++;
     this.rows.forEach((row) => {
       if (isExpandable(row)) row.expanded = false;
     });
+    const nextSelection = this.nearestVisibleAncestor(previousSelection);
+    const selectionChanged = nextSelection !== previousSelection;
+    if (selectionChanged) {
+      this.sel = nextSelection;
+      this.selected = nextSelection ? new Set([nextSelection]) : new Set();
+      this.selectionAnchor = nextSelection;
+    }
     this.render();
+    if (selectionChanged) this.focusTree();
+  }
+
+  private nearestVisibleAncestor(relPath: string | null): string | null {
+    if (!relPath) return relPath;
+    const selectedIndex = this.rows.findIndex((row) => row.relPath === relPath);
+    if (selectedIndex < 0) return relPath;
+    const visible = new Set(this.visible());
+    if (visible.has(selectedIndex)) return relPath;
+    const selected = this.rows[selectedIndex];
+    for (let index = selectedIndex - 1; index >= 0; index--) {
+      if (!visible.has(index)) continue;
+      const candidate = this.rows[index];
+      if (candidate.depth < selected.depth && isAncestorRelPath(candidate.relPath, selected.relPath)) {
+        return candidate.relPath;
+      }
+    }
+    return null;
   }
 
   private visible(): number[] {
@@ -568,26 +598,17 @@ export class Sidebar {
       return;
     }
     if (this.panel.showing || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
+    // folderTree() と同じ表示行を使う。折りたたみ済みフォルダの子行はここに入らない。
     const visible = this.visible();
     if (!visible.length) return;
     event.preventDefault();
+    const direction = event.key === "ArrowUp" ? -1 : 1;
     const current = this.sel === null ? -1 : visible.findIndex((index) => this.rows[index].relPath === this.sel);
-    const next = event.key === "ArrowUp"
-      ? visible[Math.max(0, current < 0 ? visible.length - 1 : current - 1)]
-      : visible[Math.min(visible.length - 1, current + 1)];
+    const next = nextKeyboardFileIndex(visible, this.rows, current, direction);
+    if (next === null) return;
     const row = this.rows[next];
     if (row.relPath === this.sel) return;
-    if (row.kind === "file" || row.kind === "archiveEntry") this.openFileRow(row, true);
-    else {
-      const previous = this.sel;
-      try {
-        this.sel = row.relPath;
-        this.render();
-      } catch (error) {
-        this.sel = previous;
-        void this.reportTreeError(error);
-      }
-    }
+    this.openFileRow(row, true);
     this.tree.querySelector<HTMLElement>(".fv-row.sel")?.scrollIntoView?.({ block: "nearest" });
   }
 
@@ -997,6 +1018,10 @@ export class Sidebar {
       }
       frag.appendChild(div);
     }
+    const bottomPadding = document.createElement("div");
+    bottomPadding.className = "fv-tree-bottom-padding";
+    bottomPadding.setAttribute("aria-hidden", "true");
+    frag.appendChild(bottomPadding);
     if (this.rows.some(isMovable)) {
       const rootDrop = document.createElement("div");
       rootDrop.className = "fv-root-drop";
@@ -1019,14 +1044,40 @@ function isExpandable(row: Row): boolean {
   return row.kind === "dir" || row.kind === "archive" || row.kind === "archiveDir";
 }
 
+function nextKeyboardFileIndex(
+  visible: readonly number[],
+  rows: readonly Row[],
+  current: number,
+  direction: -1 | 1,
+): number | null {
+  let cursor = current < 0 ? (direction > 0 ? -1 : visible.length) : current;
+  for (;;) {
+    cursor += direction;
+    if (cursor < 0 || cursor >= visible.length) return null;
+    const row = rows[visible[cursor]];
+    if (row.kind === "file" || row.kind === "archiveEntry") return visible[cursor];
+  }
+}
+
 function isMovable(row: Row): boolean {
   return !!row.relPath && (row.kind === "dir" || row.kind === "file" || row.kind === "archive");
 }
 
 function parentRelPath(relPath: string): string {
-  const path = relPath.replace(/\\/g, "/").replace(/\/$/, "");
+  const path = normalizeRelPath(relPath);
   const slash = path.lastIndexOf("/");
   return slash < 0 ? "" : path.slice(0, slash);
+}
+
+function isAncestorRelPath(ancestor: string, descendant: string): boolean {
+  const normalizedAncestor = normalizeRelPath(ancestor);
+  const normalizedDescendant = normalizeRelPath(descendant);
+  return normalizedDescendant.startsWith(`${normalizedAncestor}/`)
+    || normalizedDescendant.startsWith(`${normalizedAncestor}::`);
+}
+
+function normalizeRelPath(relPath: string): string {
+  return relPath.replace(/\\/g, "/").replace(/\/$/, "");
 }
 
 function fileCommandForEvent(event: KeyboardEvent): SidebarFileCommand | null {

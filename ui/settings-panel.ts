@@ -207,7 +207,7 @@ function registeredCommandsField(ports: SettingsPanelPorts): HTMLElement {
     (command) => {
       const kind = commandValueKind(command);
       return {
-        text: `${command.label} (${command.extension || "拡張子なし"}, ${kind === "file" ? "ファイル" : "文字列"})`,
+        text: `${command.label} (${kind === "file" ? "ファイル" : "文字列"})`,
         title: [command.prefix, command.command].filter(Boolean).join(" "),
         rowClass: "settings-command-row",
       };

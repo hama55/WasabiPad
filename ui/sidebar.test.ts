@@ -55,6 +55,45 @@ describe("Feature: Sidebar", () => {
     document.body.replaceChildren();
   });
 
+  // Feature: ファイルツリー末尾のスクロール余白
+  // Scenario: ファイルツリーの最後までスクロールしても3行分の空白を確保する
+  // Given: ファイルツリーにファイルを表示している
+  // When: ツリーの表示内容を描画する
+  // Then: 操作対象外の空白領域を末尾に置く
+  it("Scenario: ファイルツリー末尾に3行分の非操作空白を置く", () => {
+    const { host, sidebar } = mount();
+    sidebar.setEntries([{ name: "memo.txt", is_dir: false, is_archive: false }]);
+
+    const padding = host.querySelector<HTMLElement>(".fv-tree-bottom-padding");
+
+    expect(padding).not.toBeNull();
+    expect(padding?.textContent).toBe("");
+    expect(padding?.getAttribute("aria-hidden")).toBe("true");
+    expect(padding?.nextElementSibling?.classList.contains("fv-root-drop")).toBe(true);
+  });
+
+  // Feature: ファイルツリー空白部のコンテキストメニュー
+  // Scenario: 末尾の3行分の空白を右クリックするとルートメニューを開く
+  // Given: ファイルツリー末尾の空白領域を表示している
+  // When: 空白領域を右クリックする
+  // Then: 既定メニューを抑止し、対象なしのコンテキストメニューを通知する
+  it("Scenario: ファイルツリー末尾の空白を右クリックできる", () => {
+    const { host, ports, sidebar } = mount();
+    sidebar.setEntries([{ name: "memo.txt", is_dir: false, is_archive: false }]);
+    const padding = host.querySelector<HTMLElement>(".fv-tree-bottom-padding")!;
+    const event = new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+      clientX: 30,
+      clientY: 40,
+    });
+
+    padding.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(ports.onContextMenu).toHaveBeenCalledWith(30, 40, null, []);
+  });
+
   // Feature: ファイルツリー下部の新規作成ボタン
   // Scenario: 選択中フォルダの配下へ新規フォルダを作成する
   // Given: `docs`フォルダを含む通常ツリーを表示している
@@ -166,6 +205,59 @@ describe("Feature: Sidebar", () => {
       ["second.txt", false],
       ["first.txt", false],
     ]);
+  });
+
+  // Feature: ファイルツリーの上下キーによるファイル間移動
+  // Scenario: すべて展開済みでファイルの間にフォルダがある
+  // Given: first.txt、空のdocsフォルダ、second.txtを表示してdocsを展開している
+  // When: ツリーへフォーカスしてArrowDownを2回押す
+  // Then: フォルダを選択せずfirst.txtからsecond.txtへ移動する
+  it("Scenario: 上下キーはフォルダを飛ばして次のファイルを開く", async () => {
+    const { host, ports, sidebar } = mount();
+    sidebar.setEntries([
+      { name: "first.txt", is_dir: false, is_archive: false },
+      { name: "docs", is_dir: true, is_archive: false },
+      { name: "second.txt", is_dir: false, is_archive: false },
+    ]);
+    await sidebar.expandAllFolder("");
+
+    const tree = host.querySelector<HTMLElement>("[tabindex=\"0\"]")!;
+    tree.focus();
+    tree.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    tree.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+
+    expect(ports.onSelect.mock.calls).toEqual([
+      ["first.txt", false],
+      ["second.txt", false],
+    ]);
+    expect(host.querySelector(".fv-row.sel")?.textContent).toContain("second.txt");
+  });
+
+  // Feature: ファイルツリーの表示中ファイル間移動
+  // Scenario: 折りたたまれたフォルダの子ファイルを移動候補にしない
+  // Given: first.txt、子にhidden.txtを持つ折りたたみ済みdocs、second.txtを表示している
+  // When: first.txtを選択してArrowDownを押す
+  // Then: ファイルツリーに表示されているsecond.txtへ移動し、hidden.txtは開かない
+  it("Scenario: 上下キーは折りたたみフォルダ内の非表示ファイルを開かない", async () => {
+    const { host, ports, sidebar } = mount();
+    ports.onExpandFolder.mockResolvedValue([{ name: "hidden.txt", is_dir: false, is_archive: false }]);
+    sidebar.setEntries([
+      { name: "first.txt", is_dir: false, is_archive: false },
+      { name: "docs", is_dir: true, is_archive: false },
+      { name: "second.txt", is_dir: false, is_archive: false },
+    ]);
+    await sidebar.expandAllFolder("");
+    host.querySelector<HTMLElement>('[data-rel-path="docs"]')!.click();
+    await vi.waitFor(() => expect(host.querySelectorAll(".fv-row")).toHaveLength(3));
+    sidebar.select("first.txt");
+
+    const tree = host.querySelector<HTMLElement>("[tabindex=\"0\"]")!;
+    tree.focus();
+    tree.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+
+    expect(ports.onSelect).toHaveBeenCalledWith("second.txt", false);
+    expect(ports.onSelect).not.toHaveBeenCalledWith("hidden.txt", false);
+    expect(host.querySelector(".fv-row.sel")?.textContent).toContain("second.txt");
   });
 
   // Feature: ファイルツリーの複数選択
@@ -920,6 +1012,65 @@ describe("Feature: Sidebar", () => {
     host.querySelector<HTMLButtonElement>(".fv-fold")!.click();
     expect(host.querySelectorAll(".fv-row")).toHaveLength(1);
     expect(host.querySelector(".fv-row .fv-arrow")?.textContent).toBe("📁");
+  });
+
+  // Feature: ファイルツリー全体の折りたたみ
+  // Scenario: 選択中の表示中ファイルが折りたたみで隠れると親フォルダへフォーカスを戻す
+  // Given: dir/a.txtを開いたファイルツリーを表示している
+  // When: すべて折りたたみボタンを押す
+  // Then: エディタの選択通知は増やさず、ツリー上の選択をdirへ戻してツリーにフォーカスする
+  it("Scenario: 全折りたたみで非表示になるファイルの選択を親フォルダへ戻す", async () => {
+    const { host, ports, sidebar } = mount();
+    ports.onExpandFolder.mockResolvedValue([{ name: "a.txt", is_dir: false, is_archive: false }]);
+    sidebar.setEntries([{ name: "dir", is_dir: true, is_archive: false }]);
+
+    host.querySelector<HTMLElement>(".fv-row")!.click();
+    await vi.waitFor(() => expect(host.querySelectorAll(".fv-row")).toHaveLength(2));
+    host.querySelectorAll<HTMLElement>(".fv-row")[1].click();
+    await vi.waitFor(() => expect(ports.onSelect).toHaveBeenCalledWith("dir/a.txt", false));
+
+    const tree = host.querySelector<HTMLElement>("[tabindex=\"0\"]")!;
+    host.querySelector<HTMLButtonElement>(".fv-fold")!.click();
+
+    expect(ports.onSelect).toHaveBeenCalledTimes(1);
+    expect(host.querySelector(".fv-row.sel")?.textContent).toContain("dir");
+    expect(document.activeElement).toBe(tree);
+  });
+
+  // Feature: ファイルツリー全体の展開
+  // Scenario: 上部のすべて開くボタンで全階層を展開する
+  // Given: 複数階層の閉じたフォルダを含むファイルツリーを表示している
+  // When: すべて開くボタンを押す
+  // Then: すべて折りたたみボタンの右隣にあるボタンから全フォルダを再帰的に展開する
+  it("Scenario: 上部のすべて開くボタンでファイルツリー全体を展開する", async () => {
+    const { host, ports, sidebar } = mount();
+    ports.onExpandFolder.mockImplementation(async (relDir) => {
+      if (relDir === "dir") return [{ name: "nested", is_dir: true, is_archive: false }];
+      if (relDir === "dir/nested") return [{ name: "deep.txt", is_dir: false, is_archive: false }];
+      if (relDir === "other") return [{ name: "other.txt", is_dir: false, is_archive: false }];
+      return [];
+    });
+    sidebar.setEntries([
+      { name: "dir", is_dir: true, is_archive: false },
+      { name: "other", is_dir: true, is_archive: false },
+    ]);
+
+    expect(host.querySelectorAll(".fv-toolbar button")).toHaveLength(2);
+    const unfold = host.querySelector<HTMLButtonElement>(".fv-unfold")!;
+    expect(unfold.title).toBe("すべて開く");
+    unfold.click();
+
+    await vi.waitFor(() => expect(host.querySelectorAll(".fv-row")).toHaveLength(5));
+    expect(ports.onExpandFolder.mock.calls.map(([relDir]) => relDir)).toEqual([
+      "dir", "dir/nested", "other",
+    ]);
+    expect([...host.querySelectorAll<HTMLElement>(".fv-row")].map((row) => row.textContent)).toEqual([
+      "🗂️dir",
+      "🗂️nested",
+      "📄deep.txt",
+      "🗂️other",
+      "📄other.txt",
+    ]);
   });
 
   // Given: data.zip の一覧に folder/file.txt があり、archive内のfolder行が作られる

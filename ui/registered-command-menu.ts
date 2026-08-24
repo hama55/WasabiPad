@@ -9,9 +9,8 @@ import {
   COMMAND_VALUE_TARGETS,
   commandLineForValueWithClipboard,
   commandLineForValue,
-  commandsForPath,
+  commandsForKind,
   COPY_STRING_CLIPBOARD_PLACEHOLDER,
-  extensionOf,
   removeRegisteredCommand,
   STRING_ONE_LINE_PLACEHOLDER,
   STRING_IN_URL_PLACEHOLDER,
@@ -68,15 +67,13 @@ function promptCommandWithValue(
   initial?: RegisteredCommandValues,
 ): Promise<RegisteredCommandValues | null> {
   const path = target.path;
-  const extension = extensionOf(path);
-  const extensionLabel = extension || "拡張子なし";
   const valueTarget = COMMAND_VALUE_TARGETS[commandValueKind(target)];
   const commandHelp = commandValueKind(target) === "string"
     ? `${valueTarget.placeholder}=${valueTarget.label}、${STRING_ONE_LINE_PLACEHOLDER}=改行をスペース化、${COPY_STRING_CLIPBOARD_PLACEHOLDER}=クリップボードへコピー、${STRING_IN_URL_PLACEHOLDER}=URL用エンコード文字列、引用符不要`
     : `${valueTarget.placeholder}=${valueTarget.label}、引用符不要`;
   return services.promptFields(title, [
     {
-      label: `表示名（${extensionLabel}用）`,
+      label: "表示名",
       value: initial?.label ?? basename(path),
       validate: (value) => value.trim() ? null : "表示名を入力してください",
     },
@@ -102,7 +99,7 @@ function promptCommandWithValue(
 async function registerCommand(services: RegisteredCommandMenuServices, target: RegisteredCommandTarget) {
   const result = await promptCommand(services, "コマンドを登録", target);
   if (!result) return;
-  addRegisteredCommand({ extension: extensionOf(target.path), valueKind: commandValueKind(target), ...result });
+  addRegisteredCommand({ valueKind: commandValueKind(target), ...result });
   await flushSettings();
 }
 
@@ -122,7 +119,7 @@ export function createRegisteredCommandMenu(
   services: RegisteredCommandMenuServices,
 ): MenuItem {
   const target = targetOf(input);
-  const commands = commandsForPath(target.path, commandValueKind(target));
+  const commands = commandsForKind(commandValueKind(target));
   const register: MenuItem = {
     label: "コマンドを登録...",
     iconClass: MENU_ICON.command,

@@ -21,5 +21,10 @@
   "eolLabels": {
     "crlf": "CRLF",
     "lf": "LF"
+  },
+  "byteSize": {
+    "base": 1024,
+    "fractionDigits": 1,
+    "units": ["B", "kB", "MB", "GB", "TB"]
   }
 }

@@ -188,7 +188,7 @@ describe("Feature: settings modal", () => {
   it("Scenario: 登録項目を設定モーダルから削除する", () => {
     const ports = makePorts({
       registeredStrings: ["one", "two"],
-      registeredCommands: [{ extension: ".md", label: "Editor", prefix: "", command: "code {file}" }],
+      registeredCommands: [{ label: "Editor", prefix: "", command: "code {file}" }],
     });
     openSettingsModal(ports);
 

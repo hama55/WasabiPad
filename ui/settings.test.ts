@@ -64,10 +64,10 @@ describe("Feature: settings", () => {
     expect(settings.registeredStrings).toEqual(["ok"]);
   });
 
-  // Given: 大文字拡張子・空ラベル・不正`valueKind`を含む登録コマンド4件
+  // Given: 旧形式の拡張子・空ラベル・不正`valueKind`を含む登録コマンド4件
   // When: `parseSettings`を呼ぶ
-  // Then: 有効な`.html`と`.md`だけをtrim・小文字化して復元
-  it("Scenario: 登録コマンドは有効な文字列項目だけ復元する", () => {
+  // Then: 有効な2件だけを拡張子なしの共通コマンドとして復元
+  it("Scenario: 旧形式の登録コマンドを全拡張子共通へ移行する", () => {
     const settings = parseSettings(JSON.stringify({
       registeredCommands: [
         { extension: ".HTML", label: " Chrome ", command: " C:\\chrome.exe {file} " },
@@ -77,8 +77,8 @@ describe("Feature: settings", () => {
       ],
     }));
     expect(settings.registeredCommands).toEqual([
-      { extension: ".html", label: "Chrome", prefix: "", command: "C:\\chrome.exe {file}" },
-      { extension: ".md", label: "Browser", prefix: "", command: "open {string}", valueKind: "string" },
+      { label: "Chrome", prefix: "", command: "C:\\chrome.exe {file}" },
+      { label: "Browser", prefix: "", command: "open {string}", valueKind: "string" },
     ]);
   });
 

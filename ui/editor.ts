@@ -240,6 +240,7 @@ export class VirtualEditor {
         this.focus();
       },
       (message, error) => this.reportActionError(message, error),
+      (pat, matchCase) => this.setFindHighlightQuery(unescapePattern(pat), matchCase),
     );
 
     this.scroll.addEventListener("scroll", () => {

@@ -23,3 +23,18 @@ export const EOL_LABELS = {
   "crlf": "CRLF",
   "lf": "LF"
 } as const;
+
+export const BYTE_SIZE_BASE = 1024 as const;
+export const BYTE_SIZE_FRACTION_DIGITS = 1 as const;
+export const BYTE_SIZE_UNITS = ["B","kB","MB","GB","TB"] as const;
+
+export function formatByteSize(bytes: number): string {
+  if (bytes < BYTE_SIZE_BASE) return `${bytes} ${BYTE_SIZE_UNITS[0]}`;
+  let unitIndex = 1;
+  let value = bytes / BYTE_SIZE_BASE;
+  while (value >= BYTE_SIZE_BASE && unitIndex < 4) {
+    value /= BYTE_SIZE_BASE;
+    unitIndex += 1;
+  }
+  return `${value.toFixed(BYTE_SIZE_FRACTION_DIGITS)} ${BYTE_SIZE_UNITS[unitIndex]}`;
+}

@@ -206,10 +206,12 @@ body.preview-resizing * { cursor: ew-resize !important; user-select: none !impor
 }
 .fv-toolbar button:hover { background: var(--hover); color: var(--fg); }
 .fv-tree {
+  --fv-row-height: 22px;
   flex: 1; min-height: 0; overflow: auto;
   display: flex; flex-direction: column;
 }
 .fv-tree > * { flex: none; }
+.fv-tree-bottom-padding { flex: none; height: calc(var(--fv-row-height) * 3); }
 .fv-create-actions {
   position: sticky; bottom: 0; z-index: 2; margin-top: auto;
   display: flex; gap: 6px; padding: 6px 4px 2px;
@@ -350,7 +352,7 @@ body.preview-resizing * { cursor: ew-resize !important; user-select: none !impor
 #splitter:hover { background: var(--bg-status); }
 .fv-row {
   display: flex; align-items: center;
-  height: 22px; font-size: 13px;
+  height: var(--fv-row-height); font-size: 13px;
   white-space: nowrap; overflow: hidden;
   cursor: default;
 }
