@@ -1,12 +1,17 @@
 import type { EditManyItem, FolderEntry, WorkspaceSearchOptions, WorkspaceSearchResult } from "./api";
-import { WorkspaceSearchPanel, type WorkspaceSearchPorts } from "./workspace-search-panel";
-import { archiveEntryPath } from "./archive-path";
+import {
+  WorkspaceSearchPanel,
+  type WorkspaceSearchPorts,
+  type WorkspaceSearchViewState,
+} from "./workspace-search-panel";
+import { archiveEntryPath, splitArchiveEntryPath } from "./archive-path";
 import type { ContextTarget } from "./context-target";
 import { isMiddleClick } from "./interaction-constants";
 import { iconButton } from "./icon-button";
 import { runAsyncBoundary } from "./async-boundary";
 import { isDescendantPath } from "./path";
 import type { FileTreeDropRequest, FileTreeDropResult } from "./file-tree-drop";
+import { clampSearchOptions } from "./workspace-search-options";
 export type { ContextTarget } from "./context-target";
 export type SidebarFileCommand = "copy" | "cut" | "paste" | "rename" | "delete" | "undo" | "redo";
 
@@ -26,6 +31,12 @@ interface Row {
   kind: RowKind;
   expanded: boolean;
   childrenLoaded: boolean; // dir/archive の子一覧を取得済みか
+}
+
+export interface SidebarViewState {
+  kind: "folder" | "archive" | null;
+  expandedRelPaths: string[];
+  search: WorkspaceSearchViewState | null;
 }
 
 interface PointerDrag {
@@ -100,11 +111,14 @@ export class Sidebar {
   private managedDropUndo = false;
   private entryMoveInProgress = false;
   private workspaceRoot: string | null = null;
+  private viewKind: SidebarViewState["kind"] = null;
+  private defaultSearchOptions: WorkspaceSearchOptions;
   private dragScrollTimer: number | null = null;
   private renamingRelPath: string | null = null;
 
   constructor(host: HTMLElement, ports: SidebarPorts, searchOptions: WorkspaceSearchOptions) {
     this.host = host;
+    this.defaultSearchOptions = clampSearchOptions(searchOptions);
     this.onSelect = ports.onSelect;
     this.onContextMenu = ports.onContextMenu;
     this.onFileCommand = ports.onFileCommand;
@@ -122,7 +136,10 @@ export class Sidebar {
       onError: ports.onError,
       onOpen: ports.onOpen,
       onReplace: ports.onReplace,
-      onOptionsChange: ports.onOptionsChange,
+      onOptionsChange: (options) => {
+        this.defaultSearchOptions = clampSearchOptions(options);
+        ports.onOptionsChange(options);
+      },
       onContextMenu: (x, y, target) => this.onContextMenu(x, y, target, [target]),
       onViewChange: () => this.render(),
     });
@@ -185,6 +202,7 @@ export class Sidebar {
       this.managedDropUndo = false;
     }
     this.workspaceRoot = folderRoot;
+    this.viewKind = folderRoot === null ? null : "folder";
     this.panel.setFolderRoot(folderRoot);
   }
 
@@ -193,7 +211,103 @@ export class Sidebar {
   }
 
   setSearchOptions(options: WorkspaceSearchOptions) {
+    this.defaultSearchOptions = clampSearchOptions(options);
     this.panel.setSearchOptions(options);
+  }
+
+  captureViewState(): SidebarViewState {
+    return {
+      kind: this.viewKind,
+      expandedRelPaths: this.rows.filter((row) => isExpandable(row) && row.expanded).map((row) => row.relPath),
+      search: this.viewKind === "folder" ? this.panel.captureViewState() : null,
+    };
+  }
+
+  resetViewState() {
+    this.selectionRequest++;
+    this.invalidateOpenRequests();
+    this.panel.resetViewState(this.defaultSearchOptions);
+    this.workspaceRoot = null;
+    this.viewKind = null;
+    this.rows = [];
+    this.sel = null;
+    this.selected.clear();
+    this.selectionAnchor = null;
+    this.render();
+  }
+
+  async restoreViewState(state: SidebarViewState | null): Promise<void> {
+    if (!state || state.kind === null || state.kind !== this.viewKind) return;
+    const request = ++this.selectionRequest;
+    const paths = [...state.expandedRelPaths].sort((a, b) => pathDepth(a) - pathDepth(b));
+    for (const relPath of paths) {
+      if (request !== this.selectionRequest) return;
+      const row = this.rows.find((candidate) => candidate.relPath === relPath);
+      if (!row || !isExpandable(row)) continue;
+      if (!await this.ensureChildrenLoaded(row, request)) return;
+      if (request !== this.selectionRequest) return;
+      row.expanded = true;
+    }
+    if (state.kind === "folder" && state.search) {
+      const search = await this.filterSearchViewState(state.search, request);
+      if (request !== this.selectionRequest || !search) return;
+      this.panel.restoreViewState(search);
+    }
+    if (request === this.selectionRequest) this.render();
+  }
+
+  private async filterSearchViewState(
+    snapshot: WorkspaceSearchViewState,
+    request: number,
+  ): Promise<WorkspaceSearchViewState | null> {
+    const existence = new Map<string, Promise<Set<string>>>();
+    const filter = async (results: WorkspaceSearchResult[]): Promise<WorkspaceSearchResult[] | null> => {
+      const kept: WorkspaceSearchResult[] = [];
+      for (const result of results) {
+        if (request !== this.selectionRequest) return null;
+        if (await this.searchResultExists(result.rel_path, existence)) kept.push(result);
+      }
+      return kept;
+    };
+
+    const partial = await filter(snapshot.partial);
+    if (!partial) return null;
+    let outcome = snapshot.outcome;
+    if (outcome && typeof outcome === "object") {
+      const results = await filter(outcome.results);
+      if (!results) return null;
+      outcome = { ...outcome, results };
+    }
+    return { ...snapshot, outcome, partial };
+  }
+
+  private searchResultExists(
+    relPath: string,
+    existence: Map<string, Promise<Set<string>>>,
+  ): Promise<boolean> {
+    const normalized = normalizeRelPath(relPath);
+    if (!normalized) return Promise.resolve(false);
+    const archive = splitArchiveEntryPath(normalized);
+    if (archive) {
+      const archiveRelPath = normalizeRelPath(archive.archiveRelPath);
+      const entryName = normalizeRelPath(archive.entryName);
+      if (!archiveRelPath || !entryName) return Promise.resolve(false);
+      const key = `archive:${archiveRelPath.toLowerCase()}`;
+      const names = existence.get(key) ?? this.onExpandArchive(archiveRelPath)
+        .then((entries) => new Set(entries.map(pathKey)))
+        .catch(() => new Set<string>());
+      existence.set(key, names);
+      return names.then((available) => available.has(pathKey(entryName)));
+    }
+
+    const parent = parentRelPath(normalized);
+    const name = normalized.slice(parent ? parent.length + 1 : 0);
+    const key = `folder:${parent.toLowerCase()}`;
+    const names = existence.get(key) ?? this.onExpandFolder(parent)
+      .then((entries) => new Set(entries.map((entry) => pathKey(entry.name))))
+      .catch(() => new Set<string>());
+    existence.set(key, names);
+    return names.then((available) => available.has(pathKey(name)));
   }
 
   refreshFileOperationState() {
@@ -245,6 +359,7 @@ export class Sidebar {
 
   // フォルダの直下だけを表示する。ファイルは自動選択しない。
   setEntries(entries: FolderEntry[]) {
+    this.viewKind = "folder";
     this.renamingRelPath = null;
     this.selectionRequest++;
     this.invalidateOpenRequests();
@@ -298,6 +413,7 @@ export class Sidebar {
   }
 
   setArchiveEntries(names: string[]) {
+    this.viewKind = "archive";
     this.renamingRelPath = null;
     this.selectionRequest++;
     this.invalidateOpenRequests();
@@ -322,6 +438,7 @@ export class Sidebar {
 
   // 直接開いた (フォルダ非経由の) zip/xlsx/xls 自身を、展開前の単一行として表示する。
   setArchiveRoot(displayName: string) {
+    this.viewKind = "archive";
     this.renamingRelPath = null;
     this.selectionRequest++;
     this.invalidateOpenRequests();
@@ -1041,6 +1158,10 @@ function isExpandable(row: Row): boolean {
   return row.kind === "dir" || row.kind === "archive" || row.kind === "archiveDir";
 }
 
+function pathDepth(relPath: string): number {
+  return relPath ? relPath.split("/").length : 0;
+}
+
 function nextKeyboardFileIndex(
   visible: readonly number[],
   rows: readonly Row[],
@@ -1075,6 +1196,10 @@ function isAncestorRelPath(ancestor: string, descendant: string): boolean {
 
 function normalizeRelPath(relPath: string): string {
   return relPath.replace(/\\/g, "/").replace(/\/$/, "");
+}
+
+function pathKey(relPath: string): string {
+  return normalizeRelPath(relPath).toLowerCase();
 }
 
 function fileCommandForEvent(event: KeyboardEvent): SidebarFileCommand | null {

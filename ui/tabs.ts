@@ -4,6 +4,7 @@ import { cloneEditorViewState, type EditorViewState } from "./editor-view-state"
 import { basename, rebaseWindowsPath, type PathRebase } from "./path";
 import { TabBarView, type TabDropSpot } from "./tab-view";
 import type { RegisteredCommandMenuPorts } from "./registered-command-menu";
+import type { SidebarViewState } from "./sidebar";
 import {
   NavigationHistory,
   type NavigationEntry,
@@ -25,8 +26,15 @@ export interface TabDocumentPort {
   save: () => Promise<boolean>;
 }
 
+export interface TabWorkspaceStatePort {
+  capture: () => SidebarViewState | null;
+  reset: () => void;
+  restore: (state: SidebarViewState | null) => void | Promise<void>;
+}
+
 interface TabPorts {
   onChange: (state: StoredTabs) => void;
+  workspace?: TabWorkspaceStatePort;
   onError?: (error: unknown, message?: string) => void | Promise<void>;
   onDetach?: (request: WindowRequest) => Promise<boolean>;
   onOpenInNewWindow?: (request: WindowRequest) => Promise<boolean>;
@@ -51,6 +59,12 @@ function rebaseRelativePath(path: string, oldPrefix: string, newPrefix: string):
   return `${normalizedNew}${normalizedPath.slice(normalizedOld.length)}`.replace(/^\//, "");
 }
 
+function sameTabPath(a: string | null, b: string | null): boolean {
+  if (a === null || b === null) return a === b;
+  return a.replace(/\\/g, "/").toLocaleLowerCase("en-US")
+    === b.replace(/\\/g, "/").toLocaleLowerCase("en-US");
+}
+
 type NavigationRun<T> = {
   proceeded: boolean;
   result?: T;
@@ -61,6 +75,7 @@ type NavigationRun<T> = {
 export class TabManager {
   private tabs: StoredTab[] = [];
   private activeId = "";
+  private workspaceStates = new Map<string, { path: string | null; state: SidebarViewState }>();
   private transitionTarget: string | null = null;
   private loadingActive = false;
   private navigationInProgress = false;
@@ -113,6 +128,7 @@ export class TabManager {
   ) {
     this.navigationHistory.clear();
     this.closedTabs = [];
+    this.workspaceStates.clear();
     const startupTarget = initialPath ?? startupPath;
     const initialTab = stored.tabs.length || startupTarget
       ? this.link(startupTarget, initialPath ? initialGoto : undefined)
@@ -394,6 +410,7 @@ export class TabManager {
       delete tab.selectedRelPath;
       delete tab.selectedLine;
     }
+    this.ports.workspace?.reset();
     if (!await this.doc.openPath(entry.path, false)) return false;
     if (entry.kind === "folder" && entry.selectedRelPath
       && (await this.doc.selectEntry(entry.selectedRelPath)) !== true) return false;
@@ -439,6 +456,7 @@ export class TabManager {
       this.syncActive(this.doc.current);
       const closed = { tab: this.state.tabs[0], index: 0 };
       const replacement = await this.blankTab(null);
+      this.workspaceStates.delete(id);
       await this.commitTransition(async () => {
         this.tabs = [replacement];
         this.activeId = this.tabs[0].id;
@@ -454,6 +472,7 @@ export class TabManager {
       if (!(await this.doc.confirmDiscard())) return;
       this.syncActive(this.doc.current);
       const closed = { tab: this.state.tabs[index], index };
+      this.workspaceStates.delete(id);
       await this.commitTransition(async () => {
         this.tabs.splice(index, 1);
         this.activateTabAfterRemoval(index);
@@ -462,6 +481,7 @@ export class TabManager {
       this.closedTabs.push(closed);
     } else {
       const closed = { tab: this.state.tabs[index], index };
+      this.workspaceStates.delete(id);
       this.tabs.splice(index, 1);
       this.renderAndPersist();
       this.closedTabs.push(closed);
@@ -583,6 +603,7 @@ export class TabManager {
       const rememberedViewState = tab.viewState ? cloneEditorViewState(tab.viewState) : undefined;
       const rememberedLine = tab.selectedLine ?? (tab.kind === "folder" ? rememberedViewState?.caret.line : undefined);
       let selectionRestored = false;
+      this.ports.workspace?.reset();
       if (tab.path) {
         const opened = await this.doc.openPath(tab.path, false);
         if (!opened) {
@@ -621,6 +642,10 @@ export class TabManager {
         await this.doc.newFile(false, tab.draftDirectory ?? null);
         if (tab.viewState) await this.doc.restoreViewState(tab.viewState);
       }
+      const workspaceState = this.workspaceStates.get(tab.id);
+      if (workspaceState && sameTabPath(workspaceState.path, tab.path)) {
+        await this.ports.workspace?.restore(workspaceState.state);
+      }
       return true;
     } finally {
       this.loadingActive = false;
@@ -643,6 +668,9 @@ export class TabManager {
     } else {
       tab.viewState = view;
     }
+    const workspaceState = this.ports.workspace?.capture() ?? null;
+    if (!workspaceState || workspaceState.kind === null) this.workspaceStates.delete(tab.id);
+    else this.workspaceStates.set(tab.id, { path: tab.path, state: workspaceState });
   }
 
   private active() {
@@ -722,7 +750,10 @@ export class TabManager {
     const kept: StoredTab[] = [];
     const closed: { tab: StoredTab; index: number }[] = [];
     this.tabs.forEach((tab, index) => {
-      if (remove(tab, index)) closed.push({ tab: snapshots[index], index });
+      if (remove(tab, index)) {
+        this.workspaceStates.delete(tab.id);
+        closed.push({ tab: snapshots[index], index });
+      }
       else kept.push(tab);
     });
     this.tabs = kept;
@@ -770,6 +801,7 @@ export class TabManager {
       selectedRelPath: tab.selectedRelPath ?? null,
       viewState: tab.viewState ?? null,
     })) return;
+    this.workspaceStates.delete(id);
     this.tabs.splice(this.tabs.indexOf(tab), 1);
     if (!wasActive) {
       this.renderAndPersist();

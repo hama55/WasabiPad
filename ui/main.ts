@@ -836,6 +836,11 @@ tabs = new TabManager($("tabs"), doc, {
   onChange: (state) => {
     if (!secondaryInstance) setSetting("openTabs", state);
   },
+  workspace: {
+    capture: () => sidebar.captureViewState(),
+    reset: () => sidebar.resetViewState(),
+    restore: (state) => sidebar.restoreViewState(state),
+  },
   onError: (error, message = "タブを操作できませんでした") => reportBackgroundError(message, error),
   onDetach: (request) => launchNewWindow(request),
   onOpenInNewWindow: (request) => launchNewWindow(request),

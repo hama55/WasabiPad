@@ -2,8 +2,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "./api";
 import { TabManager, type StoredTabs, type TabDocumentPort } from "./tabs";
+import type { SidebarViewState } from "./sidebar";
 import { initialSession } from "./session";
 import { initSettings } from "./settings";
+import { DEFAULT_SEARCH_OPTIONS } from "./workspace-search-options";
 import { addRegisteredCommand, commandsForKind } from "./registered-commands";
 import type { RegisteredCommandMenuPorts } from "./registered-command-menu";
 import { MENU_ICON } from "./menu-icons";
@@ -483,6 +485,40 @@ describe("Feature: TabManager", () => {
     expect(navigationStates.at(-1)).toEqual({ canGoBack: false, canGoForward: false });
   });
 
+  // Feature: タブ別ファイルツリー表示状態
+  // Scenario: 開けないパスへの移動に失敗しても現在タブの表示状態を保持する
+  // Given: 現在タブのファイルツリー状態を保存でき、移動先のopenPathがfalseを返す
+  // When: 現在タブから移動を依頼する
+  // Then: サイドバーをリセットせず、現在タブの表示を維持する
+  it("Scenario: 通常の切替失敗時に現在タブのファイルツリー状態を保持する", async () => {
+    const { doc, host } = fixture();
+    const workspaceState: SidebarViewState = {
+      kind: "folder",
+      expandedRelPaths: ["docs"],
+      search: null,
+    };
+    const workspace = {
+      capture: vi.fn(() => workspaceState),
+      reset: vi.fn(),
+      restore: vi.fn(),
+    };
+    const manager = new TabManager(host, doc, {
+      onChange: () => {},
+      workspace,
+    }, registeredCommandPorts);
+    await manager.init({
+      tabs: [{ id: "folder", path: "C:\\work", kind: "folder", label: "work" }],
+      activeId: "folder",
+    }, null, null);
+    workspace.reset.mockClear();
+    vi.mocked(doc.openPath).mockResolvedValueOnce(false);
+
+    await expect(manager.navigatePath("C:\\missing")).resolves.toBe(false);
+
+    expect(workspace.reset).not.toHaveBeenCalled();
+    expect(manager.state.tabs[0].path).toBe("C:\\work");
+  });
+
   // Given: folder tab で a.txt を選択後 b.txt へ移動し、戻り時の selectEntry が false を返す
   // When: goBack() を呼ぶ
   // Then: 戻り値は false、selectedRelPath は b.txt のまま、selectEntry の最終引数は b.txt
@@ -682,6 +718,66 @@ describe("Feature: TabManager", () => {
       topLine: 0,
       scrollLeft: 0,
     }));
+  });
+
+  // Feature: タブ別ファイルツリー表示状態
+  // Scenario: タブを切り替えて戻るとタブ固有のファイルツリー状態を復元する
+  // Given: タブAとタブBがあり、タブAのファイルツリー表示状態を保存している
+  // When: タブAからタブBへ切り替え、タブBからタブAへ戻る
+  // Then: タブAの状態が復元され、タブBの状態とは混ざらない
+  it("Scenario: タブ切替後にタブ固有のファイルツリー状態を復元する", async () => {
+    const { doc, host } = fixture();
+    const aState: SidebarViewState = {
+      kind: "folder",
+      expandedRelPaths: ["docs"],
+      search: {
+        pattern: "needle",
+        options: { ...DEFAULT_SEARCH_OPTIONS },
+        outcome: null,
+        partial: [],
+        selected: null,
+        collapseByDefault: false,
+        collapsed: [],
+        collapseTouched: false,
+      },
+    };
+    const bState: SidebarViewState = {
+      kind: "folder",
+      expandedRelPaths: ["src"],
+      search: null,
+    };
+    const restored: (SidebarViewState | null)[] = [];
+    let currentState: SidebarViewState | null = aState;
+    const workspace = {
+      capture: vi.fn(() => currentState),
+      reset: vi.fn(),
+      restore: vi.fn(async (state: SidebarViewState | null) => {
+        restored.push(state);
+        currentState = state;
+      }),
+    };
+    vi.mocked(doc.openPath).mockImplementation(async (path: string) => {
+      doc.current.folderRoot = path;
+      doc.current.savePath = null;
+      doc.current.displayPath = path;
+      return true;
+    });
+    const manager = new TabManager(host, doc, { onChange: () => {}, workspace }, registeredCommandPorts);
+
+    await manager.init({
+      tabs: [
+        { id: "a", path: "C:\\work", kind: "folder", label: "work" },
+        { id: "b", path: "C:\\work", kind: "folder", label: "work (2)" },
+      ],
+      activeId: "a",
+    }, null, null);
+    await manager.activate("b");
+    currentState = bState;
+    await manager.activate("a");
+
+    expect(workspace.capture).toHaveBeenCalledTimes(2);
+    expect(workspace.reset).toHaveBeenCalledTimes(3);
+    expect(restored).toEqual([aState]);
   });
 
   // Given: 切替先の読み込みが継続中で、active tab a の現在位置が保存対象にある

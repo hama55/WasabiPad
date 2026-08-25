@@ -55,6 +55,16 @@ const MAX_RENDERED_ROWS = 3000;
 const AUTO_COLLAPSE_MATCHES = 500;
 type ToggleKey = BoolOptionKey;
 type SearchState = WorkspaceSearchOutcome | "searching" | "stopped" | null;
+export interface WorkspaceSearchViewState {
+  pattern: string;
+  options: WorkspaceSearchOptions;
+  outcome: WorkspaceSearchOutcome | "stopped" | null;
+  partial: WorkspaceSearchResult[];
+  selected: string | null;
+  collapseByDefault: boolean;
+  collapsed: string[];
+  collapseTouched: boolean;
+}
 type SearchViewState = {
   pattern: string;
   outcome: SearchState;
@@ -90,7 +100,8 @@ export class WorkspaceSearchPanel {
   private options: WorkspaceSearchOptions;
   private searchOptionsChangedWhileHidden = false;
   private folderRoot: string | null = null;
-  private states = new Map<string, SearchViewState>();
+  private viewState = createSearchViewState();
+  private hiddenPattern = "";
   private searchGen = 0;
   private searchTimer: number | undefined;
   private running: Promise<WorkspaceSearchOutcome> | null = null; // 走行中の検索
@@ -127,14 +138,24 @@ export class WorkspaceSearchPanel {
   }
 
   setFolderRoot(folderRoot: string | null) {
-    if (folderRoot === this.folderRoot) return;
+    if (folderRoot === this.folderRoot) {
+      this.bar.hidden = folderRoot === null;
+      return;
+    }
     this.openRequest++;
+    const wasHidden = this.folderRoot === null;
     if (this.folderRoot && this.state.outcome === "searching") this.stop();
     else {
       this.searchGen++;
       window.clearTimeout(this.searchTimer);
     }
+    if (folderRoot === null && this.folderRoot !== null) this.hiddenPattern = this.state.pattern;
     this.folderRoot = folderRoot;
+    this.viewState = createSearchViewState();
+    if (folderRoot && wasHidden) {
+      this.viewState.pattern = this.hiddenPattern;
+      this.hiddenPattern = "";
+    }
     this.bar.hidden = folderRoot === null;
     if (folderRoot) {
       this.searchInput.value = this.state.pattern;
@@ -143,6 +164,72 @@ export class WorkspaceSearchPanel {
         if (this.searchInput.value) this.queueSearch(0);
       }
     }
+    this.ports.onViewChange();
+  }
+
+  resetViewState(options = this.options) {
+    this.openRequest++;
+    if (this.folderRoot && this.state.outcome === "searching") this.stop();
+    else {
+      this.searchGen++;
+      window.clearTimeout(this.searchTimer);
+      if (this.running) this.cancelRunningSearch();
+    }
+    this.viewState = createSearchViewState();
+    this.options = clampSearchOptions(options);
+    this.syncTargetToggles();
+    this.hiddenPattern = "";
+    this.searchOptionsChangedWhileHidden = false;
+    this.searchInput.value = "";
+    this.searchStop.hidden = true;
+    this.summary.hidden = true;
+    this.bar.hidden = true;
+    this.ports.onViewChange();
+  }
+
+  captureViewState(): WorkspaceSearchViewState | null {
+    if (!this.folderRoot) return null;
+    if (this.state.outcome === "searching") this.stop();
+    const state = this.state;
+    return {
+      pattern: state.pattern,
+      options: cloneSearchOptions(this.options),
+      outcome: cloneSearchOutcome(state.outcome),
+      partial: state.partial.map(cloneSearchResult),
+      selected: state.selected,
+      collapseByDefault: state.collapseByDefault,
+      collapsed: [...state.collapsed],
+      collapseTouched: state.collapseTouched,
+    };
+  }
+
+  restoreViewState(snapshot: WorkspaceSearchViewState) {
+    if (!this.folderRoot) return;
+    this.openRequest++;
+    this.searchGen++;
+    window.clearTimeout(this.searchTimer);
+    if (this.running) this.cancelRunningSearch();
+    const outcome = cloneSearchOutcome(snapshot.outcome);
+    const partial = snapshot.partial.map(cloneSearchResult);
+    this.viewState = {
+      pattern: snapshot.pattern,
+      outcome,
+      partial,
+      selected: snapshot.selected,
+      collapseByDefault: snapshot.collapseByDefault,
+      collapsed: new Set(snapshot.collapsed),
+      collapseTouched: snapshot.collapseTouched,
+    };
+    this.options = clampSearchOptions(snapshot.options);
+    this.syncTargetToggles();
+    this.searchInput.value = snapshot.pattern;
+    this.searchStop.hidden = true;
+    this.summary.hidden = outcome === null;
+    if (this.state.selected && !this.shownResults().some((result) => searchResultKey(result) === this.state.selected)) {
+      this.state.selected = null;
+    }
+    this.searchOptionsChangedWhileHidden = false;
+    this.bar.hidden = false;
     this.ports.onViewChange();
   }
 
@@ -171,20 +258,7 @@ export class WorkspaceSearchPanel {
   private get state(): SearchViewState {
     const root = this.folderRoot;
     if (!root) throw new Error("フォルダ検索の対象がありません");
-    let state = this.states.get(root);
-    if (!state) {
-      state = {
-        pattern: "",
-        outcome: null,
-        partial: [],
-        selected: null,
-        collapseByDefault: false,
-        collapsed: new Set(),
-        collapseTouched: false,
-      };
-      this.states.set(root, state);
-    }
-    return state;
+    return this.viewState;
   }
 
   // ---- 検索バー ----
@@ -642,6 +716,42 @@ export class WorkspaceSearchPanel {
       });
     });
   }
+}
+
+function createSearchViewState(): SearchViewState {
+  return {
+    pattern: "",
+    outcome: null,
+    partial: [],
+    selected: null,
+    collapseByDefault: false,
+    collapsed: new Set(),
+    collapseTouched: false,
+  };
+}
+
+function cloneSearchOptions(options: WorkspaceSearchOptions): WorkspaceSearchOptions {
+  return clampSearchOptions({
+    ...options,
+    exclude_dirs: [...options.exclude_dirs],
+    exclude_globs: [...options.exclude_globs],
+  });
+}
+
+function cloneSearchResult(result: WorkspaceSearchResult): WorkspaceSearchResult {
+  return {
+    ...result,
+    highlights: result.highlights.map(([start, length]) => [start, length]),
+  };
+}
+
+function cloneSearchOutcome(outcome: SearchState): WorkspaceSearchOutcome | "stopped" | null {
+  if (outcome === null || outcome === "stopped") return outcome;
+  if (outcome === "searching") return "stopped";
+  return {
+    ...outcome,
+    results: outcome.results.map(cloneSearchResult),
+  };
 }
 
 function searchResultKey(result: Pick<WorkspaceSearchResult, "rel_path" | "line" | "col" | "is_filename">): string {
