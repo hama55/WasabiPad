@@ -626,10 +626,12 @@ describe("Feature: WorkspaceSearchPanel", () => {
     expect(text(host, ".ws-empty")).toContain("検索を中止しました");
   });
 
+  // Feature: タブ別ファイルツリー検索状態
+  // Scenario: 表示部品を別のフォルダへ切り替えても検索状態を共有しない
   // Given: C:\workspace で needle の a.txt 1件を表示している
   // When: folder root を C:\other→C:\workspace→null→C:\workspace と切り替える
-  // Then: C:\other では group 0個、C:\workspace 復帰時は group 1個で入力値は needle、null 経由の復帰後も group は1個
-  it("Scenario: フォルダごとに検索結果を保持する", async () => {
+  // Then: 切り替え先の検索結果と検索入力は初期状態になる
+  it("Scenario: フォルダ切替時に検索状態を共有しない", async () => {
     vi.useFakeTimers();
     const host = mount(async () => outcome([hit("a.txt", 0, "needle")]));
     await search(host, "needle");
@@ -638,12 +640,72 @@ describe("Feature: WorkspaceSearchPanel", () => {
     expect(host.querySelectorAll(".ws-group")).toHaveLength(0);
 
     mounted.setFolderRoot("C:\\workspace");
-    expect(host.querySelectorAll(".ws-group")).toHaveLength(1);
-    expect(host.querySelector<HTMLInputElement>(".ws-search-row > input")?.value).toBe("needle");
+    expect(host.querySelectorAll(".ws-group")).toHaveLength(0);
+    expect(host.querySelector<HTMLInputElement>(".ws-search-row > input")?.value).toBe("");
 
     mounted.setFolderRoot(null);
     mounted.setFolderRoot("C:\\workspace");
+    expect(host.querySelectorAll(".ws-group")).toHaveLength(0);
+  });
+
+  // Feature: タブ別ファイルツリー検索状態
+  // Scenario: 完全な検索結果表示状態を取得して復元する
+  // Given: needle の検索結果と検索結果グループの折りたたみ状態が表示されている
+  // When: 検索表示状態を取得し、表示をリセットしてから復元する
+  // Then: 検索語、完全な結果データ、メタ情報、折りたたみ状態が戻る
+  it("Scenario: 完全な検索結果表示状態をリセット後に復元する", async () => {
+    vi.useFakeTimers();
+    const result = hit("a.txt", 3, "a needle here", [[2, 6]]);
+    const host = mount(async () => outcome([result], {
+      scanned_files: 42,
+      skipped_files: 2,
+      hit_file_limit: true,
+      hit_result_limit: true,
+      pattern_error: null,
+      file_name_match_mode: "strict",
+    }));
+    await search(host, "needle");
+    host.querySelector<HTMLElement>(".ws-group")!.click();
+
+    const saved = mounted.captureViewState()!;
+    mounted.resetViewState();
+    mounted.restoreViewState(saved);
+
+    expect(host.querySelector<HTMLInputElement>(".ws-search-row > input")?.value).toBe("needle");
     expect(host.querySelectorAll(".ws-group")).toHaveLength(1);
+    expect(host.querySelectorAll(".ws-match")).toHaveLength(0);
+    expect(host.querySelector(".ws-summary")?.textContent).toContain("1 個のファイルに 1 件の結果");
+    expect(mounted.captureViewState()).toEqual(saved);
+  });
+
+  // Feature: タブ別ファイルツリー検索状態
+  // Scenario: 検索実行中にタブを切り替えるため確定済み部分結果を停止状態で保存する
+  // Given: 検索中に a.txt の途中結果が1件届いている
+  // When: 検索表示状態を取得する
+  // Then: 検索は停止され、部分結果と stopped 状態が保存される
+  it("Scenario: 検索中の取得で部分結果を停止状態として保存する", async () => {
+    vi.useFakeTimers();
+    let searchId = 0;
+    const onCancel = vi.fn();
+    const host = mount((_pat, _options, id) => {
+      searchId = id;
+      return new Promise<WorkspaceSearchOutcome>(() => {});
+    }, () => {}, onCancel);
+    await search(host, "needle");
+    mounted.acceptBatch(searchId, [hit("a.txt", 0, "needle", [[0, 6]])]);
+
+    const saved = mounted.captureViewState()!;
+
+    expect(onCancel).toHaveBeenCalledWith(searchId);
+    expect(saved.outcome).toBe("stopped");
+    expect(saved.partial).toHaveLength(1);
+    expect(saved.partial[0]).toEqual(expect.objectContaining({
+      rel_path: "a.txt",
+      line: 0,
+      col: 0,
+      preview: "needle",
+      highlights: [[0, 6]],
+    }));
   });
 
   // Given: 未完了検索があり、a.txt の途中結果を受け取っている

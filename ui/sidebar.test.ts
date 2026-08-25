@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Sidebar, type SidebarPorts } from "./sidebar";
 import { DEFAULT_SEARCH_OPTIONS } from "./workspace-search-options";
-import type { FolderEntry } from "./api";
+import type { FolderEntry, WorkspaceSearchResult } from "./api";
 
 interface MountOptions {
   onSearch?: SidebarPorts["onSearch"];
@@ -1158,6 +1158,117 @@ describe("Feature: Sidebar", () => {
     expect(host.querySelectorAll(".fv-row")).toHaveLength(2);
     expect(host.querySelector(".fv-row .fv-arrow")?.textContent).toBe("🗂️");
     expect(host.querySelectorAll<HTMLElement>(".fv-row")[1].textContent).toContain("memo.txt");
+  });
+
+  // Feature: タブ別ファイルツリー表示状態
+  // Scenario: 再構築した通常ツリーへ保存済みの展開状態を復元する
+  // Given: C:\workspace の docs を展開した通常ツリーが表示されている
+  // When: 表示状態を取得し、一覧を再構築してから状態を復元する
+  // Then: docs は再び展開され、配下の memo.txt が表示される
+  it("Scenario: 保存した通常ツリーの展開状態を再構築後に復元する", async () => {
+    const { host, ports, sidebar } = mount();
+    ports.onExpandFolder.mockImplementation(async (relDir) => relDir === "docs"
+      ? [{ name: "memo.txt", is_dir: false, is_archive: false }]
+      : []);
+    sidebar.setWorkspaceSearch("C:\\workspace");
+    sidebar.setEntries([{ name: "docs", is_dir: true, is_archive: false }]);
+    host.querySelector<HTMLElement>(".fv-row")!.click();
+    await vi.waitFor(() => expect(host.querySelectorAll(".fv-row")).toHaveLength(2));
+
+    const saved = sidebar.captureViewState();
+    saved.expandedRelPaths.push("deleted");
+    sidebar.setEntries([{ name: "docs", is_dir: true, is_archive: false }]);
+    await sidebar.restoreViewState(saved);
+
+    expect(host.querySelector(".fv-row .fv-arrow")?.textContent).toBe("🗂️");
+    expect(host.querySelectorAll<HTMLElement>(".fv-row")[1].textContent).toContain("memo.txt");
+  });
+
+  // Feature: タブ別ファイルツリー表示状態
+  // Scenario: アーカイブ内の仮想フォルダを再構築後に復元する
+  // Given: アーカイブのルートと、その中の仮想フォルダを展開している
+  // When: 表示状態を取得し、アーカイブ一覧を再構築してから復元する
+  // Then: アーカイブのルートと仮想フォルダが展開されたままになる
+  it("Scenario: 保存したアーカイブ内仮想フォルダの展開状態を復元する", async () => {
+    const { host, ports, sidebar } = mount();
+    ports.onExpandArchive.mockResolvedValue(["dir/memo.txt"]);
+    sidebar.setArchiveRoot("data.zip");
+    host.querySelector<HTMLElement>(".fv-row")!.click();
+    await vi.waitFor(() => expect(host.querySelectorAll(".fv-row")).toHaveLength(2));
+    host.querySelectorAll<HTMLElement>(".fv-row")[1].click();
+
+    const saved = sidebar.captureViewState();
+    sidebar.setArchiveRoot("data.zip");
+    await sidebar.restoreViewState(saved);
+
+    expect(host.querySelectorAll<HTMLElement>(".fv-row")[0].querySelector(".fv-arrow")?.textContent).toBe("⌄");
+    expect(host.querySelectorAll<HTMLElement>(".fv-row")[1].querySelector(".fv-arrow")?.textContent).toBe("🗂️");
+  });
+
+  // Feature: タブ別ファイルツリー検索状態
+  // Scenario: 保存状態のないタブは復元済みタブの検索条件を引き継がない
+  // Given: 復元した検索状態だけが大文字小文字を区別する設定になっている
+  // When: サイドバーを次のタブ用に初期化する
+  // Then: アプリ設定を基準にした既定の検索条件へ戻る
+  it("Scenario: 保存状態のないタブへ検索条件を漏らさない", async () => {
+    const { host, sidebar } = mount();
+    sidebar.setWorkspaceSearch("C:\\workspace");
+    sidebar.setEntries([{ name: "memo.txt", is_dir: false, is_archive: false }]);
+    const saved = sidebar.captureViewState();
+    saved.search!.options = { ...saved.search!.options, match_case: true };
+
+    await sidebar.restoreViewState(saved);
+    expect(host.querySelector<HTMLButtonElement>(".ws-search-row .ws-toggle")?.classList.contains("on")).toBe(true);
+
+    sidebar.resetViewState();
+    sidebar.setWorkspaceSearch("C:\\workspace");
+
+    expect(host.querySelector<HTMLButtonElement>(".ws-search-row .ws-toggle")?.classList.contains("on")).toBe(false);
+  });
+
+  // Feature: タブ別ファイルツリー検索状態
+  // Scenario: 検索結果の復元時に削除済み項目を除外する
+  // Given: 現在のフォルダ一覧には keep.txt だけが存在し、保存結果には deleted.txt も含まれている
+  // When: 検索表示状態を復元する
+  // Then: 再検索せず、存在する keep.txt の結果だけを表示する
+  it("Scenario: 削除済み検索結果を復元対象から除外する", async () => {
+    const { host, ports, sidebar } = mount();
+    ports.onExpandFolder.mockResolvedValue([{ name: "keep.txt", is_dir: false, is_archive: false }]);
+    sidebar.setWorkspaceSearch("C:\\workspace");
+    sidebar.setEntries([{ name: "keep.txt", is_dir: false, is_archive: false }]);
+    const keep: WorkspaceSearchResult = {
+      rel_path: "keep.txt", line: 1, col: 2, preview: "keep needle", highlights: [[5, 6]],
+      is_filename: false, score: 0,
+    };
+    const deleted: WorkspaceSearchResult = {
+      rel_path: "deleted.txt", line: 1, col: 2, preview: "deleted needle", highlights: [[7, 6]],
+      is_filename: false, score: 0,
+    };
+    const saved = sidebar.captureViewState();
+    saved.search = {
+      pattern: "needle",
+      options: saved.search!.options,
+      outcome: {
+        results: [keep, deleted],
+        scanned_files: 2,
+        skipped_files: 0,
+        hit_file_limit: false,
+        hit_result_limit: false,
+        pattern_error: null,
+        file_name_match_mode: "strict",
+      },
+      partial: [],
+      selected: null,
+      collapseByDefault: false,
+      collapsed: [],
+      collapseTouched: false,
+    };
+
+    await sidebar.restoreViewState(saved);
+
+    expect(host.querySelectorAll(".ws-group")).toHaveLength(1);
+    expect(host.querySelector(".ws-file")?.textContent).toBe("keep.txt");
+    expect(host.textContent).not.toContain("deleted.txt");
   });
 
   // Feature: ファイルツリー全体の展開
