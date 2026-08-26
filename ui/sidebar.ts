@@ -294,8 +294,7 @@ export class Sidebar {
       if (!archiveRelPath || !entryName) return Promise.resolve(false);
       const key = `archive:${archiveRelPath.toLowerCase()}`;
       const names = existence.get(key) ?? this.onExpandArchive(archiveRelPath)
-        .then((entries) => new Set(entries.map(pathKey)))
-        .catch(() => new Set<string>());
+        .then((entries) => new Set(entries.map(pathKey)));
       existence.set(key, names);
       return names.then((available) => available.has(pathKey(entryName)));
     }
@@ -304,8 +303,7 @@ export class Sidebar {
     const name = normalized.slice(parent ? parent.length + 1 : 0);
     const key = `folder:${parent.toLowerCase()}`;
     const names = existence.get(key) ?? this.onExpandFolder(parent)
-      .then((entries) => new Set(entries.map((entry) => pathKey(entry.name))))
-      .catch(() => new Set<string>());
+      .then((entries) => new Set(entries.map((entry) => pathKey(entry.name))));
     existence.set(key, names);
     return names.then((available) => available.has(pathKey(name)));
   }

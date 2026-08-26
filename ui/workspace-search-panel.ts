@@ -10,6 +10,7 @@ import {
   sameSearchOptions,
   searchScopeSummary,
   type BoolOptionKey,
+  type SearchHighlightQuery,
 } from "./workspace-search-options";
 
 // フォルダ検索の窓と結果ツリー。検索条件の保持・実行・打ち切り・途中経過の
@@ -30,7 +31,7 @@ export interface WorkspaceSearchPorts {
   onOpen: (
     result: WorkspaceSearchResult,
     newTab: boolean,
-    query: WorkspaceSearchHighlightQuery,
+    query: SearchHighlightQuery,
   ) => void | boolean | Promise<void | boolean>;
   // 本文一致を検索結果の位置で1件置換する。成功時は呼び出し側が
   // refreshAfterDocumentChange を通知する。ファイル名一致では呼ばない。
@@ -40,13 +41,6 @@ export interface WorkspaceSearchPorts {
   onOptionsChange: (options: WorkspaceSearchOptions) => void;
   // 出すべき中身が変わった → 器の描き替えを頼む
   onViewChange: () => void;
-}
-
-export interface WorkspaceSearchHighlightQuery {
-  pat: string;
-  matchCase: boolean;
-  useRegex: boolean;
-  wholeWord: boolean;
 }
 
 // DOM の行数だけは有限にしないと画面が固まる。超えた分は隠さず「ここまで」と告げる
@@ -672,7 +666,7 @@ export class WorkspaceSearchPanel {
   private invokeOpen(match: WorkspaceSearchResult, newTab: boolean) {
     const request = ++this.openRequest;
     const key = searchResultKey(match);
-    const query: WorkspaceSearchHighlightQuery = {
+    const query: SearchHighlightQuery = {
       pat: this.state.pattern,
       matchCase: this.options.match_case,
       useRegex: this.options.use_regex,

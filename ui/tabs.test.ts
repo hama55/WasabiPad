@@ -3,10 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "./api";
 import { TabManager, type StoredTabs, type TabDocumentPort } from "./tabs";
 import type { SidebarViewState } from "./sidebar";
-import type { FindHighlightQuery } from "./editor";
 import { initialSession } from "./session";
 import { initSettings } from "./settings";
-import { DEFAULT_SEARCH_OPTIONS } from "./workspace-search-options";
+import { DEFAULT_SEARCH_OPTIONS, type SearchHighlightQuery } from "./workspace-search-options";
 import { addRegisteredCommand, commandsForKind } from "./registered-commands";
 import type { RegisteredCommandMenuPorts } from "./registered-command-menu";
 import { MENU_ICON } from "./menu-icons";
@@ -62,6 +61,35 @@ const stored: StoredTabs = {
   ],
   activeId: "a",
 };
+
+function folderTabViewFixture() {
+  const { doc, host } = fixture();
+  const current = {
+    workspace: null as SidebarViewState | null,
+    query: null as SearchHighlightQuery | null,
+  };
+  const workspace = {
+    capture: vi.fn(() => current.workspace),
+    reset: vi.fn(() => { current.workspace = null; }),
+    restore: vi.fn((state: SidebarViewState | null) => { current.workspace = state; }),
+  };
+  const findHighlight = {
+    capture: vi.fn(() => current.query),
+    restore: vi.fn((query: SearchHighlightQuery | null) => { current.query = query; }),
+  };
+  vi.mocked(doc.openPath).mockImplementation(async (path: string) => {
+    doc.current.folderRoot = path;
+    doc.current.savePath = null;
+    doc.current.displayPath = path;
+    return true;
+  });
+  const manager = new TabManager(host, doc, {
+    onChange: () => {},
+    workspace,
+    findHighlight,
+  }, registeredCommandPorts);
+  return { doc, host, manager, current };
+}
 
 function dragOnto(from: HTMLElement, to: HTMLElement, ratio: number) {
   const rect = { left: 0, top: 0, width: 100, height: 20, right: 100, bottom: 20 };
@@ -724,8 +752,8 @@ describe("Feature: TabManager", () => {
   // Feature: タブ別ファイルツリー表示状態
   // Scenario: タブを切り替えて戻るとタブ固有のファイルツリー状態を復元する
   // Given: タブAとタブBがあり、タブAのファイルツリー表示状態を保存している
-  // When: タブAからタブBへ切り替え、タブBからタブAへ戻る
-  // Then: タブAの状態が復元され、タブBの状態とは混ざらない
+  // When: タブAからタブBへ切り替え、タブBからタブAへ戻り、再びタブBへ切り替える
+  // Then: 両タブの状態がそれぞれ復元され、互いに混ざらない
   it("Scenario: タブ切替後にタブ固有のファイルツリー状態を復元する", async () => {
     const { doc, host } = fixture();
     const aState: SidebarViewState = {
@@ -775,26 +803,61 @@ describe("Feature: TabManager", () => {
     await manager.activate("b");
     currentState = bState;
     await manager.activate("a");
+    await manager.activate("b");
 
-    expect(workspace.capture).toHaveBeenCalledTimes(2);
-    expect(workspace.reset).toHaveBeenCalledTimes(3);
-    expect(restored).toEqual([aState]);
+    expect(restored).toEqual([aState, bState]);
+  });
+
+  // Feature: タブ別ファイルツリー表示状態
+  // Scenario: タブのpathが変わっても保存状態の照合先を追従させる
+  // Given: タブAの状態を `C:\work` として保存した後、タブAのpathが `C:\renamed` になる
+  // When: タブAへ戻る
+  // Then: タブAのファイルツリーと検索ハイライトを復元する
+  it("Scenario: path変更後もタブ別表示状態を復元する", async () => {
+    const aState: SidebarViewState = {
+      kind: "folder",
+      expandedRelPaths: ["docs"],
+      search: null,
+    };
+    const aQuery: SearchHighlightQuery = { pat: "test", matchCase: false, useRegex: false, wholeWord: false };
+    const { manager, current } = folderTabViewFixture();
+
+    await manager.init({
+      tabs: [
+        { id: "a", path: "C:\\work", kind: "folder", label: "work" },
+        { id: "b", path: "C:\\other", kind: "folder", label: "other" },
+      ],
+      activeId: "a",
+    }, null, null);
+    current.workspace = aState;
+    current.query = aQuery;
+    await manager.activate("b");
+    manager.rebasePaths({
+      oldAbsolute: "C:\\work",
+      newAbsolute: "C:\\renamed",
+      oldRelPath: "work",
+      newRelPath: "renamed",
+    });
+    await manager.activate("a");
+
+    expect(current.workspace).toEqual(aState);
+    expect(current.query).toEqual(aQuery);
   });
 
   // Feature: タブ別エディタ検索ハイライト
   // Scenario: タブを切り替えて戻るとタブ固有の検索ハイライト条件を復元する
   // Given: タブAではtest、タブBではimportを検索結果から開いている
-  // When: タブAからタブBへ切り替え、タブBからタブAへ戻る
-  // Then: タブAのエディタ検索ハイライト条件testが復元される
+  // When: タブAからタブBへ切り替え、タブBからタブAへ戻り、再びタブBへ切り替える
+  // Then: 両タブのエディタ検索ハイライト条件がそれぞれ復元される
   it("Scenario: タブ切替後にタブ固有の検索ハイライト条件を復元する", async () => {
     const { doc, host } = fixture();
-    const aQuery: FindHighlightQuery = { pat: "test", matchCase: false, useRegex: false, wholeWord: false };
-    const bQuery: FindHighlightQuery = { pat: "import", matchCase: false, useRegex: false, wholeWord: false };
-    let currentQuery: FindHighlightQuery | null = null;
-    const restored: (FindHighlightQuery | null)[] = [];
+    const aQuery: SearchHighlightQuery = { pat: "test", matchCase: false, useRegex: false, wholeWord: false };
+    const bQuery: SearchHighlightQuery = { pat: "import", matchCase: false, useRegex: false, wholeWord: false };
+    let currentQuery: SearchHighlightQuery | null = null;
+    const restored: (SearchHighlightQuery | null)[] = [];
     const findHighlight = {
       capture: vi.fn(() => currentQuery),
-      restore: vi.fn((query: FindHighlightQuery | null) => {
+      restore: vi.fn((query: SearchHighlightQuery | null) => {
         restored.push(query);
         currentQuery = query;
       }),
@@ -817,9 +880,9 @@ describe("Feature: TabManager", () => {
     await manager.activate("b");
     currentQuery = bQuery;
     await manager.activate("a");
+    await manager.activate("b");
 
-    expect(findHighlight.capture).toHaveBeenCalledTimes(2);
-    expect(restored).toEqual([null, aQuery]);
+    expect(restored).toEqual([null, aQuery, bQuery]);
   });
 
   // Given: 切替先の読み込みが継続中で、active tab a の現在位置が保存対象にある
@@ -1092,6 +1155,29 @@ describe("Feature: TabManager", () => {
     expect(manager.state.tabs[2].kind).toBe("blank");
   });
 
+  // Feature: 新規タブの初期表示状態
+  // Scenario: 新規タブは直前タブのファイルツリーとハイライトを引き継がない
+  // Given: 現在タブにファイルツリー状態とtestの検索ハイライトがある
+  // When: 新規タブを追加する
+  // Then: 新規タブではファイルツリー状態とハイライトが初期状態になる
+  it("Scenario: 新規タブへ表示状態を引き継がない", async () => {
+    const aState: SidebarViewState = { kind: "folder", expandedRelPaths: ["docs"], search: null };
+    const aQuery: SearchHighlightQuery = { pat: "test", matchCase: false, useRegex: false, wholeWord: false };
+    const { manager, current } = folderTabViewFixture();
+
+    await manager.init({
+      tabs: [{ id: "a", path: "C:\\work", kind: "folder", label: "work" }],
+      activeId: "a",
+    }, null, null);
+    current.workspace = aState;
+    current.query = aQuery;
+
+    await manager.newBlank();
+
+    expect(current.workspace).toBeNull();
+    expect(current.query).toBeNull();
+  });
+
   // Feature: ＋から作る無題メモの既定保存先
   // Scenario: カレントタブがフォルダの場合はフォルダを下書き保存先にする
   // Given: C:\workのフォルダタブがアクティブ
@@ -1279,6 +1365,33 @@ describe("Feature: TabManager", () => {
     }));
   });
 
+  // Feature: タブ削除後のタブ別表示状態
+  // Scenario: 閉じたタブを復活してもファイルツリーと検索ハイライトを復元しない
+  // Given: タブAにファイルツリー状態とtestの検索ハイライトが保存されている
+  // When: タブAを閉じ、同じ起動中に閉じたタブを復活する
+  // Then: タブAのファイルツリーと検索ハイライトは初期状態になる
+  it("Scenario: 閉じたタブを復活しても表示状態を引き継がない", async () => {
+    const aState: SidebarViewState = { kind: "folder", expandedRelPaths: ["docs"], search: null };
+    const aQuery: SearchHighlightQuery = { pat: "test", matchCase: false, useRegex: false, wholeWord: false };
+    const { manager, current } = folderTabViewFixture();
+
+    await manager.init({
+      tabs: [
+        { id: "a", path: "C:\\work", kind: "folder", label: "work" },
+        { id: "b", path: "C:\\other", kind: "folder", label: "other" },
+      ],
+      activeId: "a",
+    }, null, null);
+    current.workspace = aState;
+    current.query = aQuery;
+    await manager.activate("b");
+    await manager.close("a");
+    await expect(manager.reopenLastClosed()).resolves.toBe(true);
+
+    expect(current.workspace).toBeNull();
+    expect(current.query).toBeNull();
+  });
+
   // Scenario: 読み込みに失敗した閉じたtabを後から再試行する
   // Given: b tabを閉じ、b.txtの最初のopenPathだけfalseを返す
   // When: reopenLastClosedを2回呼ぶ
@@ -1398,6 +1511,33 @@ describe("Feature: TabManager", () => {
     await manager.init(stored, null, null);
 
     await expect(manager.reopenLastClosed()).resolves.toBe(false);
+  });
+
+  // Feature: 再初期化後のタブ別表示状態
+  // Scenario: 再初期化後は以前の一時的な表示状態を復元しない
+  // Given: タブAにファイルツリー状態とtestの検索ハイライトが保存されている
+  // When: 同じStoredTabsでTabManagerを再初期化する
+  // Then: ファイルツリーとハイライトは初期状態になる
+  it("Scenario: 再初期化後はタブ別表示状態を復元しない", async () => {
+    const aState: SidebarViewState = { kind: "folder", expandedRelPaths: ["docs"], search: null };
+    const aQuery: SearchHighlightQuery = { pat: "test", matchCase: false, useRegex: false, wholeWord: false };
+    const { manager, current } = folderTabViewFixture();
+    const tabs: StoredTabs = {
+      tabs: [
+        { id: "a", path: "C:\\work", kind: "folder", label: "work" },
+        { id: "b", path: "C:\\other", kind: "folder", label: "other" },
+      ],
+      activeId: "a",
+    };
+
+    await manager.init(tabs, null, null);
+    current.workspace = aState;
+    current.query = aQuery;
+    await manager.activate("b");
+    await manager.init(tabs, null, null);
+
+    expect(current.workspace).toBeNull();
+    expect(current.query).toBeNull();
   });
 
   // Given: activeId=a で a.txt と b.txt があり、addLinks に a.txt(file) と src(folder) を渡す

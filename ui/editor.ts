@@ -42,6 +42,7 @@ import {
 } from "./editor-math";
 import type { EditorViewState } from "./editor-view-state";
 import { selectedLineRange } from "./editor-edit-plan";
+import type { SearchHighlightQuery } from "./workspace-search-options";
 
 const OVERSCAN = 8;
 
@@ -50,13 +51,6 @@ function normalizeClipboardText(text: string): string {
 }
 
 export type { EditorViewState } from "./editor-view-state";
-
-export interface FindHighlightQuery {
-  pat: string;
-  matchCase: boolean;
-  useRegex: boolean;
-  wholeWord: boolean;
-}
 
 function isPreviewLine(line: number, range: { start: Pos; end: Pos } | null): boolean {
   const selected = range ? selectedLineRange(range.start, range.end) : null;
@@ -132,7 +126,7 @@ export class VirtualEditor {
   private mutation: EditorMutationController;
   private findGen = 0; // 検索ループの世代。closeやEnter連打で古いループを打ち切るため
   private lastFindMatch: { start: Pos; end: Pos; pat: string; matchCase: boolean } | null = null; // 連続置換が対象にしてよい直前の一致
-  private activeFind: FindHighlightQuery | null = null;
+  private activeFind: SearchHighlightQuery | null = null;
   private findHighlights: api.FindResult[] = [];
   private findHighlightRequestKey = "";
   private findHighlightGeneration = 0;
@@ -1193,11 +1187,11 @@ export class VirtualEditor {
     this.schedule();
   }
 
-  captureFindHighlightQuery(): FindHighlightQuery | null {
+  captureFindHighlightQuery(): SearchHighlightQuery | null {
     return this.activeFind ? { ...this.activeFind } : null;
   }
 
-  restoreFindHighlightQuery(query: FindHighlightQuery | null) {
+  restoreFindHighlightQuery(query: SearchHighlightQuery | null) {
     this.setFindHighlightQuery(
       query?.pat ?? "",
       query?.matchCase ?? false,

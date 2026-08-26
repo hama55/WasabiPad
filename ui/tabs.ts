@@ -1,8 +1,7 @@
 import type { Pos, WindowRequest } from "./api";
 import type { DocumentSession } from "./session";
 import { cloneEditorViewState, type EditorViewState } from "./editor-view-state";
-import type { FindHighlightQuery } from "./editor";
-import { basename, rebaseWindowsPath, type PathRebase } from "./path";
+import { basename, comparablePath, rebaseWindowsPath, type PathRebase } from "./path";
 import { TabBarView, type TabDropSpot } from "./tab-view";
 import type { RegisteredCommandMenuPorts } from "./registered-command-menu";
 import type { SidebarViewState } from "./sidebar";
@@ -14,6 +13,7 @@ import {
 } from "./navigation-history";
 export { isStoredTab, isStoredTabs, type StoredTab, type StoredTabs } from "./stored-tabs";
 import type { StoredTab, StoredTabs } from "./stored-tabs";
+import type { SearchHighlightQuery } from "./workspace-search-options";
 
 export interface TabDocumentPort {
   readonly current: Readonly<DocumentSession>;
@@ -34,8 +34,8 @@ export interface TabWorkspaceStatePort {
 }
 
 export interface TabFindHighlightPort {
-  capture: () => FindHighlightQuery | null;
-  restore: (query: FindHighlightQuery | null) => void;
+  capture: () => SearchHighlightQuery | null;
+  restore: (query: SearchHighlightQuery | null) => void;
 }
 
 interface TabPorts {
@@ -68,11 +68,10 @@ function rebaseRelativePath(path: string, oldPrefix: string, newPrefix: string):
 
 function sameTabPath(a: string | null, b: string | null): boolean {
   if (a === null || b === null) return a === b;
-  return a.replace(/\\/g, "/").toLocaleLowerCase("en-US")
-    === b.replace(/\\/g, "/").toLocaleLowerCase("en-US");
+  return comparablePath(a) === comparablePath(b);
 }
 
-function cloneFindHighlightQuery(query: FindHighlightQuery | null): FindHighlightQuery | null {
+function cloneFindHighlightQuery(query: SearchHighlightQuery | null): SearchHighlightQuery | null {
   return query ? { ...query } : null;
 }
 
@@ -87,7 +86,7 @@ export class TabManager {
   private tabs: StoredTab[] = [];
   private activeId = "";
   private workspaceStates = new Map<string, { path: string | null; state: SidebarViewState }>();
-  private findHighlightStates = new Map<string, { path: string | null; query: FindHighlightQuery | null }>();
+  private findHighlightStates = new Map<string, { path: string | null; query: SearchHighlightQuery | null }>();
   private transitionTarget: string | null = null;
   private loadingActive = false;
   private navigationInProgress = false;
@@ -196,6 +195,15 @@ export class TabManager {
         }
       }
     }
+    const rebaseSavedPath = (saved: { path: string | null }) => {
+      if (saved.path === null) return;
+      const rebased = rebaseWindowsPath(saved.path, oldAbsolute, newAbsolute);
+      if (!rebased || rebased === saved.path) return;
+      saved.path = rebased;
+      changed = true;
+    };
+    for (const saved of this.workspaceStates.values()) rebaseSavedPath(saved);
+    for (const saved of this.findHighlightStates.values()) rebaseSavedPath(saved);
     if (changed) this.renderAndPersist();
   }
 

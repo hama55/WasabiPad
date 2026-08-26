@@ -1271,6 +1271,46 @@ describe("Feature: Sidebar", () => {
     expect(host.textContent).not.toContain("deleted.txt");
   });
 
+  // Feature: タブ別ファイルツリー検索状態
+  // Scenario: 検索結果の存在確認に失敗したときは結果を削除扱いにしない
+  // Given: 保存済み検索結果が表示され、次の存在確認IPCが失敗する
+  // When: 検索表示状態をもう一度復元する
+  // Then: 復元処理は失敗し、直前の検索結果表示と保存データを維持する
+  it("Scenario: 検索結果の存在確認失敗で結果を失わない", async () => {
+    const { ports, sidebar } = mount();
+    const keep: WorkspaceSearchResult = {
+      rel_path: "keep.txt", line: 1, col: 2, preview: "keep needle", highlights: [[5, 6]],
+      is_filename: false, score: 0,
+    };
+    ports.onExpandFolder.mockResolvedValue([{ name: "keep.txt", is_dir: false, is_archive: false }]);
+    sidebar.setWorkspaceSearch("C:\\workspace");
+    sidebar.setEntries([{ name: "keep.txt", is_dir: false, is_archive: false }]);
+    const saved = sidebar.captureViewState();
+    saved.search = {
+      ...saved.search!,
+      pattern: "needle",
+      outcome: {
+        results: [keep],
+        scanned_files: 1,
+        skipped_files: 0,
+        hit_file_limit: false,
+        hit_result_limit: false,
+        pattern_error: null,
+        file_name_match_mode: "strict",
+      },
+      partial: [],
+    };
+    await sidebar.restoreViewState(saved);
+    const before = sidebar.captureViewState();
+    const error = new Error("folder listing unavailable");
+    ports.onExpandFolder.mockRejectedValueOnce(error);
+
+    await expect(sidebar.restoreViewState(saved)).rejects.toBe(error);
+
+    expect(sidebar.captureViewState().search).toEqual(before.search);
+    expect(saved.search?.outcome).toEqual(before.search?.outcome);
+  });
+
   // Feature: ファイルツリー全体の展開
   // Scenario: 空白部メニューから全ルートを展開する
   // Given: `dir`と`other`の2つの閉じたフォルダがある
