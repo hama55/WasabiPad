@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "./api";
 import { TabManager, type StoredTabs, type TabDocumentPort } from "./tabs";
 import type { SidebarViewState } from "./sidebar";
+import type { FindHighlightQuery } from "./editor";
 import { initialSession } from "./session";
 import { initSettings } from "./settings";
 import { DEFAULT_SEARCH_OPTIONS } from "./workspace-search-options";
@@ -778,6 +779,47 @@ describe("Feature: TabManager", () => {
     expect(workspace.capture).toHaveBeenCalledTimes(2);
     expect(workspace.reset).toHaveBeenCalledTimes(3);
     expect(restored).toEqual([aState]);
+  });
+
+  // Feature: タブ別エディタ検索ハイライト
+  // Scenario: タブを切り替えて戻るとタブ固有の検索ハイライト条件を復元する
+  // Given: タブAではtest、タブBではimportを検索結果から開いている
+  // When: タブAからタブBへ切り替え、タブBからタブAへ戻る
+  // Then: タブAのエディタ検索ハイライト条件testが復元される
+  it("Scenario: タブ切替後にタブ固有の検索ハイライト条件を復元する", async () => {
+    const { doc, host } = fixture();
+    const aQuery: FindHighlightQuery = { pat: "test", matchCase: false, useRegex: false, wholeWord: false };
+    const bQuery: FindHighlightQuery = { pat: "import", matchCase: false, useRegex: false, wholeWord: false };
+    let currentQuery: FindHighlightQuery | null = null;
+    const restored: (FindHighlightQuery | null)[] = [];
+    const findHighlight = {
+      capture: vi.fn(() => currentQuery),
+      restore: vi.fn((query: FindHighlightQuery | null) => {
+        restored.push(query);
+        currentQuery = query;
+      }),
+    };
+    const manager = new TabManager(host, doc, {
+      onChange: () => {},
+      findHighlight,
+    }, registeredCommandPorts);
+
+    await manager.init({
+      tabs: [
+        { id: "a", path: "C:\\work", kind: "folder", label: "work" },
+        { id: "b", path: "C:\\work", kind: "folder", label: "work (2)" },
+      ],
+      activeId: "a",
+    }, null, null);
+    restored.length = 0;
+    currentQuery = aQuery;
+
+    await manager.activate("b");
+    currentQuery = bQuery;
+    await manager.activate("a");
+
+    expect(findHighlight.capture).toHaveBeenCalledTimes(2);
+    expect(restored).toEqual([null, aQuery]);
   });
 
   // Given: 切替先の読み込みが継続中で、active tab a の現在位置が保存対象にある

@@ -1,6 +1,7 @@
 import type { Pos, WindowRequest } from "./api";
 import type { DocumentSession } from "./session";
 import { cloneEditorViewState, type EditorViewState } from "./editor-view-state";
+import type { FindHighlightQuery } from "./editor";
 import { basename, rebaseWindowsPath, type PathRebase } from "./path";
 import { TabBarView, type TabDropSpot } from "./tab-view";
 import type { RegisteredCommandMenuPorts } from "./registered-command-menu";
@@ -32,9 +33,15 @@ export interface TabWorkspaceStatePort {
   restore: (state: SidebarViewState | null) => void | Promise<void>;
 }
 
+export interface TabFindHighlightPort {
+  capture: () => FindHighlightQuery | null;
+  restore: (query: FindHighlightQuery | null) => void;
+}
+
 interface TabPorts {
   onChange: (state: StoredTabs) => void;
   workspace?: TabWorkspaceStatePort;
+  findHighlight?: TabFindHighlightPort;
   onError?: (error: unknown, message?: string) => void | Promise<void>;
   onDetach?: (request: WindowRequest) => Promise<boolean>;
   onOpenInNewWindow?: (request: WindowRequest) => Promise<boolean>;
@@ -65,6 +72,10 @@ function sameTabPath(a: string | null, b: string | null): boolean {
     === b.replace(/\\/g, "/").toLocaleLowerCase("en-US");
 }
 
+function cloneFindHighlightQuery(query: FindHighlightQuery | null): FindHighlightQuery | null {
+  return query ? { ...query } : null;
+}
+
 type NavigationRun<T> = {
   proceeded: boolean;
   result?: T;
@@ -76,6 +87,7 @@ export class TabManager {
   private tabs: StoredTab[] = [];
   private activeId = "";
   private workspaceStates = new Map<string, { path: string | null; state: SidebarViewState }>();
+  private findHighlightStates = new Map<string, { path: string | null; query: FindHighlightQuery | null }>();
   private transitionTarget: string | null = null;
   private loadingActive = false;
   private navigationInProgress = false;
@@ -129,6 +141,7 @@ export class TabManager {
     this.navigationHistory.clear();
     this.closedTabs = [];
     this.workspaceStates.clear();
+    this.findHighlightStates.clear();
     const startupTarget = initialPath ?? startupPath;
     const initialTab = stored.tabs.length || startupTarget
       ? this.link(startupTarget, initialPath ? initialGoto : undefined)
@@ -457,10 +470,12 @@ export class TabManager {
       const closed = { tab: this.state.tabs[0], index: 0 };
       const replacement = await this.blankTab(null);
       this.workspaceStates.delete(id);
+      this.findHighlightStates.delete(id);
       await this.commitTransition(async () => {
         this.tabs = [replacement];
         this.activeId = this.tabs[0].id;
         await this.doc.newFile(false, replacement.draftDirectory ?? null);
+        this.ports.findHighlight?.restore(null);
       });
       this.closedTabs.push({ ...closed, replacementId: replacement.id });
       return;
@@ -473,6 +488,7 @@ export class TabManager {
       this.syncActive(this.doc.current);
       const closed = { tab: this.state.tabs[index], index };
       this.workspaceStates.delete(id);
+      this.findHighlightStates.delete(id);
       await this.commitTransition(async () => {
         this.tabs.splice(index, 1);
         this.activateTabAfterRemoval(index);
@@ -482,6 +498,7 @@ export class TabManager {
     } else {
       const closed = { tab: this.state.tabs[index], index };
       this.workspaceStates.delete(id);
+      this.findHighlightStates.delete(id);
       this.tabs.splice(index, 1);
       this.renderAndPersist();
       this.closedTabs.push(closed);
@@ -642,6 +659,12 @@ export class TabManager {
         await this.doc.newFile(false, tab.draftDirectory ?? null);
         if (tab.viewState) await this.doc.restoreViewState(tab.viewState);
       }
+      const findHighlightState = this.findHighlightStates.get(tab.id);
+      this.ports.findHighlight?.restore(
+        findHighlightState && sameTabPath(findHighlightState.path, tab.path)
+          ? cloneFindHighlightQuery(findHighlightState.query)
+          : null,
+      );
       const workspaceState = this.workspaceStates.get(tab.id);
       if (workspaceState && sameTabPath(workspaceState.path, tab.path)) {
         await this.ports.workspace?.restore(workspaceState.state);
@@ -671,6 +694,12 @@ export class TabManager {
     const workspaceState = this.ports.workspace?.capture() ?? null;
     if (!workspaceState || workspaceState.kind === null) this.workspaceStates.delete(tab.id);
     else this.workspaceStates.set(tab.id, { path: tab.path, state: workspaceState });
+    const findHighlight = this.ports.findHighlight?.capture();
+    if (findHighlight === undefined) this.findHighlightStates.delete(tab.id);
+    else this.findHighlightStates.set(tab.id, {
+      path: tab.path,
+      query: cloneFindHighlightQuery(findHighlight),
+    });
   }
 
   private active() {
@@ -752,6 +781,7 @@ export class TabManager {
     this.tabs.forEach((tab, index) => {
       if (remove(tab, index)) {
         this.workspaceStates.delete(tab.id);
+        this.findHighlightStates.delete(tab.id);
         closed.push({ tab: snapshots[index], index });
       }
       else kept.push(tab);
@@ -802,6 +832,7 @@ export class TabManager {
       viewState: tab.viewState ?? null,
     })) return;
     this.workspaceStates.delete(id);
+    this.findHighlightStates.delete(id);
     this.tabs.splice(this.tabs.indexOf(tab), 1);
     if (!wasActive) {
       this.renderAndPersist();
@@ -812,6 +843,7 @@ export class TabManager {
       this.tabs = [blank];
       this.activeId = blank.id;
       await this.doc.newFile(false);
+      this.ports.findHighlight?.restore(null);
     } else {
       this.activateTabAfterRemoval(index);
       await this.loadActive();

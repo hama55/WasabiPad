@@ -841,6 +841,10 @@ tabs = new TabManager($("tabs"), doc, {
     reset: () => sidebar.resetViewState(),
     restore: (state) => sidebar.restoreViewState(state),
   },
+  findHighlight: {
+    capture: () => editor.captureFindHighlightQuery(),
+    restore: (query) => editor.restoreFindHighlightQuery(query),
+  },
   onError: (error, message = "タブを操作できませんでした") => reportBackgroundError(message, error),
   onDetach: (request) => launchNewWindow(request),
   onOpenInNewWindow: (request) => launchNewWindow(request),
