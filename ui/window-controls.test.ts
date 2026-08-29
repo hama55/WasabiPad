@@ -5,7 +5,11 @@ import { WindowControls } from "./window-controls";
 
 type CloseEvent = { preventDefault: () => void };
 
-function mountControls(onCloseRequest?: () => Promise<boolean>) {
+function mountControls(
+  onCloseRequest?: () => Promise<boolean>,
+  onStateChange?: (state: "minimized" | "maximized" | "restored") => void,
+  onGeometryChange?: () => void,
+) {
   const host = document.createElement("div");
   host.innerHTML = `
     <button id="win-min"></button>
@@ -14,17 +18,36 @@ function mountControls(onCloseRequest?: () => Promise<boolean>) {
     <span id="titletext"></span>
   `;
   let resizedHandler: (() => void) | undefined;
+  let movedHandler: (() => void) | undefined;
+  let scaleChangedHandler: (() => void) | undefined;
+  let focusChangedHandler: (() => void) | undefined;
   let closeHandler: ((event: CloseEvent) => void | Promise<void>) | undefined;
   const unlistenResized = vi.fn();
+  const unlistenMoved = vi.fn();
+  const unlistenScaleChanged = vi.fn();
+  const unlistenFocusChanged = vi.fn();
   const unlistenCloseRequested = vi.fn();
   const win = {
     minimize: vi.fn(),
     close: vi.fn(),
     toggleMaximize: vi.fn(),
+    isMinimized: vi.fn(async () => false),
     isMaximized: vi.fn(async () => false),
     onResized: vi.fn(async (handler: () => void) => {
       resizedHandler = handler;
       return unlistenResized;
+    }),
+    onMoved: vi.fn(async (handler: () => void) => {
+      movedHandler = handler;
+      return unlistenMoved;
+    }),
+    onScaleChanged: vi.fn(async (handler: () => void) => {
+      scaleChangedHandler = handler;
+      return unlistenScaleChanged;
+    }),
+    onFocusChanged: vi.fn(async (handler: () => void) => {
+      focusChangedHandler = handler;
+      return unlistenFocusChanged;
     }),
     onCloseRequested: vi.fn(async (handler: (event: CloseEvent) => void | Promise<void>) => {
       closeHandler = handler;
@@ -35,8 +58,25 @@ function mountControls(onCloseRequest?: () => Promise<boolean>) {
   const controls = new WindowControls(host, win, host.querySelector<HTMLElement>("#titletext")!, {
     onError,
     onCloseRequest,
+    onGeometryChange,
+    onStateChange,
   });
-  return { host, win, onError, controls, resizedHandler, unlistenResized, unlistenCloseRequested, getCloseHandler: () => closeHandler };
+  return {
+    host,
+    win,
+    onError,
+    controls,
+    resizedHandler,
+    movedHandler: () => movedHandler,
+    scaleChangedHandler: () => scaleChangedHandler,
+    focusChangedHandler: () => focusChangedHandler,
+    unlistenResized,
+    unlistenMoved,
+    unlistenScaleChanged,
+    unlistenFocusChanged,
+    unlistenCloseRequested,
+    getCloseHandler: () => closeHandler,
+  };
 }
 
 describe("Feature: WindowControls", () => {
@@ -70,6 +110,77 @@ describe("Feature: WindowControls", () => {
     const button = host.querySelector<HTMLButtonElement>("#win-max")!;
     expect(button.title).toBe("元に戻す");
     expect(button.textContent).toBe(String.fromCharCode(0xe923));
+  });
+
+  // Given: native windowが最小化・最大化の状態を返す
+  // When: 現在のwindow状態を同期する
+  // Then: 最小化を優先し、それ以外は最大化または復元として通知する
+  it("Scenario: native window状態を最小化・最大化・復元へ分類する", async () => {
+    const onStateChange = vi.fn();
+    const { win, controls } = mountControls(undefined, onStateChange);
+
+    vi.mocked(win.isMinimized).mockResolvedValueOnce(true);
+    vi.mocked(win.isMaximized).mockResolvedValueOnce(true);
+    await controls.syncWindowState();
+
+    vi.mocked(win.isMinimized).mockResolvedValueOnce(false);
+    vi.mocked(win.isMaximized).mockResolvedValueOnce(true);
+    await controls.syncWindowState();
+
+    vi.mocked(win.isMinimized).mockResolvedValueOnce(false);
+    vi.mocked(win.isMaximized).mockResolvedValueOnce(false);
+    await controls.syncWindowState();
+
+    expect(onStateChange).toHaveBeenNthCalledWith(1, "minimized");
+    expect(onStateChange).toHaveBeenNthCalledWith(2, "maximized");
+    expect(onStateChange).toHaveBeenNthCalledWith(3, "restored");
+  });
+
+  // Given: native windowのフォーカス監視を登録したwindow controls
+  // When: フォーカスが戻ったことを通知する
+  // Then: 最小化・復元後の状態を再同期する
+  it("Scenario: フォーカス復帰でnative window状態を再同期する", async () => {
+    const onStateChange = vi.fn();
+    const { controls, win, focusChangedHandler } = mountControls(undefined, onStateChange);
+
+    await vi.waitFor(() => expect(focusChangedHandler()).toBeDefined());
+    vi.mocked(win.isMinimized).mockResolvedValue(false);
+    vi.mocked(win.isMaximized).mockResolvedValue(true);
+    focusChangedHandler()!();
+
+    await vi.waitFor(() => expect(onStateChange).toHaveBeenCalledWith("maximized"));
+    controls.dispose();
+  });
+
+  // Given: native windowの移動・表示倍率監視を登録したwindow controls
+  // When: 移動またはDPI変更を受け取る
+  // Then: レイアウト同期へ変更を通知する
+  it("Scenario: 移動・DPI変更をgeometry同期へ渡す", async () => {
+    const onGeometryChange = vi.fn();
+    const { controls, movedHandler, scaleChangedHandler } = mountControls(undefined, undefined, onGeometryChange);
+    expect(movedHandler()).toBeDefined();
+    expect(scaleChangedHandler()).toBeDefined();
+    movedHandler()!();
+    scaleChangedHandler()!();
+    expect(onGeometryChange).toHaveBeenCalledTimes(2);
+    controls.dispose();
+  });
+
+  // Given: geometry同期処理が同期例外を返すwindow controls
+  // When: nativeの移動通知を受け取る
+  // Then: 例外をwindow operationのエラー境界へ渡す
+  it("Scenario: geometry同期の同期例外をエラー境界へ渡す", async () => {
+    const error = new Error("layout failed");
+    const onGeometryChange = () => { throw error; };
+    const { controls, onError, movedHandler } = mountControls(undefined, undefined, onGeometryChange);
+
+    await vi.waitFor(() => expect(movedHandler()).toBeDefined());
+    movedHandler()!();
+
+    await vi.waitFor(() => {
+      expect(onError).toHaveBeenCalledWith("ウィンドウ形状を同期できませんでした", error);
+    });
+    controls.dispose();
   });
 
   // Given: native close確認を拒否するwindow controls
@@ -127,12 +238,40 @@ describe("Feature: WindowControls", () => {
   // When: controlsを破棄する
   // Then: 登録済みlistenerを解除する
   it("Scenario: dispose unregisters native listeners", async () => {
-    const { controls, unlistenResized, unlistenCloseRequested } = mountControls(async () => true);
+    const {
+      controls,
+      unlistenResized,
+      unlistenMoved,
+      unlistenScaleChanged,
+      unlistenFocusChanged,
+      unlistenCloseRequested,
+    } = mountControls(async () => true);
 
     controls.dispose();
     await vi.waitFor(() => {
       expect(unlistenResized).toHaveBeenCalledOnce();
+      expect(unlistenMoved).toHaveBeenCalledOnce();
+      expect(unlistenScaleChanged).toHaveBeenCalledOnce();
+      expect(unlistenFocusChanged).toHaveBeenCalledOnce();
       expect(unlistenCloseRequested).toHaveBeenCalledOnce();
     });
+  });
+
+  // Given: DOMイベントとnative listenerを登録したwindow controls
+  // When: controlsを破棄してからボタンとタイトルを操作する
+  // Then: 破棄後の遅延クリックはnative window操作へ到達しない
+  it("Scenario: dispose unregisters DOM controls", async () => {
+    const { controls, host, win } = mountControls();
+
+    controls.dispose();
+    host.querySelector<HTMLButtonElement>("#win-min")!.click();
+    host.querySelector<HTMLButtonElement>("#win-max")!.click();
+    host.querySelector<HTMLButtonElement>("#win-close")!.click();
+    host.querySelector<HTMLElement>("#titletext")!.dispatchEvent(new Event("dblclick"));
+    await Promise.resolve();
+
+    expect(win.minimize).not.toHaveBeenCalled();
+    expect(win.toggleMaximize).not.toHaveBeenCalled();
+    expect(win.close).not.toHaveBeenCalled();
   });
 });

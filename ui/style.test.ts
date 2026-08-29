@@ -26,7 +26,29 @@ describe("Feature: pane toggle placement", () => {
     expect(style).toMatch(/#preview-toggle\s*\{[^}]*top:\s*4px;/s);
     expect(style).not.toMatch(/#sidebar-toggle\s*\{[^}]*bottom:/s);
     expect(style).not.toMatch(/#preview-toggle\s*\{[^}]*bottom:/s);
-    expect(style).toMatch(/#preview\s*\{[^}]*min-width:\s*var\(--preview-min-width\);/s);
+    expect(style).toMatch(/#preview\s*\{[^}]*min-width:\s*min\(var\(--preview-min-width\),\s*100%\);/s);
+  });
+
+  // Feature: 狭いwindowの横方向レイアウト
+  // Scenario: 復元状態のwindowを手動で縮めてもペインが横へはみ出さない
+  // Given: mainとpreviewのflexレイアウト規則を読み込む
+  // When: 横幅が標準最小幅を下回るケースを検査する
+  // Then: mainが横溢れを隠し、previewは利用可能な幅まで縮小できる
+  it("Scenario: 狭いwindowでも右端の横溢れを画面外へ残さない", () => {
+    expect(style).toMatch(/#titlebar\s*\{[^}]*min-width:\s*0;[^}]*overflow:\s*hidden;/s);
+    expect(style).toMatch(/#main\s*\{[^}]*min-width:\s*0;[^}]*overflow:\s*hidden;/s);
+    expect(style).toMatch(/#editorhost\s*\{[^}]*min-width:\s*0;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/s);
+    expect(style).toMatch(/#preview\s*\{[^}]*min-width:\s*min\(var\(--preview-min-width\),\s*100%\);[^}]*min-height:\s*0;/s);
+  });
+
+  // Feature: ペイン分割幅の単一管理
+  // Scenario: サイドバーとプレビューの分割バーを同じ幅で描画する
+  // Given: 分割バーのCSS規則と実行時に設定する共有変数を読み込む
+  // When: 両方の分割バーの幅指定を検査する
+  // Then: 片方だけ固定値へ依存せず、共通のCSS変数を参照する
+  it("Scenario: 両方の分割バーを共通の幅定義へ揃える", () => {
+    expect(style).toMatch(/#splitter\s*\{[^}]*width:\s*var\(--pane-splitter-width\);/s);
+    expect(style).toMatch(/#preview-splitter\s*\{[^}]*width:\s*var\(--pane-splitter-width\);/s);
   });
 
   // Feature: エディタ右上コントロールの常時利用

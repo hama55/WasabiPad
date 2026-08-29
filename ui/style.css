@@ -35,8 +35,10 @@ body {
   display: flex;
   align-items: stretch;
   height: 32px;
+  min-width: 0;
   background: var(--bg-title);
   flex: none;
+  overflow: hidden;
 }
 .bar-toggle { width: 34px; border: 0; background: none; color: var(--fg); font-size: 14px; }
 .bar-toggle:hover { background: var(--hover); }
@@ -144,7 +146,7 @@ body {
 .fav-icon-group::after { top: 3px; bottom: 3px; left: 6px; width: 1px; height: auto; }
 
 /* ---- メイン ---- */
-#main { position: relative; flex: 1; display: flex; min-height: 0; }
+#main { position: relative; flex: 1; display: flex; min-width: 0; min-height: 0; overflow: hidden; }
 #loading {
   position: absolute; z-index: 20; inset: 0;
   display: flex; align-items: center; justify-content: center; gap: 10px;
@@ -159,7 +161,7 @@ body {
 }
 @keyframes loading-spin { to { transform: rotate(360deg); } }
 #sidebar {
-  width: 220px; min-width: 120px;
+  width: var(--sidebar-default-width); min-width: var(--sidebar-min-width);
   background: var(--bg-side);
   display: flex; flex-direction: column; overflow: hidden; flex: none;
   padding: 4px 0;
@@ -174,13 +176,13 @@ body {
 }
 #sidebar-toggle:hover { background: var(--hover); color: var(--fg); }
 #preview {
-  width: 38%; min-width: var(--preview-min-width); flex: none;
+  width: 38%; min-width: min(var(--preview-min-width), 100%); min-height: 0; flex: none; overflow: hidden;
   background: var(--bg-editor); border-left: 1px solid var(--border-strong);
 }
 #main.preview-fullscreen #preview { width: auto !important; flex: 1; }
 #preview iframe { display: block; width: 100%; height: 100%; border: 0; }
 #preview-splitter {
-  width: 4px; cursor: ew-resize; flex: none; background: transparent;
+  width: var(--pane-splitter-width); cursor: ew-resize; flex: none; background: transparent;
 }
 #preview-splitter:hover { background: var(--bg-status); }
 #preview-toggle {
@@ -348,7 +350,7 @@ body.preview-resizing * { cursor: ew-resize !important; user-select: none !impor
   border-radius: 4px; color: var(--fg); padding: 4px 10px; font-size: 13px; cursor: default;
 }
 .ss-dir-add button:hover { background: var(--hover); }
-#splitter { width: 4px; cursor: ew-resize; flex: none; background: transparent; }
+#splitter { width: var(--pane-splitter-width); cursor: ew-resize; flex: none; background: transparent; }
 #splitter:hover { background: var(--bg-status); }
 .fv-row {
   display: flex; align-items: center;
@@ -378,7 +380,7 @@ body.fv-dragging { cursor: grabbing; user-select: none; }
 }
 
 /* ---- 仮想スクロールエディタ ---- */
-#editorhost { position: relative; flex: 1; min-width: 0; }
+#editorhost { position: relative; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
 #editorhost[hidden] { display: none; }
 #main.preview-fullscreen #editorhost { display: none; }
 .ve {

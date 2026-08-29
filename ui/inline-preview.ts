@@ -115,6 +115,7 @@ export class InlinePreview {
   }
 
   setFullscreen(fullscreen: boolean) {
+    if (this.fullscreen === fullscreen) return;
     this.fullscreen = fullscreen;
     this.send();
   }

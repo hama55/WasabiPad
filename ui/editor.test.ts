@@ -58,6 +58,11 @@ function mount(
     saveImage,
   };
   const editor = new VirtualEditor(host, ports, undefined, doc.client);
+  const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
+  Object.defineProperties(scroll, {
+    clientHeight: { configurable: true, value: 100 },
+    clientWidth: { configurable: true, value: 300 },
+  });
   const input = host.querySelector<HTMLTextAreaElement>(".ve-input")!;
   const type = (value: string) => {
     input.value = value;
@@ -144,6 +149,45 @@ describe("Feature: VirtualEditor", () => {
     editor.open(3, false);
     await settle();
     expect(doc.calls.some((call) => call.startsWith("lines("))).toBe(true);
+  });
+
+  // Given: window最小化中のためeditor viewportが0×0である
+  // When: 文書を開いてから復元後の有効なResizeObserver通知を受け取る
+  // Then: 0寸法では空の描画を確定せず、復元後に可視行を描画する
+  it("Scenario: 0寸法のviewportを描画へ確定せず復元後に再描画する", async () => {
+    const originalResizeObserver = globalThis.ResizeObserver;
+    let notifyResize: ResizeObserverCallback | undefined;
+    (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = class {
+      constructor(callback: ResizeObserverCallback) {
+        notifyResize = callback;
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    };
+    try {
+      const { editor, host } = mount("line");
+      const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
+      Object.defineProperties(scroll, {
+        clientHeight: { configurable: true, value: 0 },
+        clientWidth: { configurable: true, value: 0 },
+      });
+
+      editor.open(1, false);
+
+      expect(host.querySelector(".ve-line")).toBeNull();
+
+      Object.defineProperties(scroll, {
+        clientHeight: { configurable: true, value: 100 },
+        clientWidth: { configurable: true, value: 300 },
+      });
+      notifyResize?.([], {} as ResizeObserver);
+      await vi.waitFor(() => {
+        expect(host.querySelector<HTMLElement>(".ve-line")?.textContent).toBe("line");
+      });
+    } finally {
+      (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = originalResizeObserver;
+    }
   });
 
   // Feature: フォルダ検索の一致単位置換

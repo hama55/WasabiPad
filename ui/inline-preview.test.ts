@@ -342,6 +342,25 @@ describe("Feature: inline preview", () => {
     }, window.location.origin);
   });
 
+  // Given: iframeが準備完了していて、全画面状態がすでに同期済み
+  // When: 同じ全画面状態をもう一度設定する
+  // Then: 内容の再送信を発生させない
+  it("Scenario: ignores an unchanged preview fullscreen state", () => {
+    const { host, preview } = mount();
+    const frame = host.querySelector("iframe")!;
+    const postMessage = vi.spyOn(frame.contentWindow!, "postMessage");
+
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
+    }));
+    postMessage.mockClear();
+    preview.setFullscreen(false);
+
+    expect(postMessage).not.toHaveBeenCalled();
+  });
+
   // Given: 親への形式切替ポートが例外を投げる
   // When: iframeから形式切替通知を受け取る
   // Then: messageイベントから例外を漏らさずエラーポートへ通知する

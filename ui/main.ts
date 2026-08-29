@@ -63,6 +63,10 @@ import {
   isPreviewShown,
   isPreviewSplitterShown,
   PREVIEW_MIN_WIDTH,
+  SIDEBAR_DEFAULT_WIDTH,
+  SIDEBAR_MIN_WIDTH,
+  PANE_SPLITTER_WIDTH,
+  resolvePaneVisibility,
   shouldKeepPreviewFullscreen,
   type PreviewDocument,
 } from "./preview-layout";
@@ -73,6 +77,8 @@ import { processExternalWindowRequests } from "./external-window-request";
 import { canCloseWindow } from "./close-request";
 import { createAsyncUnlisten } from "./async-unlisten";
 import { markdownLinkActionOf } from "./markdown-link-navigation";
+import { type WindowViewport } from "./window-layout";
+import { createWindowLayoutRuntime, type WindowLayoutRuntime } from "./window-layout-runtime";
 
 const win = getCurrentWindow();
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -101,6 +107,9 @@ const previewEl = $("preview");
 const previewToggle = $<HTMLButtonElement>("preview-toggle");
 const loading = $("loading");
 const loadingMessage = $("loading-message");
+document.documentElement.style.setProperty("--sidebar-default-width", `${SIDEBAR_DEFAULT_WIDTH}px`);
+document.documentElement.style.setProperty("--sidebar-min-width", `${SIDEBAR_MIN_WIDTH}px`);
+document.documentElement.style.setProperty("--pane-splitter-width", `${PANE_SPLITTER_WIDTH}px`);
 mainEl.style.setProperty("--preview-min-width", `${PREVIEW_MIN_WIDTH}px`);
 
 let sidebarAvailable = false;
@@ -121,6 +130,7 @@ const workspaceSearchListener = createAsyncUnlisten();
 const documentLoadListener = createAsyncUnlisten();
 const externalWindowListener = createAsyncUnlisten();
 const dragDropListener = createAsyncUnlisten();
+let layoutRuntime: WindowLayoutRuntime | null = null;
 
 function setLoading(active: boolean, message = "読み込み中…") {
   loading.hidden = !active;
@@ -184,40 +194,86 @@ function setSidebar(on: boolean, label = "") {
   statusbar.setMode(label);
 }
 
+function measuredMainWidth(): number {
+  const width = mainEl.getBoundingClientRect().width;
+  return Number.isFinite(width) && width > 0 ? width : 0;
+}
+
+function paneVisibilityAt(mainWidth: number) {
+  const sidebarWidth = Number.parseFloat(sidebarEl.style.width)
+    || Math.max(SIDEBAR_MIN_WIDTH, sidebarEl.getBoundingClientRect().width || SIDEBAR_DEFAULT_WIDTH);
+  const configuredPreviewWidth = Number.parseFloat(previewEl.style.width);
+  return resolvePaneVisibility({
+    mainWidth,
+    sidebarAvailable,
+    sidebarCollapsed,
+    sidebarWidth,
+    previewAvailable,
+    previewCollapsed,
+    previewWidth: Number.isFinite(configuredPreviewWidth) ? configuredPreviewWidth : undefined,
+    fullscreen: previewFullscreen,
+  });
+}
+
+function applyPaneVisibility(mainWidth: number) {
+  if (!Number.isFinite(mainWidth) || mainWidth <= 0) {
+    layoutRuntime?.coordinator.request();
+    return;
+  }
+  const layout = paneVisibilityAt(mainWidth);
+  const sidebarShown = layout.sidebarShown;
+  sidebarEl.hidden = !sidebarShown;
+  splitter.hidden = !sidebarShown;
+  const sidebarToggle = $<HTMLButtonElement>("sidebar-toggle");
+  const sidebarView = paneToggleView("sidebar", sidebarShown);
+  sidebarToggle.hidden = !sidebarAvailable;
+  sidebarToggle.textContent = sidebarView.icon;
+  sidebarToggle.title = sidebarView.title;
+  sidebarToggle.setAttribute("aria-label", sidebarView.title);
+  sidebarToggle.style.left = `${sidebarToggleLeft(sidebarShown, sidebarEl.getBoundingClientRect().width)}px`;
+
+  const previewState = {
+    available: previewAvailable,
+    collapsed: !layout.previewShown,
+    fullscreen: layout.fullscreen,
+  };
+  const previewShown = isPreviewShown(previewState);
+  const fullscreen = isPreviewFullscreen(previewState);
+  previewEl.hidden = !previewShown;
+  previewSplitter.hidden = !isPreviewSplitterShown(previewState);
+  mainEl.classList.toggle("preview-fullscreen", fullscreen);
+  inlinePreview.setFullscreen(fullscreen);
+  const previewView = paneToggleView("preview", previewShown);
+  previewToggle.hidden = false;
+  previewToggle.textContent = previewView.icon;
+  previewToggle.title = previewView.title;
+  previewToggle.setAttribute("aria-label", previewView.title);
+  const mainRect = mainEl.getBoundingClientRect();
+  previewToggle.style.left = `${previewToggleLeft(
+    previewShown,
+    mainRect.left,
+    previewEl.getBoundingClientRect().left,
+    mainEl.clientWidth || mainWidth,
+    previewToggle.offsetWidth,
+  )}px`;
+}
+
 function updateSidebarVisibility() {
-  const shown = sidebarAvailable && !sidebarCollapsed;
-  sidebarEl.hidden = !shown;
-  splitter.hidden = !shown;
-  const toggle = $<HTMLButtonElement>("sidebar-toggle");
-  const view = paneToggleView("sidebar", shown);
-  toggle.hidden = !sidebarAvailable;
-  toggle.textContent = view.icon;
-  toggle.title = view.title;
-  toggle.setAttribute("aria-label", toggle.title);
-  toggle.style.left = `${sidebarToggleLeft(shown, sidebarEl.getBoundingClientRect().width)}px`;
+  const width = measuredMainWidth();
+  if (width <= 0) {
+    layoutRuntime?.coordinator.request();
+    return;
+  }
+  applyPaneVisibility(width);
 }
 
 function updatePreviewVisibility() {
-  const state = { available: previewAvailable, collapsed: previewCollapsed, fullscreen: previewFullscreen };
-  const shown = isPreviewShown(state);
-  const fullscreen = isPreviewFullscreen(state);
-  previewEl.hidden = !shown;
-  previewSplitter.hidden = !isPreviewSplitterShown(state);
-  mainEl.classList.toggle("preview-fullscreen", fullscreen);
-  inlinePreview.setFullscreen(fullscreen);
-  const view = paneToggleView("preview", shown);
-  previewToggle.hidden = false;
-  previewToggle.textContent = view.icon;
-  previewToggle.title = view.title;
-  previewToggle.setAttribute("aria-label", previewToggle.title);
-  const mainRect = mainEl.getBoundingClientRect();
-  previewToggle.style.left = `${previewToggleLeft(
-    shown,
-    mainRect.left,
-    previewEl.getBoundingClientRect().left,
-    mainEl.clientWidth,
-    previewToggle.offsetWidth,
-  )}px`;
+  const width = measuredMainWidth();
+  if (width <= 0) {
+    layoutRuntime?.coordinator.request();
+    return;
+  }
+  applyPaneVisibility(width);
 }
 
 const inlinePreview = new InlinePreview(previewEl, {
@@ -414,6 +470,22 @@ const editor: VirtualEditor = new VirtualEditor(editorHost, {
     );
   },
 });
+
+layoutRuntime = createWindowLayoutRuntime(window, {
+  measure: (): WindowViewport => {
+    const rect = mainEl.getBoundingClientRect();
+    return { width: rect.width, height: rect.height };
+  },
+  apply: (viewport) => {
+    try {
+      applyPaneVisibility(viewport.width);
+      editor.syncWindowGeometry();
+    } catch (error) {
+      void reportBackgroundError("画面レイアウトを更新できませんでした", error);
+    }
+  },
+});
+
 function applySettingsToUi() {
   restoringEditorFont = true;
   editor.setFont(getSetting("fontFamily"), getSetting("fontSize"));
@@ -547,7 +619,10 @@ const windowChrome = new WindowChrome($("titlebar"), win, {
     flushSettings,
     onSettingsError: (error) => showError("設定を保存できませんでした", error),
   }),
-  onGeometryChange: () => editor.syncWindowGeometry(),
+  onGeometryChange: () => layoutRuntime?.coordinator.request(),
+  onStateChange: (state) => {
+    if (state !== "minimized") layoutRuntime?.coordinator.request();
+  },
   onError: showError,
 }, $("save-notice"));
 
@@ -644,6 +719,8 @@ window.addEventListener("beforeunload", () => {
   documentLoadListener.dispose();
   externalWindowListener.dispose();
   dragDropListener.dispose();
+  layoutRuntime?.dispose();
+  layoutRuntime = null;
   windowChrome.dispose();
   externalWatch.dispose();
   favbar.dispose();
@@ -718,7 +795,9 @@ $("toggle-bars").addEventListener("click", () => {
   $("navbars").hidden = !$("navbars").hidden;
 });
 $("sidebar-toggle").addEventListener("click", () => {
-  sidebarCollapsed = !sidebarCollapsed;
+  const currentlyShown = paneVisibilityAt(measuredMainWidth()).sidebarShown;
+  // 幅不足による自動退避中は、利用者の開いた状態を保持する。
+  if (currentlyShown || sidebarCollapsed) sidebarCollapsed = !sidebarCollapsed;
   updateSidebarVisibility();
 });
 previewToggle.addEventListener("click", () => {
@@ -729,7 +808,10 @@ previewToggle.addEventListener("click", () => {
     if (format) openPreviewFormat(session, path, format);
     return;
   }
-  previewCollapsed = !previewCollapsed;
+  const layoutWidth = measuredMainWidth();
+  const currentlyShown = paneVisibilityAt(layoutWidth).previewShown;
+  // 幅不足による自動退避と、利用者が明示的に閉じた状態を区別する。
+  previewCollapsed = currentlyShown;
   if (previewCollapsed) {
     previewFullscreen = false;
     previewFullscreenTabId = null;
@@ -738,15 +820,13 @@ previewToggle.addEventListener("click", () => {
   updatePreviewVisibility();
   if (!previewCollapsed) inlinePreview.resend();
 });
-window.addEventListener("resize", updatePreviewVisibility);
-
 document.addEventListener("contextmenu", (e) => e.preventDefault());
 
 // サイドバー幅のドラッグ変更
 splitter.addEventListener("mousedown", (e) => {
   e.preventDefault();
   const move = (ev: MouseEvent) => {
-    sidebarEl.style.width = `${Math.max(120, ev.clientX)}px`;
+    sidebarEl.style.width = `${Math.max(SIDEBAR_MIN_WIDTH, ev.clientX)}px`;
     updateSidebarVisibility();
   };
   const up = () => {
@@ -816,13 +896,15 @@ window.setInterval(async () => {
 
 // ---- 起動 ----
 try {
-  await windowChrome.syncMaxIcon();
+  layoutRuntime?.coordinator.refresh();
+  await windowChrome.syncWindowState();
 } catch (error) {
   await reportBackgroundError("ウィンドウ状態を取得できませんでした", error);
 }
 // 以降はファイルエラーなどでユーザー操作待ちになるため、先に操作可能な画面を出す。
 try {
   await win.show();
+  layoutRuntime?.coordinator.request();
 } catch (error) {
   await reportBackgroundError("ウィンドウを表示できませんでした", error);
 }

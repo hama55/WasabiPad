@@ -310,6 +310,7 @@ export class VirtualEditor {
     window.visualViewport?.addEventListener("scroll", () => this.syncImeAnchorAfterLayout());
 
     new ResizeObserver(() => {
+      if (!this.hasUsableViewport()) return;
       const topLine = this.wrap || this.metrics.scaleMode ? this.topLineF : this.pxToLine(this.scroll.scrollTop);
       const intraLinePx = this.wrapIntraLinePx;
       const wasAtBottom = topLine >= this.maxTopLine();
@@ -429,6 +430,7 @@ export class VirtualEditor {
 
   syncWindowGeometry() {
     this.syncImeAnchorAfterLayout();
+    this.schedule();
     window.clearTimeout(this.imeBlurTimer);
     this.imeBlurTimer = undefined;
     if (document.activeElement !== this.input) {
@@ -718,6 +720,10 @@ export class VirtualEditor {
     });
   }
 
+  private hasUsableViewport(): boolean {
+    return this.scroll.clientWidth > 0 && this.scroll.clientHeight > 0;
+  }
+
   private onScroll() {
     if (this.wrap && this.scrollbarDragging) {
       const anchor = this.wrapAnchorFromPx(this.scroll.scrollTop);
@@ -731,6 +737,7 @@ export class VirtualEditor {
   }
 
   private render() {
+    if (!this.hasUsableViewport()) return;
     const top = this.scroll.scrollTop;
     const h = this.scroll.clientHeight;
     const topLine = Math.round(this.topLineF);

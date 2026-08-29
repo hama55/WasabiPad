@@ -60,6 +60,7 @@ pub(crate) async fn open_viewer(
             .title(title)
             .decorations(false)
             .inner_size(960.0, 700.0)
+            .visible(false)
             .build()
         {
             Ok(window) => window,

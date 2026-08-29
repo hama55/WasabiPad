@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { EVENT_NAMES, openExternalUrl, openInDefaultBrowser, takeViewerPayload, type ViewerFormat, type ViewerPayload, type ViewerSelection } from "./api";
 import { formatFontFamily } from "./format";
 import { basename } from "./path";
-import { createViewerFormatHandlers, isViewerFormat, viewerFormatSpec } from "./viewer-formats";
+import { isViewerFormat, viewerFormatSpec } from "./viewer-formats";
 import { getSetting, initSettings, setSetting } from "./settings";
 import { clampFontSize, promptFontFamily, promptFontSize as promptFontSizeDialog } from "./font-controls";
 import {
@@ -69,12 +69,15 @@ import {
 } from "./viewer-csv-table";
 import { ViewerChartController } from "./viewer-chart";
 import { renderMarkdownDocument } from "./viewer-markdown-renderer";
+import { type WindowLayoutCoordinator, type WindowViewport } from "./window-layout";
+import { createWindowLayoutRuntime, type WindowLayoutRuntime } from "./window-layout-runtime";
 
 await initSettings((error) => showError("設定を読み込めませんでした", error));
 
 const isInlineViewer = new URLSearchParams(window.location.search).get("inline") === "1";
 const win = isInlineViewer ? null : getCurrentWindow();
 const content = document.getElementById("viewer-content")!;
+const viewerMain = content.parentElement as HTMLElement;
 const title = document.getElementById("viewer-title-text")!;
 const formatButtons = document.getElementById("viewer-format")!;
 const actionButtons = document.getElementById("viewer-csv-actions")!;
@@ -108,7 +111,77 @@ let csvColumnWidths: number[] = [];
 let fontFamily = getSetting("fontFamily");
 let fontSize = getSetting("previewFontSize");
 const viewerUpdateListener = createAsyncUnlisten();
+const viewerDomListeners = new AbortController();
 let windowControls: WindowControls | null = null;
+let viewerLayoutCoordinator: WindowLayoutCoordinator | null = null;
+let viewerLayoutRuntime: WindowLayoutRuntime | null = null;
+let viewerDisposed = false;
+
+interface ViewerRenderState {
+  format: ViewerFormat;
+  text: string;
+  selection: ViewerSelectionWithCaret | null;
+  sourcePath: string | null;
+  archivePath: string | null;
+  archiveEntry: string | null;
+}
+
+function currentViewerRenderState(): ViewerRenderState {
+  return {
+    format: currentFormat,
+    text: currentText,
+    selection: currentSelection,
+    sourcePath: currentSourcePath,
+    archivePath: currentArchivePath,
+    archiveEntry: currentArchiveEntry,
+  };
+}
+
+function viewerRenderStateOf(payload: ViewerPayload): ViewerRenderState {
+  return {
+    format: payload.format,
+    text: payload.text,
+    selection: payload.selection as ViewerSelectionWithCaret | null,
+    sourcePath: payload.source_path,
+    archivePath: payload.archive_path,
+    archiveEntry: payload.archive_entry,
+  };
+}
+
+function publishViewerRenderState(state: ViewerRenderState, nextImageZoom: number) {
+  currentFormat = state.format;
+  currentText = state.text;
+  currentSelection = state.selection;
+  currentSourcePath = state.sourcePath;
+  currentArchivePath = state.archivePath;
+  currentArchiveEntry = state.archiveEntry;
+  imageZoom = nextImageZoom;
+  syncViewerFormatButtons(formatButtons, state.format, state.archiveEntry ?? state.sourcePath);
+  syncViewerActionButtons(actionButtons, state.format);
+  const formatSpec = viewerFormatSpec(state.format);
+  title.textContent = formatSpec.title;
+  document.title = title.textContent;
+  if (!isInlineViewer) runViewerOperation("タイトルを更新できませんでした", () => win!.setTitle(title.textContent));
+  delimiterControl.hidden = !formatSpec.supportsDelimiter;
+  markdownReadyForFragment = state.format === "markdown" ? markdownReadyForFragment : false;
+  if (state.format !== "markdown") pendingMarkdownFragment = null;
+}
+
+function beginRender(): number {
+  const generation = ++renderGeneration;
+  content.querySelectorAll<HTMLElement>(":scope > .viewer-pending").forEach((pending) => pending.remove());
+  content.classList.add("viewer-loading");
+  viewerMain.classList.add("viewer-loading");
+  content.setAttribute("aria-busy", "true");
+  return generation;
+}
+
+function finishRender(generation: number) {
+  if (generation !== renderGeneration) return;
+  content.classList.remove("viewer-loading");
+  viewerMain.classList.remove("viewer-loading");
+  content.removeAttribute("aria-busy");
+}
 
 function postToParent(message: unknown) {
   window.parent.postMessage(message, window.location.origin);
@@ -130,7 +203,7 @@ function scrollCsvRows(rows: HTMLElement[], selection: ViewerSelection | null) {
 }
 
 function notifyParentOfSelection() {
-  if (!isInlineViewer) return;
+  if (!isInlineViewer || content.classList.contains("viewer-loading")) return;
   const selection = viewerSelectionFromDom(content);
   if (!selection) return;
   postToParent({
@@ -140,7 +213,7 @@ function notifyParentOfSelection() {
 }
 
 function notifyMarkdownLink(event: MouseEvent) {
-  if (currentFormat !== "markdown") return;
+  if (currentFormat !== "markdown" || content.classList.contains("viewer-loading")) return;
   const target = event.target instanceof Element ? event.target : null;
   const link = target?.closest<HTMLAnchorElement>("a");
   const href = link?.getAttribute("href") ?? "";
@@ -242,8 +315,18 @@ function setFullscreenButton(fullscreen: boolean) {
 }
 
 function disposeViewer() {
+  if (viewerDisposed) return;
+  viewerDisposed = true;
+  renderGeneration += 1;
   disposeImagePan?.();
   disposeImagePan = null;
+  content.classList.remove("viewer-loading");
+  viewerMain.classList.remove("viewer-loading");
+  content.removeAttribute("aria-busy");
+  viewerDomListeners.abort();
+  viewerLayoutRuntime?.dispose();
+  viewerLayoutRuntime = null;
+  viewerLayoutCoordinator = null;
   try {
     viewerUpdateListener.dispose();
   } catch (error) {
@@ -279,7 +362,7 @@ async function promptFontSize() {
 }
 
 function onViewerWheel(event: WheelEvent) {
-  if (!event.ctrlKey) return;
+  if (!event.ctrlKey || content.classList.contains("viewer-loading")) return;
   event.preventDefault();
   if (currentFormat === "image") {
     const image = content.querySelector<HTMLImageElement>(".viewer-image");
@@ -306,6 +389,7 @@ function reportWindowError(title: string, error: unknown) {
 }
 
 function runViewerOperation(title: string, operation: () => void | Promise<unknown>) {
+  if (viewerDisposed) return;
   runWindowOperation(showError, title, operation);
 }
 
@@ -322,6 +406,26 @@ const chartController = new ViewerChartController({
   },
 });
 
+function refreshViewerLayout() {
+  if (currentFormat === "image") {
+    const image = content.querySelector<HTMLImageElement>(".viewer-image");
+    if (image) setImageZoom(image, imageZoom);
+  }
+  if (currentFormat === "csv") {
+    scrollCsvRows([...content.querySelectorAll<HTMLTableRowElement>(".viewer-grid tbody > tr")], currentSelection);
+  }
+  chartController.refresh();
+}
+
+viewerLayoutRuntime = createWindowLayoutRuntime(window, {
+  measure: (): WindowViewport => {
+    const rect = viewerMain.getBoundingClientRect();
+    return { width: rect.width, height: rect.height };
+  },
+  apply: () => runViewerOperation("ビューのレイアウトを更新できませんでした", refreshViewerLayout),
+});
+viewerLayoutCoordinator = viewerLayoutRuntime.coordinator;
+
 const delimiterActionButton = createViewerDelimiterMenuItem(() => {
   runViewerOperation("区切り文字設定を開けませんでした", openDelimiterDialog);
 });
@@ -332,49 +436,64 @@ actionButtons.replaceChildren(delimiterActionButton, chartActionButton);
 
 function bindViewerControls() {
   setFullscreenButton(false);
-  fontButton.addEventListener("click", () => runViewerOperation("フォントを変更できませんでした", promptFont));
-  fontSizeButton.addEventListener("click", () => runViewerOperation("文字サイズを変更できませんでした", promptFontSize));
-  content.addEventListener("wheel", onViewerWheel, { passive: false });
+  fontButton.addEventListener("click", () => runViewerOperation("フォントを変更できませんでした", promptFont), {
+    signal: viewerDomListeners.signal,
+  });
+  fontSizeButton.addEventListener("click", () => runViewerOperation("文字サイズを変更できませんでした", promptFontSize), {
+    signal: viewerDomListeners.signal,
+  });
+  content.addEventListener("wheel", onViewerWheel, { passive: false, signal: viewerDomListeners.signal });
   fullscreenButton.addEventListener("click", () => {
     runViewerOperation("全画面表示を変更できませんでした", () => {
       if (isInlineViewer) postToParent({ type: INLINE_PREVIEW_MESSAGES.FULLSCREEN_CHANGE_MESSAGE });
     });
-  });
+  }, { signal: viewerDomListeners.signal });
   const notifySelection = () => runViewerOperation(
     "プレビューの選択位置を通知できませんでした",
     notifyParentOfSelection,
   );
-  document.addEventListener("selectionchange", notifySelection);
-  content.addEventListener("mouseup", notifySelection);
-  content.addEventListener("keyup", notifySelection);
-  content.addEventListener("click", notifyMarkdownLink);
+  document.addEventListener("selectionchange", notifySelection, { signal: viewerDomListeners.signal });
+  content.addEventListener("mouseup", notifySelection, { signal: viewerDomListeners.signal });
+  content.addEventListener("keyup", notifySelection, { signal: viewerDomListeners.signal });
+  content.addEventListener("click", notifyMarkdownLink, { signal: viewerDomListeners.signal });
 }
 
-function renderTable(text: string) {
-  renderGeneration++;
-  revokeArchiveAssetUrls();
-  const rendered = renderCsvTable({
-    text,
-    delimiter: delimiterInput.value,
-    selection: currentSelection,
-    columnWidths: csvColumnWidths,
-    onColumnResize: (event, table, columns, columnIndex) => runViewerOperation(
-      "CSV列幅の変更を開始できませんでした",
-      () => startCsvColumnResize(event, table, columns, columnIndex),
-    ),
-  });
-  currentRows = rendered.values;
-  chartController.setRows(currentRows);
-  content.replaceChildren(rendered.table);
-  scrollCsvRows(rendered.rows, currentSelection);
+function renderTable(text: string, state: ViewerRenderState = currentViewerRenderState()): boolean {
+  const generation = beginRender();
+  const previousDisposeImagePan = disposeImagePan;
+  const sameSource = state.sourcePath === currentSourcePath
+    && state.archivePath === currentArchivePath
+    && state.archiveEntry === currentArchiveEntry;
+  try {
+    const rendered = renderCsvTable({
+      text,
+      delimiter: delimiterInput.value,
+      selection: state.selection,
+      columnWidths: state.format === currentFormat && sameSource ? csvColumnWidths : [],
+      onColumnResize: (event, table, columns, columnIndex) => runViewerOperation(
+        "CSV列幅の変更を開始できませんでした",
+        () => startCsvColumnResize(event, table, columns, columnIndex),
+      ),
+    });
+    currentRows = rendered.values;
+    chartController.setRows(currentRows);
+    content.replaceChildren(rendered.table);
+    previousDisposeImagePan?.();
+    disposeImagePan = null;
+    revokeArchiveAssetUrls();
+    scrollCsvRows(rendered.rows, state.selection);
 
-  const truncated = currentRows.length > MAX_TABLE_ROWS || rendered.maxColumns > MAX_TABLE_COLUMNS;
-  summary.classList.toggle("warning", rendered.errors.length > 0);
-  summary.title = rendered.errors.map((error) => error.message).join("\n");
-  summary.textContent = `${currentRows.length.toLocaleString()}行 × ${rendered.maxColumns.toLocaleString()}列${
-    truncated ? "（表示上限を超えた部分は省略）" : ""
-  }`;
-  chartController.refresh();
+    const truncated = currentRows.length > MAX_TABLE_ROWS || rendered.maxColumns > MAX_TABLE_COLUMNS;
+    summary.classList.toggle("warning", rendered.errors.length > 0);
+    summary.title = rendered.errors.map((error) => error.message).join("\n");
+    summary.textContent = `${currentRows.length.toLocaleString()}行 × ${rendered.maxColumns.toLocaleString()}列${
+      truncated ? "（表示上限を超えた部分は省略）" : ""
+    }`;
+    chartController.refresh();
+    return generation === renderGeneration;
+  } finally {
+    finishRender(generation);
+  }
 }
 
 function revokeArchiveAssetUrls() {
@@ -392,6 +511,7 @@ function releaseArchiveAssetUrl(url: string) {
 async function loadArchiveImages(
   article: HTMLElement,
   generation: number,
+  sourcePath: string | null,
   archivePath: string | null,
   archiveEntry: string | null,
 ) {
@@ -409,14 +529,18 @@ async function loadArchiveImages(
           return;
         }
         image.src = archiveUrl;
-        await waitForImageLayout(image);
+        const ready = await waitForImageLayout(image);
+        if (!ready) {
+          if (generation === renderGeneration) markImageLoadFailure(image);
+          continue;
+        }
         keepArchiveUrl = true;
-        return;
+        continue;
       }
-      const resolved = resolveAssetPath(currentSourcePath, src);
+      const resolved = resolveAssetPath(sourcePath, src);
       if (resolved && generation === renderGeneration) {
         image.src = imageUrlFromPathWithCacheBust(resolved, generation);
-        await waitForImageLayout(image);
+        if (!await waitForImageLayout(image)) markImageLoadFailure(image);
       }
     } catch {
       if (generation !== renderGeneration) return;
@@ -430,35 +554,69 @@ async function loadArchiveImages(
   }
 }
 
-async function waitForImageLayout(image: HTMLImageElement) {
-  if (!image.getAttribute("src")) return;
+async function waitForImageLayout(image: HTMLImageElement): Promise<boolean> {
+  if (!image.getAttribute("src")) return false;
+  let loaded = image.complete && image.naturalWidth > 0;
   if (!image.complete) {
-    await new Promise<void>((resolve) => {
+    loaded = await new Promise<boolean>((resolve) => {
       let timeout: number | undefined;
-      const finish = () => {
+      const finish = (ready: boolean) => {
         window.clearTimeout(timeout);
-        image.removeEventListener("load", finish);
-        image.removeEventListener("error", finish);
-        resolve();
+        image.removeEventListener("load", onLoad);
+        image.removeEventListener("error", onError);
+        resolve(ready);
       };
-      image.addEventListener("load", finish, { once: true });
-      image.addEventListener("error", finish, { once: true });
-      timeout = window.setTimeout(finish, 2000);
-      if (image.complete) finish();
+      const onLoad = () => finish(true);
+      const onError = () => finish(false);
+      image.addEventListener("load", onLoad, { once: true });
+      image.addEventListener("error", onError, { once: true });
+      timeout = window.setTimeout(() => finish(false), 2000);
+      if (image.complete) finish(image.naturalWidth > 0);
     });
   }
   try {
-    await image.decode?.();
+    if (image.decode) {
+      await image.decode();
+      loaded = true;
+    }
   } catch {
     // 壊れた画像でも本文の中央スクロールは継続する。
+    loaded = false;
   }
+  return loaded;
+}
+
+function waitForFrameLayout(frame: HTMLIFrameElement): Promise<boolean> {
+  return new Promise((resolve) => {
+    let timeout: number | undefined;
+    const finish = (ready: boolean) => {
+      window.clearTimeout(timeout);
+      frame.removeEventListener("load", onLoad);
+      frame.removeEventListener("error", onError);
+      resolve(ready);
+    };
+    const onLoad = () => finish(true);
+    const onError = () => finish(false);
+    frame.addEventListener("load", onLoad, { once: true });
+    frame.addEventListener("error", onError, { once: true });
+    timeout = window.setTimeout(() => finish(false), 2000);
+  });
+}
+
+function replaceWithViewerError(wrapper: HTMLElement, label: string) {
+  const message = document.createElement("p");
+  message.className = "viewer-error";
+  message.textContent = `${label}（読み込めません）`;
+  wrapper.replaceChildren(message);
 }
 
 interface AssetPreviewTarget {
   wrapper: HTMLElement;
   setSource: (url: string) => void;
-  waitForReady?: () => Promise<void>;
+  waitForReady?: () => Promise<boolean | void>;
   markFailure: () => void;
+  dispose?: () => void;
+  activate?: () => void;
 }
 
 async function renderAssetPreview(
@@ -467,36 +625,57 @@ async function renderAssetPreview(
   createTarget: () => AssetPreviewTarget,
   sourceText?: string,
   cacheBustFile = false,
-) {
-  const generation = ++renderGeneration;
-  const sourcePath = currentSourcePath;
-  const archivePath = currentArchivePath;
-  const archiveEntry = currentArchiveEntry;
-  revokeArchiveAssetUrls();
-  currentRows = [];
-  chartController.clear();
-
-  const target = createTarget();
-  content.replaceChildren(target.wrapper);
-  summary.classList.remove("warning");
-  summary.title = "";
-  summary.textContent = currentFormat === "image" ? `${name} ${Math.round(imageZoom * 100)}%` : name;
-
+  state: ViewerRenderState = currentViewerRenderState(),
+  nextImageZoom = imageZoom,
+): Promise<boolean> {
+  const generation = beginRender();
+  const previousDisposeImagePan = disposeImagePan;
+  const sourcePath = state.sourcePath;
+  const archivePath = state.archivePath;
+  const archiveEntry = state.archiveEntry;
+  let target: AssetPreviewTarget | null = null;
   let assetUrl: string | null = null;
   let keepAssetUrl = false;
+  let committed = false;
   try {
+    target = createTarget();
+    target.wrapper.classList.add("viewer-pending");
+    content.appendChild(target.wrapper);
+    const discardTarget = () => {
+      target?.dispose?.();
+      target?.wrapper.remove();
+    };
+    const commitTarget = (activate = true) => {
+      if (!target) return;
+      currentRows = [];
+      chartController.clear();
+      target.wrapper.classList.remove("viewer-pending");
+      content.replaceChildren(target.wrapper);
+      previousDisposeImagePan?.();
+      disposeImagePan = null;
+      if (activate) target.activate?.();
+      else target.dispose?.();
+      archiveAssetTracker.revokeStale(generation);
+      summary.classList.remove("warning");
+      summary.title = "";
+      summary.textContent = state.format === "image" ? `${name} ${Math.round(nextImageZoom * 100)}%` : name;
+      committed = true;
+    };
+
     if (sourceText !== undefined) {
       assetUrl = imageUrlFromText(sourceText, mimeType);
       if (!retainArchiveAssetUrl(assetUrl, generation)) {
         assetUrl = null;
-        return;
+        discardTarget();
+        return false;
       }
       target.setSource(assetUrl);
     } else if (archivePath && archiveEntry) {
       assetUrl = await imageUrlFromArchive(archivePath, archiveEntry, mimeType);
       if (!retainArchiveAssetUrl(assetUrl, generation)) {
         assetUrl = null;
-        return;
+        discardTarget();
+        return false;
       }
       target.setSource(assetUrl);
     } else if (sourcePath && generation === renderGeneration) {
@@ -505,51 +684,93 @@ async function renderAssetPreview(
         : imageUrlFromPath(sourcePath));
     } else {
       target.markFailure();
-      return;
+      if (generation === renderGeneration) commitTarget(false);
+      else discardTarget();
+      return committed;
     }
-    await target.waitForReady?.();
-    keepAssetUrl = true;
+    const ready = await target.waitForReady?.();
+    if (ready === false) target.markFailure();
+    if (generation !== renderGeneration) {
+      discardTarget();
+      return false;
+    }
+    commitTarget(ready !== false);
+    keepAssetUrl = ready !== false;
+    return committed;
   } catch (error) {
-    if (generation !== renderGeneration) return;
+    if (generation !== renderGeneration) {
+      target?.dispose?.();
+      target?.wrapper.remove();
+      return false;
+    }
+    if (!target || committed) throw error;
     target.markFailure();
-    throw error;
+    target.wrapper.classList.remove("viewer-pending");
+    content.replaceChildren(target.wrapper);
+    previousDisposeImagePan?.();
+    disposeImagePan = null;
+    currentRows = [];
+    chartController.clear();
+    target.dispose?.();
+    archiveAssetTracker.revokeStale(generation);
+    summary.classList.remove("warning");
+    summary.title = "";
+    summary.textContent = name;
+    committed = true;
+    return true;
   } finally {
     if (assetUrl && (!keepAssetUrl || generation !== renderGeneration)) {
       releaseArchiveAssetUrl(assetUrl);
     }
+    finishRender(generation);
   }
 }
 
-async function renderImage(text: string) {
-  const source = currentArchiveEntry ?? currentSourcePath ?? "image";
+async function renderImage(
+  text: string,
+  state: ViewerRenderState = currentViewerRenderState(),
+  nextImageZoom = imageZoom,
+): Promise<boolean> {
+  const source = state.archiveEntry ?? state.sourcePath ?? "image";
   const name = basename(source);
   const mimeType = imageMimeType(source);
   const editedSvg = imageExtensionOf(source) === "svg" ? text : undefined;
   return renderAssetPreview(name, mimeType, () => {
     const { wrapper, image } = createImagePreview(name);
-    disposeImagePan = bindImagePan(image, content);
+    const dispose = bindImagePan(image, content);
     return {
       wrapper,
       setSource: (url) => { image.src = url; },
       waitForReady: async () => {
-        await waitForImageLayout(image);
-        setImageZoom(image, imageZoom);
+        const ready = await waitForImageLayout(image);
+        if (ready) setImageZoom(image, nextImageZoom);
+        return ready;
       },
       markFailure: () => markImageLoadFailure(image, name),
+      dispose,
+      activate: () => { disposeImagePan = dispose; },
     };
-  }, editedSvg, true);
+  }, editedSvg, true, state, nextImageZoom);
 }
 
-async function renderPdf(_text: string) {
-  const name = basename(currentArchiveEntry ?? currentSourcePath ?? "document.pdf");
+async function renderPdf(
+  _text: string,
+  state: ViewerRenderState = currentViewerRenderState(),
+): Promise<boolean> {
+  const name = basename(state.archiveEntry ?? state.sourcePath ?? "document.pdf");
   return renderAssetPreview(name, "application/pdf", () => {
     const { wrapper, frame } = createPdfPreview(name);
     return {
       wrapper,
       setSource: (url) => { frame.src = url; },
-      markFailure: () => markPdfLoadFailure(frame, name),
+      waitForReady: () => waitForFrameLayout(frame),
+      markFailure: () => {
+        markPdfLoadFailure(frame, name);
+        replaceWithViewerError(wrapper, name);
+      },
+      dispose: () => frame.remove(),
     };
-  });
+  }, undefined, false, state);
 }
 
 function htmlBaseUrl(sourcePath: string | null): string | null {
@@ -561,98 +782,145 @@ function htmlBaseUrl(sourcePath: string | null): string | null {
   }
 }
 
-function renderHtml(text: string) {
-  const generation = ++renderGeneration;
-  const sourcePath = currentSourcePath;
-  revokeArchiveAssetUrls();
-  currentRows = [];
-  chartController.clear();
-
-  const name = basename(sourcePath ?? currentArchiveEntry ?? "document.html");
-  const { wrapper } = createHtmlPreview({
-    name,
-    html: text,
-    baseUrl: htmlBaseUrl(sourcePath),
-    onContextMenu: (x, y) => {
-      if (generation !== renderGeneration || !sourcePath) return;
-      runViewerOperation("既定のブラウザで開けませんでした", () => showContextMenu(x, y));
-    },
-  });
-  content.replaceChildren(wrapper);
-  summary.classList.remove("warning");
-  summary.title = "";
-  summary.textContent = name;
-}
-
-async function renderMarkdown(text: string) {
-  const generation = ++renderGeneration;
-  const archivePath = currentArchivePath;
-  const archiveEntry = currentArchiveEntry;
-  const selection = currentSelection;
-  revokeArchiveAssetUrls();
-  currentRows = [];
-  chartController.clear();
-  markdownReadyForFragment = false;
-  const initialFragment = pendingMarkdownFragment;
-  pendingMarkdownFragment = null;
-  const { article, highlightTargets } = renderMarkdownDocument(text, selection, {
-    sourcePath: currentSourcePath,
-    archivePath,
-  });
-  content.replaceChildren(article);
-  summary.classList.remove("warning");
-  summary.title = "";
-  summary.textContent = `${text.length.toLocaleString()}文字`;
-  await loadArchiveImages(article, generation, archivePath, archiveEntry);
-  // 画像の高さが確定する前にスクロールすると、読込後のレイアウト変化で中央位置が崩れる。
-  if (generation === renderGeneration) {
-    scrollMarkdownCaret(highlightTargets, selection);
-    const fragment = pendingMarkdownFragment ?? initialFragment;
-    if (fragment !== null) {
-      scrollMarkdownFragment(article, fragment);
-      pendingMarkdownFragment = null;
+async function renderHtml(
+  text: string,
+  state: ViewerRenderState = currentViewerRenderState(),
+): Promise<boolean> {
+  const generation = beginRender();
+  const previousDisposeImagePan = disposeImagePan;
+  try {
+    const sourcePath = state.sourcePath;
+    const name = basename(sourcePath ?? state.archiveEntry ?? "document.html");
+    const { wrapper } = createHtmlPreview({
+      name,
+      html: text,
+      baseUrl: htmlBaseUrl(sourcePath),
+      onContextMenu: (x, y) => {
+        if (generation !== renderGeneration || !sourcePath) return;
+        runViewerOperation("既定のブラウザで開けませんでした", () => showContextMenu(x, y));
+      },
+    });
+    const frame = wrapper.querySelector<HTMLIFrameElement>(".viewer-html");
+    wrapper.classList.add("viewer-pending");
+    content.appendChild(wrapper);
+    const ready = frame ? await waitForFrameLayout(frame) : true;
+    if (!ready) replaceWithViewerError(wrapper, name);
+    if (generation !== renderGeneration) {
+      wrapper.remove();
+      return false;
     }
-    markdownReadyForFragment = true;
+    wrapper.classList.remove("viewer-pending");
+    content.replaceChildren(wrapper);
+    previousDisposeImagePan?.();
+    disposeImagePan = null;
+    currentRows = [];
+    chartController.clear();
+    revokeArchiveAssetUrls();
+    summary.classList.remove("warning");
+    summary.title = "";
+    summary.textContent = name;
+    return true;
+  } finally {
+    finishRender(generation);
   }
 }
 
-const VIEWER_HANDLERS = createViewerFormatHandlers({
+async function renderMarkdown(
+  text: string,
+  state: ViewerRenderState = currentViewerRenderState(),
+): Promise<boolean> {
+  const generation = beginRender();
+  const previousDisposeImagePan = disposeImagePan;
+  const previousMarkdownReadyForFragment = markdownReadyForFragment;
+  const previousPendingMarkdownFragment = pendingMarkdownFragment;
+  let committed = false;
+  try {
+    const sourcePath = state.sourcePath;
+    const archivePath = state.archivePath;
+    const archiveEntry = state.archiveEntry;
+    const selection = state.selection;
+    markdownReadyForFragment = false;
+    const initialFragment = pendingMarkdownFragment;
+    pendingMarkdownFragment = null;
+    const { article, highlightTargets } = renderMarkdownDocument(text, selection, {
+      sourcePath,
+      archivePath,
+    });
+    article.classList.add("viewer-pending");
+    content.appendChild(article);
+    await loadArchiveImages(article, generation, sourcePath, archivePath, archiveEntry);
+    // 画像の高さが確定する前にスクロールすると、読込後のレイアウト変化で中央位置が崩れる。
+    if (generation === renderGeneration) {
+      article.classList.remove("viewer-pending");
+      content.replaceChildren(article);
+      previousDisposeImagePan?.();
+      disposeImagePan = null;
+      currentRows = [];
+      chartController.clear();
+      archiveAssetTracker.revokeStale(generation);
+      summary.classList.remove("warning");
+      summary.title = "";
+      summary.textContent = `${text.length.toLocaleString()}文字`;
+      scrollMarkdownCaret(highlightTargets, selection);
+      const fragment = pendingMarkdownFragment ?? initialFragment;
+      if (fragment !== null) {
+        scrollMarkdownFragment(article, fragment);
+        pendingMarkdownFragment = null;
+      }
+      markdownReadyForFragment = true;
+      committed = true;
+      return true;
+    } else {
+      article.remove();
+      return false;
+    }
+  } finally {
+    if (!committed && generation === renderGeneration) {
+      markdownReadyForFragment = previousMarkdownReadyForFragment;
+      pendingMarkdownFragment = previousPendingMarkdownFragment;
+    }
+    finishRender(generation);
+  }
+}
+
+type ViewerStateRenderer = (
+  text: string,
+  state: ViewerRenderState,
+  nextImageZoom: number,
+) => boolean | Promise<boolean>;
+
+const VIEWER_RENDERERS: Record<ViewerFormat, ViewerStateRenderer> = {
   csv: renderTable,
   markdown: renderMarkdown,
   image: renderImage,
   pdf: renderPdf,
   html: renderHtml,
-});
+};
 
-function renderPayload(payload: ViewerPayload) {
+async function renderViewerState(state: ViewerRenderState, nextImageZoom: number): Promise<boolean> {
+  if (viewerDisposed) return false;
+  return VIEWER_RENDERERS[state.format](state.text, state, nextImageZoom);
+}
+
+function renderCurrentViewer(): Promise<boolean> {
+  if (viewerDisposed) return Promise.resolve(false);
+  const state = currentViewerRenderState();
+  return renderViewerState(state, imageZoom);
+}
+
+async function renderPayload(payload: ViewerPayload) {
   if (!isViewerPayload(payload)) throw new Error("ビューのデータが不正です");
-  const sourceChanged = payload.source_path !== currentSourcePath
-    || payload.archive_path !== currentArchivePath
-    || payload.archive_entry !== currentArchiveEntry;
-  if (payload.format !== currentFormat
-    || sourceChanged) {
-    csvColumnWidths = [];
-  }
-  if (sourceChanged) imageZoom = DEFAULT_IMAGE_ZOOM;
-  markdownReadyForFragment = false;
-  if (payload.format !== "markdown") pendingMarkdownFragment = null;
-  currentFormat = payload.format;
-  currentText = payload.text;
-  currentSelection = payload.selection as ViewerSelectionWithCaret | null;
-  currentSourcePath = payload.source_path;
-  currentArchivePath = payload.archive_path;
-  currentArchiveEntry = payload.archive_entry;
-  disposeImagePan?.();
-  disposeImagePan = null;
-  const handler = VIEWER_HANDLERS[payload.format];
-  syncViewerFormatButtons(formatButtons, payload.format, currentArchiveEntry ?? currentSourcePath);
-  const formatSpec = viewerFormatSpec(payload.format);
-  syncViewerActionButtons(actionButtons, payload.format);
-  title.textContent = formatSpec.title;
-  document.title = title.textContent;
-  if (!isInlineViewer) runViewerOperation("タイトルを更新できませんでした", () => win!.setTitle(title.textContent));
-  delimiterControl.hidden = !formatSpec.supportsDelimiter;
-  runViewerOperation("ビューを描画できませんでした", () => handler.render(payload.text));
+  const previousState = currentViewerRenderState();
+  const nextState = viewerRenderStateOf(payload);
+  const sourceChanged = nextState.sourcePath !== previousState.sourcePath
+    || nextState.archivePath !== previousState.archivePath
+    || nextState.archiveEntry !== previousState.archiveEntry;
+  const formatChanged = nextState.format !== previousState.format;
+  const nextImageZoom = sourceChanged ? DEFAULT_IMAGE_ZOOM : imageZoom;
+  const committed = await renderViewerState(nextState, nextImageZoom);
+  if (viewerDisposed || !committed) return;
+  if (formatChanged || sourceChanged) csvColumnWidths = [];
+  publishViewerRenderState(nextState, nextImageZoom);
 }
 
 function openDelimiterDialog() {
@@ -666,7 +934,7 @@ function openDelimiterDialog() {
           delimiter: value,
         });
       }
-      runViewerOperation("ビューを再描画できませんでした", () => VIEWER_HANDLERS[currentFormat].render(currentText));
+      runViewerOperation("ビューを再描画できませんでした", renderCurrentViewer);
     },
   });
 }
@@ -709,7 +977,15 @@ async function start() {
   try {
     if (isInlineViewer) document.body.classList.add("inline-viewer");
     applyTheme();
-    if (!isInlineViewer) windowControls = new WindowControls(document.body, win!, title, { onError: reportWindowError });
+    if (!isInlineViewer) {
+      windowControls = new WindowControls(document.body, win!, title, {
+        onError: reportWindowError,
+        onGeometryChange: () => viewerLayoutCoordinator?.request(),
+        onStateChange: (state) => {
+          if (state !== "minimized") viewerLayoutCoordinator?.request();
+        },
+      });
+    }
     createViewerFormatButtons(formatButtons, (format) => {
       runViewerOperation("表示形式を変更できませんでした", () => {
         if (!isInlineViewer || !isViewerFormat(format)) return;
@@ -725,7 +1001,7 @@ async function start() {
       runViewerOperation("配色を変更できませんでした", () => {
         applyTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light");
       });
-    });
+    }, { signal: viewerDomListeners.signal });
     delimiterInput.addEventListener("input", () => {
       if (!delimiterInput.value || !viewerFormatSpec(currentFormat).supportsDelimiter) return;
       if (isInlineViewer) {
@@ -734,12 +1010,13 @@ async function start() {
           delimiter: delimiterInput.value,
         });
       }
-      runViewerOperation("ビューを再描画できませんでした", () => VIEWER_HANDLERS[currentFormat].render(currentText));
-    });
+      runViewerOperation("ビューを再描画できませんでした", renderCurrentViewer);
+    }, { signal: viewerDomListeners.signal });
     document.getElementById("chart-close")!.addEventListener("click", () => {
       runViewerOperation("グラフを閉じられませんでした", () => chartController.close());
-    });
+    }, { signal: viewerDomListeners.signal });
     content.addEventListener("contextmenu", (event) => {
+      if (content.classList.contains("viewer-loading")) return;
       const target = event.target as Element;
       if (viewerFormatSpec(currentFormat).supportsChart && target.closest(".viewer-grid")) {
         event.preventDefault();
@@ -749,10 +1026,10 @@ async function start() {
         event.preventDefault();
         runViewerOperation("HTMLメニューを表示できませんでした", () => showContextMenu(event.clientX, event.clientY));
       }
-    });
+    }, { signal: viewerDomListeners.signal });
     document.addEventListener("mousedown", (event) => {
       if (!contextMenu.contains(event.target as Node)) contextMenu.hidden = true;
-    });
+    }, { signal: viewerDomListeners.signal });
     if (isInlineViewer) {
       window.addEventListener("message", (event) => {
         if (event.source !== window.parent || event.origin !== window.location.origin) return;
@@ -765,7 +1042,8 @@ async function start() {
           if (typeof event.data.fragment !== "string") return;
           const fragment = event.data.fragment;
           pendingMarkdownFragment = fragment;
-          if (currentFormat === "markdown" && markdownReadyForFragment) {
+          if (!content.classList.contains("viewer-loading")
+            && currentFormat === "markdown" && markdownReadyForFragment) {
             const article = content.querySelector<HTMLElement>("article");
             if (article) {
               scrollMarkdownFragment(article, fragment);
@@ -778,7 +1056,7 @@ async function start() {
           if (typeof event.data.delimiter !== "string") return;
           delimiterInput.value = event.data.delimiter;
           if (!delimiterInput.value || !viewerFormatSpec(currentFormat).supportsDelimiter) return;
-          runViewerOperation("ビューを再描画できませんでした", () => VIEWER_HANDLERS[currentFormat].render(currentText));
+          runViewerOperation("ビューを再描画できませんでした", renderCurrentViewer);
           return;
         }
         if (event.data?.type === INLINE_PREVIEW_MESSAGES.FONT_MESSAGE) {
@@ -796,14 +1074,17 @@ async function start() {
           setFullscreenButton(event.data.fullscreen);
           return;
         }
-      });
+      }, { signal: viewerDomListeners.signal });
       postToParent({ type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE });
     } else {
       viewerUpdateListener.set(await listen<ViewerPayload>(EVENT_NAMES.viewerUpdate, (event) => {
         runViewerOperation("ビューを更新できませんでした", () => renderPayload(event.payload));
       }));
-      renderPayload(await takeViewerPayload(win!.label));
+      await renderPayload(await takeViewerPayload(win!.label));
     }
+    viewerLayoutCoordinator?.refresh();
+    if (!isInlineViewer) await win!.show();
+    viewerLayoutCoordinator?.request();
   } catch (error) {
     disposeViewer();
     title.textContent = "表示できませんでした";
@@ -811,15 +1092,22 @@ async function start() {
     message.className = "viewer-error";
     message.textContent = String(error);
     content.replaceChildren(message);
+    if (!isInlineViewer) {
+      try {
+        await win!.show();
+      } catch (showError) {
+        reportWindowError("ビューを表示できませんでした", showError);
+      }
+    }
   }
 }
 
-window.addEventListener("beforeunload", disposeViewer, { once: true });
+window.addEventListener("beforeunload", disposeViewer, { once: true, signal: viewerDomListeners.signal });
 window.addEventListener("storage", (event) => {
   if (event.key === THEME_STORAGE_KEY) {
     runViewerOperation("配色を同期できませんでした", () => applyTheme(event.newValue));
   }
-});
+}, { signal: viewerDomListeners.signal });
 
 void start().catch((error) => {
   console.error("ビューの起動処理に失敗しました", error);
