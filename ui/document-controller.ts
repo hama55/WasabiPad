@@ -73,7 +73,7 @@ export interface DocumentStatusPort {
 }
 
 export interface DocumentAddressPort {
-  render: (path: string) => void;
+  render: (path: string, folderRoot: string | null) => void;
 }
 
 export interface DocumentSidebarPort {
@@ -140,6 +140,10 @@ export class DocumentController {
     }
   }
 
+  private renderAddressbar(path: string) {
+    this.view.addressbar.render(path, this.session.folderRoot);
+  }
+
   private notifyDocumentChange(keepViewers: boolean): boolean {
     if (!this.view.onDocumentChange) return false;
     try {
@@ -173,7 +177,7 @@ export class DocumentController {
     this.view.statusbar.setByteSize(info.byte_len, info.is_huge);
     this.view.statusbar.setModifiedAt(info.modified_at);
     this.view.statusbar.setLineCount(info.line_count);
-    this.view.addressbar.render(info.path);
+    this.renderAddressbar(info.path);
     if (updateTree) this.showTree(info);
     this.view.editor.open(
       info.line_count,
@@ -219,7 +223,7 @@ export class DocumentController {
     this.session.selectedRelPath = relPath;
     this.session.dirty = true;
     this.view.editor.setExternalFilePath(absolutePath, markdownForSession(this.session));
-    this.view.addressbar.render(absolutePath);
+    this.renderAddressbar(absolutePath);
     this.updateTitle();
   }
 
@@ -311,7 +315,7 @@ export class DocumentController {
     this.view.statusbar.setByteSize(null);
     this.view.statusbar.setModifiedAt(null);
     this.view.statusbar.setLineCount(1);
-    this.view.addressbar.render("");
+    this.renderAddressbar("");
     this.view.setSidebar(false);
     this.view.sidebar.setWorkspaceSearch(null);
     this.view.editor.open(1, false);
@@ -436,7 +440,7 @@ export class DocumentController {
     }
     try {
       this.view.editor.setExternalFilePath(path, markdownForSession(this.session));
-      this.view.addressbar.render(path);
+      this.renderAddressbar(path);
       this.view.statusbar.setFormat(this.session);
       this.view.statusbar.setModifiedAt(outcome.modified_at);
       this.updateTitle();
@@ -574,7 +578,7 @@ export class DocumentController {
     else if (this.session.savePath) this.session.savePath = info.path;
     if (this.session.archivePath) this.session.archivePath = info.path;
     this.session.selectedRelPath = selectedRelPath;
-    this.view.addressbar.render(info.path);
+    this.renderAddressbar(info.path);
     this.view.editor.setExternalFilePath(externalFilePathOf(info), markdownForSession(this.session));
     this.view.statusbar.setModifiedAt(info.modified_at);
     this.updateTitle();

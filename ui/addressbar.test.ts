@@ -68,6 +68,54 @@ describe("Feature: AddressBar breadcrumbs", () => {
     expect(ports.onOpen.mock.calls).toEqual([["C:\\work\\memo.txt"]]);
   });
 
+  // Feature: フォルダタブのルート表示
+  // Scenario: 深い階層のファイルを表示してもフォルダタブのルートを強調する
+  // Given: `C:\\work`をルートとするフォルダタブで`C:\\work\\notes\\memo.txt`を表示している
+  // When: アドレスバーのパンくずを描画する
+  // Then: `C:\\work`だけがルートとして強調され、通常クリックは現在タブで開く
+  it("Scenario: フォルダタブのルートをパンくずで強調する", () => {
+    const { host, ports } = addressBarFixture();
+    const addressbar = new AddressBar(host, ports);
+    addressbar.render("C:\\work\\notes\\memo.txt", "C:\\work");
+
+    const crumbs = host.querySelectorAll<HTMLButtonElement>(".addressbar-crumb");
+    expect(crumbs[1].classList.contains("addressbar-crumb-root")).toBe(true);
+    expect(crumbs[1].getAttribute("aria-current")).toBe("location");
+    expect([...crumbs].filter((crumb) => crumb.classList.contains("addressbar-crumb-root"))).toHaveLength(1);
+
+    crumbs[1].click();
+
+    expect(ports.onOpen).toHaveBeenCalledWith("C:\\work", false);
+  });
+
+  // Feature: フォルダタブのパンくず操作
+  // Scenario: フォルダタブルート以外のパンくずを通常クリックする
+  // Given: `C:\\work`をルートとするフォルダタブで深いファイルを表示している
+  // When: `notes`のパンくずをクリックする
+  // Then: 対象フォルダを新規タブ指定で開く通知を送る
+  it("Scenario: フォルダタブルート以外のパンくずを新規タブで開く", () => {
+    const { host, ports } = addressBarFixture();
+    const addressbar = new AddressBar(host, ports);
+    addressbar.render("C:\\work\\notes\\memo.txt", "C:\\work");
+
+    host.querySelectorAll<HTMLButtonElement>(".addressbar-crumb")[2].click();
+
+    expect(ports.onOpen.mock.calls).toEqual([["C:\\work\\notes", true]]);
+  });
+
+  // Feature: 単独ファイルタブのパンくず表示
+  // Scenario: フォルダタブルートがないファイルを表示する
+  // Given: 単独ファイルタブで`C:\\work\\memo.txt`を表示している
+  // When: アドレスバーのパンくずを描画する
+  // Then: ルート強調を表示しない
+  it("Scenario: 単独ファイルタブではルートを強調しない", () => {
+    const { host, ports } = addressBarFixture();
+    const addressbar = new AddressBar(host, ports);
+    addressbar.render("C:\\work\\memo.txt");
+
+    expect(host.querySelector(".addressbar-crumb-root")).toBeNull();
+  });
+
   // Given: `C:\\work\\memo.txt` を表示中のAddressBar
   // When: `work` のパンくずをホイールボタンでクリックする
   // Then: 対象パスと新規タブ指定を `onOpen` に通知し、既定動作を抑止する

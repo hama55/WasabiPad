@@ -55,6 +55,38 @@ describe("Feature: Sidebar", () => {
     document.body.replaceChildren();
   });
 
+  // Feature: スクロール可能なファイルツリーの中クリック
+  // Scenario: 項目行をホイールボタンでクリックすると新規タブで開く
+  // Given: ファイルツリーの表示内容が縦スクロールを必要とする
+  // When: ファイルまたはフォルダの行をホイールボタンでクリックする
+  // Then: ブラウザの自動スクロールを抑止し、新規タブ指定で選択通知を送る
+  // Examples: ファイル行とフォルダ行
+  it.each([
+    [{ name: "memo.txt", is_dir: false, is_archive: false }, "memo.txt"],
+    [{ name: "docs", is_dir: true, is_archive: false }, "docs"],
+  ] as const)("Scenario: %s行の中クリックを新規タブで開く", (target, relPath) => {
+    const { host, ports, sidebar } = mount();
+    sidebar.setEntries([
+      target,
+      ...Array.from({ length: 20 }, (_, index) => ({
+        name: `other-${index}.txt`, is_dir: false, is_archive: false,
+      })),
+    ]);
+    const tree = host.querySelector<HTMLElement>(".fv-tree")!;
+    Object.defineProperty(tree, "clientHeight", { configurable: true, value: 100 });
+    Object.defineProperty(tree, "scrollHeight", { configurable: true, value: 500 });
+    const row = host.querySelector<HTMLElement>(`[data-rel-path="${relPath}"]`)!;
+    const press = new MouseEvent("mousedown", { button: 1, bubbles: true, cancelable: true });
+    const event = new MouseEvent("auxclick", { button: 1, bubbles: true, cancelable: true });
+
+    row.dispatchEvent(press);
+    row.dispatchEvent(event);
+
+    expect(press.defaultPrevented).toBe(true);
+    expect(event.defaultPrevented).toBe(true);
+    expect(ports.onSelect).toHaveBeenCalledWith(relPath, true);
+  });
+
   // Feature: ファイルツリー末尾のスクロール余白
   // Scenario: ファイルツリーの最後までスクロールしても3行分の空白を確保する
   // Given: ファイルツリーにファイルを表示している

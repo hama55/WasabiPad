@@ -138,7 +138,7 @@ describe("Feature: DocumentController", () => {
     expect(controller.current.savePath).toBe("C:\\work\\memo.txt");
     expect(controller.current.displayPath).toBe("C:\\work\\memo.txt");
     expect(controller.current.selectedRelPath).toBe("memo.txt");
-    expect(view.addressbar.render).toHaveBeenLastCalledWith("C:\\work\\memo.txt");
+    expect(view.addressbar.render).toHaveBeenLastCalledWith("C:\\work\\memo.txt", null);
     expect(view.editor.setExternalFilePath).toHaveBeenLastCalledWith("C:\\work\\memo.txt", false);
   });
 
@@ -359,7 +359,7 @@ describe("Feature: DocumentController", () => {
     expect(view.hideExternalBanner).toHaveBeenCalled();
     expect(view.statusbar.setByteSize).toHaveBeenCalledWith(1234, false);
     expect(view.statusbar.setLineCount).toHaveBeenCalledWith(42);
-    expect(view.addressbar.render).toHaveBeenCalledWith("C:\\work\\memo.txt");
+    expect(view.addressbar.render).toHaveBeenCalledWith("C:\\work\\memo.txt", null);
     expect(view.editor.open).toHaveBeenCalledWith(42, false, false, "C:\\work\\memo.txt", false);
     expect(view.onDocumentChange).toHaveBeenCalledWith(expect.objectContaining({ savePath: "C:\\work\\memo.txt" }), false);
     expect(view.onSessionChange).not.toHaveBeenCalled();
@@ -438,6 +438,7 @@ describe("Feature: DocumentController", () => {
     }));
 
     expect(controller.current.savePath).toBeNull();
+    expect(view.addressbar.render).toHaveBeenCalledWith("C:\\work", "C:\\work");
     expect(view.editor.open).toHaveBeenCalledWith(1, false, false, null, false);
   });
 
@@ -451,6 +452,7 @@ describe("Feature: DocumentController", () => {
       folder_root: "C:\\work",
     }));
 
+    expect(view.addressbar.render).toHaveBeenCalledWith("C:\\work\\memo.txt", "C:\\work");
     expect(view.editor.open).toHaveBeenCalledWith(42, false, false, "C:\\work\\memo.txt", false);
   });
 

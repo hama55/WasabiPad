@@ -6,7 +6,7 @@ import {
 } from "./workspace-search-panel";
 import { archiveEntryPath, splitArchiveEntryPath } from "./archive-path";
 import type { ContextTarget } from "./context-target";
-import { isMiddleClick } from "./interaction-constants";
+import { preventMiddleClickDefault } from "./interaction-constants";
 import { iconButton } from "./icon-button";
 import { runAsyncBoundary } from "./async-boundary";
 import { isDescendantPath } from "./path";
@@ -1100,13 +1100,13 @@ export class Sidebar {
           (error) => this.reportTreeError(error),
         );
       });
+      div.addEventListener("mousedown", preventMiddleClickDefault);
       div.addEventListener("auxclick", (e) => {
-        if (isMiddleClick(e)) {
-          runAsyncBoundary(
-            () => activate(true),
-            (error) => this.reportTreeError(error),
-          );
-        }
+        if (!preventMiddleClickDefault(e)) return;
+        runAsyncBoundary(
+          () => activate(true),
+          (error) => this.reportTreeError(error),
+        );
       });
       if (r.kind !== "archiveEntry" && r.kind !== "archiveDir") {
         // archiveEntry/archiveDir はアーカイブ内の仮想エントリなので、実ファイル向けの
