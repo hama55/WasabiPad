@@ -66,6 +66,7 @@ function fixture(writeClipboardText?: (text: string) => Promise<void>) {
     onAddFavorite: vi.fn(),
     onSetStartupPath: vi.fn(),
     onOpenPath: vi.fn(),
+    onOpenAs: vi.fn(),
   } satisfies FolderActionsPorts;
   return {
     actions: new FolderActions(doc, ports, {
@@ -100,9 +101,10 @@ describe("Feature: FolderActions", () => {
     vi.mocked(promptFields).mockResolvedValue(null);
   });
 
+  // Feature: ファイル項目の右クリックメニュー
   // Given: rootが`C:\work`、対象が`memo.txt`、gotoが`{line:499,col:8}`
   // When: コンテキストメニュー表示後に新規ウィンドウ項目をクリック
-  // Then: 10項目・区切り4個、Explorerが先頭で、絶対パスとgotoを渡す
+  // Then: Explorerを単独の先頭グループにした12項目・区切り5個を表示し、絶対パスとgotoを渡す
   it("Scenario: 右クリック項目を操作別に区切り、新規ウィンドウで開ける", () => {
     const { actions, dropdown, ports } = fixture();
     const goto = { line: 499, col: 8 };
@@ -110,32 +112,35 @@ describe("Feature: FolderActions", () => {
 
     expect([...dropdown.querySelectorAll(".dd-label")].map((label) => label.textContent)).toEqual([
       "エクスプローラで開く",
-      "切り取り",
-      "コピー",
       "新規タブで開く",
       "新規ウィンドウで開く",
-      "アプリで開く",
+      "形式を指定して開く ▸",
+      "Windowsアプリで開く",
       "コマンドを登録...",
+      "切り取り",
+      "コピー",
       "アドレスバーに設定",
       "お気に入りに追加",
-      "新規メモ作成...",
       "名前を変更...",
-      "その他 ▸",
+      "削除",
     ]);
-    expect(dropdown.querySelectorAll(".dd-sep")).toHaveLength(4);
+    expect(dropdown.querySelectorAll(".dd-sep")).toHaveLength(5);
+    const firstSeparator = dropdown.querySelector<HTMLElement>(".dd-sep");
+    expect(firstSeparator?.previousElementSibling?.textContent).toBe("エクスプローラで開く");
+    expect(firstSeparator?.nextElementSibling?.textContent).toBe("新規タブで開く");
     const expectedIcons = [
       ["エクスプローラで開く", MENU_ICON.explorer],
-      ["切り取り", MENU_ICON.cut],
-      ["コピー", MENU_ICON.copy],
       ["新規タブで開く", MENU_ICON.newTab],
       ["新規ウィンドウで開く", MENU_ICON.newWindow],
-      ["アプリで開く", MENU_ICON.external],
+      ["形式を指定して開く ▸", MENU_ICON.more],
+      ["Windowsアプリで開く", MENU_ICON.external],
       ["コマンドを登録...", MENU_ICON.command],
+      ["切り取り", MENU_ICON.cut],
+      ["コピー", MENU_ICON.copy],
       ["アドレスバーに設定", MENU_ICON.address],
       ["お気に入りに追加", MENU_ICON.favorite],
-      ["新規メモ作成...", MENU_ICON.newMemo],
       ["名前を変更...", MENU_ICON.rename],
-      ["その他 ▸", MENU_ICON.more],
+      ["削除", MENU_ICON.delete],
     ] as const;
     for (const [label, icon] of expectedIcons) {
       const item = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
@@ -146,6 +151,36 @@ describe("Feature: FolderActions", () => {
     [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
       .find((item) => item.textContent === "新規ウィンドウで開く")!.click();
     expect(ports.onOpenInNewWindow).toHaveBeenCalledWith("C:\\work\\memo.txt", goto);
+  });
+
+  // Feature: 形式を指定して開く
+  // Scenario: 全形式を表示し、画像の自動判別を現在のフォルダタブで開く
+  // Given: 実ファイル項目`memo.bin`の右クリックメニューを表示している
+  // When: 「形式を指定して開く」から「画像」→「自動判別」を選ぶ
+  // Then: 確定した全形式を順番どおり表示し、右クリックした1ファイルと自動判別指定を渡す
+  it("Scenario: 全形式から画像の自動判別を選べる", () => {
+    const { actions, dropdown, ports } = fixture();
+    actions.showContextMenu(0, 0, { relPath: "memo.bin", isDir: false });
+
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent?.includes("形式を指定して開く"))!.click();
+    expect([...dropdown.querySelectorAll<HTMLElement>(".dd-submenu .dd-label")]
+      .map((label) => label.textContent)).toEqual([
+        ".txt", ".md", ".csv", ".html", ".pdf", "画像 ▸",
+        ".zip", ".7z", ".xlsx", ".xls",
+      ]);
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-submenu .dd-item")]
+      .find((item) => item.textContent === "画像 ▸")!.click();
+    const panels = dropdown.querySelectorAll<HTMLElement>(".dd-submenu");
+    expect([...panels[panels.length - 1].querySelectorAll<HTMLElement>(".dd-label")]
+      .map((label) => label.textContent)).toEqual([
+        "自動判別", ".svg", ".png", ".jpg", ".gif",
+        ".webp", ".bmp", ".ico", ".avif", ".apng",
+      ]);
+    [...panels[panels.length - 1].querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "自動判別")!.click();
+
+    expect(ports.onOpenAs).toHaveBeenCalledWith("memo.bin", "image-auto");
   });
 
   // Feature: ファイルツリーの内部クリップボード
@@ -774,21 +809,20 @@ describe("Feature: FolderActions", () => {
     expect(isImagePath("memo.md")).toBe(false);
   });
 
+  // Feature: ファイル項目の削除
   // Given: 対象が`memo.txt`、delete APIは成功
-  // When: その他→削除をクリック
+  // When: 右クリックメニュー直下の削除をクリック
   // Then: `deleteEntry("memo.txt")`、確認文言表示、選択解除、展開状態を壊さない更新
-  it("Scenario: 削除はその他サブメニューを経由する", async () => {
+  it("Scenario: 削除をメニュー直下から実行する", async () => {
     const { actions, dropdown, ports, doc } = fixture();
     doc.current.selectedRelPath = "memo.txt";
     vi.spyOn(api, "deleteEntry").mockResolvedValueOnce({} as api.DocInfo);
     actions.showContextMenu(0, 0, { relPath: "memo.txt", isDir: false });
 
-    const other = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
-      .find((item) => item.textContent?.includes("その他"));
-    other!.click();
-    expect(dropdown.querySelector<HTMLElement>(".dd-submenu .dd-item")?.textContent).toBe("削除");
-    expect(dropdown.querySelector<HTMLElement>(`.dd-submenu .${MENU_ICON.delete}`)).not.toBeNull();
-    dropdown.querySelector<HTMLElement>(".dd-submenu .dd-item")!.click();
+    const deleteItem = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "削除");
+    expect(deleteItem?.querySelector(`.${MENU_ICON.delete}`)).not.toBeNull();
+    deleteItem!.click();
     await vi.waitFor(() => expect(api.deleteEntry).toHaveBeenCalledWith("memo.txt"));
 
     expect(confirmMessage).toHaveBeenCalledWith(
@@ -803,7 +837,7 @@ describe("Feature: FolderActions", () => {
   // Feature: ファイルツリーの複数選択削除
   // Scenario: 選択中の複数項目をコンテキストメニューから削除する
   // Given: memo.txt と notes.txt を選択している
-  // When: その他→削除をクリックする
+  // When: メニュー直下の削除をクリックする
   // Then: 選択した2項目を確認後に削除する
   it("Scenario: コンテキストメニューの削除は複数選択へ適用する", async () => {
     const deleteEntry = vi.spyOn(api, "deleteEntry").mockResolvedValue({} as api.DocInfo);
@@ -819,8 +853,7 @@ describe("Feature: FolderActions", () => {
     );
 
     [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
-      .find((item) => item.textContent?.includes("その他"))!.click();
-    dropdown.querySelector<HTMLElement>(".dd-submenu .dd-item")!.click();
+      .find((item) => item.textContent === "削除")!.click();
 
     await vi.waitFor(() => expect(deleteEntry).toHaveBeenCalledTimes(2));
     expect(confirmMessage).toHaveBeenCalledWith(
@@ -843,10 +876,8 @@ describe("Feature: FolderActions", () => {
     doc.markDeleted.mockImplementation(() => { doc.current.selectedRelPath = ""; });
     const deleteCallsBefore = deleteEntry.mock.calls.length;
     actions.showContextMenu(0, 0, { relPath: "memo.txt", isDir: false });
-    const other = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
-      .find((item) => item.textContent?.includes("その他"));
-    other!.click();
-    dropdown.querySelector<HTMLElement>(".dd-submenu .dd-item")!.click();
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "削除")!.click();
     await vi.waitFor(() => expect(deleteEntry).toHaveBeenCalledWith("memo.txt"));
     await vi.waitFor(() => expect(ports.sidebar.refreshFolderEntries).toHaveBeenCalledOnce());
 
@@ -878,6 +909,7 @@ describe("Feature: FolderActions", () => {
       byte_len: 0,
       is_huge: false,
       modified_at: null,
+      effective_extension: null,
     } satisfies api.DocInfo;
     doc.promptMemoSpec.mockResolvedValueOnce({
       memo: { stem: "memo", extension: "txt" },
@@ -949,6 +981,7 @@ describe("Feature: FolderActions", () => {
       byte_len: 0,
       is_huge: false,
       modified_at: null,
+      effective_extension: null,
     } satisfies api.DocInfo;
     doc.promptMemoSpec.mockResolvedValueOnce({
       memo: { stem: "memo", extension: "txt" },
@@ -983,6 +1016,7 @@ describe("Feature: FolderActions", () => {
       byte_len: 0,
       is_huge: false,
       modified_at: null,
+      effective_extension: null,
     } satisfies api.DocInfo;
     const createNote = vi.spyOn(api, "createNote").mockResolvedValue(docInfo);
     const deleteEntryWithoutBackup = vi.spyOn(api, "deleteEntryWithoutBackup").mockResolvedValue(docInfo);
@@ -1023,6 +1057,7 @@ describe("Feature: FolderActions", () => {
       byte_len: 0,
       is_huge: false,
       modified_at: null,
+      effective_extension: null,
     } satisfies api.DocInfo;
     vi.spyOn(api, "renameEntry").mockResolvedValue(info);
     const { actions, doc, ports } = fixture();

@@ -47,6 +47,7 @@ const info = (overrides: Partial<DocInfo> = {}): DocInfo => ({
   byte_len: 1234,
   is_huge: false,
   modified_at: 1720000000000,
+  effective_extension: null,
   ...overrides,
 });
 
@@ -100,6 +101,28 @@ describe("Feature: DocumentController", () => {
 
     expect(await controller.openPath("C:\\work\\memo.txt")).toBe(true);
     expect(openPath).toHaveBeenCalledWith("C:\\work\\memo.txt");
+  });
+
+  // Feature: 形式を指定してファイルを開く
+  // Scenario: 指定形式をbackendへ渡して有効拡張子を表示セッションへ反映する
+  // Given: `memo.bin`をtxtとして開いた結果を返す文書API
+  // When: `selectEntry("memo.bin", "txt")`を呼ぶ
+  // Then: txt指定がAPIへ渡り、現在のセッションはtxtを有効拡張子として持つ
+  it("Scenario: 指定形式を選択APIと表示セッションへ渡す", async () => {
+    const { view } = fakeView();
+    const selectEntry = vi.fn().mockResolvedValue(info({
+      path: "C:\\work\\memo.bin",
+      folder_root: "C:\\work",
+      effective_extension: "txt",
+    }));
+    const controller = new DocumentController(view, {
+      ...services(),
+      api: { ...api, selectEntry },
+    });
+
+    expect(await controller.selectEntry("memo.bin", "txt")).toBe(true);
+    expect(selectEntry).toHaveBeenCalledWith("memo.bin", "txt");
+    expect(controller.current.effectiveExtension).toBe("txt");
   });
 
   // Feature: 削除後も編集中の本文を保持する

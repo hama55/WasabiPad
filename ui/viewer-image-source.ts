@@ -1,9 +1,10 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { readArchiveAsset } from "./api";
+import { readArchiveAsset, readFileAsset } from "./api";
 
 export interface ImageAssetSourcePorts {
   convertFileSrc: (path: string) => string;
   readArchiveAsset: (archivePath: string, entry: string) => Promise<ArrayBuffer>;
+  readFileAsset: (path: string) => Promise<ArrayBuffer>;
   createObjectURL: (blob: Blob) => string;
   revokeObjectURL: (url: string) => void;
 }
@@ -11,6 +12,7 @@ export interface ImageAssetSourcePorts {
 const defaultPorts: ImageAssetSourcePorts = {
   convertFileSrc,
   readArchiveAsset,
+  readFileAsset,
   createObjectURL: (blob) => URL.createObjectURL(blob),
   revokeObjectURL: (url) => URL.revokeObjectURL(url),
 };
@@ -44,6 +46,15 @@ export async function imageUrlFromArchive(
   ports: ImageAssetSourcePorts = defaultPorts,
 ): Promise<string> {
   const bytes = await ports.readArchiveAsset(archivePath, entry);
+  return ports.createObjectURL(new Blob([bytes], { type: mimeType }));
+}
+
+export async function imageUrlFromFile(
+  path: string,
+  mimeType: string,
+  ports: ImageAssetSourcePorts = defaultPorts,
+): Promise<string> {
+  const bytes = await ports.readFileAsset(path);
   return ports.createObjectURL(new Blob([bytes], { type: mimeType }));
 }
 

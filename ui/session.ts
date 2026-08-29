@@ -23,6 +23,7 @@ export interface DocumentSession {
   selectedRelPath: string;
   archivePath: string | null;
   archiveEntry: string | null;
+  effectiveExtension: string | null;
 }
 
 export function initialSession(): DocumentSession {
@@ -41,6 +42,7 @@ export function initialSession(): DocumentSession {
     selectedRelPath: "",
     archivePath: null,
     archiveEntry: null,
+    effectiveExtension: null,
   };
 }
 
@@ -53,9 +55,12 @@ export function externalFilePathOf(info: Pick<DocInfo, "path" | "folder_root">):
 }
 
 export function documentPathOf(
-  session: Pick<DocumentSession, "selectedRelPath" | "savePath" | "displayPath">,
+  session: Pick<DocumentSession, "selectedRelPath" | "savePath" | "displayPath">
+    & Partial<Pick<DocumentSession, "archiveEntry" | "effectiveExtension">>,
 ): string {
-  return session.selectedRelPath || session.savePath || session.displayPath;
+  const path = session.selectedRelPath || session.savePath || session.displayPath;
+  if (!path || !session.effectiveExtension || session.archiveEntry || splitArchiveEntryPath(path)) return path;
+  return `${path}.${session.effectiveExtension}`;
 }
 
 export function sessionFromDocInfo(
@@ -84,6 +89,7 @@ export function sessionFromDocInfo(
     selectedRelPath: previous.selectedRelPath,
     archivePath,
     archiveEntry,
+    effectiveExtension: info.effective_extension,
   };
 }
 

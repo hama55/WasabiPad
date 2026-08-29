@@ -269,17 +269,17 @@ export class DocumentController {
     }
   }
 
-  async selectEntry(relPath: string): Promise<boolean> {
+  async selectEntry(relPath: string, openAs?: api.OpenAs): Promise<boolean> {
     const request = ++this.loadRequest;
     try {
       this.setLoading(true, request);
       const info = await this.services.withArchivePassword(
         archiveRelOf(relPath),
-        () => this.services.api.selectEntry(relPath),
+        () => this.services.api.selectEntry(relPath, openAs),
       );
       if (request !== this.loadRequest) return false;
       this.session.selectedRelPath = relPath;
-      this.applyDocInfo(info, false, false);
+      this.applyDocInfo(info, false, openAs !== undefined);
       // 選択した行を一覧側にも戻す。深い階層は必要ならここで展開する。
       try {
         await this.view.sidebar.selectByRelPath(relPath);

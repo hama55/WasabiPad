@@ -17,7 +17,7 @@ import {
 } from "./path";
 import { isArchiveEntryUnder } from "./archive-path";
 import { createRegisteredCommandMenu, type RegisteredCommandMenuPorts } from "./registered-command-menu";
-import { MENU_ICON } from "./menu-icons";
+import { MENU_ICON, type MenuIconClass } from "./menu-icons";
 import { MENU_LABELS } from "./menu-labels";
 import { runAsyncBoundary } from "./async-boundary";
 import { reportErrorSafely } from "./report-error";
@@ -46,6 +46,7 @@ export interface FolderActionsPorts {
   onAddFavorite: (path: string) => void;
   onSetStartupPath: (path: string) => void;
   onOpenPath: (path: string) => void;
+  onOpenAs: (relPath: string, openAs: api.OpenAs) => void;
 }
 
 export interface FolderActionsSidebarPort {
@@ -177,10 +178,12 @@ export class FolderActions {
         });
       }
     }
-    if (operationTargets.length) {
+    const pushCutAndCopy = (sep = false) => {
+      if (!operationTargets.length) return;
       items.push({
         label: MENU_LABELS.cut,
         iconClass: MENU_ICON.cut,
+        sep,
         action: () => this.copyToClipboard("cut", operationTargets),
       });
       items.push({
@@ -188,11 +191,13 @@ export class FolderActions {
         iconClass: MENU_ICON.copy,
         action: () => this.copyToClipboard("copy", operationTargets),
       });
-    }
+    };
+    if (target?.isDir !== false) pushCutAndCopy();
     if (target) {
       items.push({
         label: MENU_LABELS.newTab,
         iconClass: MENU_ICON.newTab,
+        sep: !target.isDir,
         action: () => this.ports.onOpenInNewTab(target.relPath, target.goto),
       });
       items.push({
@@ -214,20 +219,71 @@ export class FolderActions {
         });
       }
       if (!target.isDir) {
+        if (operationTargets.some((entry) => entry.relPath === target.relPath)) {
+          const openAsItem = (
+            label: string,
+            openAs: api.OpenAs,
+            iconClass: MenuIconClass = MENU_ICON.text,
+          ): MenuItem => ({
+            label,
+            iconClass,
+            action: () => this.ports.onOpenAs(target.relPath, openAs),
+          });
+          items.push({
+            label: MENU_LABELS.openWithFormat,
+            iconClass: MENU_ICON.more,
+            sub: [
+              openAsItem(".txt", "txt"),
+              openAsItem(".md", "md", MENU_ICON.markdown),
+              openAsItem(".csv", "csv", MENU_ICON.csv),
+              openAsItem(".html", "html", MENU_ICON.html),
+              openAsItem(".pdf", "pdf", MENU_ICON.pdf),
+              {
+                label: "画像",
+                iconClass: MENU_ICON.image,
+                sub: [
+                  openAsItem("自動判別", "image-auto", MENU_ICON.image),
+                  openAsItem(".svg", "svg", MENU_ICON.image),
+                  openAsItem(".png", "png", MENU_ICON.image),
+                  openAsItem(".jpg", "jpg", MENU_ICON.image),
+                  openAsItem(".gif", "gif", MENU_ICON.image),
+                  openAsItem(".webp", "webp", MENU_ICON.image),
+                  openAsItem(".bmp", "bmp", MENU_ICON.image),
+                  openAsItem(".ico", "ico", MENU_ICON.image),
+                  openAsItem(".avif", "avif", MENU_ICON.image),
+                  openAsItem(".apng", "apng", MENU_ICON.image),
+                ],
+              },
+              openAsItem(".zip", "zip", MENU_ICON.more),
+              openAsItem(".7z", "7z", MENU_ICON.more),
+              openAsItem(".xlsx", "xlsx", MENU_ICON.csv),
+              openAsItem(".xls", "xls", MENU_ICON.csv),
+            ],
+          });
+        }
         items.push({
           label: MENU_LABELS.external,
           iconClass: MENU_ICON.external,
-          action: () => this.run("アプリで開けませんでした", () => this.services.openInOtherApp(this.toAbsolute(target.relPath))),
+          action: () => this.run("Windowsアプリで開けませんでした", () => this.services.openInOtherApp(this.toAbsolute(target.relPath))),
           sep: true,
         });
         items.push(this.registeredCommandMenu(target.relPath));
+        pushCutAndCopy(true);
+        if (operationTargets.length && this.services.writeClipboardText) {
+          items.push({
+            label: MENU_LABELS.copyPath,
+            iconClass: MENU_ICON.copy,
+            action: () => this.run("パスをコピーできませんでした", () => this.copyPath(operationTargets)),
+          });
+        }
       }
       items.push({
         label: MENU_LABELS.address,
         iconClass: MENU_ICON.address,
+        sep: !target.isDir,
         action: () => this.ports.onOpenPath(this.toAbsolute(target.relPath)),
       });
-      if (operationTargets.length && this.services.writeClipboardText) {
+      if (target.isDir && operationTargets.length && this.services.writeClipboardText) {
         items.push({
           label: MENU_LABELS.copyPath,
           iconClass: MENU_ICON.copy,
@@ -239,15 +295,17 @@ export class FolderActions {
       label: MENU_LABELS.favorite,
       iconClass: MENU_ICON.favorite,
       action: () => this.ports.onAddFavorite(revealPath),
-      sep: true,
+      sep: target?.isDir !== false,
     };
     if (target) items.push(favoriteItem);
-    items.push({
-      label: MENU_LABELS.newMemo,
-      iconClass: MENU_ICON.newMemo,
-      action: () => this.run("新規メモを作成できませんでした", () => this.createNote(target?.isDir ? target.relPath : null)),
-      sep: true,
-    });
+    if (!target || target.isDir) {
+      items.push({
+        label: MENU_LABELS.newMemo,
+        iconClass: MENU_ICON.newMemo,
+        action: () => this.run("新規メモを作成できませんでした", () => this.createNote(target?.isDir ? target.relPath : null)),
+        sep: true,
+      });
+    }
     if (!target) {
       items.push({
         label: MENU_LABELS.expandFolder,
@@ -259,21 +317,27 @@ export class FolderActions {
       items.push({
         label: MENU_LABELS.rename,
         iconClass: MENU_ICON.rename,
+        sep: !target.isDir,
         action: () => this.run("名前を変更できませんでした", () => this.rename(target.relPath)),
       });
-      items.push({
-        label: MENU_LABELS.more,
-        iconClass: MENU_ICON.more,
-        sep: true,
-        sub: [{
-          label: MENU_LABELS.delete,
-          iconClass: MENU_ICON.delete,
-          action: () => this.run(
-            "削除できませんでした",
-            () => this.deleteEntries(operationTargets.length ? operationTargets : [target]),
-          ),
-        }],
-      });
+      const deleteItem: MenuItem = {
+        label: MENU_LABELS.delete,
+        iconClass: MENU_ICON.delete,
+        action: () => this.run(
+          "削除できませんでした",
+          () => this.deleteEntries(operationTargets.length ? operationTargets : [target]),
+        ),
+      };
+      if (target.isDir) {
+        items.push({
+          label: MENU_LABELS.more,
+          iconClass: MENU_ICON.more,
+          sep: true,
+          sub: [deleteItem],
+        });
+      } else {
+        items.push(deleteItem);
+      }
     }
     if (!target) items.push(favoriteItem);
     showMenu(x, y, items);

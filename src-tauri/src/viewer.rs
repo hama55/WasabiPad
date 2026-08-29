@@ -29,6 +29,7 @@ pub(crate) async fn open_viewer(
     text: String,
     selection: Option<ViewerSelection>,
     source_path: Option<String>,
+    effective_extension: Option<String>,
     app: AppHandle,
     doc_state: State<'_>,
     state: tauri::State<'_, ViewerStore>,
@@ -48,6 +49,7 @@ pub(crate) async fn open_viewer(
                 text,
                 selection,
                 source_path,
+                effective_extension,
                 archive_path: archive_source
                     .as_ref()
                     .map(|(path, _)| path.to_string_lossy().into_owned()),
@@ -167,6 +169,7 @@ mod tests {
             text: "old".to_string(),
             selection: None,
             source_path: Some("C:\\work\\index.html".to_string()),
+            effective_extension: None,
             archive_path: None,
             archive_entry: None,
         };

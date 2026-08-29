@@ -25,6 +25,7 @@ export function isViewerPayload(value: unknown): value is ViewerPayload {
     && typeof payload.text === "string"
     && (payload.selection === null || isViewerSelection(payload.selection))
     && isNullableString(payload.source_path)
+    && isNullableString(payload.effective_extension)
     && isNullableString(payload.archive_path)
     && isNullableString(payload.archive_entry);
 }

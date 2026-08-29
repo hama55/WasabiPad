@@ -1068,7 +1068,7 @@ describe("Feature: VirtualEditor", () => {
       "Imageビュー",
       "PDFビュー",
       "html(静的)",
-      "アプリで開く",
+      "Windowsアプリで開く",
     ]);
     expect(dropdown.querySelector<HTMLElement>(".dd-label")?.textContent).toBe("エクスプローラで開く");
     const editorIcons = [
@@ -1085,7 +1085,7 @@ describe("Feature: VirtualEditor", () => {
       ["Imageビュー", MENU_ICON.image],
       ["PDFビュー", MENU_ICON.pdf],
       ["html(静的)", MENU_ICON.html],
-      ["アプリで開く", MENU_ICON.external],
+      ["Windowsアプリで開く", MENU_ICON.external],
     ] as const;
     for (const [label, icon] of editorIcons) {
       const menuItem = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
@@ -1216,7 +1216,7 @@ describe("Feature: VirtualEditor", () => {
       "Imageビュー",
       "PDFビュー",
       "html(静的)",
-      "アプリで開く",
+      "Windowsアプリで開く",
     ]);
     expect(dropdown.querySelectorAll(".dd-sep")).toHaveLength(3);
     for (const [label, icon] of [
@@ -1228,7 +1228,7 @@ describe("Feature: VirtualEditor", () => {
       ["Imageビュー", MENU_ICON.image],
       ["PDFビュー", MENU_ICON.pdf],
       ["html(静的)", MENU_ICON.html],
-      ["アプリで開く", MENU_ICON.external],
+      ["Windowsアプリで開く", MENU_ICON.external],
     ] as const) {
       const item = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
         .find((element) => element.textContent === label);
@@ -1300,7 +1300,7 @@ describe("Feature: VirtualEditor", () => {
       "Imageビュー",
       "PDFビュー",
       "html(静的)",
-      "アプリで開く",
+      "Windowsアプリで開く",
     ]);
     for (const [label, icon] of [
       ["エクスプローラで開く", MENU_ICON.explorer],

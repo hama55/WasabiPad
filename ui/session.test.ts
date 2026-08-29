@@ -23,6 +23,7 @@ const info = (overrides: Partial<DocInfo> = {}): DocInfo => ({
   byte_len: 10,
   is_huge: false,
   modified_at: 1720000000000,
+  effective_extension: null,
   ...overrides,
 });
 
@@ -104,6 +105,33 @@ describe("Feature: DocumentSession", () => {
     expect(documentPathOf({ selectedRelPath: "", savePath: "C:\\work\\memo.md", displayPath: "memo" }))
       .toBe("C:\\work\\memo.md");
     expect(documentPathOf({ selectedRelPath: "", savePath: null, displayPath: "" })).toBe("");
+  });
+
+  // Feature: 有効拡張子によるプレビュー判定
+  // Scenario: 実ファイルだけ指定形式を使い、アーカイブ内ではエントリ形式を使う
+  // Given: `memo.bin`をmdとして表示する状態と、そのZIP内の`photo.png`を表示する状態
+  // When: `documentPathOf`で形式判定用パスを得る
+  // Then: 実ファイルにはmdを付加し、アーカイブ内エントリはpngのまま返す
+  it("Scenario: 形式判定用パスだけ有効拡張子へ切り替える", () => {
+    expect(documentPathOf({
+      selectedRelPath: "memo.bin",
+      savePath: "C:\\work\\memo.bin",
+      displayPath: "C:\\work\\memo.bin",
+      effectiveExtension: "md",
+    })).toBe("memo.bin.md");
+    expect(documentPathOf({
+      selectedRelPath: "archive.bin::photo.png",
+      savePath: "C:\\work\\archive.bin",
+      displayPath: "C:\\work\\archive.bin",
+      effectiveExtension: "zip",
+    })).toBe("archive.bin::photo.png");
+    expect(documentPathOf({
+      selectedRelPath: "photo.png",
+      savePath: "C:\\work\\archive.bin",
+      displayPath: "C:\\work\\archive.bin",
+      archiveEntry: "photo.png",
+      effectiveExtension: "zip",
+    })).toBe("photo.png");
   });
 
   // Given: encodingが`utf8bom`または`sjis`

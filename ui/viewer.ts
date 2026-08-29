@@ -39,6 +39,7 @@ import { INLINE_PREVIEW_MESSAGES } from "./inline-preview-protocol";
 import { isViewerPayload } from "./viewer-payload";
 import {
   imageUrlFromArchive,
+  imageUrlFromFile,
   imageUrlFromPath,
   imageUrlFromPathWithCacheBust,
   imageUrlFromText,
@@ -99,6 +100,7 @@ let currentRows: string[][] = [];
 let currentText = "";
 let currentSelection: ViewerSelectionWithCaret | null = null;
 let currentSourcePath: string | null = null;
+let currentEffectiveExtension: string | null = null;
 let currentArchivePath: string | null = null;
 let currentArchiveEntry: string | null = null;
 let pendingMarkdownFragment: string | null = null;
@@ -122,6 +124,7 @@ interface ViewerRenderState {
   text: string;
   selection: ViewerSelectionWithCaret | null;
   sourcePath: string | null;
+  effectiveExtension: string | null;
   archivePath: string | null;
   archiveEntry: string | null;
 }
@@ -132,6 +135,7 @@ function currentViewerRenderState(): ViewerRenderState {
     text: currentText,
     selection: currentSelection,
     sourcePath: currentSourcePath,
+    effectiveExtension: currentEffectiveExtension,
     archivePath: currentArchivePath,
     archiveEntry: currentArchiveEntry,
   };
@@ -143,6 +147,7 @@ function viewerRenderStateOf(payload: ViewerPayload): ViewerRenderState {
     text: payload.text,
     selection: payload.selection as ViewerSelectionWithCaret | null,
     sourcePath: payload.source_path,
+    effectiveExtension: payload.effective_extension,
     archivePath: payload.archive_path,
     archiveEntry: payload.archive_entry,
   };
@@ -153,10 +158,15 @@ function publishViewerRenderState(state: ViewerRenderState, nextImageZoom: numbe
   currentText = state.text;
   currentSelection = state.selection;
   currentSourcePath = state.sourcePath;
+  currentEffectiveExtension = state.effectiveExtension;
   currentArchivePath = state.archivePath;
   currentArchiveEntry = state.archiveEntry;
   imageZoom = nextImageZoom;
-  syncViewerFormatButtons(formatButtons, state.format, state.archiveEntry ?? state.sourcePath);
+  const classificationSource = state.archiveEntry
+    ?? (state.sourcePath && state.effectiveExtension
+      ? `${state.sourcePath}.${state.effectiveExtension}`
+      : state.sourcePath);
+  syncViewerFormatButtons(formatButtons, state.format, classificationSource);
   syncViewerActionButtons(actionButtons, state.format);
   const formatSpec = viewerFormatSpec(state.format);
   title.textContent = formatSpec.title;
@@ -462,6 +472,7 @@ function renderTable(text: string, state: ViewerRenderState = currentViewerRende
   const generation = beginRender();
   const previousDisposeImagePan = disposeImagePan;
   const sameSource = state.sourcePath === currentSourcePath
+    && state.effectiveExtension === currentEffectiveExtension
     && state.archivePath === currentArchivePath
     && state.archiveEntry === currentArchiveEntry;
   try {
@@ -500,11 +511,11 @@ function revokeArchiveAssetUrls() {
   archiveAssetTracker.revokeAll();
 }
 
-function retainArchiveAssetUrl(url: string, generation: number): boolean {
+function retainAssetUrl(url: string, generation: number): boolean {
   return archiveAssetTracker.retain(url, generation, renderGeneration);
 }
 
-function releaseArchiveAssetUrl(url: string) {
+function releaseAssetUrl(url: string) {
   archiveAssetTracker.release(url);
 }
 
@@ -524,7 +535,7 @@ async function loadArchiveImages(
       const entry = resolveArchiveAssetEntry(archiveEntry, src);
       if (archivePath && archiveEntry && entry) {
         archiveUrl = await imageUrlFromArchive(archivePath, entry, imageMimeType(src));
-        if (!retainArchiveAssetUrl(archiveUrl, generation)) {
+        if (!retainAssetUrl(archiveUrl, generation)) {
           archiveUrl = null;
           return;
         }
@@ -548,7 +559,7 @@ async function loadArchiveImages(
       // 壊れた1枚で、同じ文書内の後続画像まで止めない。
     } finally {
       if (archiveUrl && (!keepArchiveUrl || generation !== renderGeneration)) {
-        releaseArchiveAssetUrl(archiveUrl);
+        releaseAssetUrl(archiveUrl);
       }
     }
   }
@@ -664,7 +675,7 @@ async function renderAssetPreview(
 
     if (sourceText !== undefined) {
       assetUrl = imageUrlFromText(sourceText, mimeType);
-      if (!retainArchiveAssetUrl(assetUrl, generation)) {
+      if (!retainAssetUrl(assetUrl, generation)) {
         assetUrl = null;
         discardTarget();
         return false;
@@ -672,7 +683,15 @@ async function renderAssetPreview(
       target.setSource(assetUrl);
     } else if (archivePath && archiveEntry) {
       assetUrl = await imageUrlFromArchive(archivePath, archiveEntry, mimeType);
-      if (!retainArchiveAssetUrl(assetUrl, generation)) {
+      if (!retainAssetUrl(assetUrl, generation)) {
+        assetUrl = null;
+        discardTarget();
+        return false;
+      }
+      target.setSource(assetUrl);
+    } else if (sourcePath && state.effectiveExtension) {
+      assetUrl = await imageUrlFromFile(sourcePath, mimeType);
+      if (!retainAssetUrl(assetUrl, generation)) {
         assetUrl = null;
         discardTarget();
         return false;
@@ -720,7 +739,7 @@ async function renderAssetPreview(
     return true;
   } finally {
     if (assetUrl && (!keepAssetUrl || generation !== renderGeneration)) {
-      releaseArchiveAssetUrl(assetUrl);
+      releaseAssetUrl(assetUrl);
     }
     finishRender(generation);
   }
@@ -733,8 +752,10 @@ async function renderImage(
 ): Promise<boolean> {
   const source = state.archiveEntry ?? state.sourcePath ?? "image";
   const name = basename(source);
-  const mimeType = imageMimeType(source);
-  const editedSvg = imageExtensionOf(source) === "svg" ? text : undefined;
+  const classificationSource = state.archiveEntry
+    ?? (state.effectiveExtension ? `${source}.${state.effectiveExtension}` : source);
+  const mimeType = imageMimeType(classificationSource);
+  const editedSvg = imageExtensionOf(classificationSource) === "svg" ? text : undefined;
   return renderAssetPreview(name, mimeType, () => {
     const { wrapper, image } = createImagePreview(name);
     const dispose = bindImagePan(image, content);
@@ -913,6 +934,7 @@ async function renderPayload(payload: ViewerPayload) {
   const previousState = currentViewerRenderState();
   const nextState = viewerRenderStateOf(payload);
   const sourceChanged = nextState.sourcePath !== previousState.sourcePath
+    || nextState.effectiveExtension !== previousState.effectiveExtension
     || nextState.archivePath !== previousState.archivePath
     || nextState.archiveEntry !== previousState.archiveEntry;
   const formatChanged = nextState.format !== previousState.format;
@@ -958,7 +980,10 @@ function showContextMenu(x: number, y: number) {
     const path = currentSourcePath;
     contextMenu.appendChild(createViewerBrowserMenuItem(() => {
       contextMenu.hidden = true;
-      runViewerOperation("既定のブラウザで開けませんでした", () => openInDefaultBrowser(path));
+      runViewerOperation(
+        "既定のブラウザで開けませんでした",
+        () => openInDefaultBrowser(path, currentEffectiveExtension),
+      );
     }));
   }
   if (!contextMenu.childElementCount) {

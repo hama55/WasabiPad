@@ -8,6 +8,7 @@ export const MENU_ICON = {
   delete: "menu-icon-delete",
   registeredString: "menu-icon-registered-string",
   selectAll: "menu-icon-select-all",
+  text: "menu-icon-text",
   csv: "menu-icon-csv",
   markdown: "menu-icon-markdown",
   image: "menu-icon-image",

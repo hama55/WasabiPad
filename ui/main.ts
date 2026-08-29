@@ -351,7 +351,12 @@ function openPreviewFormat(
   fragment: string | null = null,
 ) {
   const sourcePath = sourcePathForViewer(format, session.savePath, session.displayPath);
-  inlinePreview.setSourcePath(sourcePath, session.archivePath, session.archiveEntry);
+  inlinePreview.setSourcePath(
+    sourcePath,
+    session.archivePath,
+    session.archiveEntry,
+    session.archiveEntry ? null : session.effectiveExtension,
+  );
   statusbar.setPreviewFormat(format);
   runPreviewBackground(
     { ownerTabId: tabs?.state.activeId ?? null, path, format },
@@ -739,6 +744,9 @@ const folderActions = new FolderActions(doc, {
   sidebar,
   onOpenInNewTab: (relPath, goto) => runBackground("新規タブで開けませんでした", () => openInNewTab(relPath, goto)),
   onOpenInNewWindow: (path, goto) => launchNewWindow({ path, goto: goto ?? null }),
+  onOpenAs: (relPath, openAs) => {
+    runBackground("指定した形式で開けませんでした", () => tabs.navigateEntry(relPath, openAs));
+  },
   onAddFavorite: (path) => runBackground("お気に入りに追加できませんでした", () => favbar.addExternal(path)),
   onSetStartupPath: (path) => setSetting("startupPath", path),
   onOpenPath: (path) => {

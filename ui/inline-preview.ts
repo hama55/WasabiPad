@@ -36,6 +36,7 @@ export class InlinePreview {
   private nextLabel = 0;
   private ready = false;
   private sourcePath: string | null = null;
+  private effectiveExtension: string | null = null;
   private archivePath: string | null = null;
   private archiveEntry: string | null = null;
   private delimiter = DEFAULT_CSV_DELIMITER;
@@ -93,10 +94,16 @@ export class InlinePreview {
     });
   }
 
-  setSourcePath(path: string | null, archivePath: string | null = null, archiveEntry: string | null = null) {
+  setSourcePath(
+    path: string | null,
+    archivePath: string | null = null,
+    archiveEntry: string | null = null,
+    effectiveExtension: string | null = null,
+  ) {
     this.sourcePath = path;
     this.archivePath = archivePath;
     this.archiveEntry = archiveEntry;
+    this.effectiveExtension = effectiveExtension;
   }
 
   setDelimiter(delimiter: string) {
@@ -170,6 +177,7 @@ export class InlinePreview {
       text,
       selection,
       source_path: this.sourcePath,
+      effective_extension: this.effectiveExtension,
       archive_path: this.archivePath,
       archive_entry: this.archiveEntry,
     };

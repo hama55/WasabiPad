@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   imageUrlFromArchive,
+  imageUrlFromFile,
   imageUrlFromPath,
   imageUrlFromPathWithCacheBust,
   imageUrlFromText,
@@ -12,6 +13,7 @@ function ports(overrides: Partial<ImageAssetSourcePorts> = {}): ImageAssetSource
   return {
     convertFileSrc: (path) => `asset://${path}`,
     readArchiveAsset: vi.fn(async () => new Uint8Array([1, 2, 3]).buffer),
+    readFileAsset: vi.fn(async () => new Uint8Array([1, 2, 3]).buffer),
     createObjectURL: vi.fn(() => "blob:test"),
     revokeObjectURL: vi.fn(),
     ...overrides,
@@ -71,6 +73,24 @@ describe("Feature: viewer image asset source", () => {
 
     await expect(imageUrlFromArchive("data.zip", "photo.png", "image/png", source)).resolves.toBe("blob:test");
     expect(readArchiveAsset).toHaveBeenCalledWith("data.zip", "photo.png");
+    const blob = createObjectURL.mock.calls[0]?.[0];
+    expect(blob).toEqual(expect.objectContaining({ type: "image/png" }));
+    await expect(blob?.arrayBuffer()).resolves.toEqual(bytes);
+  });
+
+  // Feature: 指定形式の実ファイル画像/PDFプレビュー
+  // Scenario: 実拡張子に依存せず指定MIMEのBlobを作る
+  // Given: `payload.bin`のバイト列を読むファイル資産ポート
+  // When: PNG MIMEでBlob URLを作る
+  // Then: 実パスを変えず、指定MIMEのBlobを返す
+  it("Scenario: creates a MIME typed Blob URL for an effective file format", async () => {
+    const bytes = new Uint8Array([1, 2, 3]).buffer;
+    const readFileAsset = vi.fn(async () => bytes);
+    const createObjectURL = vi.fn((_blob: Blob) => "blob:file");
+    const source = ports({ readFileAsset, createObjectURL });
+
+    await expect(imageUrlFromFile("payload.bin", "image/png", source)).resolves.toBe("blob:file");
+    expect(readFileAsset).toHaveBeenCalledWith("payload.bin");
     const blob = createObjectURL.mock.calls[0]?.[0];
     expect(blob).toEqual(expect.objectContaining({ type: "image/png" }));
     await expect(blob?.arrayBuffer()).resolves.toEqual(bytes);

@@ -156,6 +156,33 @@ describe("Feature: inline preview", () => {
     }), window.location.origin);
   });
 
+  // Feature: 指定形式の画像プレビュー
+  // Scenario: 実パスと有効拡張子を別々にビューへ渡す
+  // Given: 実ファイル`photo.bin`をsvgとして表示している
+  // When: インラインプレビューを開いて準備完了通知を受け取る
+  // Then: 読込用の実パスを変えず、有効拡張子svgもペイロードへ含める
+  it("Scenario: forwards the effective extension without changing the real path", async () => {
+    const { host, preview } = mount();
+    const frame = host.querySelector("iframe")!;
+    const postMessage = vi.spyOn(frame.contentWindow!, "postMessage");
+    preview.setSourcePath("C:\\work\\photo.bin", null, null, "svg");
+    await preview.open("image", "<svg></svg>", null);
+
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
+    }));
+
+    expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE,
+      payload: expect.objectContaining({
+        source_path: "C:\\work\\photo.bin",
+        effective_extension: "svg",
+      }),
+    }), window.location.origin);
+  });
+
   // Given: インラインプレビューがフォント変更を通知する
   // When: フォントファミリー変更メッセージを受け取る
   // Then: 親の共通設定更新ポートへ値を渡す

@@ -30,7 +30,7 @@ pub use bookmarks::{load as load_bookmarks, save as save_bookmarks, Node as Book
 pub use doc::{
     Doc, DocInfo, EditManyItem, EditManyResult, EditResult, ExternalCheck, ExternalMergeChange,
     ExternalMergeContextLine, ExternalMergePreview, FindCursor, FindOutcome, FindResult,
-    FolderEntry, PosC,
+    FolderEntry, OpenAs, PosC,
     ReplaceChunkResult, SaveOutcome,
     WorkspaceSearchResult,
 };

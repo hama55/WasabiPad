@@ -34,8 +34,10 @@ function fixture() {
       session.displayPath = path;
       return true;
     }),
-    selectEntry: vi.fn(async (relPath: string) => {
+    selectEntry: vi.fn(async (relPath: string, openAs?: api.OpenAs) => {
       session.selectedRelPath = relPath;
+      if (openAs) session.effectiveExtension = openAs === "image-auto" ? "png" : openAs;
+      else if (!relPath.includes("::")) session.effectiveExtension = null;
       return true;
     }),
     newFile: vi.fn(async () => {}),
@@ -261,6 +263,100 @@ describe("Feature: TabManager", () => {
     expect(doc.confirmDiscard).not.toHaveBeenCalled();
     expect(doc.selectEntry).not.toHaveBeenCalled();
     expect(doc.current.dirty).toBe(true);
+  });
+
+  // Feature: 形式を指定してファイルを開く
+  // Scenario: 選択中の同じファイルへ指定形式を適用する
+  // Given: folder tab が `memo.bin` を通常表示している
+  // When: `navigateEntry("memo.bin", "txt")`を呼ぶ
+  // Then: 同一項目の近道を使わず、txt指定付きで文書を開き直す
+  it("Scenario: 同じファイルでも形式指定時は開き直す", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init({
+      tabs: [{ id: "folder", path: "C:\\work", kind: "folder", label: "work" }],
+      activeId: "folder",
+    }, null, null);
+    doc.current.folderRoot = "C:\\work";
+    doc.current.selectedRelPath = "memo.bin";
+    vi.mocked(doc.confirmDiscard).mockClear();
+    vi.mocked(doc.selectEntry).mockClear();
+
+    await expect(manager.navigateEntry("memo.bin", "txt")).resolves.toBe(true);
+
+    expect(doc.confirmDiscard).toHaveBeenCalledOnce();
+    expect(doc.selectEntry).toHaveBeenCalledWith("memo.bin", "txt");
+  });
+
+  // Feature: 有効拡張子の寿命
+  // Scenario: 実行中のタブ切替では保持し、保存タブ状態には永続化しない
+  // Given: folder tabの`memo.bin`をmdとして開き、別のfile tabもある
+  // When: 別タブへ移動してからfolder tabへ戻る
+  // Then: `memo.bin`をmd指定付きで復元し、StoredTabsには指定形式を含めない
+  it("Scenario: 形式指定はタブ内だけで復元し再起動用状態へ保存しない", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init({
+      tabs: [
+        { id: "folder", path: "C:\\work", kind: "folder", label: "work" },
+        { id: "other", path: "C:\\work\\other.txt", kind: "file", label: "other.txt" },
+      ],
+      activeId: "folder",
+    }, null, null);
+
+    await manager.navigateEntry("memo.bin", "md");
+    await manager.activate("other");
+    await manager.activate("folder");
+
+    expect(doc.selectEntry).toHaveBeenLastCalledWith("memo.bin", "md");
+    expect(JSON.stringify(manager.state)).not.toContain("openAs");
+    expect(JSON.stringify(manager.state)).not.toContain("effectiveExtension");
+  });
+
+  // Feature: 有効拡張子の寿命
+  // Scenario: 指定形式のアーカイブ内エントリまでタブ復元する
+  // Given: `archive.bin`をzipとして開き、その中の`memo.txt`を表示している
+  // When: 別タブへ移動してからfolder tabへ戻る
+  // Then: アーカイブ内相対パスへzip指定を添えて復元する
+  it("Scenario: 指定アーカイブ内の選択にも形式を引き継ぐ", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init({
+      tabs: [
+        { id: "folder", path: "C:\\work", kind: "folder", label: "work" },
+        { id: "other", path: "C:\\work\\other.txt", kind: "file", label: "other.txt" },
+      ],
+      activeId: "folder",
+    }, null, null);
+    await manager.navigateEntry("archive.bin", "zip");
+    await manager.navigateEntry("archive.bin::memo.txt");
+
+    await manager.activate("other");
+    await manager.activate("folder");
+
+    expect(doc.selectEntry).toHaveBeenLastCalledWith("archive.bin::memo.txt", "zip");
+  });
+
+  // Feature: 有効拡張子の寿命
+  // Scenario: 別パスへの移動で形式指定を破棄する
+  // Given: `archive.bin`をzipとして開いている
+  // When: 別のフォルダへ移動してから同じ相対パスを選択する
+  // Then: 新しいフォルダでは形式指定なしで項目を開く
+  it("Scenario: 別パスへの移動で形式指定を破棄する", async () => {
+    const { doc, manager } = folderTabViewFixture();
+    await manager.init({
+      tabs: [{ id: "folder", path: "C:\\work", kind: "folder", label: "work" }],
+      activeId: "folder",
+    }, null, null);
+
+    await manager.navigateEntry("archive.bin", "zip");
+    await manager.navigatePath("C:\\other");
+    doc.current.selectedRelPath = "other.txt";
+    vi.mocked(doc.selectEntry).mockClear();
+
+    await expect(manager.navigateEntry("archive.bin::memo.txt")).resolves.toBe(true);
+
+    expect(doc.selectEntry).toHaveBeenLastCalledWith("archive.bin::memo.txt");
   });
 
   // Feature: 終了時の未保存確認

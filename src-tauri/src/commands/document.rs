@@ -3,7 +3,7 @@ use tauri::{AppHandle, Emitter};
 
 use wasabipad_core::{
     Doc, DocInfo, EditManyItem, EditManyResult, EditResult, EncodingId, Eol, ExternalCheck,
-    ExternalMergePreview, FindCursor, FindOutcome, FindResult, FolderEntry, PosC,
+    ExternalMergePreview, FindCursor, FindOutcome, FindResult, FolderEntry, OpenAs, PosC,
     ReplaceChunkResult, SaveOutcome,
 };
 
@@ -64,8 +64,15 @@ pub(crate) fn line_char_len(line: usize, state: State) -> Result<usize, String> 
     with_doc(&state, |doc| doc.line_char_len(line))
 }
 
-pub(crate) fn select_entry(rel_path: String, state: State) -> Result<DocInfo, String> {
-    let result = with_doc(&state, |doc| doc.select_entry(&rel_path))?;
+pub(crate) fn select_entry(
+    rel_path: String,
+    open_as: Option<OpenAs>,
+    state: State,
+) -> Result<DocInfo, String> {
+    let result = with_doc(&state, |doc| match open_as {
+        Some(open_as) => doc.select_entry_as(&rel_path, open_as),
+        None => doc.select_entry(&rel_path),
+    })?;
     result
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "no entry".into())
@@ -358,4 +365,9 @@ pub(crate) fn read_archive_asset(
     let archive = PathBuf::from(archive_path);
     with_doc(&state, |doc| doc.read_archive_asset(&archive, &entry))?
         .map_err(|error| error.to_string())
+}
+
+pub(crate) fn read_file_asset(path: String, state: State) -> Result<Vec<u8>, String> {
+    let path = PathBuf::from(path);
+    with_doc(&state, |doc| doc.read_file_asset(&path))?.map_err(|error| error.to_string())
 }

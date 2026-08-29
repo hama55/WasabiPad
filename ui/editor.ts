@@ -2178,7 +2178,7 @@ export class VirtualEditor {
       items.push({
         label: MENU_LABELS.external,
         iconClass: MENU_ICON.external,
-        action: () => this.dispatch("アプリで開けませんでした", () => this.openExternally(commandPath)),
+        action: () => this.dispatch("Windowsアプリで開けませんでした", () => this.openExternally(commandPath)),
         sep: true,
       });
     }
