@@ -129,6 +129,11 @@ interface ViewerRenderState {
   archiveEntry: string | null;
 }
 
+function archiveFormatExtension(extension: string | null, archiveEntry: string | null): boolean {
+  return !!archiveEntry && !!extension
+    && ["zip", "7z", "xlsx", "xls"].includes(extension.toLowerCase());
+}
+
 function currentViewerRenderState(): ViewerRenderState {
   return {
     format: currentFormat,
@@ -162,10 +167,9 @@ function publishViewerRenderState(state: ViewerRenderState, nextImageZoom: numbe
   currentArchivePath = state.archivePath;
   currentArchiveEntry = state.archiveEntry;
   imageZoom = nextImageZoom;
-  const classificationSource = state.archiveEntry
-    ?? (state.sourcePath && state.effectiveExtension
-      ? `${state.sourcePath}.${state.effectiveExtension}`
-      : state.sourcePath);
+  const classificationSource = state.effectiveExtension && !archiveFormatExtension(state.effectiveExtension, state.archiveEntry)
+    ? `${state.archiveEntry ?? state.sourcePath ?? "source"}.${state.effectiveExtension}`
+    : state.archiveEntry ?? state.sourcePath;
   syncViewerFormatButtons(formatButtons, state.format, classificationSource);
   syncViewerActionButtons(actionButtons, state.format);
   const formatSpec = viewerFormatSpec(state.format);
@@ -752,8 +756,9 @@ async function renderImage(
 ): Promise<boolean> {
   const source = state.archiveEntry ?? state.sourcePath ?? "image";
   const name = basename(source);
-  const classificationSource = state.archiveEntry
-    ?? (state.effectiveExtension ? `${source}.${state.effectiveExtension}` : source);
+  const classificationSource = state.effectiveExtension
+    ? `${source}.${state.effectiveExtension}`
+    : source;
   const mimeType = imageMimeType(classificationSource);
   const editedSvg = imageExtensionOf(classificationSource) === "svg" ? text : undefined;
   return renderAssetPreview(name, mimeType, () => {

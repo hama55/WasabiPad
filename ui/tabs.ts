@@ -18,7 +18,7 @@ import type { SearchHighlightQuery } from "./workspace-search-options";
 export interface TabDocumentPort {
   readonly current: Readonly<DocumentSession>;
   confirmDiscard: (onProceed?: () => void | Promise<void>) => Promise<boolean>;
-  openPath: (path: string, confirm?: boolean) => Promise<boolean>;
+  openPath: (path: string, confirm?: boolean, openAs?: OpenAs) => Promise<boolean>;
   selectEntry: (relPath: string, openAs?: OpenAs) => Promise<boolean>;
   newFile: (confirm?: boolean, draftDirectory?: string | null) => Promise<void>;
   goTo: (position: Pos) => void;
@@ -71,7 +71,7 @@ function sameTabPath(a: string | null, b: string | null): boolean {
   return comparablePath(a) === comparablePath(b);
 }
 
-function isArchiveOpenAs(openAs: OpenAs): boolean {
+function isArchiveOpenAs(openAs: OpenAs | undefined): openAs is OpenAs {
   return openAs === "zip" || openAs === "7z" || openAs === "xlsx" || openAs === "xls";
 }
 
@@ -100,7 +100,12 @@ export class TabManager {
   private navigationInProgress = false;
   private navigationBusy = false;
   private navigationHistory = new Map<string, NavigationHistory>();
-  private openAsStates = new Map<string, { relPath: string; openAs: OpenAs }>();
+  private openAsStates = new Map<string, {
+    relPath: string;
+    openAs?: OpenAs;
+    // アーカイブ内項目を復元する際に必要な、書庫側の明示形式。
+    archiveOpenAs?: OpenAs;
+  }>();
   private closedTabs: { tab: StoredTab; index: number; replacementId?: string }[] = [];
   private view: TabBarView;
 
@@ -273,6 +278,90 @@ export class TabManager {
     return this.addAndActivate(this.link(path, goto));
   }
 
+  async openCurrentAs(openAs: OpenAs): Promise<boolean> {
+    const tab = this.active();
+    if (!tab?.path) return false;
+    const selectedRelPath = this.doc.current.selectedRelPath || tab.selectedRelPath || "";
+    if (tab.kind === "folder") {
+      if (!selectedRelPath) return false;
+      return this.navigateEntry(selectedRelPath, openAs);
+    }
+    // 直接開いたアーカイブの内部項目は、物理アーカイブをテキストとして
+    // 開き直さず、現在の書庫を保持したまま項目だけ読み直す。
+    if (this.doc.current.archivePath && selectedRelPath) {
+      const remembered = this.openAsStates.get(this.activeId);
+      return this.runNavigationCommand(() =>
+        this.navigateCurrent(async () => {
+          const opened = await this.doc.selectEntry(selectedRelPath, openAs);
+          if (!opened) return false;
+          this.openAsStates.set(this.activeId, {
+            relPath: selectedRelPath,
+            openAs,
+            ...(isArchiveOpenAs(openAs)
+              ? { archiveOpenAs: openAs }
+              : remembered?.archiveOpenAs
+                ? { archiveOpenAs: remembered.archiveOpenAs }
+                : {}),
+          });
+          return true;
+        })
+      );
+    }
+    return this.runNavigationCommand(() =>
+      this.navigateCurrent(async () => {
+        const opened = await this.doc.openPath(tab.path!, false, openAs);
+        if (!opened) return false;
+        if (selectedRelPath && !await this.doc.selectEntry(selectedRelPath, openAs)) return false;
+        this.openAsStates.set(this.activeId, { relPath: selectedRelPath, openAs });
+        return true;
+      })
+    );
+  }
+
+  async openCurrentInNewTab(openAs?: OpenAs): Promise<boolean> {
+    const source = this.active();
+    if (!source?.path) return false;
+    this.rememberActiveView();
+    const current = this.active();
+    if (!current?.path) return false;
+    const selectedRelPath = current.selectedRelPath;
+    const rememberedOpenAs = this.openAsStates.get(current.id);
+    const requestedOpenAs = openAs ?? (
+      rememberedOpenAs
+        && rememberedOpenAs.relPath.replace(/\\/g, "/") === (selectedRelPath ?? "").replace(/\\/g, "/")
+        ? rememberedOpenAs.openAs
+        : undefined
+    );
+    const rememberedArchiveOpenAs = rememberedOpenAs?.archiveOpenAs
+      ?? (rememberedOpenAs && isArchiveOpenAs(rememberedOpenAs.openAs)
+        ? rememberedOpenAs.openAs
+        : undefined);
+    const clone: StoredTab = {
+      ...current,
+      id: newId(),
+      viewState: current.viewState ? cloneEditorViewState(current.viewState) : undefined,
+      ...(selectedRelPath ? { selectedRelPath } : {}),
+      ...(current.selectedLine !== undefined ? { selectedLine: current.selectedLine } : {}),
+    };
+    delete clone.goto;
+    delete clone.fragment;
+    const activated = await this.addAndActivateWith(clone, (tabs) => {
+      const sourceIndex = tabs.findIndex((tab) => tab.id === current.id);
+      if (sourceIndex < 0) return false;
+      tabs.splice(sourceIndex + 1, 0, clone);
+      if (requestedOpenAs || rememberedArchiveOpenAs) {
+        this.openAsStates.set(clone.id, {
+          relPath: selectedRelPath ?? "",
+          ...(requestedOpenAs ? { openAs: requestedOpenAs } : {}),
+          ...(rememberedArchiveOpenAs ? { archiveOpenAs: rememberedArchiveOpenAs } : {}),
+        });
+      }
+      return true;
+    });
+    if (!activated) this.openAsStates.delete(clone.id);
+    return activated;
+  }
+
   async openMarkdownLink(path: string, sourceTabId: string | null, fragment: string | null): Promise<boolean> {
     const anchorId = sourceTabId ?? this.activeId;
     return this.addAndActivateAfter(
@@ -329,12 +418,24 @@ export class TabManager {
 
   navigateEntry(relPath: string, openAs?: OpenAs): Promise<boolean> {
     const rememberedOpenAs = this.openAsStates.get(this.activeId);
+    const directArchive = !this.doc.current.folderRoot && !!this.doc.current.archivePath;
+    const sameArchive = directArchive || (
+      !!rememberedOpenAs
+      && archiveScopeOf(rememberedOpenAs.relPath) === archiveScopeOf(relPath)
+    );
     const inheritedOpenAs = rememberedOpenAs
       && isArchiveOpenAs(rememberedOpenAs.openAs)
-      && archiveScopeOf(rememberedOpenAs.relPath) === archiveScopeOf(relPath)
+      && sameArchive
       ? rememberedOpenAs.openAs
       : undefined;
+    const inheritedArchiveOpenAs = sameArchive
+      ? rememberedOpenAs?.archiveOpenAs
+        ?? (rememberedOpenAs && isArchiveOpenAs(rememberedOpenAs.openAs)
+          ? rememberedOpenAs.openAs
+          : undefined)
+      : undefined;
     const requestedOpenAs = openAs ?? inheritedOpenAs;
+    const selectionOpenAs = requestedOpenAs ?? inheritedArchiveOpenAs;
     // 同じファイルを検索結果から再度選んだだけなら、再読込も確認も不要。
     // dirty と編集中のバッファを維持したまま、呼び出し側が一致位置を扱う。
     if (!requestedOpenAs && this.doc.current.folderRoot
@@ -343,14 +444,28 @@ export class TabManager {
     }
     return this.runNavigationCommand(() =>
       this.navigateCurrent(async () => {
-        const succeeded = (await (requestedOpenAs
-          ? this.doc.selectEntry(relPath, requestedOpenAs)
+        const succeeded = (await (selectionOpenAs
+          ? this.doc.selectEntry(relPath, selectionOpenAs)
           : this.doc.selectEntry(relPath))) === true;
         if (!succeeded) return false;
         if (requestedOpenAs) {
-          this.openAsStates.set(this.activeId, { relPath, openAs: requestedOpenAs });
-        }
-        else this.openAsStates.delete(this.activeId);
+          this.openAsStates.set(this.activeId, {
+            relPath,
+            openAs: requestedOpenAs,
+            ...(inheritedArchiveOpenAs
+              ? { archiveOpenAs: inheritedArchiveOpenAs }
+              : requestedOpenAs && isArchiveOpenAs(requestedOpenAs)
+                ? { archiveOpenAs: requestedOpenAs }
+                : {}),
+          });
+        } else if (inheritedArchiveOpenAs) {
+          // 内部項目の形式指定がない場合も、偽装書庫の物理形式だけは
+          // 次回のタブ切替で再利用できるように保持する。
+          this.openAsStates.set(this.activeId, {
+            relPath,
+            archiveOpenAs: inheritedArchiveOpenAs,
+          });
+        } else this.openAsStates.delete(this.activeId);
         return true;
       })
     );
@@ -663,12 +778,28 @@ export class TabManager {
       const tab = this.active()!;
       const rememberedRelPath = tab.selectedRelPath;
       const rememberedOpenAs = this.openAsStates.get(tab.id);
+      const openAs = rememberedOpenAs
+        && rememberedOpenAs.relPath.replace(/\\/g, "/") === (rememberedRelPath ?? "").replace(/\\/g, "/")
+        ? rememberedOpenAs.openAs
+        : undefined;
+      const archiveOpenAs = rememberedOpenAs
+        && rememberedOpenAs.relPath.replace(/\\/g, "/") === (rememberedRelPath ?? "").replace(/\\/g, "/")
+        ? rememberedOpenAs.archiveOpenAs
+          ?? (isArchiveOpenAs(rememberedOpenAs.openAs) ? rememberedOpenAs.openAs : undefined)
+        : undefined;
       const rememberedViewState = tab.viewState ? cloneEditorViewState(tab.viewState) : undefined;
       const rememberedLine = tab.selectedLine ?? (tab.kind === "folder" ? rememberedViewState?.caret.line : undefined);
       let selectionRestored = false;
       this.ports.workspace?.reset();
       if (tab.path) {
-        const opened = await this.doc.openPath(tab.path, false);
+        const pathOpenAs = tab.kind === "file" && rememberedRelPath
+          ? archiveOpenAs
+          : tab.kind === "file"
+            ? openAs
+            : undefined;
+        const opened = pathOpenAs !== undefined
+          ? await this.doc.openPath(tab.path, false, pathOpenAs)
+          : await this.doc.openPath(tab.path, false);
         if (!opened) {
           if (!fallbackToBlank) return false;
           tab.path = null;
@@ -677,13 +808,21 @@ export class TabManager {
           await this.doc.newFile(false, tab.draftDirectory ?? null);
         } else if (rememberedRelPath) {
           try {
-            const openAs = rememberedOpenAs
-              && rememberedOpenAs.relPath.replace(/\\/g, "/") === rememberedRelPath.replace(/\\/g, "/")
-              ? rememberedOpenAs.openAs
-              : undefined;
-            selectionRestored = (await (openAs
-              ? this.doc.selectEntry(rememberedRelPath, openAs)
-              : this.doc.selectEntry(rememberedRelPath))) === true;
+            // フォルダを再オープンした直後は書庫側の指定がまだDocへ届いていない。
+            // 偽装拡張子の書庫でも、まずコンテナを明示形式で選択してから
+            // 内部項目の指定形式を適用する。
+            let archiveReady = true;
+            if (tab.kind === "folder" && archiveOpenAs && rememberedRelPath.includes("::")) {
+              const archiveRelPath = rememberedRelPath.split("::", 1)[0];
+              if ((await this.doc.selectEntry(archiveRelPath, archiveOpenAs)) !== true) {
+                archiveReady = false;
+              }
+            }
+            if (archiveReady) {
+              selectionRestored = (await (openAs
+                ? this.doc.selectEntry(rememberedRelPath, openAs)
+                : this.doc.selectEntry(rememberedRelPath))) === true;
+            }
           } catch (error) {
             // 一時的なIPC失敗で復元情報を消すと、次回タブ切替でも再試行できない。
             await this.reportError(error);

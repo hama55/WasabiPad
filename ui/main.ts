@@ -55,7 +55,7 @@ import {
   viewerFormatForPath,
   viewerFormatForPreviewToggle,
 } from "./viewer-formats";
-import { documentPathOf, type DocumentSession } from "./session";
+import { classificationPathOf, documentPathOf, type DocumentSession } from "./session";
 import {
   effectivePreviewFormat,
   isCurrentPreviewDocument,
@@ -355,7 +355,7 @@ function openPreviewFormat(
     sourcePath,
     session.archivePath,
     session.archiveEntry,
-    session.archiveEntry ? null : session.effectiveExtension,
+    session.effectiveExtension,
   );
   statusbar.setPreviewFormat(format);
   runPreviewBackground(
@@ -371,7 +371,12 @@ function openPreviewFormat(
 function syncPreviewDocument(session: Readonly<DocumentSession>, force = false, fragment: string | null = null) {
   const path = documentPathOf(session);
   const activeTabId = tabs?.state.activeId ?? null;
-  const format = effectivePreviewFormat(path, viewerFormatForPath(path), activeTabId, previewDocument);
+  const format = effectivePreviewFormat(
+    path,
+    viewerFormatForPath(classificationPathOf(session)),
+    activeTabId,
+    previewDocument,
+  );
   if (previewFullscreen && !shouldKeepPreviewFullscreen(
     previewFullscreenTabId,
     tabs?.state.activeId ?? null,
@@ -454,7 +459,9 @@ const editor: VirtualEditor = new VirtualEditor(editorHost, {
   },
   registeredCommandPorts,
   openExternally: (path) => openInOtherApp(path),
+  openInNewTab: () => runBackground("新規タブで開けませんでした", () => tabs.openCurrentInNewTab()),
   openInNewWindow: (path) => runBackground("新規ウィンドウで開けませんでした", () => launchNewWindow({ path })),
+  openAs: (openAs) => runBackground("指定した形式で開けませんでした", () => tabs.openCurrentAs(openAs)),
   revealInExplorer: (path, isDir) => revealInExplorer(path, isDir),
   onError: (message, error) => showError(message, error),
   openViewer: async (format, text, selection) => {
@@ -812,7 +819,7 @@ previewToggle.addEventListener("click", () => {
   if (!previewAvailable) {
     const session = doc.current;
     const path = documentPathOf(session);
-    const format = viewerFormatForPreviewToggle(path);
+    const format = viewerFormatForPreviewToggle(classificationPathOf(session));
     if (format) openPreviewFormat(session, path, format);
     return;
   }

@@ -13,6 +13,7 @@ import {
 } from "./registered-command-menu";
 import { MENU_ICON } from "./menu-icons";
 import { MENU_LABELS } from "./menu-labels";
+import { createOpenAsMenu } from "./open-as-menu";
 import { viewerFormatIcon, VIEWER_FORMAT_LABELS } from "./format";
 import { viewerFormatForPath } from "./viewer-formats";
 import { LineCache } from "./line-cache";
@@ -62,7 +63,9 @@ export interface EditorPorts {
   onCursor: (line: number, col: number) => void;
   onFontChange: (fontFamily: string, fontSize: number, changed: "family" | "size" | "both") => void;
   openExternally: (path: string) => void | Promise<unknown>;
+  openInNewTab?: () => void | Promise<unknown>;
   openInNewWindow?: (path: string) => void | Promise<unknown>;
+  openAs?: (openAs: api.OpenAs) => void | Promise<unknown>;
   registeredCommandPorts: RegisteredCommandMenuPorts;
   revealInExplorer?: (path: string, isDir: boolean) => void | Promise<unknown>;
   onError: (message: string, error: unknown) => Promise<void>;
@@ -138,7 +141,9 @@ export class VirtualEditor {
   private externalFilePath: string | null = null;
   private markdown = false;
   private openExternally: (path: string) => void | Promise<unknown>;
+  private openInNewTab?: () => void | Promise<unknown>;
   private openInNewWindow?: (path: string) => void | Promise<unknown>;
+  private openAs?: (openAs: api.OpenAs) => void | Promise<unknown>;
   private registeredCommandPorts: RegisteredCommandMenuPorts;
   private revealInExplorer?: (path: string, isDir: boolean) => void | Promise<unknown>;
   private onError: (message: string, error: unknown) => Promise<void>;
@@ -185,7 +190,9 @@ export class VirtualEditor {
     this.onCursor = ports.onCursor;
     this.onFontChange = ports.onFontChange;
     this.openExternally = ports.openExternally;
+    this.openInNewTab = ports.openInNewTab;
     this.openInNewWindow = ports.openInNewWindow;
+    this.openAs = ports.openAs;
     this.registeredCommandPorts = ports.registeredCommandPorts;
     this.revealInExplorer = ports.revealInExplorer;
     this.onError = ports.onError;
@@ -2082,7 +2089,9 @@ export class VirtualEditor {
     this.focus();
     const items: MenuItem[] = [];
     const commandPath = this.externalFilePath;
-    const hasOpenItems = Boolean(commandPath && (this.revealInExplorer || this.openInNewWindow));
+    const hasOpenItems = Boolean(commandPath && (
+      this.revealInExplorer || this.openInNewTab || this.openInNewWindow || this.openAs
+    ));
     if (commandPath && this.revealInExplorer) {
       items.push({
         label: MENU_LABELS.explorer,
@@ -2090,11 +2099,27 @@ export class VirtualEditor {
         action: () => this.dispatch("エクスプローラで開けませんでした", () => this.revealInExplorer?.(commandPath, false)),
       });
     }
+    if (commandPath && this.openInNewTab) {
+      items.push({
+        label: MENU_LABELS.newTab,
+        iconClass: MENU_ICON.newTab,
+        sep: Boolean(this.revealInExplorer),
+        action: () => this.dispatch("新規タブで開けませんでした", () => this.openInNewTab?.()),
+      });
+    }
     if (commandPath && this.openInNewWindow) {
       items.push({
         label: MENU_LABELS.newWindow,
         iconClass: MENU_ICON.newWindow,
         action: () => this.dispatch("新規ウィンドウで開けませんでした", () => this.openInNewWindow?.(commandPath)),
+      });
+    }
+    if (commandPath && this.openAs) {
+      items.push({
+        ...createOpenAsMenu((openAs) => this.dispatch(
+          "指定した形式で開けませんでした",
+          () => this.openAs?.(openAs),
+        )),
       });
     }
     if (!this.readOnly) {

@@ -400,11 +400,7 @@ fn detected_avif(bytes: &[u8]) -> bool {
         .any(|brand| brand == b"avif" || brand == b"avis")
 }
 
-fn detect_image_open_as(path: &Path) -> io::Result<OpenAs> {
-    let mut bytes = Vec::new();
-    std::fs::File::open(path)?
-        .take(IMAGE_DETECTION_HEADER_LIMIT)
-        .read_to_end(&mut bytes)?;
+fn detect_image_open_as_bytes(bytes: &[u8]) -> io::Result<OpenAs> {
     let detected = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         if bytes.windows(4).any(|window| window == b"acTL") {
             Some(OpenAs::Apng)
@@ -434,6 +430,14 @@ fn detect_image_open_as(path: &Path) -> io::Result<OpenAs> {
             "画像形式を判別できませんでした",
         )
     })
+}
+
+fn detect_image_open_as(path: &Path) -> io::Result<OpenAs> {
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(IMAGE_DETECTION_HEADER_LIMIT)
+        .read_to_end(&mut bytes)?;
+    detect_image_open_as_bytes(&bytes)
 }
 
 enum ArchiveCommandOutcome {
@@ -467,6 +471,8 @@ pub struct Doc {
     eol: Eol,
     source: DocumentSource,
     open_as: Option<OpenAs>,
+    // アーカイブ内の現在の項目へ適用した形式。`open_as` は書庫そのものの形式を保持する。
+    entry_open_as: Option<OpenAs>,
     replace_progress: Option<search_replace::ReplaceProgress>, // 全置換のチャンク間進行状態
     byte_len: u64,                             // ステータスバー表示用。開いた実体のバイト数
     is_binary: bool,
@@ -497,6 +503,10 @@ impl Doc {
         (self.source.display_path() == Some(path))
             .then_some(self.open_as)
             .flatten()
+    }
+
+    fn effective_open_as(&self) -> Option<OpenAs> {
+        self.entry_open_as.or(self.open_as)
     }
 
     fn supports_archive_path(&self, path: &Path) -> bool {
@@ -615,6 +625,7 @@ impl Doc {
             eol: Eol::Crlf,
             source: DocumentSource::untitled(),
             open_as: None,
+            entry_open_as: None,
             replace_progress: None,
             byte_len: 0,
             is_binary: false,
@@ -646,7 +657,7 @@ impl Doc {
         Self::open_with_progress_as(path, None, progress)
     }
 
-    fn open_with_progress_as(
+    pub fn open_with_progress_as(
         path: &Path,
         open_as: Option<OpenAs>,
         mut progress: Option<&mut fileio::LoadProgress<'_>>,
@@ -736,6 +747,7 @@ impl Doc {
                         },
                     },
                     open_as,
+                    entry_open_as: None,
                     replace_progress: None,
                     byte_len,
                     is_binary: false,
@@ -780,6 +792,7 @@ impl Doc {
             eol: o.eol,
             source,
             open_as,
+            entry_open_as: None,
             replace_progress: None,
             byte_len: o.byte_len,
             is_binary,
@@ -822,6 +835,7 @@ impl Doc {
             eol: o.eol,
             source,
             open_as: self.open_as,
+            entry_open_as: None,
             replace_progress: None,
             byte_len: o.byte_len,
             is_binary,
@@ -997,7 +1011,7 @@ impl Doc {
                 self.source.path(),
             ),
             effective_extension: self
-                .open_as
+                .effective_open_as()
                 .and_then(OpenAs::extension)
                 .map(str::to_string),
         })
@@ -1011,7 +1025,7 @@ impl Doc {
         self.is_binary
             || self
                 .source
-                .is_view_only_with_extension(self.open_as.and_then(OpenAs::extension))
+                .is_view_only_with_extension(self.effective_open_as().and_then(OpenAs::extension))
     }
 
     // 可視範囲の行テキスト (char列そのまま)。全文は渡さない。
@@ -1059,24 +1073,33 @@ impl Doc {
             {
                 let archive_real = join_relative(&root, archive_rel);
                 let source_file = fileio::open_exclusive(&archive_real)?;
-                let archive_open_as = open_as.or_else(|| self.open_as_for_path(&archive_real));
+                // アーカイブ形式の指定は書庫へ、その他の形式は内部項目へ適用する。
+                // これによりエディタから `.bin::memo.bin` を txt として開いても、
+                // 書庫の実体形式と項目の表示形式を混同しない。
+                let archive_open_as = open_as
+                    .filter(|candidate| candidate.is_archive())
+                    .or_else(|| self.open_as_for_path(&archive_real));
+                let entry_open_as = open_as.filter(|candidate| !candidate.is_archive());
                 let classified_archive = classification_path(&archive_real, archive_open_as);
-                let (text, meta, is_binary) = if self.archive_port.supports_path(&classified_archive) {
-                    self.decode_archive_entry_with_open_as(
-                        &archive_real,
-                        entry_name,
-                        archive_open_as,
-                    )?
-                } else {
-                    let bytes = fileio::read_locked(&source_file)?;
-                    let entry = crate::archive::decode_one_entry(&bytes, entry_name).ok_or_else(|| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "アーカイブのエントリが見つかりません",
-                        )
-                    })?;
-                    (entry.text, None, entry.is_binary)
-                };
+                let (text, meta, is_binary, resolved_entry_open_as) =
+                    if self.archive_port.supports_path(&classified_archive) {
+                        self.decode_archive_entry_with_open_as(
+                            &archive_real,
+                            entry_name,
+                            archive_open_as,
+                            entry_open_as,
+                        )?
+                    } else {
+                        let bytes = fileio::read_locked(&source_file)?;
+                        let entry = crate::archive::decode_one_entry(&bytes, entry_name)
+                            .ok_or_else(|| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "アーカイブのエントリが見つかりません",
+                                )
+                            })?;
+                        (entry.text, None, entry.is_binary, entry_open_as)
+                    };
                 if let Some((enc, eol)) = meta {
                     self.enc = enc;
                     self.eol = eol;
@@ -1088,6 +1111,7 @@ impl Doc {
                 self.pending_merge = None;
                 self.undo.clear();
                 self.open_as = archive_open_as;
+                self.entry_open_as = resolved_entry_open_as;
                 self.source = DocumentSource {
                     root: Some(root),
                     target: Target::Archive {
@@ -1117,43 +1141,72 @@ impl Doc {
             *self = d;
             return Ok(Some(info));
         }
-        let (archive_path, text, meta, is_binary) = match &self.source.target {
-            Target::Archive {
-                path,
-                source_file,
-                entries,
-                ..
-            } => {
-                if self.supports_archive_path(path) {
-                    let path = path.clone();
-                    let (text, meta, is_binary) = self.decode_archive_entry(&path, rel_path)?;
-                    (path.to_string_lossy().into_owned(), text, meta, is_binary)
+        let (archive_path, archive_open_as, entry_open_as, text, meta, is_binary) = {
+            let (path, source_file, entries) = match &self.source.target {
+                Target::Archive {
+                    path,
+                    source_file,
+                    entries,
+                    ..
+                } => (path.clone(), source_file.as_ref(), entries.as_ref()),
+                _ => return Ok(None),
+            };
+            // 直接開いたアーカイブでは、archive_open_as は現在の書庫形式を保持し、
+            // 非アーカイブ形式だけを内部項目の有効拡張子として扱う。
+            let archive_open_as = open_as
+                .filter(|candidate| candidate.is_archive())
+                .or_else(|| self.open_as_for_path(&path));
+            let entry_open_as = open_as.filter(|candidate| !candidate.is_archive());
+            if self
+                .archive_port
+                .supports_path(&classification_path(&path, archive_open_as))
+            {
+                let (text, meta, is_binary, resolved_entry_open_as) = self
+                    .decode_archive_entry_with_open_as(
+                        &path,
+                        rel_path,
+                        archive_open_as,
+                        entry_open_as,
+                    )?;
+                (
+                    path.to_string_lossy().into_owned(),
+                    archive_open_as,
+                    resolved_entry_open_as,
+                    text,
+                    meta,
+                    is_binary,
+                )
+            } else {
+                let (text, is_binary) = if let Some(entries) = entries {
+                    match entries.iter().find(|entry| entry.name == rel_path) {
+                        Some(entry) => (entry.text.clone(), entry.is_binary),
+                        None => return Ok(None),
+                    }
                 } else {
-                    let (text, is_binary) = if let Some(entries) = entries {
-                        match entries.iter().find(|entry| entry.name == rel_path) {
-                            Some(entry) => (entry.text.clone(), entry.is_binary),
-                            None => return Ok(None),
-                        }
-                    } else {
-                        let Some(source_file) = source_file else {
-                            return Err(io::Error::new(
-                                io::ErrorKind::WouldBlock,
-                                "アーカイブを読み込めません。再度開いてください",
-                            ));
-                        };
-                        let bytes = fileio::read_locked(source_file)?;
-                        let entry = crate::archive::decode_one_entry(&bytes, rel_path).ok_or_else(|| {
-                            io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "アーカイブのエントリが見つかりません",
-                            )
-                        })?;
-                        (entry.text, entry.is_binary)
+                    let Some(source_file) = source_file else {
+                        return Err(io::Error::new(
+                            io::ErrorKind::WouldBlock,
+                            "アーカイブを読み込めません。再度開いてください",
+                        ));
                     };
-                    (path.to_string_lossy().into_owned(), text, None, is_binary)
-                }
+                    let bytes = fileio::read_locked(source_file)?;
+                    let entry = crate::archive::decode_one_entry(&bytes, rel_path).ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "アーカイブのエントリが見つかりません",
+                        )
+                    })?;
+                    (entry.text, entry.is_binary)
+                };
+                (
+                    path.to_string_lossy().into_owned(),
+                    archive_open_as,
+                    entry_open_as,
+                    text,
+                    None,
+                    is_binary,
+                )
             }
-            _ => return Ok(None),
         };
         if let Some((enc, eol)) = meta {
             self.enc = enc;
@@ -1168,6 +1221,8 @@ impl Doc {
         self.merge_base = None;
         self.pending_merge = None;
         self.undo.clear();
+        self.open_as = archive_open_as;
+        self.entry_open_as = entry_open_as;
         Ok(Some(self.info(archive_path)?))
     }
 
@@ -1179,20 +1234,13 @@ impl Doc {
 
     // 7z/zip の1エントリを展開してテキスト化する。編集して書き戻せる (=テキストとして
     // 復元可能な) 場合のみ検出した enc/eol を返す。画像はテキスト化せずプレビューへ渡す。
-    fn decode_archive_entry(
-        &mut self,
-        archive: &Path,
-        entry: &str,
-    ) -> io::Result<(String, Option<(Encoding, Eol)>, bool)> {
-        self.decode_archive_entry_with_open_as(archive, entry, self.open_as_for_path(archive))
-    }
-
     fn decode_archive_entry_with_open_as(
         &mut self,
         archive: &Path,
         entry: &str,
-        open_as: Option<OpenAs>,
-    ) -> io::Result<(String, Option<(Encoding, Eol)>, bool)> {
+        archive_open_as: Option<OpenAs>,
+        entry_open_as: Option<OpenAs>,
+    ) -> io::Result<(String, Option<(Encoding, Eol)>, bool, Option<OpenAs>)> {
         let bytes = match self
             .archive_port
             .extract(archive, entry, self.sevenz_password(archive))
@@ -1201,7 +1249,7 @@ impl Doc {
             Err(error)
                 if self.archive_port.supports_legacy_zip_fallback(&classification_path(
                     archive,
-                    open_as,
+                    archive_open_as,
                 ))
                     && !self.archive_port.is_password_error(&error) =>
             {
@@ -1219,6 +1267,7 @@ impl Doc {
                     text.clone(),
                     editable.then_some((Encoding::Utf8 { bom: false }, fileio::detect_eol(&text))),
                     is_binary,
+                    entry_open_as,
                 ));
             }
             Err(error) if error.kind() == io::ErrorKind::FileTooLarge => {
@@ -1229,17 +1278,30 @@ impl Doc {
                     ),
                     None,
                     false,
+                    entry_open_as,
                 ));
             }
             Err(error) => return Err(self.annotate_sevenz_error(archive, error)),
         };
-        if is_binary_image_path(Path::new(entry)) {
+        let entry_open_as = match entry_open_as {
+            Some(OpenAs::ImageAuto) => Some(detect_image_open_as_bytes(&bytes)?),
+            other => other,
+        };
+        let image_path = if entry_open_as.is_some() {
+            is_binary_image_with_extension(
+                Path::new(entry),
+                entry_open_as.and_then(OpenAs::extension),
+            )
+        } else {
+            is_binary_image_path(Path::new(entry))
+        };
+        if image_path {
             self.archive_asset = Some(CachedArchiveAsset {
                 archive: archive.to_path_buf(),
                 entry: entry.to_string(),
                 bytes,
             });
-            return Ok((String::new(), None, true));
+            return Ok((String::new(), None, true, entry_open_as));
         }
         let is_binary = fileio::is_binary_bytes(&bytes);
         if is_binary {
@@ -1247,11 +1309,12 @@ impl Doc {
                 fileio::sanitize_binary_text(fileio::decode(&bytes).0),
                 None,
                 true,
+                entry_open_as,
             ));
         }
         let (text, enc) = fileio::decode(&bytes);
         let eol = fileio::detect_eol(&text);
-        Ok((text, Some((enc, eol)), false))
+        Ok((text, Some((enc, eol)), false, entry_open_as))
     }
 
     fn sevenz_password(&self, archive: &Path) -> &str {
@@ -2393,6 +2456,10 @@ impl Doc {
                     root: workspace_root,
                     ..DocumentSource::file(path.to_path_buf(), None, stamp)
                 };
+                if !same_target {
+                    self.open_as = None;
+                }
+                self.entry_open_as = None;
                 let modified_at = fileio::modified_at_from_stamp_or_path(
                     self.source.stamp(),
                     Some(path),
@@ -2421,6 +2488,10 @@ impl Doc {
             root: workspace_root,
             ..DocumentSource::file(path.to_path_buf(), o.source_file, o.stamp)
         };
+        if !same_target {
+            self.open_as = None;
+        }
+        self.entry_open_as = None;
         self.merge_base = merge_base;
         self.pending_merge = None;
         self.undo.break_coalescing();
@@ -2669,6 +2740,7 @@ mod tests {
                 },
             },
             open_as: None,
+            entry_open_as: None,
             replace_progress: None,
             byte_len: 0,
             is_binary: false,
@@ -3005,6 +3077,7 @@ mod tests {
             eol: Eol::Lf,
             source: DocumentSource::untitled(),
             open_as: None,
+            entry_open_as: None,
             replace_progress: None,
             byte_len: 0,
             is_binary: false,
@@ -3804,6 +3877,77 @@ mod tests {
         assert_eq!(info.effective_extension.as_deref(), Some("txt"));
         assert!(!info.view_only);
         drop(d);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    // Feature: エディタからアーカイブ内項目の形式を指定して開く
+    // Scenario: 内部パスを保ったまま項目だけをtxtとして開く
+    // Given: フォルダ内の`archive.zip::memo.bin`と、本文を返すアーカイブ境界がある
+    // When: 内部項目へtxt形式を指定する
+    // Then: 物理アーカイブのパスと内部項目を保持し、通常のテキストとして編集できる
+    #[test]
+    fn archive_entry_accepts_an_explicit_text_format_without_replacing_archive_format() {
+        let root = std::env::temp_dir().join(format!(
+            "wasabipad_archive_entry_explicit_text_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let archive = root.join("archive.zip");
+        std::fs::write(&archive, b"placeholder").unwrap();
+        let d = FakeArchivePort {
+            bytes: b"hello".to_vec(),
+            ..FakeArchivePort::default()
+        };
+        let mut doc = Doc::empty_with_archive_port(Arc::new(d));
+        doc.source.root = Some(root.clone());
+
+        let info = doc
+            .select_entry_as("archive.zip::memo.bin", OpenAs::Txt)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(info.path, archive.to_string_lossy());
+        assert_eq!(info.effective_extension.as_deref(), Some("txt"));
+        assert!(!info.view_only);
+        assert_eq!(doc.viewer_source(), Some((archive, "memo.bin".to_string())));
+        assert!(doc.edit(pos(0, 5), pos(0, 5), pos(0, 5), "!", false).is_some());
+        drop(doc);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    // Feature: エディタからアーカイブ内画像の形式を指定して開く
+    // Scenario: 内容から画像形式を判別する
+    // Given: 拡張子を持たないアーカイブ内項目がPNGシグネチャを持つ
+    // When: 画像の自動判別を指定する
+    // Then: PNGを有効拡張子として返し、本文をテキスト化しない
+    #[test]
+    fn archive_entry_image_auto_uses_the_extracted_signature() {
+        let root = std::env::temp_dir().join(format!(
+            "wasabipad_archive_entry_image_auto_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let archive = root.join("archive.zip");
+        std::fs::write(&archive, b"placeholder").unwrap();
+        let doc = FakeArchivePort {
+            bytes: b"\x89PNG\r\n\x1a\n\0\0\0\0IEND".to_vec(),
+            ..FakeArchivePort::default()
+        };
+        let mut document = Doc::empty_with_archive_port(Arc::new(doc));
+        document.source.root = Some(root.clone());
+
+        let info = document
+            .select_entry_as("archive.zip::payload.bin", OpenAs::ImageAuto)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(info.effective_extension.as_deref(), Some("png"));
+        assert!(info.view_only);
+        assert!(info.is_binary);
+        assert_eq!(document.lines(0, 1), vec![""]);
+        drop(document);
         std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -642,7 +642,7 @@ describe("Feature: FolderActions", () => {
 
   // Given: rootが`C:\work`で対象がない
   // When: フォルダ空白部のコンテキストメニューを表示する
-  // Then: Explorerが先頭にあり、新規メモ・全展開・お気に入り追加が残る
+  // Then: Explorerの直下に新規フォルダを置き、新規メモ・全展開・お気に入り追加も残す
   it("Scenario: 対象なしのフォルダメニューでもExplorerを先頭にする", async () => {
     const reveal = vi.spyOn(api, "revealInExplorer").mockResolvedValue();
     try {
@@ -651,6 +651,7 @@ describe("Feature: FolderActions", () => {
 
       expect([...dropdown.querySelectorAll(".dd-label")].map((label) => label.textContent)).toEqual([
         "エクスプローラで開く",
+        "新規フォルダ",
         "新規メモ作成...",
         "フォルダを全展開",
         "お気に入りに追加",
@@ -658,6 +659,7 @@ describe("Feature: FolderActions", () => {
       expect(dropdown.querySelectorAll(".dd-sep")).toHaveLength(2);
       for (const [label, icon] of [
         ["エクスプローラで開く", MENU_ICON.explorer],
+        ["新規フォルダ", MENU_ICON.newFolder],
         ["新規メモ作成...", MENU_ICON.newMemo],
         ["フォルダを全展開", MENU_ICON.expandFolder],
         ["お気に入りに追加", MENU_ICON.favorite],
@@ -669,6 +671,13 @@ describe("Feature: FolderActions", () => {
       dropdown.querySelector<HTMLElement>(".dd-item:first-child")!.click();
 
       await vi.waitFor(() => expect(reveal).toHaveBeenCalledWith("C:\\work", true));
+      vi.mocked(promptFields).mockResolvedValueOnce(["notes"]);
+      const createFolder = vi.spyOn(api, "createFolder").mockResolvedValueOnce();
+      actions.showContextMenu(0, 0, null);
+      [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+        .find((item) => item.textContent === "新規フォルダ")!.click();
+      await vi.waitFor(() => expect(createFolder).toHaveBeenCalledWith("", "notes"));
+
       actions.showContextMenu(0, 0, null);
       [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
         .find((item) => item.textContent === "フォルダを全展開")!.click();

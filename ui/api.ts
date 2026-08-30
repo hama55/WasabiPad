@@ -71,7 +71,8 @@ export const EVENT_NAMES = {
 
 export type { DocumentLoadProgress } from "./document-load-progress";
 
-export const openPath = (path: string) => invoke<DocInfo>(IPC_COMMANDS.openPath, { path });
+export const openPath = (path: string, openAs?: OpenAs) =>
+  invoke<DocInfo>(IPC_COMMANDS.openPath, { path, openAs });
 export const newDoc = () => invoke<void>(IPC_COMMANDS.newDoc);
 export const closeDoc = () => invoke<void>(IPC_COMMANDS.closeDoc);
 

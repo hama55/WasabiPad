@@ -313,6 +313,128 @@ describe("Feature: TabManager", () => {
     expect(JSON.stringify(manager.state)).not.toContain("effectiveExtension");
   });
 
+  // Feature: エディタからの形式指定
+  // Scenario: 直接開いたファイルを指定形式で開き直す
+  // Given: active tab が `C:\work\memo.bin` のファイルタブである
+  // When: `openCurrentAs("md")` を呼ぶ
+  // Then: 同じ実パスへmd指定を渡して現在タブだけを開き直す
+  it("Scenario: エディタから直接ファイルの形式を指定できる", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init({
+      tabs: [{ id: "file", path: "C:\\work\\memo.bin", kind: "file", label: "memo.bin" }],
+      activeId: "file",
+    }, null, null);
+
+    await expect(manager.openCurrentAs("md")).resolves.toBe(true);
+
+    expect(doc.openPath).toHaveBeenLastCalledWith("C:\\work\\memo.bin", false, "md");
+    expect(manager.state.tabs).toHaveLength(1);
+  });
+
+  // Feature: エディタから直接開いたアーカイブ内項目の形式指定
+  // Scenario: 物理アーカイブを開き直さず内部項目だけを読み直す
+  // Given: 直接開いた`C:\\work\\archive.zip`の`memo.bin`を表示している
+  // When: `openCurrentAs("txt")`を呼ぶ
+  // Then: 物理パスをテキストとして再オープンせず、内部項目と指定形式を選択する
+  it("Scenario: 直接開いたアーカイブ内項目の形式を指定できる", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init({
+      tabs: [{ id: "archive", path: "C:\\work\\archive.zip", kind: "file", label: "archive.zip" }],
+      activeId: "archive",
+    }, null, null);
+    doc.current.archivePath = "C:\\work\\archive.zip";
+    doc.current.archiveEntry = "memo.bin";
+    doc.current.selectedRelPath = "memo.bin";
+    vi.mocked(doc.openPath).mockClear();
+    vi.mocked(doc.selectEntry).mockClear();
+
+    await expect(manager.openCurrentAs("txt")).resolves.toBe(true);
+
+    expect(doc.openPath).not.toHaveBeenCalled();
+    expect(doc.selectEntry).toHaveBeenCalledWith("memo.bin", "txt");
+  });
+
+  // Feature: エディタからのアーカイブ内形式指定
+  // Scenario: 表示中の仮想項目へ形式を指定する
+  // Given: folder tab が `archive.zip::memo.bin` を選択中である
+  // When: `openCurrentAs("txt")` を呼ぶ
+  // Then: アーカイブの内部パスを保ったまま指定形式を選択APIへ渡す
+  it("Scenario: エディタからアーカイブ内項目の形式を指定できる", async () => {
+    const { doc, manager } = folderTabViewFixture();
+    await manager.init({
+      tabs: [{
+        id: "folder",
+        path: "C:\\work",
+        kind: "folder",
+        label: "work",
+        selectedRelPath: "archive.zip::memo.bin",
+      }],
+      activeId: "folder",
+    }, null, null);
+    vi.mocked(doc.selectEntry).mockClear();
+
+    await expect(manager.openCurrentAs("txt")).resolves.toBe(true);
+
+    expect(doc.selectEntry).toHaveBeenCalledWith("archive.zip::memo.bin", "txt");
+    expect(manager.state.tabs).toHaveLength(1);
+  });
+
+  // Feature: エディタからの新規タブ
+  // Scenario: フォルダ内の現在項目を同じ選択状態で複製する
+  // Given: folder tab が `archive.zip::memo.txt` を選択中である
+  // When: `openCurrentInNewTab()` を呼ぶ
+  // Then: 元タブを残し、選択パスを維持したタブを直後へ追加する
+  it("Scenario: エディタから現在のアーカイブ内項目を新規タブで開く", async () => {
+    const { doc, manager } = folderTabViewFixture();
+    await manager.init({
+      tabs: [{
+        id: "folder",
+        path: "C:\\work",
+        kind: "folder",
+        label: "work",
+        selectedRelPath: "archive.zip::memo.txt",
+      }],
+      activeId: "folder",
+    }, null, null);
+
+    await expect(manager.openCurrentInNewTab()).resolves.toBe(true);
+
+    expect(manager.state.tabs).toHaveLength(2);
+    expect(manager.state.tabs[0]).toMatchObject({
+      id: "folder",
+      path: "C:\\work",
+      selectedRelPath: "archive.zip::memo.txt",
+    });
+    expect(manager.state.tabs[1]).toMatchObject({
+      path: "C:\\work",
+      kind: "folder",
+      selectedRelPath: "archive.zip::memo.txt",
+    });
+    expect(manager.state.activeId).toBe(manager.state.tabs[1].id);
+    expect(doc.selectEntry).toHaveBeenLastCalledWith("archive.zip::memo.txt");
+  });
+
+  // Feature: エディタからの新規タブ形式指定
+  // Scenario: 現在項目を指定形式のまま複製する
+  // Given: folder tab が `memo.bin` を表示中である
+  // When: `openCurrentInNewTab("txt")` を呼ぶ
+  // Then: 元タブを残し、txt指定を新規タブの選択へ渡す
+  it("Scenario: エディタから指定形式の新規タブを開く", async () => {
+    const { doc, manager } = folderTabViewFixture();
+    await manager.init({
+      tabs: [{ id: "folder", path: "C:\\work", kind: "folder", label: "work", selectedRelPath: "memo.bin" }],
+      activeId: "folder",
+    }, null, null);
+
+    await expect(manager.openCurrentInNewTab("txt")).resolves.toBe(true);
+
+    expect(manager.state.tabs).toHaveLength(2);
+    expect(manager.state.tabs[0].id).toBe("folder");
+    expect(doc.selectEntry).toHaveBeenLastCalledWith("memo.bin", "txt");
+  });
+
   // Feature: 有効拡張子の寿命
   // Scenario: 指定形式のアーカイブ内エントリまでタブ復元する
   // Given: `archive.bin`をzipとして開き、その中の`memo.txt`を表示している
@@ -335,6 +457,85 @@ describe("Feature: TabManager", () => {
     await manager.activate("folder");
 
     expect(doc.selectEntry).toHaveBeenLastCalledWith("archive.bin::memo.txt", "zip");
+  });
+
+  // Feature: アーカイブ内項目の形式指定をタブ切替で復元する
+  // Scenario: 書庫形式と項目形式を分けて保持する
+  // Given: `archive.bin`を7zとして開き、内部の`memo.txt`をtxt指定で表示している
+  // When: 別タブへ移動してから元のフォルダタブへ戻る
+  // Then: 7z指定で書庫を準備してから、txt指定で内部項目を復元する
+  it("Scenario: 偽装拡張子アーカイブの内部項目形式を復元する", async () => {
+    const { doc, host } = folderTabViewFixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init({
+      tabs: [
+        { id: "folder", path: "C:\\work", kind: "folder", label: "work" },
+        { id: "other", path: "C:\\work\\other.txt", kind: "file", label: "other.txt" },
+      ],
+      activeId: "folder",
+    }, null, null);
+    await manager.navigateEntry("archive.bin", "7z");
+    await manager.navigateEntry("archive.bin::memo.txt", "txt");
+    await manager.activate("other");
+    vi.mocked(doc.selectEntry).mockClear();
+    await manager.activate("folder");
+
+    expect(doc.selectEntry).toHaveBeenNthCalledWith(1, "archive.bin", "7z");
+    expect(doc.selectEntry).toHaveBeenNthCalledWith(2, "archive.bin::memo.txt", "txt");
+  });
+
+  // Feature: 偽装アーカイブの書庫形式保持
+  // Scenario: 内部項目から書庫本体へ戻る
+  // Given: `archive.bin`を7zとして開き、内部の`memo.txt`をtxt指定で表示している
+  // When: 形式指定なしで`archive.bin`へ戻る
+  // Then: 保持した7z指定を選択APIへ渡して書庫を再展開する
+  it("Scenario: 内部項目から書庫本体へ戻るときも書庫形式を保持する", async () => {
+    const { doc, manager } = folderTabViewFixture();
+    await manager.init({
+      tabs: [{ id: "folder", path: "C:\\work", kind: "folder", label: "work" }],
+      activeId: "folder",
+    }, null, null);
+
+    await manager.navigateEntry("archive.bin", "7z");
+    await manager.navigateEntry("archive.bin::memo.txt", "txt");
+    vi.mocked(doc.selectEntry).mockClear();
+
+    await expect(manager.navigateEntry("archive.bin")).resolves.toBe(true);
+
+    expect(doc.selectEntry).toHaveBeenCalledWith("archive.bin", "7z");
+  });
+
+  // Feature: 直接開いた偽装アーカイブの形式保持
+  // Scenario: 内部項目を切り替えても書庫形式を保持する
+  // Given: `archive.bin`を7zとして開き、内部項目をtxt指定で表示している
+  // When: 別の内部項目へ形式指定なしで移動してタブを切り替える
+  // Then: 物理書庫を7zで再度開き、内部項目は指定なしで復元する
+  it("Scenario: 直接開いたアーカイブの書庫形式を項目移動後も復元する", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init({
+      tabs: [
+        { id: "archive", path: "C:\\work\\archive.bin", kind: "file", label: "archive.bin" },
+        { id: "other", path: "C:\\work\\other.txt", kind: "file", label: "other.txt" },
+      ],
+      activeId: "archive",
+    }, null, null);
+    doc.current.archivePath = "C:\\work\\archive.bin";
+    doc.current.folderRoot = null;
+    doc.current.selectedRelPath = "memo.bin";
+
+    await manager.openCurrentAs("7z");
+    await manager.openCurrentAs("txt");
+    await manager.navigateEntry("other.bin");
+    vi.mocked(doc.openPath).mockClear();
+    vi.mocked(doc.selectEntry).mockClear();
+
+    await manager.activate("other");
+    doc.current.archivePath = null;
+    await manager.activate("archive");
+
+    expect(doc.openPath).toHaveBeenLastCalledWith("C:\\work\\archive.bin", false, "7z");
+    expect(doc.selectEntry).toHaveBeenLastCalledWith("other.bin");
   });
 
   // Feature: 有効拡張子の寿命

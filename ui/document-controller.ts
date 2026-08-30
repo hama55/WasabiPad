@@ -1,6 +1,6 @@
 import type * as api from "./api";
 import type { DocumentSession } from "./session";
-import { documentPathOf, externalFilePathOf, initialSession, sessionFromDocInfo } from "./session";
+import { classificationPathOf, externalFilePathOf, initialSession, sessionFromDocInfo } from "./session";
 import type { promptSaveFormat, saveFormatFields, saveFormatFromValues, SaveFormat } from "./save-format";
 import type { confirmSaveDiscard, promptFields, PromptField, PromptFieldsOptions } from "./prompt";
 import type { isPasswordCancelled, withArchivePassword } from "./archive-password";
@@ -21,7 +21,7 @@ export const SAVE_EXTENSIONS = [
 ] as const;
 
 function markdownForSession(session: Readonly<DocumentSession>): boolean {
-  return viewerFormatForPath(documentPathOf(session)) === "markdown";
+  return viewerFormatForPath(classificationPathOf(session)) === "markdown";
 }
 
 export interface MemoCreationSpec {
@@ -227,12 +227,14 @@ export class DocumentController {
     this.updateTitle();
   }
 
-  async openPath(path: string, confirm = true): Promise<boolean> {
+  async openPath(path: string, confirm = true, openAs?: api.OpenAs): Promise<boolean> {
     if (confirm && !(await this.confirmDiscard())) return false;
     const request = ++this.loadRequest;
     try {
       this.setLoading(true, request);
-      const info = await this.services.api.openPath(path);
+      const info = openAs === undefined
+        ? await this.services.api.openPath(path)
+        : await this.services.api.openPath(path, openAs);
       if (request !== this.loadRequest) return false;
       this.session.selectedRelPath = "";
       this.showTree(info);

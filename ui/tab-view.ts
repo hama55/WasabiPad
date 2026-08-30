@@ -96,15 +96,19 @@ export class TabBarView {
         }),
       });
       if (tab.kind === "file") {
-        items.push(createRegisteredCommandMenu(tab.path, {
-          ...this.ports.registeredCommandPorts,
-          run: (title, operation) => this.run(operation, title),
-        }));
+        items.push({
+          ...createRegisteredCommandMenu(tab.path, {
+            ...this.ports.registeredCommandPorts,
+            run: (title, operation) => this.run(operation, title),
+          }),
+          sep: true,
+        });
       }
       if (this.ports.onOpenInNewWindow) {
         items.splice(tab.kind === "file" ? 1 : items.length, 0, {
           label: MENU_LABELS.newWindow,
           iconClass: MENU_ICON.newWindow,
+          sep: true,
           action: () => this.run(() => this.ports.onOpenInNewWindow!(tab), "新規ウィンドウで開けませんでした"),
         });
       }

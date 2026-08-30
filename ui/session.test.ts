@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { DocInfo } from "./api";
 import {
+  classificationPathOf,
   displayName,
   documentPathOf,
   externalFilePathOf,
@@ -132,6 +133,28 @@ describe("Feature: DocumentSession", () => {
       archiveEntry: "photo.png",
       effectiveExtension: "zip",
     })).toBe("photo.png");
+  });
+
+  // Feature: アーカイブ内部項目の形式指定
+  // Scenario: Markdownとして明示した項目を分類する
+  // Given: `archive.bin::memo.bin`の有効拡張子がmdである
+  // When: `classificationPathOf`を呼ぶ
+  // Then: 文書識別子を保ったままmdを分類用パスへ付加する
+  it("Scenario: アーカイブ内項目の形式指定を分類へ反映する", () => {
+    expect(classificationPathOf({
+      selectedRelPath: "archive.bin::memo.bin",
+      savePath: "C:\\work\\archive.bin",
+      displayPath: "C:\\work\\archive.bin",
+      archiveEntry: "memo.bin",
+      effectiveExtension: "md",
+    })).toBe("archive.bin::memo.bin.md");
+    expect(classificationPathOf({
+      selectedRelPath: "archive.bin::memo.bin",
+      savePath: "C:\\work\\archive.bin",
+      displayPath: "C:\\work\\archive.bin",
+      archiveEntry: "memo.bin",
+      effectiveExtension: "7z",
+    })).toBe("archive.bin::memo.bin");
   });
 
   // Given: encodingが`utf8bom`または`sjis`

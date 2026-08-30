@@ -103,6 +103,28 @@ describe("Feature: DocumentController", () => {
     expect(openPath).toHaveBeenCalledWith("C:\\work\\memo.txt");
   });
 
+  // Feature: 形式を指定して開く
+  // Scenario: 直接ファイルを指定形式で開き直す
+  // Given: `memo.bin`をtxtとして開く文書APIがある
+  // When: `controller.openPath("C:\work\memo.bin", false, "txt")`を呼ぶ
+  // Then: 実パスと指定形式をそのままAPIへ渡す
+  it("Scenario: 直接ファイルの形式指定を文書APIへ渡す", async () => {
+    const { view } = fakeView();
+    const openPath = vi.fn().mockResolvedValue(info({
+      path: "C:\\work\\memo.bin",
+      effective_extension: "txt",
+    }));
+    const controller = new DocumentController(view, {
+      ...services(),
+      api: { ...api, openPath },
+    });
+
+    expect(await controller.openPath("C:\\work\\memo.bin", false, "txt")).toBe(true);
+
+    expect(openPath).toHaveBeenCalledWith("C:\\work\\memo.bin", "txt");
+    expect(controller.current.effectiveExtension).toBe("txt");
+  });
+
   // Feature: 形式を指定してファイルを開く
   // Scenario: 指定形式をbackendへ渡して有効拡張子を表示セッションへ反映する
   // Given: `memo.bin`をtxtとして開いた結果を返す文書API
@@ -123,6 +145,30 @@ describe("Feature: DocumentController", () => {
     expect(await controller.selectEntry("memo.bin", "txt")).toBe(true);
     expect(selectEntry).toHaveBeenCalledWith("memo.bin", "txt");
     expect(controller.current.effectiveExtension).toBe("txt");
+  });
+
+  // Feature: アーカイブ内部項目のMarkdown判定
+  // Scenario: 拡張子を持たない内部項目をmdとして開く
+  // Given: `archive.bin::memo.bin`をmd指定で返す文書APIがある
+  // When: `selectEntry`を呼ぶ
+  // Then: エディタへMarkdown文書として通知する
+  it("Scenario: アーカイブ内項目の指定形式をMarkdown表示へ反映する", async () => {
+    const { view } = fakeView();
+    const selectEntry = vi.fn().mockResolvedValue(info({
+      kind: "archive",
+      path: "C:\\work\\archive.bin",
+      folder_root: "C:\\work",
+      effective_extension: "md",
+    }));
+    const controller = new DocumentController(view, {
+      ...services(),
+      api: { ...api, selectEntry },
+    });
+    controller.setSelectedRelPath("archive.bin::memo.bin");
+
+    expect(await controller.selectEntry("archive.bin::memo.bin", "md")).toBe(true);
+
+    expect(view.editor.open).toHaveBeenLastCalledWith(42, false, false, "C:\\work\\archive.bin", true);
   });
 
   // Feature: 削除後も編集中の本文を保持する

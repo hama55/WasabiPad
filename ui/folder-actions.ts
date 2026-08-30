@@ -17,8 +17,9 @@ import {
 } from "./path";
 import { isArchiveEntryUnder } from "./archive-path";
 import { createRegisteredCommandMenu, type RegisteredCommandMenuPorts } from "./registered-command-menu";
-import { MENU_ICON, type MenuIconClass } from "./menu-icons";
+import { MENU_ICON } from "./menu-icons";
 import { MENU_LABELS } from "./menu-labels";
+import { createOpenAsMenu } from "./open-as-menu";
 import { runAsyncBoundary } from "./async-boundary";
 import { reportErrorSafely } from "./report-error";
 import type { MemoCreationSpec } from "./document-controller";
@@ -168,15 +169,34 @@ export class FolderActions {
       iconClass: MENU_ICON.explorer,
       action: () => this.run("エクスプローラで開けませんでした", () => this.services.revealInExplorer(revealPath, revealIsDir)),
     });
+    const newFolderItem = (relDir: string): MenuItem => ({
+      label: MENU_LABELS.newFolder,
+      iconClass: MENU_ICON.newFolder,
+      action: () => this.run("新規フォルダを作成できませんでした", () => this.createFolder(relDir)),
+    });
+    const newMemoItem = (relDir: string | null, sep: boolean): MenuItem => ({
+      label: MENU_LABELS.newMemo,
+      iconClass: MENU_ICON.newMemo,
+      action: () => this.run("新規メモを作成できませんでした", () => this.createNote(relDir)),
+      sep,
+    });
+    if (!target) {
+      items.push({ ...newFolderItem(""), sep: true });
+      items.push(newMemoItem(null, false));
+    }
     const operationTargets = this.operationTargets(target, selected);
-    if (!target || target.isDir) {
-      if (this.clipboard) {
-        items.push({
-          label: MENU_LABELS.paste,
-          iconClass: MENU_ICON.paste,
-          action: () => this.run("貼り付けできませんでした", () => this.paste(target)),
-        });
-      }
+    const pushPaste = () => {
+      if (!this.clipboard) return;
+      items.push({
+        label: MENU_LABELS.paste,
+        iconClass: MENU_ICON.paste,
+        action: () => this.run("貼り付けできませんでした", () => this.paste(target)),
+      });
+    };
+    if (target?.isDir) {
+      pushPaste();
+    } else if (!target) {
+      pushPaste();
     }
     const pushCutAndCopy = (sep = false) => {
       if (!operationTargets.length) return;
@@ -197,7 +217,7 @@ export class FolderActions {
       items.push({
         label: MENU_LABELS.newTab,
         iconClass: MENU_ICON.newTab,
-        sep: !target.isDir,
+        sep: true,
         action: () => this.ports.onOpenInNewTab(target.relPath, target.goto),
       });
       items.push({
@@ -212,54 +232,11 @@ export class FolderActions {
           sep: true,
           action: () => this.run(`${MENU_LABELS.expandFolder}できませんでした`, () => this.ports.sidebar.expandAllFolder(target.relPath)),
         });
-        items.push({
-          label: MENU_LABELS.newFolder,
-          iconClass: MENU_ICON.newFolder,
-          action: () => this.run("新規フォルダを作成できませんでした", () => this.createFolder(target.relPath)),
-        });
+        items.push(newFolderItem(target.relPath));
       }
       if (!target.isDir) {
         if (operationTargets.some((entry) => entry.relPath === target.relPath)) {
-          const openAsItem = (
-            label: string,
-            openAs: api.OpenAs,
-            iconClass: MenuIconClass = MENU_ICON.text,
-          ): MenuItem => ({
-            label,
-            iconClass,
-            action: () => this.ports.onOpenAs(target.relPath, openAs),
-          });
-          items.push({
-            label: MENU_LABELS.openWithFormat,
-            iconClass: MENU_ICON.more,
-            sub: [
-              openAsItem(".txt", "txt"),
-              openAsItem(".md", "md", MENU_ICON.markdown),
-              openAsItem(".csv", "csv", MENU_ICON.csv),
-              openAsItem(".html", "html", MENU_ICON.html),
-              openAsItem(".pdf", "pdf", MENU_ICON.pdf),
-              {
-                label: "画像",
-                iconClass: MENU_ICON.image,
-                sub: [
-                  openAsItem("自動判別", "image-auto", MENU_ICON.image),
-                  openAsItem(".svg", "svg", MENU_ICON.image),
-                  openAsItem(".png", "png", MENU_ICON.image),
-                  openAsItem(".jpg", "jpg", MENU_ICON.image),
-                  openAsItem(".gif", "gif", MENU_ICON.image),
-                  openAsItem(".webp", "webp", MENU_ICON.image),
-                  openAsItem(".bmp", "bmp", MENU_ICON.image),
-                  openAsItem(".ico", "ico", MENU_ICON.image),
-                  openAsItem(".avif", "avif", MENU_ICON.image),
-                  openAsItem(".apng", "apng", MENU_ICON.image),
-                ],
-              },
-              openAsItem(".zip", "zip", MENU_ICON.more),
-              openAsItem(".7z", "7z", MENU_ICON.more),
-              openAsItem(".xlsx", "xlsx", MENU_ICON.csv),
-              openAsItem(".xls", "xls", MENU_ICON.csv),
-            ],
-          });
+          items.push(createOpenAsMenu((openAs) => this.ports.onOpenAs(target.relPath, openAs)));
         }
         items.push({
           label: MENU_LABELS.external,
@@ -298,14 +275,7 @@ export class FolderActions {
       sep: target?.isDir !== false,
     };
     if (target) items.push(favoriteItem);
-    if (!target || target.isDir) {
-      items.push({
-        label: MENU_LABELS.newMemo,
-        iconClass: MENU_ICON.newMemo,
-        action: () => this.run("新規メモを作成できませんでした", () => this.createNote(target?.isDir ? target.relPath : null)),
-        sep: true,
-      });
-    }
+    if (target?.isDir) items.push(newMemoItem(target.relPath, true));
     if (!target) {
       items.push({
         label: MENU_LABELS.expandFolder,

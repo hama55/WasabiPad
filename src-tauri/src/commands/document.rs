@@ -19,7 +19,12 @@ struct DocumentLoadProgress {
     percent: u8,
 }
 
-pub(crate) fn open_path(path: String, state: State, app: AppHandle) -> Result<DocInfo, String> {
+pub(crate) fn open_path(
+    path: String,
+    open_as: Option<OpenAs>,
+    state: State,
+    app: AppHandle,
+) -> Result<DocInfo, String> {
     let mut report = |loaded: u64, total: u64| {
         let percent = if total == 0 {
             100
@@ -33,7 +38,7 @@ pub(crate) fn open_path(path: String, state: State, app: AppHandle) -> Result<Do
             eprintln!("文書読み込み進捗の通知に失敗しました: {error}");
         }
     };
-    let mut d = Doc::open_with_progress(&PathBuf::from(&path), Some(&mut report))
+    let mut d = Doc::open_with_progress_as(&PathBuf::from(&path), open_as, Some(&mut report))
         .map_err(|e| e.to_string())?;
     // フォルダを開いた場合 d.path は先頭の実ファイルを指す (フォルダ自体は保存先を持たない)
     let info_path = d

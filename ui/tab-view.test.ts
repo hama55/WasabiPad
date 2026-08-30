@@ -115,4 +115,29 @@ describe("Feature: TabBarView", () => {
       path: "C:/memo.md",
     })));
   });
+
+  // Feature: タブ右クリックメニューのグループ
+  // Scenario: Explorerの直下へ区切り線を置く
+  // Given: パスを持つファイルタブを表示している
+  // When: タブの右クリックメニューを開く
+  // Then: 最初の区切り線はExplorerの直後に表示される
+  it("Scenario: タブメニューでもExplorerを単独の先頭グループにする", () => {
+    const host = document.createElement("div");
+    document.body.replaceChildren();
+    const dropdown = document.createElement("div");
+    dropdown.id = "dropdown";
+    document.body.append(dropdown);
+    const ports = makePorts();
+    const view = new TabBarView(host, ports);
+    view.render({
+      tabs: [{ id: "file", path: "C:/memo.md", kind: "file", label: "memo.md" }],
+      activeId: "file",
+      dirty: false,
+    });
+
+    host.querySelector<HTMLElement>(".doc-tab")!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+
+    const firstSeparator = dropdown.querySelector<HTMLElement>(".dd-sep");
+    expect(firstSeparator?.previousElementSibling?.textContent).toBe("エクスプローラで開く");
+  });
 });
