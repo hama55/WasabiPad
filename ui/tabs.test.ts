@@ -382,11 +382,49 @@ describe("Feature: TabManager", () => {
   });
 
   // Feature: エディタからの新規タブ
-  // Scenario: フォルダ内の現在項目を同じ選択状態で複製する
-  // Given: folder tab が `archive.zip::memo.txt` を選択中である
+  // Scenario: 表示中のファイルをルートにしたファイルタブを開く
+  // Given: folder tab が `C:\\work\\memo.txt` を表示中である
   // When: `openCurrentInNewTab()` を呼ぶ
-  // Then: 元タブを残し、選択パスを維持したタブを直後へ追加する
-  it("Scenario: エディタから現在のアーカイブ内項目を新規タブで開く", async () => {
+  // Then: 元のフォルダタブを残し、実ファイルをルートとするタブを追加する
+  it("Scenario: エディタから現在のファイルをルートにした新規タブを開く", async () => {
+    const { doc, manager } = folderTabViewFixture();
+    await manager.init({
+      tabs: [{
+        id: "folder",
+        path: "C:\\work",
+        kind: "folder",
+        label: "work",
+        selectedRelPath: "memo.txt",
+      }],
+      activeId: "folder",
+    }, null, null);
+    doc.current.folderRoot = "C:\\work";
+    doc.current.selectedRelPath = "memo.txt";
+    doc.current.displayPath = "C:\\work\\memo.txt";
+    doc.current.savePath = "C:\\work\\memo.txt";
+    vi.mocked(doc.openPath).mockClear();
+
+    await expect(manager.openCurrentInNewTab()).resolves.toBe(true);
+
+    expect(manager.state.tabs).toHaveLength(2);
+    expect(manager.state.tabs[0]).toMatchObject({
+      id: "folder",
+      path: "C:\\work",
+    });
+    expect(manager.state.tabs[1]).toMatchObject({
+      path: "C:\\work\\memo.txt",
+      kind: "file",
+    });
+    expect(manager.state.activeId).toBe(manager.state.tabs[1].id);
+    expect(doc.openPath).toHaveBeenLastCalledWith("C:\\work\\memo.txt", false);
+  });
+
+  // Feature: エディタからのアーカイブ内項目の新規タブ
+  // Scenario: 仮想項目を表示中でも物理アーカイブをルートにする
+  // Given: `archive.zip::memo.txt`を表示するフォルダタブがある
+  // When: `openCurrentInNewTab()` を呼ぶ
+  // Then: 内部相対パスを複製せず、アーカイブ本体をファイルタブで開く
+  it("Scenario: エディタからアーカイブ内項目を物理アーカイブの新規タブで開く", async () => {
     const { doc, manager } = folderTabViewFixture();
     await manager.init({
       tabs: [{
@@ -398,41 +436,23 @@ describe("Feature: TabManager", () => {
       }],
       activeId: "folder",
     }, null, null);
+    doc.current.folderRoot = "C:\\work";
+    doc.current.selectedRelPath = "archive.zip::memo.txt";
+    doc.current.archivePath = "C:\\work\\archive.zip";
+    doc.current.archiveEntry = "memo.txt";
+    doc.current.displayPath = "C:\\work\\archive.zip";
+    doc.current.savePath = "C:\\work\\archive.zip";
+    vi.mocked(doc.openPath).mockClear();
 
     await expect(manager.openCurrentInNewTab()).resolves.toBe(true);
 
     expect(manager.state.tabs).toHaveLength(2);
-    expect(manager.state.tabs[0]).toMatchObject({
-      id: "folder",
-      path: "C:\\work",
-      selectedRelPath: "archive.zip::memo.txt",
-    });
-    expect(manager.state.tabs[1]).toMatchObject({
-      path: "C:\\work",
-      kind: "folder",
-      selectedRelPath: "archive.zip::memo.txt",
-    });
-    expect(manager.state.activeId).toBe(manager.state.tabs[1].id);
-    expect(doc.selectEntry).toHaveBeenLastCalledWith("archive.zip::memo.txt");
-  });
-
-  // Feature: エディタからの新規タブ形式指定
-  // Scenario: 現在項目を指定形式のまま複製する
-  // Given: folder tab が `memo.bin` を表示中である
-  // When: `openCurrentInNewTab("txt")` を呼ぶ
-  // Then: 元タブを残し、txt指定を新規タブの選択へ渡す
-  it("Scenario: エディタから指定形式の新規タブを開く", async () => {
-    const { doc, manager } = folderTabViewFixture();
-    await manager.init({
-      tabs: [{ id: "folder", path: "C:\\work", kind: "folder", label: "work", selectedRelPath: "memo.bin" }],
-      activeId: "folder",
-    }, null, null);
-
-    await expect(manager.openCurrentInNewTab("txt")).resolves.toBe(true);
-
-    expect(manager.state.tabs).toHaveLength(2);
     expect(manager.state.tabs[0].id).toBe("folder");
-    expect(doc.selectEntry).toHaveBeenLastCalledWith("memo.bin", "txt");
+    expect(manager.state.tabs[1]).toMatchObject({
+      path: "C:\\work\\archive.zip",
+      kind: "file",
+    });
+    expect(doc.openPath).toHaveBeenLastCalledWith("C:\\work\\archive.zip", false);
   });
 
   // Feature: 有効拡張子の寿命

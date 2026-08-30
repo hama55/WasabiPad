@@ -318,48 +318,14 @@ export class TabManager {
     );
   }
 
-  async openCurrentInNewTab(openAs?: OpenAs): Promise<boolean> {
-    const source = this.active();
-    if (!source?.path) return false;
-    this.rememberActiveView();
+  async openCurrentInNewTab(): Promise<boolean> {
     const current = this.active();
-    if (!current?.path) return false;
-    const selectedRelPath = current.selectedRelPath;
-    const rememberedOpenAs = this.openAsStates.get(current.id);
-    const requestedOpenAs = openAs ?? (
-      rememberedOpenAs
-        && rememberedOpenAs.relPath.replace(/\\/g, "/") === (selectedRelPath ?? "").replace(/\\/g, "/")
-        ? rememberedOpenAs.openAs
-        : undefined
-    );
-    const rememberedArchiveOpenAs = rememberedOpenAs?.archiveOpenAs
-      ?? (rememberedOpenAs && isArchiveOpenAs(rememberedOpenAs.openAs)
-        ? rememberedOpenAs.openAs
-        : undefined);
-    const clone: StoredTab = {
-      ...current,
-      id: newId(),
-      viewState: current.viewState ? cloneEditorViewState(current.viewState) : undefined,
-      ...(selectedRelPath ? { selectedRelPath } : {}),
-      ...(current.selectedLine !== undefined ? { selectedLine: current.selectedLine } : {}),
-    };
-    delete clone.goto;
-    delete clone.fragment;
-    const activated = await this.addAndActivateWith(clone, (tabs) => {
-      const sourceIndex = tabs.findIndex((tab) => tab.id === current.id);
-      if (sourceIndex < 0) return false;
-      tabs.splice(sourceIndex + 1, 0, clone);
-      if (requestedOpenAs || rememberedArchiveOpenAs) {
-        this.openAsStates.set(clone.id, {
-          relPath: selectedRelPath ?? "",
-          ...(requestedOpenAs ? { openAs: requestedOpenAs } : {}),
-          ...(rememberedArchiveOpenAs ? { archiveOpenAs: rememberedArchiveOpenAs } : {}),
-        });
-      }
-      return true;
-    });
-    if (!activated) this.openAsStates.delete(clone.id);
-    return activated;
+    const path = this.doc.current.savePath ?? this.doc.current.displayPath;
+    if (!current?.path || !path) return false;
+    // ファイルツリーのホイールクリックと同じく、表示中の実ファイルを
+    // ルートにしたタブを開く。アーカイブ内項目でも物理アーカイブを使い、
+    // フォルダタブや内部相対パスを複製しない。
+    return this.open(path);
   }
 
   async openMarkdownLink(path: string, sourceTabId: string | null, fragment: string | null): Promise<boolean> {
