@@ -3,7 +3,7 @@ use tauri::{AppHandle, Emitter};
 
 use wasabipad_core::{
     Doc, DocInfo, EditManyItem, EditManyResult, EditResult, EncodingId, Eol, ExternalCheck,
-    ExternalMergePreview, FindCursor, FindOutcome, FindResult, FolderEntry, PosC,
+    ExternalMergePreview, FindCursor, FindOutcome, FindResult, FolderEntry, OpenAs, PosC,
     ReplaceChunkResult, SaveOutcome,
 };
 
@@ -19,7 +19,12 @@ struct DocumentLoadProgress {
     percent: u8,
 }
 
-pub(crate) fn open_path(path: String, state: State, app: AppHandle) -> Result<DocInfo, String> {
+pub(crate) fn open_path(
+    path: String,
+    open_as: Option<OpenAs>,
+    state: State,
+    app: AppHandle,
+) -> Result<DocInfo, String> {
     let mut report = |loaded: u64, total: u64| {
         let percent = if total == 0 {
             100
@@ -33,7 +38,7 @@ pub(crate) fn open_path(path: String, state: State, app: AppHandle) -> Result<Do
             eprintln!("文書読み込み進捗の通知に失敗しました: {error}");
         }
     };
-    let mut d = Doc::open_with_progress(&PathBuf::from(&path), Some(&mut report))
+    let mut d = Doc::open_with_progress_as(&PathBuf::from(&path), open_as, Some(&mut report))
         .map_err(|e| e.to_string())?;
     // フォルダを開いた場合 d.path は先頭の実ファイルを指す (フォルダ自体は保存先を持たない)
     let info_path = d
@@ -64,8 +69,15 @@ pub(crate) fn line_char_len(line: usize, state: State) -> Result<usize, String> 
     with_doc(&state, |doc| doc.line_char_len(line))
 }
 
-pub(crate) fn select_entry(rel_path: String, state: State) -> Result<DocInfo, String> {
-    let result = with_doc(&state, |doc| doc.select_entry(&rel_path))?;
+pub(crate) fn select_entry(
+    rel_path: String,
+    open_as: Option<OpenAs>,
+    state: State,
+) -> Result<DocInfo, String> {
+    let result = with_doc(&state, |doc| match open_as {
+        Some(open_as) => doc.select_entry_as(&rel_path, open_as),
+        None => doc.select_entry(&rel_path),
+    })?;
     result
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "no entry".into())
@@ -108,7 +120,7 @@ pub(crate) fn create_note(
         .map_err(|e| e.to_string())
 }
 
-pub(crate) fn create_folder(rel_dir: String, name: String, state: State) -> Result<(), String> {
+pub(crate) fn create_folder(rel_dir: String, name: String, state: State) -> Result<String, String> {
     with_doc(&state, |doc| doc.create_folder(&rel_dir, &name))?
         .map_err(|e| e.to_string())
 }
@@ -358,4 +370,9 @@ pub(crate) fn read_archive_asset(
     let archive = PathBuf::from(archive_path);
     with_doc(&state, |doc| doc.read_archive_asset(&archive, &entry))?
         .map_err(|error| error.to_string())
+}
+
+pub(crate) fn read_file_asset(path: String, state: State) -> Result<Vec<u8>, String> {
+    let path = PathBuf::from(path);
+    with_doc(&state, |doc| doc.read_file_asset(&path))?.map_err(|error| error.to_string())
 }

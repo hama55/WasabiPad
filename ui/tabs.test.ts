@@ -5,7 +5,7 @@ import { TabManager, type StoredTabs, type TabDocumentPort } from "./tabs";
 import type { SidebarViewState } from "./sidebar";
 import { initialSession } from "./session";
 import { initSettings } from "./settings";
-import { DEFAULT_SEARCH_OPTIONS } from "./workspace-search-options";
+import { DEFAULT_SEARCH_OPTIONS, type SearchHighlightQuery } from "./workspace-search-options";
 import { addRegisteredCommand, commandsForKind } from "./registered-commands";
 import type { RegisteredCommandMenuPorts } from "./registered-command-menu";
 import { MENU_ICON } from "./menu-icons";
@@ -34,8 +34,10 @@ function fixture() {
       session.displayPath = path;
       return true;
     }),
-    selectEntry: vi.fn(async (relPath: string) => {
+    selectEntry: vi.fn(async (relPath: string, openAs?: api.OpenAs) => {
       session.selectedRelPath = relPath;
+      if (openAs) session.effectiveExtension = openAs === "image-auto" ? "png" : openAs;
+      else if (!relPath.includes("::")) session.effectiveExtension = null;
       return true;
     }),
     newFile: vi.fn(async () => {}),
@@ -61,6 +63,35 @@ const stored: StoredTabs = {
   ],
   activeId: "a",
 };
+
+function folderTabViewFixture() {
+  const { doc, host } = fixture();
+  const current = {
+    workspace: null as SidebarViewState | null,
+    query: null as SearchHighlightQuery | null,
+  };
+  const workspace = {
+    capture: vi.fn(() => current.workspace),
+    reset: vi.fn(() => { current.workspace = null; }),
+    restore: vi.fn((state: SidebarViewState | null) => { current.workspace = state; }),
+  };
+  const findHighlight = {
+    capture: vi.fn(() => current.query),
+    restore: vi.fn((query: SearchHighlightQuery | null) => { current.query = query; }),
+  };
+  vi.mocked(doc.openPath).mockImplementation(async (path: string) => {
+    doc.current.folderRoot = path;
+    doc.current.savePath = null;
+    doc.current.displayPath = path;
+    return true;
+  });
+  const manager = new TabManager(host, doc, {
+    onChange: () => {},
+    workspace,
+    findHighlight,
+  }, registeredCommandPorts);
+  return { doc, host, manager, current };
+}
 
 function dragOnto(from: HTMLElement, to: HTMLElement, ratio: number) {
   const rect = { left: 0, top: 0, width: 100, height: 20, right: 100, bottom: 20 };
@@ -232,6 +263,321 @@ describe("Feature: TabManager", () => {
     expect(doc.confirmDiscard).not.toHaveBeenCalled();
     expect(doc.selectEntry).not.toHaveBeenCalled();
     expect(doc.current.dirty).toBe(true);
+  });
+
+  // Feature: 形式を指定してファイルを開く
+  // Scenario: 選択中の同じファイルへ指定形式を適用する
+  // Given: folder tab が `memo.bin` を通常表示している
+  // When: `navigateEntry("memo.bin", "txt")`を呼ぶ
+  // Then: 同一項目の近道を使わず、txt指定付きで文書を開き直す
+  it("Scenario: 同じファイルでも形式指定時は開き直す", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init({
+      tabs: [{ id: "folder", path: "C:\\work", kind: "folder", label: "work" }],
+      activeId: "folder",
+    }, null, null);
+    doc.current.folderRoot = "C:\\work";
+    doc.current.selectedRelPath = "memo.bin";
+    vi.mocked(doc.confirmDiscard).mockClear();
+    vi.mocked(doc.selectEntry).mockClear();
+
+    await expect(manager.navigateEntry("memo.bin", "txt")).resolves.toBe(true);
+
+    expect(doc.confirmDiscard).toHaveBeenCalledOnce();
+    expect(doc.selectEntry).toHaveBeenCalledWith("memo.bin", "txt");
+  });
+
+  // Feature: 有効拡張子の寿命
+  // Scenario: 実行中のタブ切替では保持し、保存タブ状態には永続化しない
+  // Given: folder tabの`memo.bin`をmdとして開き、別のfile tabもある
+  // When: 別タブへ移動してからfolder tabへ戻る
+  // Then: `memo.bin`をmd指定付きで復元し、StoredTabsには指定形式を含めない
+  it("Scenario: 形式指定はタブ内だけで復元し再起動用状態へ保存しない", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init({
+      tabs: [
+        { id: "folder", path: "C:\\work", kind: "folder", label: "work" },
+        { id: "other", path: "C:\\work\\other.txt", kind: "file", label: "other.txt" },
+      ],
+      activeId: "folder",
+    }, null, null);
+
+    await manager.navigateEntry("memo.bin", "md");
+    await manager.activate("other");
+    await manager.activate("folder");
+
+    expect(doc.selectEntry).toHaveBeenLastCalledWith("memo.bin", "md");
+    expect(JSON.stringify(manager.state)).not.toContain("openAs");
+    expect(JSON.stringify(manager.state)).not.toContain("effectiveExtension");
+  });
+
+  // Feature: エディタからの形式指定
+  // Scenario: 直接開いたファイルを指定形式で開き直す
+  // Given: active tab が `C:\work\memo.bin` のファイルタブである
+  // When: `openCurrentAs("md")` を呼ぶ
+  // Then: 同じ実パスへmd指定を渡して現在タブだけを開き直す
+  it("Scenario: エディタから直接ファイルの形式を指定できる", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init({
+      tabs: [{ id: "file", path: "C:\\work\\memo.bin", kind: "file", label: "memo.bin" }],
+      activeId: "file",
+    }, null, null);
+
+    await expect(manager.openCurrentAs("md")).resolves.toBe(true);
+
+    expect(doc.openPath).toHaveBeenLastCalledWith("C:\\work\\memo.bin", false, "md");
+    expect(manager.state.tabs).toHaveLength(1);
+  });
+
+  // Feature: エディタから直接開いたアーカイブ内項目の形式指定
+  // Scenario: 物理アーカイブを開き直さず内部項目だけを読み直す
+  // Given: 直接開いた`C:\\work\\archive.zip`の`memo.bin`を表示している
+  // When: `openCurrentAs("txt")`を呼ぶ
+  // Then: 物理パスをテキストとして再オープンせず、内部項目と指定形式を選択する
+  it("Scenario: 直接開いたアーカイブ内項目の形式を指定できる", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init({
+      tabs: [{ id: "archive", path: "C:\\work\\archive.zip", kind: "file", label: "archive.zip" }],
+      activeId: "archive",
+    }, null, null);
+    doc.current.archivePath = "C:\\work\\archive.zip";
+    doc.current.archiveEntry = "memo.bin";
+    doc.current.selectedRelPath = "memo.bin";
+    vi.mocked(doc.openPath).mockClear();
+    vi.mocked(doc.selectEntry).mockClear();
+
+    await expect(manager.openCurrentAs("txt")).resolves.toBe(true);
+
+    expect(doc.openPath).not.toHaveBeenCalled();
+    expect(doc.selectEntry).toHaveBeenCalledWith("memo.bin", "txt");
+  });
+
+  // Feature: エディタからのアーカイブ内形式指定
+  // Scenario: 表示中の仮想項目へ形式を指定する
+  // Given: folder tab が `archive.zip::memo.bin` を選択中である
+  // When: `openCurrentAs("txt")` を呼ぶ
+  // Then: アーカイブの内部パスを保ったまま指定形式を選択APIへ渡す
+  it("Scenario: エディタからアーカイブ内項目の形式を指定できる", async () => {
+    const { doc, manager } = folderTabViewFixture();
+    await manager.init({
+      tabs: [{
+        id: "folder",
+        path: "C:\\work",
+        kind: "folder",
+        label: "work",
+        selectedRelPath: "archive.zip::memo.bin",
+      }],
+      activeId: "folder",
+    }, null, null);
+    vi.mocked(doc.selectEntry).mockClear();
+
+    await expect(manager.openCurrentAs("txt")).resolves.toBe(true);
+
+    expect(doc.selectEntry).toHaveBeenCalledWith("archive.zip::memo.bin", "txt");
+    expect(manager.state.tabs).toHaveLength(1);
+  });
+
+  // Feature: エディタからの新規タブ
+  // Scenario: 表示中のファイルをルートにしたファイルタブを開く
+  // Given: folder tab が `C:\\work\\memo.txt` を表示中である
+  // When: `openCurrentInNewTab()` を呼ぶ
+  // Then: 元のフォルダタブを残し、実ファイルをルートとするタブを追加する
+  it("Scenario: エディタから現在のファイルをルートにした新規タブを開く", async () => {
+    const { doc, manager } = folderTabViewFixture();
+    await manager.init({
+      tabs: [{
+        id: "folder",
+        path: "C:\\work",
+        kind: "folder",
+        label: "work",
+        selectedRelPath: "memo.txt",
+      }],
+      activeId: "folder",
+    }, null, null);
+    doc.current.folderRoot = "C:\\work";
+    doc.current.selectedRelPath = "memo.txt";
+    doc.current.displayPath = "C:\\work\\memo.txt";
+    doc.current.savePath = "C:\\work\\memo.txt";
+    vi.mocked(doc.openPath).mockClear();
+
+    await expect(manager.openCurrentInNewTab()).resolves.toBe(true);
+
+    expect(manager.state.tabs).toHaveLength(2);
+    expect(manager.state.tabs[0]).toMatchObject({
+      id: "folder",
+      path: "C:\\work",
+    });
+    expect(manager.state.tabs[1]).toMatchObject({
+      path: "C:\\work\\memo.txt",
+      kind: "file",
+    });
+    expect(manager.state.activeId).toBe(manager.state.tabs[1].id);
+    expect(doc.openPath).toHaveBeenLastCalledWith("C:\\work\\memo.txt", false);
+  });
+
+  // Feature: エディタからのアーカイブ内項目の新規タブ
+  // Scenario: 仮想項目を表示中でも物理アーカイブをルートにする
+  // Given: `archive.zip::memo.txt`を表示するフォルダタブがある
+  // When: `openCurrentInNewTab()` を呼ぶ
+  // Then: 内部相対パスを複製せず、アーカイブ本体をファイルタブで開く
+  it("Scenario: エディタからアーカイブ内項目を物理アーカイブの新規タブで開く", async () => {
+    const { doc, manager } = folderTabViewFixture();
+    await manager.init({
+      tabs: [{
+        id: "folder",
+        path: "C:\\work",
+        kind: "folder",
+        label: "work",
+        selectedRelPath: "archive.zip::memo.txt",
+      }],
+      activeId: "folder",
+    }, null, null);
+    doc.current.folderRoot = "C:\\work";
+    doc.current.selectedRelPath = "archive.zip::memo.txt";
+    doc.current.archivePath = "C:\\work\\archive.zip";
+    doc.current.archiveEntry = "memo.txt";
+    doc.current.displayPath = "C:\\work\\archive.zip";
+    doc.current.savePath = "C:\\work\\archive.zip";
+    vi.mocked(doc.openPath).mockClear();
+
+    await expect(manager.openCurrentInNewTab()).resolves.toBe(true);
+
+    expect(manager.state.tabs).toHaveLength(2);
+    expect(manager.state.tabs[0].id).toBe("folder");
+    expect(manager.state.tabs[1]).toMatchObject({
+      path: "C:\\work\\archive.zip",
+      kind: "file",
+    });
+    expect(doc.openPath).toHaveBeenLastCalledWith("C:\\work\\archive.zip", false);
+  });
+
+  // Feature: 有効拡張子の寿命
+  // Scenario: 指定形式のアーカイブ内エントリまでタブ復元する
+  // Given: `archive.bin`をzipとして開き、その中の`memo.txt`を表示している
+  // When: 別タブへ移動してからfolder tabへ戻る
+  // Then: アーカイブ内相対パスへzip指定を添えて復元する
+  it("Scenario: 指定アーカイブ内の選択にも形式を引き継ぐ", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init({
+      tabs: [
+        { id: "folder", path: "C:\\work", kind: "folder", label: "work" },
+        { id: "other", path: "C:\\work\\other.txt", kind: "file", label: "other.txt" },
+      ],
+      activeId: "folder",
+    }, null, null);
+    await manager.navigateEntry("archive.bin", "zip");
+    await manager.navigateEntry("archive.bin::memo.txt");
+
+    await manager.activate("other");
+    await manager.activate("folder");
+
+    expect(doc.selectEntry).toHaveBeenLastCalledWith("archive.bin::memo.txt", "zip");
+  });
+
+  // Feature: アーカイブ内項目の形式指定をタブ切替で復元する
+  // Scenario: 書庫形式と項目形式を分けて保持する
+  // Given: `archive.bin`を7zとして開き、内部の`memo.txt`をtxt指定で表示している
+  // When: 別タブへ移動してから元のフォルダタブへ戻る
+  // Then: 7z指定で書庫を準備してから、txt指定で内部項目を復元する
+  it("Scenario: 偽装拡張子アーカイブの内部項目形式を復元する", async () => {
+    const { doc, host } = folderTabViewFixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init({
+      tabs: [
+        { id: "folder", path: "C:\\work", kind: "folder", label: "work" },
+        { id: "other", path: "C:\\work\\other.txt", kind: "file", label: "other.txt" },
+      ],
+      activeId: "folder",
+    }, null, null);
+    await manager.navigateEntry("archive.bin", "7z");
+    await manager.navigateEntry("archive.bin::memo.txt", "txt");
+    await manager.activate("other");
+    vi.mocked(doc.selectEntry).mockClear();
+    await manager.activate("folder");
+
+    expect(doc.selectEntry).toHaveBeenNthCalledWith(1, "archive.bin", "7z");
+    expect(doc.selectEntry).toHaveBeenNthCalledWith(2, "archive.bin::memo.txt", "txt");
+  });
+
+  // Feature: 偽装アーカイブの書庫形式保持
+  // Scenario: 内部項目から書庫本体へ戻る
+  // Given: `archive.bin`を7zとして開き、内部の`memo.txt`をtxt指定で表示している
+  // When: 形式指定なしで`archive.bin`へ戻る
+  // Then: 保持した7z指定を選択APIへ渡して書庫を再展開する
+  it("Scenario: 内部項目から書庫本体へ戻るときも書庫形式を保持する", async () => {
+    const { doc, manager } = folderTabViewFixture();
+    await manager.init({
+      tabs: [{ id: "folder", path: "C:\\work", kind: "folder", label: "work" }],
+      activeId: "folder",
+    }, null, null);
+
+    await manager.navigateEntry("archive.bin", "7z");
+    await manager.navigateEntry("archive.bin::memo.txt", "txt");
+    vi.mocked(doc.selectEntry).mockClear();
+
+    await expect(manager.navigateEntry("archive.bin")).resolves.toBe(true);
+
+    expect(doc.selectEntry).toHaveBeenCalledWith("archive.bin", "7z");
+  });
+
+  // Feature: 直接開いた偽装アーカイブの形式保持
+  // Scenario: 内部項目を切り替えても書庫形式を保持する
+  // Given: `archive.bin`を7zとして開き、内部項目をtxt指定で表示している
+  // When: 別の内部項目へ形式指定なしで移動してタブを切り替える
+  // Then: 物理書庫を7zで再度開き、内部項目は指定なしで復元する
+  it("Scenario: 直接開いたアーカイブの書庫形式を項目移動後も復元する", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init({
+      tabs: [
+        { id: "archive", path: "C:\\work\\archive.bin", kind: "file", label: "archive.bin" },
+        { id: "other", path: "C:\\work\\other.txt", kind: "file", label: "other.txt" },
+      ],
+      activeId: "archive",
+    }, null, null);
+    doc.current.archivePath = "C:\\work\\archive.bin";
+    doc.current.folderRoot = null;
+    doc.current.selectedRelPath = "memo.bin";
+
+    await manager.openCurrentAs("7z");
+    await manager.openCurrentAs("txt");
+    await manager.navigateEntry("other.bin");
+    vi.mocked(doc.openPath).mockClear();
+    vi.mocked(doc.selectEntry).mockClear();
+
+    await manager.activate("other");
+    doc.current.archivePath = null;
+    await manager.activate("archive");
+
+    expect(doc.openPath).toHaveBeenLastCalledWith("C:\\work\\archive.bin", false, "7z");
+    expect(doc.selectEntry).toHaveBeenLastCalledWith("other.bin");
+  });
+
+  // Feature: 有効拡張子の寿命
+  // Scenario: 別パスへの移動で形式指定を破棄する
+  // Given: `archive.bin`をzipとして開いている
+  // When: 別のフォルダへ移動してから同じ相対パスを選択する
+  // Then: 新しいフォルダでは形式指定なしで項目を開く
+  it("Scenario: 別パスへの移動で形式指定を破棄する", async () => {
+    const { doc, manager } = folderTabViewFixture();
+    await manager.init({
+      tabs: [{ id: "folder", path: "C:\\work", kind: "folder", label: "work" }],
+      activeId: "folder",
+    }, null, null);
+
+    await manager.navigateEntry("archive.bin", "zip");
+    await manager.navigatePath("C:\\other");
+    doc.current.selectedRelPath = "other.txt";
+    vi.mocked(doc.selectEntry).mockClear();
+
+    await expect(manager.navigateEntry("archive.bin::memo.txt")).resolves.toBe(true);
+
+    expect(doc.selectEntry).toHaveBeenLastCalledWith("archive.bin::memo.txt");
   });
 
   // Feature: 終了時の未保存確認
@@ -723,8 +1069,8 @@ describe("Feature: TabManager", () => {
   // Feature: タブ別ファイルツリー表示状態
   // Scenario: タブを切り替えて戻るとタブ固有のファイルツリー状態を復元する
   // Given: タブAとタブBがあり、タブAのファイルツリー表示状態を保存している
-  // When: タブAからタブBへ切り替え、タブBからタブAへ戻る
-  // Then: タブAの状態が復元され、タブBの状態とは混ざらない
+  // When: タブAからタブBへ切り替え、タブBからタブAへ戻り、再びタブBへ切り替える
+  // Then: 両タブの状態がそれぞれ復元され、互いに混ざらない
   it("Scenario: タブ切替後にタブ固有のファイルツリー状態を復元する", async () => {
     const { doc, host } = fixture();
     const aState: SidebarViewState = {
@@ -774,10 +1120,86 @@ describe("Feature: TabManager", () => {
     await manager.activate("b");
     currentState = bState;
     await manager.activate("a");
+    await manager.activate("b");
 
-    expect(workspace.capture).toHaveBeenCalledTimes(2);
-    expect(workspace.reset).toHaveBeenCalledTimes(3);
-    expect(restored).toEqual([aState]);
+    expect(restored).toEqual([aState, bState]);
+  });
+
+  // Feature: タブ別ファイルツリー表示状態
+  // Scenario: タブのpathが変わっても保存状態の照合先を追従させる
+  // Given: タブAの状態を `C:\work` として保存した後、タブAのpathが `C:\renamed` になる
+  // When: タブAへ戻る
+  // Then: タブAのファイルツリーと検索ハイライトを復元する
+  it("Scenario: path変更後もタブ別表示状態を復元する", async () => {
+    const aState: SidebarViewState = {
+      kind: "folder",
+      expandedRelPaths: ["docs"],
+      search: null,
+    };
+    const aQuery: SearchHighlightQuery = { pat: "test", matchCase: false, useRegex: false, wholeWord: false };
+    const { manager, current } = folderTabViewFixture();
+
+    await manager.init({
+      tabs: [
+        { id: "a", path: "C:\\work", kind: "folder", label: "work" },
+        { id: "b", path: "C:\\other", kind: "folder", label: "other" },
+      ],
+      activeId: "a",
+    }, null, null);
+    current.workspace = aState;
+    current.query = aQuery;
+    await manager.activate("b");
+    manager.rebasePaths({
+      oldAbsolute: "C:\\work",
+      newAbsolute: "C:\\renamed",
+      oldRelPath: "work",
+      newRelPath: "renamed",
+    });
+    await manager.activate("a");
+
+    expect(current.workspace).toEqual(aState);
+    expect(current.query).toEqual(aQuery);
+  });
+
+  // Feature: タブ別エディタ検索ハイライト
+  // Scenario: タブを切り替えて戻るとタブ固有の検索ハイライト条件を復元する
+  // Given: タブAではtest、タブBではimportを検索結果から開いている
+  // When: タブAからタブBへ切り替え、タブBからタブAへ戻り、再びタブBへ切り替える
+  // Then: 両タブのエディタ検索ハイライト条件がそれぞれ復元される
+  it("Scenario: タブ切替後にタブ固有の検索ハイライト条件を復元する", async () => {
+    const { doc, host } = fixture();
+    const aQuery: SearchHighlightQuery = { pat: "test", matchCase: false, useRegex: false, wholeWord: false };
+    const bQuery: SearchHighlightQuery = { pat: "import", matchCase: false, useRegex: false, wholeWord: false };
+    let currentQuery: SearchHighlightQuery | null = null;
+    const restored: (SearchHighlightQuery | null)[] = [];
+    const findHighlight = {
+      capture: vi.fn(() => currentQuery),
+      restore: vi.fn((query: SearchHighlightQuery | null) => {
+        restored.push(query);
+        currentQuery = query;
+      }),
+    };
+    const manager = new TabManager(host, doc, {
+      onChange: () => {},
+      findHighlight,
+    }, registeredCommandPorts);
+
+    await manager.init({
+      tabs: [
+        { id: "a", path: "C:\\work", kind: "folder", label: "work" },
+        { id: "b", path: "C:\\work", kind: "folder", label: "work (2)" },
+      ],
+      activeId: "a",
+    }, null, null);
+    restored.length = 0;
+    currentQuery = aQuery;
+
+    await manager.activate("b");
+    currentQuery = bQuery;
+    await manager.activate("a");
+    await manager.activate("b");
+
+    expect(restored).toEqual([null, aQuery, bQuery]);
   });
 
   // Given: 切替先の読み込みが継続中で、active tab a の現在位置が保存対象にある
@@ -1050,6 +1472,29 @@ describe("Feature: TabManager", () => {
     expect(manager.state.tabs[2].kind).toBe("blank");
   });
 
+  // Feature: 新規タブの初期表示状態
+  // Scenario: 新規タブは直前タブのファイルツリーとハイライトを引き継がない
+  // Given: 現在タブにファイルツリー状態とtestの検索ハイライトがある
+  // When: 新規タブを追加する
+  // Then: 新規タブではファイルツリー状態とハイライトが初期状態になる
+  it("Scenario: 新規タブへ表示状態を引き継がない", async () => {
+    const aState: SidebarViewState = { kind: "folder", expandedRelPaths: ["docs"], search: null };
+    const aQuery: SearchHighlightQuery = { pat: "test", matchCase: false, useRegex: false, wholeWord: false };
+    const { manager, current } = folderTabViewFixture();
+
+    await manager.init({
+      tabs: [{ id: "a", path: "C:\\work", kind: "folder", label: "work" }],
+      activeId: "a",
+    }, null, null);
+    current.workspace = aState;
+    current.query = aQuery;
+
+    await manager.newBlank();
+
+    expect(current.workspace).toBeNull();
+    expect(current.query).toBeNull();
+  });
+
   // Feature: ＋から作る無題メモの既定保存先
   // Scenario: カレントタブがフォルダの場合はフォルダを下書き保存先にする
   // Given: C:\workのフォルダタブがアクティブ
@@ -1237,6 +1682,33 @@ describe("Feature: TabManager", () => {
     }));
   });
 
+  // Feature: タブ削除後のタブ別表示状態
+  // Scenario: 閉じたタブを復活してもファイルツリーと検索ハイライトを復元しない
+  // Given: タブAにファイルツリー状態とtestの検索ハイライトが保存されている
+  // When: タブAを閉じ、同じ起動中に閉じたタブを復活する
+  // Then: タブAのファイルツリーと検索ハイライトは初期状態になる
+  it("Scenario: 閉じたタブを復活しても表示状態を引き継がない", async () => {
+    const aState: SidebarViewState = { kind: "folder", expandedRelPaths: ["docs"], search: null };
+    const aQuery: SearchHighlightQuery = { pat: "test", matchCase: false, useRegex: false, wholeWord: false };
+    const { manager, current } = folderTabViewFixture();
+
+    await manager.init({
+      tabs: [
+        { id: "a", path: "C:\\work", kind: "folder", label: "work" },
+        { id: "b", path: "C:\\other", kind: "folder", label: "other" },
+      ],
+      activeId: "a",
+    }, null, null);
+    current.workspace = aState;
+    current.query = aQuery;
+    await manager.activate("b");
+    await manager.close("a");
+    await expect(manager.reopenLastClosed()).resolves.toBe(true);
+
+    expect(current.workspace).toBeNull();
+    expect(current.query).toBeNull();
+  });
+
   // Scenario: 読み込みに失敗した閉じたtabを後から再試行する
   // Given: b tabを閉じ、b.txtの最初のopenPathだけfalseを返す
   // When: reopenLastClosedを2回呼ぶ
@@ -1356,6 +1828,33 @@ describe("Feature: TabManager", () => {
     await manager.init(stored, null, null);
 
     await expect(manager.reopenLastClosed()).resolves.toBe(false);
+  });
+
+  // Feature: 再初期化後のタブ別表示状態
+  // Scenario: 再初期化後は以前の一時的な表示状態を復元しない
+  // Given: タブAにファイルツリー状態とtestの検索ハイライトが保存されている
+  // When: 同じStoredTabsでTabManagerを再初期化する
+  // Then: ファイルツリーとハイライトは初期状態になる
+  it("Scenario: 再初期化後はタブ別表示状態を復元しない", async () => {
+    const aState: SidebarViewState = { kind: "folder", expandedRelPaths: ["docs"], search: null };
+    const aQuery: SearchHighlightQuery = { pat: "test", matchCase: false, useRegex: false, wholeWord: false };
+    const { manager, current } = folderTabViewFixture();
+    const tabs: StoredTabs = {
+      tabs: [
+        { id: "a", path: "C:\\work", kind: "folder", label: "work" },
+        { id: "b", path: "C:\\other", kind: "folder", label: "other" },
+      ],
+      activeId: "a",
+    };
+
+    await manager.init(tabs, null, null);
+    current.workspace = aState;
+    current.query = aQuery;
+    await manager.activate("b");
+    await manager.init(tabs, null, null);
+
+    expect(current.workspace).toBeNull();
+    expect(current.query).toBeNull();
   });
 
   // Given: activeId=a で a.txt と b.txt があり、addLinks に a.txt(file) と src(folder) を渡す

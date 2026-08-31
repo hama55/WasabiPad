@@ -18,6 +18,7 @@ import type { FindCursor } from "./generated/FindCursor";
 import type { FindResult } from "./generated/FindResult";
 import type { FindOutcome } from "./generated/FindOutcome";
 import type { FolderEntry } from "./generated/FolderEntry";
+import type { OpenAs } from "./generated/OpenAs";
 import type { Pos } from "./generated/Pos";
 import type { ReplaceChunkResult } from "./generated/ReplaceChunkResult";
 import type { SaveOutcome } from "./generated/SaveOutcome";
@@ -45,6 +46,7 @@ export type {
   FindResult,
   FindOutcome,
   FolderEntry,
+  OpenAs,
   Pos,
   ReplaceChunkResult,
   SaveOutcome,
@@ -69,7 +71,8 @@ export const EVENT_NAMES = {
 
 export type { DocumentLoadProgress } from "./document-load-progress";
 
-export const openPath = (path: string) => invoke<DocInfo>(IPC_COMMANDS.openPath, { path });
+export const openPath = (path: string, openAs?: OpenAs) =>
+  invoke<DocInfo>(IPC_COMMANDS.openPath, { path, openAs });
 export const newDoc = () => invoke<void>(IPC_COMMANDS.newDoc);
 export const closeDoc = () => invoke<void>(IPC_COMMANDS.closeDoc);
 
@@ -77,7 +80,8 @@ export const closeDoc = () => invoke<void>(IPC_COMMANDS.closeDoc);
 export const lines = (start: number, count: number) =>
   invoke<string[]>(IPC_COMMANDS.lines, { start, count });
 export const lineCharLen = (line: number) => invoke<number>(IPC_COMMANDS.lineCharLen, { line });
-export const selectEntry = (relPath: string) => invoke<DocInfo>(IPC_COMMANDS.selectEntry, { relPath });
+export const selectEntry = (relPath: string, openAs?: OpenAs) =>
+  invoke<DocInfo>(IPC_COMMANDS.selectEntry, { relPath, openAs });
 
 // ツリーの展開ボタン用。zip/xlsx/xls の中身一覧だけを取得する (本文は読まない)。
 // relPath が空文字なら直接開いているアーカイブ自身、それ以外はフォルダ内の相対パス。
@@ -112,7 +116,7 @@ export const createNote = (dir: string | null, name: string, enc: Encoding, eol:
   invoke<DocInfo>(IPC_COMMANDS.createNote, { dir, name, enc, eol });
 
 export const createFolder = (relDir: string, name: string) =>
-  invoke<void>(IPC_COMMANDS.createFolder, { relDir, name });
+  invoke<string>(IPC_COMMANDS.createFolder, { relDir, name });
 
 // サイドバー上のファイル/フォルダをリネームする (relPath はフォルダルートからの相対パス)
 export const renameEntry = (relPath: string, newName: string) =>
@@ -138,14 +142,16 @@ export const cleanupUnusedImages = (path: string) =>
   invoke<void>(IPC_COMMANDS.cleanupUnusedImages, { path });
 export const readArchiveAsset = (archivePath: string, entry: string) =>
   invoke<ArrayBuffer>(IPC_COMMANDS.readArchiveAsset, { archivePath, entry });
+export const readFileAsset = (path: string) =>
+  invoke<ArrayBuffer>(IPC_COMMANDS.readFileAsset, { path });
 
 export const revealInExplorer = (path: string, isDir: boolean) =>
   invoke<void>(IPC_COMMANDS.revealInExplorer, { path, isDir });
 
 export const openInOtherApp = (path: string) =>
   invoke<void>(IPC_COMMANDS.openInOtherApp, { path });
-export const openInDefaultBrowser = (path: string) =>
-  invoke<void>(IPC_COMMANDS.openInDefaultBrowser, { path });
+export const openInDefaultBrowser = (path: string, effectiveExtension: string | null = null) =>
+  invoke<void>(IPC_COMMANDS.openInDefaultBrowser, { path, effectiveExtension });
 export const openExternalUrl = (url: string) =>
   invoke<void>(IPC_COMMANDS.openExternalUrl, { url });
 export const runExternalCommand = (command: string, path: string) =>
@@ -273,8 +279,15 @@ export const openViewer = (
   format: ViewerFormat,
   text: string,
   selection: ViewerSelection | null,
-  sourcePath: string | null
-) => invoke<string>(IPC_COMMANDS.openViewer, { format, text, selection, sourcePath });
+  sourcePath: string | null,
+  effectiveExtension: string | null = null,
+) => invoke<string>(IPC_COMMANDS.openViewer, {
+  format,
+  text,
+  selection,
+  sourcePath,
+  effectiveExtension,
+});
 export const takeViewerPayload = (label: string) =>
   invoke<ViewerPayload>(IPC_COMMANDS.takeViewerPayload, { label });
 export const updateViewer = (label: string, text: string, selection: ViewerSelection | null) =>

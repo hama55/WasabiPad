@@ -5,3 +5,10 @@ export const DRAG_THRESHOLD = 5;
 export function isMiddleClick(event: MouseEvent | undefined): boolean {
   return event?.button === 1;
 }
+
+export function preventMiddleClickDefault(event: MouseEvent | undefined): boolean {
+  if (!event || !isMiddleClick(event)) return false;
+  event.preventDefault();
+  event.stopPropagation();
+  return true;
+}

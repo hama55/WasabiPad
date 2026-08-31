@@ -1,6 +1,7 @@
 // パス表示欄とその操作ボタン (#topbar) を1つの部品として閉じる。
 // パスの解釈以外の判断 (開けるか/保存するか) は持たず、すべて ports へ委ねる。
-import { isMiddleClick } from "./interaction-constants";
+import { preventMiddleClickDefault } from "./interaction-constants";
+import { comparablePath } from "./path";
 
 export interface AddressBarPorts {
   onOpen: (path: string, newTab?: boolean) => void;
@@ -35,6 +36,7 @@ export function pathSegments(path: string): { label: string; path: string }[] {
 export class AddressBar {
   private input: HTMLInputElement;
   private breadcrumb: HTMLElement;
+  private folderRoot: string | null = null;
 
   constructor(private host: HTMLElement, private ports: AddressBarPorts) {
     this.input = this.pick<HTMLInputElement>("addressbar");
@@ -42,9 +44,9 @@ export class AddressBar {
 
     this.input.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && this.path) this.ports.onOpen(this.path);
-      else if (e.key === "Escape") this.render(this.input.value);
+      else if (e.key === "Escape") this.render(this.input.value, this.folderRoot);
     });
-    this.input.addEventListener("blur", () => this.render(this.input.value));
+    this.input.addEventListener("blur", () => this.render(this.input.value, this.folderRoot));
     this.breadcrumb.addEventListener("click", () => this.edit());
     this.pick("addressbar-fav").addEventListener("click", ports.onFavorite);
     this.pick("addressbar-save").addEventListener("click", ports.onSave);
@@ -64,7 +66,9 @@ export class AddressBar {
     return this.input.value.trim();
   }
 
-  render(path: string) {
+  render(path: string, folderRoot: string | null = null) {
+    this.folderRoot = folderRoot;
+    const folderRootKey = folderRoot ? comparablePath(folderRoot) : null;
     this.input.value = path;
     this.breadcrumb.replaceChildren(...pathSegments(path).flatMap((segment, index) => {
       const items: Node[] = [];
@@ -78,16 +82,19 @@ export class AddressBar {
       button.className = "addressbar-crumb";
       button.textContent = segment.label;
       button.title = segment.path;
-      const openInNewTab = () => this.ports.onOpen(segment.path, true);
+      const isFolderRoot = folderRootKey !== null && comparablePath(segment.path) === folderRootKey;
+      if (isFolderRoot) {
+        button.classList.add("addressbar-crumb-root");
+        button.setAttribute("aria-current", "location");
+      }
+      const open = (newTab: boolean) => this.ports.onOpen(segment.path, newTab);
       button.addEventListener("click", (event) => {
         event.stopPropagation();
-        openInNewTab();
+        open(!isFolderRoot);
       });
       button.addEventListener("auxclick", (event) => {
-        if (!isMiddleClick(event)) return;
-        event.preventDefault();
-        event.stopPropagation();
-        openInNewTab();
+        if (!preventMiddleClickDefault(event)) return;
+        open(true);
       });
       items.push(button);
       return items;

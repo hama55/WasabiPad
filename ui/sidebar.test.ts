@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Sidebar, type SidebarPorts } from "./sidebar";
 import { DEFAULT_SEARCH_OPTIONS } from "./workspace-search-options";
 import type { FolderEntry, WorkspaceSearchResult } from "./api";
+import { MENU_ICON } from "./menu-icons";
 
 interface MountOptions {
   onSearch?: SidebarPorts["onSearch"];
@@ -53,6 +54,38 @@ describe("Feature: Sidebar", () => {
     vi.restoreAllMocks();
     Reflect.deleteProperty(document, "elementFromPoint");
     document.body.replaceChildren();
+  });
+
+  // Feature: スクロール可能なファイルツリーの中クリック
+  // Scenario: 項目行をホイールボタンでクリックすると新規タブで開く
+  // Given: ファイルツリーの表示内容が縦スクロールを必要とする
+  // When: ファイルまたはフォルダの行をホイールボタンでクリックする
+  // Then: ブラウザの自動スクロールを抑止し、新規タブ指定で選択通知を送る
+  // Examples: ファイル行とフォルダ行
+  it.each([
+    [{ name: "memo.txt", is_dir: false, is_archive: false }, "memo.txt"],
+    [{ name: "docs", is_dir: true, is_archive: false }, "docs"],
+  ] as const)("Scenario: %s行の中クリックを新規タブで開く", (target, relPath) => {
+    const { host, ports, sidebar } = mount();
+    sidebar.setEntries([
+      target,
+      ...Array.from({ length: 20 }, (_, index) => ({
+        name: `other-${index}.txt`, is_dir: false, is_archive: false,
+      })),
+    ]);
+    const tree = host.querySelector<HTMLElement>(".fv-tree")!;
+    Object.defineProperty(tree, "clientHeight", { configurable: true, value: 100 });
+    Object.defineProperty(tree, "scrollHeight", { configurable: true, value: 500 });
+    const row = host.querySelector<HTMLElement>(`[data-rel-path="${relPath}"]`)!;
+    const press = new MouseEvent("mousedown", { button: 1, bubbles: true, cancelable: true });
+    const event = new MouseEvent("auxclick", { button: 1, bubbles: true, cancelable: true });
+
+    row.dispatchEvent(press);
+    row.dispatchEvent(event);
+
+    expect(press.defaultPrevented).toBe(true);
+    expect(event.defaultPrevented).toBe(true);
+    expect(ports.onSelect).toHaveBeenCalledWith(relPath, true);
   });
 
   // Feature: ファイルツリー末尾のスクロール余白
@@ -111,7 +144,11 @@ describe("Feature: Sidebar", () => {
     host.querySelector<HTMLButtonElement>(".fv-create-note")!.click();
 
     expect(ports.onCreateFolder).toHaveBeenCalledWith("docs");
-    expect(ports.onCreateNote).toHaveBeenCalledOnce();
+    expect(ports.onCreateNote).toHaveBeenCalledWith("docs");
+    expect(host.querySelector<HTMLButtonElement>(".fv-create-folder")?.textContent).toBe("フォルダ");
+    expect(host.querySelector<HTMLButtonElement>(".fv-create-folder")?.querySelector(`.${MENU_ICON.newFolder}`)).not.toBeNull();
+    expect(host.querySelector<HTMLButtonElement>(".fv-create-note")?.textContent).toBe("メモ");
+    expect(host.querySelector<HTMLButtonElement>(".fv-create-note")?.querySelector(`.${MENU_ICON.newMemo}`)).not.toBeNull();
     const tree = host.querySelector<HTMLElement>(".fv-tree");
     const actions = host.querySelector<HTMLElement>(".fv-create-actions");
     expect(tree?.contains(actions)).toBe(false);
@@ -157,6 +194,26 @@ describe("Feature: Sidebar", () => {
     host.querySelector<HTMLButtonElement>(".fv-create-folder")!.click();
 
     expect(ports.onCreateFolder).toHaveBeenCalledWith("docs");
+  });
+
+  // Feature: ファイルツリー下部の新規メモ作成先
+  // Scenario: ファイル選択時はその親フォルダへメモを作成する
+  // Given: `docs/memo.txt`を選択している
+  // When: `＋メモ`を押す
+  // Then: `docs`を作成先として渡す
+  it("Scenario: ファイル選択時は親フォルダを新規メモ作成先にする", async () => {
+    const { host, ports, sidebar } = mount();
+    ports.onExpandFolder.mockResolvedValueOnce([
+      { name: "memo.txt", is_dir: false, is_archive: false },
+    ]);
+    sidebar.setEntries([{ name: "docs", is_dir: true, is_archive: false }]);
+    host.querySelector<HTMLElement>(".fv-row")!.click();
+    await vi.waitFor(() => expect(host.querySelectorAll(".fv-row")).toHaveLength(2));
+    host.querySelectorAll<HTMLElement>(".fv-row")[1].click();
+
+    host.querySelector<HTMLButtonElement>(".fv-create-note")!.click();
+
+    expect(ports.onCreateNote).toHaveBeenCalledWith("docs");
   });
 
   // Scenario: 未選択時はワークスペースのルートへ作成する
@@ -1269,6 +1326,46 @@ describe("Feature: Sidebar", () => {
     expect(host.querySelectorAll(".ws-group")).toHaveLength(1);
     expect(host.querySelector(".ws-file")?.textContent).toBe("keep.txt");
     expect(host.textContent).not.toContain("deleted.txt");
+  });
+
+  // Feature: タブ別ファイルツリー検索状態
+  // Scenario: 検索結果の存在確認に失敗したときは結果を削除扱いにしない
+  // Given: 保存済み検索結果が表示され、次の存在確認IPCが失敗する
+  // When: 検索表示状態をもう一度復元する
+  // Then: 復元処理は失敗し、直前の検索結果表示と保存データを維持する
+  it("Scenario: 検索結果の存在確認失敗で結果を失わない", async () => {
+    const { ports, sidebar } = mount();
+    const keep: WorkspaceSearchResult = {
+      rel_path: "keep.txt", line: 1, col: 2, preview: "keep needle", highlights: [[5, 6]],
+      is_filename: false, score: 0,
+    };
+    ports.onExpandFolder.mockResolvedValue([{ name: "keep.txt", is_dir: false, is_archive: false }]);
+    sidebar.setWorkspaceSearch("C:\\workspace");
+    sidebar.setEntries([{ name: "keep.txt", is_dir: false, is_archive: false }]);
+    const saved = sidebar.captureViewState();
+    saved.search = {
+      ...saved.search!,
+      pattern: "needle",
+      outcome: {
+        results: [keep],
+        scanned_files: 1,
+        skipped_files: 0,
+        hit_file_limit: false,
+        hit_result_limit: false,
+        pattern_error: null,
+        file_name_match_mode: "strict",
+      },
+      partial: [],
+    };
+    await sidebar.restoreViewState(saved);
+    const before = sidebar.captureViewState();
+    const error = new Error("folder listing unavailable");
+    ports.onExpandFolder.mockRejectedValueOnce(error);
+
+    await expect(sidebar.restoreViewState(saved)).rejects.toBe(error);
+
+    expect(sidebar.captureViewState().search).toEqual(before.search);
+    expect(saved.search?.outcome).toEqual(before.search?.outcome);
   });
 
   // Feature: ファイルツリー全体の展開

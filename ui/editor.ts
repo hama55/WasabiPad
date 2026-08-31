@@ -13,6 +13,7 @@ import {
 } from "./registered-command-menu";
 import { MENU_ICON } from "./menu-icons";
 import { MENU_LABELS } from "./menu-labels";
+import { createOpenAsMenu } from "./open-as-menu";
 import { viewerFormatIcon, VIEWER_FORMAT_LABELS } from "./format";
 import { viewerFormatForPath } from "./viewer-formats";
 import { LineCache } from "./line-cache";
@@ -42,6 +43,7 @@ import {
 } from "./editor-math";
 import type { EditorViewState } from "./editor-view-state";
 import { selectedLineRange } from "./editor-edit-plan";
+import type { SearchHighlightQuery } from "./workspace-search-options";
 
 const OVERSCAN = 8;
 
@@ -61,7 +63,9 @@ export interface EditorPorts {
   onCursor: (line: number, col: number) => void;
   onFontChange: (fontFamily: string, fontSize: number, changed: "family" | "size" | "both") => void;
   openExternally: (path: string) => void | Promise<unknown>;
+  openInNewTab?: () => void | Promise<unknown>;
   openInNewWindow?: (path: string) => void | Promise<unknown>;
+  openAs?: (openAs: api.OpenAs) => void | Promise<unknown>;
   registeredCommandPorts: RegisteredCommandMenuPorts;
   revealInExplorer?: (path: string, isDir: boolean) => void | Promise<unknown>;
   onError: (message: string, error: unknown) => Promise<void>;
@@ -125,7 +129,7 @@ export class VirtualEditor {
   private mutation: EditorMutationController;
   private findGen = 0; // 検索ループの世代。closeやEnter連打で古いループを打ち切るため
   private lastFindMatch: { start: Pos; end: Pos; pat: string; matchCase: boolean } | null = null; // 連続置換が対象にしてよい直前の一致
-  private activeFind: { pat: string; matchCase: boolean; useRegex: boolean; wholeWord: boolean } | null = null;
+  private activeFind: SearchHighlightQuery | null = null;
   private findHighlights: api.FindResult[] = [];
   private findHighlightRequestKey = "";
   private findHighlightGeneration = 0;
@@ -137,7 +141,9 @@ export class VirtualEditor {
   private externalFilePath: string | null = null;
   private markdown = false;
   private openExternally: (path: string) => void | Promise<unknown>;
+  private openInNewTab?: () => void | Promise<unknown>;
   private openInNewWindow?: (path: string) => void | Promise<unknown>;
+  private openAs?: (openAs: api.OpenAs) => void | Promise<unknown>;
   private registeredCommandPorts: RegisteredCommandMenuPorts;
   private revealInExplorer?: (path: string, isDir: boolean) => void | Promise<unknown>;
   private onError: (message: string, error: unknown) => Promise<void>;
@@ -184,7 +190,9 @@ export class VirtualEditor {
     this.onCursor = ports.onCursor;
     this.onFontChange = ports.onFontChange;
     this.openExternally = ports.openExternally;
+    this.openInNewTab = ports.openInNewTab;
     this.openInNewWindow = ports.openInNewWindow;
+    this.openAs = ports.openAs;
     this.registeredCommandPorts = ports.registeredCommandPorts;
     this.revealInExplorer = ports.revealInExplorer;
     this.onError = ports.onError;
@@ -309,6 +317,7 @@ export class VirtualEditor {
     window.visualViewport?.addEventListener("scroll", () => this.syncImeAnchorAfterLayout());
 
     new ResizeObserver(() => {
+      if (!this.hasUsableViewport()) return;
       const topLine = this.wrap || this.metrics.scaleMode ? this.topLineF : this.pxToLine(this.scroll.scrollTop);
       const intraLinePx = this.wrapIntraLinePx;
       const wasAtBottom = topLine >= this.maxTopLine();
@@ -428,6 +437,7 @@ export class VirtualEditor {
 
   syncWindowGeometry() {
     this.syncImeAnchorAfterLayout();
+    this.schedule();
     window.clearTimeout(this.imeBlurTimer);
     this.imeBlurTimer = undefined;
     if (document.activeElement !== this.input) {
@@ -717,6 +727,10 @@ export class VirtualEditor {
     });
   }
 
+  private hasUsableViewport(): boolean {
+    return this.scroll.clientWidth > 0 && this.scroll.clientHeight > 0;
+  }
+
   private onScroll() {
     if (this.wrap && this.scrollbarDragging) {
       const anchor = this.wrapAnchorFromPx(this.scroll.scrollTop);
@@ -730,6 +744,7 @@ export class VirtualEditor {
   }
 
   private render() {
+    if (!this.hasUsableViewport()) return;
     const top = this.scroll.scrollTop;
     const h = this.scroll.clientHeight;
     const topLine = Math.round(this.topLineF);
@@ -1184,6 +1199,19 @@ export class VirtualEditor {
     this.activeFind = next;
     this.invalidateFindHighlights();
     this.schedule();
+  }
+
+  captureFindHighlightQuery(): SearchHighlightQuery | null {
+    return this.activeFind ? { ...this.activeFind } : null;
+  }
+
+  restoreFindHighlightQuery(query: SearchHighlightQuery | null) {
+    this.setFindHighlightQuery(
+      query?.pat ?? "",
+      query?.matchCase ?? false,
+      query?.useRegex ?? false,
+      query?.wholeWord ?? false,
+    );
   }
 
   private invalidateFindHighlights() {
@@ -2061,7 +2089,9 @@ export class VirtualEditor {
     this.focus();
     const items: MenuItem[] = [];
     const commandPath = this.externalFilePath;
-    const hasOpenItems = Boolean(commandPath && (this.revealInExplorer || this.openInNewWindow));
+    const hasOpenItems = Boolean(commandPath && (
+      this.revealInExplorer || this.openInNewTab || this.openInNewWindow || this.openAs
+    ));
     if (commandPath && this.revealInExplorer) {
       items.push({
         label: MENU_LABELS.explorer,
@@ -2069,11 +2099,27 @@ export class VirtualEditor {
         action: () => this.dispatch("エクスプローラで開けませんでした", () => this.revealInExplorer?.(commandPath, false)),
       });
     }
+    if (commandPath && this.openInNewTab) {
+      items.push({
+        label: MENU_LABELS.newTab,
+        iconClass: MENU_ICON.newTab,
+        sep: Boolean(this.revealInExplorer),
+        action: () => this.dispatch("新規タブで開けませんでした", () => this.openInNewTab?.()),
+      });
+    }
     if (commandPath && this.openInNewWindow) {
       items.push({
         label: MENU_LABELS.newWindow,
         iconClass: MENU_ICON.newWindow,
         action: () => this.dispatch("新規ウィンドウで開けませんでした", () => this.openInNewWindow?.(commandPath)),
+      });
+    }
+    if (commandPath && this.openAs) {
+      items.push({
+        ...createOpenAsMenu((openAs) => this.dispatch(
+          "指定した形式で開けませんでした",
+          () => this.openAs?.(openAs),
+        )),
       });
     }
     if (!this.readOnly) {
@@ -2157,7 +2203,7 @@ export class VirtualEditor {
       items.push({
         label: MENU_LABELS.external,
         iconClass: MENU_ICON.external,
-        action: () => this.dispatch("アプリで開けませんでした", () => this.openExternally(commandPath)),
+        action: () => this.dispatch("Windowsアプリで開けませんでした", () => this.openExternally(commandPath)),
         sep: true,
       });
     }

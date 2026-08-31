@@ -131,6 +131,51 @@ describe("Feature: inline preview", () => {
     }, window.location.origin);
   });
 
+  // Given: エディタがMarkdown通常改行設定を変更している
+  // When: iframeの準備完了通知を受け取る
+  // Then: 保留していた設定をプレビューへ送る
+  it("Scenario: sends a queued Markdown soft-break setting after the iframe is ready", async () => {
+    const { host, preview } = mount();
+    const frame = host.querySelector("iframe")!;
+    const postMessage = vi.spyOn(frame.contentWindow!, "postMessage");
+    await preview.open("markdown", "first\nsecond", null);
+    preview.setMarkdownSoftBreaks(false);
+
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
+    }));
+
+    expect(postMessage).toHaveBeenCalledWith({
+      type: INLINE_PREVIEW_MESSAGES.MARKDOWN_SOFT_BREAKS_MESSAGE,
+      enabled: false,
+    }, window.location.origin);
+  });
+
+  // Given: iframeの準備完了後にMarkdownプレビューを表示している
+  // When: Markdown通常改行設定を変更する
+  // Then: 設定変更を待たせずプレビューへ送る
+  it("Scenario: sends a Markdown soft-break setting change immediately", async () => {
+    const { host, preview } = mount();
+    const frame = host.querySelector("iframe")!;
+    const postMessage = vi.spyOn(frame.contentWindow!, "postMessage");
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
+    }));
+    await preview.open("markdown", "first\nsecond", null);
+    postMessage.mockClear();
+
+    preview.setMarkdownSoftBreaks(false);
+
+    expect(postMessage).toHaveBeenLastCalledWith({
+      type: INLINE_PREVIEW_MESSAGES.MARKDOWN_SOFT_BREAKS_MESSAGE,
+      enabled: false,
+    }, window.location.origin);
+  });
+
   // Given: アーカイブ内Markdownの本文と、画像解決に必要なアーカイブ情報を設定している
   // When: プレビューを開いてiframeの準備完了通知を受け取る
   // Then: アーカイブパスとエントリ名をビューへ渡す
@@ -155,6 +200,61 @@ describe("Feature: inline preview", () => {
       }),
     }), window.location.origin);
   });
+
+  // Feature: 指定形式の画像プレビュー
+  // Scenario: 実パスと有効拡張子を別々にビューへ渡す
+  // Given: 実ファイル`photo.bin`をsvgとして表示している
+  // When: インラインプレビューを開いて準備完了通知を受け取る
+  // Then: 読込用の実パスを変えず、有効拡張子svgもペイロードへ含める
+  it("Scenario: forwards the effective extension without changing the real path", async () => {
+    const { host, preview } = mount();
+    const frame = host.querySelector("iframe")!;
+    const postMessage = vi.spyOn(frame.contentWindow!, "postMessage");
+    preview.setSourcePath("C:\\work\\photo.bin", null, null, "svg");
+    await preview.open("image", "<svg></svg>", null);
+
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
+    }));
+
+    expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE,
+      payload: expect.objectContaining({
+        source_path: "C:\\work\\photo.bin",
+        effective_extension: "svg",
+      }),
+    }), window.location.origin);
+  });
+
+  // Feature: プレビュー本文の初回描画
+  // Scenario: ビューア準備後に付随設定を本文より先に同期する
+  // Given: ビューアiframeが準備完了している
+  // When: 各形式の文書をプレビューへ開く
+  // Then: 区切り設定の同期が本文payloadより先に送られ、本文描画を中断しない
+  it.each(["markdown", "html", "csv", "image", "pdf"] as ViewerFormat[])(
+    "Scenario: %s本文の初回描画を付随設定が中断しない",
+    async (format) => {
+      const { host, preview } = mount();
+      const frame = host.querySelector("iframe")!;
+      const postMessage = vi.spyOn(frame.contentWindow!, "postMessage");
+
+      window.dispatchEvent(new MessageEvent("message", {
+        source: frame.contentWindow,
+        origin: window.location.origin,
+        data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
+      }));
+      await preview.open(format, "preview body", null);
+
+      const types = postMessage.mock.calls.map(([message]) => (message as { type: string }).type);
+      const delimiterIndex = types.indexOf(INLINE_PREVIEW_MESSAGES.DELIMITER_MESSAGE);
+      const payloadIndex = types.indexOf(INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE);
+      expect(delimiterIndex).toBeGreaterThanOrEqual(0);
+      expect(payloadIndex).toBeGreaterThanOrEqual(0);
+      expect(delimiterIndex).toBeLessThan(payloadIndex);
+    },
+  );
 
   // Given: インラインプレビューがフォント変更を通知する
   // When: フォントファミリー変更メッセージを受け取る
@@ -340,6 +440,25 @@ describe("Feature: inline preview", () => {
       type: INLINE_PREVIEW_MESSAGES.FULLSCREEN_STATE_MESSAGE,
       fullscreen: true,
     }, window.location.origin);
+  });
+
+  // Given: iframeが準備完了していて、全画面状態がすでに同期済み
+  // When: 同じ全画面状態をもう一度設定する
+  // Then: 内容の再送信を発生させない
+  it("Scenario: ignores an unchanged preview fullscreen state", () => {
+    const { host, preview } = mount();
+    const frame = host.querySelector("iframe")!;
+    const postMessage = vi.spyOn(frame.contentWindow!, "postMessage");
+
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
+    }));
+    postMessage.mockClear();
+    preview.setFullscreen(false);
+
+    expect(postMessage).not.toHaveBeenCalled();
   });
 
   // Given: 親への形式切替ポートが例外を投げる

@@ -47,6 +47,7 @@ const info = (overrides: Partial<DocInfo> = {}): DocInfo => ({
   byte_len: 1234,
   is_huge: false,
   modified_at: 1720000000000,
+  effective_extension: null,
   ...overrides,
 });
 
@@ -102,26 +103,100 @@ describe("Feature: DocumentController", () => {
     expect(openPath).toHaveBeenCalledWith("C:\\work\\memo.txt");
   });
 
-  // Feature: 削除後も編集中の本文を保持する
+  // Feature: 形式を指定して開く
+  // Scenario: 直接ファイルを指定形式で開き直す
+  // Given: `memo.bin`をtxtとして開く文書APIがある
+  // When: `controller.openPath("C:\work\memo.bin", false, "txt")`を呼ぶ
+  // Then: 実パスと指定形式をそのままAPIへ渡す
+  it("Scenario: 直接ファイルの形式指定を文書APIへ渡す", async () => {
+    const { view } = fakeView();
+    const openPath = vi.fn().mockResolvedValue(info({
+      path: "C:\\work\\memo.bin",
+      effective_extension: "txt",
+    }));
+    const controller = new DocumentController(view, {
+      ...services(),
+      api: { ...api, openPath },
+    });
+
+    expect(await controller.openPath("C:\\work\\memo.bin", false, "txt")).toBe(true);
+
+    expect(openPath).toHaveBeenCalledWith("C:\\work\\memo.bin", "txt");
+    expect(controller.current.effectiveExtension).toBe("txt");
+  });
+
+  // Feature: 形式を指定してファイルを開く
+  // Scenario: 指定形式をbackendへ渡して有効拡張子を表示セッションへ反映する
+  // Given: `memo.bin`をtxtとして開いた結果を返す文書API
+  // When: `selectEntry("memo.bin", "txt")`を呼ぶ
+  // Then: txt指定がAPIへ渡り、現在のセッションはtxtを有効拡張子として持つ
+  it("Scenario: 指定形式を選択APIと表示セッションへ渡す", async () => {
+    const { view } = fakeView();
+    const selectEntry = vi.fn().mockResolvedValue(info({
+      path: "C:\\work\\memo.bin",
+      folder_root: "C:\\work",
+      effective_extension: "txt",
+    }));
+    const controller = new DocumentController(view, {
+      ...services(),
+      api: { ...api, selectEntry },
+    });
+
+    expect(await controller.selectEntry("memo.bin", "txt")).toBe(true);
+    expect(selectEntry).toHaveBeenCalledWith("memo.bin", "txt");
+    expect(controller.current.effectiveExtension).toBe("txt");
+  });
+
+  // Feature: アーカイブ内部項目のMarkdown判定
+  // Scenario: 拡張子を持たない内部項目をmdとして開く
+  // Given: `archive.bin::memo.bin`をmd指定で返す文書APIがある
+  // When: `selectEntry`を呼ぶ
+  // Then: エディタへMarkdown文書として通知する
+  it("Scenario: アーカイブ内項目の指定形式をMarkdown表示へ反映する", async () => {
+    const { view } = fakeView();
+    const selectEntry = vi.fn().mockResolvedValue(info({
+      kind: "archive",
+      path: "C:\\work\\archive.bin",
+      folder_root: "C:\\work",
+      effective_extension: "md",
+    }));
+    const controller = new DocumentController(view, {
+      ...services(),
+      api: { ...api, selectEntry },
+    });
+    controller.setSelectedRelPath("archive.bin::memo.bin");
+
+    expect(await controller.selectEntry("archive.bin::memo.bin", "md")).toBe(true);
+
+    expect(view.editor.open).toHaveBeenLastCalledWith(42, false, false, "C:\\work\\archive.bin", true);
+  });
+
+  // Feature: 削除後に編集中の本文を消去する
   // Scenario: 開いているファイルがごみ箱へ移動される
   // Given: フォルダ内の`memo.txt`を選択している
   // When: DocumentControllerへ削除済みを通知する
-  // Then: 保存先を外し、本文表示を壊さず名前を付けて保存へ進める状態にする
-  it("Scenario: 削除後は保存先を外して本文を保持する", () => {
+  // Then: フォルダルートへ戻り、エディタとプレビューを空にする
+  it("Scenario: 削除後はフォルダルートへ戻り本文を消去する", () => {
     const { view, controller } = fakeView();
     Object.assign(controller.current, {
       folderRoot: "C:\\work",
       displayPath: "C:\\work\\memo.txt",
       selectedRelPath: "memo.txt",
       savePath: "C:\\work\\memo.txt",
+      dirty: true,
     });
 
     controller.markDeleted();
 
     expect(controller.current.savePath).toBeNull();
     expect(controller.current.selectedRelPath).toBe("");
-    expect(controller.current.dirty).toBe(true);
-    expect(view.editor.setExternalFilePath).toHaveBeenLastCalledWith(null, false);
+    expect(controller.current.displayPath).toBe("C:\\work");
+    expect(controller.current.folderRoot).toBe("C:\\work");
+    expect(controller.current.lineCount).toBe(1);
+    expect(controller.current.dirty).toBe(false);
+    expect(view.editor.open).toHaveBeenLastCalledWith(1, false, false, null, false);
+    expect(view.addressbar.render).toHaveBeenLastCalledWith("C:\\work", "C:\\work");
+    expect(view.onDocumentChange).toHaveBeenLastCalledWith(controller.current, false);
   });
 
   // Feature: 削除のセッション内アンドゥ
@@ -138,7 +213,7 @@ describe("Feature: DocumentController", () => {
     expect(controller.current.savePath).toBe("C:\\work\\memo.txt");
     expect(controller.current.displayPath).toBe("C:\\work\\memo.txt");
     expect(controller.current.selectedRelPath).toBe("memo.txt");
-    expect(view.addressbar.render).toHaveBeenLastCalledWith("C:\\work\\memo.txt");
+    expect(view.addressbar.render).toHaveBeenLastCalledWith("C:\\work\\memo.txt", null);
     expect(view.editor.setExternalFilePath).toHaveBeenLastCalledWith("C:\\work\\memo.txt", false);
   });
 
@@ -359,7 +434,7 @@ describe("Feature: DocumentController", () => {
     expect(view.hideExternalBanner).toHaveBeenCalled();
     expect(view.statusbar.setByteSize).toHaveBeenCalledWith(1234, false);
     expect(view.statusbar.setLineCount).toHaveBeenCalledWith(42);
-    expect(view.addressbar.render).toHaveBeenCalledWith("C:\\work\\memo.txt");
+    expect(view.addressbar.render).toHaveBeenCalledWith("C:\\work\\memo.txt", null);
     expect(view.editor.open).toHaveBeenCalledWith(42, false, false, "C:\\work\\memo.txt", false);
     expect(view.onDocumentChange).toHaveBeenCalledWith(expect.objectContaining({ savePath: "C:\\work\\memo.txt" }), false);
     expect(view.onSessionChange).not.toHaveBeenCalled();
@@ -438,6 +513,7 @@ describe("Feature: DocumentController", () => {
     }));
 
     expect(controller.current.savePath).toBeNull();
+    expect(view.addressbar.render).toHaveBeenCalledWith("C:\\work", "C:\\work");
     expect(view.editor.open).toHaveBeenCalledWith(1, false, false, null, false);
   });
 
@@ -451,6 +527,7 @@ describe("Feature: DocumentController", () => {
       folder_root: "C:\\work",
     }));
 
+    expect(view.addressbar.render).toHaveBeenCalledWith("C:\\work\\memo.txt", "C:\\work");
     expect(view.editor.open).toHaveBeenCalledWith(42, false, false, "C:\\work\\memo.txt", false);
   });
 

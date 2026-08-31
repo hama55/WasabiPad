@@ -1,5 +1,5 @@
 import type * as api from "./api";
-import { documentPathOf, type DocumentSession } from "./session";
+import { classificationPathOf, type DocumentSession } from "./session";
 import { isAssetViewerFormat, viewerFormatForPath } from "./viewer-formats";
 
 const POLL_INTERVAL_MS = 3000;
@@ -31,11 +31,11 @@ export type ExternalWatchApi = Pick<
 >;
 
 export function canPollExternalDocument(
-  session: Pick<DocumentSession, "archivePath" | "displayPath" | "savePath" | "selectedRelPath">,
+  session: Pick<DocumentSession, "archivePath" | "archiveEntry" | "displayPath" | "savePath" | "selectedRelPath" | "effectiveExtension">,
 ): boolean {
   return session.savePath !== null || (
     session.archivePath === null
-    && isAssetViewerFormat(viewerFormatForPath(documentPathOf(session)))
+    && isAssetViewerFormat(viewerFormatForPath(classificationPathOf(session)))
   );
 }
 

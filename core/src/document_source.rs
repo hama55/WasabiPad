@@ -1,9 +1,7 @@
 use crate::fileio::FileStamp;
-use crate::folder::FolderEntry;
 use crate::protocol;
 use crate::ziptext::Entry;
 use std::fs::File;
-use std::io;
 use std::path::{Path, PathBuf};
 
 // 文書の所在・閲覧対象だけを担当する。本文・Undo・検索状態は所有しない。
@@ -63,13 +61,6 @@ impl DocumentSource {
         self.root.as_deref()
     }
 
-    pub(crate) fn folder_entries(&self) -> io::Result<Option<Vec<FolderEntry>>> {
-        self.root
-            .as_deref()
-            .map(|root| crate::folder::list_children(root, ""))
-            .transpose()
-    }
-
     pub(crate) fn entries(&self) -> Option<&[Entry]> {
         match &self.target {
             Target::Archive {
@@ -80,14 +71,19 @@ impl DocumentSource {
         }
     }
 
-    pub(crate) fn is_view_only(&self) -> bool {
+    pub(crate) fn is_view_only_with_extension(&self, effective_extension: Option<&str>) -> bool {
         matches!(
             &self.target,
             Target::Archive {
                 editable_entry: None,
                 ..
             }
-        ) || matches!(&self.target, Target::File { path, .. } if is_binary_image_path(path))
+        ) || matches!(&self.target, Target::File { path, .. } if is_binary_image_with_extension(path, effective_extension))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_view_only(&self) -> bool {
+        self.is_view_only_with_extension(None)
     }
 
     pub(crate) fn kind(&self) -> SourceKind {
@@ -133,7 +129,11 @@ impl DocumentSource {
 }
 
 pub(crate) fn is_binary_image_path(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
+    is_binary_image_with_extension(path, None)
+}
+
+pub(crate) fn is_binary_image_with_extension(path: &Path, effective_extension: Option<&str>) -> bool {
+    effective_extension
+        .or_else(|| path.extension().and_then(|ext| ext.to_str()))
         .is_some_and(|ext| !ext.eq_ignore_ascii_case("svg") && protocol::is_image_extension(ext))
 }

@@ -1,7 +1,7 @@
-import type { Pos, WindowRequest } from "./api";
+import type { OpenAs, Pos, WindowRequest } from "./api";
 import type { DocumentSession } from "./session";
 import { cloneEditorViewState, type EditorViewState } from "./editor-view-state";
-import { basename, rebaseWindowsPath, type PathRebase } from "./path";
+import { basename, comparablePath, rebaseWindowsPath, type PathRebase } from "./path";
 import { TabBarView, type TabDropSpot } from "./tab-view";
 import type { RegisteredCommandMenuPorts } from "./registered-command-menu";
 import type { SidebarViewState } from "./sidebar";
@@ -13,12 +13,13 @@ import {
 } from "./navigation-history";
 export { isStoredTab, isStoredTabs, type StoredTab, type StoredTabs } from "./stored-tabs";
 import type { StoredTab, StoredTabs } from "./stored-tabs";
+import type { SearchHighlightQuery } from "./workspace-search-options";
 
 export interface TabDocumentPort {
   readonly current: Readonly<DocumentSession>;
   confirmDiscard: (onProceed?: () => void | Promise<void>) => Promise<boolean>;
-  openPath: (path: string, confirm?: boolean) => Promise<boolean>;
-  selectEntry: (relPath: string) => Promise<boolean>;
+  openPath: (path: string, confirm?: boolean, openAs?: OpenAs) => Promise<boolean>;
+  selectEntry: (relPath: string, openAs?: OpenAs) => Promise<boolean>;
   newFile: (confirm?: boolean, draftDirectory?: string | null) => Promise<void>;
   goTo: (position: Pos) => void;
   captureViewState: () => EditorViewState;
@@ -32,9 +33,15 @@ export interface TabWorkspaceStatePort {
   restore: (state: SidebarViewState | null) => void | Promise<void>;
 }
 
+export interface TabFindHighlightPort {
+  capture: () => SearchHighlightQuery | null;
+  restore: (query: SearchHighlightQuery | null) => void;
+}
+
 interface TabPorts {
   onChange: (state: StoredTabs) => void;
   workspace?: TabWorkspaceStatePort;
+  findHighlight?: TabFindHighlightPort;
   onError?: (error: unknown, message?: string) => void | Promise<void>;
   onDetach?: (request: WindowRequest) => Promise<boolean>;
   onOpenInNewWindow?: (request: WindowRequest) => Promise<boolean>;
@@ -61,8 +68,19 @@ function rebaseRelativePath(path: string, oldPrefix: string, newPrefix: string):
 
 function sameTabPath(a: string | null, b: string | null): boolean {
   if (a === null || b === null) return a === b;
-  return a.replace(/\\/g, "/").toLocaleLowerCase("en-US")
-    === b.replace(/\\/g, "/").toLocaleLowerCase("en-US");
+  return comparablePath(a) === comparablePath(b);
+}
+
+function isArchiveOpenAs(openAs: OpenAs | undefined): openAs is OpenAs {
+  return openAs === "zip" || openAs === "7z" || openAs === "xlsx" || openAs === "xls";
+}
+
+function archiveScopeOf(relPath: string): string {
+  return relPath.split("::", 1)[0].replace(/\\/g, "/").toLocaleLowerCase("en-US");
+}
+
+function cloneFindHighlightQuery(query: SearchHighlightQuery | null): SearchHighlightQuery | null {
+  return query ? { ...query } : null;
 }
 
 type NavigationRun<T> = {
@@ -76,11 +94,18 @@ export class TabManager {
   private tabs: StoredTab[] = [];
   private activeId = "";
   private workspaceStates = new Map<string, { path: string | null; state: SidebarViewState }>();
+  private findHighlightStates = new Map<string, { path: string | null; query: SearchHighlightQuery | null }>();
   private transitionTarget: string | null = null;
   private loadingActive = false;
   private navigationInProgress = false;
   private navigationBusy = false;
   private navigationHistory = new Map<string, NavigationHistory>();
+  private openAsStates = new Map<string, {
+    relPath: string;
+    openAs?: OpenAs;
+    // アーカイブ内項目を復元する際に必要な、書庫側の明示形式。
+    archiveOpenAs?: OpenAs;
+  }>();
   private closedTabs: { tab: StoredTab; index: number; replacementId?: string }[] = [];
   private view: TabBarView;
 
@@ -127,8 +152,10 @@ export class TabManager {
     initialViewState?: EditorViewState,
   ) {
     this.navigationHistory.clear();
+    this.openAsStates.clear();
     this.closedTabs = [];
     this.workspaceStates.clear();
+    this.findHighlightStates.clear();
     const startupTarget = initialPath ?? startupPath;
     const initialTab = stored.tabs.length || startupTarget
       ? this.link(startupTarget, initialPath ? initialGoto : undefined)
@@ -179,10 +206,21 @@ export class TabManager {
         const rebased = rebaseRelativePath(tab.selectedRelPath, oldRelPath, newRelPath);
         if (rebased !== null && rebased !== tab.selectedRelPath) {
           tab.selectedRelPath = rebased;
+          const openAsState = this.openAsStates.get(tab.id);
+          if (openAsState) openAsState.relPath = rebased;
           changed = true;
         }
       }
     }
+    const rebaseSavedPath = (saved: { path: string | null }) => {
+      if (saved.path === null) return;
+      const rebased = rebaseWindowsPath(saved.path, oldAbsolute, newAbsolute);
+      if (!rebased || rebased === saved.path) return;
+      saved.path = rebased;
+      changed = true;
+    };
+    for (const saved of this.workspaceStates.values()) rebaseSavedPath(saved);
+    for (const saved of this.findHighlightStates.values()) rebaseSavedPath(saved);
     if (changed) this.renderAndPersist();
   }
 
@@ -240,6 +278,56 @@ export class TabManager {
     return this.addAndActivate(this.link(path, goto));
   }
 
+  async openCurrentAs(openAs: OpenAs): Promise<boolean> {
+    const tab = this.active();
+    if (!tab?.path) return false;
+    const selectedRelPath = this.doc.current.selectedRelPath || tab.selectedRelPath || "";
+    if (tab.kind === "folder") {
+      if (!selectedRelPath) return false;
+      return this.navigateEntry(selectedRelPath, openAs);
+    }
+    // 直接開いたアーカイブの内部項目は、物理アーカイブをテキストとして
+    // 開き直さず、現在の書庫を保持したまま項目だけ読み直す。
+    if (this.doc.current.archivePath && selectedRelPath) {
+      const remembered = this.openAsStates.get(this.activeId);
+      return this.runNavigationCommand(() =>
+        this.navigateCurrent(async () => {
+          const opened = await this.doc.selectEntry(selectedRelPath, openAs);
+          if (!opened) return false;
+          this.openAsStates.set(this.activeId, {
+            relPath: selectedRelPath,
+            openAs,
+            ...(isArchiveOpenAs(openAs)
+              ? { archiveOpenAs: openAs }
+              : remembered?.archiveOpenAs
+                ? { archiveOpenAs: remembered.archiveOpenAs }
+                : {}),
+          });
+          return true;
+        })
+      );
+    }
+    return this.runNavigationCommand(() =>
+      this.navigateCurrent(async () => {
+        const opened = await this.doc.openPath(tab.path!, false, openAs);
+        if (!opened) return false;
+        if (selectedRelPath && !await this.doc.selectEntry(selectedRelPath, openAs)) return false;
+        this.openAsStates.set(this.activeId, { relPath: selectedRelPath, openAs });
+        return true;
+      })
+    );
+  }
+
+  async openCurrentInNewTab(): Promise<boolean> {
+    const current = this.active();
+    const path = this.doc.current.savePath ?? this.doc.current.displayPath;
+    if (!current?.path || !path) return false;
+    // ファイルツリーのホイールクリックと同じく、表示中の実ファイルを
+    // ルートにしたタブを開く。アーカイブ内項目でも物理アーカイブを使い、
+    // フォルダタブや内部相対パスを複製しない。
+    return this.open(path);
+  }
+
   async openMarkdownLink(path: string, sourceTabId: string | null, fragment: string | null): Promise<boolean> {
     const anchorId = sourceTabId ?? this.activeId;
     return this.addAndActivateAfter(
@@ -285,18 +373,67 @@ export class TabManager {
   }
 
   navigatePath(path: string): Promise<boolean> {
-    return this.runNavigationCommand(() => this.navigateCurrent(() => this.doc.openPath(path, false)));
+    return this.runNavigationCommand(() =>
+      this.navigateCurrent(async () => {
+        const succeeded = await this.doc.openPath(path, false);
+        if (succeeded) this.openAsStates.delete(this.activeId);
+        return succeeded;
+      })
+    );
   }
 
-  navigateEntry(relPath: string): Promise<boolean> {
+  navigateEntry(relPath: string, openAs?: OpenAs): Promise<boolean> {
+    const rememberedOpenAs = this.openAsStates.get(this.activeId);
+    const directArchive = !this.doc.current.folderRoot && !!this.doc.current.archivePath;
+    const sameArchive = directArchive || (
+      !!rememberedOpenAs
+      && archiveScopeOf(rememberedOpenAs.relPath) === archiveScopeOf(relPath)
+    );
+    const inheritedOpenAs = rememberedOpenAs
+      && isArchiveOpenAs(rememberedOpenAs.openAs)
+      && sameArchive
+      ? rememberedOpenAs.openAs
+      : undefined;
+    const inheritedArchiveOpenAs = sameArchive
+      ? rememberedOpenAs?.archiveOpenAs
+        ?? (rememberedOpenAs && isArchiveOpenAs(rememberedOpenAs.openAs)
+          ? rememberedOpenAs.openAs
+          : undefined)
+      : undefined;
+    const requestedOpenAs = openAs ?? inheritedOpenAs;
+    const selectionOpenAs = requestedOpenAs ?? inheritedArchiveOpenAs;
     // 同じファイルを検索結果から再度選んだだけなら、再読込も確認も不要。
     // dirty と編集中のバッファを維持したまま、呼び出し側が一致位置を扱う。
-    if (this.doc.current.folderRoot
+    if (!requestedOpenAs && this.doc.current.folderRoot
       && this.doc.current.selectedRelPath.replace(/\\/g, "/") === relPath.replace(/\\/g, "/")) {
       return Promise.resolve(true);
     }
     return this.runNavigationCommand(() =>
-      this.navigateCurrent(async () => (await this.doc.selectEntry(relPath)) === true)
+      this.navigateCurrent(async () => {
+        const succeeded = (await (selectionOpenAs
+          ? this.doc.selectEntry(relPath, selectionOpenAs)
+          : this.doc.selectEntry(relPath))) === true;
+        if (!succeeded) return false;
+        if (requestedOpenAs) {
+          this.openAsStates.set(this.activeId, {
+            relPath,
+            openAs: requestedOpenAs,
+            ...(inheritedArchiveOpenAs
+              ? { archiveOpenAs: inheritedArchiveOpenAs }
+              : requestedOpenAs && isArchiveOpenAs(requestedOpenAs)
+                ? { archiveOpenAs: requestedOpenAs }
+                : {}),
+          });
+        } else if (inheritedArchiveOpenAs) {
+          // 内部項目の形式指定がない場合も、偽装書庫の物理形式だけは
+          // 次回のタブ切替で再利用できるように保持する。
+          this.openAsStates.set(this.activeId, {
+            relPath,
+            archiveOpenAs: inheritedArchiveOpenAs,
+          });
+        } else this.openAsStates.delete(this.activeId);
+        return true;
+      })
     );
   }
 
@@ -414,6 +551,8 @@ export class TabManager {
     if (!await this.doc.openPath(entry.path, false)) return false;
     if (entry.kind === "folder" && entry.selectedRelPath
       && (await this.doc.selectEntry(entry.selectedRelPath)) !== true) return false;
+    // 履歴には形式指定を保存しない。移動に成功した時点で、通常の拡張子へ戻す。
+    this.openAsStates.delete(tab.id);
     this.doc.goTo({ line: entry.line, col: 0 });
     return true;
   }
@@ -457,10 +596,12 @@ export class TabManager {
       const closed = { tab: this.state.tabs[0], index: 0 };
       const replacement = await this.blankTab(null);
       this.workspaceStates.delete(id);
+      this.findHighlightStates.delete(id);
       await this.commitTransition(async () => {
         this.tabs = [replacement];
         this.activeId = this.tabs[0].id;
         await this.doc.newFile(false, replacement.draftDirectory ?? null);
+        this.ports.findHighlight?.restore(null);
       });
       this.closedTabs.push({ ...closed, replacementId: replacement.id });
       return;
@@ -473,6 +614,7 @@ export class TabManager {
       this.syncActive(this.doc.current);
       const closed = { tab: this.state.tabs[index], index };
       this.workspaceStates.delete(id);
+      this.findHighlightStates.delete(id);
       await this.commitTransition(async () => {
         this.tabs.splice(index, 1);
         this.activateTabAfterRemoval(index);
@@ -482,6 +624,7 @@ export class TabManager {
     } else {
       const closed = { tab: this.state.tabs[index], index };
       this.workspaceStates.delete(id);
+      this.findHighlightStates.delete(id);
       this.tabs.splice(index, 1);
       this.renderAndPersist();
       this.closedTabs.push(closed);
@@ -600,12 +743,29 @@ export class TabManager {
     try {
       const tab = this.active()!;
       const rememberedRelPath = tab.selectedRelPath;
+      const rememberedOpenAs = this.openAsStates.get(tab.id);
+      const openAs = rememberedOpenAs
+        && rememberedOpenAs.relPath.replace(/\\/g, "/") === (rememberedRelPath ?? "").replace(/\\/g, "/")
+        ? rememberedOpenAs.openAs
+        : undefined;
+      const archiveOpenAs = rememberedOpenAs
+        && rememberedOpenAs.relPath.replace(/\\/g, "/") === (rememberedRelPath ?? "").replace(/\\/g, "/")
+        ? rememberedOpenAs.archiveOpenAs
+          ?? (isArchiveOpenAs(rememberedOpenAs.openAs) ? rememberedOpenAs.openAs : undefined)
+        : undefined;
       const rememberedViewState = tab.viewState ? cloneEditorViewState(tab.viewState) : undefined;
       const rememberedLine = tab.selectedLine ?? (tab.kind === "folder" ? rememberedViewState?.caret.line : undefined);
       let selectionRestored = false;
       this.ports.workspace?.reset();
       if (tab.path) {
-        const opened = await this.doc.openPath(tab.path, false);
+        const pathOpenAs = tab.kind === "file" && rememberedRelPath
+          ? archiveOpenAs
+          : tab.kind === "file"
+            ? openAs
+            : undefined;
+        const opened = pathOpenAs !== undefined
+          ? await this.doc.openPath(tab.path, false, pathOpenAs)
+          : await this.doc.openPath(tab.path, false);
         if (!opened) {
           if (!fallbackToBlank) return false;
           tab.path = null;
@@ -614,7 +774,21 @@ export class TabManager {
           await this.doc.newFile(false, tab.draftDirectory ?? null);
         } else if (rememberedRelPath) {
           try {
-            selectionRestored = (await this.doc.selectEntry(rememberedRelPath)) === true;
+            // フォルダを再オープンした直後は書庫側の指定がまだDocへ届いていない。
+            // 偽装拡張子の書庫でも、まずコンテナを明示形式で選択してから
+            // 内部項目の指定形式を適用する。
+            let archiveReady = true;
+            if (tab.kind === "folder" && archiveOpenAs && rememberedRelPath.includes("::")) {
+              const archiveRelPath = rememberedRelPath.split("::", 1)[0];
+              if ((await this.doc.selectEntry(archiveRelPath, archiveOpenAs)) !== true) {
+                archiveReady = false;
+              }
+            }
+            if (archiveReady) {
+              selectionRestored = (await (openAs
+                ? this.doc.selectEntry(rememberedRelPath, openAs)
+                : this.doc.selectEntry(rememberedRelPath))) === true;
+            }
           } catch (error) {
             // 一時的なIPC失敗で復元情報を消すと、次回タブ切替でも再試行できない。
             await this.reportError(error);
@@ -642,6 +816,12 @@ export class TabManager {
         await this.doc.newFile(false, tab.draftDirectory ?? null);
         if (tab.viewState) await this.doc.restoreViewState(tab.viewState);
       }
+      const findHighlightState = this.findHighlightStates.get(tab.id);
+      this.ports.findHighlight?.restore(
+        findHighlightState && sameTabPath(findHighlightState.path, tab.path)
+          ? cloneFindHighlightQuery(findHighlightState.query)
+          : null,
+      );
       const workspaceState = this.workspaceStates.get(tab.id);
       if (workspaceState && sameTabPath(workspaceState.path, tab.path)) {
         await this.ports.workspace?.restore(workspaceState.state);
@@ -671,6 +851,12 @@ export class TabManager {
     const workspaceState = this.ports.workspace?.capture() ?? null;
     if (!workspaceState || workspaceState.kind === null) this.workspaceStates.delete(tab.id);
     else this.workspaceStates.set(tab.id, { path: tab.path, state: workspaceState });
+    const findHighlight = this.ports.findHighlight?.capture();
+    if (findHighlight === undefined) this.findHighlightStates.delete(tab.id);
+    else this.findHighlightStates.set(tab.id, {
+      path: tab.path,
+      query: cloneFindHighlightQuery(findHighlight),
+    });
   }
 
   private active() {
@@ -727,6 +913,9 @@ export class TabManager {
     for (const id of this.navigationHistory.keys()) {
       if (!ids.has(id)) this.navigationHistory.delete(id);
     }
+    for (const id of this.openAsStates.keys()) {
+      if (!ids.has(id)) this.openAsStates.delete(id);
+    }
   }
 
   private async keepOnly(id: string) {
@@ -752,6 +941,7 @@ export class TabManager {
     this.tabs.forEach((tab, index) => {
       if (remove(tab, index)) {
         this.workspaceStates.delete(tab.id);
+        this.findHighlightStates.delete(tab.id);
         closed.push({ tab: snapshots[index], index });
       }
       else kept.push(tab);
@@ -802,6 +992,7 @@ export class TabManager {
       viewState: tab.viewState ?? null,
     })) return;
     this.workspaceStates.delete(id);
+    this.findHighlightStates.delete(id);
     this.tabs.splice(this.tabs.indexOf(tab), 1);
     if (!wasActive) {
       this.renderAndPersist();
@@ -812,6 +1003,7 @@ export class TabManager {
       this.tabs = [blank];
       this.activeId = blank.id;
       await this.doc.newFile(false);
+      this.ports.findHighlight?.restore(null);
     } else {
       this.activateTabAfterRemoval(index);
       await this.loadActive();

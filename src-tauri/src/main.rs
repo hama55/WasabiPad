@@ -20,7 +20,7 @@ use tauri::{AppHandle, Manager};
 use viewer::ViewerStore;
 use wasabipad_core::{
     self, BookmarkNode, Doc, DocInfo, EditManyItem, EditManyResult, EditResult, EncodingId, Eol,
-    ExternalCheck, ExternalMergePreview, FindCursor, FindOutcome, FindResult, FolderEntry, PosC,
+    ExternalCheck, ExternalMergePreview, FindCursor, FindOutcome, FindResult, FolderEntry, OpenAs, PosC,
     ReplaceChunkResult, SaveOutcome, SearchOptions, WorkspaceSearchOutcome,
 };
 
@@ -88,6 +88,8 @@ struct ViewerPayload {
     selection: Option<ViewerSelection>,
     // Markdown 内の相対パス画像は元ファイルの位置からしか解決できない (未保存なら None)
     source_path: Option<String>,
+    // 形式指定で開いた場合も、実パスは資産読込用にそのまま保持する。
+    effective_extension: Option<String>,
     // アーカイブ内メモの画像は、アーカイブエントリを IPC 経由で読む。
     archive_path: Option<String>,
     archive_entry: Option<String>,
@@ -101,8 +103,13 @@ struct ViewerSelection {
 }
 
 #[tauri::command]
-fn open_path(path: String, state: State, app: AppHandle) -> Result<DocInfo, String> {
-    document::open_path(path, state, app)
+fn open_path(
+    path: String,
+    open_as: Option<OpenAs>,
+    state: State,
+    app: AppHandle,
+) -> Result<DocInfo, String> {
+    document::open_path(path, open_as, state, app)
 }
 
 #[tauri::command]
@@ -126,10 +133,14 @@ fn line_char_len(line: usize, state: State) -> Result<usize, String> {
 }
 
 #[tauri::command]
-async fn select_entry(rel_path: String, app: AppHandle) -> Result<DocInfo, String> {
+async fn select_entry(
+    rel_path: String,
+    open_as: Option<OpenAs>,
+    app: AppHandle,
+) -> Result<DocInfo, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Mutex<DocState>>();
-        document::select_entry(rel_path, state)
+        document::select_entry(rel_path, open_as, state)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -191,7 +202,7 @@ fn create_note(
 }
 
 #[tauri::command]
-fn create_folder(rel_dir: String, name: String, state: State) -> Result<(), String> {
+fn create_folder(rel_dir: String, name: String, state: State) -> Result<String, String> {
     document::create_folder(rel_dir, name, state)
 }
 
@@ -277,8 +288,8 @@ fn open_in_other_app(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn open_in_default_browser(path: String) -> Result<(), String> {
-    system::open_in_default_browser(path)
+fn open_in_default_browser(path: String, effective_extension: Option<String>) -> Result<(), String> {
+    system::open_in_default_browser(path, effective_extension)
 }
 
 #[tauri::command]
@@ -487,6 +498,17 @@ async fn read_archive_asset(
 }
 
 #[tauri::command]
+async fn read_file_asset(path: String, app: AppHandle) -> Result<tauri::ipc::Response, String> {
+    let bytes = tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<DocState>>();
+        document::read_file_asset(path, state)
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+#[tauri::command]
 fn take_pending_window_requests(state: tauri::State<'_, InstanceServer>) -> Vec<WindowRequest> {
     drain_pending_window_requests(&state)
 }
@@ -527,11 +549,22 @@ async fn open_viewer(
     text: String,
     selection: Option<ViewerSelection>,
     source_path: Option<String>,
+    effective_extension: Option<String>,
     app: AppHandle,
     doc_state: State<'_>,
     state: tauri::State<'_, ViewerStore>,
 ) -> Result<String, String> {
-    viewer::open_viewer(format, text, selection, source_path, app, doc_state, state).await
+    viewer::open_viewer(
+        format,
+        text,
+        selection,
+        source_path,
+        effective_extension,
+        app,
+        doc_state,
+        state,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -620,6 +653,7 @@ fn main() {
             save_pasted_image,
             cleanup_unused_images,
             read_archive_asset,
+            read_file_asset,
             reveal_in_explorer,
             open_in_other_app,
             open_in_default_browser,

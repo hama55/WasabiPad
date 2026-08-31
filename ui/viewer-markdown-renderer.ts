@@ -22,6 +22,7 @@ export interface MarkdownRenderResult {
 export interface MarkdownRenderOptions {
   sourcePath?: string | null;
   archivePath?: string | null;
+  breaks?: boolean;
 }
 
 function decorateTaskListItems(article: HTMLElement) {
@@ -87,7 +88,12 @@ export function renderMarkdownDocument(
 ): MarkdownRenderResult {
   const article = document.createElement("article");
   const sourceLines = text.split(/\r?\n/);
-  const markdown = new MarkdownIt({ breaks: false, html: true, linkify: true, typographer: false });
+  const markdown = new MarkdownIt({
+    breaks: options.breaks ?? true,
+    html: true,
+    linkify: true,
+    typographer: false,
+  });
   const rawHtml = (tokens: { content: string }[], index: number) =>
     renderRawHtml(tokens[index].content, markdown.utils.escapeHtml);
   markdown.renderer.rules.html_block = rawHtml;

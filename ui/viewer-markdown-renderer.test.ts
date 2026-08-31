@@ -58,8 +58,8 @@ describe("Feature: Markdown viewer drawing boundary", () => {
 
   // Given: 単一改行・末尾半角スペース2つ・`<br>`・空行と、未完了/完了のGFMタスクリスト
   // When: Markdown専用rendererで文書を描画する
-  // Then: 明示した改行だけが`br`になり、空行は段落を分け、タスク記号は操作不可のチェックボックスへ変換される
-  it("Scenario: Markdown標準の改行規則とタスクリストを表示する", () => {
+  // Then: 通常改行も`br`になり、空行は段落を分け、タスク記号は操作不可のチェックボックスへ変換される
+  it("Scenario: Markdown設定に応じた改行規則とタスクリストを表示する", () => {
     const { article } = renderMarkdownDocument(
       "first line\nsecond line  \nthird<br>line\n\nfourth paragraph\n\n- [ ] todo\n- [x] done",
       null,
@@ -67,11 +67,60 @@ describe("Feature: Markdown viewer drawing boundary", () => {
 
     const paragraphs = article.querySelectorAll("p");
     expect(paragraphs).toHaveLength(2);
-    expect(paragraphs[0].querySelectorAll("br")).toHaveLength(2);
+    expect(paragraphs[0].querySelectorAll("br")).toHaveLength(3);
     const checkboxes = [...article.querySelectorAll<HTMLInputElement>("input.viewer-markdown-task")];
     expect(checkboxes).toHaveLength(2);
     expect(checkboxes[0].disabled).toBe(true);
     expect(checkboxes[0].checked).toBe(false);
     expect(checkboxes[1].checked).toBe(true);
+  });
+
+  // Feature: Markdownプレビューの通常改行
+  // Scenario: 設定ONで段落内の通常改行を表示する
+  // Given: 段落内に半角スペース2つを付けない改行がある
+  // When: `breaks: true`でMarkdownを描画する
+  // Then: 通常改行も`br`として表示する
+  it("Scenario: 設定ONで段落内の通常改行を表示する", () => {
+    const { article } = renderMarkdownDocument("first line\nsecond line", null, { breaks: true });
+
+    expect(article.querySelectorAll("p")).toHaveLength(1);
+    expect(article.querySelectorAll("p br")).toHaveLength(1);
+  });
+
+  // Feature: Markdownプレビューの通常改行
+  // Scenario: 設定OFFで段落内の通常改行を表示しない
+  // Given: 段落内に半角スペース2つを付けない改行がある
+  // When: `breaks: false`でMarkdownを描画する
+  // Then: 通常改行を`br`へ変換しない
+  it("Scenario: 設定OFFで段落内の通常改行を表示しない", () => {
+    const { article } = renderMarkdownDocument("first line\nsecond line", null, { breaks: false });
+
+    expect(article.querySelectorAll("p")).toHaveLength(1);
+    expect(article.querySelectorAll("p br")).toHaveLength(0);
+  });
+
+  // Feature: Markdownプレビューの標準段落
+  // Scenario: 連続空行を段落区切りとして扱う
+  // Given: 2つの本文の間に複数の空行がある
+  // When: Markdownを描画する
+  // Then: 段落は2つに分かれ、独自の空白要素は追加しない
+  it("Scenario: 連続空行は標準の段落区切りとして扱う", () => {
+    const { article } = renderMarkdownDocument("first\n\n\nsecond", null, { breaks: true });
+
+    expect(article.querySelectorAll("p")).toHaveLength(2);
+    expect(article.querySelectorAll(".viewer-markdown-blank-line")).toHaveLength(0);
+    expect([...article.children].map((element) => element.tagName)).toEqual(["P", "P"]);
+  });
+
+  // Feature: Markdownプレビューの空白行保持
+  // Scenario: リスト内部の空行はMarkdownの構造を優先する
+  // Given: 2つのリスト項目の間に空行がある
+  // When: Markdown専用rendererで文書を描画する
+  // Then: リストを壊す専用空白要素を追加しない
+  it("Scenario: リスト内部の空行はMarkdown構造を維持する", () => {
+    const { article } = renderMarkdownDocument("- first\n\n- second", null);
+
+    expect(article.querySelectorAll(".viewer-markdown-blank-line")).toHaveLength(0);
+    expect(article.querySelectorAll("li")).toHaveLength(2);
   });
 });

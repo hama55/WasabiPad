@@ -29,7 +29,7 @@ installDomStubs();
 function mount(
   initial: string,
   saveImage?: EditorPorts["saveImage"],
-  overrides: Partial<Pick<EditorPorts, "revealInExplorer" | "openInNewWindow" | "registeredCommandPorts" | "openViewer">> = {},
+  overrides: Partial<Pick<EditorPorts, "revealInExplorer" | "openInNewTab" | "openInNewWindow" | "openAs" | "registeredCommandPorts" | "openViewer">> = {},
 ) {
   const host = document.createElement("div");
   document.body.replaceChildren(host);
@@ -45,7 +45,9 @@ function mount(
     onCursor: (line, col) => { events.cursor = [line, col]; },
     onFontChange: (family, size, changed) => { events.fontChanges.push({ family, size, changed }); },
     openExternally: () => {},
+    openInNewTab: overrides.openInNewTab,
     openInNewWindow: overrides.openInNewWindow,
+    openAs: overrides.openAs,
     revealInExplorer: overrides.revealInExplorer,
     registeredCommandPorts: overrides.registeredCommandPorts ?? {
       promptFields: async () => null,
@@ -58,6 +60,11 @@ function mount(
     saveImage,
   };
   const editor = new VirtualEditor(host, ports, undefined, doc.client);
+  const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
+  Object.defineProperties(scroll, {
+    clientHeight: { configurable: true, value: 100 },
+    clientWidth: { configurable: true, value: 300 },
+  });
   const input = host.querySelector<HTMLTextAreaElement>(".ve-input")!;
   const type = (value: string) => {
     input.value = value;
@@ -144,6 +151,45 @@ describe("Feature: VirtualEditor", () => {
     editor.open(3, false);
     await settle();
     expect(doc.calls.some((call) => call.startsWith("lines("))).toBe(true);
+  });
+
+  // Given: window最小化中のためeditor viewportが0×0である
+  // When: 文書を開いてから復元後の有効なResizeObserver通知を受け取る
+  // Then: 0寸法では空の描画を確定せず、復元後に可視行を描画する
+  it("Scenario: 0寸法のviewportを描画へ確定せず復元後に再描画する", async () => {
+    const originalResizeObserver = globalThis.ResizeObserver;
+    let notifyResize: ResizeObserverCallback | undefined;
+    (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = class {
+      constructor(callback: ResizeObserverCallback) {
+        notifyResize = callback;
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    };
+    try {
+      const { editor, host } = mount("line");
+      const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
+      Object.defineProperties(scroll, {
+        clientHeight: { configurable: true, value: 0 },
+        clientWidth: { configurable: true, value: 0 },
+      });
+
+      editor.open(1, false);
+
+      expect(host.querySelector(".ve-line")).toBeNull();
+
+      Object.defineProperties(scroll, {
+        clientHeight: { configurable: true, value: 100 },
+        clientWidth: { configurable: true, value: 300 },
+      });
+      notifyResize?.([], {} as ResizeObserver);
+      await vi.waitFor(() => {
+        expect(host.querySelector<HTMLElement>(".ve-line")?.textContent).toBe("line");
+      });
+    } finally {
+      (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = originalResizeObserver;
+    }
   });
 
   // Feature: フォルダ検索の一致単位置換
@@ -998,8 +1044,13 @@ describe("Feature: VirtualEditor", () => {
   // Then: revealInExplorer が実ファイルのパスで1回だけ呼ばれる
   it("Scenario: 保存済みメモの右クリックから実ファイルをExplorerで開く", async () => {
     const revealInExplorer = vi.fn();
+    const openInNewTab = vi.fn();
+    const openAs = vi.fn();
     const { editor, host } = mount("memo", undefined, {
       revealInExplorer,
+      openInNewTab,
+      openAs,
+      openInNewWindow: vi.fn(),
     });
     const dropdown = document.createElement("div");
     dropdown.id = "dropdown";
@@ -1012,6 +1063,9 @@ describe("Feature: VirtualEditor", () => {
     );
     expect([...dropdown.querySelectorAll<HTMLElement>(".dd-label")].map((element) => element.textContent)).toEqual([
       "エクスプローラで開く",
+      "新規タブで開く",
+      "新規ウィンドウで開く",
+      "形式を指定して開く ▸",
       "元に戻す",
       "やり直し",
       "切り取り",
@@ -1024,11 +1078,14 @@ describe("Feature: VirtualEditor", () => {
       "Imageビュー",
       "PDFビュー",
       "html(静的)",
-      "アプリで開く",
+      "Windowsアプリで開く",
     ]);
     expect(dropdown.querySelector<HTMLElement>(".dd-label")?.textContent).toBe("エクスプローラで開く");
     const editorIcons = [
       ["エクスプローラで開く", MENU_ICON.explorer],
+      ["新規タブで開く", MENU_ICON.newTab],
+      ["新規ウィンドウで開く", MENU_ICON.newWindow],
+      ["形式を指定して開く ▸", MENU_ICON.more],
       ["元に戻す", MENU_ICON.undo],
       ["やり直し", MENU_ICON.redo],
       ["切り取り", MENU_ICON.cut],
@@ -1041,20 +1098,38 @@ describe("Feature: VirtualEditor", () => {
       ["Imageビュー", MENU_ICON.image],
       ["PDFビュー", MENU_ICON.pdf],
       ["html(静的)", MENU_ICON.html],
-      ["アプリで開く", MENU_ICON.external],
+      ["Windowsアプリで開く", MENU_ICON.external],
     ] as const;
     for (const [label, icon] of editorIcons) {
       const menuItem = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
         .find((element) => element.textContent === label);
       expect(menuItem?.querySelector(`.${icon}`), label).not.toBeNull();
     }
-    expect(dropdown.querySelectorAll(".dd-sep")).toHaveLength(4);
+    expect(dropdown.querySelectorAll(".dd-sep")).toHaveLength(5);
     const item = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
       .find((element) => element.textContent === "エクスプローラで開く");
     item?.click();
     await settle();
 
     expect(revealInExplorer).toHaveBeenCalledWith("C:\\work\\memo.txt", false);
+
+    host.querySelector<HTMLElement>(".ve-scroll")!.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, clientX: 0, clientY: 0 }),
+    );
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((element) => element.textContent === "新規タブで開く")!.click();
+    await settle();
+    expect(openInNewTab).toHaveBeenCalledOnce();
+
+    host.querySelector<HTMLElement>(".ve-scroll")!.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, clientX: 0, clientY: 0 }),
+    );
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((element) => element.textContent === "形式を指定して開く ▸")!.click();
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-submenu .dd-item")]
+      .find((element) => element.textContent === ".md")!.click();
+    await settle();
+    expect(openAs).toHaveBeenCalledWith("md");
   });
 
   // Given: 外部ファイルパスと新規ウィンドウ操作がある
@@ -1120,6 +1195,30 @@ describe("Feature: VirtualEditor", () => {
       .not.toContain("エクスプローラで開く");
   });
 
+  // Given: 未保存の新規メモを表示している
+  // When: エディタ本文のコンテキストメニューを開く
+  // Then: 新規タブと形式指定は表示しない
+  it("Scenario: 未保存メモでは文書を開く操作を表示しない", async () => {
+    const { editor, host } = mount("memo", undefined, {
+      openInNewTab: vi.fn(),
+      openAs: vi.fn(),
+    });
+    const dropdown = document.createElement("div");
+    dropdown.id = "dropdown";
+    document.body.appendChild(dropdown);
+    editor.open(1, false);
+    await settle();
+
+    host.querySelector<HTMLElement>(".ve-scroll")!.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, clientX: 0, clientY: 0 }),
+    );
+
+    const labels = [...dropdown.querySelectorAll<HTMLElement>(".dd-label")]
+      .map((item) => item.textContent);
+    expect(labels).not.toContain("新規タブで開く");
+    expect(labels).not.toContain("形式を指定して開く ▸");
+  });
+
   // Given: 外部ファイルパスがあり、Explorer起動がError("explorer failed")で拒否される
   // When: 保存済みメモの右クリックから「エクスプローラで開く」をクリックする
   // Then: エディタのエラー境界から「エクスプローラで開けませんでした」を通知する
@@ -1152,6 +1251,9 @@ describe("Feature: VirtualEditor", () => {
   it("Scenario: 閲覧専用メモの右クリック項目を編集なしで並べる", async () => {
     const { editor, host } = mount("memo", undefined, {
       revealInExplorer: vi.fn(),
+      openInNewTab: vi.fn(),
+      openInNewWindow: vi.fn(),
+      openAs: vi.fn(),
     });
     const dropdown = document.createElement("div");
     dropdown.id = "dropdown";
@@ -1165,6 +1267,9 @@ describe("Feature: VirtualEditor", () => {
 
     expect([...dropdown.querySelectorAll<HTMLElement>(".dd-label")].map((item) => item.textContent)).toEqual([
       "エクスプローラで開く",
+      "新規タブで開く",
+      "新規ウィンドウで開く",
+      "形式を指定して開く ▸",
       "コピー",
       "すべて選択",
       "CSVビュー",
@@ -1172,9 +1277,9 @@ describe("Feature: VirtualEditor", () => {
       "Imageビュー",
       "PDFビュー",
       "html(静的)",
-      "アプリで開く",
+      "Windowsアプリで開く",
     ]);
-    expect(dropdown.querySelectorAll(".dd-sep")).toHaveLength(3);
+    expect(dropdown.querySelectorAll(".dd-sep")).toHaveLength(4);
     for (const [label, icon] of [
       ["エクスプローラで開く", MENU_ICON.explorer],
       ["コピー", MENU_ICON.copy],
@@ -1184,7 +1289,7 @@ describe("Feature: VirtualEditor", () => {
       ["Imageビュー", MENU_ICON.image],
       ["PDFビュー", MENU_ICON.pdf],
       ["html(静的)", MENU_ICON.html],
-      ["アプリで開く", MENU_ICON.external],
+      ["Windowsアプリで開く", MENU_ICON.external],
     ] as const) {
       const item = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
         .find((element) => element.textContent === label);
@@ -1222,6 +1327,9 @@ describe("Feature: VirtualEditor", () => {
     const registeredCommandPorts: RegisteredCommandMenuPorts = { promptFields, runExternalCommand };
     const { editor, host, events } = mount("https://example.com", undefined, {
       revealInExplorer: vi.fn(),
+      openInNewTab: vi.fn(),
+      openInNewWindow: vi.fn(),
+      openAs: vi.fn(),
       registeredCommandPorts,
     });
     const dropdown = document.createElement("div");
@@ -1242,6 +1350,9 @@ describe("Feature: VirtualEditor", () => {
     showContextMenu();
     expect([...dropdown.querySelectorAll<HTMLElement>(".dd-label")].map((item) => item.textContent)).toEqual([
       "エクスプローラで開く",
+      "新規タブで開く",
+      "新規ウィンドウで開く",
+      "形式を指定して開く ▸",
       "元に戻す",
       "やり直し",
       "切り取り",
@@ -1256,7 +1367,7 @@ describe("Feature: VirtualEditor", () => {
       "Imageビュー",
       "PDFビュー",
       "html(静的)",
-      "アプリで開く",
+      "Windowsアプリで開く",
     ]);
     for (const [label, icon] of [
       ["エクスプローラで開く", MENU_ICON.explorer],

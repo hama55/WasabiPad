@@ -55,6 +55,7 @@ export const IPC_COMMANDS = {
   launchNewInstance: "launch_new_instance",
   initialWindowRequest: "initial_window_request",
   readArchiveAsset: "read_archive_asset",
+  readFileAsset: "read_file_asset",
   takePendingWindowRequests: "take_pending_window_requests",
   openViewer: "open_viewer",
   takeViewerPayload: "take_viewer_payload",

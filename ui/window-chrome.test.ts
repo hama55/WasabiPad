@@ -17,11 +17,13 @@ function mountChrome() {
   const unlistenResized = vi.fn();
   const unlistenMoved = vi.fn();
   const unlistenScaleChanged = vi.fn();
+  const unlistenFocusChanged = vi.fn();
   const unlistenCloseRequested = vi.fn();
   const win = {
     minimize: vi.fn(),
     close: vi.fn(),
     toggleMaximize: vi.fn(),
+    isMinimized: vi.fn(async () => false),
     isMaximized: vi.fn(async () => false),
     setTitle: vi.fn(),
     onResized: vi.fn(async (handler: () => void) => {
@@ -36,9 +38,23 @@ function mountChrome() {
       handlers.scale = handler;
       return unlistenScaleChanged;
     }),
+    onFocusChanged: vi.fn(async (handler: () => void) => {
+      handlers.focus = handler;
+      return unlistenFocusChanged;
+    }),
     onCloseRequested: vi.fn(async () => unlistenCloseRequested),
   } as unknown as Window;
-  return { host, notice, win, handlers, unlistenResized, unlistenMoved, unlistenScaleChanged, unlistenCloseRequested };
+  return {
+    host,
+    notice,
+    win,
+    handlers,
+    unlistenResized,
+    unlistenMoved,
+    unlistenScaleChanged,
+    unlistenFocusChanged,
+    unlistenCloseRequested,
+  };
 }
 
 describe("Feature: WindowChrome", () => {
@@ -59,6 +75,23 @@ describe("Feature: WindowChrome", () => {
     handlers.scale();
 
     expect(onGeometryChange).toHaveBeenCalledTimes(3);
+  });
+
+  // Given: native windowのgeometry監視を登録している
+  // When: 最小化から復元したwindowのfocus変更を受け取る
+  // Then: resizeが届かなくても同じgeometry同期へ渡す
+  it("Scenario: focus復元をgeometry同期へ渡す", async () => {
+    const { host, notice, win, handlers } = mountChrome();
+    const onGeometryChange = vi.fn();
+    new WindowChrome(host, win, {
+      onCloseRequest: async () => true,
+      onGeometryChange,
+      onError: async () => {},
+    }, notice);
+
+    handlers.focus();
+
+    await vi.waitFor(() => expect(onGeometryChange).toHaveBeenCalledOnce());
   });
 
   // Given: titlebar外の通知要素とfake timer
@@ -97,9 +130,10 @@ describe("Feature: WindowChrome", () => {
 
     chrome.dispose();
     await vi.waitFor(() => {
-      expect(fixture.unlistenResized).toHaveBeenCalledTimes(2);
+      expect(fixture.unlistenResized).toHaveBeenCalledOnce();
       expect(fixture.unlistenMoved).toHaveBeenCalledOnce();
       expect(fixture.unlistenScaleChanged).toHaveBeenCalledOnce();
+      expect(fixture.unlistenFocusChanged).toHaveBeenCalledOnce();
       expect(fixture.unlistenCloseRequested).toHaveBeenCalledOnce();
     });
   });

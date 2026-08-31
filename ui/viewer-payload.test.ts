@@ -11,6 +11,7 @@ describe("Feature: viewer payload validation", () => {
       text: "# memo",
       selection: { start: { line: 0, col: 0 }, end: { line: 0, col: 4 } },
       source_path: "C:\\work\\memo.md",
+      effective_extension: null,
       archive_path: null,
       archive_entry: null,
     })).toBe(true);
@@ -25,6 +26,7 @@ describe("Feature: viewer payload validation", () => {
       text: "# memo",
       selection: null,
       source_path: null,
+      effective_extension: null,
       archive_path: null,
       archive_entry: null,
     };

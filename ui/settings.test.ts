@@ -105,6 +105,15 @@ describe("Feature: settings", () => {
     expect(invalid.previewFontSize).toBe(14);
   });
 
+  // Given: Markdownの通常改行設定が未設定・`false`・不正値として保存されている
+  // When: `parseSettings`を呼ぶ
+  // Then: 既定値は有効、明示したbooleanだけ復元し、不正値は既定値へ戻す
+  it("Scenario: Markdown通常改行設定を安全に復元する", () => {
+    expect(parseSettings("{}").markdownSoftBreaks).toBe(true);
+    expect(parseSettings(JSON.stringify({ markdownSoftBreaks: false })).markdownSoftBreaks).toBe(false);
+    expect(parseSettings(JSON.stringify({ markdownSoftBreaks: "false" })).markdownSoftBreaks).toBe(true);
+  });
+
   // Given: エディタ用サイズ16とプレビュー用サイズ20を保存
   // When: `parseSettings`を呼ぶ
   // Then: それぞれのサイズを独立して復元する
@@ -124,6 +133,7 @@ describe("Feature: settings", () => {
     };
     setSetting("openTabs", openTabs);
     setSetting("fontSize", 20);
+    setSetting("markdownSoftBreaks", false);
     setSetting("startupPath", "C:\\work");
     setSetting("registeredStrings", ["snippet"]);
     await flushSettings();
@@ -133,6 +143,7 @@ describe("Feature: settings", () => {
     await flushSettings();
 
     expect(getSetting("fontSize")).toBe(14);
+    expect(getSetting("markdownSoftBreaks")).toBe(true);
     expect(getSetting("startupPath")).toBeNull();
     expect(getSetting("registeredStrings")).toEqual([]);
     expect(getSetting("openTabs")).toEqual(openTabs);
@@ -148,6 +159,17 @@ describe("Feature: settings", () => {
     await flushSettings();
 
     expect(updateSettingMock).toHaveBeenCalledWith("previewFontSize", "20");
+  });
+
+  // Given: Markdown通常改行を無効にする
+  // When: 設定保存をflushする
+  // Then: 専用キーへboolean値を保存する
+  it("Scenario: Markdown通常改行設定は専用キーへ保存する", async () => {
+    setSetting("markdownSoftBreaks", false);
+
+    await flushSettings();
+
+    expect(updateSettingMock).toHaveBeenCalledWith("markdownSoftBreaks", "false");
   });
 
   // Given: `workspaceSearchOptions`未設定または`{ max_files: 5 }`

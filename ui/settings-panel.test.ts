@@ -10,6 +10,7 @@ function makePorts(initial: Partial<Settings> = {}): SettingsPanelPorts {
     fontFamily: 'Consolas, "MS Gothic", monospace',
     fontSize: 14,
     previewFontSize: 14,
+    markdownSoftBreaks: true,
     startupPath: null,
     registeredStrings: [],
     registeredCommands: [],
@@ -30,6 +31,7 @@ function makePorts(initial: Partial<Settings> = {}): SettingsPanelPorts {
     applyFontSize: vi.fn(),
     applyIndent: vi.fn(),
     applyPreviewFontSize: vi.fn(),
+    applyMarkdownSoftBreaks: vi.fn(),
     getSearchOptions: () => searchOptions,
     updateSearchOptions: vi.fn((next) => {
       searchOptions = next;
@@ -58,6 +60,7 @@ describe("Feature: settings quick menu", () => {
     for (const key of ["theme", "font-family", "font-size", "indent-size", "preview-font-size"]) {
       expect(document.querySelector(`[data-setting="${key}"]`)).not.toBeNull();
     }
+    expect(document.querySelector('[data-setting="markdown-soft-breaks"]')).toBeNull();
     document.querySelector<HTMLButtonElement>(".settings-open-all")!.click();
     expect(onOpenAll).toHaveBeenCalledOnce();
 
@@ -135,6 +138,24 @@ describe("Feature: settings modal", () => {
     expect(document.querySelector("[data-settings-section=登録]")).not.toBeNull();
     expect(document.querySelector('[data-setting="startup-path"]')).not.toBeNull();
     expect(document.querySelector(".settings-reset")).not.toBeNull();
+  });
+
+  // Given: Markdown通常改行設定を有効にした現在のアプリ設定
+  // When: 詳細設定のプレビュー項目を開いて切り替える
+  // Then: 設定を保存し、表示中のプレビューへ即時反映する
+  it("Scenario: Markdown通常改行をプレビュー設定から切り替える", () => {
+    const ports = makePorts();
+    openSettingsModal(ports);
+
+    const previewSection = document.querySelector<HTMLElement>("[data-settings-section=プレビュー]")!;
+    const input = previewSection.querySelector<HTMLInputElement>('[data-setting="markdown-soft-breaks"]')!;
+    expect(input.type).toBe("checkbox");
+    expect(input.checked).toBe(true);
+    input.click();
+
+    expect(ports.setSetting).toHaveBeenCalledWith("markdownSoftBreaks", false);
+    expect(ports.applyMarkdownSoftBreaks).toHaveBeenCalledWith(false);
+    expect(document.querySelector(".settings-box")).not.toBeNull();
   });
 
   // Given: 詳細設定を開いている

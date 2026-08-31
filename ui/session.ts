@@ -23,6 +23,7 @@ export interface DocumentSession {
   selectedRelPath: string;
   archivePath: string | null;
   archiveEntry: string | null;
+  effectiveExtension: string | null;
 }
 
 export function initialSession(): DocumentSession {
@@ -41,6 +42,7 @@ export function initialSession(): DocumentSession {
     selectedRelPath: "",
     archivePath: null,
     archiveEntry: null,
+    effectiveExtension: null,
   };
 }
 
@@ -53,9 +55,34 @@ export function externalFilePathOf(info: Pick<DocInfo, "path" | "folder_root">):
 }
 
 export function documentPathOf(
-  session: Pick<DocumentSession, "selectedRelPath" | "savePath" | "displayPath">,
+  session: Pick<DocumentSession, "selectedRelPath" | "savePath" | "displayPath">
+    & Partial<Pick<DocumentSession, "archiveEntry" | "effectiveExtension">>,
 ): string {
-  return session.selectedRelPath || session.savePath || session.displayPath;
+  const path = session.selectedRelPath || session.savePath || session.displayPath;
+  if (!path || !session.effectiveExtension || session.archiveEntry || splitArchiveEntryPath(path)) return path;
+  return `${path}.${session.effectiveExtension}`;
+}
+
+// 表示対象の識別子は実パス/アーカイブ内相対パスのまま保持し、
+// 拡張子で形式を判定する箇所だけ有効拡張子を付加する。
+// アーカイブ内項目では書庫形式を分類へ混ぜず、項目へ指定した形式だけを
+// `archive.bin::memo.bin.md`のように判定へ反映する。
+export function classificationPathOf(
+  session: Pick<DocumentSession, "selectedRelPath" | "savePath" | "displayPath">
+    & Partial<Pick<DocumentSession, "archiveEntry" | "effectiveExtension">>,
+): string {
+  const path = session.selectedRelPath || session.savePath || session.displayPath;
+  if (!path || !session.effectiveExtension) return path;
+  if (session.archiveEntry || splitArchiveEntryPath(path)) {
+    // archive形式は書庫を開くための指定であり、内部項目の分類には使わない。
+    if (isArchiveExtension(session.effectiveExtension)) return path;
+    return `${path}.${session.effectiveExtension}`;
+  }
+  return documentPathOf(session);
+}
+
+function isArchiveExtension(extension: string): boolean {
+  return ["zip", "7z", "xlsx", "xls"].includes(extension.toLowerCase());
 }
 
 export function sessionFromDocInfo(
@@ -84,6 +111,7 @@ export function sessionFromDocInfo(
     selectedRelPath: previous.selectedRelPath,
     archivePath,
     archiveEntry,
+    effectiveExtension: info.effective_extension,
   };
 }
 

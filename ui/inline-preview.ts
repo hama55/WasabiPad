@@ -12,6 +12,7 @@ const {
   DELIMITER_MESSAGE,
   FONT_MESSAGE,
   FONT_SIZE_MESSAGE,
+  MARKDOWN_SOFT_BREAKS_MESSAGE,
   FONT_CHANGE_MESSAGE,
   FULLSCREEN_CHANGE_MESSAGE,
   FULLSCREEN_STATE_MESSAGE,
@@ -36,11 +37,13 @@ export class InlinePreview {
   private nextLabel = 0;
   private ready = false;
   private sourcePath: string | null = null;
+  private effectiveExtension: string | null = null;
   private archivePath: string | null = null;
   private archiveEntry: string | null = null;
   private delimiter = DEFAULT_CSV_DELIMITER;
   private fontFamily: string | null = null;
   private fontSize: number | null = null;
+  private markdownSoftBreaks = true;
   private fullscreen = false;
   private pendingMarkdownFragment: string | null = null;
 
@@ -93,10 +96,16 @@ export class InlinePreview {
     });
   }
 
-  setSourcePath(path: string | null, archivePath: string | null = null, archiveEntry: string | null = null) {
+  setSourcePath(
+    path: string | null,
+    archivePath: string | null = null,
+    archiveEntry: string | null = null,
+    effectiveExtension: string | null = null,
+  ) {
     this.sourcePath = path;
     this.archivePath = archivePath;
     this.archiveEntry = archiveEntry;
+    this.effectiveExtension = effectiveExtension;
   }
 
   setDelimiter(delimiter: string) {
@@ -114,7 +123,13 @@ export class InlinePreview {
     this.sendFontSize();
   }
 
+  setMarkdownSoftBreaks(enabled: boolean) {
+    this.markdownSoftBreaks = enabled;
+    this.sendMarkdownSoftBreaks();
+  }
+
   setFullscreen(fullscreen: boolean) {
+    if (this.fullscreen === fullscreen) return;
     this.fullscreen = fullscreen;
     this.send();
   }
@@ -169,6 +184,7 @@ export class InlinePreview {
       text,
       selection,
       source_path: this.sourcePath,
+      effective_extension: this.effectiveExtension,
       archive_path: this.archivePath,
       archive_entry: this.archiveEntry,
     };
@@ -180,7 +196,15 @@ export class InlinePreview {
       type: FULLSCREEN_STATE_MESSAGE,
       fullscreen: this.fullscreen,
     }, window.location.origin);
+    this.sendMarkdownSoftBreaks();
     if (!this.payload) return;
+    // 区切り文字の変更は、現在のビューがCSVなら再描画を開始する。
+    // 本文を先に送ると、その再描画が非同期の本文描画を中断するため、
+    // 付随設定を先に同期してから本文を送る。
+    this.frame.contentWindow?.postMessage({
+      type: DELIMITER_MESSAGE,
+      delimiter: this.delimiter,
+    }, window.location.origin);
     this.frame.contentWindow?.postMessage({ type: PAYLOAD_MESSAGE, payload: this.payload }, window.location.origin);
     if (this.pendingMarkdownFragment !== null) {
       this.frame.contentWindow?.postMessage({
@@ -189,10 +213,6 @@ export class InlinePreview {
       }, window.location.origin);
       this.pendingMarkdownFragment = null;
     }
-    this.frame.contentWindow?.postMessage({
-      type: DELIMITER_MESSAGE,
-      delimiter: this.delimiter,
-    }, window.location.origin);
     this.sendFontFamily();
     this.sendFontSize();
   }
@@ -210,6 +230,14 @@ export class InlinePreview {
     this.frame.contentWindow?.postMessage({
       type: FONT_SIZE_MESSAGE,
       size: this.fontSize,
+    }, window.location.origin);
+  }
+
+  private sendMarkdownSoftBreaks() {
+    if (!this.ready) return;
+    this.frame.contentWindow?.postMessage({
+      type: MARKDOWN_SOFT_BREAKS_MESSAGE,
+      enabled: this.markdownSoftBreaks,
     }, window.location.origin);
   }
 
