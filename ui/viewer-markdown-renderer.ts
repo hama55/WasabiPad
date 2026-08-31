@@ -1,5 +1,4 @@
 import MarkdownIt from "markdown-it";
-import Token from "markdown-it/lib/token.mjs";
 import type { ViewerSelection } from "./api";
 import {
   markdownBlockSelected,
@@ -23,6 +22,7 @@ export interface MarkdownRenderResult {
 export interface MarkdownRenderOptions {
   sourcePath?: string | null;
   archivePath?: string | null;
+  breaks?: boolean;
 }
 
 function decorateTaskListItems(article: HTMLElement) {
@@ -81,49 +81,6 @@ function markdownLinkTitle(
   return "Ctrl+クリックで新規タブで開く";
 }
 
-const BLANK_LINE_TOKEN = "wasabipad_blank_line";
-
-function isBlankSourceLine(line: string): boolean {
-  return /^[ \t]*$/.test(line);
-}
-
-function isTopLevelBlock(token: Token): boolean {
-  return token.block && token.level === 0 && token.map !== null && token.nesting >= 0;
-}
-
-function blankLineToken(): Token {
-  const token = new Token(BLANK_LINE_TOKEN, "div", 0);
-  token.block = true;
-  return token;
-}
-
-function blankLineTokensBetween(sourceLines: string[], start: number, end: number): Token[] {
-  const lines = sourceLines.slice(start, end);
-  return lines.length && lines.every(isBlankSourceLine)
-    ? lines.map(() => blankLineToken())
-    : [];
-}
-
-function insertTopLevelBlankLines(tokens: Token[], sourceLines: string[]): Token[] {
-  const blocks = tokens.filter(isTopLevelBlock);
-  if (!blocks.length) return blankLineTokensBetween(sourceLines, 0, sourceLines.length);
-
-  const output: Token[] = [];
-  let sourceEnd = 0;
-  let blockIndex = 0;
-  tokens.forEach((token) => {
-    if (token === blocks[blockIndex]) {
-      const [sourceStart, nextSourceEnd] = token.map!;
-      output.push(...blankLineTokensBetween(sourceLines, sourceEnd, sourceStart));
-      sourceEnd = nextSourceEnd;
-      blockIndex += 1;
-    }
-    output.push(token);
-  });
-  output.push(...blankLineTokensBetween(sourceLines, sourceEnd, sourceLines.length));
-  return output;
-}
-
 export function renderMarkdownDocument(
   text: string,
   selection: ViewerSelection | null,
@@ -131,14 +88,17 @@ export function renderMarkdownDocument(
 ): MarkdownRenderResult {
   const article = document.createElement("article");
   const sourceLines = text.split(/\r?\n/);
-  const markdown = new MarkdownIt({ breaks: false, html: true, linkify: true, typographer: false });
-  markdown.renderer.rules[BLANK_LINE_TOKEN] = () =>
-    '<div class="viewer-markdown-blank-line" aria-hidden="true"></div>';
+  const markdown = new MarkdownIt({
+    breaks: options.breaks ?? true,
+    html: true,
+    linkify: true,
+    typographer: false,
+  });
   const rawHtml = (tokens: { content: string }[], index: number) =>
     renderRawHtml(tokens[index].content, markdown.utils.escapeHtml);
   markdown.renderer.rules.html_block = rawHtml;
   markdown.renderer.rules.html_inline = rawHtml;
-  const tokens = insertTopLevelBlankLines(markdown.parse(text, {}), sourceLines);
+  const tokens = markdown.parse(text, {});
   tokens.forEach((token) => {
     if (token.nesting === 1 && token.map) {
       token.attrSet("data-source-start", String(token.map[0]));

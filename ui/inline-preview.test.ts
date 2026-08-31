@@ -131,6 +131,51 @@ describe("Feature: inline preview", () => {
     }, window.location.origin);
   });
 
+  // Given: エディタがMarkdown通常改行設定を変更している
+  // When: iframeの準備完了通知を受け取る
+  // Then: 保留していた設定をプレビューへ送る
+  it("Scenario: sends a queued Markdown soft-break setting after the iframe is ready", async () => {
+    const { host, preview } = mount();
+    const frame = host.querySelector("iframe")!;
+    const postMessage = vi.spyOn(frame.contentWindow!, "postMessage");
+    await preview.open("markdown", "first\nsecond", null);
+    preview.setMarkdownSoftBreaks(false);
+
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
+    }));
+
+    expect(postMessage).toHaveBeenCalledWith({
+      type: INLINE_PREVIEW_MESSAGES.MARKDOWN_SOFT_BREAKS_MESSAGE,
+      enabled: false,
+    }, window.location.origin);
+  });
+
+  // Given: iframeの準備完了後にMarkdownプレビューを表示している
+  // When: Markdown通常改行設定を変更する
+  // Then: 設定変更を待たせずプレビューへ送る
+  it("Scenario: sends a Markdown soft-break setting change immediately", async () => {
+    const { host, preview } = mount();
+    const frame = host.querySelector("iframe")!;
+    const postMessage = vi.spyOn(frame.contentWindow!, "postMessage");
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
+    }));
+    await preview.open("markdown", "first\nsecond", null);
+    postMessage.mockClear();
+
+    preview.setMarkdownSoftBreaks(false);
+
+    expect(postMessage).toHaveBeenLastCalledWith({
+      type: INLINE_PREVIEW_MESSAGES.MARKDOWN_SOFT_BREAKS_MESSAGE,
+      enabled: false,
+    }, window.location.origin);
+  });
+
   // Given: アーカイブ内Markdownの本文と、画像解決に必要なアーカイブ情報を設定している
   // When: プレビューを開いてiframeの準備完了通知を受け取る
   // Then: アーカイブパスとエントリ名をビューへ渡す

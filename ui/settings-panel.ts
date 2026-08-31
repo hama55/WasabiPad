@@ -17,6 +17,7 @@ export interface SettingsPanelPorts {
   applyFontSize: (size: number) => void;
   applyIndent: (size: number) => void;
   applyPreviewFontSize: (size: number) => void;
+  applyMarkdownSoftBreaks: (enabled: boolean) => void;
   getSearchOptions: () => WorkspaceSearchOptions;
   updateSearchOptions: (options: WorkspaceSearchOptions) => void;
   confirmReset: () => boolean | Promise<boolean>;
@@ -27,7 +28,13 @@ export interface SettingsCloseHandle {
   close: () => void;
 }
 
-type CommonSettingKey = "theme" | "fontFamily" | "editorFontSize" | "indent" | "previewFontSize";
+type CommonSettingKey =
+  | "theme"
+  | "fontFamily"
+  | "editorFontSize"
+  | "indent"
+  | "previewFontSize"
+  | "markdownSoftBreaks";
 
 const SETTING_FIELD_BUILDERS: Record<CommonSettingKey, (ports: SettingsPanelPorts) => HTMLElement> = {
   theme: themeField,
@@ -35,6 +42,7 @@ const SETTING_FIELD_BUILDERS: Record<CommonSettingKey, (ports: SettingsPanelPort
   editorFontSize: editorFontSizeField,
   indent: indentField,
   previewFontSize: previewFontSizeField,
+  markdownSoftBreaks: markdownSoftBreaksField,
 };
 const QUICK_SETTING_KEYS = ["theme", "fontFamily", "editorFontSize", "indent", "previewFontSize"] as const;
 const EDITOR_SETTING_KEYS = ["fontFamily", "editorFontSize", "indent"] as const;
@@ -126,7 +134,7 @@ export function openSettingsModal(ports: SettingsPanelPorts): SettingsCloseHandl
         ...buildCommonSettingFields(ports, EDITOR_SETTING_KEYS),
       ]),
       settingsSection("プレビュー", [
-        ...buildCommonSettingFields(ports, ["previewFontSize"]),
+        ...buildCommonSettingFields(ports, ["previewFontSize", "markdownSoftBreaks"]),
       ]),
       settingsSection("検索", [createSearchSettingsEditor(ports.getSearchOptions(), ports.updateSearchOptions)]),
       settingsSection("登録", [
@@ -295,6 +303,23 @@ function previewFontSizeField(ports: SettingsPanelPorts): HTMLElement {
     ports.setSetting("previewFontSize", value);
     ports.applyPreviewFontSize(value);
   });
+}
+
+function markdownSoftBreaksField(ports: SettingsPanelPorts): HTMLElement {
+  const row = document.createElement("label");
+  row.className = "settings-field settings-checkbox";
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.dataset.setting = "markdown-soft-breaks";
+  input.checked = ports.getSetting("markdownSoftBreaks");
+  input.addEventListener("change", () => {
+    ports.setSetting("markdownSoftBreaks", input.checked);
+    ports.applyMarkdownSoftBreaks(input.checked);
+  });
+  const label = document.createElement("span");
+  label.textContent = "Markdownの通常改行を表示";
+  row.append(input, label);
+  return row;
 }
 
 function fontOptions(current: string): { value: string; label: string }[] {

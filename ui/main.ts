@@ -505,6 +505,7 @@ function applySettingsToUi() {
   editor.setTabSize(statusbar.setIndent(getSetting("indentSize")));
   inlinePreview.setFontFamily(getSetting("fontFamily"));
   inlinePreview.setFontSize(getSetting("previewFontSize"));
+  inlinePreview.setMarkdownSoftBreaks(getSetting("markdownSoftBreaks"));
   sidebar?.setSearchOptions(loadSearchOptions());
 }
 
@@ -522,6 +523,7 @@ settingsPorts = {
     statusbar.setIndent(size);
   },
   applyPreviewFontSize: (size) => inlinePreview.setFontSize(size),
+  applyMarkdownSoftBreaks: (enabled) => inlinePreview.setMarkdownSoftBreaks(enabled),
   getSearchOptions: loadSearchOptions,
   updateSearchOptions: (options) => {
     saveSearchOptions(options);

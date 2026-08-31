@@ -16,6 +16,7 @@ export interface Settings {
   fontFamily: string;
   fontSize: number;
   previewFontSize: number;
+  markdownSoftBreaks: boolean;
   startupPath: string | null;
   registeredStrings: string[];
   registeredCommands: RegisteredCommand[];
@@ -29,6 +30,7 @@ const DEFAULTS: Settings = {
   fontFamily: DEFAULT_EDITOR_CONFIG.fontFamily,
   fontSize: DEFAULT_EDITOR_CONFIG.fontSize,
   previewFontSize: DEFAULT_EDITOR_CONFIG.fontSize,
+  markdownSoftBreaks: true,
   startupPath: null,
   registeredStrings: [],
   registeredCommands: [],
@@ -73,6 +75,9 @@ export function parseSettingsResult(text: string): SettingsParseResult {
     previewFontSize: isValidFontSize(value.previewFontSize)
       ? value.previewFontSize
       : isValidFontSize(value.fontSize) ? value.fontSize : DEFAULTS.previewFontSize,
+    markdownSoftBreaks: typeof value.markdownSoftBreaks === "boolean"
+      ? value.markdownSoftBreaks
+      : DEFAULTS.markdownSoftBreaks,
     startupPath: typeof value.startupPath === "string" ? value.startupPath : null,
     registeredStrings: Array.isArray(value.registeredStrings)
       ? value.registeredStrings.filter((item): item is string => typeof item === "string" && item.length > 0)
@@ -139,6 +144,7 @@ export function resetUserSettings(): void {
   setSetting("fontFamily", DEFAULTS.fontFamily);
   setSetting("fontSize", DEFAULTS.fontSize);
   setSetting("previewFontSize", DEFAULTS.previewFontSize);
+  setSetting("markdownSoftBreaks", DEFAULTS.markdownSoftBreaks);
   setSetting("startupPath", DEFAULTS.startupPath);
   setSetting("registeredStrings", []);
   setSetting("registeredCommands", []);

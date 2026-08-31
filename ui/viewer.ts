@@ -112,6 +112,7 @@ const archiveAssetTracker = new ViewerAssetTracker(revokeImageUrl);
 let csvColumnWidths: number[] = [];
 let fontFamily = getSetting("fontFamily");
 let fontSize = getSetting("previewFontSize");
+let markdownSoftBreaks = getSetting("markdownSoftBreaks");
 const viewerUpdateListener = createAsyncUnlisten();
 const viewerDomListeners = new AbortController();
 let windowControls: WindowControls | null = null;
@@ -871,6 +872,7 @@ async function renderMarkdown(
     const { article, highlightTargets } = renderMarkdownDocument(text, selection, {
       sourcePath,
       archivePath,
+      breaks: markdownSoftBreaks,
     });
     article.classList.add("viewer-pending");
     content.appendChild(article);
@@ -1079,6 +1081,15 @@ async function start() {
               scrollMarkdownFragment(article, fragment);
               pendingMarkdownFragment = null;
             }
+          }
+          return;
+        }
+        if (event.data?.type === INLINE_PREVIEW_MESSAGES.MARKDOWN_SOFT_BREAKS_MESSAGE) {
+          if (typeof event.data.enabled !== "boolean") return;
+          if (markdownSoftBreaks === event.data.enabled) return;
+          markdownSoftBreaks = event.data.enabled;
+          if (currentFormat === "markdown") {
+            runViewerOperation("ビューを更新できませんでした", renderCurrentViewer);
           }
           return;
         }
