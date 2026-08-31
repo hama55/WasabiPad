@@ -183,6 +183,34 @@ describe("Feature: inline preview", () => {
     }), window.location.origin);
   });
 
+  // Feature: プレビュー本文の初回描画
+  // Scenario: ビューア準備後に付随設定を本文より先に同期する
+  // Given: ビューアiframeが準備完了している
+  // When: 各形式の文書をプレビューへ開く
+  // Then: 区切り設定の同期が本文payloadより先に送られ、本文描画を中断しない
+  it.each(["markdown", "html", "csv", "image", "pdf"] as ViewerFormat[])(
+    "Scenario: %s本文の初回描画を付随設定が中断しない",
+    async (format) => {
+      const { host, preview } = mount();
+      const frame = host.querySelector("iframe")!;
+      const postMessage = vi.spyOn(frame.contentWindow!, "postMessage");
+
+      window.dispatchEvent(new MessageEvent("message", {
+        source: frame.contentWindow,
+        origin: window.location.origin,
+        data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
+      }));
+      await preview.open(format, "preview body", null);
+
+      const types = postMessage.mock.calls.map(([message]) => (message as { type: string }).type);
+      const delimiterIndex = types.indexOf(INLINE_PREVIEW_MESSAGES.DELIMITER_MESSAGE);
+      const payloadIndex = types.indexOf(INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE);
+      expect(delimiterIndex).toBeGreaterThanOrEqual(0);
+      expect(payloadIndex).toBeGreaterThanOrEqual(0);
+      expect(delimiterIndex).toBeLessThan(payloadIndex);
+    },
+  );
+
   // Given: インラインプレビューがフォント変更を通知する
   // When: フォントファミリー変更メッセージを受け取る
   // Then: 親の共通設定更新ポートへ値を渡す

@@ -190,6 +190,13 @@ export class InlinePreview {
       fullscreen: this.fullscreen,
     }, window.location.origin);
     if (!this.payload) return;
+    // 区切り文字の変更は、現在のビューがCSVなら再描画を開始する。
+    // 本文を先に送ると、その再描画が非同期の本文描画を中断するため、
+    // 付随設定を先に同期してから本文を送る。
+    this.frame.contentWindow?.postMessage({
+      type: DELIMITER_MESSAGE,
+      delimiter: this.delimiter,
+    }, window.location.origin);
     this.frame.contentWindow?.postMessage({ type: PAYLOAD_MESSAGE, payload: this.payload }, window.location.origin);
     if (this.pendingMarkdownFragment !== null) {
       this.frame.contentWindow?.postMessage({
@@ -198,10 +205,6 @@ export class InlinePreview {
       }, window.location.origin);
       this.pendingMarkdownFragment = null;
     }
-    this.frame.contentWindow?.postMessage({
-      type: DELIMITER_MESSAGE,
-      delimiter: this.delimiter,
-    }, window.location.origin);
     this.sendFontFamily();
     this.sendFontSize();
   }
