@@ -569,7 +569,7 @@ sidebar = new Sidebar(sidebarEl, {
   onDropEntries: (request) => folderActions.dropEntries(request),
   onUndoLastDrop: () => folderActions.undoLastDrop(),
   onCreateFolder: (relDir) => folderActions.createFolder(relDir),
-  onCreateNote: () => folderActions.createNote(null),
+  onCreateNote: (relDir) => folderActions.createNote(relDir),
   onTreeError: async (error) => {
     if (!isPasswordCancelled(error)) await showError("フォルダを展開できませんでした", error);
   },

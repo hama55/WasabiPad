@@ -1465,14 +1465,20 @@ impl Doc {
     }
 
     // ファイルツリーの作成ボタン/右クリック用。指定ディレクトリ直下へ空フォルダを1つ作る。
-    pub fn create_folder(&self, rel_dir: &str, name: &str) -> io::Result<()> {
+    pub fn create_folder(&self, rel_dir: &str, name: &str) -> io::Result<String> {
         crate::validate_windows_file_name(name)?;
         let root = self
             .source
             .folder_root()
             .ok_or_else(|| io::Error::other("フォルダを開いていません"))?;
         let dir = if rel_dir.is_empty() { root.to_path_buf() } else { join_relative(root, rel_dir) };
-        std::fs::create_dir(dir.join(name))
+        let path = next_available_path(&dir, name, "")?;
+        let actual_name = path
+            .file_name()
+            .map(|value| value.to_string_lossy().into_owned())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "フォルダ名が不正です"))?;
+        std::fs::create_dir(path)?;
+        Ok(actual_name)
     }
 
     fn prepare_destination(
@@ -3430,6 +3436,30 @@ mod tests {
         d.create_folder("docs", "notes").unwrap();
 
         assert!(root.join("docs/notes").is_dir());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    // Feature: 新規フォルダの重複名採番
+    // Scenario: 入力名が存在すると新規メモと同じ規則で末尾へ数字を付ける
+    // Given: `folder`と`folder1`が存在する
+    // When: `folder`という新規フォルダを作成する
+    // Then: `folder2`を作成する
+    #[test]
+    fn create_folder_appends_number_to_the_requested_name_when_taken() {
+        let root = std::env::temp_dir().join(format!(
+            "wasabipad_create_folder_duplicate_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir(root.join("folder")).unwrap();
+        std::fs::create_dir(root.join("folder1")).unwrap();
+
+        let d = Doc::open(&root).unwrap();
+        let actual_name = d.create_folder("", "folder").unwrap();
+
+        assert_eq!(actual_name, "folder2");
+        assert!(root.join("folder2").is_dir());
         std::fs::remove_dir_all(root).unwrap();
     }
 

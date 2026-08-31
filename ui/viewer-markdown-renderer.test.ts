@@ -74,4 +74,41 @@ describe("Feature: Markdown viewer drawing boundary", () => {
     expect(checkboxes[0].checked).toBe(false);
     expect(checkboxes[1].checked).toBe(true);
   });
+
+  // Feature: Markdownプレビューの空白行保持
+  // Scenario: トップレベルの連続空白行を同じ行数で表示する
+  // Given: `first`と`second`の間に空白行が3行ある
+  // When: Markdown専用rendererで文書を描画する
+  // Then: プレビューにも3行分の非操作空白を表示する
+  it("Scenario: トップレベルの連続空白行を同じ行数で表示する", () => {
+    const { article } = renderMarkdownDocument("first\n\n\n\nsecond", null);
+
+    const blanks = [...article.querySelectorAll<HTMLElement>(".viewer-markdown-blank-line")];
+    expect(blanks).toHaveLength(3);
+    expect(blanks.every((blank) => blank.getAttribute("aria-hidden") === "true")).toBe(true);
+    expect([...article.children].map((element) => element.tagName)).toEqual(["P", "DIV", "DIV", "DIV", "P"]);
+  });
+
+  // Feature: Markdownプレビューの空白行保持
+  // Scenario: 先頭・末尾と空白文字だけの行もトップレベルの空白として表示する
+  // Given: 文書の先頭と末尾に空白行があり、途中にタブだけの行がある
+  // When: Markdown専用rendererで文書を描画する
+  // Then: 空白行を合計4行分表示する
+  it("Scenario: 先頭末尾と空白文字だけの行を保持する", () => {
+    const { article } = renderMarkdownDocument(" \t\nfirst\n\t\nsecond\n\n", null);
+
+    expect(article.querySelectorAll(".viewer-markdown-blank-line")).toHaveLength(4);
+  });
+
+  // Feature: Markdownプレビューの空白行保持
+  // Scenario: リスト内部の空行はMarkdownの構造を優先する
+  // Given: 2つのリスト項目の間に空行がある
+  // When: Markdown専用rendererで文書を描画する
+  // Then: リストを壊す専用空白要素を追加しない
+  it("Scenario: リスト内部の空行はMarkdown構造を維持する", () => {
+    const { article } = renderMarkdownDocument("- first\n\n- second", null);
+
+    expect(article.querySelectorAll(".viewer-markdown-blank-line")).toHaveLength(0);
+    expect(article.querySelectorAll("li")).toHaveLength(2);
+  });
 });

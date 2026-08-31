@@ -178,7 +178,8 @@ body.viewer-resizing * {
 
 article { max-width: 900px; margin: 0 auto; padding: 24px 36px 64px; line-height: 1.65; font: var(--viewer-font-size) var(--font-mono); }
 article h1, article h2 { border-bottom: 1px solid var(--border-strong); padding-bottom: .25em; }
-article p + p { margin-top: 1em; }
+article > p + p { margin-top: 0; }
+article > .viewer-markdown-blank-line { display: block; height: 1lh; }
 article ul, article ol { padding-inline-start: 2em; }
 article pre, article code { font-family: var(--font-mono); background: var(--bg-side); }
 article code { padding: .12em .3em; border-radius: 3px; }

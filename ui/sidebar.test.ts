@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Sidebar, type SidebarPorts } from "./sidebar";
 import { DEFAULT_SEARCH_OPTIONS } from "./workspace-search-options";
 import type { FolderEntry, WorkspaceSearchResult } from "./api";
+import { MENU_ICON } from "./menu-icons";
 
 interface MountOptions {
   onSearch?: SidebarPorts["onSearch"];
@@ -143,7 +144,11 @@ describe("Feature: Sidebar", () => {
     host.querySelector<HTMLButtonElement>(".fv-create-note")!.click();
 
     expect(ports.onCreateFolder).toHaveBeenCalledWith("docs");
-    expect(ports.onCreateNote).toHaveBeenCalledOnce();
+    expect(ports.onCreateNote).toHaveBeenCalledWith("docs");
+    expect(host.querySelector<HTMLButtonElement>(".fv-create-folder")?.textContent).toBe("フォルダ");
+    expect(host.querySelector<HTMLButtonElement>(".fv-create-folder")?.querySelector(`.${MENU_ICON.newFolder}`)).not.toBeNull();
+    expect(host.querySelector<HTMLButtonElement>(".fv-create-note")?.textContent).toBe("メモ");
+    expect(host.querySelector<HTMLButtonElement>(".fv-create-note")?.querySelector(`.${MENU_ICON.newMemo}`)).not.toBeNull();
     const tree = host.querySelector<HTMLElement>(".fv-tree");
     const actions = host.querySelector<HTMLElement>(".fv-create-actions");
     expect(tree?.contains(actions)).toBe(false);
@@ -189,6 +194,26 @@ describe("Feature: Sidebar", () => {
     host.querySelector<HTMLButtonElement>(".fv-create-folder")!.click();
 
     expect(ports.onCreateFolder).toHaveBeenCalledWith("docs");
+  });
+
+  // Feature: ファイルツリー下部の新規メモ作成先
+  // Scenario: ファイル選択時はその親フォルダへメモを作成する
+  // Given: `docs/memo.txt`を選択している
+  // When: `＋メモ`を押す
+  // Then: `docs`を作成先として渡す
+  it("Scenario: ファイル選択時は親フォルダを新規メモ作成先にする", async () => {
+    const { host, ports, sidebar } = mount();
+    ports.onExpandFolder.mockResolvedValueOnce([
+      { name: "memo.txt", is_dir: false, is_archive: false },
+    ]);
+    sidebar.setEntries([{ name: "docs", is_dir: true, is_archive: false }]);
+    host.querySelector<HTMLElement>(".fv-row")!.click();
+    await vi.waitFor(() => expect(host.querySelectorAll(".fv-row")).toHaveLength(2));
+    host.querySelectorAll<HTMLElement>(".fv-row")[1].click();
+
+    host.querySelector<HTMLButtonElement>(".fv-create-note")!.click();
+
+    expect(ports.onCreateNote).toHaveBeenCalledWith("docs");
   });
 
   // Scenario: 未選択時はワークスペースのルートへ作成する

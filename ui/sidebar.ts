@@ -8,6 +8,7 @@ import { archiveEntryPath, splitArchiveEntryPath } from "./archive-path";
 import type { ContextTarget } from "./context-target";
 import { preventMiddleClickDefault } from "./interaction-constants";
 import { iconButton } from "./icon-button";
+import { createMenuIcon, MENU_ICON } from "./menu-icons";
 import { runAsyncBoundary } from "./async-boundary";
 import { isDescendantPath } from "./path";
 import type { FileTreeDropRequest, FileTreeDropResult } from "./file-tree-drop";
@@ -78,7 +79,7 @@ export interface SidebarPorts extends Omit<WorkspaceSearchPorts, "onViewChange" 
   onDropEntries: (request: FileTreeDropRequest) => Promise<FileTreeDropResult>;
   onUndoLastDrop: () => Promise<boolean>;
   onCreateFolder: (relDir: string) => void | Promise<void>;
-  onCreateNote: () => void | Promise<void>;
+  onCreateNote: (relDir: string) => void | Promise<void>;
   onTreeError: (error: unknown) => Promise<void>;
 }
 
@@ -170,7 +171,7 @@ export class Sidebar {
     const createFolder = document.createElement("button");
     createFolder.type = "button";
     createFolder.className = "fv-create-folder";
-    createFolder.textContent = "＋ フォルダ";
+    createFolder.append(createMenuIcon(MENU_ICON.newFolder), document.createTextNode("フォルダ"));
     createFolder.title = "新規フォルダ";
     createFolder.addEventListener("click", () => runAsyncBoundary(
       () => ports.onCreateFolder(this.selectedFolderRelDir()),
@@ -179,10 +180,10 @@ export class Sidebar {
     const createNote = document.createElement("button");
     createNote.type = "button";
     createNote.className = "fv-create-note";
-    createNote.textContent = "＋ メモ";
+    createNote.append(createMenuIcon(MENU_ICON.newMemo), document.createTextNode("メモ"));
     createNote.title = "新規メモ";
     createNote.addEventListener("click", () => runAsyncBoundary(
-      ports.onCreateNote,
+      () => ports.onCreateNote(this.selectedFolderRelDir()),
       (error) => this.reportTreeError(error),
     ));
     this.createActions.append(createFolder, createNote);

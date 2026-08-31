@@ -202,18 +202,28 @@ export class DocumentController {
     this.applyPathChange(info, selectedRelPath, false);
   }
 
-  // 選択中の実ファイルがごみ箱へ移動された後も、編集中の本文を保持する。
-  // 保存先だけを外しておくことで、次回保存時は名前を付けて保存へ進む。
+  // 選択中の実ファイルがごみ箱へ移動された後は、フォルダルートの空文書へ戻す。
   markDeleted() {
     this.view.hideExternalBanner();
+    this.session.displayPath = this.session.folderRoot ?? "";
     this.session.savePath = null;
     this.session.selectedRelPath = "";
     this.session.archivePath = null;
     this.session.archiveEntry = null;
-    this.session.dirty = true;
-    this.view.editor.setExternalFilePath(null, markdownForSession(this.session));
+    this.session.effectiveExtension = null;
+    this.session.readOnly = false;
+    this.session.isBinary = false;
+    this.session.dirty = false;
+    this.session.lineCount = 1;
+    this.view.statusbar.setFormat(this.session);
+    this.view.statusbar.setByteSize(null);
     this.view.statusbar.setModifiedAt(null);
-    this.updateTitle();
+    this.view.statusbar.setLineCount(1);
+    this.renderAddressbar(this.session.displayPath);
+    this.view.editor.open(1, false, false, null, false);
+    this.view.editor.focus();
+    const documentChangeNotified = this.notifyDocumentChange(false);
+    this.updateTitle(!documentChangeNotified);
   }
 
   markRestored(relPath: string, absolutePath: string) {

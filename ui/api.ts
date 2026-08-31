@@ -116,7 +116,7 @@ export const createNote = (dir: string | null, name: string, enc: Encoding, eol:
   invoke<DocInfo>(IPC_COMMANDS.createNote, { dir, name, enc, eol });
 
 export const createFolder = (relDir: string, name: string) =>
-  invoke<void>(IPC_COMMANDS.createFolder, { relDir, name });
+  invoke<string>(IPC_COMMANDS.createFolder, { relDir, name });
 
 // サイドバー上のファイル/フォルダをリネームする (relPath はフォルダルートからの相対パス)
 export const renameEntry = (relPath: string, newName: string) =>

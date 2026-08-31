@@ -171,26 +171,32 @@ describe("Feature: DocumentController", () => {
     expect(view.editor.open).toHaveBeenLastCalledWith(42, false, false, "C:\\work\\archive.bin", true);
   });
 
-  // Feature: 削除後も編集中の本文を保持する
+  // Feature: 削除後に編集中の本文を消去する
   // Scenario: 開いているファイルがごみ箱へ移動される
   // Given: フォルダ内の`memo.txt`を選択している
   // When: DocumentControllerへ削除済みを通知する
-  // Then: 保存先を外し、本文表示を壊さず名前を付けて保存へ進める状態にする
-  it("Scenario: 削除後は保存先を外して本文を保持する", () => {
+  // Then: フォルダルートへ戻り、エディタとプレビューを空にする
+  it("Scenario: 削除後はフォルダルートへ戻り本文を消去する", () => {
     const { view, controller } = fakeView();
     Object.assign(controller.current, {
       folderRoot: "C:\\work",
       displayPath: "C:\\work\\memo.txt",
       selectedRelPath: "memo.txt",
       savePath: "C:\\work\\memo.txt",
+      dirty: true,
     });
 
     controller.markDeleted();
 
     expect(controller.current.savePath).toBeNull();
     expect(controller.current.selectedRelPath).toBe("");
-    expect(controller.current.dirty).toBe(true);
-    expect(view.editor.setExternalFilePath).toHaveBeenLastCalledWith(null, false);
+    expect(controller.current.displayPath).toBe("C:\\work");
+    expect(controller.current.folderRoot).toBe("C:\\work");
+    expect(controller.current.lineCount).toBe(1);
+    expect(controller.current.dirty).toBe(false);
+    expect(view.editor.open).toHaveBeenLastCalledWith(1, false, false, null, false);
+    expect(view.addressbar.render).toHaveBeenLastCalledWith("C:\\work", "C:\\work");
+    expect(view.onDocumentChange).toHaveBeenLastCalledWith(controller.current, false);
   });
 
   // Feature: 削除のセッション内アンドゥ

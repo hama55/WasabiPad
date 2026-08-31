@@ -15,7 +15,6 @@ import {
   relativePathFromRoot,
   type PathRebase,
 } from "./path";
-import { isArchiveEntryUnder } from "./archive-path";
 import { createRegisteredCommandMenu, type RegisteredCommandMenuPorts } from "./registered-command-menu";
 import { MENU_ICON } from "./menu-icons";
 import { MENU_LABELS } from "./menu-labels";
@@ -193,9 +192,7 @@ export class FolderActions {
         action: () => this.run("貼り付けできませんでした", () => this.paste(target)),
       });
     };
-    if (target?.isDir) {
-      pushPaste();
-    } else if (!target) {
+    if (!target) {
       pushPaste();
     }
     const pushCutAndCopy = (sep = false) => {
@@ -212,7 +209,6 @@ export class FolderActions {
         action: () => this.copyToClipboard("copy", operationTargets),
       });
     };
-    if (target?.isDir !== false) pushCutAndCopy();
     if (target) {
       items.push({
         label: MENU_LABELS.newTab,
@@ -233,6 +229,9 @@ export class FolderActions {
           action: () => this.run(`${MENU_LABELS.expandFolder}できませんでした`, () => this.ports.sidebar.expandAllFolder(target.relPath)),
         });
         items.push(newFolderItem(target.relPath));
+        items.push(newMemoItem(target.relPath, false));
+        pushCutAndCopy(true);
+        pushPaste();
       }
       if (!target.isDir) {
         if (operationTargets.some((entry) => entry.relPath === target.relPath)) {
@@ -275,7 +274,6 @@ export class FolderActions {
       sep: target?.isDir !== false,
     };
     if (target) items.push(favoriteItem);
-    if (target?.isDir) items.push(newMemoItem(target.relPath, true));
     if (!target) {
       items.push({
         label: MENU_LABELS.expandFolder,
@@ -287,7 +285,7 @@ export class FolderActions {
       items.push({
         label: MENU_LABELS.rename,
         iconClass: MENU_ICON.rename,
-        sep: !target.isDir,
+        sep: true,
         action: () => this.run("名前を変更できませんでした", () => this.rename(target.relPath)),
       });
       const deleteItem: MenuItem = {
@@ -298,16 +296,7 @@ export class FolderActions {
           () => this.deleteEntries(operationTargets.length ? operationTargets : [target]),
         ),
       };
-      if (target.isDir) {
-        items.push({
-          label: MENU_LABELS.more,
-          iconClass: MENU_ICON.more,
-          sep: true,
-          sub: [deleteItem],
-        });
-      } else {
-        items.push(deleteItem);
-      }
+      items.push(deleteItem);
     }
     if (!target) items.push(favoriteItem);
     showMenu(x, y, items);
@@ -609,11 +598,16 @@ export class FolderActions {
       if (undo) {
         await this.services.api.restoreDeletedEntry(operation.relPath);
         if (operation.restoreRelPath && !this.doc.current.selectedRelPath) {
-          this.doc.markRestored(operation.restoreRelPath, this.toAbsolute(operation.restoreRelPath));
+          this.doc.setSelectedRelPath(operation.restoreRelPath);
+          const info = await this.services.api.selectEntry(operation.restoreRelPath);
+          this.doc.applyDocInfo(info);
         }
       } else {
+        const selected = this.doc.current.selectedRelPath;
         await this.services.api.deleteEntry(operation.relPath);
-        if (operation.restoreRelPath) this.doc.markDeleted();
+        if (operation.restoreRelPath && this.pathContains(selected, operation.restoreRelPath)) {
+          this.doc.markDeleted();
+        }
       }
       return;
     }
@@ -775,7 +769,7 @@ export class FolderActions {
     try {
       result = await this.services.promptFields("新規フォルダ", [{
         label: "フォルダ名",
-        value: "",
+        value: "folder",
         validate: (value) => value.trim() ? null : "名前を入力してください",
       }]);
     } catch (error) {
@@ -784,15 +778,17 @@ export class FolderActions {
     }
     const name = result?.[0].trim();
     if (!name) return;
+    let actualName: string;
     try {
-      await this.services.api.createFolder(relDir, name);
+      actualName = (await this.services.api.createFolder(relDir, name)) || name;
     } catch (error) {
       await this.reportError("新規フォルダを作成できませんでした", error);
       return;
     }
+    const actualRelPath = relDir ? `${relDir}/${actualName}` : actualName;
     this.recordOperations([{
       kind: "create",
-      relPath: relDir ? `${relDir}/${name}` : name,
+      relPath: actualRelPath,
       isDir: true,
     }]);
     try {
@@ -907,7 +903,13 @@ export class FolderActions {
     const message = targets.length === 1
       ? `「${basename(targets[0].relPath)}」${targets[0].isDir ? "フォルダと中身" : "ファイル"}をごみ箱へ移動します。元に戻せます。`
       : `${targets.length}項目をごみ箱へ移動します。元に戻せます。`;
-    if (!await this.services.confirmMessage("削除", message, "削除")) return;
+    const selected = this.doc.current.selectedRelPath;
+    const discardsUnsaved = this.doc.current.dirty
+      && targets.some((target) => this.pathContains(selected, target.relPath));
+    const confirmation = discardsUnsaved
+      ? `${message}\n未保存の編集内容も失われます。`
+      : message;
+    if (!await this.services.confirmMessage("削除", confirmation, "削除")) return;
     let changed = false;
     const operations: FileOperation[] = [];
     for (const target of targets) {
@@ -920,9 +922,7 @@ export class FolderActions {
       changed = true;
       try {
         const selected = this.doc.current.selectedRelPath;
-        const deletedSelection = selected === target.relPath
-          || selected.startsWith(`${target.relPath}/`)
-          || isArchiveEntryUnder(selected, target.relPath);
+        const deletedSelection = this.pathContains(selected, target.relPath);
         operations.push({
           kind: "delete",
           relPath: target.relPath,
