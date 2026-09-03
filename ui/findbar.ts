@@ -18,7 +18,7 @@ export class FindBar {
   private findRequest = 0;
 
   constructor(
-    host: HTMLElement,
+    private host: HTMLElement,
     onFind: (pat: string, forward: boolean, matchCase: boolean) => Promise<boolean>,
     onReplaceAll: (pat: string, rep: string, matchCase: boolean) => Promise<number>,
     onReplaceNext: (pat: string, rep: string, matchCase: boolean) => Promise<boolean>,
@@ -81,6 +81,7 @@ export class FindBar {
   }
 
   open(initial: string) {
+    this.host.classList.add("ve-search-open");
     this.root.hidden = false;
     if (initial) this.findIn.value = initial;
     this.status.textContent = "";
@@ -91,6 +92,7 @@ export class FindBar {
 
   private toggleReplace() {
     const on = this.root.classList.toggle("with-rep");
+    this.host.classList.toggle("ve-search-with-rep", on);
     this.toggleBtn.textContent = on ? CHEVRON_DOWN : CHEVRON_RIGHT;
     this.toggleBtn.setAttribute("aria-expanded", String(on));
     if (on) this.repIn.focus();
@@ -98,6 +100,7 @@ export class FindBar {
 
   close() {
     this.findRequest++;
+    this.host.classList.remove("ve-search-open", "ve-search-with-rep");
     this.root.hidden = true;
     this.onDone();
   }

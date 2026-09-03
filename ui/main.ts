@@ -36,6 +36,7 @@ import { createCommandRegistry, globalCommandForEvent } from "./commands";
 import { TabManager } from "./tabs";
 import {
   getSetting,
+  clampSidebarWidth,
   flushSettings,
   initSettings,
   loadSearchOptions,
@@ -124,6 +125,7 @@ let sidebar: Sidebar;
 let settingsMenu: SettingsCloseHandle | null = null;
 let settingsPorts: SettingsPanelPorts;
 let restoringEditorFont = true;
+let previewingEditorFont = false;
 let imageCleanupTimer: number | undefined;
 let externalRequestChain = Promise.resolve();
 const workspaceSearchListener = createAsyncUnlisten();
@@ -402,6 +404,8 @@ const statusbar = new StatusBar($("statusbar"), {
   onGoTo: (line) => editor.goTo(line, 0),
   onFontFamily: (family) => editor.setFont(family, getSetting("fontSize"), "family"),
   onFontSize: (size) => editor.setFont(getSetting("fontFamily"), size, "size"),
+  onPreviewFontFamily: (family) => previewEditorFont(family, getSetting("fontSize"), "family"),
+  onPreviewFontSize: (size) => previewEditorFont(getSetting("fontFamily"), size, "size"),
   onPreviewDelimiter: (delimiter) => inlinePreview.setDelimiter(delimiter),
   onWrap: (on) => editor.setWrap(on),
   onIndent: (size) => {
@@ -436,6 +440,16 @@ const registeredCommandPorts = {
   writeClipboardText,
 };
 
+function previewEditorFont(family: string, size: number, changed: "family" | "size") {
+  previewingEditorFont = true;
+  try {
+    editor.setFont(family, size, changed);
+  } finally {
+    previewingEditorFont = false;
+  }
+  if (changed === "family") inlinePreview.setFontFamily(family);
+}
+
 // 部品どうしが相互に参照するため、型注釈で推論の循環を切る
 const editor: VirtualEditor = new VirtualEditor(editorHost, {
   onDocChange: (lineCount, edits) => {
@@ -450,6 +464,7 @@ const editor: VirtualEditor = new VirtualEditor(editorHost, {
     tabs?.syncCursor(line - 1);
   },
   onFontChange: (family, size, changed) => {
+    if (previewingEditorFont) return;
     statusbar.setFont(family, size);
     if (changed !== "size") inlinePreview.setFontFamily(family);
     if (!restoringEditorFont) {
@@ -499,6 +514,7 @@ layoutRuntime = createWindowLayoutRuntime(window, {
 });
 
 function applySettingsToUi() {
+  sidebarEl.style.width = `${clampSidebarWidth(getSetting("sidebarWidth"))}px`;
   restoringEditorFont = true;
   editor.setFont(getSetting("fontFamily"), getSetting("fontSize"));
   restoringEditorFont = false;
@@ -837,18 +853,59 @@ previewToggle.addEventListener("click", () => {
   updatePreviewVisibility();
   if (!previewCollapsed) inlinePreview.resend();
 });
+
+// プレビュー切替は本文上へ常駐させず、エディタと縦スクロールバーの境界へ
+// ポインターを近づけたときだけ見せる。キーボード操作中はfocus-visibleで表示する。
+let previewToggleHovered = false;
+let previewTogglePeekTimer: number | undefined;
+function showPreviewTogglePeek() {
+  window.clearTimeout(previewTogglePeekTimer);
+  previewTogglePeekTimer = undefined;
+  mainEl.classList.add("preview-toggle-peek");
+}
+function hidePreviewTogglePeekLater() {
+  window.clearTimeout(previewTogglePeekTimer);
+  previewTogglePeekTimer = window.setTimeout(() => {
+    previewTogglePeekTimer = undefined;
+    if (!previewToggleHovered && document.activeElement !== previewToggle) {
+      mainEl.classList.remove("preview-toggle-peek");
+    }
+  }, 450);
+}
+function pointerNearPreviewBoundary(clientX: number): boolean {
+  const boundary = previewEl.hidden
+    ? mainEl.getBoundingClientRect().right
+    : previewEl.getBoundingClientRect().left;
+  return clientX >= boundary - 28 && clientX <= boundary + 14;
+}
+mainEl.addEventListener("pointermove", (event) => {
+  if (pointerNearPreviewBoundary(event.clientX)) showPreviewTogglePeek();
+  else if (!previewToggleHovered) hidePreviewTogglePeekLater();
+});
+previewToggle.addEventListener("pointerenter", () => {
+  previewToggleHovered = true;
+  showPreviewTogglePeek();
+});
+previewToggle.addEventListener("pointerleave", () => {
+  previewToggleHovered = false;
+  hidePreviewTogglePeekLater();
+});
+previewToggle.addEventListener("focus", showPreviewTogglePeek);
+previewToggle.addEventListener("blur", hidePreviewTogglePeekLater);
 document.addEventListener("contextmenu", (e) => e.preventDefault());
 
 // サイドバー幅のドラッグ変更
 splitter.addEventListener("mousedown", (e) => {
   e.preventDefault();
   const move = (ev: MouseEvent) => {
-    sidebarEl.style.width = `${Math.max(SIDEBAR_MIN_WIDTH, ev.clientX)}px`;
+    sidebarEl.style.width = `${clampSidebarWidth(ev.clientX)}px`;
     updateSidebarVisibility();
   };
   const up = () => {
     window.removeEventListener("mousemove", move);
     window.removeEventListener("mouseup", up);
+    const width = Number.parseFloat(sidebarEl.style.width);
+    if (Number.isFinite(width)) setSetting("sidebarWidth", clampSidebarWidth(width));
   };
   window.addEventListener("mousemove", move);
   window.addEventListener("mouseup", up);

@@ -35,6 +35,7 @@ import {
   DEFAULT_CSV_DELIMITER,
 } from "./viewer-delimiter";
 import { openViewerDelimiterDialog } from "./viewer-delimiter-dialog";
+import { createViewerDelimiterControl, syncViewerDelimiterControl } from "./viewer-delimiter-control";
 import { INLINE_PREVIEW_MESSAGES } from "./inline-preview-protocol";
 import { isViewerPayload } from "./viewer-payload";
 import {
@@ -80,7 +81,7 @@ const win = isInlineViewer ? null : getCurrentWindow();
 const content = document.getElementById("viewer-content")!;
 const viewerMain = content.parentElement as HTMLElement;
 const title = document.getElementById("viewer-title-text")!;
-const formatButtons = document.getElementById("viewer-format")!;
+const formatButtons = document.getElementById("viewer-format") as HTMLSelectElement;
 const actionButtons = document.getElementById("viewer-csv-actions")!;
 const fullscreenButton = document.getElementById("viewer-fullscreen") as HTMLButtonElement;
 const summary = document.getElementById("viewer-summary")!;
@@ -92,6 +93,7 @@ const chartPanel = document.getElementById("chart-panel")!;
 const chartTitle = document.getElementById("chart-title")!;
 const chartCanvas = document.getElementById("chart-canvas") as HTMLCanvasElement;
 const delimiterControl = document.getElementById("viewer-delimiter")!;
+const delimiterSelect = document.getElementById("viewer-delimiter-select") as HTMLSelectElement;
 const delimiterInput = document.getElementById("viewer-delimiter-input") as HTMLInputElement;
 delimiterInput.value ||= DEFAULT_CSV_DELIMITER;
 
@@ -178,6 +180,7 @@ function publishViewerRenderState(state: ViewerRenderState, nextImageZoom: numbe
   document.title = title.textContent;
   if (!isInlineViewer) runViewerOperation("タイトルを更新できませんでした", () => win!.setTitle(title.textContent));
   delimiterControl.hidden = !formatSpec.supportsDelimiter;
+  syncViewerDelimiterControl(delimiterSelect, delimiterInput, delimiterInput.value);
   markdownReadyForFragment = state.format === "markdown" ? markdownReadyForFragment : false;
   if (state.format !== "markdown") pendingMarkdownFragment = null;
 }
@@ -956,16 +959,21 @@ function openDelimiterDialog() {
   openViewerDelimiterDialog({
     value: delimiterInput.value,
     onApply: (value) => {
-      delimiterInput.value = value;
-      if (isInlineViewer) {
-        postToParent({
-          type: INLINE_PREVIEW_MESSAGES.DELIMITER_CHANGE_MESSAGE,
-          delimiter: value,
-        });
-      }
-      runViewerOperation("ビューを再描画できませんでした", renderCurrentViewer);
+      applyDelimiter(value);
     },
   });
+}
+
+function applyDelimiter(value: string) {
+  delimiterInput.value = value;
+  syncViewerDelimiterControl(delimiterSelect, delimiterInput, value);
+  if (isInlineViewer) {
+    postToParent({
+      type: INLINE_PREVIEW_MESSAGES.DELIMITER_CHANGE_MESSAGE,
+      delimiter: value,
+    });
+  }
+  runViewerOperation("ビューを再描画できませんでした", renderCurrentViewer);
 }
 
 function showContextMenu(x: number, y: number) {
@@ -1018,7 +1026,7 @@ async function start() {
         },
       });
     }
-    createViewerFormatButtons(formatButtons, (format) => {
+    const notifyFormatChange = (format: ViewerFormat) => {
       runViewerOperation("表示形式を変更できませんでした", () => {
         if (!isInlineViewer || !isViewerFormat(format)) return;
         postToParent({
@@ -1026,23 +1034,24 @@ async function start() {
           format,
         });
       });
+    };
+    createViewerFormatButtons(formatButtons, {
+      onPreview: notifyFormatChange,
+      onSelect: notifyFormatChange,
     });
+    createViewerDelimiterControl(
+      delimiterSelect,
+      delimiterInput,
+      delimiterInput.value,
+      (value) => runViewerOperation("区切り文字を変更できませんでした", () => applyDelimiter(value)),
+      viewerDomListeners.signal,
+    );
     bindViewerControls();
     applyFont(fontFamily, fontSize, false);
     themeButton.addEventListener("click", () => {
       runViewerOperation("配色を変更できませんでした", () => {
         applyTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light");
       });
-    }, { signal: viewerDomListeners.signal });
-    delimiterInput.addEventListener("input", () => {
-      if (!delimiterInput.value || !viewerFormatSpec(currentFormat).supportsDelimiter) return;
-      if (isInlineViewer) {
-        postToParent({
-          type: INLINE_PREVIEW_MESSAGES.DELIMITER_CHANGE_MESSAGE,
-          delimiter: delimiterInput.value,
-        });
-      }
-      runViewerOperation("ビューを再描画できませんでした", renderCurrentViewer);
     }, { signal: viewerDomListeners.signal });
     document.getElementById("chart-close")!.addEventListener("click", () => {
       runViewerOperation("グラフを閉じられませんでした", () => chartController.close());
@@ -1096,6 +1105,7 @@ async function start() {
         if (event.data?.type === INLINE_PREVIEW_MESSAGES.DELIMITER_MESSAGE) {
           if (typeof event.data.delimiter !== "string") return;
           delimiterInput.value = event.data.delimiter;
+          syncViewerDelimiterControl(delimiterSelect, delimiterInput, delimiterInput.value);
           if (!delimiterInput.value || !viewerFormatSpec(currentFormat).supportsDelimiter) return;
           runViewerOperation("ビューを再描画できませんでした", renderCurrentViewer);
           return;

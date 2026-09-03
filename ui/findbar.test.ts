@@ -21,6 +21,24 @@ describe("Feature: FindBar", () => {
     expect(toggle.textContent).toBe(CHEVRON_DOWN);
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
     expect(host.querySelector(".ve-find")?.classList.contains("with-rep")).toBe(true);
+    expect(host.classList.contains("ve-search-with-rep")).toBe(true);
+  });
+
+  // Feature: エディタ検索バーの占有表示
+  // Scenario: 検索バーを開いている間は本文レイアウトが検索バー領域を確保する
+  // Given: 閉じたFindBarを持つエディタホスト
+  // When: 検索バーを開いて閉じる
+  // Then: ホストの占有表示クラスが開閉に合わせて切り替わる
+  it("Scenario: 検索バー表示中だけ本文領域を押し下げる", () => {
+    const host = document.createElement("div");
+    const bar = new FindBar(host, async () => true, async () => 0, async () => true, () => {}, async () => {});
+
+    bar.open("");
+    expect(host.classList.contains("ve-search-open")).toBe(true);
+
+    bar.close();
+    expect(host.classList.contains("ve-search-open")).toBe(false);
+    expect(host.classList.contains("ve-search-with-rep")).toBe(false);
   });
 
   // Feature: 入力時点での本文検索

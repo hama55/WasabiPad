@@ -1,4 +1,6 @@
 import type { WorkspaceSearchOptions } from "./api";
+import packageInfo from "../package.json";
+import { APP_NAME } from "./app-config";
 import { formatFontFamily } from "./format";
 import { FONT_FAMILIES, INDENT_SIZES, isValidFontSize, MAX_FONT_SIZE, MIN_FONT_SIZE } from "./font-controls";
 import { openModal } from "./modal";
@@ -46,6 +48,8 @@ const SETTING_FIELD_BUILDERS: Record<CommonSettingKey, (ports: SettingsPanelPort
 };
 const QUICK_SETTING_KEYS = ["theme", "fontFamily", "editorFontSize", "indent", "previewFontSize"] as const;
 const EDITOR_SETTING_KEYS = ["fontFamily", "editorFontSize", "indent"] as const;
+// package.json の version は sync-version により Cargo.toml の workspace version と同期される。
+const APP_VERSION = packageInfo.version;
 
 export function openSettingsMenu(
   anchor: HTMLElement,
@@ -104,11 +108,23 @@ export function openSettingsModal(ports: SettingsPanelPorts): SettingsCloseHandl
   const title = document.createElement("div");
   title.className = "pf-title";
   title.textContent = "設定";
-  box.append(title);
+
+  const layout = document.createElement("div");
+  layout.className = "settings-layout";
+
+  const tabList = document.createElement("nav");
+  tabList.className = "settings-tabs";
+  tabList.setAttribute("role", "tablist");
+  tabList.setAttribute("aria-orientation", "vertical");
+  tabList.setAttribute("aria-label", "設定カテゴリ");
 
   const content = document.createElement("div");
   content.className = "settings-content";
-  box.append(content);
+  content.tabIndex = 0;
+  content.setAttribute("aria-label", "設定内容");
+
+  layout.append(tabList, content);
+  box.append(title, layout);
 
   const actions = document.createElement("div");
   actions.className = "pf-btns settings-actions";
@@ -124,24 +140,97 @@ export function openSettingsModal(ports: SettingsPanelPorts): SettingsCloseHandl
   actions.append(reset, closeButton);
   box.append(actions);
 
-  const render = () => {
-    content.replaceChildren(
-      settingsSection("一般", [
+  const sectionSpecs = [
+    {
+      name: "一般",
+      id: "settings-general",
+      build: () => [
         ...buildCommonSettingFields(ports, ["theme"]),
         startupPathField(ports),
-      ]),
-      settingsSection("エディタ", [
+      ],
+    },
+    {
+      name: "エディタ",
+      id: "settings-editor",
+      build: () => [
         ...buildCommonSettingFields(ports, EDITOR_SETTING_KEYS),
-      ]),
-      settingsSection("プレビュー", [
+      ],
+    },
+    {
+      name: "プレビュー",
+      id: "settings-preview",
+      build: () => [
         ...buildCommonSettingFields(ports, ["previewFontSize", "markdownSoftBreaks"]),
-      ]),
-      settingsSection("検索", [createSearchSettingsEditor(ports.getSearchOptions(), ports.updateSearchOptions)]),
-      settingsSection("登録", [
+      ],
+    },
+    {
+      name: "検索",
+      id: "settings-search",
+      build: () => [createSearchSettingsEditor(ports.getSearchOptions(), ports.updateSearchOptions)],
+    },
+    {
+      name: "登録",
+      id: "settings-registered",
+      build: () => [
         registeredStringsField(ports),
         registeredCommandsField(ports),
-      ]),
-    );
+      ],
+    },
+    {
+      name: "About",
+      id: "settings-about",
+      build: () => [aboutField()],
+    },
+  ] as const;
+
+  const tabs = new Map<string, HTMLButtonElement>();
+  let renderedSections: HTMLElement[] = [];
+  let activeSectionId: string = sectionSpecs[0].id;
+
+  const setActiveSection = (sectionId: string) => {
+    activeSectionId = sectionId;
+    for (const [id, tab] of tabs) tab.setAttribute("aria-selected", String(id === sectionId));
+    content.setAttribute("aria-activedescendant", sectionId);
+  };
+
+  const updateActiveTabFromScroll = () => {
+    if (!renderedSections.length) return;
+    const containerTop = content.getBoundingClientRect().top;
+    const activationLine = containerTop + 24;
+    let active = renderedSections[0];
+    for (const section of renderedSections) {
+      if (section.getBoundingClientRect().top > activationLine) break;
+      active = section;
+    }
+    setActiveSection(active.id);
+  };
+
+  for (const spec of sectionSpecs) {
+    const tab = document.createElement("button");
+    tab.type = "button";
+    tab.className = "settings-tab";
+    tab.dataset.settingsTab = spec.name;
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-controls", spec.id);
+    tab.setAttribute("aria-selected", "false");
+    tab.textContent = spec.name;
+    tab.addEventListener("click", () => {
+      const section = renderedSections.find((current) => current.id === spec.id);
+      if (!section) return;
+      setActiveSection(spec.id);
+      section.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    tabs.set(spec.id, tab);
+    tabList.append(tab);
+  }
+
+  content.addEventListener("scroll", updateActiveTabFromScroll);
+
+  const render = () => {
+    renderedSections = sectionSpecs.map(({ name, id, build }) => settingsSection(name, id, build()));
+    content.replaceChildren(...renderedSections);
+    const activeExists = renderedSections.some((section) => section.id === activeSectionId);
+    setActiveSection(activeExists ? activeSectionId : sectionSpecs[0].id);
   };
 
   reset.addEventListener("click", () => {
@@ -162,14 +251,39 @@ export function openSettingsModal(ports: SettingsPanelPorts): SettingsCloseHandl
   }
 }
 
-function settingsSection(name: string, children: HTMLElement[]): HTMLElement {
+function settingsSection(name: string, id: string, children: HTMLElement[]): HTMLElement {
   const section = document.createElement("section");
   section.className = "settings-section";
   section.dataset.settingsSection = name;
+  const headingId = `${id}-heading`;
+  section.id = id;
+  section.setAttribute("role", "region");
+  section.setAttribute("aria-labelledby", headingId);
   const heading = document.createElement("h2");
+  heading.id = headingId;
   heading.textContent = name;
   section.append(heading, ...children);
   return section;
+}
+
+function aboutField(): HTMLElement {
+  const details = document.createElement("dl");
+  details.className = "settings-about";
+
+  const appNameLabel = document.createElement("dt");
+  appNameLabel.textContent = "アプリ名";
+  const appNameValue = document.createElement("dd");
+  appNameValue.dataset.aboutValue = "app-name";
+  appNameValue.textContent = APP_NAME;
+
+  const versionLabel = document.createElement("dt");
+  versionLabel.textContent = "バージョン";
+  const versionValue = document.createElement("dd");
+  versionValue.dataset.aboutValue = "version";
+  versionValue.textContent = APP_VERSION;
+
+  details.append(appNameLabel, appNameValue, versionLabel, versionValue);
+  return details;
 }
 
 function buildCommonSettingFields(

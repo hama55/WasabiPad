@@ -55,9 +55,12 @@ describe("Feature: pane toggle placement", () => {
   // Scenario: 検索欄とプレビュー開閉ボタンを重ねず表示する
   // Given: エディタのCSSとメイン画面HTML
   // When: 検索欄の右位置とプレビュー開閉ボタンを検査する
-  // Then: 検索欄はボタン幅ぶん左にあり、プレビュー開閉ボタンは初期状態から非表示ではない
-  it("Scenario: 検索欄を左へずらしプレビュー開閉ボタンを常時表示する", () => {
-    expect(style).toMatch(/\.ve-find\s*\{[^}]*right:\s*54px;/s);
+  // Then: 検索欄はエディタ上端を占有し、プレビュー開閉ボタンは境界へ近づいた時だけ見える
+  it("Scenario: 検索欄を占有表示しプレビュー開閉ボタンを必要時だけ見せる", () => {
+    expect(style).toMatch(/\.ve-find\s*\{[^}]*top:\s*0;[^}]*left:\s*0;[^}]*right:\s*0;/s);
+    expect(style).toMatch(/\.ve-search-open\s+\.ve-gutter,[\s\S]*\.ve-search-open\s+\.ve-scroll\s*\{[^}]*top:\s*40px;/s);
+    expect(style).toMatch(/#main\.preview-toggle-peek\s+#preview-toggle,[\s\S]*#preview-toggle:focus-visible/);
+    expect(style).toMatch(/#preview-toggle\s*\{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/s);
     expect(indexHtml).toMatch(/<button\s+id="preview-toggle"(?![^>]*\shidden(?:\s|=|>))[^>]*>/s);
   });
 

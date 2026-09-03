@@ -2,7 +2,14 @@ import { READ_ENCODINGS, type ReadEncoding, type ViewerFormat } from "./api";
 import type { DocumentSession } from "./session";
 import { readEncodingOf } from "./session";
 import { formatByteSize, formatCursor, formatFontFamily, formatLineCount, formatModifiedAt } from "./format";
-import { DEFAULT_INDENT_SIZE, INDENT_SIZES, promptFontFamily, promptFontSize } from "./font-controls";
+import {
+  DEFAULT_INDENT_SIZE,
+  FONT_FAMILIES,
+  INDENT_SIZES,
+  MAX_FONT_SIZE,
+  MIN_FONT_SIZE,
+  clampFontSize,
+} from "./font-controls";
 import { confirmMessage, promptFields } from "./prompt";
 import { normalizeTheme, THEME_LABELS, THEME_STORAGE_KEY, THEMES, type Theme } from "./theme";
 import { runAsyncBoundary } from "./async-boundary";
@@ -21,6 +28,8 @@ export interface StatusBarPorts {
   onGoTo: (line: number) => void;
   onFontFamily: (family: string) => void;
   onFontSize: (size: number) => void;
+  onPreviewFontFamily?: (family: string) => void | Promise<void>;
+  onPreviewFontSize?: (size: number) => void | Promise<void>;
   onWrap: (on: boolean) => void;
   onIndent: (size: number) => void;
   onPreviewDelimiter?: (delimiter: string) => void;
@@ -35,15 +44,26 @@ export class StatusBar {
   private currentLine = 1;
   private lineCount = 1;
   private wrap = false;
-  private fontFamily = "";
-  private fontSize = 0;
   private modifiedAt: number | null = null;
   // change 後の select からは元の値が読めないため、直近に表示した値を控えておく
   private shownReadEncoding: ReadEncoding = "utf8";
+  private committedFontFamily = FONT_FAMILIES[0];
+  private committedFontSize = MIN_FONT_SIZE;
+  private familyCandidatePending = false;
+  private sizeCandidatePending = false;
 
   constructor(private host: HTMLElement, private ports: StatusBarPorts) {
     this.indentSelect.replaceChildren(
       ...INDENT_SIZES.map((size) => option(String(size), `インデント: ${size}`)),
+    );
+    this.fontFamilySelect.replaceChildren(
+      ...FONT_FAMILIES.map((family) => option(family, formatFontFamily(family))),
+    );
+    this.fontSizeSelect.replaceChildren(
+      ...Array.from({ length: MAX_FONT_SIZE - MIN_FONT_SIZE + 1 }, (_, index) => {
+        const size = MIN_FONT_SIZE + index;
+        return option(String(size), `${size}px`);
+      }),
     );
     this.sourceEncodingSelect.replaceChildren(
       ...READ_ENCODINGS.map((encoding) => option(encoding, ENCODING_LABELS[encoding])),
@@ -60,8 +80,44 @@ export class StatusBar {
         this.applyTheme(THEMES[(THEMES.indexOf(current) + 1) % THEMES.length]);
       });
     });
-    this.pick("st-font").addEventListener("click", () => this.run("フォントを変更できませんでした", () => this.promptFont()));
-    this.pick("st-font-size").addEventListener("click", () => this.run("文字サイズを変更できませんでした", () => this.promptFontSize()));
+    // input は候補移動中のエディタだけのプレビュー。設定保存を行う既存ポートは change だけで呼ぶ。
+    this.fontFamilySelect.addEventListener("input", () => this.previewFontFamily(this.fontFamilySelect.value));
+    this.fontFamilySelect.addEventListener("pointerover", (event) => {
+      const option = (event.target as Element | null)?.closest<HTMLOptionElement>("option");
+      if (!option || option.parentElement !== this.fontFamilySelect || option.disabled) return;
+      this.previewFontFamily(option.value);
+    });
+    this.fontSizeSelect.addEventListener("input", () =>
+      this.previewFontSize(clampFontSize(Number(this.fontSizeSelect.value))));
+    this.fontSizeSelect.addEventListener("pointerover", (event) => {
+      const option = (event.target as Element | null)?.closest<HTMLOptionElement>("option");
+      if (!option || option.parentElement !== this.fontSizeSelect || option.disabled) return;
+      this.previewFontSize(clampFontSize(Number(option.value)));
+    });
+    this.fontFamilySelect.addEventListener("change", () => {
+      this.familyCandidatePending = false;
+      this.committedFontFamily = this.fontFamilySelect.value;
+      const family = this.committedFontFamily;
+      this.run("フォントを変更できませんでした", () => this.ports.onFontFamily(family));
+    });
+    this.fontSizeSelect.addEventListener("change", () => {
+      this.sizeCandidatePending = false;
+      this.committedFontSize = clampFontSize(Number(this.fontSizeSelect.value));
+      const size = this.committedFontSize;
+      this.run("文字サイズを変更できませんでした", () => this.ports.onFontSize(size));
+    });
+    this.fontFamilySelect.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      this.restoreFontFamilyCandidate();
+    });
+    this.fontSizeSelect.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      this.restoreFontSizeCandidate();
+    });
+    this.fontFamilySelect.addEventListener("blur", () => this.restoreFontFamilyCandidate());
+    this.fontSizeSelect.addEventListener("blur", () => this.restoreFontSizeCandidate());
     this.pick("st-wrap").addEventListener("click", () => {
       this.run("折り返しを変更できませんでした", () => {
         this.wrap = !this.wrap;
@@ -91,6 +147,14 @@ export class StatusBar {
 
   private get indentSelect() {
     return this.pick<HTMLSelectElement>("st-indent");
+  }
+
+  private get fontFamilySelect() {
+    return this.pick<HTMLSelectElement>("st-font");
+  }
+
+  private get fontSizeSelect() {
+    return this.pick<HTMLSelectElement>("st-font-size");
   }
 
   private get sourceEncodingSelect() {
@@ -123,10 +187,42 @@ export class StatusBar {
   }
 
   setFont(family: string, size: number) {
-    this.fontFamily = family;
-    this.fontSize = size;
-    this.pick("st-font").textContent = formatFontFamily(family);
-    this.pick("st-font-size").textContent = `${size}px`;
+    const clampedSize = clampFontSize(size);
+    if (![...this.fontFamilySelect.options].some((item) => item.value === family)) {
+      this.fontFamilySelect.insertBefore(option(family, formatFontFamily(family)), this.fontFamilySelect.firstChild);
+    }
+    this.committedFontFamily = family;
+    this.committedFontSize = clampedSize;
+    this.familyCandidatePending = false;
+    this.sizeCandidatePending = false;
+    this.fontFamilySelect.value = family;
+    this.fontSizeSelect.value = String(clampedSize);
+  }
+
+  private previewFontFamily(family: string) {
+    this.familyCandidatePending = true;
+    this.run("フォントをプレビューできませんでした", () => this.ports.onPreviewFontFamily?.(family));
+  }
+
+  private previewFontSize(size: number) {
+    this.sizeCandidatePending = true;
+    this.run("文字サイズをプレビューできませんでした", () => this.ports.onPreviewFontSize?.(size));
+  }
+
+  private restoreFontFamilyCandidate() {
+    if (!this.familyCandidatePending) return;
+    this.familyCandidatePending = false;
+    this.fontFamilySelect.value = this.committedFontFamily;
+    this.run("フォントをプレビューできませんでした", () =>
+      this.ports.onPreviewFontFamily?.(this.committedFontFamily));
+  }
+
+  private restoreFontSizeCandidate() {
+    if (!this.sizeCandidatePending) return;
+    this.sizeCandidatePending = false;
+    this.fontSizeSelect.value = String(this.committedFontSize);
+    this.run("文字サイズをプレビューできませんでした", () =>
+      this.ports.onPreviewFontSize?.(this.committedFontSize));
   }
 
   setCursor(line: number, col: number) {
@@ -186,16 +282,6 @@ export class StatusBar {
     const requested = select.value as ReadEncoding;
     if (requested === this.shownReadEncoding) return;
     if (!(await this.ports.onReadEncoding(requested))) select.value = this.shownReadEncoding;
-  }
-
-  private async promptFont() {
-    const family = await promptFontFamily(this.fontFamily);
-    if (family) this.ports.onFontFamily(family);
-  }
-
-  private async promptFontSize() {
-    const size = await promptFontSize(this.fontSize);
-    if (size !== null) this.ports.onFontSize(size);
   }
 
   private async promptGoTo() {

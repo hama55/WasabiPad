@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
+import packageInfo from "../package.json";
+import { APP_NAME } from "./app-config";
 import type { Settings } from "./settings";
 import { openSettingsMenu, openSettingsModal, type SettingsPanelPorts } from "./settings-panel";
 import { DEFAULT_SEARCH_OPTIONS } from "./workspace-search-options";
@@ -7,6 +9,7 @@ import { DEFAULT_SEARCH_OPTIONS } from "./workspace-search-options";
 function makePorts(initial: Partial<Settings> = {}): SettingsPanelPorts {
   const values: Settings = {
     indentSize: 8,
+    sidebarWidth: 220,
     fontFamily: 'Consolas, "MS Gothic", monospace',
     fontSize: 14,
     previewFontSize: 14,
@@ -138,6 +141,86 @@ describe("Feature: settings modal", () => {
     expect(document.querySelector("[data-settings-section=登録]")).not.toBeNull();
     expect(document.querySelector('[data-setting="startup-path"]')).not.toBeNull();
     expect(document.querySelector(".settings-reset")).not.toBeNull();
+  });
+
+  // Given: 現在のアプリ設定
+  // When: 設定モーダルを開く
+  // Then: 左側に縦タブを表示し、右側のセクションを一般からAboutの順に表示する
+  it("Scenario: 設定カテゴリを縦タブで選択でき、Aboutを最後に表示する", () => {
+    openSettingsModal(makePorts());
+
+    const tabList = document.querySelector<HTMLElement>(".settings-tabs")!;
+    const tabs = [...tabList.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
+    const content = document.querySelector<HTMLElement>(".settings-content")!;
+    const sections = [...content.querySelectorAll<HTMLElement>("[data-settings-section]")];
+
+    expect(tabList.getAttribute("role")).toBe("tablist");
+    expect(tabList.getAttribute("aria-orientation")).toBe("vertical");
+    expect(tabs.map((tab) => tab.textContent)).toEqual([
+      "一般",
+      "エディタ",
+      "プレビュー",
+      "検索",
+      "登録",
+      "About",
+    ]);
+    expect(sections.map((section) => section.dataset.settingsSection)).toEqual([
+      "一般",
+      "エディタ",
+      "プレビュー",
+      "検索",
+      "登録",
+      "About",
+    ]);
+    expect(tabs[0].getAttribute("aria-selected")).toBe("true");
+
+    const about = sections.at(-1)!;
+    expect(about.textContent).toContain(APP_NAME);
+    expect(about.textContent).toContain(packageInfo.version);
+  });
+
+  // Given: 設定モーダルを開いている
+  // When: プレビュータブをクリックする
+  // Then: 対応する設定セクションへスクロールし、タブを選択状態にする
+  it("Scenario: タブクリックで対応セクションへ移動する", () => {
+    openSettingsModal(makePorts());
+
+    const content = document.querySelector<HTMLElement>(".settings-content")!;
+    const preview = document.querySelector<HTMLElement>('[data-settings-section="プレビュー"]')!;
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(preview, "scrollIntoView", { configurable: true, value: scrollIntoView });
+
+    document.querySelector<HTMLButtonElement>('[data-settings-tab="プレビュー"]')!.click();
+
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "start" });
+    expect(preview.id).toBeTruthy();
+    expect(content.getAttribute("aria-activedescendant")).toBe(preview.id);
+    expect(document.querySelector<HTMLButtonElement>('[data-settings-tab="プレビュー"]')!
+      .getAttribute("aria-selected")).toBe("true");
+  });
+
+  // Given: 設定セクションがスクロール領域内に並んでいる
+  // When: 検索セクションが先頭に近づくまで設定領域をスクロールする
+  // Then: 対応する検索タブを選択状態にする
+  it("Scenario: スクロール位置に応じて選択中タブを追従させる", () => {
+    openSettingsModal(makePorts());
+
+    const content = document.querySelector<HTMLElement>(".settings-content")!;
+    const sections = [...content.querySelectorAll<HTMLElement>("[data-settings-section]")];
+    vi.spyOn(content, "getBoundingClientRect").mockReturnValue({ top: 100, bottom: 500 } as DOMRect);
+    sections.forEach((section, index) => {
+      vi.spyOn(section, "getBoundingClientRect").mockReturnValue({
+        top: index < 3 ? -500 + index * 100 : index === 3 ? 105 : 700 + index * 100,
+        bottom: index < 3 ? -400 + index * 100 : index === 3 ? 300 : 900 + index * 100,
+      } as DOMRect);
+    });
+
+    content.dispatchEvent(new Event("scroll"));
+
+    expect(document.querySelector<HTMLButtonElement>('[data-settings-tab="検索"]')!
+      .getAttribute("aria-selected")).toBe("true");
+    expect(content.getAttribute("aria-activedescendant"))
+      .toBe(document.querySelector<HTMLElement>('[data-settings-section="検索"]')!.id);
   });
 
   // Given: Markdown通常改行設定を有効にした現在のアプリ設定

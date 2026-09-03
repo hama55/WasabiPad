@@ -112,6 +112,17 @@ export class TabBarView {
           action: () => this.run(() => this.ports.onOpenInNewWindow!(tab), "新規ウィンドウで開けませんでした"),
         });
       }
+      const writeClipboardText = this.ports.registeredCommandPorts.writeClipboardText;
+      if (writeClipboardText) {
+        items.push({
+          label: MENU_LABELS.copyPath,
+          iconClass: MENU_ICON.copy,
+          action: () => this.run(
+            () => writeClipboardText(tab.path!),
+            "パスをコピーできませんでした",
+          ),
+        });
+      }
     }
     items.push(
       { label: "閉じる", iconClass: MENU_ICON.close, action: () => this.run(() => this.ports.onClose(tab.id)), sep: Boolean(tab.path) },

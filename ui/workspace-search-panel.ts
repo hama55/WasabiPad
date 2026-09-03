@@ -755,7 +755,16 @@ function searchResultKey(result: Pick<WorkspaceSearchResult, "rel_path" | "line"
 function searchingRow(stopped: boolean): HTMLElement {
   const div = document.createElement("div");
   div.className = "ws-empty";
-  div.textContent = stopped ? "検索を中止しました" : "検索中…";
+  if (!stopped) {
+    div.textContent = "検索中…";
+    return div;
+  }
+  const title = document.createElement("div");
+  title.textContent = "検索を中止しました";
+  const detail = document.createElement("div");
+  detail.className = "ws-empty-detail";
+  detail.textContent = "検索を中止したため、ここまでに見つかった途中結果だけを表示しています。";
+  div.append(title, detail);
   return div;
 }
 

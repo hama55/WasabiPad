@@ -12,8 +12,12 @@
     <div id="viewer-title-spacer"></div>
     <div id="viewer-title" data-tauri-drag-region>
       <span id="viewer-title-text">読込み中…</span>
-      <div id="viewer-format" role="group" aria-label="表示形式"></div>
+      <select id="viewer-format" aria-label="表示形式"></select>
     </div>
+    <label id="viewer-delimiter" hidden>区切り文字
+      <select id="viewer-delimiter-select" aria-label="区切り文字"></select>
+      <input id="viewer-delimiter-input" aria-label="自由形式の区切り文字" hidden />
+    </label>
     <div id="viewer-csv-actions" role="group" aria-label="CSV操作" hidden></div>
     <div id="wincontrols">
       <button id="win-min" title="最小化">&#xE921;</button>
@@ -34,7 +38,6 @@
   </main>
   <div id="statusbar">
     <span id="viewer-summary"></span>
-    <label id="viewer-delimiter">区切り文字 <input id="viewer-delimiter-input" aria-label="区切り文字" /></label>
     <span class="st-spacer"></span>
     <button id="viewer-font" title="フォントを変更"></button>
     <button id="viewer-font-size" title="フォントサイズを変更"></button>

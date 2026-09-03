@@ -31,6 +31,7 @@ export interface MemoCreationSpec {
 
 const DEFAULT_MEMO_STEM = "memo";
 const DEFAULT_MEMO_EXTENSION = SAVE_EXTENSIONS[0].extension;
+const DEFAULT_MEMO_FORMAT: SaveFormat = { encoding: "utf8", eol: "crlf" };
 
 export type DocumentControllerApi = Pick<
   typeof api,
@@ -566,7 +567,7 @@ export class DocumentController {
     return this.memoCreationSpec(await this.promptMemoValues(
       "新規メモ作成",
       directory,
-      this.services.saveFormatFields(this.session),
+      this.services.saveFormatFields(DEFAULT_MEMO_FORMAT),
     ));
   }
 
@@ -574,7 +575,7 @@ export class DocumentController {
     return this.memoCreationSpec(await this.promptMemoValues(
       "新規メモ保存",
       directory,
-      this.services.saveFormatFields(this.session),
+      this.services.saveFormatFields(DEFAULT_MEMO_FORMAT),
     ));
   }
 

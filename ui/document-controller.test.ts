@@ -288,6 +288,27 @@ describe("Feature: DocumentController", () => {
     expect(promptFieldsMock.mock.calls[0][2]).toEqual({});
   });
 
+  // Feature: 新規メモの既定保存形式
+  // Scenario: 選択中文書の形式にかかわらずUTF-8/CRLFを初期値にする
+  // Given: 現在の文書がShift-JIS/LFで開かれている
+  // When: `promptMemoSpec`を呼ぶ
+  // Then: 新規メモの文字コードと改行コードの入力値はUTF-8/CRLFになる
+  it("Scenario: 新規メモは現在文書の形式を引き継がない", async () => {
+    const { view } = fakeView();
+    const promptFieldsMock = vi.fn(async (..._args: Parameters<typeof promptFields>) => [
+      "memo", "txt", "utf8", "crlf",
+    ]);
+    const controller = new DocumentController(view, { ...services(), promptFields: promptFieldsMock });
+    controller.applyDocInfo(info({ enc: "sjis", eol: "lf" }));
+
+    await controller.promptMemoSpec();
+
+    expect(promptFieldsMock.mock.calls[0][1]).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: "文字コード", value: "utf8" }),
+      expect.objectContaining({ label: "改行コード", value: "crlf" }),
+    ]));
+  });
+
   // Feature: 新規メモ名の初期採番
   // Scenario: ダイアログ表示後に拡張子だけを変更しても入力名を保持する
   // Given: `nextMemoPath`が初期値`memo1.txt`を返す

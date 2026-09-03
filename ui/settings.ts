@@ -8,11 +8,13 @@ import { isStoredTabs, type StoredTabs } from "./stored-tabs";
 import { DEFAULT_EDITOR_CONFIG } from "./editor-config";
 import { DEFAULT_INDENT_SIZE, INDENT_SIZES, isValidFontSize } from "./font-controls";
 import { isRegisteredCommand, normalizeRegisteredCommand, type RegisteredCommand } from "./registered-command-model";
+import { SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MIN_WIDTH } from "./preview-layout";
 
 export type { RegisteredCommand } from "./registered-command-model";
 
 export interface Settings {
   indentSize: number;
+  sidebarWidth: number;
   fontFamily: string;
   fontSize: number;
   previewFontSize: number;
@@ -27,6 +29,7 @@ export interface Settings {
 
 const DEFAULTS: Settings = {
   indentSize: DEFAULT_INDENT_SIZE,
+  sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
   fontFamily: DEFAULT_EDITOR_CONFIG.fontFamily,
   fontSize: DEFAULT_EDITOR_CONFIG.fontSize,
   previewFontSize: DEFAULT_EDITOR_CONFIG.fontSize,
@@ -37,6 +40,13 @@ const DEFAULTS: Settings = {
   workspaceSearchOptions: null,
   openTabs: { tabs: [], activeId: null },
 };
+
+export const SIDEBAR_MAX_WIDTH = 640;
+
+export function clampSidebarWidth(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULTS.sidebarWidth;
+  return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, Math.round(value)));
+}
 
 let cache: Settings = { ...DEFAULTS };
 let pendingSave = Promise.resolve();
@@ -66,6 +76,7 @@ export function parseSettingsResult(text: string): SettingsParseResult {
     indentSize: typeof value.indentSize === "number" && INDENT_SIZES.includes(value.indentSize as typeof INDENT_SIZES[number])
       ? value.indentSize
       : DEFAULTS.indentSize,
+    sidebarWidth: clampSidebarWidth(value.sidebarWidth),
     fontFamily: typeof value.fontFamily === "string" && value.fontFamily.length > 0
       ? value.fontFamily
       : DEFAULTS.fontFamily,
@@ -141,6 +152,7 @@ export function setSetting<K extends keyof Settings>(key: K, value: Settings[K])
 // アプリ設定だけを既定値へ戻す。openTabs は作業再開に必要なセッション状態なので触らない。
 export function resetUserSettings(): void {
   setSetting("indentSize", DEFAULTS.indentSize);
+  setSetting("sidebarWidth", DEFAULTS.sidebarWidth);
   setSetting("fontFamily", DEFAULTS.fontFamily);
   setSetting("fontSize", DEFAULTS.fontSize);
   setSetting("previewFontSize", DEFAULTS.previewFontSize);

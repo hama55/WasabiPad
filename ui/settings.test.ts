@@ -90,6 +90,18 @@ describe("Feature: settings", () => {
     expect(parseSettings(JSON.stringify({ indentSize: 3 })).indentSize).toBe(8);
   });
 
+  // Feature: サイドバー幅の設定
+  // Scenario: 保存済みの幅を復元し、不安全な値は画面に収まる範囲へ丸める
+  // Given: 正常値・小さすぎる値・大きすぎる値を設定ファイルへ保存する
+  // When: `parseSettings`を呼ぶ
+  // Then: 正常値は維持し、範囲外は安全な境界値へ戻す
+  it("Scenario: サイドバー幅を安全に復元する", () => {
+    expect(parseSettings(JSON.stringify({ sidebarWidth: 360 })).sidebarWidth).toBe(360);
+    expect(parseSettings(JSON.stringify({ sidebarWidth: 1 })).sidebarWidth).toBe(120);
+    expect(parseSettings(JSON.stringify({ sidebarWidth: 9999 })).sidebarWidth).toBe(640);
+    expect(parseSettings("{}").sidebarWidth).toBe(220);
+  });
+
   // Given: 有効なフォント設定と空文字/小数サイズの設定
   // When: `parseSettings`を呼ぶ
   // Then: 有効値は復元し、不正値は既定フォントと14に戻す
