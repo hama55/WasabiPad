@@ -23,6 +23,25 @@ describe("Feature: window layout integration", () => {
     expect(mainSource).toMatch(/layoutRuntime\?\.dispose\(\)/);
   });
 
+  // Feature: プレビュー開閉ボタン幅の起動時同期
+  // Scenario: TypeScriptの既定幅をメイン画面のCSSカスタムプロパティへ渡す
+  // Given: プレビュー開閉ボタン幅を管理するTypeScript定数がある
+  // When: メイン画面の初期CSS変数設定を検査する
+  // Then: CSS変数は既定幅定数からpx値として設定される
+  it("Scenario: 起動時にプレビュー開閉ボタン幅をCSSへ設定する", () => {
+    expect(mainSource).toMatch(/mainEl\.style\.setProperty\("--preview-toggle-width",\s*`\$\{PREVIEW_TOGGLE_DEFAULT_WIDTH\}px`\)/);
+  });
+
+  // Feature: プレビュー開閉ボタンの離脱時非表示
+  // Scenario: メイン領域の外へポインターが出たらプレビュー開閉ボタンを非表示にする
+  // Given: 近接表示を解除する関数と、ホバー中・フォーカス中のガードがある
+  // When: `#main` の pointerleave イベントを登録する
+  // Then: メイン領域外への離脱時に非表示予約を行い、既存のガードを維持する
+  it("Scenario: メイン領域から離れた時にプレビュー開閉ボタンを非表示予約する", () => {
+    expect(mainSource).toMatch(/mainEl\.addEventListener\("pointerleave",\s*hidePreviewTogglePeekLater\);/);
+    expect(mainSource).toMatch(/if \(!previewToggleHovered && document\.activeElement !== previewToggle\)/);
+  });
+
   // Given: 独立viewerが最大化・最小化・復元と内容更新を受け取る
   // When: windowのresize・移動・DPI・focusまたはnative state changeが届く
   // Then: 画像・表・グラフを共有の有効viewport反映へまとめる

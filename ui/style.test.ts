@@ -51,7 +51,7 @@ describe("Feature: pane toggle placement", () => {
     expect(style).toMatch(/#preview-splitter\s*\{[^}]*width:\s*var\(--pane-splitter-width\);/s);
   });
 
-  // Feature: エディタ右上コントロールの常時利用
+  // Feature: エディタ右上コントロールの近接表示
   // Scenario: 検索欄とプレビュー開閉ボタンを重ねず表示する
   // Given: エディタのCSSとメイン画面HTML
   // When: 検索欄の右位置とプレビュー開閉ボタンを検査する
@@ -68,6 +68,25 @@ describe("Feature: pane toggle placement", () => {
     expect(style).toMatch(/#main\.preview-toggle-peek\s+#preview-toggle,[\s\S]*#preview-toggle:focus-visible/);
     expect(style).toMatch(/#preview-toggle\s*\{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/s);
     expect(indexHtml).toMatch(/<button\s+id="preview-toggle"(?![^>]*\shidden(?:\s|=|>))[^>]*>/s);
+  });
+
+  // Feature: プレビュー開閉ボタン幅のCSS同期
+  // Scenario: TypeScriptで管理するボタン幅をCSSでも共有する
+  // Given: プレビュー開閉ボタンのCSSと起動時レイアウト設定がある
+  // When: ボタンの最小幅指定とCSS変数の設定を検査する
+  // Then: CSSは固定値を持たず、共有CSS変数を参照する
+  it("Scenario: プレビュー開閉ボタン幅を共有CSS変数から取得する", () => {
+    expect(style).toMatch(/#preview-toggle\s*\{[^}]*min-width:\s*var\(--preview-toggle-width\);/s);
+    expect(style).not.toMatch(/#preview-toggle\s*\{[^}]*min-width:\s*28px;/s);
+  });
+
+  // Feature: 検索バー表示中のプレビュー開閉操作
+  // Scenario: 検索バーを表示してもプレビュー開閉ボタンを操作できる位置へ移す
+  // Given: エディタ上端を40px占有する検索バーと、通常時は上端にあるプレビュー開閉ボタン
+  // When: エディタの検索バーが表示される
+  // Then: プレビュー開閉ボタンは検索バーの下の44px位置へ移り、検索バーと重ならない
+  it("Scenario: 検索バー表示中はプレビュー開閉ボタンを検索バーの下へ移す", () => {
+    expect(style).toMatch(/#editorhost\.ve-search-open\s*~\s*#preview-toggle\s*\{[^}]*top:\s*44px;/s);
   });
 
   // Feature: ファイルツリー下端の新規作成操作

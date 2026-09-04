@@ -188,13 +188,14 @@ body {
 #preview-splitter:hover { background: var(--bg-status); }
 #preview-toggle {
   position: absolute; z-index: 8; left: 0; top: 4px;
-  min-width: 28px; height: 24px; padding: 0 5px;
+  min-width: var(--preview-toggle-width); height: 24px; padding: 0 5px;
   border: 1px solid var(--border); border-radius: 4px;
   background: var(--bg-title); color: var(--fg-dim);
   font: 16px/1 "Segoe MDL2 Assets", var(--font-ui);
   opacity: 0; pointer-events: none;
   transition: opacity 120ms ease;
 }
+#editorhost.ve-search-open ~ #preview-toggle { top: 44px; }
 #preview-toggle:hover { background: var(--hover); color: var(--fg); }
 #main.preview-toggle-peek #preview-toggle,
 #preview-toggle:focus-visible {

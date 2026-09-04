@@ -72,7 +72,13 @@ import {
   type PreviewDocument,
 } from "./preview-layout";
 import { bindPreviewResize } from "./preview-resize";
-import { paneToggleView, previewToggleLeft, sidebarToggleLeft } from "./pane-toggle";
+import {
+  PREVIEW_TOGGLE_DEFAULT_WIDTH,
+  isPreviewTogglePeekPoint,
+  paneToggleView,
+  previewToggleLeft,
+  sidebarToggleLeft,
+} from "./pane-toggle";
 import { reportErrorSafely } from "./report-error";
 import { processExternalWindowRequests } from "./external-window-request";
 import { canCloseWindow } from "./close-request";
@@ -112,6 +118,7 @@ document.documentElement.style.setProperty("--sidebar-default-width", `${SIDEBAR
 document.documentElement.style.setProperty("--sidebar-min-width", `${SIDEBAR_MIN_WIDTH}px`);
 document.documentElement.style.setProperty("--pane-splitter-width", `${PANE_SPLITTER_WIDTH}px`);
 mainEl.style.setProperty("--preview-min-width", `${PREVIEW_MIN_WIDTH}px`);
+mainEl.style.setProperty("--preview-toggle-width", `${PREVIEW_TOGGLE_DEFAULT_WIDTH}px`);
 
 let sidebarAvailable = false;
 let sidebarCollapsed = false;
@@ -876,12 +883,17 @@ function pointerNearPreviewBoundary(clientX: number): boolean {
   const boundary = previewEl.hidden
     ? mainEl.getBoundingClientRect().right
     : previewEl.getBoundingClientRect().left;
-  return clientX >= boundary - 28 && clientX <= boundary + 14;
+  return isPreviewTogglePeekPoint(
+    clientX,
+    boundary,
+    previewToggle.offsetWidth || PREVIEW_TOGGLE_DEFAULT_WIDTH,
+  );
 }
 mainEl.addEventListener("pointermove", (event) => {
   if (pointerNearPreviewBoundary(event.clientX)) showPreviewTogglePeek();
   else if (!previewToggleHovered) hidePreviewTogglePeekLater();
 });
+mainEl.addEventListener("pointerleave", hidePreviewTogglePeekLater);
 previewToggle.addEventListener("pointerenter", () => {
   previewToggleHovered = true;
   showPreviewTogglePeek();

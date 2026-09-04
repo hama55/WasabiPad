@@ -2,6 +2,8 @@ import { CHEVRON_LEFT, CHEVRON_RIGHT } from "./icon-button";
 
 const PREVIEW_TOGGLE_RIGHT_INSET = 16;
 
+export const PREVIEW_TOGGLE_DEFAULT_WIDTH = 28;
+
 export type PaneToggleKind = "sidebar" | "preview";
 
 export function paneToggleView(kind: PaneToggleKind, shown: boolean) {
@@ -25,4 +27,13 @@ export function previewToggleLeft(
   buttonWidth: number,
 ): number {
   return Math.max(4, shown ? previewLeft - mainLeft : mainWidth - buttonWidth - PREVIEW_TOGGLE_RIGHT_INSET);
+}
+
+export function isPreviewTogglePeekPoint(
+  clientX: number,
+  boundary: number,
+  buttonWidth = PREVIEW_TOGGLE_DEFAULT_WIDTH,
+): boolean {
+  return clientX >= boundary - buttonWidth - PREVIEW_TOGGLE_RIGHT_INSET
+    && clientX <= boundary + PREVIEW_TOGGLE_RIGHT_INSET;
 }

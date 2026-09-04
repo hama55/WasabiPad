@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { paneToggleView, previewToggleLeft, sidebarToggleLeft } from "./pane-toggle";
+import {
+  PREVIEW_TOGGLE_DEFAULT_WIDTH,
+  isPreviewTogglePeekPoint,
+  paneToggleView,
+  previewToggleLeft,
+  sidebarToggleLeft,
+} from "./pane-toggle";
 
 describe("Feature: pane toggle controls", () => {
   // Given: フォルダビューが表示されている
@@ -28,7 +34,19 @@ describe("Feature: pane toggle controls", () => {
   // When: プレビュー開閉ボタンの位置を求める
   // Then: 表示時はプレビュー左端、非表示時は右端になる
   it("Scenario: anchors the preview toggle to the preview edge", () => {
-    expect(previewToggleLeft(true, 100, 900, 1200, 28)).toBe(800);
-    expect(previewToggleLeft(false, 100, 900, 1200, 28)).toBe(1156);
+    expect(previewToggleLeft(true, 100, 900, 1200, PREVIEW_TOGGLE_DEFAULT_WIDTH)).toBe(800);
+    expect(previewToggleLeft(false, 100, 900, 1200, PREVIEW_TOGGLE_DEFAULT_WIDTH)).toBe(1156);
+  });
+
+  // Feature: プレビュー開閉ボタンの近接表示
+  // Scenario: 縦スクロールバー付近の操作可能領域へポインターを近づける
+  // Given: プレビュー境界が画面上の900pxにある
+  // When: 境界の左右から近接領域の内外へポインターを移動する
+  // Then: ボタンの操作に必要な範囲だけが表示対象になる
+  it("Scenario: keeps the preview toggle reachable across the preview boundary", () => {
+    expect(isPreviewTogglePeekPoint(856, 900)).toBe(true);
+    expect(isPreviewTogglePeekPoint(916, 900)).toBe(true);
+    expect(isPreviewTogglePeekPoint(855, 900)).toBe(false);
+    expect(isPreviewTogglePeekPoint(917, 900)).toBe(false);
   });
 });
