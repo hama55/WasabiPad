@@ -1,5 +1,6 @@
 import type { WorkspaceSearchOptions } from "./api";
 import packageInfo from "../package.json";
+import { releaseTag } from "../version-policy.mjs";
 import { APP_NAME } from "./app-config";
 import { formatFontFamily } from "./format";
 import { FONT_FAMILIES, INDENT_SIZES, isValidFontSize, MAX_FONT_SIZE, MIN_FONT_SIZE } from "./font-controls";
@@ -48,8 +49,9 @@ const SETTING_FIELD_BUILDERS: Record<CommonSettingKey, (ports: SettingsPanelPort
 };
 const QUICK_SETTING_KEYS = ["theme", "fontFamily", "editorFontSize", "indent", "previewFontSize"] as const;
 const EDITOR_SETTING_KEYS = ["fontFamily", "editorFontSize", "indent"] as const;
-// package.json の version は sync-version により Cargo.toml の workspace version と同期される。
-const APP_VERSION = packageInfo.version;
+// package.jsonのversionはsync-versionによりCargo.tomlのworkspace versionから同期される。
+// Aboutの表示値はversion-policy.jsonを読む共有releaseTagで生成する。
+const APP_VERSION = releaseTag(packageInfo.version);
 
 export function openSettingsMenu(
   anchor: HTMLElement,

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import packageInfo from "../package.json";
+import { releaseTag } from "../version-policy.mjs";
 import { APP_NAME } from "./app-config";
 import type { Settings } from "./settings";
 import { openSettingsMenu, openSettingsModal, type SettingsPanelPorts } from "./settings-panel";
@@ -176,7 +177,8 @@ describe("Feature: settings modal", () => {
 
     const about = sections.at(-1)!;
     expect(about.textContent).toContain(APP_NAME);
-    expect(about.textContent).toContain(packageInfo.version);
+    expect(about.querySelector('[data-about-value="version"]')?.textContent)
+      .toBe(releaseTag(packageInfo.version));
   });
 
   // Given: 設定モーダルを開いている

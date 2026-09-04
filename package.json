@@ -11,6 +11,7 @@
     "check:generated": "npm run sync:ipc && npm run sync:protocol && git diff --exit-code -- ui/generated core/src/protocol.rs",
     "sync:config": "node scripts/sync-app-config.mjs",
     "check:config": "node scripts/check-config.mjs",
+    "check:release-version": "node scripts/check-release-version.mjs",
     "sync:version": "node scripts/sync-version.mjs",
     "release": "node scripts/release.mjs",
     "test": "vitest run",
