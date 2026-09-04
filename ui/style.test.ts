@@ -58,6 +58,12 @@ describe("Feature: pane toggle placement", () => {
   // Then: 検索欄はエディタ上端を占有し、プレビュー開閉ボタンは境界へ近づいた時だけ見える
   it("Scenario: 検索欄を占有表示しプレビュー開閉ボタンを必要時だけ見せる", () => {
     expect(style).toMatch(/\.ve-find\s*\{[^}]*top:\s*0;[^}]*left:\s*0;[^}]*right:\s*0;/s);
+    expect(style).toMatch(/\.ve-find-row\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(110px,\s*1fr\)[^;]*minmax\(110px,\s*1fr\)/s);
+    expect(style).toMatch(/\.ve-rep-in\s*\{[^}]*grid-column:\s*6;/s);
+    expect(style).toMatch(/\.ve-rep-actions\s*\{[^}]*grid-column:\s*7\s*\/\s*9;/s);
+    expect(style).toMatch(/\.ve-find-close\s*\{[^}]*grid-column:\s*9;/s);
+    expect(style).not.toContain(".ve-find-toggle");
+    expect(style).not.toContain(".ve-find.with-rep");
     expect(style).toMatch(/\.ve-search-open\s+\.ve-gutter,[\s\S]*\.ve-search-open\s+\.ve-scroll\s*\{[^}]*top:\s*40px;/s);
     expect(style).toMatch(/#main\.preview-toggle-peek\s+#preview-toggle,[\s\S]*#preview-toggle:focus-visible/);
     expect(style).toMatch(/#preview-toggle\s*\{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/s);

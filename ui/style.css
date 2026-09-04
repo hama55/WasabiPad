@@ -266,7 +266,7 @@ body.preview-resizing * { cursor: ew-resize !important; user-select: none !impor
   line-height: 20px; cursor: default;
 }
 .ws-search .ws-toggle { font-size: 12px; min-width: 20px; }
-.ws-replace-toggle, .ve-find-toggle { font-family: "Segoe MDL2 Assets"; font-size: 12px !important; }
+.ws-replace-toggle { font-family: "Segoe MDL2 Assets"; font-size: 12px !important; }
 .ws-search button:hover { background: var(--hover); color: var(--fg); }
 .ws-search button.on { background: var(--accent); color: #fff; }
 .ws-search button[hidden], .ws-replace-row[hidden], .ws-replace-button[hidden] { display: none; }
@@ -510,18 +510,22 @@ body.fv-dragging { cursor: grabbing; user-select: none; }
   box-shadow: none; padding: 6px 8px;
 }
 .ve-find-row {
-  display: grid; align-items: center; gap: 4px;
-  grid-template-columns: 23px 194px auto auto auto minmax(90px, 1fr) auto;
+  display: grid; align-items: center; gap: 4px; min-width: 0;
+  grid-template-columns: minmax(110px, 1fr) auto auto auto minmax(90px, auto) minmax(110px, 1fr) auto auto auto;
 }
-.ve-rep-row { margin-top: 4px; display: none; }
-.ve-find.with-rep .ve-rep-row { display: grid; }
-.ve-rep-in { grid-column: 2; box-sizing: border-box; }
-.ve-rep-actions { grid-column: 3 / -1; display: flex; gap: 4px; }
+.ve-find-in { grid-column: 1; }
+.ve-find-case { grid-column: 2; }
+.ve-find-prev { grid-column: 3; }
+.ve-find-next { grid-column: 4; }
+.ve-find-status { grid-column: 5; }
+.ve-rep-in { grid-column: 6; box-sizing: border-box; min-width: 0; }
+.ve-rep-actions { grid-column: 7 / 9; display: flex; gap: 4px; min-width: 0; }
+.ve-find-close { grid-column: 9; }
 .ve-find input[type="text"], .ve-find-in, .ve-rep-in {
   background: var(--bg-editor); color: var(--fg);
   border: 1px solid var(--border-strong); border-radius: 3px;
   padding: 3px 6px; font-size: 13px; font-family: var(--font-ui);
-  width: 194px; box-sizing: border-box; outline: none;
+  width: 100%; box-sizing: border-box; outline: none;
 }
 .ve-find-in:focus, .ve-rep-in:focus { border-color: var(--bg-status); }
 .ve-find button {
@@ -529,30 +533,12 @@ body.fv-dragging { cursor: grabbing; user-select: none; }
   color: var(--fg); font-size: 12px; padding: 3px 7px; cursor: default;
 }
 .ve-find button:hover { background: var(--hover); }
-.ve-find-toggle { padding: 3px 5px; }
 .ve-find-case { display: flex; align-items: center; gap: 2px; font-size: 12px; color: var(--fg-dim); }
 .ve-find-status { font-size: 12px; color: var(--fg-dim); min-width: 90px; }
 
 /* 検索欄は本文に重ねず、開いている間だけエディタの上端を占有する。 */
 .ve-search-open .ve-gutter,
 .ve-search-open .ve-scroll { top: 40px; }
-
-/* 置換欄を開いても、検索バーを二段にせず一行へ収める。 */
-.ve-find.with-rep {
-  display: grid;
-  grid-template-columns: 23px minmax(120px, 1fr) minmax(120px, 1fr) auto auto auto auto auto minmax(90px, auto) auto;
-}
-.ve-find.with-rep .ve-find-row,
-.ve-find.with-rep .ve-rep-row { display: contents; }
-.ve-find.with-rep .ve-find-toggle { grid-column: 1; }
-.ve-find.with-rep .ve-find-in { grid-column: 2; }
-.ve-find.with-rep .ve-rep-in { grid-column: 3; }
-.ve-find.with-rep .ve-find-case { grid-column: 4; }
-.ve-find.with-rep .ve-find-prev { grid-column: 5; }
-.ve-find.with-rep .ve-find-next { grid-column: 6; }
-.ve-find.with-rep .ve-rep-actions { grid-column: 7 / 9; margin-top: 0; }
-.ve-find.with-rep .ve-find-status { grid-column: 9; }
-.ve-find.with-rep .ve-find-close { grid-column: 10; }
 
 /* ---- ステータスバー ---- */
 #statusbar {
