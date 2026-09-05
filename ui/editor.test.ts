@@ -112,6 +112,31 @@ function installMouseLayout(host: HTMLElement) {
   };
 }
 
+function installWrappedMouseHitTesting(host: HTMLElement) {
+  const original = document.elementFromPoint;
+  const hadOwnProperty = Object.prototype.hasOwnProperty.call(document, "elementFromPoint");
+  const gutter = host.querySelector<HTMLElement>(".ve-gutter")!;
+  const hitTest = vi.fn((cx: number, cy: number): Element | null => {
+    if (cx < 60) return gutter;
+    const line = Math.floor(cy / 20);
+    return host.querySelector<HTMLElement>(`.ve-line[data-line="${line}"]`)
+      ?? host.querySelector<HTMLElement>(".ve-scroll");
+  });
+  Object.defineProperty(document, "elementFromPoint", {
+    configurable: true,
+    value: hitTest,
+  });
+  return {
+    restore: () => {
+      if (hadOwnProperty) {
+        Object.defineProperty(document, "elementFromPoint", { configurable: true, value: original });
+      } else {
+        Reflect.deleteProperty(document, "elementFromPoint");
+      }
+    },
+  };
+}
+
 function mockBlockSelectionPoints(editor: VirtualEditor) {
   // jsdomのRange座標差を避け、Alt+D&D処理へ渡す文字位置だけを固定する。
   return vi.spyOn(
@@ -561,6 +586,120 @@ describe("Feature: VirtualEditor", () => {
 
     expect(editor.captureViewState().caret).toEqual({ line: 1, col: 3 });
     layout.restore();
+  });
+
+  // Feature: 折り返し表示中の本文選択境界
+  // Scenario: 本文の選択を行番号領域へドラッグしても選択終点をEOFへ拡張しない
+  // Given: 「abcdefghij\nklmnopqrst\nuvwxyz」を折り返し表示している
+  // When: 本文で選択を開始し、本文内で移動した後、行番号領域を経由して本文へ戻りmouseupする
+  // Then: 行番号領域上では直前の本文位置を維持し、本文へ戻ると選択更新を再開する
+  it("Scenario: 行番号領域へドラッグしても本文選択をEOFへ拡張しない", async () => {
+    const { editor, host } = mount("abcdefghij\nklmnopqrst\nuvwxyz");
+    editor.open(3, false);
+    await settle();
+    const layout = installMouseLayout(host);
+    const hitTesting = installWrappedMouseHitTesting(host);
+    editor.setWrap(true);
+    const scroll = layout.scroll;
+
+    try {
+      scroll.dispatchEvent(new MouseEvent("mousedown", {
+        bubbles: true, button: 0, clientX: 68, clientY: 10,
+      }));
+      window.dispatchEvent(new MouseEvent("mousemove", {
+        bubbles: true, clientX: 98, clientY: 10,
+      }));
+      window.dispatchEvent(new MouseEvent("mousemove", {
+        bubbles: true, clientX: 20, clientY: 10,
+      }));
+      expect(editor.captureViewState().caret).toEqual({ line: 0, col: 9 });
+      window.dispatchEvent(new MouseEvent("mousemove", {
+        bubbles: true, clientX: 78, clientY: 30,
+      }));
+      window.dispatchEvent(new MouseEvent("mouseup", {
+        bubbles: true, clientX: 78, clientY: 30,
+      }));
+
+      const state = editor.captureViewState();
+      expect(state.anchor).toEqual({ line: 0, col: 6 });
+      expect(state.caret).toEqual({ line: 1, col: 7 });
+    } finally {
+      hitTesting.restore();
+      layout.restore();
+    }
+  });
+
+  // Feature: 折り返し中の既存選択のドロップ境界
+  // Scenario: 既存選択を本文内へドロップした後に行番号領域でmouseupする
+  // Given: 「abcDEFGHIj\nklmnopqrst」の5〜9列目を選択している
+  // When: 選択範囲を本文内の行1列7へドラッグし、行番号領域へ移動してmouseupする
+  // Then: ドロップ位置は行番号領域ではなく、直前の本文位置として扱う
+  it("Scenario: 行番号領域でmouseupしても既存選択のドロップ位置を保つ", async () => {
+    const { editor, doc, host } = mount("abcDEFGHIj\nklmnopqrst");
+    editor.open(2, false);
+    await settle();
+    const layout = installMouseLayout(host);
+    const hitTesting = installWrappedMouseHitTesting(host);
+    await editor.selectRange(0, 5, 9);
+    editor.setWrap(true);
+    const scroll = layout.scroll;
+
+    try {
+      scroll.dispatchEvent(new MouseEvent("mousedown", {
+        bubbles: true, button: 0, clientX: 68, clientY: 10,
+      }));
+      window.dispatchEvent(new MouseEvent("mousemove", {
+        bubbles: true, clientX: 78, clientY: 30,
+      }));
+      window.dispatchEvent(new MouseEvent("mousemove", {
+        bubbles: true, clientX: 20, clientY: 30,
+      }));
+      window.dispatchEvent(new MouseEvent("mouseup", {
+        bubbles: true, clientX: 20, clientY: 30,
+      }));
+      await settle();
+
+      expect(doc.text()).toBe("abcDEj\nklmnopqFGHIrst");
+      expect(editor.captureViewState().caret).toEqual({ line: 1, col: 11 });
+    } finally {
+      hitTesting.restore();
+      layout.restore();
+    }
+  });
+
+  // Feature: 選択開始直後の行番号領域ドラッグ
+  // Scenario: 有効な本文ドロップ位置を得る前に行番号領域でmouseupする
+  // Given: 「abcDEFGHIj\nklmnopqrst」の5〜9列目を選択している
+  // When: 選択範囲内からドラッグを開始し、本文を経由せず行番号領域でmouseupする
+  // Then: 元の選択範囲を維持し、文書も変更しない
+  it("Scenario: 有効なドロップ位置がない行番号領域mouseupは元の選択を保つ", async () => {
+    const { editor, doc, host } = mount("abcDEFGHIj\nklmnopqrst");
+    editor.open(2, false);
+    await settle();
+    const layout = installMouseLayout(host);
+    const hitTesting = installWrappedMouseHitTesting(host);
+    await editor.selectRange(0, 5, 9);
+    editor.setWrap(true);
+    const scroll = layout.scroll;
+
+    try {
+      scroll.dispatchEvent(new MouseEvent("mousedown", {
+        bubbles: true, button: 0, clientX: 68, clientY: 10,
+      }));
+      window.dispatchEvent(new MouseEvent("mousemove", {
+        bubbles: true, clientX: 20, clientY: 10,
+      }));
+      window.dispatchEvent(new MouseEvent("mouseup", {
+        bubbles: true, clientX: 20, clientY: 10,
+      }));
+
+      expect(doc.text()).toBe("abcDEFGHIj\nklmnopqrst");
+      expect(editor.captureViewState().anchor).toEqual({ line: 0, col: 5 });
+      expect(editor.captureViewState().caret).toEqual({ line: 0, col: 9 });
+    } finally {
+      hitTesting.restore();
+      layout.restore();
+    }
   });
 
   // Given: Alt+D&Dで0〜2行目の1〜3列を矩形選択している

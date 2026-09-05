@@ -1982,8 +1982,8 @@ export class VirtualEditor {
         const upSelection = (ev: MouseEvent) => {
           try {
             updateSelectionDrag(ev);
-            if (dragging && drop) {
-              if (cmp(drop, s) >= 0 && cmp(drop, end) <= 0) {
+            if (dragging) {
+              if (!drop || (cmp(drop, s) >= 0 && cmp(drop, end) <= 0)) {
                 this.sel.anchor = originalAnchor;
                 this.sel.caret = originalCaret;
                 this.render();
@@ -2039,8 +2039,10 @@ export class VirtualEditor {
   }
 
   private posFromPoint(cx: number, cy: number): Pos | null {
+    const hit = document.elementFromPoint?.(cx, cy);
+    if (hit?.closest(".ve-gutter")) return null;
     if (this.wrap) {
-      const target = document.elementFromPoint?.(cx, cy)?.closest<HTMLElement>(".ve-line");
+      const target = hit?.closest<HTMLElement>(".ve-line");
       if (!target?.dataset.line) {
         // 行のない空白 (新規メモの本文下など) でもクリックを捨てず、文書末尾へ置く。
         const line = this.lineCount - 1;
