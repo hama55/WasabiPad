@@ -1,13 +1,12 @@
 // インストール済み 7z.exe を子プロセスとして呼び、.7z の一覧・展開・書き戻しを行う。
 // 自前実装しないのは、7z (LZMA2/AES-256/solid) の再実装が割に合わないため。
 // パスワードは常に -p で渡す (省略すると 7z が対話プロンプトで待ち続けてハングする)。
-use std::collections::HashMap;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
-    Arc, Condvar, Mutex, OnceLock, Weak,
+    Arc, Condvar, Mutex, OnceLock,
 };
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
@@ -27,53 +26,7 @@ struct ExtractPermit {
     gate: &'static ExtractGate,
 }
 
-// 同じ書庫を複数の7z.exeで同時に読むと、solid書庫では同じ圧縮ブロックを
-// 各プロセスが先頭から再展開して競合する。書庫単位では1件に絞り、別書庫間だけ
-// process-wide gate の並列数を使う。
-struct ArchiveExtractGate {
-    active: Mutex<bool>,
-    available: Condvar,
-}
-
-struct ArchiveExtractPermit {
-    gate: Arc<ArchiveExtractGate>,
-}
-
 static EXTRACT_GATE: OnceLock<ExtractGate> = OnceLock::new();
-static ARCHIVE_EXTRACT_GATES: OnceLock<Mutex<HashMap<PathBuf, Weak<ArchiveExtractGate>>>> =
-    OnceLock::new();
-
-fn acquire_archive_extract_permit(archive: &Path) -> ArchiveExtractPermit {
-    let gates = ARCHIVE_EXTRACT_GATES.get_or_init(|| Mutex::new(HashMap::new()));
-    let gate = {
-        let mut gates = gates
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(gate) = gates.get(archive).and_then(Weak::upgrade) {
-            gate
-        } else {
-            let gate = Arc::new(ArchiveExtractGate {
-                active: Mutex::new(false),
-                available: Condvar::new(),
-            });
-            gates.insert(archive.to_path_buf(), Arc::downgrade(&gate));
-            gate
-        }
-    };
-    let mut active = gate
-        .active
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    while *active {
-        active = gate
-            .available
-            .wait(active)
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-    }
-    *active = true;
-    drop(active);
-    ArchiveExtractPermit { gate }
-}
 
 fn acquire_extract_permit() -> ExtractPermit {
     let gate = EXTRACT_GATE.get_or_init(|| ExtractGate {
@@ -102,18 +55,6 @@ impl Drop for ExtractPermit {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         *active = active.saturating_sub(1);
-        self.gate.available.notify_one();
-    }
-}
-
-impl Drop for ArchiveExtractPermit {
-    fn drop(&mut self) {
-        let mut active = self
-            .gate
-            .active
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        *active = false;
         self.gate.available.notify_one();
     }
 }
@@ -375,7 +316,6 @@ fn extract_with_limit(
 }
 
 pub fn extract(archive: &Path, entry: &str, password: &str) -> io::Result<Vec<u8>> {
-    let _archive_permit = acquire_archive_extract_permit(archive);
     let _permit = acquire_extract_permit();
     extract_with_limit(archive, entry, password, crate::ziptext::MAX_ENTRY)
 }
@@ -586,79 +526,6 @@ mod tests {
             handle.join().unwrap();
         }
         assert!(peak.load(Ordering::Relaxed) <= MAX_PARALLEL_EXTRACTS);
-    }
-
-    // Feature: 同一7z書庫の展開競合防止
-    // Scenario: 同じsolid書庫と別書庫のエントリを同時に展開する
-    // Given: 書庫単位ゲートとプロセス全体ゲートがある
-    // When: 同じ書庫の展開を複数件、別書庫の展開を同時に開始する
-    // Then: 同じ書庫は1件ずつ、別書庫は全体上限まで進められる
-    #[test]
-    fn extract_gate_serializes_the_same_archive() {
-        let root = temp_root("archive-gate");
-        let same_archive = root.join("solid.7z");
-        let other_archive = root.join("other.7z");
-        let active = Arc::new(AtomicUsize::new(0));
-        let same_active = Arc::new(AtomicUsize::new(0));
-        let same_peak = Arc::new(AtomicUsize::new(0));
-        let global_peak = Arc::new(AtomicUsize::new(0));
-        let handles: Vec<_> = (0..(MAX_PARALLEL_EXTRACTS + 2))
-            .map(|index| {
-                let archive = if index < MAX_PARALLEL_EXTRACTS {
-                    same_archive.clone()
-                } else {
-                    other_archive.clone()
-                };
-                let active = Arc::clone(&active);
-                let same_active = Arc::clone(&same_active);
-                let same_peak = Arc::clone(&same_peak);
-                let global_peak = Arc::clone(&global_peak);
-                let is_same = index < MAX_PARALLEL_EXTRACTS;
-                thread::spawn(move || {
-                    let _archive_permit = acquire_archive_extract_permit(&archive);
-                    let _permit = acquire_extract_permit();
-                    let current = active.fetch_add(1, Ordering::Relaxed) + 1;
-                    let mut observed = global_peak.load(Ordering::Relaxed);
-                    while current > observed {
-                        match global_peak.compare_exchange(
-                            observed,
-                            current,
-                            Ordering::Relaxed,
-                            Ordering::Relaxed,
-                        ) {
-                            Ok(_) => break,
-                            Err(next) => observed = next,
-                        }
-                    }
-                    if is_same {
-                        let current = same_active.fetch_add(1, Ordering::Relaxed) + 1;
-                        let mut observed = same_peak.load(Ordering::Relaxed);
-                        while current > observed {
-                            match same_peak.compare_exchange(
-                                observed,
-                                current,
-                                Ordering::Relaxed,
-                                Ordering::Relaxed,
-                            ) {
-                                Ok(_) => break,
-                                Err(next) => observed = next,
-                            }
-                        }
-                        thread::sleep(Duration::from_millis(20));
-                        same_active.fetch_sub(1, Ordering::Relaxed);
-                    } else {
-                        thread::sleep(Duration::from_millis(20));
-                    }
-                    active.fetch_sub(1, Ordering::Relaxed);
-                })
-            })
-            .collect();
-        for handle in handles {
-            handle.join().unwrap();
-        }
-        assert_eq!(same_peak.load(Ordering::Relaxed), 1);
-        assert!(global_peak.load(Ordering::Relaxed) <= MAX_PARALLEL_EXTRACTS);
-        let _ = std::fs::remove_dir_all(root);
     }
 
     fn temp_root(tag: &str) -> PathBuf {

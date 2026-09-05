@@ -371,7 +371,6 @@ fn is_pdf_classified_path(path: &Path, open_as: Option<OpenAs>) -> bool {
 
 const IMAGE_DETECTION_HEADER_LIMIT: u64 = 1024 * 1024;
 const FILE_ASSET_MAX_BYTES: u64 = crate::ziptext::MAX_ENTRY as u64;
-const LAZY_PDF_THRESHOLD: u64 = 8 * 1024 * 1024;
 
 fn preview_cache_fingerprint(path: &Path) -> Option<String> {
     let metadata = std::fs::metadata(path).ok()?;
@@ -553,6 +552,7 @@ pub struct ArchiveAssetReadPlan {
     password: String,
     archive_port: Arc<dyn ArchivePort>,
     archive_is_7z: bool,
+    asset_is_pdf: bool,
     prepared_bytes: Option<Vec<u8>>,
 }
 
@@ -562,7 +562,9 @@ impl ArchiveAssetReadPlan {
     }
 
     pub fn read_with_cache(self, cache: Option<&PreviewCache>) -> io::Result<Vec<u8>> {
-        let cache_allowed = cache.is_some() && !(self.archive_is_7z && !self.password.is_empty());
+        let cache_allowed = cache.is_some()
+            && !self.asset_is_pdf
+            && !(self.archive_is_7z && !self.password.is_empty());
         let cache_key = cache_allowed.then(|| preview_cache_archive_key(&self.archive, &self.entry));
         let fingerprint = cache_allowed
             .then(|| preview_cache_fingerprint(&self.archive))
@@ -736,6 +738,7 @@ impl Doc {
             password: self.sevenz_password(archive).to_string(),
             archive_port: Arc::clone(&self.archive_port),
             archive_is_7z: self.archive_is_7z(archive),
+            asset_is_pdf: is_pdf_classified_path(Path::new(entry), self.entry_open_as),
             prepared_bytes,
         })
     }
@@ -776,9 +779,12 @@ impl Doc {
                 "表示中のファイルと一致しません",
             ));
         }
-        let cache_key = cache.map(|_| preview_cache_file_key(path));
-        let fingerprint = cache
-            .and_then(|_| preview_cache_fingerprint(path));
+        let cache_allowed =
+            cache.is_some() && !is_pdf_classified_path(path, self.open_as_for_path(path));
+        let cache_key = cache_allowed.then(|| preview_cache_file_key(path));
+        let fingerprint = cache_allowed
+            .then(|| preview_cache_fingerprint(path))
+            .flatten();
         if let Some(bytes) = load_preview_cache(
             cache,
             cache_key.as_deref(),
@@ -955,34 +961,6 @@ impl Doc {
                     archive_port,
                 });
             }
-        }
-
-        // PDFは編集対象ではなく、本文のための全量デコードも不要。一定サイズ以上は
-        // パスと排他ハンドルだけを先に保持し、ビューアが表示時に直接取得する。
-        if is_pdf_classified_path(path, open_as) {
-            let source_file = fileio::open_exclusive(path)?;
-            let byte_len = source_file.metadata()?.len();
-            if byte_len >= LAZY_PDF_THRESHOLD && !fileio::is_archive_handle(&source_file) {
-                return Ok(Doc {
-                    buf: TextBuffer::new(),
-                    undo: UndoStack::new(),
-                    enc: Encoding::Utf8 { bom: false },
-                    eol: Eol::Lf,
-                    source: DocumentSource::file(path.to_path_buf(), Some(source_file), None),
-                    open_as,
-                    entry_open_as: None,
-                    replace_progress: None,
-                    byte_len,
-                    is_binary: true,
-                    merge_base: None,
-                    pending_merge: None,
-                    archive_asset: None,
-                    sevenz_passwords: HashMap::new(),
-                    deleted_entries: Vec::new(),
-                    archive_port,
-                });
-            }
-            drop(source_file);
         }
 
         let o = if let Some(progress) = progress.as_deref_mut() {
@@ -1500,11 +1478,7 @@ impl Doc {
                 entry_open_as.and_then(OpenAs::extension),
             ),
         };
-        let known_pdf = entry_open_as
-            .and_then(OpenAs::extension)
-            .or_else(|| Path::new(entry).extension().and_then(|extension| extension.to_str()))
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"));
-        if known_image || known_pdf {
+        if known_image {
             if let Some(bytes) = load_preview_cache(
                 cache,
                 cache_key.as_deref(),
@@ -1576,11 +1550,7 @@ impl Doc {
         } else {
             is_binary_image_path(Path::new(entry))
         };
-        let pdf_path = entry_open_as
-            .and_then(OpenAs::extension)
-            .or_else(|| Path::new(entry).extension().and_then(|extension| extension.to_str()))
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"));
-        if image_path || pdf_path {
+        if image_path {
             save_preview_cache(
                 cache,
                 cache_key.as_deref(),
@@ -3096,13 +3066,16 @@ mod tests {
 
     // Feature: 7z内PDFの選択とプレビュー
     // Scenario: PDFを選択してからプレビュー用バイトを読む
-    // Given: 7z内にPDFエントリがある
+    // Given: 7z内にバイナリPDFエントリがある
     // When: エントリ選択後にプレビュー用バイトを読む
-    // Then: PDFを本文へ展開し直さず、同じエントリを1回だけ展開する
+    // Then: 選択時の判定展開とビューア用の再展開を行い、従来の読込経路を保つ
     #[test]
-    fn archive_pdf_is_not_textified_or_extracted_twice() {
-        let archive = PathBuf::from("archive.7z");
-        let pdf = b"%PDF-1.7\n%%EOF".to_vec();
+    fn archive_pdf_uses_legacy_preview_extraction() {
+        let root = preview_cache_test_root("pdf-legacy");
+        let archive = root.join("archive.7z");
+        std::fs::write(&archive, b"archive").unwrap();
+        let cache = PreviewCache::new(root.join("cache"));
+        let pdf = b"%PDF-1.7\n1 0 obj\n\0%%EOF".to_vec();
         let extract_count = Arc::new(AtomicUsize::new(0));
         let archive_port = FakeArchivePort {
             bytes: pdf.clone(),
@@ -3121,13 +3094,20 @@ mod tests {
             },
         };
 
-        let info = d.select_entry("manual.pdf").unwrap().unwrap();
-        let bytes = d.read_archive_asset(&archive, "manual.pdf").unwrap();
+        let info = d
+            .select_entry_with_cache("manual.pdf", Some(&cache))
+            .unwrap()
+            .unwrap();
+        let bytes = d
+            .read_archive_asset_with_cache(&archive, "manual.pdf", Some(&cache))
+            .unwrap();
 
         assert!(info.is_binary);
-        assert_eq!(d.lines(0, 1), vec![String::new()]);
         assert_eq!(bytes, pdf);
-        assert_eq!(extract_count.load(Ordering::Relaxed), 1);
+        assert_eq!(extract_count.load(Ordering::Relaxed), 2);
+        assert_eq!(cache.total_bytes().unwrap(), 0);
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     fn preview_cache_test_root(tag: &str) -> PathBuf {
@@ -3158,7 +3138,7 @@ mod tests {
     }
 
     // Feature: プレビュー資産の外部キャッシュ
-    // Scenario: パスワードなし7zの同じエントリを再表示する
+    // Scenario: パスワードなし7zの同じ画像エントリを再表示する
     // Given: 1回目の展開結果が外部キャッシュへ保存されている
     // When: 別のDocで同じ7zエントリを読む
     // Then: キャッシュを返し、7zを再展開しない
@@ -3180,7 +3160,7 @@ mod tests {
         );
         assert_eq!(
             first
-                .read_archive_asset_with_cache(&archive, "manual.pdf", Some(&cache))
+                .read_archive_asset_with_cache(&archive, "picture.png", Some(&cache))
                 .unwrap(),
             b"first extraction"
         );
@@ -3197,7 +3177,7 @@ mod tests {
         );
         assert_eq!(
             second
-                .read_archive_asset_with_cache(&archive, "manual.pdf", Some(&cache))
+                .read_archive_asset_with_cache(&archive, "picture.png", Some(&cache))
                 .unwrap(),
             b"first extraction"
         );
@@ -3207,7 +3187,7 @@ mod tests {
     }
 
     // Feature: 形式指定7zの外部キャッシュ境界
-    // Scenario: `.bin`を7zとして開いたパスワード付きアーカイブの資産を読む
+    // Scenario: `.bin`を7zとして開いたパスワード付きアーカイブの画像を読む
     // Given: 同じ`.bin`アーカイブのパスワードなしキャッシュが存在する
     // When: `OpenAs::SevenZip`と非空パスワードを指定して資産を読む
     // Then: キャッシュを使わず展開し、展開結果を外部キャッシュへ保存しない
@@ -3224,7 +3204,7 @@ mod tests {
         }));
         seed.source.root = Some(root.clone());
         seed.select_entry_as_with_cache(
-            "archive.bin::manual.pdf",
+            "archive.bin::picture.png",
             OpenAs::SevenZip,
             Some(&cache),
         )
@@ -3244,7 +3224,7 @@ mod tests {
             .unwrap();
         passworded
             .select_entry_as_with_cache(
-                "archive.bin::manual.pdf",
+                "archive.bin::picture.png",
                 OpenAs::SevenZip,
                 Some(&cache),
             )
@@ -3253,7 +3233,7 @@ mod tests {
 
         assert_eq!(
             passworded
-                .read_archive_asset(&archive, "manual.pdf")
+                .read_archive_asset(&archive, "picture.png")
                 .unwrap(),
             b"freshly decrypted bytes"
         );
@@ -3269,7 +3249,7 @@ mod tests {
         third.source.root = Some(root.clone());
         third
             .select_entry_as_with_cache(
-                "archive.bin::manual.pdf",
+                "archive.bin::picture.png",
                 OpenAs::SevenZip,
                 Some(&cache),
             )
@@ -3277,7 +3257,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            third.read_archive_asset(&archive, "manual.pdf").unwrap(),
+            third.read_archive_asset(&archive, "picture.png").unwrap(),
             b"cached bytes"
         );
         assert_eq!(third_count.load(Ordering::Relaxed), 0);
@@ -3302,7 +3282,7 @@ mod tests {
     }
 
     // Feature: パスワード付き7zの機密境界
-    // Scenario: パスワード付き7zを外部キャッシュ付きで読む
+    // Scenario: パスワード付き7zを外部キャッシュ付きで画像として読む
     // Given: 同じエントリにパスワードなしのキャッシュが存在する
     // When: Docに非空パスワードを設定してエントリを読む
     // Then: キャッシュをload/saveせず、復号結果を外部へ残さない
@@ -3321,7 +3301,7 @@ mod tests {
             },
         );
         assert_eq!(
-            seed.read_archive_asset_with_cache(&archive, "secret.pdf", Some(&cache))
+            seed.read_archive_asset_with_cache(&archive, "secret.png", Some(&cache))
                 .unwrap(),
             b"cached-before-password"
         );
@@ -3338,7 +3318,7 @@ mod tests {
         passworded.set_archive_password("", "secret").unwrap();
         assert_eq!(
             passworded
-                .read_archive_asset_with_cache(&archive, "secret.pdf", Some(&cache))
+                .read_archive_asset_with_cache(&archive, "secret.png", Some(&cache))
                 .unwrap(),
             b"freshly-decrypted-bytes"
         );
@@ -3355,7 +3335,7 @@ mod tests {
         );
         assert_eq!(
             third
-                .read_archive_asset_with_cache(&archive, "secret.pdf", Some(&cache))
+                .read_archive_asset_with_cache(&archive, "secret.png", Some(&cache))
                 .unwrap(),
             b"cached-before-password"
         );
@@ -3416,7 +3396,7 @@ mod tests {
     }
 
     // Feature: アーカイブ資産の遅延読み込み
-    // Scenario: 展開計画を作成してからDocを再び使う
+    // Scenario: 画像の展開計画を作成してからDocを再び使う
     // Given: アーカイブ資産の読み込み計画がある
     // When: 計画を作った後にDocを参照してから計画を実行する
     // Then: 計画はDocの借用を保持せず、展開結果を返す
@@ -3433,7 +3413,7 @@ mod tests {
             },
         );
 
-        let plan = doc.prepare_archive_asset_read(&archive, "manual.pdf").unwrap();
+        let plan = doc.prepare_archive_asset_read(&archive, "picture.png").unwrap();
         assert_eq!(doc.line_count(), 1);
 
         assert_eq!(plan.execute().unwrap(), b"planned extraction");
@@ -3441,10 +3421,10 @@ mod tests {
     }
 
     // Feature: 選択時のプレビューキャッシュ
-    // Scenario: 過去に展開済みのPDFを選択する
-    // Given: 同じ7zエントリの外部キャッシュが存在する
+    // Scenario: 過去に展開済みの画像を選択する
+    // Given: 同じ7z画像エントリの外部キャッシュが存在する
     // When: cache付きでエントリを選択する
-    // Then: 選択処理は7zを再展開せず、archive_assetから読み出せる
+    // Then: 選択処理は7zを再展開せず、archive_assetから画像を読み出せる
     #[test]
     fn selecting_archive_entry_with_cache_hit_avoids_extract() {
         let root = preview_cache_test_root("select-hit");
@@ -3455,11 +3435,11 @@ mod tests {
         let mut seed = archive_doc_for_preview_cache(
             archive.clone(),
             FakeArchivePort {
-                bytes: b"cached PDF".to_vec(),
+                bytes: b"cached image".to_vec(),
                 ..FakeArchivePort::default()
             },
         );
-        seed.read_archive_asset_with_cache(&archive, "manual.pdf", Some(&cache))
+        seed.read_archive_asset_with_cache(&archive, "picture.png", Some(&cache))
             .unwrap();
 
         let extract_count = Arc::new(AtomicUsize::new(0));
@@ -3473,13 +3453,13 @@ mod tests {
         );
 
         let info = doc
-            .select_entry_with_cache("manual.pdf", Some(&cache))
+            .select_entry_with_cache("picture.png", Some(&cache))
             .unwrap()
             .unwrap();
         assert!(info.is_binary);
         assert_eq!(
-            doc.read_archive_asset(&archive, "manual.pdf").unwrap(),
-            b"cached PDF"
+            doc.read_archive_asset(&archive, "picture.png").unwrap(),
+            b"cached image"
         );
         assert_eq!(extract_count.load(Ordering::Relaxed), 0);
 
@@ -4563,36 +4543,6 @@ mod tests {
 
         assert_eq!(error.kind(), io::ErrorKind::FileTooLarge);
         assert_eq!(error.to_string(), "画像サイズが大きすぎます");
-        drop(d);
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    // Feature: 大きなPDFの先行表示
-    // Scenario: 8MiB以上のPDFを開く
-    // Given: 本文解析を必要としない大きなPDFがある
-    // When: Docを開いて文書情報を取得する
-    // Then: PDF本文をテキスト化せず、ビューア用の空バッファを先に返す
-    #[test]
-    fn large_pdf_opens_without_materializing_text() {
-        let root = std::env::temp_dir().join(format!(
-            "wasabipad_large_pdf_{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        let path = root.join("manual.pdf");
-        let mut file = std::fs::File::create(&path).unwrap();
-        std::io::Write::write_all(&mut file, b"%PDF-1.7\n").unwrap();
-        file.set_len(LAZY_PDF_THRESHOLD).unwrap();
-        drop(file);
-
-        let d = Doc::open(&path).unwrap();
-        let info = d.info(path.to_string_lossy().into_owned()).unwrap();
-
-        assert!(info.is_binary);
-        assert_eq!(info.line_count, 1);
-        assert_eq!(d.lines(0, 1), vec![String::new()]);
-
         drop(d);
         std::fs::remove_dir_all(root).unwrap();
     }

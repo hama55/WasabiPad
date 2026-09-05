@@ -80,24 +80,24 @@ describe("Feature: viewer image asset source", () => {
   });
 
   // Feature: Viewerセッション内のアーカイブ資産再利用
-  // Scenario: 同じPDFを選択時とプレビュー時に再要求する
-  // Given: 同じアーカイブパスとエントリからPDFバイトを返す読込ポートがある
-  // When: 同一セッションから同じPDFのBlob URLを2回作る
+  // Scenario: 同じ画像を選択時とプレビュー時に再要求する
+  // Given: 同じアーカイブパスとエントリから画像バイトを返す読込ポートがある
+  // When: 同一セッションから同じ画像のBlob URLを2回作る
   // Then: readArchiveAssetは1回だけ呼び、生バイトを再利用して表示用URLを作る
-  it("Scenario: reuses archive PDF bytes within one viewer session", async () => {
-    const bytes = new Uint8Array([37, 80, 68, 70]).buffer;
+  it("Scenario: reuses archive image bytes within one viewer session", async () => {
+    const bytes = new Uint8Array([1, 2, 3]).buffer;
     const readArchiveAsset = vi.fn(async () => bytes);
-    const createObjectURL = vi.fn((_blob: Blob) => "blob:pdf");
+    const createObjectURL = vi.fn((_blob: Blob) => "blob:image");
     const source = ports({
       readArchiveAsset,
       createObjectURL,
     });
     const session = createArchiveAssetSession(source);
 
-    await expect(session.imageUrlFromArchive("manuals.7z", "guide/manual.pdf", "application/pdf"))
-      .resolves.toBe("blob:pdf");
-    await expect(session.imageUrlFromArchive("manuals.7z", "guide/manual.pdf", "application/pdf"))
-      .resolves.toBe("blob:pdf");
+    await expect(session.imageUrlFromArchive("manuals.7z", "guide/photo.png", "image/png"))
+      .resolves.toBe("blob:image");
+    await expect(session.imageUrlFromArchive("manuals.7z", "guide/photo.png", "image/png"))
+      .resolves.toBe("blob:image");
 
     expect(readArchiveAsset).toHaveBeenCalledOnce();
     expect(createObjectURL).toHaveBeenCalledTimes(2);
@@ -107,9 +107,9 @@ describe("Feature: viewer image asset source", () => {
   });
 
   // Feature: Viewerセッション内のアーカイブ資産再利用
-  // Scenario: Viewerセッションを破棄してから同じPDFを再要求する
-  // Given: 同一セッションで一度読込済みのPDF資産がある
-  // When: セッションを破棄して新しいセッションから同じPDFを読む
+  // Scenario: Viewerセッションを破棄してから同じ画像を再要求する
+  // Given: 同一セッションで一度読込済みの画像資産がある
+  // When: セッションを破棄して新しいセッションから同じ画像を読む
   // Then: 古いセッションの資産を持ち越さず、readArchiveAssetを新たに呼ぶ
   it("Scenario: releases archive bytes at the viewer session boundary", async () => {
     const readArchiveAsset = vi.fn(async () => new Uint8Array([1, 2, 3]).buffer);
@@ -117,9 +117,9 @@ describe("Feature: viewer image asset source", () => {
     const firstSession = createArchiveAssetSession(source);
     const secondSession = createArchiveAssetSession(source);
 
-    await firstSession.imageUrlFromArchive("manuals.7z", "guide/manual.pdf", "application/pdf");
+    await firstSession.imageUrlFromArchive("manuals.7z", "guide/photo.png", "image/png");
     firstSession.dispose();
-    await secondSession.imageUrlFromArchive("manuals.7z", "guide/manual.pdf", "application/pdf");
+    await secondSession.imageUrlFromArchive("manuals.7z", "guide/photo.png", "image/png");
 
     expect(readArchiveAsset).toHaveBeenCalledTimes(2);
   });
@@ -139,9 +139,9 @@ describe("Feature: viewer image asset source", () => {
     const source = ports({ readArchiveAsset, createObjectURL });
     const session = createArchiveAssetSession(source);
 
-    await session.imageUrlFromArchive("manuals.7z", "guide/manual.pdf", "application/pdf");
+    await session.imageUrlFromArchive("manuals.7z", "guide/photo.png", "image/png");
     session.clearCachedAssets();
-    await session.imageUrlFromArchive("manuals.7z", "guide/manual.pdf", "application/pdf");
+    await session.imageUrlFromArchive("manuals.7z", "guide/photo.png", "image/png");
 
     expect(readArchiveAsset).toHaveBeenCalledTimes(2);
     await expect(createObjectURL.mock.calls[1]?.[0]?.arrayBuffer()).resolves.toEqual(secondBytes);
@@ -149,19 +149,19 @@ describe("Feature: viewer image asset source", () => {
 
   // Feature: Viewerセッション内のアーカイブ資産再利用
   // Scenario: Viewerセッションを破棄すると保持中の生バイトを解放する
-  // Given: セッションからPDFのBlob URLを取得している
+  // Given: セッションから画像のBlob URLを取得している
   // When: Viewerセッションを破棄する
   // Then: 破棄済みセッションは再利用できない
   it("Scenario: rejects archive reads after the viewer session is disposed", async () => {
     const source = ports();
     const session = createArchiveAssetSession(source);
 
-    await expect(session.imageUrlFromArchive("manuals.7z", "guide/manual.pdf", "application/pdf"))
+    await expect(session.imageUrlFromArchive("manuals.7z", "guide/photo.png", "image/png"))
       .resolves.toBe("blob:test");
 
     session.dispose();
 
-    await expect(session.imageUrlFromArchive("manuals.7z", "guide/manual.pdf", "application/pdf"))
+    await expect(session.imageUrlFromArchive("manuals.7z", "guide/photo.png", "image/png"))
       .rejects.toThrow("アーカイブ資産セッションは破棄されています");
   });
 

@@ -40,6 +40,7 @@ import { INLINE_PREVIEW_MESSAGES } from "./inline-preview-protocol";
 import { isViewerPayload } from "./viewer-payload";
 import {
   createArchiveAssetSession,
+  imageUrlFromArchive,
   imageUrlFromFile,
   imageUrlFromPath,
   imageUrlFromPathWithCacheBust,
@@ -714,7 +715,9 @@ async function renderAssetPreview(
       }
       target.setSource(assetUrl);
     } else if (archivePath && archiveEntry) {
-      assetUrl = await archiveAssetSession.imageUrlFromArchive(archivePath, archiveEntry, mimeType);
+      assetUrl = state.format === "image"
+        ? await archiveAssetSession.imageUrlFromArchive(archivePath, archiveEntry, mimeType)
+        : await imageUrlFromArchive(archivePath, archiveEntry, mimeType);
       if (!retainAssetUrl(assetUrl, generation)) {
         assetUrl = null;
         discardTarget();
