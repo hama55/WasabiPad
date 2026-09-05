@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { renderMarkdownDocument } from "./viewer-markdown-renderer";
+import { MARKDOWN_IMAGE_SOURCE_ATTRIBUTE, renderMarkdownDocument } from "./viewer-markdown-renderer";
 
 describe("Feature: Markdown viewer drawing boundary", () => {
   // Given: 見出しと外部リンクを含み、見出し行の途中にあるキャレット
@@ -40,6 +40,20 @@ describe("Feature: Markdown viewer drawing boundary", () => {
       "Ctrl+クリックで新規タブを開いて該当箇所へ移動",
       "Ctrl+クリックで既定のブラウザで開く",
     ]);
+  });
+
+  // Feature: Markdown画像の遅延読み込み
+  // Scenario: rendererが画像URLをローダーへ引き渡す
+  // Given: 通常の相対パス画像を含むMarkdown
+  // When: Markdown専用rendererで文書を描画する
+  // Then: DOM挿入時の自動読込を防ぎ、元URLを専用data属性へ保持する
+  it("Scenario: Markdown画像のURLを上限付きローダーへ委譲する", () => {
+    const { article } = renderMarkdownDocument("![diagram](images/diagram.png)", null);
+    const image = article.querySelector<HTMLImageElement>("img");
+
+    expect(image?.getAttribute("src")).toBeNull();
+    expect(image?.getAttribute(MARKDOWN_IMAGE_SOURCE_ATTRIBUTE)).toBe("images/diagram.png");
+    expect(image?.alt).toBe("diagram");
   });
 
   // Given: Markdownの見出しと明示的な空アンカー

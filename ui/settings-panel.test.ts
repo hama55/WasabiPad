@@ -15,6 +15,7 @@ function makePorts(initial: Partial<Settings> = {}): SettingsPanelPorts {
     fontSize: 14,
     previewFontSize: 14,
     markdownSoftBreaks: true,
+    previewCacheDirectory: null,
     startupPath: null,
     registeredStrings: [],
     registeredCommands: [],
@@ -241,6 +242,79 @@ describe("Feature: settings modal", () => {
     expect(ports.setSetting).toHaveBeenCalledWith("markdownSoftBreaks", false);
     expect(ports.applyMarkdownSoftBreaks).toHaveBeenCalledWith(false);
     expect(document.querySelector(".settings-box")).not.toBeNull();
+  });
+
+  // Feature: 外部プレビューキャッシュ保存場所の設定画面
+  // Scenario: プレビュー設定に現在のキャッシュ保存場所を表示する
+  // Given: プレビューキャッシュ保存場所が `D:\\WasabiPad\\preview-cache` に設定されている
+  // When: 設定モーダルのプレビューカテゴリを開く
+  // Then: 現在の保存場所を確認できる
+  it("Scenario: プレビューキャッシュ保存場所を表示する", () => {
+    openSettingsModal(makePorts({ previewCacheDirectory: "D:\\WasabiPad\\preview-cache" }));
+
+    const previewSection = document.querySelector<HTMLElement>("[data-settings-section=プレビュー]")!;
+    expect(previewSection.querySelector('[data-setting="preview-cache-directory"]')?.textContent)
+      .toBe("D:\\WasabiPad\\preview-cache");
+  });
+
+  // Feature: 外部プレビューキャッシュ保存場所の設定画面
+  // Scenario: 未設定時にもバックエンドが使う実際の場所と使用量を確認する
+  // Given: 設定は未指定で、バックエンドが既定キャッシュ情報を返す
+  // When: 設定モーダルのプレビューカテゴリを開く
+  // Then: 実際の保存先と使用量を表示する
+  it("Scenario: 既定のプレビューキャッシュ場所と使用量を表示する", async () => {
+    const getPreviewCacheInfo = vi.fn(async () => ({
+      directory: "C:\\Users\\test\\AppData\\Local\\WasabiPad\\.wasabipad-preview-cache",
+      bytes: 1024 * 1024,
+    }));
+    const ports = Object.assign(makePorts(), { getPreviewCacheInfo });
+    openSettingsModal(ports as SettingsPanelPorts);
+
+    await vi.waitFor(() => {
+      const previewSection = document.querySelector<HTMLElement>("[data-settings-section=プレビュー]")!;
+      expect(previewSection.querySelector('[data-setting="preview-cache-directory"]')?.textContent)
+        .toBe("C:\\Users\\test\\AppData\\Local\\WasabiPad\\.wasabipad-preview-cache");
+      expect(previewSection.querySelector('[data-setting="preview-cache-size"]')?.textContent)
+        .toBe("使用量: 1.0 MB");
+    });
+  });
+
+  // Feature: 外部プレビューキャッシュ保存場所の設定画面
+  // Scenario: 選択した保存場所だけをSettingsへ保存する
+  // Given: フォルダ選択portが `D:\\WasabiPad\\preview-cache` を返す
+  // When: 保存場所の選択ボタンを押す
+  // Then: 選択した場所を`previewCacheDirectory`として保存する
+  it("Scenario: プレビューキャッシュ保存場所を選択して保存する", async () => {
+    const selectedDirectory = "D:\\WasabiPad\\preview-cache";
+    const pickPreviewCacheDirectory = vi.fn(() => selectedDirectory);
+    const ports = Object.assign(makePorts({ previewCacheDirectory: null }), { pickPreviewCacheDirectory });
+    openSettingsModal(ports as SettingsPanelPorts);
+
+    const previewSection = document.querySelector<HTMLElement>("[data-settings-section=プレビュー]")!;
+    previewSection.querySelector<HTMLButtonElement>('[data-action="pick-preview-cache-directory"]')!.click();
+
+    await vi.waitFor(() => expect(ports.setSetting).toHaveBeenCalledWith(
+      "previewCacheDirectory",
+      selectedDirectory,
+    ));
+    expect(previewSection.querySelector('[data-setting="preview-cache-directory"]')?.textContent)
+      .toBe(selectedDirectory);
+  });
+
+  // Feature: 外部プレビューキャッシュ保存場所の設定画面
+  // Scenario: キャッシュ全削除を注入したportへ委譲する
+  // Given: キャッシュ全削除portが利用できる
+  // When: プレビュー設定のキャッシュ全削除ボタンを押す
+  // Then: キャッシュ全削除portを呼び出す
+  it("Scenario: プレビューキャッシュを全削除する", () => {
+    const clearPreviewCache = vi.fn();
+    const ports = Object.assign(makePorts(), { clearPreviewCache });
+    openSettingsModal(ports as SettingsPanelPorts);
+
+    const previewSection = document.querySelector<HTMLElement>("[data-settings-section=プレビュー]")!;
+    previewSection.querySelector<HTMLButtonElement>('[data-action="clear-preview-cache"]')!.click();
+
+    expect(clearPreviewCache).toHaveBeenCalledOnce();
   });
 
   // Given: 詳細設定を開いている

@@ -4,7 +4,7 @@ use tauri::{AppHandle, Emitter};
 use wasabipad_core::{
     Doc, DocInfo, EditManyItem, EditManyResult, EditResult, EncodingId, Eol, ExternalCheck,
     ExternalMergePreview, FindCursor, FindOutcome, FindResult, FolderEntry, OpenAs, PosC,
-    ReplaceChunkResult, SaveOutcome,
+    PreviewCache, ReplaceChunkResult, SaveOutcome,
 };
 
 use crate::state::{with_doc, State};
@@ -72,11 +72,13 @@ pub(crate) fn line_char_len(line: usize, state: State) -> Result<usize, String> 
 pub(crate) fn select_entry(
     rel_path: String,
     open_as: Option<OpenAs>,
+    cache_directory: Option<String>,
     state: State,
 ) -> Result<DocInfo, String> {
+    let cache = preview_cache(cache_directory);
     let result = with_doc(&state, |doc| match open_as {
-        Some(open_as) => doc.select_entry_as(&rel_path, open_as),
-        None => doc.select_entry(&rel_path),
+        Some(open_as) => doc.select_entry_as_with_cache(&rel_path, open_as, cache.as_ref()),
+        None => doc.select_entry_with_cache(&rel_path, cache.as_ref()),
     })?;
     result
         .map_err(|error| error.to_string())?
@@ -365,14 +367,32 @@ pub(crate) fn reload_with_encoding(enc: EncodingId, state: State) -> Result<DocI
 pub(crate) fn read_archive_asset(
     archive_path: String,
     entry: String,
+    cache_directory: Option<String>,
     state: State,
 ) -> Result<Vec<u8>, String> {
     let archive = PathBuf::from(archive_path);
-    with_doc(&state, |doc| doc.read_archive_asset(&archive, &entry))?
+    let cache = preview_cache(cache_directory);
+    let plan = with_doc(&state, |doc| doc.prepare_archive_asset_read(&archive, &entry))?
+        .map_err(|error| error.to_string())?;
+    plan.read_with_cache(cache.as_ref())
         .map_err(|error| error.to_string())
 }
 
-pub(crate) fn read_file_asset(path: String, state: State) -> Result<Vec<u8>, String> {
+pub(crate) fn read_file_asset(
+    path: String,
+    cache_directory: Option<String>,
+    state: State,
+) -> Result<Vec<u8>, String> {
     let path = PathBuf::from(path);
-    with_doc(&state, |doc| doc.read_file_asset(&path))?.map_err(|error| error.to_string())
+    let cache = preview_cache(cache_directory);
+    with_doc(&state, |doc| doc.read_file_asset_with_cache(&path, cache.as_ref()))?
+        .map_err(|error| error.to_string())
+}
+
+fn preview_cache(cache_directory: Option<String>) -> Option<PreviewCache> {
+    let root = cache_directory
+        .filter(|directory| !directory.trim().is_empty())
+        .map(PathBuf::from)
+        .or_else(|| PreviewCache::default_root().ok())?;
+    Some(PreviewCache::new(root))
 }

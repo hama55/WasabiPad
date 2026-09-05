@@ -2,7 +2,7 @@ import type { WorkspaceSearchOptions } from "./api";
 import packageInfo from "../package.json";
 import { releaseTag } from "../version-policy.mjs";
 import { APP_NAME } from "./app-config";
-import { formatFontFamily } from "./format";
+import { formatByteSize, formatFontFamily } from "./format";
 import { FONT_FAMILIES, INDENT_SIZES, isValidFontSize, MAX_FONT_SIZE, MIN_FONT_SIZE } from "./font-controls";
 import { openModal } from "./modal";
 import { commandValueKind } from "./registered-command-model";
@@ -21,10 +21,18 @@ export interface SettingsPanelPorts {
   applyIndent: (size: number) => void;
   applyPreviewFontSize: (size: number) => void;
   applyMarkdownSoftBreaks: (enabled: boolean) => void;
+  pickPreviewCacheDirectory?: () => string | null | Promise<string | null>;
+  clearPreviewCache?: () => void | Promise<void>;
+  getPreviewCacheInfo?: () => PreviewCacheInfo | null | Promise<PreviewCacheInfo | null>;
   getSearchOptions: () => WorkspaceSearchOptions;
   updateSearchOptions: (options: WorkspaceSearchOptions) => void;
   confirmReset: () => boolean | Promise<boolean>;
   resetSettings: () => void | Promise<void>;
+}
+
+export interface PreviewCacheInfo {
+  directory: string;
+  bytes: number;
 }
 
 export interface SettingsCloseHandle {
@@ -163,6 +171,7 @@ export function openSettingsModal(ports: SettingsPanelPorts): SettingsCloseHandl
       id: "settings-preview",
       build: () => [
         ...buildCommonSettingFields(ports, ["previewFontSize", "markdownSoftBreaks"]),
+        previewCacheField(ports),
       ],
     },
     {
@@ -436,6 +445,84 @@ function markdownSoftBreaksField(ports: SettingsPanelPorts): HTMLElement {
   label.textContent = "Markdownの通常改行を表示";
   row.append(input, label);
   return row;
+}
+
+function previewCacheField(ports: SettingsPanelPorts): HTMLElement {
+  const group = document.createElement("div");
+  group.className = "settings-field settings-preview-cache";
+
+  const title = document.createElement("span");
+  title.textContent = "プレビューキャッシュ保存場所";
+
+  const locationRow = document.createElement("div");
+  locationRow.className = "settings-list-row";
+  const location = document.createElement("span");
+  location.dataset.setting = "preview-cache-directory";
+  let currentDirectory = ports.getSetting("previewCacheDirectory");
+  location.textContent = currentDirectory ?? "バックエンド既定場所を確認中…";
+  location.title = location.textContent;
+  locationRow.append(location);
+
+  const size = document.createElement("span");
+  size.dataset.setting = "preview-cache-size";
+  size.textContent = "使用量: 確認中…";
+  locationRow.append(size);
+
+  const refreshInfo = () => {
+    const getInfo = ports.getPreviewCacheInfo;
+    if (!getInfo) {
+      if (currentDirectory === null) location.textContent = "バックエンド既定場所";
+      size.textContent = "使用量: 確認できません";
+      location.title = location.textContent;
+      return;
+    }
+    void Promise.resolve(getInfo()).then((info) => {
+      if (!info) {
+        size.textContent = "使用量: 確認できません";
+        return;
+      }
+      if (currentDirectory === null) location.textContent = info.directory;
+      location.title = info.directory;
+      size.textContent = `使用量: ${formatByteSize(info.bytes)}`;
+    }).catch(() => {
+      size.textContent = "使用量: 確認できません";
+    });
+  };
+  refreshInfo();
+
+  const actions = document.createElement("div");
+  actions.className = "settings-list-row";
+
+  const pick = document.createElement("button");
+  pick.type = "button";
+  pick.dataset.action = "pick-preview-cache-directory";
+  pick.textContent = "保存場所を変更";
+  pick.disabled = !ports.pickPreviewCacheDirectory;
+  pick.addEventListener("click", () => {
+    const pickDirectory = ports.pickPreviewCacheDirectory;
+    if (!pickDirectory) return;
+    void Promise.resolve(pickDirectory()).then((directory) => {
+      if (typeof directory !== "string" || directory.trim().length === 0) return;
+      currentDirectory = directory;
+      ports.setSetting("previewCacheDirectory", directory);
+      location.textContent = directory;
+      location.title = directory;
+      refreshInfo();
+    });
+  });
+
+  const clear = document.createElement("button");
+  clear.type = "button";
+  clear.dataset.action = "clear-preview-cache";
+  clear.textContent = "キャッシュを全削除";
+  clear.disabled = !ports.clearPreviewCache;
+  clear.addEventListener("click", () => {
+    void Promise.resolve(ports.clearPreviewCache?.()).then(refreshInfo);
+  });
+
+  actions.append(pick, clear);
+  group.append(title, locationRow, actions);
+  return group;
 }
 
 function fontOptions(current: string): { value: string; label: string }[] {

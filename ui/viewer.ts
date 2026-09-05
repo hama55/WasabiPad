@@ -39,13 +39,14 @@ import { createViewerDelimiterControl, syncViewerDelimiterControl } from "./view
 import { INLINE_PREVIEW_MESSAGES } from "./inline-preview-protocol";
 import { isViewerPayload } from "./viewer-payload";
 import {
-  imageUrlFromArchive,
+  createArchiveAssetSession,
   imageUrlFromFile,
   imageUrlFromPath,
   imageUrlFromPathWithCacheBust,
   imageUrlFromText,
   revokeImageUrl,
 } from "./viewer-image-source";
+import { scheduleMarkdownImageLoads } from "./viewer-markdown-images";
 import {
   bindImagePan,
   createImagePreview,
@@ -70,7 +71,7 @@ import {
   renderCsvTable,
 } from "./viewer-csv-table";
 import { ViewerChartController } from "./viewer-chart";
-import { renderMarkdownDocument } from "./viewer-markdown-renderer";
+import { MARKDOWN_IMAGE_SOURCE_ATTRIBUTE, renderMarkdownDocument } from "./viewer-markdown-renderer";
 import { type WindowLayoutCoordinator, type WindowViewport } from "./window-layout";
 import { createWindowLayoutRuntime, type WindowLayoutRuntime } from "./window-layout-runtime";
 
@@ -111,6 +112,7 @@ let renderGeneration = 0;
 let imageZoom = DEFAULT_IMAGE_ZOOM;
 let disposeImagePan: (() => void) | null = null;
 const archiveAssetTracker = new ViewerAssetTracker(revokeImageUrl);
+const archiveAssetSession = createArchiveAssetSession();
 let csvColumnWidths: number[] = [];
 let fontFamily = getSetting("fontFamily");
 let fontSize = getSetting("previewFontSize");
@@ -363,6 +365,11 @@ function disposeViewer() {
     console.error("画像URLの後始末に失敗しました", error);
   }
   try {
+    archiveAssetSession.dispose();
+  } catch (error) {
+    console.error("アーカイブ資産の後始末に失敗しました", error);
+  }
+  try {
     chartController.clear();
   } catch (error) {
     console.error("グラフの後始末に失敗しました", error);
@@ -535,14 +542,17 @@ async function loadArchiveImages(
   archiveEntry: string | null,
 ) {
   const images = [...article.querySelectorAll<HTMLImageElement>("img")];
-  for (const image of images) {
+  await scheduleMarkdownImageLoads(images, async (image) => {
     let archiveUrl: string | null = null;
     let keepArchiveUrl = false;
     try {
-      const src = image.getAttribute("src") ?? "";
+      if (generation !== renderGeneration) return;
+      const src = image.getAttribute(MARKDOWN_IMAGE_SOURCE_ATTRIBUTE)
+        ?? image.getAttribute("src")
+        ?? "";
       const entry = resolveArchiveAssetEntry(archiveEntry, src);
       if (archivePath && archiveEntry && entry) {
-        archiveUrl = await imageUrlFromArchive(archivePath, entry, imageMimeType(src));
+        archiveUrl = await archiveAssetSession.imageUrlFromArchive(archivePath, entry, imageMimeType(src));
         if (!retainAssetUrl(archiveUrl, generation)) {
           archiveUrl = null;
           return;
@@ -551,15 +561,22 @@ async function loadArchiveImages(
         const ready = await waitForImageLayout(image);
         if (!ready) {
           if (generation === renderGeneration) markImageLoadFailure(image);
-          continue;
+          return;
         }
         keepArchiveUrl = true;
-        continue;
+        return;
       }
       const resolved = resolveAssetPath(sourcePath, src);
       if (resolved && generation === renderGeneration) {
+        // 通常ファイル画像はWebViewのファイルURLで読み、IPCで全バイトを複製しない。
+        // 外部キャッシュはPDF/画像ビューとアーカイブ展開資産に限定する。
         image.src = imageUrlFromPathWithCacheBust(resolved, generation);
-        if (!await waitForImageLayout(image)) markImageLoadFailure(image);
+        if (!await waitForImageLayout(image) && generation === renderGeneration) {
+          markImageLoadFailure(image);
+        }
+      } else if (src && generation === renderGeneration) {
+        // data:/http(s): など、ローカル解決の対象外だったURLは既存のMarkdown挙動を保つ。
+        image.src = src;
       }
     } catch {
       if (generation !== renderGeneration) return;
@@ -570,7 +587,14 @@ async function loadArchiveImages(
         releaseAssetUrl(archiveUrl);
       }
     }
-  }
+  }, { isPriority: imageIsNearViewport });
+}
+
+function imageIsNearViewport(image: HTMLImageElement): boolean {
+  const rect = image.getBoundingClientRect();
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+  const margin = Math.max(viewportHeight, 800);
+  return rect.top <= viewportHeight + margin && rect.bottom >= -margin;
 }
 
 async function waitForImageLayout(image: HTMLImageElement): Promise<boolean> {
@@ -690,7 +714,7 @@ async function renderAssetPreview(
       }
       target.setSource(assetUrl);
     } else if (archivePath && archiveEntry) {
-      assetUrl = await imageUrlFromArchive(archivePath, archiveEntry, mimeType);
+      assetUrl = await archiveAssetSession.imageUrlFromArchive(archivePath, archiveEntry, mimeType);
       if (!retainAssetUrl(assetUrl, generation)) {
         assetUrl = null;
         discardTarget();
@@ -877,34 +901,35 @@ async function renderMarkdown(
       archivePath,
       breaks: markdownSoftBreaks,
     });
-    article.classList.add("viewer-pending");
-    content.appendChild(article);
-    await loadArchiveImages(article, generation, sourcePath, archivePath, archiveEntry);
-    // 画像の高さが確定する前にスクロールすると、読込後のレイアウト変化で中央位置が崩れる。
-    if (generation === renderGeneration) {
-      article.classList.remove("viewer-pending");
-      content.replaceChildren(article);
-      previousDisposeImagePan?.();
-      disposeImagePan = null;
-      currentRows = [];
-      chartController.clear();
-      archiveAssetTracker.revokeStale(generation);
-      summary.classList.remove("warning");
-      summary.title = "";
-      summary.textContent = `${text.length.toLocaleString()}文字`;
-      scrollMarkdownCaret(highlightTargets, selection);
-      const fragment = pendingMarkdownFragment ?? initialFragment;
-      if (fragment !== null) {
-        scrollMarkdownFragment(article, fragment);
-        pendingMarkdownFragment = null;
-      }
-      markdownReadyForFragment = true;
-      committed = true;
-      return true;
-    } else {
+    if (generation !== renderGeneration) {
       article.remove();
       return false;
     }
+    article.classList.remove("viewer-pending");
+    content.replaceChildren(article);
+    previousDisposeImagePan?.();
+    disposeImagePan = null;
+    currentRows = [];
+    chartController.clear();
+    archiveAssetTracker.revokeStale(generation);
+    summary.classList.remove("warning");
+    summary.title = "";
+    summary.textContent = `${text.length.toLocaleString()}文字`;
+    scrollMarkdownCaret(highlightTargets, selection);
+    const fragment = pendingMarkdownFragment ?? initialFragment;
+    if (fragment !== null) {
+      scrollMarkdownFragment(article, fragment);
+      pendingMarkdownFragment = null;
+    }
+    markdownReadyForFragment = true;
+    committed = true;
+    void loadArchiveImages(article, generation, sourcePath, archivePath, archiveEntry)
+      .catch((error) => {
+        if (generation === renderGeneration) {
+          console.error("Markdown画像の読み込みに失敗しました", error);
+        }
+      });
+    return true;
   } finally {
     if (!committed && generation === renderGeneration) {
       markdownReadyForFragment = previousMarkdownReadyForFragment;
@@ -949,6 +974,7 @@ async function renderPayload(payload: ViewerPayload) {
     || nextState.archiveEntry !== previousState.archiveEntry;
   const formatChanged = nextState.format !== previousState.format;
   const nextImageZoom = sourceChanged ? DEFAULT_IMAGE_ZOOM : imageZoom;
+  if (sourceChanged) archiveAssetSession.clearCachedAssets();
   const committed = await renderViewerState(nextState, nextImageZoom);
   if (viewerDisposed || !committed) return;
   if (formatChanged || sourceChanged) csvColumnWidths = [];
@@ -1071,6 +1097,8 @@ async function start() {
     document.addEventListener("mousedown", (event) => {
       if (!contextMenu.contains(event.target as Node)) contextMenu.hidden = true;
     }, { signal: viewerDomListeners.signal });
+    // PDF/画像の資産取得を待つ間も、空のビューア（読込み中…）を先に表示する。
+    if (!isInlineViewer) await win!.show();
     if (isInlineViewer) {
       window.addEventListener("message", (event) => {
         if (event.source !== window.parent || event.origin !== window.location.origin) return;
@@ -1134,7 +1162,6 @@ async function start() {
       await renderPayload(await takeViewerPayload(win!.label));
     }
     viewerLayoutCoordinator?.refresh();
-    if (!isInlineViewer) await win!.show();
     viewerLayoutCoordinator?.request();
   } catch (error) {
     disposeViewer();

@@ -135,6 +135,28 @@ describe("Feature: settings", () => {
     expect(saved.previewFontSize).toBe(20);
   });
 
+  // Feature: 外部プレビューキャッシュ保存場所の設定
+  // Scenario: 未設定はバックエンド既定場所として復元し、保存済みの場所は保持する
+  // Given: プレビューキャッシュ保存場所が未設定または `D:\\WasabiPad\\preview-cache` として保存されている
+  // When: `parseSettings`を呼ぶ
+  // Then: 未設定は`null`、保存済みの場所は同じ文字列になる
+  it("Scenario: プレビューキャッシュ保存場所を復元する", () => {
+    expect(parseSettings("{}").previewCacheDirectory).toBeNull();
+    expect(parseSettings(JSON.stringify({ previewCacheDirectory: "D:\\WasabiPad\\preview-cache" }))
+      .previewCacheDirectory).toBe("D:\\WasabiPad\\preview-cache");
+  });
+
+  // Feature: 外部プレビューキャッシュ保存場所の設定
+  // Scenario: 不正な保存場所は未設定へ戻す
+  // Given: 数値・空文字・配列をプレビューキャッシュ保存場所として保存する
+  // When: `parseSettings`を呼ぶ
+  // Then: どの値も`null`として復元する
+  it("Scenario: 不正なプレビューキャッシュ保存場所を無効化する", () => {
+    expect(parseSettings(JSON.stringify({ previewCacheDirectory: 42 })).previewCacheDirectory).toBeNull();
+    expect(parseSettings(JSON.stringify({ previewCacheDirectory: "" })).previewCacheDirectory).toBeNull();
+    expect(parseSettings(JSON.stringify({ previewCacheDirectory: [] })).previewCacheDirectory).toBeNull();
+  });
+
   // Given: フォント・起動パス・登録項目を変更し、再開タブも保存済み
   // When: アプリ設定だけを初期化する
   // Then: ユーザー設定は既定値へ戻り、再開タブは保持する
@@ -160,6 +182,23 @@ describe("Feature: settings", () => {
     expect(getSetting("registeredStrings")).toEqual([]);
     expect(getSetting("openTabs")).toEqual(openTabs);
     expect(updateSettingMock).not.toHaveBeenCalledWith("openTabs", expect.anything());
+  });
+
+  // Feature: 外部プレビューキャッシュ保存場所の設定
+  // Scenario: アプリ設定の初期化でプレビューキャッシュ保存場所を既定値へ戻す
+  // Given: プレビューキャッシュ保存場所を `D:\\WasabiPad\\preview-cache` へ変更している
+  // When: アプリ設定だけを初期化する
+  // Then: 保存場所は`null`へ戻り、その値を保存する
+  it("Scenario: 設定初期化でプレビューキャッシュ保存場所を戻す", async () => {
+    setSetting("previewCacheDirectory", "D:\\WasabiPad\\preview-cache");
+    await flushSettings();
+    updateSettingMock.mockClear();
+
+    resetUserSettings();
+    await flushSettings();
+
+    expect(getSetting("previewCacheDirectory")).toBeNull();
+    expect(updateSettingMock).toHaveBeenCalledWith("previewCacheDirectory", "null");
   });
 
   // Given: プレビュー用文字サイズを20へ変更する

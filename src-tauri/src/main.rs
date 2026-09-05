@@ -15,13 +15,14 @@ use instance::{
 };
 use state::{DocState, State};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
 use viewer::ViewerStore;
 use wasabipad_core::{
     self, BookmarkNode, Doc, DocInfo, EditManyItem, EditManyResult, EditResult, EncodingId, Eol,
     ExternalCheck, ExternalMergePreview, FindCursor, FindOutcome, FindResult, FolderEntry, OpenAs, PosC,
-    ReplaceChunkResult, SaveOutcome, SearchOptions, WorkspaceSearchOutcome,
+    PreviewCache, ReplaceChunkResult, SaveOutcome, SearchOptions, WorkspaceSearchOutcome,
 };
 
 const EVENT_EXTERNAL_WINDOW_REQUEST: &str = "external-window-request";
@@ -62,6 +63,13 @@ struct WindowRequest {
 struct WorkspaceSearchBatch {
     search_id: u32,
     results: Vec<wasabipad_core::WorkspaceSearchResult>,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PreviewCacheInfo {
+    directory: String,
+    bytes: u64,
 }
 
 // 受理する形式はこの enum が単一の定義。表示名はフロント (ui/format.ts) だけが持つ。
@@ -136,11 +144,12 @@ fn line_char_len(line: usize, state: State) -> Result<usize, String> {
 async fn select_entry(
     rel_path: String,
     open_as: Option<OpenAs>,
+    cache_directory: Option<String>,
     app: AppHandle,
 ) -> Result<DocInfo, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Mutex<DocState>>();
-        document::select_entry(rel_path, open_as, state)
+        document::select_entry(rel_path, open_as, cache_directory, state)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -486,11 +495,12 @@ fn initial_window_request() -> Result<WindowRequest, String> {
 async fn read_archive_asset(
     archive_path: String,
     entry: String,
+    cache_directory: Option<String>,
     app: AppHandle,
 ) -> Result<tauri::ipc::Response, String> {
     let bytes = tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Mutex<DocState>>();
-        document::read_archive_asset(archive_path, entry, state)
+        document::read_archive_asset(archive_path, entry, cache_directory, state)
     })
     .await
     .map_err(|error| error.to_string())??;
@@ -498,14 +508,44 @@ async fn read_archive_asset(
 }
 
 #[tauri::command]
-async fn read_file_asset(path: String, app: AppHandle) -> Result<tauri::ipc::Response, String> {
+async fn read_file_asset(
+    path: String,
+    cache_directory: Option<String>,
+    app: AppHandle,
+) -> Result<tauri::ipc::Response, String> {
     let bytes = tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Mutex<DocState>>();
-        document::read_file_asset(path, state)
+        document::read_file_asset(path, cache_directory, state)
     })
     .await
     .map_err(|error| error.to_string())??;
     Ok(tauri::ipc::Response::new(bytes))
+}
+
+fn preview_cache_from_directory(cache_directory: Option<String>) -> Result<PreviewCache, String> {
+    let root = cache_directory
+        .filter(|directory| !directory.trim().is_empty())
+        .map(PathBuf::from)
+        .or_else(|| PreviewCache::default_root().ok())
+        .ok_or_else(|| "プレビューキャッシュの既定保存場所を取得できません".to_string())?;
+    Ok(PreviewCache::new(root))
+}
+
+#[tauri::command]
+fn preview_cache_info(cache_directory: Option<String>) -> Result<PreviewCacheInfo, String> {
+    let cache = preview_cache_from_directory(cache_directory)?;
+    let bytes = cache.total_bytes().map_err(|error| error.to_string())?;
+    Ok(PreviewCacheInfo {
+        directory: cache.directory().to_string_lossy().into_owned(),
+        bytes,
+    })
+}
+
+#[tauri::command]
+fn clear_preview_cache(cache_directory: Option<String>) -> Result<(), String> {
+    preview_cache_from_directory(cache_directory)?
+        .clear()
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -654,6 +694,8 @@ fn main() {
             cleanup_unused_images,
             read_archive_asset,
             read_file_asset,
+            preview_cache_info,
+            clear_preview_cache,
             reveal_in_explorer,
             open_in_other_app,
             open_in_default_browser,

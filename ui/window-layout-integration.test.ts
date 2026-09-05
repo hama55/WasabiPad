@@ -49,7 +49,7 @@ describe("Feature: window layout integration", () => {
     expect(viewerSource).toMatch(/viewerLayoutRuntime = createWindowLayoutRuntime\(window/);
     expect(viewerSource).toMatch(/onGeometryChange:\s*\(\) => viewerLayoutCoordinator\?\.request\(\)/);
     expect(viewerSource).toMatch(/onStateChange:\s*\(state\) => \{[\s\S]*?state !== "minimized"[\s\S]*?viewerLayoutCoordinator\?\.request\(\)/);
-    expect(viewerSource).toMatch(/viewerLayoutCoordinator\?\.refresh\(\);[\s\S]*?if \(!isInlineViewer\) await win!\.show\(\);\s*viewerLayoutCoordinator\?\.request\(\)/s);
+    expect(viewerSource).toMatch(/viewerLayoutCoordinator\?\.refresh\(\);\s*viewerLayoutCoordinator\?\.request\(\)/s);
     expect(viewerSource).toMatch(/viewerLayoutRuntime\?\.dispose\(\)/);
     expect(viewerSource).toMatch(/function beginRender\(\): number/);
     expect(viewerSource).toMatch(/content\.classList\.add\("viewer-loading"\)/);
@@ -64,7 +64,7 @@ describe("Feature: window layout integration", () => {
     expect(viewerSource).toMatch(/const committed = await renderViewerState\(nextState, nextImageZoom\);[\s\S]*?if \(viewerDisposed \|\| !committed\) return;[\s\S]*?publishViewerRenderState\(nextState, nextImageZoom\)/s);
     expect(viewerSource).toMatch(/previousDisposeImagePan\?\.\(\)/);
     expect(viewerRustSource).toMatch(/\.inner_size\(960\.0, 700\.0\)\s*\.visible\(false\)/s);
-    expect(viewerSource).toMatch(/await renderPayload\(await takeViewerPayload\(win!\.label\)\);[\s\S]*?await win!\.show\(\)/);
+    expect(viewerSource).toMatch(/if \(!isInlineViewer\) await win!\.show\(\);[\s\S]*?await renderPayload\(await takeViewerPayload\(win!\.label\)\);/);
   });
 
   // Given: native/DOMの複数通知を同じlayout coordinatorへ接続している

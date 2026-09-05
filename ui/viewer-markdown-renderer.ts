@@ -25,6 +25,17 @@ export interface MarkdownRenderOptions {
   breaks?: boolean;
 }
 
+export const MARKDOWN_IMAGE_SOURCE_ATTRIBUTE = "data-wasabipad-src";
+
+function deferMarkdownImageSources(article: HTMLElement) {
+  article.querySelectorAll<HTMLImageElement>("img[src]").forEach((image) => {
+    const source = image.getAttribute("src");
+    if (source === null) return;
+    image.setAttribute(MARKDOWN_IMAGE_SOURCE_ATTRIBUTE, source);
+    image.removeAttribute("src");
+  });
+}
+
 function decorateTaskListItems(article: HTMLElement) {
   article.querySelectorAll<HTMLLIElement>("li").forEach((item) => {
     const walker = document.createTreeWalker(item, NodeFilter.SHOW_TEXT);
@@ -107,6 +118,8 @@ export function renderMarkdownDocument(
     }
   });
   article.innerHTML = markdown.renderer.render(tokens, markdown.options, {});
+  // DOM挿入直後のブラウザ任せの全件読込を止め、viewer.tsの上限付きローダーへ渡す。
+  deferMarkdownImageSources(article);
   decorateTaskListItems(article);
   assignMarkdownHeadingIds(article);
   const sourceElements = [...article.querySelectorAll<HTMLElement>("[data-source-start]")];

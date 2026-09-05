@@ -17,6 +17,7 @@ mod fuzzy;
 mod hugebuf;
 mod merge;
 mod protocol;
+mod preview_cache;
 mod search;
 mod search_replace;
 mod settings;
@@ -28,7 +29,7 @@ mod ziptext;
 
 pub use bookmarks::{load as load_bookmarks, save as save_bookmarks, Node as BookmarkNode};
 pub use doc::{
-    Doc, DocInfo, EditManyItem, EditManyResult, EditResult, ExternalCheck, ExternalMergeChange,
+    ArchiveAssetReadPlan, Doc, DocInfo, EditManyItem, EditManyResult, EditResult, ExternalCheck, ExternalMergeChange,
     ExternalMergeContextLine, ExternalMergePreview, FindCursor, FindOutcome, FindResult,
     FolderEntry, OpenAs, PosC,
     ReplaceChunkResult, SaveOutcome,
@@ -36,5 +37,6 @@ pub use doc::{
 };
 pub use fileio::{Encoding, EncodingId, Eol};
 pub use filename::{next_available_path, validate_windows_file_name};
+pub use preview_cache::PreviewCache;
 pub use settings::{load as load_settings, update as update_setting};
 pub use workspace_search::{search_workspace, FileNameMatchMode, SearchOptions, WorkspaceSearchOutcome};

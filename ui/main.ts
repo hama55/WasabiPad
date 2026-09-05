@@ -547,6 +547,30 @@ settingsPorts = {
   },
   applyPreviewFontSize: (size) => inlinePreview.setFontSize(size),
   applyMarkdownSoftBreaks: (enabled) => inlinePreview.setMarkdownSoftBreaks(enabled),
+  pickPreviewCacheDirectory: async () => {
+    try {
+      const selected = await openDialog({ directory: true, multiple: false });
+      return typeof selected === "string" ? selected : null;
+    } catch (error) {
+      await reportBackgroundError("プレビューキャッシュ保存場所を選べませんでした", error);
+      return null;
+    }
+  },
+  clearPreviewCache: async () => {
+    try {
+      await api.clearPreviewCache(getSetting("previewCacheDirectory"));
+    } catch (error) {
+      await reportBackgroundError("プレビューキャッシュを削除できませんでした", error);
+    }
+  },
+  getPreviewCacheInfo: async () => {
+    try {
+      return await api.getPreviewCacheInfo(getSetting("previewCacheDirectory"));
+    } catch (error) {
+      console.error("プレビューキャッシュの情報を取得できませんでした", error);
+      return null;
+    }
+  },
   getSearchOptions: loadSearchOptions,
   updateSearchOptions: (options) => {
     saveSearchOptions(options);
@@ -663,6 +687,12 @@ const windowChrome = new WindowChrome($("titlebar"), win, {
   onError: showError,
 }, $("save-notice"));
 
+const cacheAwareDocumentApi = {
+  ...api,
+  selectEntry: (relPath: string, openAs?: api.OpenAs) =>
+    api.selectEntry(relPath, openAs, getSetting("previewCacheDirectory")),
+};
+
 const doc: DocumentController = new DocumentController({
   editor,
   statusbar,
@@ -691,7 +721,7 @@ const doc: DocumentController = new DocumentController({
     return path ?? null;
   },
 }, {
-  api,
+  api: cacheAwareDocumentApi,
   showError,
   confirmSaveDiscard,
   promptFields,
@@ -785,7 +815,7 @@ const folderActions = new FolderActions(doc, {
     runBackground("開けませんでした", () => openPathInTabs(tabs, path));
   },
 }, {
-  api,
+  api: cacheAwareDocumentApi,
   showError,
   confirmMessage,
   promptFields,
