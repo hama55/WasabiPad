@@ -5,6 +5,7 @@ import {
   commandLineForExternalFile,
   commandTemplateFor,
   editorExtensionOf,
+  externalPreviewSourcePathFor,
   fileExtensionOf,
 } from "./external-integration";
 
@@ -82,12 +83,19 @@ describe("Feature: 連携コマンド", () => {
     expect(canUseExternalEditor({ ...folderFile, savePath: null }, "C:\\work")).toBe(false);
   });
 
-  // Scenario: 実拡張子と異なる形式でプレビューする
-  // Given: 保存済みMarkdown、通常のCSV、アーカイブ内Markdown
+  // Scenario: フォルダビューの保存済みMarkdownを連携プレビューで開ける
+  // Given: folderRootを持つフォルダビューで保存済みMarkdownを表示している
   // When: 外部プレビュー可能か確認する
-  // Then: 実拡張子とViewerFormatが一致する通常ファイルだけを許可する
-  it("Scenario: 連携プレビューは実拡張子と形式が一致する通常ファイルだけ許可する", () => {
-    expect(canUseExternalPreview("C:\\work\\memo.md", "markdown", null, null)).toBe(true);
+  // Then: フォルダビューの所属だけでは拒否せず、実拡張子とViewerFormatが一致する通常ファイルだけを許可する
+  it("Scenario: フォルダビューの保存済みMarkdownを連携プレビューで開ける", () => {
+    const folderFile = {
+      savePath: "C:\\work\\memo.md",
+      displayPath: "C:\\work\\memo.md",
+      folderRoot: "C:\\work",
+      archivePath: null,
+      archiveEntry: null,
+    } as const;
+    expect(externalPreviewSourcePathFor(folderFile, "markdown")).toBe(folderFile.savePath);
     expect(canUseExternalPreview("C:\\work\\memo.csv", "markdown", null, null)).toBe(false);
     expect(canUseExternalPreview(
       "C:\\work\\archive.7z",

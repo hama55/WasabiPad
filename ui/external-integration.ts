@@ -1,7 +1,7 @@
 import type { ViewerFormat } from "./api";
 import { commandLineForFile } from "./registered-commands";
 import type { DocumentSession } from "./session";
-import { viewerFormatForPath } from "./viewer-formats";
+import { sourcePathForViewer, viewerFormatForPath } from "./viewer-formats";
 
 export type ExternalCommandMap = Record<string, string>;
 
@@ -56,4 +56,15 @@ export function canUseExternalPreview(
     && !archivePath
     && !archiveEntry
     && viewerFormatForPath(sourcePath) === format;
+}
+
+export function externalPreviewSourcePathFor(
+  session: Pick<DocumentSession, "savePath" | "displayPath" | "archivePath" | "archiveEntry">,
+  format: ViewerFormat,
+): string | null {
+  const sourcePath = sourcePathForViewer(format, session.savePath, session.displayPath);
+  if (!sourcePath || sourcePath !== session.savePath) return null;
+  return canUseExternalPreview(sourcePath, format, session.archivePath, session.archiveEntry)
+    ? sourcePath
+    : null;
 }

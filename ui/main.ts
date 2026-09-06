@@ -57,10 +57,10 @@ import {
 } from "./viewer-formats";
 import {
   canUseExternalEditor,
-  canUseExternalPreview,
   commandLineForExternalFile,
   commandTemplateFor,
   editorExtensionOf,
+  externalPreviewSourcePathFor,
 } from "./external-integration";
 import { classificationPathOf, documentPathOf, type DocumentSession } from "./session";
 import {
@@ -359,18 +359,13 @@ const inlinePreviewPorts = {
   onFormatChange: (format) => runBackground("ビューを切り替えられませんでした", () => editor.openTextViewer(format, true)),
   onExternalPreview: (format) => runBackground("連携プレビューを開けませんでした", async () => {
     const session = doc.current;
-    const sourcePath = sourcePathForViewer(format, session.savePath, session.displayPath);
-    if (!sourcePath
-      || sourcePath !== session.savePath
-      || session.folderRoot
-      || !canUseExternalPreview(sourcePath, format, session.archivePath, session.archiveEntry)) return;
+    const sourcePath = externalPreviewSourcePathFor(session, format);
+    if (!sourcePath) return;
     const template = commandTemplateFor(getSetting("externalPreviewCommands"), format);
     if (!template) throw new Error("連携プレビューが未設定です");
     if (session.dirty && !(await doc.confirmDiscard())) return;
     const current = doc.current;
-    if (current.savePath !== sourcePath
-      || current.folderRoot
-      || !canUseExternalPreview(sourcePath, format, current.archivePath, current.archiveEntry)) return;
+    if (externalPreviewSourcePathFor(current, format) !== sourcePath) return;
     await launchConfiguredExternalWindow(commandLineForExternalFile(template, sourcePath), sourcePath, previewEl);
   }),
   onDelimiterChange: (delimiter) => inlinePreview.setDelimiter(delimiter),
