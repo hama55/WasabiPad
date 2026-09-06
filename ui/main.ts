@@ -7,11 +7,11 @@ import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialo
 import { writeText as writeClipboardText } from "@tauri-apps/plugin-clipboard-manager";
 import * as api from "./api";
 import { applyDocumentLoadProgress } from "./document-load-progress";
-import { VirtualEditor } from "./editor";
-import { Sidebar } from "./sidebar";
-import { FavBar } from "./favbar";
-import { AddressBar } from "./addressbar";
-import { StatusBar } from "./statusbar";
+import type { EditorPorts } from "./editor";
+import { EditingSurfaceHost } from "./editing-surface-host";
+import type { InlinePreviewPorts } from "./inline-preview";
+import { WorkspaceHost } from "./workspace-host";
+import type { StatusBarPorts } from "./statusbar";
 import { WindowChrome } from "./window-chrome";
 import { canPollExternalDocument, ExternalWatch } from "./external-watch";
 import { confirmExternalMerge, isExternalMergeRetryError } from "./external-merge";
@@ -49,7 +49,6 @@ import { openSettingsMenu, openSettingsModal, type SettingsCloseHandle, type Set
 import { searchResultGoto } from "./search-results";
 import { runAsyncBoundary, reportUnhandledRejection } from "./async-boundary";
 import { openPath as openPathInTabs } from "./path-opener";
-import { InlinePreview } from "./inline-preview";
 import {
   isAssetViewerFormat,
   sourcePathForViewer,
@@ -128,7 +127,13 @@ let previewFullscreen = false;
 let previewFullscreenTabId: string | null = null;
 let currentLine = 1;
 let tabs: TabManager;
-let sidebar: Sidebar;
+let sidebar: WorkspaceHost["sidebar"];
+let addressbar: WorkspaceHost["addressbar"];
+let favbar: WorkspaceHost["favbar"];
+let fileStatusbar: WorkspaceHost["fileStatusbar"];
+let editingStatusbar: EditingSurfaceHost["statusbar"];
+let inlinePreview: EditingSurfaceHost["preview"];
+let editor: EditingSurfaceHost["editor"];
 let settingsMenu: SettingsCloseHandle | null = null;
 let settingsPorts: SettingsPanelPorts;
 let restoringEditorFont = true;
@@ -200,7 +205,7 @@ function drainExternalWindowRequests() {
 function setSidebar(on: boolean, label = "") {
   sidebarAvailable = on;
   updateSidebarVisibility();
-  statusbar.setMode(label);
+  editingStatusbar.setMode(label);
 }
 
 function measuredMainWidth(): number {
@@ -285,12 +290,12 @@ function updatePreviewVisibility() {
   applyPaneVisibility(width);
 }
 
-const inlinePreview = new InlinePreview(previewEl, {
+const inlinePreviewPorts = {
   onAvailabilityChange: (available) => {
     previewAvailable = available;
     if (!available) {
       previewDocument = null;
-      statusbar.setPreviewFormat(null);
+      editingStatusbar.setPreviewFormat(null);
     }
     if (available) previewCollapsed = false;
     updatePreviewVisibility();
@@ -334,7 +339,7 @@ const inlinePreview = new InlinePreview(previewEl, {
     updatePreviewVisibility();
   },
   onError: (error) => reportBackgroundError("プレビュー通知を処理できませんでした", error),
-});
+} satisfies InlinePreviewPorts;
 
 let previewDocument: PreviewDocument | null = null;
 function runPreviewBackground(
@@ -366,7 +371,7 @@ function openPreviewFormat(
     session.archiveEntry,
     session.effectiveExtension,
   );
-  statusbar.setPreviewFormat(format);
+  editingStatusbar.setPreviewFormat(format);
   runPreviewBackground(
     { ownerTabId: tabs?.state.activeId ?? null, path, format },
     "ビューを表示できませんでした",
@@ -399,15 +404,15 @@ function syncPreviewDocument(session: Readonly<DocumentSession>, force = false, 
   if (!format) {
     inlinePreview.setSourcePath(null, session.archivePath, session.archiveEntry);
     previewDocument = null;
-    statusbar.setPreviewFormat(null);
+    editingStatusbar.setPreviewFormat(null);
     inlinePreview.clear();
     return;
   }
   openPreviewFormat(session, path, format, fragment);
 }
 
-// ---- 部品 ----
-const statusbar = new StatusBar($("statusbar"), {
+// ---- 編集・プレビュー側 ----
+const editingStatusbarPorts = {
   onGoTo: (line) => editor.goTo(line, 0),
   onFontFamily: (family) => editor.setFont(family, getSetting("fontSize"), "family"),
   onFontSize: (size) => editor.setFont(getSetting("fontFamily"), size, "size"),
@@ -424,21 +429,15 @@ const statusbar = new StatusBar($("statusbar"), {
     return doc.reloadWithEncoding(encoding);
   },
   onError: showError,
-});
-statusbar.restoreTheme(localStorage.getItem(THEME_STORAGE_KEY));
-window.addEventListener("storage", (event) => {
-  if (event.key === THEME_STORAGE_KEY) statusbar.restoreTheme(event.newValue);
-});
+} satisfies StatusBarPorts;
+function applyTheme(theme: ReturnType<typeof normalizeTheme>) {
+  document.documentElement.setAttribute("data-theme", theme);
+  localStorage.setItem(THEME_STORAGE_KEY, theme);
+}
 
-const addressbar = new AddressBar($("topbar"), {
-  onOpen: (path, newTab) => runBackground("開けませんでした", () => openPathInTabs(tabs, path, newTab)),
-  onSave: () => runBackground("保存できませんでした", () => doc.save()),
-  onSaveAs: () => runBackground("名前を付けて保存できませんでした", () => doc.saveAs()),
-  onNew: () => runBackground("新規ウィンドウを開けませんでした", launchNewWindow),
-  onFind: () => editor.openSearch(),
-  onPick: () => runBackground("ファイルを開けませんでした", () => pickAndOpen(false)),
-  onFavorite: () => runBackground("お気に入りに追加できませんでした", () => favbar.addCurrent()),
-  onSettings: () => openSettings(),
+applyTheme(normalizeTheme(localStorage.getItem(THEME_STORAGE_KEY)));
+window.addEventListener("storage", (event) => {
+  if (event.key === THEME_STORAGE_KEY) applyTheme(normalizeTheme(event.newValue));
 });
 
 const registeredCommandPorts = {
@@ -457,22 +456,21 @@ function previewEditorFont(family: string, size: number, changed: "family" | "si
   if (changed === "family") inlinePreview.setFontFamily(family);
 }
 
-// 部品どうしが相互に参照するため、型注釈で推論の循環を切る
-const editor: VirtualEditor = new VirtualEditor(editorHost, {
+const editorPorts = {
   onDocChange: (lineCount, edits) => {
     doc.onEdit(lineCount);
-    statusbar.setLineCount(lineCount);
+    editingStatusbar.setLineCount(lineCount);
     sidebar?.refreshWorkspaceSearch(doc.current.selectedRelPath, edits ?? []);
     scheduleImageCleanup();
   },
   onCursor: (line, col) => {
     currentLine = line;
-    statusbar.setCursor(line, col);
+    editingStatusbar.setCursor(line, col);
     tabs?.syncCursor(line - 1);
   },
   onFontChange: (family, size, changed) => {
     if (previewingEditorFont) return;
-    statusbar.setFont(family, size);
+    editingStatusbar.setFont(family, size);
     if (changed !== "size") inlinePreview.setFontFamily(family);
     if (!restoringEditorFont) {
       if (changed !== "size") setSetting("fontFamily", family);
@@ -488,7 +486,7 @@ const editor: VirtualEditor = new VirtualEditor(editorHost, {
   onError: (message, error) => showError(message, error),
   openViewer: async (format, text, selection) => {
     const path = documentPathOf(doc.current);
-    statusbar.setPreviewFormat(format);
+    editingStatusbar.setPreviewFormat(format);
     const label = await inlinePreview.open(format, text, selection);
     if (isCurrentPreviewDocument(previewDocument, tabs?.state.activeId ?? null, path)) {
       previewDocument.format = format;
@@ -503,7 +501,15 @@ const editor: VirtualEditor = new VirtualEditor(editorHost, {
       () => api.savePastedImage(bytes, mimeType),
     );
   },
-});
+} satisfies EditorPorts;
+
+const editingSurfaceHost = new EditingSurfaceHost(
+  { editor: editorHost, preview: previewEl, statusbar: $("editing-statusbar") },
+  { editor: editorPorts, preview: inlinePreviewPorts, statusbar: editingStatusbarPorts },
+);
+editor = editingSurfaceHost.editor;
+inlinePreview = editingSurfaceHost.preview;
+editingStatusbar = editingSurfaceHost.statusbar;
 
 layoutRuntime = createWindowLayoutRuntime(window, {
   measure: (): WindowViewport => {
@@ -525,7 +531,7 @@ function applySettingsToUi() {
   restoringEditorFont = true;
   editor.setFont(getSetting("fontFamily"), getSetting("fontSize"));
   restoringEditorFont = false;
-  editor.setTabSize(statusbar.setIndent(getSetting("indentSize")));
+  editor.setTabSize(editingStatusbar.setIndent(getSetting("indentSize")));
   inlinePreview.setFontFamily(getSetting("fontFamily"));
   inlinePreview.setFontSize(getSetting("previewFontSize"));
   inlinePreview.setMarkdownSoftBreaks(getSetting("markdownSoftBreaks"));
@@ -536,14 +542,14 @@ applySettingsToUi();
 
 settingsPorts = {
   getTheme: () => normalizeTheme(document.documentElement.getAttribute("data-theme")),
-  setTheme: (theme) => statusbar.restoreTheme(theme),
+  setTheme: applyTheme,
   getSetting,
   setSetting,
   applyFontFamily: (family) => editor.setFont(family, getSetting("fontSize"), "family"),
   applyFontSize: (size) => editor.setFont(getSetting("fontFamily"), size, "size"),
   applyIndent: (size) => {
     editor.setTabSize(size);
-    statusbar.setIndent(size);
+    editingStatusbar.setIndent(size);
   },
   applyPreviewFontSize: (size) => inlinePreview.setFontSize(size),
   applyMarkdownSoftBreaks: (enabled) => inlinePreview.setMarkdownSoftBreaks(enabled),
@@ -583,7 +589,7 @@ settingsPorts = {
   ),
   resetSettings: () => {
     resetUserSettings();
-    statusbar.restoreTheme("dark");
+    applyTheme("dark");
     applySettingsToUi();
   },
 };
@@ -603,56 +609,89 @@ function openSettings() {
   });
 }
 
-sidebar = new Sidebar(sidebarEl, {
-  onSelect: async (relPath, newTab) => {
-    if (newTab) return openInNewTab(relPath);
-    return tabs.navigateEntry(relPath);
+const workspaceHost = new WorkspaceHost(
+  {
+    topbar: $("topbar"),
+    sidebar: sidebarEl,
+    favbar: $("favbar"),
+    fileStatusbar: $("file-statusbar"),
   },
-  onContextMenu: (x, y, target, selected) => folderActions.showContextMenu(x, y, target, selected),
-  onFileCommand: (command, selected) => folderActions.executeCommand(command, selected),
-  onRenameEntry: (relPath, newName) => folderActions.renameEntry(relPath, newName),
-  isCut: (relPath) => folderActions.isCut(relPath),
-  onExpandArchive: (relPath) =>
-    withArchivePassword(relPath, () => api.listArchiveEntries(relPath)),
-  onExpandFolder: (relDir) => api.listFolderEntries(relDir),
-  onDropEntries: (request) => folderActions.dropEntries(request),
-  onUndoLastDrop: () => folderActions.undoLastDrop(),
-  onCreateFolder: (relDir) => folderActions.createFolder(relDir),
-  onCreateNote: (relDir) => folderActions.createNote(relDir),
-  onTreeError: async (error) => {
-    if (!isPasswordCancelled(error)) await showError("フォルダを展開できませんでした", error);
+  {
+    addressbar: {
+      onOpen: (path, newTab) => runBackground("開けませんでした", () => openPathInTabs(tabs, path, newTab)),
+      onSave: () => runBackground("保存できませんでした", () => doc.save()),
+      onSaveAs: () => runBackground("名前を付けて保存できませんでした", () => doc.saveAs()),
+      onNew: () => runBackground("新規ウィンドウを開けませんでした", launchNewWindow),
+      onFind: () => editor.openSearch(),
+      onPick: () => runBackground("ファイルを開けませんでした", () => pickAndOpen(false)),
+      onFavorite: () => runBackground("お気に入りに追加できませんでした", () => favbar.addCurrent()),
+      onSettings: () => openSettings(),
+    },
+    sidebar: {
+      onSelect: async (relPath, newTab) => {
+        if (newTab) return openInNewTab(relPath);
+        return tabs.navigateEntry(relPath);
+      },
+      onContextMenu: (x, y, target, selected) => folderActions.showContextMenu(x, y, target, selected),
+      onFileCommand: (command, selected) => folderActions.executeCommand(command, selected),
+      onRenameEntry: (relPath, newName) => folderActions.renameEntry(relPath, newName),
+      isCut: (relPath) => folderActions.isCut(relPath),
+      onExpandArchive: (relPath) =>
+        withArchivePassword(relPath, () => api.listArchiveEntries(relPath)),
+      onExpandFolder: (relDir) => api.listFolderEntries(relDir),
+      onDropEntries: (request) => folderActions.dropEntries(request),
+      onUndoLastDrop: () => folderActions.undoLastDrop(),
+      onCreateFolder: (relDir) => folderActions.createFolder(relDir),
+      onCreateNote: (relDir) => folderActions.createNote(relDir),
+      onTreeError: async (error) => {
+        if (!isPasswordCancelled(error)) await showError("フォルダを展開できませんでした", error);
+      },
+      onSearch: (pat, options, searchId) => api.workspaceSearch(pat, options, searchId),
+      onCancel: (searchId) => api.workspaceSearchCancel(searchId),
+      onCancelError: (error) => showError("検索を中止できませんでした", error),
+      onError: (error) => showError("フォルダを検索できませんでした", error),
+      onOptionsChange: saveSearchOptions,
+      onOpen: async (result, newTab, query) => {
+        if (newTab) {
+          if (!(await openInNewTab(result.rel_path, searchResultGoto(result)))) return false;
+        } else if (!(await tabs.navigateEntry(result.rel_path))) {
+          return false;
+        }
+        // 当たった長さは backend が返す範囲から取る。正規表現や大小の畳み込みでは
+        // 入力したパターンの長さと一致しない。
+        const [, length] = result.highlights[0] ?? [0, 0];
+        if (result.is_filename) {
+          editor.setFindHighlightQuery("", false);
+          if (!newTab) editor.goTo(result.line, result.col);
+        } else {
+          editor.setFindHighlightQuery(query.pat, query.matchCase, query.useRegex, query.wholeWord);
+          if (!newTab) await editor.selectRange(result.line, result.col, result.col + length);
+        }
+        return true;
+      },
+      onReplace: async (result, replacement) => {
+        if (result.is_filename) return false;
+        if (!(await tabs.navigateEntry(result.rel_path))) return false;
+        const [, length] = result.highlights[0] ?? [0, 0];
+        if (!length) return false;
+        return editor.replaceRange(result.line, result.col, result.col + length, replacement);
+      },
+    },
+    favbar: {
+      onOpen: (path, newTab) => runBackground("お気に入りを開けませんでした", () => openPathInTabs(tabs, path, newTab)),
+      onOpenInNewWindow: (path) => launchNewWindow({ path }),
+      onAddGroupToTabs: (items) => tabs.addLinks(items),
+      revealInExplorer,
+      currentFile: () => addressbar.path || null,
+      onError: (error) => showError("お気に入りを移動できませんでした", error),
+    },
   },
-  onSearch: (pat, options, searchId) => api.workspaceSearch(pat, options, searchId),
-  onCancel: (searchId) => api.workspaceSearchCancel(searchId),
-  onCancelError: (error) => showError("検索を中止できませんでした", error),
-  onError: (error) => showError("フォルダを検索できませんでした", error),
-  onOptionsChange: saveSearchOptions,
-  onOpen: async (result, newTab, query) => {
-    if (newTab) {
-      if (!(await openInNewTab(result.rel_path, searchResultGoto(result)))) return false;
-    } else if (!(await tabs.navigateEntry(result.rel_path))) {
-      return false;
-    }
-    // 当たった長さは backend が返す範囲から取る。正規表現や大小の畳み込みでは
-    // 入力したパターンの長さと一致しない。
-    const [, length] = result.highlights[0] ?? [0, 0];
-    if (result.is_filename) {
-      editor.setFindHighlightQuery("", false);
-      if (!newTab) editor.goTo(result.line, result.col);
-    } else {
-      editor.setFindHighlightQuery(query.pat, query.matchCase, query.useRegex, query.wholeWord);
-      if (!newTab) await editor.selectRange(result.line, result.col, result.col + length);
-    }
-    return true;
-  },
-  onReplace: async (result, replacement) => {
-    if (result.is_filename) return false;
-    if (!(await tabs.navigateEntry(result.rel_path))) return false;
-    const [, length] = result.highlights[0] ?? [0, 0];
-    if (!length) return false;
-    return editor.replaceRange(result.line, result.col, result.col + length, replacement);
-  },
-}, loadSearchOptions());
+  loadSearchOptions(),
+);
+addressbar = workspaceHost.addressbar;
+sidebar = workspaceHost.sidebar;
+favbar = workspaceHost.favbar;
+fileStatusbar = workspaceHost.fileStatusbar;
 
 // 検索の途中経過。確定を待たずに届いた分から並べる
 void api.onWorkspaceSearchBatch((batch) => runBackground("検索結果を画面へ反映できませんでした", () =>
@@ -695,7 +734,8 @@ const cacheAwareDocumentApi = {
 
 const doc: DocumentController = new DocumentController({
   editor,
-  statusbar,
+  statusbar: editingStatusbar,
+  fileStatusbar,
   addressbar,
   sidebar,
   setSidebar,
@@ -739,8 +779,8 @@ function applyExternalInfo(info: api.DocInfo) {
 }
 
 function applyExternalMetadata(info: api.DocInfo) {
-  statusbar.setByteSize(info.byte_len, info.is_huge);
-  statusbar.setModifiedAt(info.modified_at);
+  fileStatusbar.setByteSize(info.byte_len, info.is_huge);
+  fileStatusbar.setModifiedAt(info.modified_at);
 }
 
 const externalWatch = new ExternalWatch($("external-banner"), {
@@ -791,15 +831,6 @@ window.addEventListener("beforeunload", () => {
   windowChrome.dispose();
   externalWatch.dispose();
   favbar.dispose();
-});
-
-const favbar = new FavBar($("favbar"), {
-  onOpen: (path, newTab) => runBackground("お気に入りを開けませんでした", () => openPathInTabs(tabs, path, newTab)),
-  onOpenInNewWindow: (path) => launchNewWindow({ path }),
-  onAddGroupToTabs: (items) => tabs.addLinks(items),
-  revealInExplorer,
-  currentFile: () => addressbar.path || null,
-  onError: (error) => showError("お気に入りを移動できませんでした", error),
 });
 
 const folderActions = new FolderActions(doc, {
@@ -923,6 +954,7 @@ mainEl.addEventListener("pointermove", (event) => {
   if (pointerNearPreviewBoundary(event.clientX)) showPreviewTogglePeek();
   else if (!previewToggleHovered) hidePreviewTogglePeekLater();
 });
+
 mainEl.addEventListener("pointerleave", hidePreviewTogglePeekLater);
 previewToggle.addEventListener("pointerenter", () => {
   previewToggleHovered = true;
@@ -993,7 +1025,7 @@ void getCurrentWebview().onDragDropEvent((ev) => {
 let folderRefreshRunning = false;
 let folderRefreshErrorReported = false;
 window.setInterval(async () => {
-  statusbar.refreshModifiedAt();
+  fileStatusbar.refreshModifiedAt();
   if (!doc.current.folderRoot || folderRefreshRunning) return;
   folderRefreshRunning = true;
   try {

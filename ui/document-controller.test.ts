@@ -67,7 +67,8 @@ function fakeView() {
       })),
       restoreViewState: vi.fn(async () => {}),
     },
-  statusbar: { setFormat: vi.fn(), setByteSize: vi.fn(), setModifiedAt: vi.fn(), setLineCount: vi.fn() },
+    statusbar: { setFormat: vi.fn(), setLineCount: vi.fn() },
+    fileStatusbar: { setByteSize: vi.fn(), setModifiedAt: vi.fn() },
     addressbar: { render: vi.fn() },
     sidebar: {
       setWorkspaceSearch: vi.fn(),
@@ -453,7 +454,7 @@ describe("Feature: DocumentController", () => {
     expect(controller.current.savePath).toBe("C:\\work\\memo.txt");
     expect(controller.current.sourceEncoding).toBe("sjis");
     expect(view.hideExternalBanner).toHaveBeenCalled();
-    expect(view.statusbar.setByteSize).toHaveBeenCalledWith(1234, false);
+    expect(view.fileStatusbar.setByteSize).toHaveBeenCalledWith(1234, false);
     expect(view.statusbar.setLineCount).toHaveBeenCalledWith(42);
     expect(view.addressbar.render).toHaveBeenCalledWith("C:\\work\\memo.txt", null);
     expect(view.editor.open).toHaveBeenCalledWith(42, false, false, "C:\\work\\memo.txt", false);
@@ -677,7 +678,7 @@ describe("Feature: DocumentController", () => {
     vi.spyOn(api, "saveFile").mockResolvedValueOnce({ kind: "saved", modified_at: savedAt });
 
     expect(await controller.save()).toBe(true);
-    expect(view.statusbar.setModifiedAt).toHaveBeenLastCalledWith(savedAt);
+    expect(view.fileStatusbar.setModifiedAt).toHaveBeenLastCalledWith(savedAt);
   });
 
   // Given: 保存結果が「保存済みだが再読込警告」を返す

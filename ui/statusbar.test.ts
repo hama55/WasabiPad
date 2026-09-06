@@ -2,18 +2,21 @@
 import { describe, expect, it, vi } from "vitest";
 import { FONT_FAMILIES, MAX_FONT_SIZE, MIN_FONT_SIZE } from "./font-controls";
 import { initialSession } from "./session";
-import { StatusBar, type StatusBarPorts } from "./statusbar";
+import { EditingStatusBar, FileStatusBar, type StatusBarPorts } from "./statusbar";
 
 function mount(overrides: Partial<StatusBarPorts> = {}) {
   const host = document.createElement("div");
   host.innerHTML = `
-    <span id="st-mode"></span>
-    <span id="st-binary" hidden></span>
-    <label id="st-delimiter" hidden>区切り <input id="st-delimiter-input" value="," /></label>
-    <button id="st-pos"></button><span id="st-size"></span><span id="st-modified"></span><button id="st-lines"></button>
-    <select id="st-font"></select><select id="st-font-size"></select>
-    <select id="st-indent"></select><button id="st-wrap"></button>
-    <select id="st-source-enc"></select><span id="st-eol"></span><button id="st-theme"></button>
+    <div id="file-statusbar"><span id="st-size"></span><span id="st-modified"></span></div>
+    <div id="editing-statusbar">
+      <span id="st-mode"></span>
+      <span id="st-binary" hidden></span>
+      <label id="st-delimiter" hidden>区切り <input id="st-delimiter-input" value="," /></label>
+      <button id="st-pos"></button><button id="st-lines"></button>
+      <select id="st-font"></select><select id="st-font-size"></select>
+      <select id="st-indent"></select><button id="st-wrap"></button>
+      <select id="st-source-enc"></select><span id="st-eol"></span>
+    </div>
   `;
   document.body.replaceChildren(host);
   const ports: StatusBarPorts = {
@@ -27,7 +30,12 @@ function mount(overrides: Partial<StatusBarPorts> = {}) {
     onError: vi.fn(async () => {}),
     ...overrides,
   };
-  return { host, ports, statusbar: new StatusBar(host, ports) };
+  return {
+    host,
+    ports,
+    statusbar: new EditingStatusBar(host.querySelector("#editing-statusbar")!, ports),
+    fileStatusbar: new FileStatusBar(host.querySelector("#file-statusbar")!),
+  };
 }
 
 describe("Feature: statusbar preview controls", () => {
@@ -250,16 +258,16 @@ describe("Feature: statusbar preview controls", () => {
     ));
   });
 
-  // Given: ファイル保存日時を表示するステータスバー
+  // Given: ファイル側ステータスバー
   // When: 日時を設定してから未保存状態へ戻す
   // Then: 保存日時を表示し、nullでは空表示にする
   it("Scenario: ファイル保存日時を表示する", () => {
-    const { host, statusbar } = mount();
+    const { host, fileStatusbar } = mount();
     const modified = host.querySelector<HTMLElement>("#st-modified")!;
 
-    statusbar.setModifiedAt(1720000000000);
+    fileStatusbar.setModifiedAt(1720000000000);
     expect(modified.textContent).toContain("保存:");
-    statusbar.setModifiedAt(null);
+    fileStatusbar.setModifiedAt(null);
     expect(modified.textContent).toBe("");
   });
 
@@ -273,14 +281,14 @@ describe("Feature: statusbar preview controls", () => {
     try {
       const now = Date.UTC(2026, 0, 1, 0, 0, 0);
       vi.setSystemTime(now);
-      const { host, statusbar } = mount();
+      const { host, fileStatusbar } = mount();
       const modified = host.querySelector<HTMLElement>("#st-modified")!;
 
-      statusbar.setModifiedAt(now);
+      fileStatusbar.setModifiedAt(now);
       expect(modified.textContent).toBe("保存: たった今");
 
       vi.setSystemTime(now + 60 * 1000);
-      statusbar.refreshModifiedAt();
+      fileStatusbar.refreshModifiedAt();
       expect(modified.textContent).toBe("保存: 1分前");
     } finally {
       vi.useRealTimers();

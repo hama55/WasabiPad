@@ -11,7 +11,6 @@ import {
   clampFontSize,
 } from "./font-controls";
 import { confirmMessage, promptFields } from "./prompt";
-import { normalizeTheme, THEME_LABELS, THEME_STORAGE_KEY, THEMES, type Theme } from "./theme";
 import { runAsyncBoundary } from "./async-boundary";
 import { viewerFormatSpec } from "./viewer-formats";
 import { reportErrorSafely } from "./report-error";
@@ -38,13 +37,38 @@ export interface StatusBarPorts {
   onError?: (title: string, error: unknown) => void | Promise<void>;
 }
 
-// ステータスバー全体 (#statusbar) を1つの部品として閉じる。表示中の文書がどう
-// 見えているかだけを持ち、文書そのものの状態は持たない。
-export class StatusBar {
+// ファイルビュー側のステータス。文書のバイトサイズと保存日時だけを持つ。
+export class FileStatusBar {
+  private modifiedAt: number | null = null;
+
+  constructor(private host: HTMLElement) {}
+
+  private pick<T extends HTMLElement>(id: string): T {
+    return this.host.querySelector<T>(`#${id}`)!;
+  }
+
+  setByteSize(bytes: number | null, isHuge = false) {
+    const size = this.pick<HTMLElement>("st-size");
+    size.textContent = bytes === null ? "" : formatByteSize(bytes);
+    size.classList.toggle("is-huge", bytes !== null && isHuge);
+  }
+
+  setModifiedAt(timestamp: number | null) {
+    this.modifiedAt = timestamp;
+    this.refreshModifiedAt();
+  }
+
+  // 相対時刻は時間経過で変わるため、メイン画面の定期更新から呼び出す。
+  refreshModifiedAt() {
+    this.pick<HTMLElement>("st-modified").textContent = formatModifiedAt(this.modifiedAt);
+  }
+}
+
+// エディタ・プレビュー側のステータス。ファイル情報は持たない。
+export class EditingStatusBar {
   private currentLine = 1;
   private lineCount = 1;
   private wrap = false;
-  private modifiedAt: number | null = null;
   // change 後の select からは元の値が読めないため、直近に表示した値を控えておく
   private shownReadEncoding: ReadEncoding = "utf8";
   private committedFontFamily = FONT_FAMILIES[0];
@@ -72,12 +96,6 @@ export class StatusBar {
       this.run("CSV区切り文字を変更できませんでした", () => {
         if (!this.previewDelimiterInput.value) return;
         return this.ports.onPreviewDelimiter?.(this.previewDelimiterInput.value);
-      });
-    });
-    this.pick("st-theme").addEventListener("click", () => {
-      this.run("テーマを変更できませんでした", () => {
-        const current = (document.documentElement.getAttribute("data-theme") as Theme) ?? "dark";
-        this.applyTheme(THEMES[(THEMES.indexOf(current) + 1) % THEMES.length]);
       });
     });
     // input は候補移動中のエディタだけのプレビュー。設定保存を行う既存ポートは change だけで呼ぶ。
@@ -169,17 +187,6 @@ export class StatusBar {
     return this.pick<HTMLInputElement>("st-delimiter-input");
   }
 
-  // 保存済みの配色を復元する。未保存/未知の値はダーク扱い。
-  restoreTheme(saved: string | null) {
-    this.applyTheme(normalizeTheme(saved));
-  }
-
-  private applyTheme(theme: Theme) {
-    document.documentElement.setAttribute("data-theme", theme);
-    this.pick("st-theme").textContent = THEME_LABELS[theme];
-    localStorage.setItem(THEME_STORAGE_KEY, theme);
-  }
-
   // 選択肢に無いインデント幅は既定の8へ丸め、丸めた結果を返す
   setIndent(size: number): number {
     this.indentSelect.value = String(INDENT_SIZES.includes(size as typeof INDENT_SIZES[number]) ? size : DEFAULT_INDENT_SIZE);
@@ -233,23 +240,6 @@ export class StatusBar {
   setLineCount(count: number) {
     this.lineCount = count;
     this.pick("st-lines").textContent = formatLineCount(count);
-  }
-
-  // 無題文書はバイト数を持たないため null で空表示にする
-  setByteSize(bytes: number | null, isHuge = false) {
-    const size = this.pick("st-size");
-    size.textContent = bytes === null ? "" : formatByteSize(bytes);
-    size.classList.toggle("is-huge", bytes !== null && isHuge);
-  }
-
-  setModifiedAt(timestamp: number | null) {
-    this.modifiedAt = timestamp;
-    this.refreshModifiedAt();
-  }
-
-  // 相対時刻は時間経過で変わるため、メイン画面の定期更新から呼び出す。
-  refreshModifiedAt() {
-    this.pick("st-modified").textContent = formatModifiedAt(this.modifiedAt);
   }
 
   setMode(label: string) {

@@ -547,6 +547,9 @@ body.fv-dragging { cursor: grabbing; user-select: none; }
   height: 22px; background: var(--bg-status); color: #fff;
   padding: 0 10px; font-size: 12px; flex: none;
 }
+#file-statusbar, #editing-statusbar { display: flex; align-items: center; gap: 12px; min-width: 0; }
+#file-statusbar { flex: none; padding-right: 12px; border-right: 1px solid #ffffff55; }
+#editing-statusbar { flex: 1; }
 .st-spacer { flex: 1; }
 .st-sep { width: 1px; height: 14px; background: #ffffff55; flex: none; }
 #statusbar button, #statusbar select {
@@ -564,7 +567,6 @@ body.fv-dragging { cursor: grabbing; user-select: none; }
 #st-mode:empty { display: none; }
 #st-mode { background: #c586c0; color: #1e1e1e; padding: 0 6px; border-radius: 3px; }
 #st-size.is-huge { background: #8a9a3c; padding: 0 4px; border-radius: 3px; }
-#st-theme { padding: 0 4px; }
 
 /* ---- ドロップダウンメニュー ---- */
 .dd-menu {

@@ -68,9 +68,12 @@ export interface DocumentEditorPort {
 
 export interface DocumentStatusPort {
   setFormat: (session: Readonly<DocumentSession>) => void;
+  setLineCount: (count: number) => void;
+}
+
+export interface DocumentFileStatusPort {
   setByteSize: (bytes: number | null, isHuge?: boolean) => void;
   setModifiedAt: (timestamp: number | null) => void;
-  setLineCount: (count: number) => void;
 }
 
 export interface DocumentAddressPort {
@@ -90,6 +93,7 @@ export interface DocumentSidebarPort {
 export interface DocumentView {
   editor: DocumentEditorPort;
   statusbar: DocumentStatusPort;
+  fileStatusbar: DocumentFileStatusPort;
   addressbar: DocumentAddressPort;
   sidebar: DocumentSidebarPort;
   setSidebar: (on: boolean, label?: string) => void;
@@ -175,8 +179,8 @@ export class DocumentController {
     this.view.hideExternalBanner();
     this.session = sessionFromDocInfo(this.session, info);
     this.view.statusbar.setFormat(this.session);
-    this.view.statusbar.setByteSize(info.byte_len, info.is_huge);
-    this.view.statusbar.setModifiedAt(info.modified_at);
+    this.view.fileStatusbar.setByteSize(info.byte_len, info.is_huge);
+    this.view.fileStatusbar.setModifiedAt(info.modified_at);
     this.view.statusbar.setLineCount(info.line_count);
     this.renderAddressbar(info.path);
     if (updateTree) this.showTree(info);
@@ -217,8 +221,8 @@ export class DocumentController {
     this.session.dirty = false;
     this.session.lineCount = 1;
     this.view.statusbar.setFormat(this.session);
-    this.view.statusbar.setByteSize(null);
-    this.view.statusbar.setModifiedAt(null);
+    this.view.fileStatusbar.setByteSize(null);
+    this.view.fileStatusbar.setModifiedAt(null);
     this.view.statusbar.setLineCount(1);
     this.renderAddressbar(this.session.displayPath);
     this.view.editor.open(1, false, false, null, false);
@@ -325,8 +329,8 @@ export class DocumentController {
     this.session = initialSession();
     this.draftDirectory = draftDirectory;
     this.view.statusbar.setFormat(this.session);
-    this.view.statusbar.setByteSize(null);
-    this.view.statusbar.setModifiedAt(null);
+    this.view.fileStatusbar.setByteSize(null);
+    this.view.fileStatusbar.setModifiedAt(null);
     this.view.statusbar.setLineCount(1);
     this.renderAddressbar("");
     this.view.setSidebar(false);
@@ -455,7 +459,7 @@ export class DocumentController {
       this.view.editor.setExternalFilePath(path, markdownForSession(this.session));
       this.renderAddressbar(path);
       this.view.statusbar.setFormat(this.session);
-      this.view.statusbar.setModifiedAt(outcome.modified_at);
+      this.view.fileStatusbar.setModifiedAt(outcome.modified_at);
       this.updateTitle();
     } catch (error) {
       await this.reportError("保存後の画面更新に失敗しました", error);
@@ -593,7 +597,7 @@ export class DocumentController {
     this.session.selectedRelPath = selectedRelPath;
     this.renderAddressbar(info.path);
     this.view.editor.setExternalFilePath(externalFilePathOf(info), markdownForSession(this.session));
-    this.view.statusbar.setModifiedAt(info.modified_at);
+    this.view.fileStatusbar.setModifiedAt(info.modified_at);
     this.updateTitle();
   }
 
