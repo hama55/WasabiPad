@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isStoredTab, isStoredTabs } from "./stored-tabs";
+import { isStoredTab, isStoredTabs, normalizeStoredTabs } from "./stored-tabs";
 
 const tab = (overrides: Record<string, unknown> = {}) => ({
   id: "tab-1",
@@ -19,6 +19,7 @@ describe("Feature: 保存タブの検証", () => {
       goto: { line: 2, col: 3 },
       selectedRelPath: "memo.txt",
       selectedLine: 2,
+      fileTreeWidth: 280,
     }))).toBe(true);
   });
 
@@ -29,7 +30,27 @@ describe("Feature: 保存タブの検証", () => {
     expect(isStoredTab(tab({ goto: { line: -1, col: 0 } }))).toBe(false);
     expect(isStoredTab(tab({ draftDirectory: 1 }))).toBe(false);
     expect(isStoredTab(tab({ selectedLine: Number.NaN }))).toBe(false);
+    expect(isStoredTab(tab({ fileTreeWidth: "280" }))).toBe(false);
     expect(isStoredTab(tab({ kind: "unknown" }))).toBe(false);
+  });
+
+  // Given: 再開タブの一つに不正なfileTreeWidthがある
+  // When: normalizeStoredTabsを呼ぶ
+  // Then: 幅だけを捨て、他のタブとタブ自体は保持する
+  it("Scenario: 不正なタブ別幅だけを除去して再開タブを保持する", () => {
+    expect(normalizeStoredTabs({
+      tabs: [
+        tab({ fileTreeWidth: "280" }),
+        tab({ id: "tab-2", fileTreeWidth: 320 }),
+      ],
+      activeId: "tab-1",
+    })).toEqual({
+      tabs: [
+        tab(),
+        tab({ id: "tab-2", fileTreeWidth: 320 }),
+      ],
+      activeId: "tab-1",
+    });
   });
 
   // Given: 有効なタブ配列と無効なactiveId

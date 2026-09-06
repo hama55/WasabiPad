@@ -1267,6 +1267,91 @@ describe("Feature: TabManager", () => {
     });
   });
 
+  // Feature: 再起動後のタブ別ファイルツリー幅
+  // Scenario: 保存済みタブを初期化するとファイルツリー幅を復元する
+  // Given: 保存済みフォルダタブにfileTreeWidth=300がある
+  // When: アプリ再起動相当のmanager.initを呼ぶ
+  // Then: 保存済み幅だけをworkspaceへ復元する
+  it("Scenario: 再起動後に保存済みのタブ別幅を復元する", async () => {
+    const { doc, host } = fixture();
+    const restored: (SidebarViewState | null)[] = [];
+    let currentState: SidebarViewState | null = null;
+    const workspace = {
+      capture: vi.fn(() => currentState),
+      reset: vi.fn(() => { currentState = null; }),
+      restore: vi.fn(async (state: SidebarViewState | null) => {
+        restored.push(state);
+        currentState = state;
+      }),
+    };
+    vi.mocked(doc.openPath).mockImplementation(async (path: string) => {
+      doc.current.folderRoot = path;
+      doc.current.savePath = null;
+      doc.current.displayPath = path;
+      currentState = { kind: "folder", expandedRelPaths: [], search: null };
+      return true;
+    });
+    const manager = new TabManager(host, doc, { onChange: () => {}, workspace }, registeredCommandPorts);
+
+    await manager.init({
+      tabs: [{ id: "folder", path: "C:\\work", kind: "folder", label: "work", fileTreeWidth: 300 }],
+      activeId: "folder",
+    }, null, null);
+
+    expect(restored).toEqual([{
+      kind: null,
+      expandedRelPaths: [],
+      search: null,
+      fileTreeWidth: 300,
+    }]);
+  });
+
+  // Feature: 終了時のタブ別ファイルツリー幅保存
+  // Scenario: 手動変更直後に終了するとアクティブタブの幅を保存する
+  // Given: アクティブなフォルダタブのworkspace幅が260である
+  // When: saveForExitを呼ぶ
+  // Then: onChangeへfileTreeWidth=260を含むStoredTabsを渡す
+  it("Scenario: 終了時にアクティブタブの幅を永続化する", async () => {
+    const { doc, host } = fixture();
+    const changes: StoredTabs[] = [];
+    let currentState: SidebarViewState | null = {
+      kind: "folder",
+      expandedRelPaths: [],
+      search: null,
+      fileTreeWidth: 260,
+    };
+    const workspace = {
+      capture: vi.fn(() => currentState),
+      reset: vi.fn(() => { currentState = null; }),
+      restore: vi.fn(async (state: SidebarViewState | null) => { currentState = state; }),
+    };
+    vi.mocked(doc.openPath).mockImplementation(async (path: string) => {
+      doc.current.folderRoot = path;
+      doc.current.savePath = null;
+      doc.current.displayPath = path;
+      currentState = {
+        kind: "folder",
+        expandedRelPaths: [],
+        search: null,
+        fileTreeWidth: 260,
+      };
+      return true;
+    });
+    const manager = new TabManager(host, doc, {
+      onChange: (state) => changes.push(state),
+      workspace,
+    }, registeredCommandPorts);
+    await manager.init({
+      tabs: [{ id: "folder", path: "C:\\work", kind: "folder", label: "work" }],
+      activeId: "folder",
+    }, null, null);
+    changes.length = 0;
+
+    await expect(manager.saveForExit()).resolves.toBe(true);
+
+    expect(changes.at(-1)?.tabs[0].fileTreeWidth).toBe(260);
+  });
+
   // Feature: タブ別ファイルツリー表示状態
   // Scenario: タブのpathが変わっても保存状態の照合先を追従させる
   // Given: タブAの状態を `C:\work` として保存した後、タブAのpathが `C:\renamed` になる
@@ -1830,7 +1915,9 @@ describe("Feature: TabManager", () => {
   // When: タブAを閉じ、同じ起動中に閉じたタブを復活する
   // Then: タブAのファイルツリーと検索ハイライトは初期状態になる
   it("Scenario: 閉じたタブを復活しても表示状態を引き継がない", async () => {
-    const aState: SidebarViewState = { kind: "folder", expandedRelPaths: ["docs"], search: null };
+    const aState: SidebarViewState = {
+      kind: "folder", expandedRelPaths: ["docs"], search: null, fileTreeWidth: 280,
+    };
     const aQuery: SearchHighlightQuery = { pat: "test", matchCase: false, useRegex: false, wholeWord: false };
     const { manager, current } = folderTabViewFixture();
 
@@ -1849,6 +1936,7 @@ describe("Feature: TabManager", () => {
 
     expect(current.workspace).toBeNull();
     expect(current.query).toBeNull();
+    expect(manager.state.tabs.find((tab) => tab.id === "a")?.fileTreeWidth).toBeUndefined();
   });
 
   // Scenario: 読み込みに失敗した閉じたtabを後から再試行する

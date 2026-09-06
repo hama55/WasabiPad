@@ -4,7 +4,7 @@
 import type { WorkspaceSearchOptions } from "./api";
 import { loadSettings as loadSettingsJson, updateSetting } from "./api";
 import { clampSearchOptions, DEFAULT_SEARCH_OPTIONS } from "./workspace-search-options";
-import { isStoredTabs, type StoredTabs } from "./stored-tabs";
+import { normalizeStoredTabs, type StoredTabs } from "./stored-tabs";
 import { DEFAULT_EDITOR_CONFIG } from "./editor-config";
 import { DEFAULT_INDENT_SIZE, INDENT_SIZES, isValidFontSize } from "./font-controls";
 import { isRegisteredCommand, normalizeRegisteredCommand, type RegisteredCommand } from "./registered-command-model";
@@ -166,7 +166,7 @@ export function parseSettingsResult(text: string): SettingsParseResult {
       typeof value.workspaceSearchOptions === "object" && value.workspaceSearchOptions !== null
         ? value.workspaceSearchOptions
         : null,
-    openTabs: isStoredTabs(value.openTabs) ? value.openTabs : DEFAULTS.openTabs,
+    openTabs: normalizeStoredTabs(value.openTabs) ?? DEFAULTS.openTabs,
   };
   return { settings, corrupted: false };
 }

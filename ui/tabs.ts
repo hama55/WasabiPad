@@ -94,7 +94,6 @@ export class TabManager {
   private tabs: StoredTab[] = [];
   private activeId = "";
   private workspaceStates = new Map<string, { path: string | null; state: SidebarViewState }>();
-  private workspaceWidths = new Map<string, number>();
   private findHighlightStates = new Map<string, { path: string | null; query: SearchHighlightQuery | null }>();
   private transitionTarget: string | null = null;
   private loadingActive = false;
@@ -156,7 +155,6 @@ export class TabManager {
     this.openAsStates.clear();
     this.closedTabs = [];
     this.workspaceStates.clear();
-    this.workspaceWidths.clear();
     this.findHighlightStates.clear();
     const startupTarget = initialPath ?? startupPath;
     const initialTab = stored.tabs.length || startupTarget
@@ -175,6 +173,10 @@ export class TabManager {
       ? stored.activeId
       : this.tabs[0].id);
     await this.loadActive(true, false);
+    const currentWorkspace = this.ports.workspace?.capture();
+    if (this.active()?.fileTreeWidth !== undefined && currentWorkspace && currentWorkspace.kind !== null) {
+      await this.restoreWorkspaceWidth();
+    }
     this.renderAndPersist();
   }
 
@@ -603,7 +605,6 @@ export class TabManager {
       const closed = { tab: this.state.tabs[0], index: 0 };
       const replacement = await this.blankTab(null);
       this.workspaceStates.delete(id);
-      this.workspaceWidths.delete(id);
       this.findHighlightStates.delete(id);
       await this.commitTransition(async () => {
         this.tabs = [replacement];
@@ -622,7 +623,6 @@ export class TabManager {
       this.syncActive(this.doc.current);
       const closed = { tab: this.state.tabs[index], index };
       this.workspaceStates.delete(id);
-      this.workspaceWidths.delete(id);
       this.findHighlightStates.delete(id);
       await this.commitTransition(async () => {
         this.tabs.splice(index, 1);
@@ -633,7 +633,6 @@ export class TabManager {
     } else {
       const closed = { tab: this.state.tabs[index], index };
       this.workspaceStates.delete(id);
-      this.workspaceWidths.delete(id);
       this.findHighlightStates.delete(id);
       this.tabs.splice(index, 1);
       this.renderAndPersist();
@@ -654,6 +653,7 @@ export class TabManager {
             ...closed.tab,
             viewState: closed.tab.viewState ? cloneEditorViewState(closed.tab.viewState) : undefined,
           };
+          delete tab.fileTreeWidth;
           const replacementIndex = closed.replacementId
             ? this.tabs.findIndex((candidate) => candidate.id === closed.replacementId && candidate.kind === "blank")
             : -1;
@@ -673,6 +673,7 @@ export class TabManager {
   async saveForExit(onProceed: () => void | Promise<void> = () => {}): Promise<boolean> {
     return this.doc.confirmDiscard(async () => {
       this.rememberActiveView();
+      this.persist();
       await onProceed();
     });
   }
@@ -864,7 +865,7 @@ export class TabManager {
     }
     const workspaceState = this.ports.workspace?.capture() ?? null;
     if (workspaceState?.kind !== null && workspaceState?.fileTreeWidth !== undefined) {
-      this.workspaceWidths.set(tab.id, workspaceState.fileTreeWidth);
+      tab.fileTreeWidth = workspaceState.fileTreeWidth;
     }
     if (!workspaceState || workspaceState.kind === null) {
       this.workspaceStates.delete(tab.id);
@@ -883,7 +884,7 @@ export class TabManager {
     const workspace = this.ports.workspace;
     if (!workspace) return;
     const current = workspace.capture();
-    const width = current && current.kind !== null ? this.workspaceWidths.get(this.activeId) : undefined;
+    const width = current && current.kind !== null ? this.active()?.fileTreeWidth : undefined;
     await workspace.restore(width === undefined ? null : {
       kind: null,
       expandedRelPaths: [],
@@ -974,7 +975,6 @@ export class TabManager {
     this.tabs.forEach((tab, index) => {
       if (remove(tab, index)) {
         this.workspaceStates.delete(tab.id);
-        this.workspaceWidths.delete(tab.id);
         this.findHighlightStates.delete(tab.id);
         closed.push({ tab: snapshots[index], index });
       }
@@ -1026,7 +1026,6 @@ export class TabManager {
       viewState: tab.viewState ?? null,
     })) return;
     this.workspaceStates.delete(id);
-    this.workspaceWidths.delete(id);
     this.findHighlightStates.delete(id);
     this.tabs.splice(this.tabs.indexOf(tab), 1);
     if (!wasActive) {

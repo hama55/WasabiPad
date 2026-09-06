@@ -303,6 +303,23 @@ describe("Feature: settings", () => {
     expect(settings.openTabs.tabs).toEqual([]);
   });
 
+  // Given: `openTabs`の一つに不正なfileTreeWidthがある
+  // When: `parseSettings`を呼ぶ
+  // Then: タブを保持し、幅だけを未設定へ戻す
+  it("Scenario: 不正なタブ別幅だけを既定扱いへ戻す", () => {
+    const settings = parseSettings(JSON.stringify({
+      openTabs: {
+        tabs: [{ id: "tab-1", path: "memo.txt", kind: "file", label: "memo", fileTreeWidth: "wide" }],
+        activeId: "tab-1",
+      },
+    }));
+
+    expect(settings.openTabs).toEqual({
+      tabs: [{ id: "tab-1", path: "memo.txt", kind: "file", label: "memo" }],
+      activeId: "tab-1",
+    });
+  });
+
   // Given: `openTabs`保存は`"openTabs failed"`で失敗し、次の保存は成功
   // When: 2キーを設定して`flushSettings`を呼ぶ
   // Then: 失敗理由をrejectし、保存mockは2回呼ぶ
