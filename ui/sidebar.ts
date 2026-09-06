@@ -39,6 +39,7 @@ export interface SidebarViewState {
   kind: "folder" | "archive" | null;
   expandedRelPaths: string[];
   search: WorkspaceSearchViewState | null;
+  fileTreeWidth?: number;
 }
 
 interface PointerDrag {

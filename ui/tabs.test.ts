@@ -1076,6 +1076,7 @@ describe("Feature: TabManager", () => {
     const aState: SidebarViewState = {
       kind: "folder",
       expandedRelPaths: ["docs"],
+      fileTreeWidth: 180,
       search: {
         pattern: "needle",
         options: { ...DEFAULT_SEARCH_OPTIONS },
@@ -1091,6 +1092,7 @@ describe("Feature: TabManager", () => {
       kind: "folder",
       expandedRelPaths: ["src"],
       search: null,
+      fileTreeWidth: 320,
     };
     const restored: (SidebarViewState | null)[] = [];
     let currentState: SidebarViewState | null = aState;
@@ -1122,7 +1124,101 @@ describe("Feature: TabManager", () => {
     await manager.activate("a");
     await manager.activate("b");
 
-    expect(restored).toEqual([aState, bState]);
+    expect(restored).toEqual([null, aState, bState]);
+  });
+
+  // Feature: タブ別ファイルツリー幅
+  // Scenario: 幅をまだ保存していないタブへ切り替えると共通の既定幅へ戻す
+  // Given: タブAにはファイルツリー幅があり、タブBには表示状態が保存されていない
+  // When: タブAからタブBへ切り替える
+  // Then: workspace境界へnullを渡し、既定幅を適用できる
+  it("Scenario: 幅未保存のタブへ切り替えると既定幅へ戻す", async () => {
+    const { doc, host } = fixture();
+    const aState: SidebarViewState = {
+      kind: "folder",
+      expandedRelPaths: [],
+      search: null,
+      fileTreeWidth: 280,
+    };
+    const restored: (SidebarViewState | null)[] = [];
+    let currentState: SidebarViewState | null = aState;
+    const workspace = {
+      capture: vi.fn(() => currentState),
+      reset: vi.fn(),
+      restore: vi.fn(async (state: SidebarViewState | null) => {
+        restored.push(state);
+        currentState = state;
+      }),
+    };
+    vi.mocked(doc.openPath).mockImplementation(async (path: string) => {
+      doc.current.folderRoot = path;
+      doc.current.savePath = null;
+      doc.current.displayPath = path;
+      return true;
+    });
+    const manager = new TabManager(host, doc, { onChange: () => {}, workspace }, registeredCommandPorts);
+
+    await manager.init({
+      tabs: [
+        { id: "a", path: "C:\\work", kind: "folder", label: "work" },
+        { id: "b", path: "C:\\other", kind: "folder", label: "other" },
+      ],
+      activeId: "a",
+    }, null, null);
+    restored.length = 0;
+
+    await manager.activate("b");
+
+    expect(restored).toEqual([null]);
+  });
+
+  // Feature: タブ別ファイルツリー幅
+  // Scenario: 同じタブのパス移動後もファイルツリー幅を保持する
+  // Given: C:\\work のツリーに展開状態と幅が保存されている
+  // When: 同じタブで C:\\renamed へ移動する
+  // Then: 新しいツリーの展開状態は初期化し、幅だけを復元する
+  it("Scenario: 同じタブのパス移動後も幅を保持する", async () => {
+    const { doc, host } = fixture();
+    const aState: SidebarViewState = {
+      kind: "folder",
+      expandedRelPaths: ["docs"],
+      search: null,
+      fileTreeWidth: 260,
+    };
+    const restored: (SidebarViewState | null)[] = [];
+    let currentState: SidebarViewState | null = aState;
+    const workspace = {
+      capture: vi.fn(() => currentState),
+      reset: vi.fn(),
+      restore: vi.fn(async (state: SidebarViewState | null) => {
+        restored.push(state);
+        currentState = state;
+      }),
+    };
+    vi.mocked(doc.openPath).mockImplementation(async (path: string) => {
+      doc.current.folderRoot = path;
+      doc.current.savePath = null;
+      doc.current.displayPath = path;
+      currentState = { kind: "folder", expandedRelPaths: [], search: null };
+      return true;
+    });
+    const manager = new TabManager(host, doc, { onChange: () => {}, workspace }, registeredCommandPorts);
+
+    await manager.init({
+      tabs: [{ id: "a", path: "C:\\work", kind: "folder", label: "work" }],
+      activeId: "a",
+    }, null, null);
+    currentState = aState;
+    restored.length = 0;
+
+    await manager.navigatePath("C:\\renamed");
+
+    expect(restored.at(-1)).toEqual({
+      kind: null,
+      expandedRelPaths: [],
+      search: null,
+      fileTreeWidth: 260,
+    });
   });
 
   // Feature: タブ別ファイルツリー表示状態

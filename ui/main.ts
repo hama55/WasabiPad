@@ -269,6 +269,15 @@ function measuredMainWidth(): number {
   return Number.isFinite(width) && width > 0 ? width : 0;
 }
 
+function setSidebarWidth(width: unknown) {
+  sidebarEl.style.width = `${clampSidebarWidth(width)}px`;
+}
+
+function readSidebarWidth(): number {
+  const width = Number.parseFloat(sidebarEl.style.width);
+  return Number.isFinite(width) ? clampSidebarWidth(width) : clampSidebarWidth(getSetting("sidebarWidth"));
+}
+
 function paneVisibilityAt(mainWidth: number) {
   const sidebarWidth = Number.parseFloat(sidebarEl.style.width)
     || Math.max(SIDEBAR_MIN_WIDTH, sidebarEl.getBoundingClientRect().width || SIDEBAR_DEFAULT_WIDTH);
@@ -596,7 +605,7 @@ layoutRuntime = createWindowLayoutRuntime(window, {
 });
 
 function applySettingsToUi() {
-  sidebarEl.style.width = `${clampSidebarWidth(getSetting("sidebarWidth"))}px`;
+  setSidebarWidth(getSetting("sidebarWidth"));
   restoringEditorFont = true;
   editor.setFont(getSetting("fontFamily"), getSetting("fontSize"));
   restoringEditorFont = false;
@@ -1043,7 +1052,7 @@ document.addEventListener("contextmenu", (e) => e.preventDefault());
 splitter.addEventListener("mousedown", (e) => {
   e.preventDefault();
   const move = (ev: MouseEvent) => {
-    sidebarEl.style.width = `${clampSidebarWidth(ev.clientX)}px`;
+    setSidebarWidth(ev.clientX);
     updateSidebarVisibility();
   };
   const up = () => {
@@ -1147,9 +1156,13 @@ tabs = new TabManager($("tabs"), doc, {
     if (!secondaryInstance) setSetting("openTabs", state);
   },
   workspace: {
-    capture: () => sidebar.captureViewState(),
+    capture: () => ({ ...sidebar.captureViewState(), fileTreeWidth: readSidebarWidth() }),
     reset: () => sidebar.resetViewState(),
-    restore: (state) => sidebar.restoreViewState(state),
+    restore: (state) => {
+      setSidebarWidth(state?.fileTreeWidth ?? getSetting("sidebarWidth"));
+      updateSidebarVisibility();
+      return sidebar.restoreViewState(state);
+    },
   },
   findHighlight: {
     capture: () => editor.captureFindHighlightQuery(),

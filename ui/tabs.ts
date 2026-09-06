@@ -94,6 +94,7 @@ export class TabManager {
   private tabs: StoredTab[] = [];
   private activeId = "";
   private workspaceStates = new Map<string, { path: string | null; state: SidebarViewState }>();
+  private workspaceWidths = new Map<string, number>();
   private findHighlightStates = new Map<string, { path: string | null; query: SearchHighlightQuery | null }>();
   private transitionTarget: string | null = null;
   private loadingActive = false;
@@ -155,6 +156,7 @@ export class TabManager {
     this.openAsStates.clear();
     this.closedTabs = [];
     this.workspaceStates.clear();
+    this.workspaceWidths.clear();
     this.findHighlightStates.clear();
     const startupTarget = initialPath ?? startupPath;
     const initialTab = stored.tabs.length || startupTarget
@@ -172,7 +174,7 @@ export class TabManager {
     this.activeId = incoming?.id ?? (stored.activeId && this.tabs.some((tab) => tab.id === stored.activeId)
       ? stored.activeId
       : this.tabs[0].id);
-    await this.loadActive();
+    await this.loadActive(true, false);
     this.renderAndPersist();
   }
 
@@ -470,6 +472,7 @@ export class TabManager {
       const succeeded = await operation();
       if (!succeeded) return { succeeded: false, current: null };
       this.syncActive(this.doc.current);
+      await this.restoreWorkspaceWidth();
       return { succeeded: true, current: this.currentNavigationEntry() };
     });
     const succeeded = run.result?.succeeded === true;
@@ -596,6 +599,7 @@ export class TabManager {
       const closed = { tab: this.state.tabs[0], index: 0 };
       const replacement = await this.blankTab(null);
       this.workspaceStates.delete(id);
+      this.workspaceWidths.delete(id);
       this.findHighlightStates.delete(id);
       await this.commitTransition(async () => {
         this.tabs = [replacement];
@@ -614,6 +618,7 @@ export class TabManager {
       this.syncActive(this.doc.current);
       const closed = { tab: this.state.tabs[index], index };
       this.workspaceStates.delete(id);
+      this.workspaceWidths.delete(id);
       this.findHighlightStates.delete(id);
       await this.commitTransition(async () => {
         this.tabs.splice(index, 1);
@@ -624,6 +629,7 @@ export class TabManager {
     } else {
       const closed = { tab: this.state.tabs[index], index };
       this.workspaceStates.delete(id);
+      this.workspaceWidths.delete(id);
       this.findHighlightStates.delete(id);
       this.tabs.splice(index, 1);
       this.renderAndPersist();
@@ -738,7 +744,7 @@ export class TabManager {
     }
   }
 
-  private async loadActive(fallbackToBlank = true): Promise<boolean> {
+  private async loadActive(fallbackToBlank = true, restoreWorkspace = true): Promise<boolean> {
     this.loadingActive = true;
     try {
       const tab = this.active()!;
@@ -822,9 +828,13 @@ export class TabManager {
           ? cloneFindHighlightQuery(findHighlightState.query)
           : null,
       );
-      const workspaceState = this.workspaceStates.get(tab.id);
-      if (workspaceState && sameTabPath(workspaceState.path, tab.path)) {
-        await this.ports.workspace?.restore(workspaceState.state);
+      if (restoreWorkspace) {
+        const workspaceState = this.workspaceStates.get(tab.id);
+        if (workspaceState && sameTabPath(workspaceState.path, tab.path)) {
+          await this.ports.workspace?.restore(workspaceState.state);
+        } else {
+          await this.restoreWorkspaceWidth();
+        }
       }
       return true;
     } finally {
@@ -849,13 +859,32 @@ export class TabManager {
       tab.viewState = view;
     }
     const workspaceState = this.ports.workspace?.capture() ?? null;
-    if (!workspaceState || workspaceState.kind === null) this.workspaceStates.delete(tab.id);
-    else this.workspaceStates.set(tab.id, { path: tab.path, state: workspaceState });
+    if (workspaceState?.kind !== null && workspaceState?.fileTreeWidth !== undefined) {
+      this.workspaceWidths.set(tab.id, workspaceState.fileTreeWidth);
+    }
+    if (!workspaceState || workspaceState.kind === null) {
+      this.workspaceStates.delete(tab.id);
+    } else {
+      this.workspaceStates.set(tab.id, { path: tab.path, state: workspaceState });
+    }
     const findHighlight = this.ports.findHighlight?.capture();
     if (findHighlight === undefined) this.findHighlightStates.delete(tab.id);
     else this.findHighlightStates.set(tab.id, {
       path: tab.path,
       query: cloneFindHighlightQuery(findHighlight),
+    });
+  }
+
+  private async restoreWorkspaceWidth() {
+    const workspace = this.ports.workspace;
+    if (!workspace) return;
+    const current = workspace.capture();
+    const width = current && current.kind !== null ? this.workspaceWidths.get(this.activeId) : undefined;
+    await workspace.restore(width === undefined ? null : {
+      kind: null,
+      expandedRelPaths: [],
+      search: null,
+      fileTreeWidth: width,
     });
   }
 
@@ -941,6 +970,7 @@ export class TabManager {
     this.tabs.forEach((tab, index) => {
       if (remove(tab, index)) {
         this.workspaceStates.delete(tab.id);
+        this.workspaceWidths.delete(tab.id);
         this.findHighlightStates.delete(tab.id);
         closed.push({ tab: snapshots[index], index });
       }
@@ -992,6 +1022,7 @@ export class TabManager {
       viewState: tab.viewState ?? null,
     })) return;
     this.workspaceStates.delete(id);
+    this.workspaceWidths.delete(id);
     this.findHighlightStates.delete(id);
     this.tabs.splice(this.tabs.indexOf(tab), 1);
     if (!wasActive) {
