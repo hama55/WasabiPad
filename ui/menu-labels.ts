@@ -8,6 +8,7 @@ export const MENU_LABELS = {
   newWindow: "新規ウィンドウで開く",
   expandFolder: "フォルダを全展開",
   openWithFormat: "形式を指定して開く",
+  externalEditor: "連携エディタで開く",
   external: "Windowsアプリで開く",
   address: "アドレスバーに設定",
   favorite: "お気に入りに追加",

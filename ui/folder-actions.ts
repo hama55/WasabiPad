@@ -82,6 +82,8 @@ export interface FolderActionsServices {
   getStartupPath: () => string | null;
   revealInExplorer: typeof revealInExplorer;
   openInOtherApp: typeof openInOtherApp;
+  openExternalEditor?: (path: string) => void | Promise<unknown>;
+  canOpenExternalEditor?: (path: string) => boolean;
   onClipboardChange?: () => void;
   writeClipboardText?: (text: string) => Promise<void>;
   onRebasePath?: (rebase: PathRebase) => void;
@@ -234,15 +236,29 @@ export class FolderActions {
         pushPaste();
       }
       if (!target.isDir) {
+        const externalPath = this.toAbsolute(target.relPath);
+        const canOpenExternalEditor = this.services.openExternalEditor
+          && (!this.services.canOpenExternalEditor || this.services.canOpenExternalEditor(externalPath));
         if (operationTargets.some((entry) => entry.relPath === target.relPath)) {
           items.push(createOpenAsMenu((openAs) => this.ports.onOpenAs(target.relPath, openAs)));
         }
         items.push({
           label: MENU_LABELS.external,
           iconClass: MENU_ICON.external,
-          action: () => this.run("Windowsアプリで開けませんでした", () => this.services.openInOtherApp(this.toAbsolute(target.relPath))),
+          action: () => this.run("Windowsアプリで開けませんでした", () => this.services.openInOtherApp(externalPath)),
           sep: true,
         });
+        if (canOpenExternalEditor) {
+          items.push({
+            label: MENU_LABELS.externalEditor,
+            iconClass: MENU_ICON.external,
+            action: () => this.run(
+              "連携エディタを開けませんでした",
+              () => this.services.openExternalEditor?.(externalPath),
+            ),
+            sep: false,
+          });
+        }
         items.push(this.registeredCommandMenu(target.relPath));
         pushCutAndCopy(true);
         if (operationTargets.length && this.services.writeClipboardText) {

@@ -931,6 +931,8 @@ const folderActions = new FolderActions(doc, {
   getStartupPath: () => getSetting("startupPath"),
   revealInExplorer,
   openInOtherApp,
+  openExternalEditor,
+  canOpenExternalEditor,
   onClipboardChange: () => sidebar.refreshFileOperationState(),
   writeClipboardText,
   onRebasePath: (rebase) => tabs?.rebasePaths(rebase),

@@ -66,6 +66,22 @@ describe("Feature: 連携コマンド", () => {
     expect(canUseExternalEditor(binary, base.savePath)).toBe(true);
   });
 
+  // Scenario: フォルダビューで選択中の保存済み実ファイルを許可する
+  // Given: folderRootを持つフォルダビューで保存済みファイルを選択している
+  // When: 連携エディタの対象可否を判定する
+  // Then: フォルダビューの所属だけでは拒否せず、フォルダ自身は拒否する
+  it("Scenario: フォルダビューの保存済みファイルを連携エディタで開ける", () => {
+    const base = {
+      savePath: "C:\\work\\memo.txt",
+      folderRoot: null,
+      archivePath: null,
+      archiveEntry: null,
+    } as const;
+    const folderFile = { ...base, folderRoot: "C:\\work" };
+    expect(canUseExternalEditor(folderFile, folderFile.savePath)).toBe(true);
+    expect(canUseExternalEditor({ ...folderFile, savePath: null }, "C:\\work")).toBe(false);
+  });
+
   // Scenario: 実拡張子と異なる形式でプレビューする
   // Given: 保存済みMarkdown、通常のCSV、アーカイブ内Markdown
   // When: 外部プレビュー可能か確認する

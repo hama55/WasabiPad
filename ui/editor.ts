@@ -2211,7 +2211,7 @@ export class VirtualEditor {
       if (this.openExternalEditor
         && (!this.canOpenExternalEditor || this.canOpenExternalEditor(commandPath))) {
         items.push({
-          label: "連携エディタで開く",
+          label: MENU_LABELS.externalEditor,
           iconClass: MENU_ICON.external,
           action: () => this.dispatch(
             "連携エディタを開けませんでした",

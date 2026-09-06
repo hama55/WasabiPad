@@ -38,11 +38,10 @@ export function editorExtensionOf(
 }
 
 export function canUseExternalEditor(
-  session: Pick<DocumentSession, "savePath" | "folderRoot" | "archivePath" | "archiveEntry">,
+  session: Pick<DocumentSession, "savePath" | "archivePath" | "archiveEntry">,
   path: string,
 ): boolean {
   return session.savePath === path
-    && !session.folderRoot
     && !session.archivePath
     && !session.archiveEntry;
 }
