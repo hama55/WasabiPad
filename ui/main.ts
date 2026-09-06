@@ -92,6 +92,7 @@ import { createAsyncUnlisten } from "./async-unlisten";
 import { markdownLinkActionOf } from "./markdown-link-navigation";
 import { type WindowViewport } from "./window-layout";
 import { createWindowLayoutRuntime, type WindowLayoutRuntime } from "./window-layout-runtime";
+import { externalWindowRectFor, type ExternalWindowRect } from "./external-window-geometry";
 
 const win = getCurrentWindow();
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -189,6 +190,35 @@ function canOpenExternalEditor(path: string): boolean {
   return canUseExternalEditor(doc.current, path) && externalEditorTemplateFor(path) !== null;
 }
 
+async function externalWindowRectForPane(pane: HTMLElement): Promise<ExternalWindowRect | null> {
+  const rect = pane.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return null;
+  const [innerPosition, scaleFactor] = await Promise.all([win.innerPosition(), win.scaleFactor()]);
+  return externalWindowRectFor(rect, innerPosition, scaleFactor);
+}
+
+async function launchConfiguredExternalWindow(
+  command: string,
+  path: string,
+  pane: HTMLElement,
+): Promise<void> {
+  let rect: ExternalWindowRect | null = null;
+  try {
+    rect = await externalWindowRectForPane(pane);
+  } catch {
+    // 矩形取得に失敗しても、従来の外部起動は継続する。
+  }
+  if (!rect) {
+    await api.runExternalCommand(command, path);
+    windowChrome.notify("連携先ウィンドウを配置できませんでした。連携アプリは起動しています");
+    return;
+  }
+  const placed = await api.launchExternalWindow(command, path, rect);
+  if (!placed) {
+    windowChrome.notify("連携先ウィンドウを配置できませんでした。連携アプリは起動しています");
+  }
+}
+
 async function openExternalEditor(path: string): Promise<void> {
   if (!canUseExternalEditor(doc.current, path)) return;
   const template = externalEditorTemplateFor(path);
@@ -196,7 +226,7 @@ async function openExternalEditor(path: string): Promise<void> {
   const command = commandLineForExternalFile(template, path);
   if (doc.current.dirty && !(await doc.confirmDiscard())) return;
   if (!canUseExternalEditor(doc.current, path)) return;
-  await api.runExternalCommand(command, path);
+  await launchConfiguredExternalWindow(command, path, editorHost);
 }
 
 async function launchNewWindow(request: Partial<api.WindowRequest> = {}): Promise<boolean> {
@@ -341,7 +371,7 @@ const inlinePreviewPorts = {
     if (current.savePath !== sourcePath
       || current.folderRoot
       || !canUseExternalPreview(sourcePath, format, current.archivePath, current.archiveEntry)) return;
-    await api.runExternalCommand(commandLineForExternalFile(template, sourcePath), sourcePath);
+    await launchConfiguredExternalWindow(commandLineForExternalFile(template, sourcePath), sourcePath, previewEl);
   }),
   onDelimiterChange: (delimiter) => inlinePreview.setDelimiter(delimiter),
   onFontFamilyChange: (family) => editor.setFont(family, getSetting("fontSize"), "family"),

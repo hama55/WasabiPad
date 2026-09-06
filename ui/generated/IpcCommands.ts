@@ -28,6 +28,7 @@ export const IPC_COMMANDS = {
   openInDefaultBrowser: "open_in_default_browser",
   openExternalUrl: "open_external_url",
   runExternalCommand: "run_external_command",
+  launchExternalWindow: "launch_external_window",
   edit: "edit",
   editMany: "edit_many",
   undo: "undo",

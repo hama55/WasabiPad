@@ -10,6 +10,7 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
 import {
   clearPreviewCache,
   getPreviewCacheInfo,
+  launchExternalWindow,
   readArchiveAsset,
   readFileAsset,
   selectEntry,
@@ -73,6 +74,31 @@ describe("Feature: preview cache IPC", () => {
       relPath: "guide/manual.pdf",
       openAs: "pdf",
       cacheDirectory: "D:\\WasabiPad\\cache",
+    });
+  });
+});
+
+describe("Feature: 連携先ウィンドウIPC", () => {
+  beforeEach(() => invokeMock.mockClear());
+
+  // Scenario: 連携先ウィンドウの配置矩形をバックエンドへ渡す
+  // Given: 外部コマンドと物理画面矩形がある
+  // When: 連携先ウィンドウ起動を要求する
+  // Then: コマンド、対象ファイル、矩形をIPCへ渡す
+  it("Scenario: external window launches carry the physical rectangle", async () => {
+    await launchExternalWindow(
+      'notepad "C:\\work\\memo.txt"',
+      "C:\\work\\memo.txt",
+      { x: -100, y: 20, width: 800, height: 600 },
+    );
+
+    expect(invokeMock).toHaveBeenCalledWith(IPC_COMMANDS.launchExternalWindow, {
+      command: 'notepad "C:\\work\\memo.txt"',
+      path: "C:\\work\\memo.txt",
+      x: -100,
+      y: 20,
+      width: 800,
+      height: 600,
     });
   });
 });

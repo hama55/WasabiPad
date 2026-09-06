@@ -383,7 +383,7 @@ function externalCommandGroup(
   title.textContent = titleText;
   const hint = document.createElement("p");
   hint.className = "settings-empty";
-  hint.textContent = "コマンドには {file} を含める。引用符もここで指定する。";
+  hint.textContent = "コマンドには {file} を含める。引用符もここで指定する。対象アプリを直接起動すると連携先ウィンドウを配置できる。cmd/start/CLI経由や既存プロセス再利用では配置できない場合がある。";
   group.append(title, hint);
   const commands = ports.getSetting(setting);
   for (const entry of entries) {
