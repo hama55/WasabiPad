@@ -58,9 +58,11 @@ import {
 import {
   canUseExternalEditor,
   commandLineForExternalFile,
-  commandTemplateFor,
   editorExtensionOf,
+  externalCommandLabel,
+  externalCommandsFor,
   externalPreviewSourcePathFor,
+  fileExtensionOf,
 } from "./external-integration";
 import { classificationPathOf, documentPathOf, type DocumentSession } from "./session";
 import {
@@ -181,13 +183,22 @@ function runBackground(title: string, operation: () => void | Promise<unknown>) 
   runAsyncBoundary(() => Promise.resolve().then(operation), (error) => reportBackgroundError(title, error));
 }
 
-function externalEditorTemplateFor(path: string): string | null {
+function externalEditorCommandsFor(path: string) {
+  if (!canUseExternalEditor(doc.current, path)) return [];
   const extension = editorExtensionOf(path, doc.current.effectiveExtension);
-  return commandTemplateFor(getSetting("externalEditorCommands"), extension ?? "");
+  return externalCommandsFor(getSetting("externalEditorCommands"), extension ?? "");
+}
+
+function externalEditorTemplateFor(path: string, index = 0): string | null {
+  return externalEditorCommandsFor(path)[index]?.command ?? null;
+}
+
+function externalEditorLabelsFor(path: string): readonly string[] {
+  return externalEditorCommandsFor(path).map(externalCommandLabel);
 }
 
 function canOpenExternalEditor(path: string): boolean {
-  return canUseExternalEditor(doc.current, path) && externalEditorTemplateFor(path) !== null;
+  return externalEditorCommandsFor(path).length > 0;
 }
 
 async function externalWindowRectForPane(pane: HTMLElement): Promise<ExternalWindowRect | null> {
@@ -219,9 +230,8 @@ async function launchConfiguredExternalWindow(
   }
 }
 
-async function openExternalEditor(path: string): Promise<void> {
-  if (!canUseExternalEditor(doc.current, path)) return;
-  const template = externalEditorTemplateFor(path);
+async function openExternalEditor(path: string, index = 0): Promise<void> {
+  const template = externalEditorTemplateFor(path, index);
   if (!template) return;
   const command = commandLineForExternalFile(template, path);
   if (doc.current.dirty && !(await doc.confirmDiscard())) return;
@@ -366,16 +376,17 @@ const inlinePreviewPorts = {
     updatePreviewVisibility();
   },
   onFormatChange: (format) => runBackground("ビューを切り替えられませんでした", () => editor.openTextViewer(format, true)),
-  onExternalPreview: (format) => runBackground("連携プレビューを開けませんでした", async () => {
+  onExternalPreview: (format, index = 0) => runBackground("連携プレビューを開けませんでした", async () => {
     const session = doc.current;
     const sourcePath = externalPreviewSourcePathFor(session, format);
     if (!sourcePath) return;
-    const template = commandTemplateFor(getSetting("externalPreviewCommands"), format);
-    if (!template) throw new Error("連携プレビューが未設定です");
+    const extension = fileExtensionOf(sourcePath);
+    const target = externalCommandsFor(getSetting("externalPreviewCommands"), extension ?? "")[index];
+    if (!target) throw new Error("連携プレビューが未設定です");
     if (session.dirty && !(await doc.confirmDiscard())) return;
     const current = doc.current;
     if (externalPreviewSourcePathFor(current, format) !== sourcePath) return;
-    await launchConfiguredExternalWindow(commandLineForExternalFile(template, sourcePath), sourcePath, previewEl);
+    await launchConfiguredExternalWindow(commandLineForExternalFile(target.command, sourcePath), sourcePath, previewEl);
   }),
   onDelimiterChange: (delimiter) => inlinePreview.setDelimiter(delimiter),
   onFontFamilyChange: (family) => editor.setFont(family, getSetting("fontSize"), "family"),
@@ -556,6 +567,7 @@ const editorPorts = {
   registeredCommandPorts,
   openExternalEditor,
   canOpenExternalEditor,
+  getExternalEditorLabels: externalEditorLabelsFor,
   openExternally: (path) => openInOtherApp(path),
   openInNewTab: () => runBackground("新規タブで開けませんでした", () => tabs.openCurrentInNewTab()),
   openInNewWindow: (path) => runBackground("新規ウィンドウで開けませんでした", () => launchNewWindow({ path })),

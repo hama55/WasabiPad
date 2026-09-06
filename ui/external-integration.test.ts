@@ -5,6 +5,8 @@ import {
   commandLineForExternalFile,
   commandTemplateFor,
   editorExtensionOf,
+  externalCommandLabel,
+  externalCommandsFor,
   externalPreviewSourcePathFor,
   fileExtensionOf,
 } from "./external-integration";
@@ -21,6 +23,16 @@ describe("Feature: 連携コマンド", () => {
     )).toBe('C:\\Tools\\editor.exe "C:\\work\\memo.txt" --wait');
   });
 
+  // Given: 前後に空白を含む設定済みテンプレート
+  // When: 連携用のコマンドラインを組み立てる
+  // Then: ファイル置換以外の文字列を削らない
+  it("Scenario: 連携コマンドの空白を保ったまま置換する", () => {
+    expect(commandLineForExternalFile(
+      '  editor "{file}"  ',
+      "C:\\work\\memo.txt",
+    )).toBe('  editor "C:\\work\\memo.txt"  ');
+  });
+
   // Scenario: \`{file}\`を含まないテンプレートを起動する
   // Given: 設定済みだが対象ファイルの差し込み先がないコマンド
   // When: 連携用のコマンドラインを組み立てる
@@ -35,8 +47,17 @@ describe("Feature: 連携コマンド", () => {
   // When: 設定値を取得する
   // Then: 空値は未設定として扱い、編集とプレビューを混同しない
   it("Scenario: 連携エディタと連携プレビューを独立して引く", () => {
-    const commands = { md: 'editor "{file}"', markdown: "" };
-    expect(commandTemplateFor(commands, "md")).toBe('editor "{file}"');
+    const commands = {
+      md: [
+        { name: "エディタA", command: 'editor-a "{file}"' },
+        { name: "", command: 'editor-b "{file}"' },
+      ],
+      markdown: [],
+    };
+    expect(commandTemplateFor(commands, "md")).toBe('editor-a "{file}"');
+    expect(externalCommandsFor(commands, "md")).toHaveLength(2);
+    expect(externalCommandLabel(commands.md[0])).toBe("エディタA");
+    expect(externalCommandLabel(commands.md[1])).toBe('editor-b "{file}"');
     expect(commandTemplateFor(commands, "markdown")).toBeNull();
   });
 

@@ -1,25 +1,39 @@
 import type { ViewerFormat } from "./api";
-import { commandLineForFile } from "./registered-commands";
 import type { DocumentSession } from "./session";
 import { sourcePathForViewer, viewerFormatForPath } from "./viewer-formats";
 
-export type ExternalCommandMap = Record<string, string>;
+export interface ExternalCommandEntry {
+  name: string;
+  command: string;
+}
+
+export type ExternalCommandMap = Record<string, ExternalCommandEntry[]>;
 
 export const FILE_PLACEHOLDER = "{file}";
+
+export function externalCommandsFor(
+  commands: Readonly<ExternalCommandMap>,
+  key: string,
+): readonly ExternalCommandEntry[] {
+  return (commands[key] ?? []).filter((entry) => entry.command.trim().length > 0);
+}
+
+export function externalCommandLabel(entry: ExternalCommandEntry): string {
+  return entry.name.trim() || entry.command.trim();
+}
 
 export function commandTemplateFor(
   commands: Readonly<ExternalCommandMap>,
   key: string,
 ): string | null {
-  const template = commands[key]?.trim();
-  return template || null;
+  return externalCommandsFor(commands, key)[0]?.command || null;
 }
 
 export function commandLineForExternalFile(template: string, path: string): string {
   if (!template.includes(FILE_PLACEHOLDER)) {
     throw new Error(`連携コマンドには${FILE_PLACEHOLDER}が必要です`);
   }
-  return commandLineForFile("", template, path);
+  return template.replaceAll(FILE_PLACEHOLDER, () => path);
 }
 
 export function fileExtensionOf(path: string): string | null {

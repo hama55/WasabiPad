@@ -63,8 +63,9 @@ export interface EditorPorts {
   onCursor: (line: number, col: number) => void;
   onFontChange: (fontFamily: string, fontSize: number, changed: "family" | "size" | "both") => void;
   openExternally: (path: string) => void | Promise<unknown>;
-  openExternalEditor?: (path: string) => void | Promise<unknown>;
+  openExternalEditor?: (path: string, index?: number) => void | Promise<unknown>;
   canOpenExternalEditor?: (path: string) => boolean;
+  getExternalEditorLabels?: (path: string) => readonly string[];
   openInNewTab?: () => void | Promise<unknown>;
   openInNewWindow?: (path: string) => void | Promise<unknown>;
   openAs?: (openAs: api.OpenAs) => void | Promise<unknown>;
@@ -143,8 +144,9 @@ export class VirtualEditor {
   private externalFilePath: string | null = null;
   private markdown = false;
   private openExternally: (path: string) => void | Promise<unknown>;
-  private openExternalEditor?: (path: string) => void | Promise<unknown>;
+  private openExternalEditor?: (path: string, index?: number) => void | Promise<unknown>;
   private canOpenExternalEditor?: (path: string) => boolean;
+  private getExternalEditorLabels?: (path: string) => readonly string[];
   private openInNewTab?: () => void | Promise<unknown>;
   private openInNewWindow?: (path: string) => void | Promise<unknown>;
   private openAs?: (openAs: api.OpenAs) => void | Promise<unknown>;
@@ -196,6 +198,7 @@ export class VirtualEditor {
     this.openExternally = ports.openExternally;
     this.openExternalEditor = ports.openExternalEditor;
     this.canOpenExternalEditor = ports.canOpenExternalEditor;
+    this.getExternalEditorLabels = ports.getExternalEditorLabels;
     this.openInNewTab = ports.openInNewTab;
     this.openInNewWindow = ports.openInNewWindow;
     this.openAs = ports.openAs;
@@ -2208,17 +2211,32 @@ export class VirtualEditor {
       })),
     );
     if (commandPath) {
-      if (this.openExternalEditor
-        && (!this.canOpenExternalEditor || this.canOpenExternalEditor(commandPath))) {
-        items.push({
-          label: MENU_LABELS.externalEditor,
-          iconClass: MENU_ICON.external,
-          action: () => this.dispatch(
-            "連携エディタを開けませんでした",
-            () => this.openExternalEditor?.(commandPath),
-          ),
-          sep: true,
-        });
+      const labels = this.getExternalEditorLabels?.(commandPath);
+      const canOpen = this.openExternalEditor
+        && (labels ? labels.length > 0 : (!this.canOpenExternalEditor || this.canOpenExternalEditor(commandPath)));
+      if (canOpen) {
+        const item: MenuItem = labels && labels.length > 1
+          ? {
+            label: MENU_LABELS.externalEditor,
+            iconClass: MENU_ICON.external,
+            sub: labels.map((label, index) => ({
+              label,
+              iconClass: MENU_ICON.external,
+              action: () => this.dispatch(
+                "連携エディタを開けませんでした",
+                () => this.openExternalEditor?.(commandPath, index),
+              ),
+            })),
+          }
+          : {
+            label: MENU_LABELS.externalEditor,
+            iconClass: MENU_ICON.external,
+            action: () => this.dispatch(
+              "連携エディタを開けませんでした",
+              () => this.openExternalEditor?.(commandPath),
+            ),
+          };
+        items.push({ ...item, sep: true });
       }
       items.push({
         label: MENU_LABELS.external,

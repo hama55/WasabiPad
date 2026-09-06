@@ -29,7 +29,7 @@ installDomStubs();
 function mount(
   initial: string,
   saveImage?: EditorPorts["saveImage"],
-  overrides: Partial<Pick<EditorPorts, "revealInExplorer" | "openExternalEditor" | "canOpenExternalEditor" | "openInNewTab" | "openInNewWindow" | "openAs" | "registeredCommandPorts" | "openViewer">> = {},
+  overrides: Partial<Pick<EditorPorts, "revealInExplorer" | "openExternalEditor" | "canOpenExternalEditor" | "getExternalEditorLabels" | "openInNewTab" | "openInNewWindow" | "openAs" | "registeredCommandPorts" | "openViewer">> = {},
 ) {
   const host = document.createElement("div");
   document.body.replaceChildren(host);
@@ -47,6 +47,7 @@ function mount(
     openExternally: () => {},
     openExternalEditor: overrides.openExternalEditor,
     canOpenExternalEditor: overrides.canOpenExternalEditor,
+    getExternalEditorLabels: overrides.getExternalEditorLabels,
     openInNewTab: overrides.openInNewTab,
     openInNewWindow: overrides.openInNewWindow,
     openAs: overrides.openAs,
@@ -1298,6 +1299,35 @@ describe("Feature: VirtualEditor", () => {
     await settle();
 
     expect(openExternalEditor).toHaveBeenCalledWith("C:\\work\\memo.md");
+  });
+
+  // Feature: 複数連携エディタの明示起動
+  // Scenario: 保存済み通常ファイルの右クリックに登録済み連携先をすべて表示する
+  // Given: 名前付きの連携エディタが2件ある
+  // When: サブメニューから2件目を選ぶ
+  // Then: 選択した登録番号と現在のファイルパスをportへ渡す
+  it("Scenario: エディタの右クリックから複数の連携先を選ぶ", async () => {
+    const openExternalEditor = vi.fn();
+    const { editor, host } = mount("memo", undefined, {
+      openExternalEditor,
+      getExternalEditorLabels: () => ["VS Code", "メモ帳"],
+    });
+    const dropdown = document.createElement("div");
+    dropdown.id = "dropdown";
+    document.body.appendChild(dropdown);
+    editor.open(1, false, false, "C:\\work\\memo.md");
+    await settle();
+
+    host.querySelector<HTMLElement>(".ve-scroll")!.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, clientX: 0, clientY: 0 }),
+    );
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "連携エディタで開く ▸")!.click();
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-submenu .dd-item")]
+      .find((item) => item.textContent === "メモ帳")!.click();
+    await settle();
+
+    expect(openExternalEditor).toHaveBeenCalledWith("C:\\work\\memo.md", 1);
   });
 
   // Given: 外部ファイルパスと新規ウィンドウ操作がある

@@ -118,6 +118,25 @@ describe("Feature: inline preview", () => {
     expect(onExternalPreview).toHaveBeenCalledWith("markdown");
   });
 
+  // Feature: 複数連携プレビューの選択
+  // Scenario: ビューアから選択した連携先番号を親へ転送する
+  // Given: 連携プレビュー通知portを持つインラインプレビュー
+  // When: ビューアが2件目の連携先を要求する
+  // Then: 形式と登録番号を親へ渡す
+  it("Scenario: forwards the selected external preview index", () => {
+    const onExternalPreview = vi.fn();
+    const { host } = mount(undefined, undefined, undefined, undefined, undefined, undefined, onExternalPreview);
+    const frame = host.querySelector("iframe")!;
+
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.EXTERNAL_PREVIEW_MESSAGE, format: "markdown", index: 1 },
+    }));
+
+    expect(onExternalPreview).toHaveBeenCalledWith("markdown", 1);
+  });
+
   // Given: 右側プレビューが表示形式の選択を持つ
   // When: 未登録の形式（unknown）を選択した通知を親へ送る
   // Then: 親側の形式切替処理を呼ばない

@@ -9,7 +9,8 @@ import { DEFAULT_EDITOR_CONFIG } from "./editor-config";
 import { DEFAULT_INDENT_SIZE, INDENT_SIZES, isValidFontSize } from "./font-controls";
 import { isRegisteredCommand, normalizeRegisteredCommand, type RegisteredCommand } from "./registered-command-model";
 import { SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MIN_WIDTH } from "./preview-layout";
-import type { ExternalCommandMap } from "./external-integration";
+import type { ExternalCommandEntry, ExternalCommandMap } from "./external-integration";
+import { VIEWER_FORMATS } from "./viewer-formats";
 
 export type { RegisteredCommand } from "./registered-command-model";
 
@@ -42,7 +43,9 @@ const DEFAULTS: Settings = {
   startupPath: null,
   registeredStrings: [],
   registeredCommands: [],
-  externalEditorCommands: {},
+  externalEditorCommands: {
+    txt: [{ name: "メモ帳", command: 'notepad.exe "{file}"' }],
+  },
   externalPreviewCommands: {},
   workspaceSearchOptions: null,
   openTabs: { tabs: [], activeId: null },
@@ -64,15 +67,49 @@ export function parseSettings(text: string): Settings {
   return parseSettingsResult(text).settings;
 }
 
-function parseExternalCommandMap(value: unknown): ExternalCommandMap {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseExternalCommandEntries(value: unknown): ExternalCommandEntry[] {
+  const values = Array.isArray(value)
+    ? value
+    : typeof value === "string" || isRecord(value) ? [value] : [];
+  return values.flatMap((item) => {
+    if (typeof item === "string") {
+      return item.trim() ? [{ name: "", command: item }] : [];
+    }
+    if (!isRecord(item) || typeof item.command !== "string") return [];
+    if (!item.command.trim()) return [];
+    return [{
+      name: typeof item.name === "string" ? item.name.trim() : "",
+      command: item.command,
+    }];
+  });
+}
+
+function parseExternalCommandMap(value: unknown, expandViewerFormats = false): ExternalCommandMap {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
-  return Object.fromEntries(
-    Object.entries(value)
-      .filter(([key, command]) =>
-        key.trim().length > 0 && typeof command === "string" && command.trim().length > 0
-      )
-      .map(([key, command]) => [key.trim().toLowerCase(), (command as string).trim()]),
-  );
+  const commands = new Map<string, ExternalCommandEntry[]>();
+  const legacy = new Map<string, ExternalCommandEntry[]>();
+  for (const [rawKey, rawValue] of Object.entries(value)) {
+    const key = rawKey.trim().replace(/^\./, "").toLowerCase();
+    if (!key) continue;
+    const entries = parseExternalCommandEntries(rawValue);
+    if (!entries.length) continue;
+    const format = expandViewerFormats ? VIEWER_FORMATS[key as keyof typeof VIEWER_FORMATS] : undefined;
+    const legacyExtensions = format?.extensions
+      ?? (key === "image" ? VIEWER_FORMATS.image.extensions : null);
+    if (legacyExtensions) {
+      for (const extension of legacyExtensions) legacy.set(extension.replace(/^\./, "").toLowerCase(), entries);
+    } else {
+      commands.set(key, entries);
+    }
+  }
+  for (const [key, entries] of legacy) {
+    if (!commands.has(key)) commands.set(key, entries.map((entry) => ({ ...entry })));
+  }
+  return Object.fromEntries(commands);
 }
 
 export interface SettingsParseResult {
@@ -119,8 +156,12 @@ export function parseSettingsResult(text: string): SettingsParseResult {
         .filter(isRegisteredCommand)
         .map(normalizeRegisteredCommand)
       : [],
-    externalEditorCommands: parseExternalCommandMap(value.externalEditorCommands),
-    externalPreviewCommands: parseExternalCommandMap(value.externalPreviewCommands),
+    externalEditorCommands: Object.prototype.hasOwnProperty.call(value, "externalEditorCommands")
+      ? parseExternalCommandMap(value.externalEditorCommands)
+      : parseExternalCommandMap(DEFAULTS.externalEditorCommands),
+    externalPreviewCommands: Object.prototype.hasOwnProperty.call(value, "externalPreviewCommands")
+      ? parseExternalCommandMap(value.externalPreviewCommands, true)
+      : parseExternalCommandMap(DEFAULTS.externalPreviewCommands, true),
     workspaceSearchOptions:
       typeof value.workspaceSearchOptions === "object" && value.workspaceSearchOptions !== null
         ? value.workspaceSearchOptions

@@ -25,6 +25,7 @@ import { showError } from "./dialogs";
 import { WindowControls } from "./window-controls";
 import { reportWindowOperationError, runWindowOperation } from "./window-operation";
 import { imageExtensionOf, imageMimeType } from "./image-formats";
+import { externalCommandLabel, externalCommandsFor, fileExtensionOf } from "./external-integration";
 import {
   scrollMarkdownFragment,
   scrollMarkdownCaret,
@@ -1041,13 +1042,28 @@ function showContextMenu(x: number, y: number) {
   }
   if (isInlineViewer && currentSourcePath) {
     const format = currentFormat;
-    contextMenu.appendChild(createViewerExternalMenuItem(() => {
-      contextMenu.hidden = true;
-      postToParent({
-        type: INLINE_PREVIEW_MESSAGES.EXTERNAL_PREVIEW_MESSAGE,
-        format,
-      });
-    }));
+    const commands = externalCommandsFor(
+      getSetting("externalPreviewCommands"),
+      fileExtensionOf(currentSourcePath) ?? "",
+    );
+    if (commands.length <= 1) {
+      contextMenu.appendChild(createViewerExternalMenuItem(() => {
+        contextMenu.hidden = true;
+        postToParent({
+          type: INLINE_PREVIEW_MESSAGES.EXTERNAL_PREVIEW_MESSAGE,
+          format,
+        });
+      }));
+    } else {
+      commands.forEach((command, index) => contextMenu.appendChild(createViewerExternalMenuItem(() => {
+        contextMenu.hidden = true;
+        postToParent({
+          type: INLINE_PREVIEW_MESSAGES.EXTERNAL_PREVIEW_MESSAGE,
+          format,
+          index,
+        });
+      }, externalCommandLabel(command))));
+    }
   }
   if (!contextMenu.childElementCount) {
     contextMenu.hidden = true;

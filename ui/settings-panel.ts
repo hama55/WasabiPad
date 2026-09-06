@@ -8,6 +8,7 @@ import { openModal } from "./modal";
 import { commandValueKind } from "./registered-command-model";
 import { registeredStringLabel } from "./registered-strings";
 import { SAVE_EXTENSIONS } from "./document-controller";
+import type { ExternalCommandEntry } from "./external-integration";
 import type { Settings } from "./settings";
 import { createSearchSettingsEditor } from "./search-settings-dialog";
 import { THEME_LABELS, THEMES, type Theme } from "./theme";
@@ -205,7 +206,10 @@ export function openSettingsModal(ports: SettingsPanelPorts): SettingsCloseHandl
           "連携プレビュー",
           Object.values(VIEWER_FORMATS)
             .sort((left, right) => left.previewOrder - right.previewOrder)
-            .map((spec) => ({ key: spec.id, label: spec.label })),
+            .flatMap((spec) => spec.extensions.map((extension) => ({
+              key: extension.replace(/^\./, ""),
+              label: extension,
+            }))),
         ),
       ],
     },
@@ -384,30 +388,81 @@ function externalCommandGroup(
   const hint = document.createElement("p");
   hint.className = "settings-empty";
   hint.textContent = "コマンドには {file} を含める。引用符もここで指定する。対象アプリを直接起動すると連携先ウィンドウを配置できる。cmd/start/CLI経由や既存プロセス再利用では配置できない場合がある。";
-  group.append(title, hint);
-  const commands = ports.getSetting(setting);
-  for (const entry of entries) {
-    const row = document.createElement("label");
-    row.className = "settings-field settings-external-command";
-    const label = document.createElement("span");
-    label.textContent = entry.label;
-    const input = document.createElement("input");
-    input.type = "text";
-    input.dataset.setting = `${setting}-${entry.key}`;
-    input.spellcheck = false;
-    input.placeholder = "未設定";
-    input.value = commands[entry.key] ?? "";
-    input.addEventListener("change", () => {
-      const next = { ...ports.getSetting(setting) };
-      const command = input.value.trim();
-      if (command) next[entry.key] = command;
-      else delete next[entry.key];
-      ports.setSetting(setting, next);
-      input.value = next[entry.key] ?? "";
-    });
-    row.append(label, input);
-    group.append(row);
-  }
+  const render = () => {
+    const commands = ports.getSetting(setting);
+    const body = document.createElement("div");
+    body.className = "settings-external-command-list";
+    for (const entry of entries) {
+      const extensionGroup = document.createElement("div");
+      extensionGroup.className = "settings-external-command-extension";
+      extensionGroup.dataset.extension = entry.key;
+      const extensionLabel = document.createElement("h4");
+      extensionLabel.textContent = entry.label;
+      extensionGroup.append(extensionLabel);
+      const items = commands[entry.key] ?? [];
+      items.forEach((item, index) => {
+        const row = document.createElement("div");
+        row.className = "settings-list-row settings-external-command-row";
+        const name = document.createElement("input");
+        name.type = "text";
+        name.dataset.setting = `${setting}-${entry.key}-${index}-name`;
+        name.setAttribute("aria-label", `${entry.label}の連携先名`);
+        name.placeholder = "名前（任意）";
+        name.value = item.name;
+        name.spellcheck = false;
+        name.addEventListener("change", () => {
+          const next = { ...ports.getSetting(setting) };
+          const nextItems: ExternalCommandEntry[] = [...(next[entry.key] ?? [])];
+          nextItems[index] = { ...nextItems[index], name: name.value.trim() };
+          next[entry.key] = nextItems;
+          ports.setSetting(setting, next);
+        });
+        const command = document.createElement("input");
+        command.type = "text";
+        command.dataset.setting = `${setting}-${entry.key}-${index}-command`;
+        command.setAttribute("aria-label", `${entry.label}のコマンド`);
+        command.placeholder = '例: notepad.exe "{file}"';
+        command.value = item.command;
+        command.spellcheck = false;
+        command.addEventListener("change", () => {
+          const next = { ...ports.getSetting(setting) };
+          const nextItems: ExternalCommandEntry[] = [...(next[entry.key] ?? [])];
+          nextItems[index] = { ...nextItems[index], command: command.value };
+          next[entry.key] = nextItems;
+          ports.setSetting(setting, next);
+        });
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.textContent = "削除";
+        remove.title = `${entry.label}の連携先を削除`;
+        remove.addEventListener("click", () => {
+          const next = { ...ports.getSetting(setting) };
+          const nextItems = (next[entry.key] ?? []).filter((_, currentIndex) => currentIndex !== index);
+          if (nextItems.length) next[entry.key] = nextItems;
+          else delete next[entry.key];
+          ports.setSetting(setting, next);
+          render();
+        });
+        row.append(name, command, remove);
+        extensionGroup.append(row);
+      });
+      const add = document.createElement("button");
+      add.type = "button";
+      add.textContent = "追加";
+      add.dataset.action = "add-external-command";
+      add.dataset.setting = `${setting}-${entry.key}`;
+      add.addEventListener("click", () => {
+        const next = { ...ports.getSetting(setting) };
+        next[entry.key] = [...(next[entry.key] ?? []), { name: "", command: "" }];
+        ports.setSetting(setting, next);
+        render();
+      });
+      extensionGroup.append(add);
+      body.append(extensionGroup);
+    }
+    group.replaceChildren(title, hint, body);
+  };
+  render();
   return group;
 }
 

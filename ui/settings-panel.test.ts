@@ -250,22 +250,43 @@ describe("Feature: settings modal", () => {
   });
 
   // Feature: 連携コマンドの設定画面
-  // Scenario: 形式別の連携コマンドを直接編集する
-  // Given: 連携設定を空にした設定モーダル
-  // When: Markdownの連携エディタコマンドを変更する
-  // Then: 形式別の設定値をportへ保存する
-  it("Scenario: 形式別の連携コマンドを設定する", () => {
-    const ports = makePorts();
+  // Scenario: 1つの拡張子に複数の連携先を追加する
+  // Given: txtにメモ帳が1件ある設定モーダル
+  // When: 追加ボタンで2件目を作り、名前とコマンドを変更する
+  // Then: 名前付きの順序付き登録をportへ保存する
+  it("Scenario: 1つの拡張子へ連携先を追加する", () => {
+    const ports = makePorts({
+      externalEditorCommands: {
+        txt: [{ name: "メモ帳", command: 'notepad.exe "{file}"' }],
+      },
+    });
     openSettingsModal(ports);
 
     const section = document.querySelector<HTMLElement>("[data-settings-section=連携]")!;
-    const input = section.querySelector<HTMLInputElement>('[data-setting="externalEditorCommands-md"]')!;
-    expect(section.querySelector('[data-setting="externalPreviewCommands-markdown"]')).not.toBeNull();
+    expect(section.querySelector('[data-setting="externalEditorCommands-txt-0-name"]')).not.toBeNull();
+    expect(section.querySelector('[data-setting="externalPreviewCommands-png-0-command"]')).toBeNull();
+    expect(section.querySelector('[data-extension="png"]')).not.toBeNull();
 
-    input.value = 'code "{file}"';
-    input.dispatchEvent(new Event("change", { bubbles: true }));
+    section.querySelector<HTMLButtonElement>(
+      '[data-action="add-external-command"][data-setting="externalEditorCommands-txt"]',
+    )!.click();
 
-    expect(ports.setSetting).toHaveBeenCalledWith("externalEditorCommands", { md: 'code "{file}"' });
+    const secondName = section.querySelector<HTMLInputElement>('[data-setting="externalEditorCommands-txt-1-name"]')!;
+    const secondCommand = section.querySelector<HTMLInputElement>('[data-setting="externalEditorCommands-txt-1-command"]')!;
+    secondName.value = "VS Code";
+    secondName.dispatchEvent(new Event("change", { bubbles: true }));
+    secondCommand.value = 'code "{file}"';
+    secondCommand.dispatchEvent(new Event("change", { bubbles: true }));
+
+    expect(ports.getSetting("externalEditorCommands")).toEqual({
+      txt: [
+        { name: "メモ帳", command: 'notepad.exe "{file}"' },
+        { name: "VS Code", command: 'code "{file}"' },
+      ],
+    });
+
+    expect(section.querySelectorAll('[data-setting^="externalEditorCommands-txt-"][data-setting$="-command"]'))
+      .toHaveLength(2);
   });
 
   // Feature: 外部プレビューキャッシュ保存場所の設定画面
