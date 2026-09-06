@@ -314,6 +314,8 @@ export const openViewer = (
   sourcePath,
   effectiveExtension,
 });
+export const setInlinePreviewFocus = (focused: boolean) =>
+  invoke<void>(IPC_COMMANDS.setInlinePreviewFocus, { focused });
 export const takeViewerPayload = (label: string) =>
   invoke<ViewerPayload>(IPC_COMMANDS.takeViewerPayload, { label });
 export const updateViewer = (label: string, text: string, selection: ViewerSelection | null) =>

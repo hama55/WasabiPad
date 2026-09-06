@@ -56,6 +56,21 @@ describe("Feature: Sidebar", () => {
     document.body.replaceChildren();
   });
 
+  // Feature: 正規のファイルツリー検索ショートカット
+  // Scenario: ファイルツリーをフォーカスして検索すると既存の全ファイル検索欄へ移動する
+  // Given: フォルダタブのファイルツリーと検索欄
+  // When: Sidebarの検索フォーカスを依頼する
+  // Then: 全ファイル検索欄がフォーカスされる
+  it("Scenario: 全ファイル検索欄へフォーカスする", () => {
+    const { host, sidebar } = mount();
+    sidebar.setWorkspaceSearch("C:\\workspace");
+    const input = host.querySelector<HTMLInputElement>(".ws-search input")!;
+
+    sidebar.focusWorkspaceSearch();
+
+    expect(document.activeElement).toBe(input);
+  });
+
   // Feature: スクロール可能なファイルツリーの中クリック
   // Scenario: 項目行をホイールボタンでクリックすると新規タブで開く
   // Given: ファイルツリーの表示内容が縦スクロールを必要とする
@@ -463,6 +478,26 @@ describe("Feature: Sidebar", () => {
 
     await vi.waitFor(() => expect(onRenameEntry).toHaveBeenCalledWith("memo.txt", "renamed.txt"));
     expect(host.querySelector(".fv-rename-input")).toBeNull();
+  });
+
+  // Scenario: 名前変更中のCtrl-Fでも標準検索を起動しない
+  // Given: `memo.txt`のインライン名前変更入力と既存の全ファイル検索欄
+  // When: 名前変更入力でCtrl-Fを押す
+  // Then: 標準動作を抑止し、全ファイル検索欄へフォーカスする
+  it("Scenario: 名前変更入力のCtrl-Fを全ファイル検索へ送る", () => {
+    const { host, sidebar } = mount({ onRenameEntry: vi.fn() });
+    sidebar.setWorkspaceSearch("C:\\work");
+    sidebar.setEntries([{ name: "memo.txt", is_dir: false, is_archive: false }]);
+    host.querySelector<HTMLElement>(".fv-row")!.click();
+    host.querySelector<HTMLElement>(".fv-tree")!
+      .dispatchEvent(new KeyboardEvent("keydown", { key: "F2", bubbles: true, cancelable: true }));
+    const input = host.querySelector<HTMLInputElement>(".fv-rename-input")!;
+    const event = new KeyboardEvent("keydown", { key: "f", ctrlKey: true, bubbles: true, cancelable: true });
+
+    input.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(host.querySelector(".ws-search input"));
   });
 
   // Scenario: インライン名前変更をEscで取り消す

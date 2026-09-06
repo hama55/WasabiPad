@@ -61,6 +61,7 @@ export const IPC_COMMANDS = {
   clearPreviewCache: "clear_preview_cache",
   takePendingWindowRequests: "take_pending_window_requests",
   openViewer: "open_viewer",
+  setInlinePreviewFocus: "set_inline_preview_focus",
   takeViewerPayload: "take_viewer_payload",
   updateViewer: "update_viewer",
   closeViewer: "close_viewer",

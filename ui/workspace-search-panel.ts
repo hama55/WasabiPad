@@ -161,6 +161,10 @@ export class WorkspaceSearchPanel {
     this.ports.onViewChange();
   }
 
+  focusSearch() {
+    if (this.folderRoot !== null) this.searchInput.focus();
+  }
+
   resetViewState(options = this.options) {
     this.openRequest++;
     if (this.folderRoot && this.state.outcome === "searching") this.stop();

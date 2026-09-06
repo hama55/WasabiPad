@@ -1,3 +1,4 @@
+import { setInlinePreviewFocus } from "./api";
 import type { ViewerFormat, ViewerPayload, ViewerSelection } from "./api";
 import { runAsyncBoundary } from "./async-boundary";
 import { isViewerFormat } from "./viewer-formats";
@@ -48,6 +49,7 @@ export class InlinePreview {
   private markdownSoftBreaks = true;
   private fullscreen = false;
   private pendingMarkdownFragment: string | null = null;
+  private previewFocused = false;
 
   constructor(
     private host: HTMLElement,
@@ -57,6 +59,9 @@ export class InlinePreview {
     if (!this.frame.parentElement) host.appendChild(this.frame);
     this.frame.title = "プレビュー";
     this.frame.src = new URL("/viewer.html?inline=1", window.location.href).toString();
+    this.frame.addEventListener("pointerdown", () => this.setPreviewFocused(true));
+    this.frame.addEventListener("focus", () => this.setPreviewFocused(true));
+    this.frame.addEventListener("blur", () => this.setPreviewFocused(false));
     window.addEventListener("message", (event) => {
       if (event.source !== this.frame.contentWindow || event.origin !== window.location.origin) return;
       if (event.data?.type === READY_MESSAGE) {
@@ -164,6 +169,7 @@ export class InlinePreview {
 
   async close(label: string): Promise<void> {
     if (label !== this.label) return;
+    this.setPreviewFocused(false);
     this.payload = null;
     this.label = "";
     this.pendingMarkdownFragment = null;
@@ -179,6 +185,12 @@ export class InlinePreview {
 
   resend() {
     this.send();
+  }
+
+  private setPreviewFocused(focused: boolean) {
+    if (this.previewFocused === focused) return;
+    this.previewFocused = focused;
+    this.notifyPort(() => setInlinePreviewFocus(focused));
   }
 
   private createPayload(

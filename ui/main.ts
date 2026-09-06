@@ -32,7 +32,7 @@ import { promptSaveFormat, saveFormatFields, saveFormatFromValues } from "./save
 import { isPasswordCancelled, withArchivePassword } from "./archive-password";
 import { archiveRelOf } from "./archive-path";
 import { joinWindowsRoot } from "./path";
-import { createCommandRegistry, globalCommandForEvent } from "./commands";
+import { createCommandRegistry, globalCommandForEvent, runFindForTarget } from "./commands";
 import { TabManager } from "./tabs";
 import {
   getSetting,
@@ -1068,12 +1068,21 @@ bindPreviewResize(previewSplitter, {
   onStop: () => document.body.classList.remove("preview-resizing"),
 });
 
-// グローバルショートカット (ファイル操作のみ。編集系はエディタが処理)
+// グローバルショートカット（検索はフォーカス領域へ振り分ける）
 window.addEventListener("keydown", (e) => {
   const command = globalCommandForEvent(commands, e);
   if (!command) return;
   e.preventDefault();
-  runBackground(`${command.label}を実行できませんでした`, () => command.run());
+  runBackground(`${command.label}を実行できませんでした`, () => {
+    if (command === commands.find) {
+      runFindForTarget(e.target, {
+        openEditorSearch: () => editor.openSearch(),
+        focusWorkspaceSearch: () => sidebar.focusWorkspaceSearch(),
+      });
+      return;
+    }
+    return command.run();
+  });
 });
 
 // お気に入りバー上へのdropは登録、それ以外は従来どおり開く

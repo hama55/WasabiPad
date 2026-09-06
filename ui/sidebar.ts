@@ -13,6 +13,7 @@ import { runAsyncBoundary } from "./async-boundary";
 import { isDescendantPath } from "./path";
 import type { FileTreeDropRequest, FileTreeDropResult } from "./file-tree-drop";
 import { clampSearchOptions } from "./workspace-search-options";
+import { isFindShortcut } from "./commands";
 export type { ContextTarget } from "./context-target";
 export type SidebarFileCommand = "copy" | "cut" | "paste" | "rename" | "delete" | "undo" | "redo";
 
@@ -205,6 +206,10 @@ export class Sidebar {
     this.workspaceRoot = folderRoot;
     this.viewKind = folderRoot === null ? null : "folder";
     this.panel.setFolderRoot(folderRoot);
+  }
+
+  focusWorkspaceSearch() {
+    this.panel.focusSearch();
   }
 
   refreshWorkspaceSearch(relPath: string, edits: EditManyItem[]) {
@@ -1052,6 +1057,12 @@ export class Sidebar {
         input.addEventListener("click", (event) => event.stopPropagation());
         input.addEventListener("pointerdown", (event) => event.stopPropagation());
         input.addEventListener("keydown", (event) => {
+          if (isFindShortcut(event)) {
+            event.preventDefault();
+            event.stopPropagation();
+            this.focusWorkspaceSearch();
+            return;
+          }
           event.stopPropagation();
           if (event.key === "Enter") {
             event.preventDefault();

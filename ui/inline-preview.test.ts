@@ -3,6 +3,12 @@ import { describe, expect, it, vi } from "vitest";
 import type { ViewerFormat } from "./api";
 import { InlinePreview, INLINE_PREVIEW_MESSAGES } from "./inline-preview";
 
+const { setInlinePreviewFocusMock } = vi.hoisted(() => ({
+  setInlinePreviewFocusMock: vi.fn(async () => undefined),
+}));
+
+vi.mock("./api", () => ({ setInlinePreviewFocus: setInlinePreviewFocusMock }));
+
 function mount(
   onFormatChange?: (format: ViewerFormat) => void,
   onFontFamilyChange?: (family: string) => void,
@@ -31,6 +37,22 @@ function mount(
 }
 
 describe("Feature: inline preview", () => {
+  // Feature: インラインプレビューのネイティブ検索抑止
+  // Scenario: プレビューiframeのフォーカスをネイティブ境界へ通知する
+  // Given: インラインプレビューのiframe
+  // When: iframeへフォーカスしてから外す
+  // Then: WebView2の検索抑止状態が追随する
+  it("Scenario: inline preview focus controls native search suppression", () => {
+    const { host } = mount();
+    const frame = host.querySelector("iframe")!;
+
+    frame.dispatchEvent(new Event("focus"));
+    frame.dispatchEvent(new Event("blur"));
+
+    expect(setInlinePreviewFocusMock).toHaveBeenNthCalledWith(1, true);
+    expect(setInlinePreviewFocusMock).toHaveBeenNthCalledWith(2, false);
+  });
+
   // Given: 右側プレビューが空のホスト
   // When: Markdownビューを開いてからCSVビューへ切り替え、古いビューを閉じる
   // Then: 新しいビューは表示されたままで、古い終了通知が新しいビューを隠さない

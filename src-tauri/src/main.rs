@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
-use viewer::ViewerStore;
+use viewer::{FindShortcutGuard, ViewerStore};
 use wasabipad_core::{
     self, BookmarkNode, Doc, DocInfo, EditManyItem, EditManyResult, EditResult, EncodingId, Eol,
     ExternalCheck, ExternalMergePreview, FindCursor, FindOutcome, FindResult, FolderEntry, OpenAs, PosC,
@@ -620,6 +620,11 @@ async fn open_viewer(
 }
 
 #[tauri::command]
+fn set_inline_preview_focus(focused: bool, state: tauri::State<'_, FindShortcutGuard>) {
+    state.set(focused);
+}
+
+#[tauri::command]
 fn take_viewer_payload(
     label: String,
     state: tauri::State<'_, ViewerStore>,
@@ -674,10 +679,17 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(Mutex::new(DocState(Doc::empty())))
         .manage(ViewerStore(Mutex::new(HashMap::new())))
+        .manage(FindShortcutGuard::default())
         .manage(search::SearchCancel(Mutex::new(None)))
         .manage(instance_server)
         .setup(|app| {
             app.state::<InstanceServer>().start(app.handle());
+            if let Some(window) = app.get_webview_window("main") {
+                viewer::install_find_shortcut_guard(
+                    &window,
+                    app.state::<FindShortcutGuard>().0.clone(),
+                );
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -742,6 +754,7 @@ fn main() {
             initial_window_request,
             take_pending_window_requests,
             open_viewer,
+            set_inline_preview_focus,
             take_viewer_payload,
             update_viewer,
             close_viewer,

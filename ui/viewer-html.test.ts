@@ -37,4 +37,26 @@ describe("Feature: static HTML preview", () => {
     expect(frame.getAttribute("sandbox")).toBe("allow-same-origin");
     expect(frame.srcdoc).toContain("script-src 'none'");
   });
+
+  // Feature: 設計外検索の標準動作抑止
+  // Scenario: HTMLプレビュー内のCtrl-Fで標準検索を起動しない
+  // Given: HTMLプレビューのiframeが読み込み済み
+  // When: iframe内でCtrl-Fを押す
+  // Then: iframe内の既定検索動作を抑止する
+  it("Scenario: HTMLプレビュー内のCtrl-Fを標準検索へ漏らさない", () => {
+    const { frame } = createHtmlPreview({
+      name: "index.html",
+      html: "<p>hello</p>",
+      baseUrl: null,
+      onContextMenu: () => undefined,
+    });
+    const child = document.implementation.createHTMLDocument("preview");
+    Object.defineProperty(frame, "contentDocument", { configurable: true, value: child });
+    frame.dispatchEvent(new Event("load"));
+    const event = new KeyboardEvent("keydown", { key: "f", ctrlKey: true, cancelable: true });
+
+    child.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+  });
 });

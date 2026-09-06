@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
-    Mutex,
+    Arc, Mutex,
 };
 
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
@@ -10,6 +10,61 @@ use crate::state::{with_doc, State};
 use crate::{ViewerFormat, ViewerPayload, ViewerSelection, EVENT_VIEWER_UPDATE};
 
 pub(crate) struct ViewerStore(pub(crate) Mutex<HashMap<String, ViewerPayload>>);
+
+#[derive(Default)]
+pub(crate) struct FindShortcutGuard(pub(crate) Arc<std::sync::atomic::AtomicBool>);
+
+impl FindShortcutGuard {
+    pub(crate) fn set(&self, enabled: bool) {
+        self.0.store(enabled, Ordering::Relaxed);
+    }
+}
+
+pub(crate) fn install_find_shortcut_guard<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    enabled: Arc<std::sync::atomic::AtomicBool>,
+) {
+    #[cfg(windows)]
+    {
+        use webview2_com::{
+            AcceleratorKeyPressedEventHandler,
+            Microsoft::Web::WebView2::Win32::COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN,
+        };
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL};
+
+        let _ = window.with_webview(|webview| {
+            let handler = AcceleratorKeyPressedEventHandler::create(Box::new(move |_, args| {
+                let Some(args) = args else {
+                    return Ok(());
+                };
+                let mut kind = COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN;
+                let mut virtual_key = 0;
+                unsafe {
+                    args.KeyEventKind(&mut kind)?;
+                    args.VirtualKey(&mut virtual_key)?;
+                }
+                if enabled.load(Ordering::Relaxed)
+                    && kind == COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN
+                    && virtual_key == u32::from(b'F')
+                    && unsafe { GetKeyState(VK_CONTROL as i32) } < 0
+                {
+                    unsafe { args.SetHandled(true)?; }
+                }
+                Ok(())
+            }));
+            let mut token = 0;
+            if let Err(error) = unsafe {
+                webview
+                    .controller()
+                    .add_AcceleratorKeyPressed(&handler, &mut token)
+            } {
+                eprintln!("ビューの検索ショートカット抑止を設定できませんでした: {error}");
+            }
+        });
+    }
+    #[cfg(not(windows))]
+    let _ = (window, enabled);
+}
 
 static VIEWER_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -73,6 +128,7 @@ pub(crate) async fn open_viewer(
                 return Err(error.to_string());
             }
         };
+    install_find_shortcut_guard(&window, Arc::new(std::sync::atomic::AtomicBool::new(true)));
     let cleanup_app = app.clone();
     let cleanup_label = label.clone();
     window.on_window_event(move |event| {

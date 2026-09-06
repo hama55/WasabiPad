@@ -71,6 +71,7 @@ import {
 } from "./viewer-selection";
 import { createViewerFormatButtons, syncViewerActionButtons, syncViewerFormatButtons } from "./viewer-format-buttons";
 import { ViewerAssetTracker } from "./viewer-asset-tracker";
+import { isFindShortcut } from "./commands";
 import {
   MAX_TABLE_COLUMNS,
   MAX_TABLE_ROWS,
@@ -466,6 +467,9 @@ const chartActionButton = createViewerChartMenuItem(() => {
 actionButtons.replaceChildren(delimiterActionButton, chartActionButton);
 
 function bindViewerControls() {
+  document.addEventListener("keydown", (event) => {
+    if (isFindShortcut(event)) event.preventDefault();
+  }, { capture: true, signal: viewerDomListeners.signal });
   setFullscreenButton(false);
   fontButton.addEventListener("click", () => runViewerOperation("フォントを変更できませんでした", promptFont), {
     signal: viewerDomListeners.signal,
