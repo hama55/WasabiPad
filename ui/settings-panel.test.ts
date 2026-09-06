@@ -19,6 +19,8 @@ function makePorts(initial: Partial<Settings> = {}): SettingsPanelPorts {
     startupPath: null,
     registeredStrings: [],
     registeredCommands: [],
+    externalEditorCommands: {},
+    externalPreviewCommands: {},
     workspaceSearchOptions: null,
     openTabs: { tabs: [], activeId: null },
     ...initial,
@@ -141,6 +143,7 @@ describe("Feature: settings modal", () => {
     expect(document.querySelector("[data-settings-section=プレビュー]")).not.toBeNull();
     expect(document.querySelector("[data-settings-section=検索]")).not.toBeNull();
     expect(document.querySelector("[data-settings-section=登録]")).not.toBeNull();
+    expect(document.querySelector("[data-settings-section=連携]")).not.toBeNull();
     expect(document.querySelector('[data-setting="startup-path"]')).not.toBeNull();
     expect(document.querySelector(".settings-reset")).not.toBeNull();
   });
@@ -164,6 +167,7 @@ describe("Feature: settings modal", () => {
       "プレビュー",
       "検索",
       "登録",
+      "連携",
       "About",
     ]);
     expect(sections.map((section) => section.dataset.settingsSection)).toEqual([
@@ -172,6 +176,7 @@ describe("Feature: settings modal", () => {
       "プレビュー",
       "検索",
       "登録",
+      "連携",
       "About",
     ]);
     expect(tabs[0].getAttribute("aria-selected")).toBe("true");
@@ -242,6 +247,25 @@ describe("Feature: settings modal", () => {
     expect(ports.setSetting).toHaveBeenCalledWith("markdownSoftBreaks", false);
     expect(ports.applyMarkdownSoftBreaks).toHaveBeenCalledWith(false);
     expect(document.querySelector(".settings-box")).not.toBeNull();
+  });
+
+  // Feature: 連携コマンドの設定画面
+  // Scenario: 形式別の連携コマンドを直接編集する
+  // Given: 連携設定を空にした設定モーダル
+  // When: Markdownの連携エディタコマンドを変更する
+  // Then: 形式別の設定値をportへ保存する
+  it("Scenario: 形式別の連携コマンドを設定する", () => {
+    const ports = makePorts();
+    openSettingsModal(ports);
+
+    const section = document.querySelector<HTMLElement>("[data-settings-section=連携]")!;
+    const input = section.querySelector<HTMLInputElement>('[data-setting="externalEditorCommands-md"]')!;
+    expect(section.querySelector('[data-setting="externalPreviewCommands-markdown"]')).not.toBeNull();
+
+    input.value = 'code "{file}"';
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+
+    expect(ports.setSetting).toHaveBeenCalledWith("externalEditorCommands", { md: 'code "{file}"' });
   });
 
   // Feature: 外部プレビューキャッシュ保存場所の設定画面

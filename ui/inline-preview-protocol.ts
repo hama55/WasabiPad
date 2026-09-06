@@ -13,4 +13,5 @@ export const INLINE_PREVIEW_MESSAGES = {
   SELECTION_CHANGE_MESSAGE: "wasabipad-viewer-selection-change",
   MARKDOWN_LINK_MESSAGE: "wasabipad-viewer-markdown-link",
   MARKDOWN_FRAGMENT_MESSAGE: "wasabipad-viewer-markdown-fragment",
+  EXTERNAL_PREVIEW_MESSAGE: "wasabipad-viewer-external-preview",
 } as const;

@@ -135,6 +135,21 @@ describe("Feature: settings", () => {
     expect(saved.previewFontSize).toBe(20);
   });
 
+  // Feature: 連携コマンド設定の保存
+  // Scenario: 形式別の連携コマンドを正規化して復元する
+  // Given: 大文字キー・前後空白・空値・不正値を含む連携コマンド設定
+  // When: parseSettingsを呼ぶ
+  // Then: 有効なコマンドだけを小文字キーとtrim済み文字列で復元する
+  it("Scenario: 連携コマンド設定を安全に復元する", () => {
+    const settings = parseSettings(JSON.stringify({
+      externalEditorCommands: { " MD ": '  editor "{file}"  ', empty: " ", invalid: 42 },
+      externalPreviewCommands: { Markdown: ' browser "{file}" ' },
+    }));
+
+    expect(settings.externalEditorCommands).toEqual({ md: 'editor "{file}"' });
+    expect(settings.externalPreviewCommands).toEqual({ markdown: 'browser "{file}"' });
+  });
+
   // Feature: 外部プレビューキャッシュ保存場所の設定
   // Scenario: 未設定はバックエンド既定場所として復元し、保存済みの場所は保持する
   // Given: プレビューキャッシュ保存場所が未設定または `D:\\WasabiPad\\preview-cache` として保存されている

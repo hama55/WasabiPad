@@ -63,6 +63,8 @@ export interface EditorPorts {
   onCursor: (line: number, col: number) => void;
   onFontChange: (fontFamily: string, fontSize: number, changed: "family" | "size" | "both") => void;
   openExternally: (path: string) => void | Promise<unknown>;
+  openExternalEditor?: (path: string) => void | Promise<unknown>;
+  canOpenExternalEditor?: (path: string) => boolean;
   openInNewTab?: () => void | Promise<unknown>;
   openInNewWindow?: (path: string) => void | Promise<unknown>;
   openAs?: (openAs: api.OpenAs) => void | Promise<unknown>;
@@ -141,6 +143,8 @@ export class VirtualEditor {
   private externalFilePath: string | null = null;
   private markdown = false;
   private openExternally: (path: string) => void | Promise<unknown>;
+  private openExternalEditor?: (path: string) => void | Promise<unknown>;
+  private canOpenExternalEditor?: (path: string) => boolean;
   private openInNewTab?: () => void | Promise<unknown>;
   private openInNewWindow?: (path: string) => void | Promise<unknown>;
   private openAs?: (openAs: api.OpenAs) => void | Promise<unknown>;
@@ -190,6 +194,8 @@ export class VirtualEditor {
     this.onCursor = ports.onCursor;
     this.onFontChange = ports.onFontChange;
     this.openExternally = ports.openExternally;
+    this.openExternalEditor = ports.openExternalEditor;
+    this.canOpenExternalEditor = ports.canOpenExternalEditor;
     this.openInNewTab = ports.openInNewTab;
     this.openInNewWindow = ports.openInNewWindow;
     this.openAs = ports.openAs;
@@ -2202,6 +2208,18 @@ export class VirtualEditor {
       })),
     );
     if (commandPath) {
+      if (this.openExternalEditor
+        && (!this.canOpenExternalEditor || this.canOpenExternalEditor(commandPath))) {
+        items.push({
+          label: "連携エディタで開く",
+          iconClass: MENU_ICON.external,
+          action: () => this.dispatch(
+            "連携エディタを開けませんでした",
+            () => this.openExternalEditor?.(commandPath),
+          ),
+          sep: true,
+        });
+      }
       items.push({
         label: MENU_LABELS.external,
         iconClass: MENU_ICON.external,

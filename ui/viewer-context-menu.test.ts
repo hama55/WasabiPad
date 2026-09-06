@@ -2,7 +2,11 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { MENU_ICON } from "./menu-icons";
-import { createViewerBrowserMenuItem, createViewerChartMenuItem } from "./viewer-context-menu";
+import {
+  createViewerBrowserMenuItem,
+  createViewerChartMenuItem,
+  createViewerExternalMenuItem,
+} from "./viewer-context-menu";
 
 describe("Feature: viewer context menu", () => {
   // Given: グラフ作成アクションを渡したビューアのメニュー項目
@@ -30,6 +34,22 @@ describe("Feature: viewer context menu", () => {
     const item = createViewerBrowserMenuItem(onClick);
 
     expect(item.textContent).toBe("\u898f\u5b9a\u306e\u30d6\u30e9\u30a6\u30b6\u3067\u8868\u793a");
+    expect(item.querySelector(`.${MENU_ICON.external}`)).not.toBeNull();
+    item.click();
+    expect(onClick).toHaveBeenCalledOnce();
+  });
+
+  // Feature: 連携プレビューの明示起動
+  // Scenario: 連携プレビュー項目をクリックする
+  // Given: 連携プレビューの操作port
+  // When: ビューアコンテキストメニュー項目をクリックする
+  // Then: 操作portを1回呼び出す
+  it("Scenario: 連携プレビュー項目を作成する", () => {
+    const onClick = vi.fn();
+    const item = createViewerExternalMenuItem(onClick);
+
+    expect(item.textContent).toBe("連携プレビューで開く");
+    expect(item.dataset.viewerAction).toBe("external-preview");
     expect(item.querySelector(`.${MENU_ICON.external}`)).not.toBeNull();
     item.click();
     expect(onClick).toHaveBeenCalledOnce();

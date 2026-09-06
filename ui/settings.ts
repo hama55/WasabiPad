@@ -9,6 +9,7 @@ import { DEFAULT_EDITOR_CONFIG } from "./editor-config";
 import { DEFAULT_INDENT_SIZE, INDENT_SIZES, isValidFontSize } from "./font-controls";
 import { isRegisteredCommand, normalizeRegisteredCommand, type RegisteredCommand } from "./registered-command-model";
 import { SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MIN_WIDTH } from "./preview-layout";
+import type { ExternalCommandMap } from "./external-integration";
 
 export type { RegisteredCommand } from "./registered-command-model";
 
@@ -23,6 +24,8 @@ export interface Settings {
   startupPath: string | null;
   registeredStrings: string[];
   registeredCommands: RegisteredCommand[];
+  externalEditorCommands: ExternalCommandMap;
+  externalPreviewCommands: ExternalCommandMap;
   // null は「未設定」。既定値は ui/workspace-search-options.ts だけが持つ
   workspaceSearchOptions: WorkspaceSearchOptions | null;
   openTabs: StoredTabs;
@@ -39,6 +42,8 @@ const DEFAULTS: Settings = {
   startupPath: null,
   registeredStrings: [],
   registeredCommands: [],
+  externalEditorCommands: {},
+  externalPreviewCommands: {},
   workspaceSearchOptions: null,
   openTabs: { tabs: [], activeId: null },
 };
@@ -57,6 +62,17 @@ const saveErrors = new Map<keyof Settings, unknown>();
 // 手で編集されうるファイルなので、型が合わない項目は既定値へ落とす
 export function parseSettings(text: string): Settings {
   return parseSettingsResult(text).settings;
+}
+
+function parseExternalCommandMap(value: unknown): ExternalCommandMap {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key, command]) =>
+        key.trim().length > 0 && typeof command === "string" && command.trim().length > 0
+      )
+      .map(([key, command]) => [key.trim().toLowerCase(), (command as string).trim()]),
+  );
 }
 
 export interface SettingsParseResult {
@@ -103,6 +119,8 @@ export function parseSettingsResult(text: string): SettingsParseResult {
         .filter(isRegisteredCommand)
         .map(normalizeRegisteredCommand)
       : [],
+    externalEditorCommands: parseExternalCommandMap(value.externalEditorCommands),
+    externalPreviewCommands: parseExternalCommandMap(value.externalPreviewCommands),
     workspaceSearchOptions:
       typeof value.workspaceSearchOptions === "object" && value.workspaceSearchOptions !== null
         ? value.workspaceSearchOptions
@@ -166,6 +184,8 @@ export function resetUserSettings(): void {
   setSetting("startupPath", DEFAULTS.startupPath);
   setSetting("registeredStrings", []);
   setSetting("registeredCommands", []);
+  setSetting("externalEditorCommands", DEFAULTS.externalEditorCommands);
+  setSetting("externalPreviewCommands", DEFAULTS.externalPreviewCommands);
   setSetting("workspaceSearchOptions", DEFAULTS.workspaceSearchOptions);
 }
 

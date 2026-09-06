@@ -30,7 +30,12 @@ import {
   scrollMarkdownCaret,
 } from "./viewer-markdown";
 import { scrollViewerCaret, scrollViewerCell } from "./viewer-scroll";
-import { createViewerBrowserMenuItem, createViewerChartMenuItem, createViewerDelimiterMenuItem } from "./viewer-context-menu";
+import {
+  createViewerBrowserMenuItem,
+  createViewerChartMenuItem,
+  createViewerDelimiterMenuItem,
+  createViewerExternalMenuItem,
+} from "./viewer-context-menu";
 import {
   DEFAULT_CSV_DELIMITER,
 } from "./viewer-delimiter";
@@ -1030,6 +1035,16 @@ function showContextMenu(x: number, y: number) {
       );
     }));
   }
+  if (isInlineViewer && currentSourcePath) {
+    const format = currentFormat;
+    contextMenu.appendChild(createViewerExternalMenuItem(() => {
+      contextMenu.hidden = true;
+      postToParent({
+        type: INLINE_PREVIEW_MESSAGES.EXTERNAL_PREVIEW_MESSAGE,
+        format,
+      });
+    }));
+  }
   if (!contextMenu.childElementCount) {
     contextMenu.hidden = true;
     return;
@@ -1095,6 +1110,9 @@ async function start() {
         && currentSourcePath && target.closest(".viewer-html-wrap")) {
         event.preventDefault();
         runViewerOperation("HTMLメニューを表示できませんでした", () => showContextMenu(event.clientX, event.clientY));
+      } else if (isInlineViewer && currentSourcePath) {
+        event.preventDefault();
+        runViewerOperation("連携プレビューメニューを表示できませんでした", () => showContextMenu(event.clientX, event.clientY));
       }
     }, { signal: viewerDomListeners.signal });
     document.addEventListener("mousedown", (event) => {

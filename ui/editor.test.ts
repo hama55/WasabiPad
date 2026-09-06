@@ -29,7 +29,7 @@ installDomStubs();
 function mount(
   initial: string,
   saveImage?: EditorPorts["saveImage"],
-  overrides: Partial<Pick<EditorPorts, "revealInExplorer" | "openInNewTab" | "openInNewWindow" | "openAs" | "registeredCommandPorts" | "openViewer">> = {},
+  overrides: Partial<Pick<EditorPorts, "revealInExplorer" | "openExternalEditor" | "canOpenExternalEditor" | "openInNewTab" | "openInNewWindow" | "openAs" | "registeredCommandPorts" | "openViewer">> = {},
 ) {
   const host = document.createElement("div");
   document.body.replaceChildren(host);
@@ -45,6 +45,8 @@ function mount(
     onCursor: (line, col) => { events.cursor = [line, col]; },
     onFontChange: (family, size, changed) => { events.fontChanges.push({ family, size, changed }); },
     openExternally: () => {},
+    openExternalEditor: overrides.openExternalEditor,
+    canOpenExternalEditor: overrides.canOpenExternalEditor,
     openInNewTab: overrides.openInNewTab,
     openInNewWindow: overrides.openInNewWindow,
     openAs: overrides.openAs,
@@ -1269,6 +1271,33 @@ describe("Feature: VirtualEditor", () => {
       .find((element) => element.textContent === ".md")!.click();
     await settle();
     expect(openAs).toHaveBeenCalledWith("md");
+  });
+
+  // Feature: 連携エディタの明示起動
+  // Scenario: 保存済み通常ファイルを連携エディタで開く
+  // Given: 連携エディタの起動portと対象ファイルパス
+  // When: エディタの右クリックから「連携エディタで開く」を選ぶ
+  // Then: 現在のファイルパスをportへ渡す
+  it("Scenario: エディタの右クリックから連携エディタを開く", async () => {
+    const openExternalEditor = vi.fn();
+    const { editor, host } = mount("memo", undefined, {
+      openExternalEditor,
+      canOpenExternalEditor: () => true,
+    });
+    const dropdown = document.createElement("div");
+    dropdown.id = "dropdown";
+    document.body.appendChild(dropdown);
+    editor.open(1, false, false, "C:\\work\\memo.md");
+    await settle();
+
+    host.querySelector<HTMLElement>(".ve-scroll")!.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, clientX: 0, clientY: 0 }),
+    );
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "連携エディタで開く")!.click();
+    await settle();
+
+    expect(openExternalEditor).toHaveBeenCalledWith("C:\\work\\memo.md");
   });
 
   // Given: 外部ファイルパスと新規ウィンドウ操作がある

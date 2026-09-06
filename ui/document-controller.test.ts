@@ -596,6 +596,22 @@ describe("Feature: DocumentController", () => {
     expect(proceed).toHaveBeenCalledOnce();
   });
 
+  // Feature: 連携エディタ起動前の保存確認
+  // Scenario: dirty文書で保存確認をキャンセルする
+  // Given: 編集済み文書と連携エディタ起動処理がある
+  // When: 既存の保存確認をキャンセルする
+  // Then: 起動処理を実行せずfalseを返す
+  it("Scenario: dirty文書の連携エディタ起動をキャンセルする", async () => {
+    const { controller } = fakeView();
+    controller.applyDocInfo(info());
+    controller.onEdit(42);
+    vi.mocked(confirmSaveDiscard).mockResolvedValueOnce("cancel");
+    const launch = vi.fn();
+
+    expect(await controller.confirmDiscard(launch)).toBe(false);
+    expect(launch).not.toHaveBeenCalled();
+  });
+
   // Given: 編集済みで確認結果がdiscard、終了前の設定保存が失敗する
   // When: confirmDiscard に設定保存処理を渡す
   // Then: 例外を返し、dirty状態は解除しない

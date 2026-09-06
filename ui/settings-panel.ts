@@ -7,9 +7,11 @@ import { FONT_FAMILIES, INDENT_SIZES, isValidFontSize, MAX_FONT_SIZE, MIN_FONT_S
 import { openModal } from "./modal";
 import { commandValueKind } from "./registered-command-model";
 import { registeredStringLabel } from "./registered-strings";
+import { SAVE_EXTENSIONS } from "./document-controller";
 import type { Settings } from "./settings";
 import { createSearchSettingsEditor } from "./search-settings-dialog";
 import { THEME_LABELS, THEMES, type Theme } from "./theme";
+import { VIEWER_FORMATS } from "./viewer-formats";
 
 export interface SettingsPanelPorts {
   getTheme: () => Theme;
@@ -188,6 +190,26 @@ export function openSettingsModal(ports: SettingsPanelPorts): SettingsCloseHandl
       ],
     },
     {
+      name: "連携",
+      id: "settings-integration",
+      build: () => [
+        externalCommandGroup(
+          ports,
+          "externalEditorCommands",
+          "連携エディタ",
+          SAVE_EXTENSIONS.map(({ name, extension }) => ({ key: extension, label: `${name} (.${extension})` })),
+        ),
+        externalCommandGroup(
+          ports,
+          "externalPreviewCommands",
+          "連携プレビュー",
+          Object.values(VIEWER_FORMATS)
+            .sort((left, right) => left.previewOrder - right.previewOrder)
+            .map((spec) => ({ key: spec.id, label: spec.label })),
+        ),
+      ],
+    },
+    {
       name: "About",
       id: "settings-about",
       build: () => [aboutField()],
@@ -347,6 +369,46 @@ function registeredCommandsField(ports: SettingsPanelPorts): HTMLElement {
     },
     "登録コマンドを削除",
   );
+}
+
+function externalCommandGroup(
+  ports: SettingsPanelPorts,
+  setting: "externalEditorCommands" | "externalPreviewCommands",
+  titleText: string,
+  entries: readonly { key: string; label: string }[],
+): HTMLElement {
+  const group = document.createElement("div");
+  group.className = "settings-list-group";
+  const title = document.createElement("h3");
+  title.textContent = titleText;
+  const hint = document.createElement("p");
+  hint.className = "settings-empty";
+  hint.textContent = "コマンドには {file} を含める。引用符もここで指定する。";
+  group.append(title, hint);
+  const commands = ports.getSetting(setting);
+  for (const entry of entries) {
+    const row = document.createElement("label");
+    row.className = "settings-field settings-external-command";
+    const label = document.createElement("span");
+    label.textContent = entry.label;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.dataset.setting = `${setting}-${entry.key}`;
+    input.spellcheck = false;
+    input.placeholder = "未設定";
+    input.value = commands[entry.key] ?? "";
+    input.addEventListener("change", () => {
+      const next = { ...ports.getSetting(setting) };
+      const command = input.value.trim();
+      if (command) next[entry.key] = command;
+      else delete next[entry.key];
+      ports.setSetting(setting, next);
+      input.value = next[entry.key] ?? "";
+    });
+    row.append(label, input);
+    group.append(row);
+  }
+  return group;
 }
 
 function registeredListField<T>(
