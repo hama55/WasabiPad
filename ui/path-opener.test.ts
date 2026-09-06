@@ -5,14 +5,14 @@ describe("Feature: absolute path opening", () => {
   // Given: 現在タブ遷移と新規タブ作成の操作口
   // When: newTab=trueで絶対パスを開く
   // Then: 新規タブ操作だけを呼び、その成否を返す
-  it("Scenario: 新規タブ指定をopenへ振り分ける", async () => {
-    const open = vi.fn(async () => false);
+  it("Scenario: 新規タブ指定をopenInNewTabへ振り分ける", async () => {
+    const openInNewTab = vi.fn(async () => false);
     const navigatePath = vi.fn(async () => true);
 
-    await expect(openPath({ open, navigatePath }, "C:\\work\\memo.txt", true)).resolves.toBe(false);
+    await expect(openPath({ openInNewTab, navigatePath }, "C:\\work\\memo.txt", true)).resolves.toBe(false);
 
-    expect(open).toHaveBeenCalledTimes(1);
-    expect(open).toHaveBeenCalledWith("C:\\work\\memo.txt");
+    expect(openInNewTab).toHaveBeenCalledTimes(1);
+    expect(openInNewTab).toHaveBeenCalledWith("C:\\work\\memo.txt");
     expect(navigatePath).not.toHaveBeenCalled();
   });
 
@@ -20,13 +20,13 @@ describe("Feature: absolute path opening", () => {
   // When: newTab=falseで絶対パスを開く
   // Then: 現在タブ操作だけを呼ぶ
   it("Scenario: 通常指定をnavigatePathへ振り分ける", async () => {
-    const open = vi.fn(async () => true);
+    const openInNewTab = vi.fn(async () => true);
     const navigatePath = vi.fn(async () => true);
 
-    await openPath({ open, navigatePath }, "C:\\work\\memo.txt");
+    await openPath({ openInNewTab, navigatePath }, "C:\\work\\memo.txt");
 
     expect(navigatePath).toHaveBeenCalledTimes(1);
     expect(navigatePath).toHaveBeenCalledWith("C:\\work\\memo.txt");
-    expect(open).not.toHaveBeenCalled();
+    expect(openInNewTab).not.toHaveBeenCalled();
   });
 });

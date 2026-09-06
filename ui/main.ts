@@ -788,7 +788,7 @@ void api.onDocumentLoadProgress((progress) => {
 async function openInNewTab(relPath: string, goto?: api.Pos): Promise<boolean> {
   const root = doc.current.folderRoot;
   if (!root) return false;
-  return tabs.open(joinWindowsRoot(root, relPath), goto);
+  return tabs.openInNewTab(joinWindowsRoot(root, relPath), goto);
 }
 
 const windowChrome = new WindowChrome($("titlebar"), win, {

@@ -1,8 +1,8 @@
 export interface PathOpener {
-  open: (path: string) => Promise<boolean>;
+  openInNewTab: (path: string) => Promise<boolean>;
   navigatePath: (path: string) => Promise<boolean>;
 }
 
 export function openPath(opener: PathOpener, path: string, newTab = false) {
-  return newTab ? opener.open(path) : opener.navigatePath(path);
+  return newTab ? opener.openInNewTab(path) : opener.navigatePath(path);
 }

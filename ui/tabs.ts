@@ -280,6 +280,10 @@ export class TabManager {
     return this.addAndActivate(this.link(path, goto));
   }
 
+  async openInNewTab(path: string, goto?: Pos): Promise<boolean> {
+    return this.addAndActivate(this.link(path, goto));
+  }
+
   async openCurrentAs(openAs: OpenAs): Promise<boolean> {
     const tab = this.active();
     if (!tab?.path) return false;
@@ -327,7 +331,7 @@ export class TabManager {
     // ファイルツリーのホイールクリックと同じく、表示中の実ファイルを
     // ルートにしたタブを開く。アーカイブ内項目でも物理アーカイブを使い、
     // フォルダタブや内部相対パスを複製しない。
-    return this.open(path);
+    return this.openInNewTab(path);
   }
 
   async openMarkdownLink(path: string, sourceTabId: string | null, fragment: string | null): Promise<boolean> {

@@ -125,6 +125,29 @@ describe("Feature: TabManager", () => {
     expect(doc.openPath).toHaveBeenCalledWith("C:\\work\\a.txt", false);
   });
 
+  // Feature: 重複タブのセッション復元
+  // Scenario: 保存済みの同一パスを別タブとして復元する
+  // Given: 同じパスを持つ2つのStoredTabが保存されている
+  // When: セッション状態を初期化する
+  // Then: 2タブを保持し、保存済みactiveIdを選択する
+  it("Scenario: 保存済みの重複タブをそのまま復元する", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    const duplicateStored: StoredTabs = {
+      tabs: [
+        { id: "first", path: "C:\\work\\memo.md", kind: "file", label: "memo.md" },
+        { id: "second", path: "C:\\work\\memo.md", kind: "file", label: "memo.md" },
+      ],
+      activeId: "second",
+    };
+
+    await manager.init(duplicateStored, null, null);
+
+    expect(manager.state.tabs.map((tab) => tab.id)).toEqual(["first", "second"]);
+    expect(manager.state.activeId).toBe("second");
+    expect(doc.openPath).toHaveBeenCalledWith("C:\\work\\memo.md", false);
+  });
+
   // Feature: ファイル操作後のタブパス追従
   // Scenario: フォルダを移動すると開いている複数タブのパスをまとめて更新する
   // Given: `docs/memo.txt`のファイルタブと`docs/memo.txt`を選択したフォルダタブがある
@@ -919,9 +942,9 @@ describe("Feature: TabManager", () => {
   });
 
   // Given: a.txtとb.txtの2タブがあり、activeIdはa
-  // When: 既存のb.txtをopenする
+  // When: 通常のopenで既存のb.txtを開く
   // Then: タブを複製せずbをactiveにする
-  it("Scenario: 新規タブ経路でも同じパスの既存タブを再利用する", async () => {
+  it("Scenario: 通常のopenは同じパスの既存タブを再利用する", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
     await manager.init(stored, null, null);
@@ -931,6 +954,29 @@ describe("Feature: TabManager", () => {
     expect(manager.state.tabs).toHaveLength(2);
     expect(manager.state.activeId).toBe("b");
     expect(doc.openPath).toHaveBeenLastCalledWith("C:\\work\\b.txt", false);
+  });
+
+  // Feature: 同一パスの明示的新規タブ
+  // Scenario: 既存タブと同じパスを別タブとして開く
+  // Given: a.txtとb.txtの2タブがあり、activeIdはa
+  // When: openInNewTab("C:\\work\\a.txt")を呼ぶ
+  // Then: a.txtの重複タブが追加され、新しいタブがactiveになる
+  it("Scenario: 明示的新規タブは同じパスを重複して開く", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init(stored, null, null);
+
+    await expect(manager.openInNewTab("C:\\work\\a.txt")).resolves.toBe(true);
+
+    expect(manager.state.tabs).toHaveLength(3);
+    expect(manager.state.tabs.map((tab) => tab.path)).toEqual([
+      "C:\\work\\a.txt",
+      "C:\\work\\b.txt",
+      "C:\\work\\a.txt",
+    ]);
+    expect(manager.state.tabs[2].id).not.toBe("a");
+    expect(manager.state.activeId).toBe(manager.state.tabs[2].id);
+    expect(doc.openPath).toHaveBeenLastCalledWith("C:\\work\\a.txt", false);
   });
 
   // Given: a tabがactiveで、同じパスのa.txtが既に開かれている

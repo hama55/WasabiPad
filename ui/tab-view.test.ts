@@ -52,6 +52,27 @@ describe("Feature: TabBarView", () => {
     expect(host.querySelector(".doc-tab-add")?.getAttribute("aria-label")).toBe("新規タブ");
   });
 
+  // Feature: 同一パスのタブ表示
+  // Scenario: 同じパスのタブを表示順の連番で区別する
+  // Given: 大文字小文字だけが異なる同一パスの2タブがある
+  // When: 2タブ目をactiveかつ未保存として描画する
+  // Then: 基本名と`(2)`を表示し、StoredTabのlabelは変更しない
+  it("Scenario: 同一パスの重複タブを表示上の連番で区別する", () => {
+    const host = document.createElement("div");
+    const ports = makePorts();
+    const view = new TabBarView(host, ports);
+    const tabs = [
+      { id: "first", path: "C:/memo.md", kind: "file" as const, label: "memo.md" },
+      { id: "second", path: "c:/MEMO.md", kind: "file" as const, label: "memo.md" },
+    ];
+
+    view.render({ tabs, activeId: "second", dirty: true });
+
+    expect([...host.querySelectorAll<HTMLElement>(".doc-tab-label")].map((label) => label.textContent))
+      .toEqual(["memo.md", "● memo.md (2)"]);
+    expect(tabs.map((tab) => tab.label)).toEqual(["memo.md", "memo.md"]);
+  });
+
   // Given: 描画済みのタブ
   // When: タブを中クリックする
   // Then: タブのパスをエクスプローラで開く操作だけを親へ通知する
