@@ -1,6 +1,12 @@
 import type * as api from "./api";
 import type { DocumentSession } from "./session";
-import { classificationPathOf, externalFilePathOf, initialSession, sessionFromDocInfo } from "./session";
+import {
+  classificationPathOf,
+  externalFilePathOf,
+  initialSession,
+  registeredCommandPathOf,
+  sessionFromDocInfo,
+} from "./session";
 import type { promptSaveFormat, saveFormatFields, saveFormatFromValues, SaveFormat } from "./save-format";
 import type { confirmSaveDiscard, promptFields, PromptField, PromptFieldsOptions } from "./prompt";
 import type { isPasswordCancelled, withArchivePassword } from "./archive-password";
@@ -60,6 +66,7 @@ export interface DocumentEditorPort {
     markdown?: boolean,
   ) => void;
   setExternalFilePath: (path: string | null, markdown?: boolean) => void;
+  setRegisteredCommandPath: (path: string | null) => void;
   focus: () => void;
   goTo: (line: number, col: number) => void;
   captureViewState: () => EditorViewState;
@@ -191,6 +198,7 @@ export class DocumentController {
       externalFilePathOf(info),
       markdownForSession(this.session),
     );
+    this.view.editor.setRegisteredCommandPath(registeredCommandPathOf(this.session));
     this.view.editor.focus();
     const documentChangeNotified = this.notifyDocumentChange(keepViewers);
     this.updateTitle(!documentChangeNotified);
@@ -226,6 +234,7 @@ export class DocumentController {
     this.view.statusbar.setLineCount(1);
     this.renderAddressbar(this.session.displayPath);
     this.view.editor.open(1, false, false, null, false);
+    this.view.editor.setRegisteredCommandPath(null);
     this.view.editor.focus();
     const documentChangeNotified = this.notifyDocumentChange(false);
     this.updateTitle(!documentChangeNotified);
@@ -238,6 +247,7 @@ export class DocumentController {
     this.session.selectedRelPath = relPath;
     this.session.dirty = true;
     this.view.editor.setExternalFilePath(absolutePath, markdownForSession(this.session));
+    this.view.editor.setRegisteredCommandPath(registeredCommandPathOf(this.session));
     this.renderAddressbar(absolutePath);
     this.updateTitle();
   }
@@ -457,6 +467,7 @@ export class DocumentController {
     }
     try {
       this.view.editor.setExternalFilePath(path, markdownForSession(this.session));
+      this.view.editor.setRegisteredCommandPath(registeredCommandPathOf(this.session));
       this.renderAddressbar(path);
       this.view.statusbar.setFormat(this.session);
       this.view.fileStatusbar.setModifiedAt(outcome.modified_at);
@@ -597,6 +608,7 @@ export class DocumentController {
     this.session.selectedRelPath = selectedRelPath;
     this.renderAddressbar(info.path);
     this.view.editor.setExternalFilePath(externalFilePathOf(info), markdownForSession(this.session));
+    this.view.editor.setRegisteredCommandPath(registeredCommandPathOf(this.session));
     this.view.fileStatusbar.setModifiedAt(info.modified_at);
     this.updateTitle();
   }

@@ -54,6 +54,15 @@ export function externalFilePathOf(info: Pick<DocInfo, "path" | "folder_root">):
   return info.path && !isFolderDraftInfo(info) ? info.path : null;
 }
 
+export function registeredCommandPathOf(
+  session: Pick<DocumentSession, "savePath" | "archivePath" | "archiveEntry">
+    & Partial<Pick<DocumentSession, "readOnly">>,
+): string | null {
+  return !session.readOnly && session.savePath && !session.archivePath && !session.archiveEntry
+    ? session.savePath
+    : null;
+}
+
 export function documentPathOf(
   session: Pick<DocumentSession, "selectedRelPath" | "savePath" | "displayPath">
     & Partial<Pick<DocumentSession, "archiveEntry" | "effectiveExtension">>,

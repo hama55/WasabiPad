@@ -24,11 +24,15 @@ function githubReleaseTag() {
   return null;
 }
 
-export function checkReleaseVersion({
-  actual = process.argv[2] ?? githubReleaseTag(),
-  headTag = exactHeadTag(),
-  versions,
-} = {}) {
+export function checkReleaseVersion(options = {}) {
+  const {
+    actual = process.argv[2] ?? githubReleaseTag(),
+    githubRefType = process.env.GITHUB_REF_TYPE,
+    versions,
+  } = options;
+  const headTag = Object.hasOwn(options, "headTag")
+    ? (Object.hasOwn(options, "githubRefType") && githubRefType ? null : options.headTag)
+    : githubRefType ? null : exactHeadTag();
   const synchronizedVersions = assertSynchronizedVersions(versions);
   const tag = actual ?? headTag;
   if (!tag) return { checked: false, tag: null };

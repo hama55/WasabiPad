@@ -140,6 +140,7 @@ export class VirtualEditor {
   private onCursor: (line: number, col: number) => void;
   private onFontChange: (fontFamily: string, fontSize: number, changed: "family" | "size" | "both") => void;
   private externalFilePath: string | null = null;
+  private registeredCommandPath: string | null = null;
   private markdown = false;
   private openExternally: (path: string) => void | Promise<unknown>;
   private openInNewTab?: () => void | Promise<unknown>;
@@ -347,6 +348,7 @@ export class VirtualEditor {
     this.dragCleanup?.();
     this.clearDragCaret();
     this.externalFilePath = externalFilePath;
+    this.registeredCommandPath = externalFilePath;
     this.markdown = markdown;
     this.rectangularClipboard.clear();
     this.documentGeneration++;
@@ -384,7 +386,12 @@ export class VirtualEditor {
     markdown = viewerFormatForPath(path ?? "") === "markdown",
   ) {
     this.externalFilePath = path;
+    this.registeredCommandPath = path;
     this.markdown = markdown;
+  }
+
+  setRegisteredCommandPath(path: string | null) {
+    this.registeredCommandPath = path;
   }
 
   focus() {
@@ -2180,19 +2187,19 @@ export class VirtualEditor {
         });
       }
     }
-    if (commandPath) {
+    if (this.registeredCommandPath) {
       const registeredCommandServices = {
         ...this.registeredCommandPorts,
         run: (title: string, operation: () => void | Promise<unknown>) => this.dispatch(title, operation),
       };
       const hasFileCommands = commandsForKind("file").length > 0;
-      const fileMenu = createRegisteredCommandMenu({ path: commandPath, valueKind: "file" }, registeredCommandServices);
+      const fileMenu = createRegisteredCommandMenu({ path: this.registeredCommandPath, valueKind: "file" }, registeredCommandServices);
       if (hasFileCommands) fileMenu.label = "登録コマンド（ファイル）";
       if (!this.sel.hasSel() || hasFileCommands) addCustomItem(fileMenu);
       if (this.sel.hasSel()) {
         const [start, end] = this.sel.norm();
         const stringMenu = createRegisteredCommandMenu({
-          path: commandPath,
+          path: this.registeredCommandPath,
           value: () => this.sel.blockBounds() ? this.blockText() : this.lineCache.textInRange(start, end),
           valueKind: "string",
         }, registeredCommandServices);

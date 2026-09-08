@@ -66,7 +66,7 @@ describe("Feature: リリースタグとアプリバージョンの一致検査"
   });
 
   // Scenario: GitHubの通常ブランチビルドでGITHUB_REF_NAMEだけが設定されている
-  // Given: GITHUB_REF_TYPEがbranchでGITHUB_REF_NAMEがv1.5.7である
+  // Given: GITHUB_REF_TYPEがbranchでGITHUB_REF_NAMEがv1.5.7、HEADがリリースタグでもある
   // When: CLIのバージョン検査を実行する
   // Then: branch名をリリースタグと誤認せず、開発ビルドとして継続する
   it("Scenario: 通常のブランチビルドをリリース検査で止めない", () => {
@@ -77,6 +77,19 @@ describe("Feature: リリースタグとアプリバージョンの一致検査"
     });
 
     expect(output).toContain("version check skipped for development build");
+  });
+
+  // Scenario: ブランチビルドのHEADが過去のリリースタグでもある
+  // Given: HEADタグがv1.5.8、GitHubのref種別がbranchである
+  // When: タグを指定せずにバージョン検査を実行する
+  // Then: HEADタグをリリース実行と解釈せず検査をスキップする
+  it("Scenario: ブランチビルドではHEADのリリースタグを無視する", () => {
+    expect(checkReleaseVersion({
+      actual: null,
+      headTag: "v1.5.8",
+      githubRefType: "branch",
+      versions: versionCopies("1.5.8"),
+    })).toEqual({ checked: false, tag: null });
   });
 });
 

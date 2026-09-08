@@ -6,6 +6,7 @@ import {
   documentPathOf,
   externalFilePathOf,
   initialSession,
+  registeredCommandPathOf,
   readEncodingOf,
   sessionFromDocInfo,
 } from "./session";
@@ -95,6 +96,29 @@ describe("Feature: DocumentSession", () => {
       path: "C:\\work\\memo.txt",
       folder_root: "C:\\work",
     }))).toBe("C:\\work\\memo.txt");
+  });
+
+  // Given: 通常ファイルの保存先、アーカイブ内項目、未保存文書のセッションがある
+  // When: `registeredCommandPathOf`を呼ぶ
+  // Then: 実ファイルだけが登録コマンドの対象pathになる
+  it("Scenario: 登録コマンドはアーカイブ内項目と未保存文書を対象にしない", () => {
+    expect(registeredCommandPathOf({
+      savePath: "C:\\work\\memo.txt",
+      archivePath: null,
+      archiveEntry: null,
+    })).toBe("C:\\work\\memo.txt");
+    expect(registeredCommandPathOf({
+      savePath: "C:\\work\\data.zip",
+      archivePath: "C:\\work\\data.zip",
+      archiveEntry: "memo.txt",
+    })).toBeNull();
+    expect(registeredCommandPathOf({
+      savePath: "C:\\work\\memo.txt",
+      archivePath: null,
+      archiveEntry: null,
+      readOnly: true,
+    })).toBeNull();
+    expect(registeredCommandPathOf({ savePath: null, archivePath: null, archiveEntry: null })).toBeNull();
   });
 
   // Given: selectedRelPath、savePath、displayPathのいずれかが設定された文書セッション

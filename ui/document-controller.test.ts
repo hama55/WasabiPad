@@ -56,6 +56,7 @@ function fakeView() {
     editor: {
       open: vi.fn(),
       setExternalFilePath: vi.fn(),
+      setRegisteredCommandPath: vi.fn(),
       focus: vi.fn(),
       goTo: vi.fn(),
       captureViewState: vi.fn(() => ({
@@ -170,6 +171,25 @@ describe("Feature: DocumentController", () => {
     expect(await controller.selectEntry("archive.bin::memo.bin", "md")).toBe(true);
 
     expect(view.editor.open).toHaveBeenLastCalledWith(42, false, false, "C:\\work\\archive.bin", true);
+  });
+
+  // Feature: エディタの登録コマンド対象
+  // Scenario: アーカイブ内項目を表示する
+  // Given: 編集可能なアーカイブ内項目のDocInfoがある
+  // When: 文書情報をDocumentControllerへ反映する
+  // Then: Explorer用pathは保持し、登録コマンド用pathは無効にする
+  it("Scenario: アーカイブ内項目へ登録コマンドを渡さない", () => {
+    const { view, controller } = fakeView();
+    controller.setSelectedRelPath("archive.bin::memo.txt");
+
+    controller.applyDocInfo(info({
+      kind: "archive",
+      path: "C:\\work\\archive.bin",
+      folder_root: "C:\\work",
+      view_only: false,
+    }));
+
+    expect(view.editor.setRegisteredCommandPath).toHaveBeenLastCalledWith(null);
   });
 
   // Feature: 削除後に編集中の本文を消去する

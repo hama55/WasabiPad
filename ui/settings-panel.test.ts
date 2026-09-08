@@ -303,6 +303,37 @@ describe("Feature: settings modal", () => {
     ]);
   });
 
+  // Feature: 登録コマンドの設定画面
+  // Scenario: 登録コマンドの編集値を正規化する
+  // Given: ファイル用2件の登録コマンドがある
+  // When: 1件目を空欄または2件目と同じ内容へ変更する
+  // Then: 無効な編集結果や重複は設定ストアへ保存しない
+  it("Scenario: 登録コマンド編集時に空欄と重複を保存しない", () => {
+    const ports = makePorts({
+      registeredCommands: [
+        { label: "Editor", prefix: "", command: "code {file}" },
+        { label: "Notepad", prefix: "", command: "code {file}" },
+      ],
+    });
+    openSettingsModal(ports);
+
+    const label = document.querySelector<HTMLInputElement>(
+      '[data-setting="registered-command-0-label"]',
+    )!;
+    label.value = "   ";
+    label.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(ports.getSetting("registeredCommands")[0]).toEqual({
+      label: "Editor", prefix: "", command: "code {file}",
+    });
+
+    label.value = "Notepad";
+    label.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(ports.getSetting("registeredCommands")).toEqual([
+      { label: "Editor", prefix: "", command: "code {file}" },
+      { label: "Notepad", prefix: "", command: "code {file}" },
+    ]);
+  });
+
   // Feature: 外部プレビューキャッシュ保存場所の設定画面
   // Scenario: プレビュー設定に現在のキャッシュ保存場所を表示する
   // Given: プレビューキャッシュ保存場所が `D:\\WasabiPad\\preview-cache` に設定されている

@@ -6,6 +6,7 @@ import { formatByteSize, formatFontFamily } from "./format";
 import { FONT_FAMILIES, INDENT_SIZES, isValidFontSize, MAX_FONT_SIZE, MIN_FONT_SIZE } from "./font-controls";
 import { openModal } from "./modal";
 import { commandValueKind } from "./registered-command-model";
+import { updateRegisteredCommands } from "./registered-commands";
 import { registeredStringLabel } from "./registered-strings";
 import type { Settings } from "./settings";
 import { createSearchSettingsEditor } from "./search-settings-dialog";
@@ -361,10 +362,12 @@ function registeredCommandsField(ports: SettingsPanelPorts): HTMLElement {
 
   const update = (index: number, key: "label" | "prefix" | "command", value: string) => {
     const commands = ports.getSetting("registeredCommands");
-    if (!commands[index]) return;
-    const next = [...commands];
-    next[index] = { ...next[index], [key]: value };
-    ports.setSetting("registeredCommands", next);
+    const command = commands[index];
+    if (!command) return;
+    const changes = { label: command.label, prefix: command.prefix, command: command.command };
+    changes[key] = value;
+    const next = updateRegisteredCommands(commands, command, changes);
+    if (next) ports.setSetting("registeredCommands", next);
   };
 
   const render = () => {
