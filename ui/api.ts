@@ -29,7 +29,6 @@ import type { WorkspaceSearchBatch } from "./generated/WorkspaceSearchBatch";
 import type { WorkspaceSearchOptions } from "./generated/WorkspaceSearchOptions";
 import type { WorkspaceSearchOutcome } from "./generated/WorkspaceSearchOutcome";
 import type { WorkspaceSearchResult } from "./generated/WorkspaceSearchResult";
-import type { ExternalWindowRect } from "./external-window-geometry";
 
 export type {
   EditManyItem,
@@ -173,15 +172,6 @@ export const openExternalUrl = (url: string) =>
   invoke<void>(IPC_COMMANDS.openExternalUrl, { url });
 export const runExternalCommand = (command: string, path: string) =>
   invoke<void>(IPC_COMMANDS.runExternalCommand, { command, path });
-export const launchExternalWindow = (command: string, path: string, rect: ExternalWindowRect) =>
-  invoke<boolean>(IPC_COMMANDS.launchExternalWindow, {
-    command,
-    path,
-    x: rect.x,
-    y: rect.y,
-    width: rect.width,
-    height: rect.height,
-  });
 
 // 範囲[start,end)を削除して text を挿入する統一プリミティブ
 // Tauri は Rust の snake_case 引数名を camelCase に変換して受け取るため、

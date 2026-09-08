@@ -22,14 +22,3 @@ export function createViewerBrowserMenuItem(onClick: () => void): HTMLButtonElem
   item.addEventListener("click", onClick);
   return item;
 }
-
-export function createViewerExternalMenuItem(
-  onClick: () => void,
-  label = "連携プレビューで開く",
-): HTMLButtonElement {
-  const item = document.createElement("button");
-  item.dataset.viewerAction = "external-preview";
-  item.append(createMenuIcon(MENU_ICON.external), document.createTextNode(label));
-  item.addEventListener("click", onClick);
-  return item;
-}

@@ -596,12 +596,12 @@ describe("Feature: DocumentController", () => {
     expect(proceed).toHaveBeenCalledOnce();
   });
 
-  // Feature: 連携エディタ起動前の保存確認
+  // Feature: 外部操作前の保存確認
   // Scenario: dirty文書で保存確認をキャンセルする
-  // Given: 編集済み文書と連携エディタ起動処理がある
+  // Given: 編集済み文書と外部操作処理がある
   // When: 既存の保存確認をキャンセルする
   // Then: 起動処理を実行せずfalseを返す
-  it("Scenario: dirty文書の連携エディタ起動をキャンセルする", async () => {
+  it("Scenario: dirty文書の外部操作をキャンセルする", async () => {
     const { controller } = fakeView();
     controller.applyDocInfo(info());
     controller.onEdit(42);

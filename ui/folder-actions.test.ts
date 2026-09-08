@@ -16,7 +16,6 @@ import {
 import type { RegisteredCommandMenuPorts } from "./registered-command-menu";
 import type { MemoCreationSpec } from "./document-controller";
 import { MENU_ICON } from "./menu-icons";
-import { canUseExternalEditor } from "./external-integration";
 
 vi.mock("./dialogs", () => ({ showError: vi.fn(async () => {}) }));
 vi.mock("./api", async (importOriginal) => ({
@@ -39,10 +38,6 @@ const registeredCommandPorts: RegisteredCommandMenuPorts = {
 
 function fixture(
   writeClipboardText?: (text: string) => Promise<void>,
-  externalEditor: {
-    openExternalEditor?: (path: string) => void | Promise<unknown>;
-    canOpenExternalEditor?: (path: string) => boolean;
-  } = {},
 ) {
   const dropdown = document.createElement("div");
   dropdown.id = "dropdown";
@@ -85,7 +80,6 @@ function fixture(
       getStartupPath: () => null,
       revealInExplorer,
       openInOtherApp,
-      ...externalEditor,
       writeClipboardText,
     }),
     doc,
@@ -159,29 +153,6 @@ describe("Feature: FolderActions", () => {
     [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
       .find((item) => item.textContent === "新規ウィンドウで開く")!.click();
     expect(ports.onOpenInNewWindow).toHaveBeenCalledWith("C:\\work\\memo.txt", goto);
-  });
-
-  // Feature: ファイルツリーからの連携エディタ起動
-  // Scenario: 連携エディタ設定済みのファイルを右クリックする
-  // Given: 現在のファイルに対応する連携エディタ起動portがある
-  // When: 「連携エディタで開く」をクリックする
-  // Then: 対象ファイルの絶対パスを連携エディタへ渡す
-  it("Scenario: ファイルツリーから連携エディタを開く", () => {
-    const openExternalEditor = vi.fn();
-    const { actions, dropdown, doc } = fixture(undefined, {
-      openExternalEditor,
-      canOpenExternalEditor: (path) => canUseExternalEditor(doc.current, path),
-    });
-    doc.current.savePath = "C:\\work\\memo.txt";
-
-    actions.showContextMenu(0, 0, { relPath: "memo.txt", isDir: false });
-
-    const item = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
-      .find((element) => element.textContent === "連携エディタで開く");
-    expect(item).toBeDefined();
-    item!.click();
-
-    expect(openExternalEditor).toHaveBeenCalledWith("C:\\work\\memo.txt");
   });
 
   // Feature: 形式を指定して開く

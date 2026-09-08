@@ -29,7 +29,7 @@ installDomStubs();
 function mount(
   initial: string,
   saveImage?: EditorPorts["saveImage"],
-  overrides: Partial<Pick<EditorPorts, "revealInExplorer" | "openExternalEditor" | "canOpenExternalEditor" | "getExternalEditorLabels" | "openInNewTab" | "openInNewWindow" | "openAs" | "registeredCommandPorts" | "openViewer">> = {},
+  overrides: Partial<Pick<EditorPorts, "revealInExplorer" | "openInNewTab" | "openInNewWindow" | "openAs" | "registeredCommandPorts" | "openViewer">> = {},
 ) {
   const host = document.createElement("div");
   document.body.replaceChildren(host);
@@ -45,9 +45,6 @@ function mount(
     onCursor: (line, col) => { events.cursor = [line, col]; },
     onFontChange: (family, size, changed) => { events.fontChanges.push({ family, size, changed }); },
     openExternally: () => {},
-    openExternalEditor: overrides.openExternalEditor,
-    canOpenExternalEditor: overrides.canOpenExternalEditor,
-    getExternalEditorLabels: overrides.getExternalEditorLabels,
     openInNewTab: overrides.openInNewTab,
     openInNewWindow: overrides.openInNewWindow,
     openAs: overrides.openAs,
@@ -1215,6 +1212,7 @@ describe("Feature: VirtualEditor", () => {
       "貼り付け",
       "削除",
       "すべて選択",
+      "コマンドを登録...",
       "CSVビュー",
       "Markdownビュー",
       "Imageビュー",
@@ -1247,7 +1245,7 @@ describe("Feature: VirtualEditor", () => {
         .find((element) => element.textContent === label);
       expect(menuItem?.querySelector(`.${icon}`), label).not.toBeNull();
     }
-    expect(dropdown.querySelectorAll(".dd-sep")).toHaveLength(5);
+    expect(dropdown.querySelectorAll(".dd-sep")).toHaveLength(6);
     const item = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
       .find((element) => element.textContent === "エクスプローラで開く");
     item?.click();
@@ -1272,62 +1270,6 @@ describe("Feature: VirtualEditor", () => {
       .find((element) => element.textContent === ".md")!.click();
     await settle();
     expect(openAs).toHaveBeenCalledWith("md");
-  });
-
-  // Feature: 連携エディタの明示起動
-  // Scenario: 保存済み通常ファイルを連携エディタで開く
-  // Given: 連携エディタの起動portと対象ファイルパス
-  // When: エディタの右クリックから「連携エディタで開く」を選ぶ
-  // Then: 現在のファイルパスをportへ渡す
-  it("Scenario: エディタの右クリックから連携エディタを開く", async () => {
-    const openExternalEditor = vi.fn();
-    const { editor, host } = mount("memo", undefined, {
-      openExternalEditor,
-      canOpenExternalEditor: () => true,
-    });
-    const dropdown = document.createElement("div");
-    dropdown.id = "dropdown";
-    document.body.appendChild(dropdown);
-    editor.open(1, false, false, "C:\\work\\memo.md");
-    await settle();
-
-    host.querySelector<HTMLElement>(".ve-scroll")!.dispatchEvent(
-      new MouseEvent("contextmenu", { bubbles: true, clientX: 0, clientY: 0 }),
-    );
-    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
-      .find((item) => item.textContent === "連携エディタで開く")!.click();
-    await settle();
-
-    expect(openExternalEditor).toHaveBeenCalledWith("C:\\work\\memo.md");
-  });
-
-  // Feature: 複数連携エディタの明示起動
-  // Scenario: 保存済み通常ファイルの右クリックに登録済み連携先をすべて表示する
-  // Given: 名前付きの連携エディタが2件ある
-  // When: サブメニューから2件目を選ぶ
-  // Then: 選択した登録番号と現在のファイルパスをportへ渡す
-  it("Scenario: エディタの右クリックから複数の連携先を選ぶ", async () => {
-    const openExternalEditor = vi.fn();
-    const { editor, host } = mount("memo", undefined, {
-      openExternalEditor,
-      getExternalEditorLabels: () => ["VS Code", "メモ帳"],
-    });
-    const dropdown = document.createElement("div");
-    dropdown.id = "dropdown";
-    document.body.appendChild(dropdown);
-    editor.open(1, false, false, "C:\\work\\memo.md");
-    await settle();
-
-    host.querySelector<HTMLElement>(".ve-scroll")!.dispatchEvent(
-      new MouseEvent("contextmenu", { bubbles: true, clientX: 0, clientY: 0 }),
-    );
-    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
-      .find((item) => item.textContent === "連携エディタで開く ▸")!.click();
-    [...dropdown.querySelectorAll<HTMLElement>(".dd-submenu .dd-item")]
-      .find((item) => item.textContent === "メモ帳")!.click();
-    await settle();
-
-    expect(openExternalEditor).toHaveBeenCalledWith("C:\\work\\memo.md", 1);
   });
 
   // Given: 外部ファイルパスと新規ウィンドウ操作がある
@@ -1470,6 +1412,7 @@ describe("Feature: VirtualEditor", () => {
       "形式を指定して開く ▸",
       "コピー",
       "すべて選択",
+      "コマンドを登録...",
       "CSVビュー",
       "Markdownビュー",
       "Imageビュー",
@@ -1477,7 +1420,7 @@ describe("Feature: VirtualEditor", () => {
       "html(静的)",
       "Windowsアプリで開く",
     ]);
-    expect(dropdown.querySelectorAll(".dd-sep")).toHaveLength(4);
+    expect(dropdown.querySelectorAll(".dd-sep")).toHaveLength(5);
     for (const [label, icon] of [
       ["エクスプローラで開く", MENU_ICON.explorer],
       ["コピー", MENU_ICON.copy],
@@ -1516,11 +1459,48 @@ describe("Feature: VirtualEditor", () => {
       .not.toContain("エクスプローラで開く");
   });
 
-  // Given: 文書が「https://example.com」、選択範囲がURL全体、promptFields が「ブラウザ」「open {string}」を返し、外部パスが「C:\work\memo.txt」
+  // Feature: エディタの登録コマンド
+  // Scenario: 選択範囲がない保存済みファイルへファイル用コマンドを表示する
+  // Given: ファイル用の登録コマンドと保存済みファイルがある
+  // When: エディタ本文の右クリックから登録コマンドを実行する
+  // Then: {file}を現在のファイルパスへ置換して実行する
+  it("Scenario: エディタの右クリックでファイル用登録コマンドを実行する", async () => {
+    loadSettings.mockResolvedValue(JSON.stringify({
+      registeredCommands: [{ label: "VS Code", prefix: "", command: 'code "{file}"' }],
+    }));
+    await initSettings();
+    const runExternalCommand = vi.fn(async () => {});
+    const { editor, host } = mount("memo", undefined, {
+      registeredCommandPorts: {
+        promptFields: async () => null,
+        runExternalCommand,
+      },
+    });
+    const dropdown = document.createElement("div");
+    dropdown.id = "dropdown";
+    document.body.appendChild(dropdown);
+    editor.open(1, false, false, "C:\\work\\memo.md");
+    await settle();
+
+    host.querySelector<HTMLElement>(".ve-scroll")!.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, clientX: 0, clientY: 0 }),
+    );
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "登録コマンド（ファイル） ▸")!.click();
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-submenu .dd-item")]
+      .find((item) => item.textContent?.startsWith("VS Code"))!.click();
+
+    await vi.waitFor(() => expect(runExternalCommand).toHaveBeenCalledWith(
+      'code "C:\\work\\memo.md"',
+      "C:\\work\\memo.md",
+    ));
+  });
+
+  // Given: 文書が「https://example.com」、選択範囲がURL全体、promptFields が「ブラウザ」「open {string_in_url}」を返し、外部パスが「C:\work\memo.txt」
   // When: 「コマンドを登録...」を選び、登録されたコマンドを選んで実行し、その後実行失敗も発生させる
-  // Then: 第2入力欄のラベルがplaceholderの説明付きで、成功時に runExternalCommand('open https://example.com', 'C:\work\memo.txt') が呼ばれ、失敗時に「登録コマンドを実行できませんでした」と Error を含むイベントが通知される
+  // Then: 第2入力欄のラベルがplaceholderの説明付きで、成功時にURLエンコードした文字列が実行され、失敗時に「登録コマンドを実行できませんでした」と Error を含むイベントが通知される
   it("Scenario: メモビューの登録コマンドへ選択文字列を渡す", async () => {
-    const promptFields = vi.fn(async () => ["ブラウザ", "open {string}"]);
+    const promptFields = vi.fn(async () => ["ブラウザ", "open {string_in_url}"]);
     const runExternalCommand = vi.fn(async () => {});
     const registeredCommandPorts: RegisteredCommandMenuPorts = { promptFields, runExternalCommand };
     const { editor, host, events } = mount("https://example.com", undefined, {
@@ -1585,19 +1565,19 @@ describe("Feature: VirtualEditor", () => {
 
     showContextMenu();
     [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
-      .find((item) => item.textContent === "登録コマンド ▸")!.click();
+      .find((item) => item.textContent === "登録コマンド（選択文字列） ▸")!.click();
     const commandItem = dropdown.querySelector<HTMLElement>(".dd-submenu .dd-item");
     commandItem?.click();
 
     await vi.waitFor(() => expect(runExternalCommand).toHaveBeenCalledWith(
-      "open https://example.com",
+      "open https%3A%2F%2Fexample.com",
       "C:\\work\\memo.txt",
     ));
 
     runExternalCommand.mockRejectedValueOnce(new Error("command failed"));
     showContextMenu();
     [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
-      .find((item) => item.textContent === "登録コマンド ▸")!.click();
+      .find((item) => item.textContent === "登録コマンド（選択文字列） ▸")!.click();
     dropdown.querySelector<HTMLElement>(".dd-submenu .dd-item")!.click();
     await vi.waitFor(() => expect(events.errors).toContainEqual({
       message: "登録コマンドを実行できませんでした",

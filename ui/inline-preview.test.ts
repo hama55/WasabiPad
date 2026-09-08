@@ -17,7 +17,6 @@ function mount(
   onSelectionChange?: (selection: { start: { line: number; col: number }; end: { line: number; col: number } }) =>
     void | Promise<void>,
   onMarkdownLink?: (href: string, newTab: boolean) => void | Promise<void>,
-  onExternalPreview?: (format: ViewerFormat) => void | Promise<void>,
 ) {
   const host = document.createElement("div");
   host.appendChild(document.createElement("iframe"));
@@ -30,7 +29,6 @@ function mount(
     onFullscreenChange,
     onSelectionChange,
     onMarkdownLink,
-    onExternalPreview,
     onError,
   });
   return { host, preview, onAvailabilityChange };
@@ -97,44 +95,6 @@ describe("Feature: inline preview", () => {
     }));
 
     expect(onFormatChange).toHaveBeenCalledWith("csv");
-  });
-
-  // Feature: 連携プレビューの親通知
-  // Scenario: inline viewerから連携プレビュー要求を転送する
-  // Given: 連携プレビュー通知portを持つインラインプレビュー
-  // When: viewerから現在形式の外部プレビュー通知を受け取る
-  // Then: 親の連携プレビューportへ形式を渡す
-  it("Scenario: forwards an external preview request", () => {
-    const onExternalPreview = vi.fn();
-    const { host } = mount(undefined, undefined, undefined, undefined, undefined, undefined, onExternalPreview);
-    const frame = host.querySelector("iframe")!;
-
-    window.dispatchEvent(new MessageEvent("message", {
-      source: frame.contentWindow,
-      origin: window.location.origin,
-      data: { type: INLINE_PREVIEW_MESSAGES.EXTERNAL_PREVIEW_MESSAGE, format: "markdown" },
-    }));
-
-    expect(onExternalPreview).toHaveBeenCalledWith("markdown");
-  });
-
-  // Feature: 複数連携プレビューの選択
-  // Scenario: ビューアから選択した連携先番号を親へ転送する
-  // Given: 連携プレビュー通知portを持つインラインプレビュー
-  // When: ビューアが2件目の連携先を要求する
-  // Then: 形式と登録番号を親へ渡す
-  it("Scenario: forwards the selected external preview index", () => {
-    const onExternalPreview = vi.fn();
-    const { host } = mount(undefined, undefined, undefined, undefined, undefined, undefined, onExternalPreview);
-    const frame = host.querySelector("iframe")!;
-
-    window.dispatchEvent(new MessageEvent("message", {
-      source: frame.contentWindow,
-      origin: window.location.origin,
-      data: { type: INLINE_PREVIEW_MESSAGES.EXTERNAL_PREVIEW_MESSAGE, format: "markdown", index: 1 },
-    }));
-
-    expect(onExternalPreview).toHaveBeenCalledWith("markdown", 1);
   });
 
   // Given: 右側プレビューが表示形式の選択を持つ

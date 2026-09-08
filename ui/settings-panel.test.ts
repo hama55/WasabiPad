@@ -19,8 +19,6 @@ function makePorts(initial: Partial<Settings> = {}): SettingsPanelPorts {
     startupPath: null,
     registeredStrings: [],
     registeredCommands: [],
-    externalEditorCommands: {},
-    externalPreviewCommands: {},
     workspaceSearchOptions: null,
     openTabs: { tabs: [], activeId: null },
     ...initial,
@@ -143,7 +141,6 @@ describe("Feature: settings modal", () => {
     expect(document.querySelector("[data-settings-section=プレビュー]")).not.toBeNull();
     expect(document.querySelector("[data-settings-section=検索]")).not.toBeNull();
     expect(document.querySelector("[data-settings-section=登録]")).not.toBeNull();
-    expect(document.querySelector("[data-settings-section=連携]")).not.toBeNull();
     expect(document.querySelector('[data-setting="startup-path"]')).not.toBeNull();
     expect(document.querySelector(".settings-reset")).not.toBeNull();
   });
@@ -167,7 +164,6 @@ describe("Feature: settings modal", () => {
       "プレビュー",
       "検索",
       "登録",
-      "連携",
       "About",
     ]);
     expect(sections.map((section) => section.dataset.settingsSection)).toEqual([
@@ -176,7 +172,6 @@ describe("Feature: settings modal", () => {
       "プレビュー",
       "検索",
       "登録",
-      "連携",
       "About",
     ]);
     expect(tabs[0].getAttribute("aria-selected")).toBe("true");
@@ -249,44 +244,63 @@ describe("Feature: settings modal", () => {
     expect(document.querySelector(".settings-box")).not.toBeNull();
   });
 
-  // Feature: 連携コマンドの設定画面
-  // Scenario: 1つの拡張子に複数の連携先を追加する
-  // Given: txtにメモ帳が1件ある設定モーダル
-  // When: 追加ボタンで2件目を作り、名前とコマンドを変更する
-  // Then: 名前付きの順序付き登録をportへ保存する
-  it("Scenario: 1つの拡張子へ連携先を追加する", () => {
+  // Feature: 登録コマンドの設定画面
+  // Scenario: 登録コマンドを編集して同じ種類の順序をD&Dで変更する
+  // Given: ファイル用2件と文字列用1件の登録コマンドがある
+  // When: 表示名を編集し、ファイル用の2件目を1件目へドロップする
+  // Then: 編集内容と種類別の順序を設定ストアへ即時保存する
+  it("Scenario: 登録コマンドを設定画面で編集して並べ替える", () => {
     const ports = makePorts({
-      externalEditorCommands: {
-        txt: [{ name: "メモ帳", command: 'notepad.exe "{file}"' }],
-      },
+      registeredCommands: [
+        { label: "Editor", prefix: "", command: "code {file}" },
+        { label: "Browser", prefix: "", command: "open {string}", valueKind: "string" },
+        { label: "Notepad", prefix: "", command: "notepad {file}" },
+      ],
     });
     openSettingsModal(ports);
 
-    const section = document.querySelector<HTMLElement>("[data-settings-section=連携]")!;
-    expect(section.querySelector('[data-setting="externalEditorCommands-txt-0-name"]')).not.toBeNull();
-    expect(section.querySelector('[data-setting="externalPreviewCommands-png-0-command"]')).toBeNull();
-    expect(section.querySelector('[data-extension="png"]')).not.toBeNull();
+    const section = document.querySelector<HTMLElement>("[data-settings-section=登録]")!;
+    const label = section.querySelector<HTMLInputElement>('[data-setting="registered-command-0-label"]')!;
+    const command = section.querySelector<HTMLTextAreaElement>('[data-setting="registered-command-0-command"]')!;
+    label.value = "VS Code";
+    label.dispatchEvent(new Event("change", { bubbles: true }));
+    command.value = "code --reuse-window {file}";
+    command.dispatchEvent(new Event("change", { bubbles: true }));
 
-    section.querySelector<HTMLButtonElement>(
-      '[data-action="add-external-command"][data-setting="externalEditorCommands-txt"]',
-    )!.click();
+    const first = section.querySelector<HTMLElement>('[data-command-index="0"]')!;
+    const second = section.querySelector<HTMLElement>('[data-command-index="2"]')!;
+    second.dispatchEvent(new Event("dragstart", { bubbles: true }));
+    first.dispatchEvent(new Event("drop", { bubbles: true }));
 
-    const secondName = section.querySelector<HTMLInputElement>('[data-setting="externalEditorCommands-txt-1-name"]')!;
-    const secondCommand = section.querySelector<HTMLInputElement>('[data-setting="externalEditorCommands-txt-1-command"]')!;
-    secondName.value = "VS Code";
-    secondName.dispatchEvent(new Event("change", { bubbles: true }));
-    secondCommand.value = 'code "{file}"';
-    secondCommand.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(ports.getSetting("registeredCommands")).toEqual([
+      { label: "Notepad", prefix: "", command: "notepad {file}" },
+      { label: "Browser", prefix: "", command: "open {string}", valueKind: "string" },
+      { label: "VS Code", prefix: "", command: "code --reuse-window {file}" },
+    ]);
+  });
 
-    expect(ports.getSetting("externalEditorCommands")).toEqual({
-      txt: [
-        { name: "メモ帳", command: 'notepad.exe "{file}"' },
-        { name: "VS Code", command: 'code "{file}"' },
+  // Feature: 登録コマンドの設定画面
+  // Scenario: 登録コマンドを上下矢印で移動する
+  // Given: 同じ種類の登録コマンドが2件ある
+  // When: 2件目の上矢印を押す
+  // Then: 同じ種類の登録順だけを入れ替えて保存する
+  it("Scenario: 登録コマンドを上下矢印で並べ替える", () => {
+    const ports = makePorts({
+      registeredCommands: [
+        { label: "Editor", prefix: "", command: "code {file}" },
+        { label: "Notepad", prefix: "", command: "notepad {file}" },
       ],
     });
+    openSettingsModal(ports);
 
-    expect(section.querySelectorAll('[data-setting^="externalEditorCommands-txt-"][data-setting$="-command"]'))
-      .toHaveLength(2);
+    document.querySelector<HTMLButtonElement>(
+      '[data-action="move-registered-command-up"][data-command-index="1"]',
+    )!.click();
+
+    expect(ports.getSetting("registeredCommands")).toEqual([
+      { label: "Notepad", prefix: "", command: "notepad {file}" },
+      { label: "Editor", prefix: "", command: "code {file}" },
+    ]);
   });
 
   // Feature: 外部プレビューキャッシュ保存場所の設定画面
@@ -417,10 +431,11 @@ describe("Feature: settings modal", () => {
     });
     openSettingsModal(ports);
 
-    const groups = [...document.querySelectorAll<HTMLElement>(".settings-list-group")];
-    groups[0].querySelector<HTMLButtonElement>(".settings-list-row button")!.click();
-    groups[0].querySelector<HTMLButtonElement>(".settings-list-row button")!.click();
-    groups[1].querySelector<HTMLButtonElement>(".settings-list-row button")!.click();
+    const strings = document.querySelector<HTMLElement>('[data-setting-group="registered-strings"]')!;
+    const commands = document.querySelector<HTMLElement>('[data-setting-group="registered-commands"]')!;
+    strings.querySelector<HTMLButtonElement>(".settings-list-row button")!.click();
+    strings.querySelector<HTMLButtonElement>(".settings-list-row button")!.click();
+    commands.querySelector<HTMLButtonElement>('[title="登録コマンドを削除"]')!.click();
 
     expect(ports.setSetting).toHaveBeenCalledWith("registeredStrings", ["two"]);
     expect(ports.setSetting).toHaveBeenCalledWith("registeredStrings", []);

@@ -18,7 +18,6 @@ const {
   FULLSCREEN_CHANGE_MESSAGE,
   FULLSCREEN_STATE_MESSAGE,
   MARKDOWN_FRAGMENT_MESSAGE,
-  EXTERNAL_PREVIEW_MESSAGE,
 } = INLINE_PREVIEW_MESSAGES;
 
 export interface InlinePreviewPorts {
@@ -29,7 +28,6 @@ export interface InlinePreviewPorts {
   onFullscreenChange?: () => void | Promise<void>;
   onSelectionChange?: (selection: ViewerSelection) => void | Promise<void>;
   onMarkdownLink?: (href: string, newTab: boolean) => void | Promise<void>;
-  onExternalPreview?: (format: ViewerFormat, index?: number) => void | Promise<void>;
   onError?: (error: unknown) => void | Promise<void>;
 }
 
@@ -100,15 +98,6 @@ export class InlinePreview {
         if (typeof event.data.href !== "string" || typeof event.data.newTab !== "boolean") return;
         this.notifyPort(() => this.ports.onMarkdownLink?.(event.data.href, event.data.newTab));
         return;
-      }
-      if (event.data?.type === EXTERNAL_PREVIEW_MESSAGE) {
-        if (!isViewerFormat(event.data.format)) return;
-        if (event.data.index !== undefined
-          && (!Number.isInteger(event.data.index) || event.data.index < 0)) return;
-        const index = event.data.index;
-        this.notifyPort(() => index === undefined
-          ? this.ports.onExternalPreview?.(event.data.format)
-          : this.ports.onExternalPreview?.(event.data.format, index));
       }
     });
   }

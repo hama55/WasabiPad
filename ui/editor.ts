@@ -11,6 +11,7 @@ import {
   createRegisteredCommandMenu,
   type RegisteredCommandMenuPorts,
 } from "./registered-command-menu";
+import { commandsForKind } from "./registered-commands";
 import { MENU_ICON } from "./menu-icons";
 import { MENU_LABELS } from "./menu-labels";
 import { createOpenAsMenu } from "./open-as-menu";
@@ -63,9 +64,6 @@ export interface EditorPorts {
   onCursor: (line: number, col: number) => void;
   onFontChange: (fontFamily: string, fontSize: number, changed: "family" | "size" | "both") => void;
   openExternally: (path: string) => void | Promise<unknown>;
-  openExternalEditor?: (path: string, index?: number) => void | Promise<unknown>;
-  canOpenExternalEditor?: (path: string) => boolean;
-  getExternalEditorLabels?: (path: string) => readonly string[];
   openInNewTab?: () => void | Promise<unknown>;
   openInNewWindow?: (path: string) => void | Promise<unknown>;
   openAs?: (openAs: api.OpenAs) => void | Promise<unknown>;
@@ -144,9 +142,6 @@ export class VirtualEditor {
   private externalFilePath: string | null = null;
   private markdown = false;
   private openExternally: (path: string) => void | Promise<unknown>;
-  private openExternalEditor?: (path: string, index?: number) => void | Promise<unknown>;
-  private canOpenExternalEditor?: (path: string) => boolean;
-  private getExternalEditorLabels?: (path: string) => readonly string[];
   private openInNewTab?: () => void | Promise<unknown>;
   private openInNewWindow?: (path: string) => void | Promise<unknown>;
   private openAs?: (openAs: api.OpenAs) => void | Promise<unknown>;
@@ -196,9 +191,6 @@ export class VirtualEditor {
     this.onCursor = ports.onCursor;
     this.onFontChange = ports.onFontChange;
     this.openExternally = ports.openExternally;
-    this.openExternalEditor = ports.openExternalEditor;
-    this.canOpenExternalEditor = ports.canOpenExternalEditor;
-    this.getExternalEditorLabels = ports.getExternalEditorLabels;
     this.openInNewTab = ports.openInNewTab;
     this.openInNewWindow = ports.openInNewWindow;
     this.openAs = ports.openAs;
@@ -2188,18 +2180,25 @@ export class VirtualEditor {
         });
       }
     }
-    if (this.sel.hasSel() && commandPath) {
-      const [start, end] = this.sel.norm();
-      addCustomItem({
-        ...createRegisteredCommandMenu({
+    if (commandPath) {
+      const registeredCommandServices = {
+        ...this.registeredCommandPorts,
+        run: (title: string, operation: () => void | Promise<unknown>) => this.dispatch(title, operation),
+      };
+      const hasFileCommands = commandsForKind("file").length > 0;
+      const fileMenu = createRegisteredCommandMenu({ path: commandPath, valueKind: "file" }, registeredCommandServices);
+      if (hasFileCommands) fileMenu.label = "登録コマンド（ファイル）";
+      if (!this.sel.hasSel() || hasFileCommands) addCustomItem(fileMenu);
+      if (this.sel.hasSel()) {
+        const [start, end] = this.sel.norm();
+        const stringMenu = createRegisteredCommandMenu({
           path: commandPath,
           value: () => this.sel.blockBounds() ? this.blockText() : this.lineCache.textInRange(start, end),
           valueKind: "string",
-        }, {
-          ...this.registeredCommandPorts,
-          run: (title, operation) => this.dispatch(title, operation),
-        }),
-      });
+        }, registeredCommandServices);
+        if (commandsForKind("string").length) stringMenu.label = "登録コマンド（選択文字列）";
+        addCustomItem(stringMenu);
+      }
     }
     const viewerFormats = Object.entries(VIEWER_FORMAT_LABELS) as [api.ViewerFormat, string][];
     items.push(
@@ -2211,33 +2210,6 @@ export class VirtualEditor {
       })),
     );
     if (commandPath) {
-      const labels = this.getExternalEditorLabels?.(commandPath);
-      const canOpen = this.openExternalEditor
-        && (labels ? labels.length > 0 : (!this.canOpenExternalEditor || this.canOpenExternalEditor(commandPath)));
-      if (canOpen) {
-        const item: MenuItem = labels && labels.length > 1
-          ? {
-            label: MENU_LABELS.externalEditor,
-            iconClass: MENU_ICON.external,
-            sub: labels.map((label, index) => ({
-              label,
-              iconClass: MENU_ICON.external,
-              action: () => this.dispatch(
-                "連携エディタを開けませんでした",
-                () => this.openExternalEditor?.(commandPath, index),
-              ),
-            })),
-          }
-          : {
-            label: MENU_LABELS.externalEditor,
-            iconClass: MENU_ICON.external,
-            action: () => this.dispatch(
-              "連携エディタを開けませんでした",
-              () => this.openExternalEditor?.(commandPath),
-            ),
-          };
-        items.push({ ...item, sep: true });
-      }
       items.push({
         label: MENU_LABELS.external,
         iconClass: MENU_ICON.external,

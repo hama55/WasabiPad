@@ -135,61 +135,23 @@ describe("Feature: settings", () => {
     expect(saved.previewFontSize).toBe(20);
   });
 
-  // Feature: 連携先登録の保存
-  // Scenario: 形式別の複数連携先と旧形式を正規化して復元する
-  // Given: 大文字キー・前後空白・空値・不正値・名前付きの複数登録を含む設定
+  // Feature: 拡張子別連携設定の削除
+  // Scenario: 旧設定キーを含む設定JSONを復元する
+  // Given: 旧版のexternalEditorCommandsとexternalPreviewCommandsが保存されている
   // When: parseSettingsを呼ぶ
-  // Then: 有効な登録だけを順序どおり復元し、コマンド文字列を保ったまま旧形式のプレビューキーを拡張子へ展開する
-  it("Scenario: 複数の連携先登録を安全に復元する", () => {
+  // Then: 旧設定は読み込まず、現在の登録コマンドだけを復元する
+  it("Scenario: 旧版の拡張子別連携設定を無視する", () => {
     const settings = parseSettings(JSON.stringify({
-      externalEditorCommands: { " MD ": '  editor "{file}"  ', empty: " ", invalid: 42 },
-      externalPreviewCommands: {
-        Markdown: ' browser "{file}" ',
-        png: [{ name: " PNGビュー ", command: ' image-viewer "{file}" ' }],
-      },
+      externalEditorCommands: { txt: [{ name: "メモ帳", command: "notepad {file}" }] },
+      externalPreviewCommands: { image: "viewer {file}" },
+      registeredCommands: [{ label: "メモ帳", command: "notepad {file}" }],
     }));
 
-    expect(settings.externalEditorCommands).toEqual({
-      md: [{ name: "", command: '  editor "{file}"  ' }],
-    });
-    expect(settings.externalPreviewCommands).toEqual({
-      md: [{ name: "", command: ' browser "{file}" ' }],
-      markdown: [{ name: "", command: ' browser "{file}" ' }],
-      png: [{ name: "PNGビュー", command: ' image-viewer "{file}" ' }],
-    });
-  });
-
-  // Feature: 連携エディタの初期値
-  // Scenario: 初期設定だけにtxtのメモ帳登録を入れる
-  // Given: 連携エディタ設定キーをまだ持たない設定JSON
-  // When: parseSettingsを呼ぶ
-  // Then: txtにメモ帳を1件だけ復元する
-  it("Scenario: txtの初期連携先にメモ帳を設定する", () => {
-    expect(parseSettings("{}").externalEditorCommands).toEqual({
-      txt: [{ name: "メモ帳", command: 'notepad.exe "{file}"' }],
-    });
-    expect(parseSettings(JSON.stringify({ externalEditorCommands: {} })).externalEditorCommands).toEqual({});
-  });
-
-  // Feature: 画像形式別の連携プレビュー
-  // Scenario: 旧image設定を個別拡張子へ移行する
-  // Given: imageの旧設定とpngの個別設定
-  // When: parseSettingsを呼ぶ
-  // Then: 個別設定を保ち、未設定の画像拡張子へだけ旧設定を展開する
-  it("Scenario: imageの旧設定を個別画像拡張子へ移行する", () => {
-    const settings = parseSettings(JSON.stringify({
-      externalPreviewCommands: {
-        image: ' old-viewer "{file}" ',
-        png: [{ name: "PNG", command: ' png-viewer "{file}" ' }],
-      },
-    }));
-
-    expect(settings.externalPreviewCommands.png).toEqual([
-      { name: "PNG", command: ' png-viewer "{file}" ' },
+    expect(settings.registeredCommands).toEqual([
+      { label: "メモ帳", prefix: "", command: "notepad {file}" },
     ]);
-    expect(settings.externalPreviewCommands.svg).toEqual([
-      { name: "", command: ' old-viewer "{file}" ' },
-    ]);
+    expect(settings).not.toHaveProperty("externalEditorCommands");
+    expect(settings).not.toHaveProperty("externalPreviewCommands");
   });
 
   // Feature: 外部プレビューキャッシュ保存場所の設定

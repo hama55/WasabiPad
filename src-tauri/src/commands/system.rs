@@ -219,35 +219,10 @@ pub(crate) fn open_external_url(url: String) -> Result<(), String> {
 }
 
 #[cfg(target_os = "windows")]
-struct ProcessHandles {
-    thread: windows_sys::Win32::Foundation::HANDLE,
-    process: windows_sys::Win32::Foundation::HANDLE,
-}
-
-#[cfg(target_os = "windows")]
-struct SpawnedProcess {
-    process_id: u32,
-    // 探索中にプロセスオブジェクトを保持し、PID再利用で別窓を誤操作しない。
-    _handles: ProcessHandles,
-}
-
-#[cfg(target_os = "windows")]
-impl Drop for ProcessHandles {
-    fn drop(&mut self) {
-        use windows_sys::Win32::Foundation::CloseHandle;
-
-        unsafe {
-            let _ = CloseHandle(self.thread);
-            let _ = CloseHandle(self.process);
-        }
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn spawn_command_line_with_process(command: &str) -> Result<SpawnedProcess, String> {
+fn spawn_command_line(command: &str) -> Result<(), String> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Foundation::GetLastError;
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
     use windows_sys::Win32::System::Threading::{
         CreateProcessW, PROCESS_INFORMATION, STARTUPINFOW,
     };
@@ -278,120 +253,11 @@ fn spawn_command_line_with_process(command: &str) -> Result<SpawnedProcess, Stri
         return Err(std::io::Error::from_raw_os_error(error as i32).to_string());
     }
 
-    Ok(SpawnedProcess {
-        process_id: process_info.dwProcessId,
-        _handles: ProcessHandles {
-            thread: process_info.hThread,
-            process: process_info.hProcess,
-        },
-    })
-}
-
-#[cfg(target_os = "windows")]
-fn spawn_command_line_with_pid(command: &str) -> Result<u32, String> {
-    spawn_command_line_with_process(command).map(|process| process.process_id)
-}
-
-#[cfg(target_os = "windows")]
-fn spawn_command_line(command: &str) -> Result<(), String> {
-    spawn_command_line_with_pid(command).map(|_| ())
-}
-
-#[cfg(target_os = "windows")]
-fn find_visible_window_for_process(process_id: u32) -> Option<windows_sys::Win32::Foundation::HWND> {
-    use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM};
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetWindowThreadProcessId, IsWindowVisible,
-    };
-
-    struct Search {
-        process_id: u32,
-        window: HWND,
-    }
-
-    unsafe extern "system" fn visit_window(hwnd: HWND, data: LPARAM) -> BOOL {
-        let search = unsafe { &mut *(data as *mut Search) };
-        if unsafe { IsWindowVisible(hwnd) } == 0 {
-            return 1;
-        }
-        let mut window_process_id = 0;
-        if unsafe { GetWindowThreadProcessId(hwnd, &mut window_process_id) } == 0 {
-            return 1;
-        }
-        if window_process_id == search.process_id {
-            search.window = hwnd;
-            return 0;
-        }
-        1
-    }
-
-    let mut search = Search {
-        process_id,
-        window: std::ptr::null_mut(),
-    };
     unsafe {
-        EnumWindows(
-            Some(visit_window),
-            (&mut search as *mut Search).cast::<std::ffi::c_void>() as LPARAM,
-        );
+        let _ = CloseHandle(process_info.hThread);
+        let _ = CloseHandle(process_info.hProcess);
     }
-    (!search.window.is_null()).then_some(search.window)
-}
-
-#[cfg(target_os = "windows")]
-fn place_external_window(
-    process_id: u32,
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
-) -> bool {
-    use std::time::{Duration, Instant};
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        SetForegroundWindow, SetWindowPos, ShowWindow, SWP_NOZORDER, SWP_SHOWWINDOW, SW_RESTORE,
-    };
-
-    let Ok(width) = i32::try_from(width) else {
-        return false;
-    };
-    let Ok(height) = i32::try_from(height) else {
-        return false;
-    };
-    if width <= 0 || height <= 0 {
-        return false;
-    }
-
-    // ponytail: bounded polling handles normal startup races; use a native window event only if this proves insufficient.
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let window = loop {
-        if let Some(window) = find_visible_window_for_process(process_id) {
-            break window;
-        }
-        if Instant::now() >= deadline {
-            return false;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    };
-
-    let moved = unsafe {
-        SetWindowPos(
-            window,
-            std::ptr::null_mut(),
-            x,
-            y,
-            width,
-            height,
-            SWP_NOZORDER | SWP_SHOWWINDOW,
-        )
-    } != 0;
-    if !moved {
-        return false;
-    }
-    unsafe {
-        ShowWindow(window, SW_RESTORE);
-        let _ = SetForegroundWindow(window);
-    }
-    true
+    Ok(())
 }
 
 pub(crate) fn run_external_command(command: String, path: String) -> Result<(), String> {
@@ -419,27 +285,6 @@ fn validated_external_command(command: String, path: String) -> Result<String, S
         return Err("コマンドが空です".to_string());
     }
     Ok(command.to_string())
-}
-
-pub(crate) fn launch_external_window(
-    command: String,
-    path: String,
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
-) -> Result<bool, String> {
-    #[cfg(target_os = "windows")]
-    {
-        let command = validated_external_command(command, path)?;
-        let process = spawn_command_line_with_process(&command)?;
-        return Ok(place_external_window(process.process_id, x, y, width, height));
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = (command, path, x, y, width, height);
-        Err("この機能はWindowsでのみ使用できます".to_string())
-    }
 }
 
 #[cfg(all(test, target_os = "windows"))]
@@ -498,84 +343,14 @@ mod tests {
         assert!(super::explorer_args(&path, true).is_err());
     }
 
+    // Feature: 登録コマンドの外部実行
+    // Scenario: 完成したコマンドラインをそのまま起動する
+    // Given: すぐ終了するcmd.exeコマンドがある
+    // When: 登録コマンドの実行処理を呼ぶ
+    // Then: シェルを追加せずに起動できる
     #[test]
     fn runs_the_complete_command_line_without_adding_a_shell() {
         super::spawn_command_line("cmd.exe /D /C exit 0").unwrap();
-    }
-
-    // Feature: 連携先ウィンドウ起動の入力検証
-    // Scenario: 空コマンドを指定する
-    // Given: 実ファイルが存在する
-    // When: 連携先ウィンドウ起動を要求する
-    // Then: コマンドが空であることを通知する
-    #[test]
-    fn rejects_an_empty_external_window_command() {
-        let root = std::env::temp_dir().join(format!("wasabipad_external_window_{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        let file = root.join("memo.txt");
-        fs::write(&file, "memo").unwrap();
-
-        assert_eq!(
-            super::launch_external_window("  ".to_string(), file.to_string_lossy().to_string(), 0, 0, 1, 1)
-                .unwrap_err(),
-            "コマンドが空です"
-        );
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    // Feature: 連携先ウィンドウ起動の入力検証
-    // Scenario: 不在ファイルを指定する
-    // Given: 実在しないファイルパスがある
-    // When: 連携先ウィンドウ起動を要求する
-    // Then: 対象ファイルがないことを通知する
-    #[test]
-    fn rejects_a_missing_external_window_file() {
-        let path = std::env::temp_dir()
-            .join(format!("wasabipad_missing_external_window_{}.txt", std::process::id()))
-            .to_string_lossy()
-            .to_string();
-
-        assert_eq!(
-            super::launch_external_window("cmd.exe /D /C exit 0".to_string(), path, 0, 0, 1, 1)
-                .unwrap_err(),
-            "対象ファイルが見つかりません"
-        );
-    }
-
-    // Feature: 連携先ウィンドウ起動のプロセス生成
-    // Scenario: 外部コマンドを起動する
-    // Given: すぐ終了するcmd.exeコマンドがある
-    // When: PID取得付きの起動処理を呼ぶ
-    // Then: 正のプロセスIDを返す
-    #[test]
-    fn returns_a_process_id_when_spawning_an_external_command() {
-        assert!(super::spawn_command_line_with_pid("cmd.exe /D /C exit 0").unwrap() > 0);
-    }
-
-    // Feature: 連携先ウィンドウの配置境界
-    // Scenario: 不正なサイズで起動する
-    // Given: 実ファイルと外部コマンドがあるが、配置サイズが0である
-    // When: 連携先ウィンドウ起動を要求する
-    // Then: 外部プロセスを止めずに配置失敗を返す
-    #[test]
-    fn returns_false_for_an_invalid_external_window_size() {
-        let root = std::env::temp_dir().join(format!("wasabipad_external_window_size_{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        let file = root.join("memo.txt");
-        fs::write(&file, "memo").unwrap();
-
-        assert!(!super::launch_external_window(
-            "cmd.exe /D /C exit 0".to_string(),
-            file.to_string_lossy().to_string(),
-            0,
-            0,
-            0,
-            100,
-        )
-        .unwrap());
-        fs::remove_dir_all(root).unwrap();
     }
 
     // Feature: Markdown外部URLの既定ブラウザ起動

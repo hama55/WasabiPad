@@ -312,18 +312,6 @@ fn run_external_command(command: String, path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn launch_external_window(
-    command: String,
-    path: String,
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
-) -> Result<bool, String> {
-    system::launch_external_window(command, path, x, y, width, height)
-}
-
-#[tauri::command]
 fn edit(
     start: PosC,
     end: PosC,
@@ -725,7 +713,6 @@ fn main() {
             open_in_default_browser,
             open_external_url,
             run_external_command,
-            launch_external_window,
             edit,
             edit_many,
             undo,

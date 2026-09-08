@@ -7,12 +7,9 @@ import { FONT_FAMILIES, INDENT_SIZES, isValidFontSize, MAX_FONT_SIZE, MIN_FONT_S
 import { openModal } from "./modal";
 import { commandValueKind } from "./registered-command-model";
 import { registeredStringLabel } from "./registered-strings";
-import { SAVE_EXTENSIONS } from "./document-controller";
-import type { ExternalCommandEntry } from "./external-integration";
 import type { Settings } from "./settings";
 import { createSearchSettingsEditor } from "./search-settings-dialog";
 import { THEME_LABELS, THEMES, type Theme } from "./theme";
-import { VIEWER_FORMATS } from "./viewer-formats";
 
 export interface SettingsPanelPorts {
   getTheme: () => Theme;
@@ -191,29 +188,6 @@ export function openSettingsModal(ports: SettingsPanelPorts): SettingsCloseHandl
       ],
     },
     {
-      name: "連携",
-      id: "settings-integration",
-      build: () => [
-        externalCommandGroup(
-          ports,
-          "externalEditorCommands",
-          "連携エディタ",
-          SAVE_EXTENSIONS.map(({ name, extension }) => ({ key: extension, label: `${name} (.${extension})` })),
-        ),
-        externalCommandGroup(
-          ports,
-          "externalPreviewCommands",
-          "連携プレビュー",
-          Object.values(VIEWER_FORMATS)
-            .sort((left, right) => left.previewOrder - right.previewOrder)
-            .flatMap((spec) => spec.extensions.map((extension) => ({
-              key: extension.replace(/^\./, ""),
-              label: extension,
-            }))),
-        ),
-      ],
-    },
-    {
       name: "About",
       id: "settings-about",
       build: () => [aboutField()],
@@ -349,118 +323,142 @@ function startupPathField(ports: SettingsPanelPorts): HTMLElement {
 }
 
 function registeredStringsField(ports: SettingsPanelPorts): HTMLElement {
-  return registeredListField(
+  const group = registeredListField(
     "登録文字列",
     () => ports.getSetting("registeredStrings"),
     (items) => ports.setSetting("registeredStrings", items),
     (text) => ({ text: registeredStringLabel(text), title: text }),
     "登録文字列を削除",
   );
+  group.dataset.settingGroup = "registered-strings";
+  return group;
 }
 
 function registeredCommandsField(ports: SettingsPanelPorts): HTMLElement {
-  return registeredListField(
-    "登録コマンド",
-    () => ports.getSetting("registeredCommands"),
-    (items) => ports.setSetting("registeredCommands", items),
-    (command) => {
-      const kind = commandValueKind(command);
-      return {
-        text: `${command.label} (${kind === "file" ? "ファイル" : "文字列"})`,
-        title: [command.prefix, command.command].filter(Boolean).join(" "),
-        rowClass: "settings-command-row",
-      };
-    },
-    "登録コマンドを削除",
-  );
-}
-
-function externalCommandGroup(
-  ports: SettingsPanelPorts,
-  setting: "externalEditorCommands" | "externalPreviewCommands",
-  titleText: string,
-  entries: readonly { key: string; label: string }[],
-): HTMLElement {
   const group = document.createElement("div");
   group.className = "settings-list-group";
+  group.dataset.settingGroup = "registered-commands";
   const title = document.createElement("h3");
-  title.textContent = titleText;
-  const hint = document.createElement("p");
-  hint.className = "settings-empty";
-  hint.textContent = "コマンドには {file} を含める。引用符もここで指定する。対象アプリを直接起動すると連携先ウィンドウを配置できる。cmd/start/CLI経由や既存プロセス再利用では配置できない場合がある。";
+  title.textContent = "登録コマンド";
+  let draggingIndex: number | null = null;
+
+  const reorder = (from: number, to: number) => {
+    const commands = ports.getSetting("registeredCommands");
+    const kind = commands[from] && commandValueKind(commands[from]);
+    if (!kind || !commands[to] || commandValueKind(commands[to]) !== kind || from === to) return;
+    const kindIndexes = commands.flatMap((command, index) => commandValueKind(command) === kind ? [index] : []);
+    const fromKindIndex = kindIndexes.indexOf(from);
+    const toKindIndex = kindIndexes.indexOf(to);
+    if (fromKindIndex < 0 || toKindIndex < 0) return;
+    const ordered = kindIndexes.map((index) => commands[index]);
+    const [moved] = ordered.splice(fromKindIndex, 1);
+    ordered.splice(toKindIndex, 0, moved);
+    const next = [...commands];
+    kindIndexes.forEach((index, position) => { next[index] = ordered[position]; });
+    ports.setSetting("registeredCommands", next);
+    render();
+  };
+
+  const update = (index: number, key: "label" | "prefix" | "command", value: string) => {
+    const commands = ports.getSetting("registeredCommands");
+    if (!commands[index]) return;
+    const next = [...commands];
+    next[index] = { ...next[index], [key]: value };
+    ports.setSetting("registeredCommands", next);
+  };
+
   const render = () => {
-    const commands = ports.getSetting(setting);
-    const body = document.createElement("div");
-    body.className = "settings-external-command-list";
-    for (const entry of entries) {
-      const extensionGroup = document.createElement("div");
-      extensionGroup.className = "settings-external-command-extension";
-      extensionGroup.dataset.extension = entry.key;
-      const extensionLabel = document.createElement("h4");
-      extensionLabel.textContent = entry.label;
-      extensionGroup.append(extensionLabel);
-      const items = commands[entry.key] ?? [];
-      items.forEach((item, index) => {
+    group.replaceChildren(title);
+    const commands = ports.getSetting("registeredCommands");
+    if (!commands.length) {
+      group.append(emptySettingsNotice("登録なし。エディタやファイルツリーの右クリックから登録できる。"));
+      return;
+    }
+    for (const kind of ["file", "string"] as const) {
+      const kindIndexes = commands.flatMap((command, index) => commandValueKind(command) === kind ? [index] : []);
+      if (!kindIndexes.length) continue;
+      const kindGroup = document.createElement("div");
+      kindGroup.className = "settings-command-kind-group";
+      const kindTitle = document.createElement("h4");
+      kindTitle.textContent = kind === "file" ? "ファイル用" : "文字列用";
+      kindGroup.append(kindTitle);
+      for (const index of kindIndexes) {
+        const command = commands[index];
         const row = document.createElement("div");
-        row.className = "settings-list-row settings-external-command-row";
-        const name = document.createElement("input");
-        name.type = "text";
-        name.dataset.setting = `${setting}-${entry.key}-${index}-name`;
-        name.setAttribute("aria-label", `${entry.label}の連携先名`);
-        name.placeholder = "名前（任意）";
-        name.value = item.name;
-        name.spellcheck = false;
-        name.addEventListener("change", () => {
-          const next = { ...ports.getSetting(setting) };
-          const nextItems: ExternalCommandEntry[] = [...(next[entry.key] ?? [])];
-          nextItems[index] = { ...nextItems[index], name: name.value.trim() };
-          next[entry.key] = nextItems;
-          ports.setSetting(setting, next);
+        row.className = "settings-list-row settings-command-row";
+        row.dataset.commandIndex = String(index);
+        row.draggable = true;
+        row.addEventListener("dragstart", () => { draggingIndex = index; });
+        row.addEventListener("dragend", () => { draggingIndex = null; });
+        row.addEventListener("dragover", (event) => {
+          if (draggingIndex === null || draggingIndex === index
+            || commandValueKind(commands[draggingIndex]) !== kind) return;
+          event.preventDefault();
         });
-        const command = document.createElement("input");
-        command.type = "text";
-        command.dataset.setting = `${setting}-${entry.key}-${index}-command`;
-        command.setAttribute("aria-label", `${entry.label}のコマンド`);
-        command.placeholder = '例: notepad.exe "{file}"';
-        command.value = item.command;
-        command.spellcheck = false;
-        command.addEventListener("change", () => {
-          const next = { ...ports.getSetting(setting) };
-          const nextItems: ExternalCommandEntry[] = [...(next[entry.key] ?? [])];
-          nextItems[index] = { ...nextItems[index], command: command.value };
-          next[entry.key] = nextItems;
-          ports.setSetting(setting, next);
+        row.addEventListener("drop", (event) => {
+          event.preventDefault();
+          const source = draggingIndex;
+          draggingIndex = null;
+          if (source !== null) reorder(source, index);
         });
+
+        for (const [key, labelText] of [
+          ["label", "表示名"],
+          ["prefix", "前置き"],
+          ["command", "コマンド"],
+        ] as const) {
+          const field = document.createElement("label");
+          field.className = "settings-command-field";
+          const label = document.createElement("span");
+          label.textContent = labelText;
+          const input = key === "command"
+            ? document.createElement("textarea")
+            : document.createElement("input");
+          if (input instanceof HTMLInputElement) input.type = "text";
+          if (input instanceof HTMLTextAreaElement) input.rows = 2;
+          input.dataset.setting = `registered-command-${index}-${key}`;
+          input.setAttribute("aria-label", `${command.label}の${labelText}`);
+          input.value = command[key];
+          input.spellcheck = false;
+          input.addEventListener("change", () => update(index, key, input.value));
+          field.append(label, input);
+          row.append(field);
+        }
+
+        const actions = document.createElement("div");
+        actions.className = "settings-command-actions";
+        const position = kindIndexes.indexOf(index);
+        for (const [direction, text, titleText] of [
+          ["up", "↑", "上へ移動"],
+          ["down", "↓", "下へ移動"],
+        ] as const) {
+          const move = document.createElement("button");
+          move.type = "button";
+          move.textContent = text;
+          move.title = titleText;
+          move.dataset.action = `move-registered-command-${direction}`;
+          move.dataset.commandIndex = String(index);
+          const target = kindIndexes[position + (direction === "up" ? -1 : 1)];
+          move.disabled = target === undefined;
+          move.addEventListener("click", () => {
+            if (target !== undefined) reorder(index, target);
+          });
+          actions.append(move);
+        }
         const remove = document.createElement("button");
         remove.type = "button";
         remove.textContent = "削除";
-        remove.title = `${entry.label}の連携先を削除`;
+        remove.title = "登録コマンドを削除";
         remove.addEventListener("click", () => {
-          const next = { ...ports.getSetting(setting) };
-          const nextItems = (next[entry.key] ?? []).filter((_, currentIndex) => currentIndex !== index);
-          if (nextItems.length) next[entry.key] = nextItems;
-          else delete next[entry.key];
-          ports.setSetting(setting, next);
+          ports.setSetting("registeredCommands", ports.getSetting("registeredCommands").filter((_, current) => current !== index));
           render();
         });
-        row.append(name, command, remove);
-        extensionGroup.append(row);
-      });
-      const add = document.createElement("button");
-      add.type = "button";
-      add.textContent = "追加";
-      add.dataset.action = "add-external-command";
-      add.dataset.setting = `${setting}-${entry.key}`;
-      add.addEventListener("click", () => {
-        const next = { ...ports.getSetting(setting) };
-        next[entry.key] = [...(next[entry.key] ?? []), { name: "", command: "" }];
-        ports.setSetting(setting, next);
-        render();
-      });
-      extensionGroup.append(add);
-      body.append(extensionGroup);
+        actions.append(remove);
+        row.append(actions);
+        kindGroup.append(row);
+      }
+      group.append(kindGroup);
     }
-    group.replaceChildren(title, hint, body);
   };
   render();
   return group;
