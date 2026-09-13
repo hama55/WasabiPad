@@ -471,6 +471,22 @@ describe("Feature: settings modal", () => {
       .toBe(selectedDirectory);
   });
 
+  // Given: プレビューキャッシュ保存場所が `D:\\WasabiPad\\preview-cache` に設定されている
+  // When: 「保存場所を変更」ボタンを押す
+  // Then: フォルダ選択ダイアログを現在の保存場所から開く
+  it("Scenario: プレビューキャッシュ保存場所の選択を現在のフォルダから開く", () => {
+    const currentDirectory = "D:\\WasabiPad\\preview-cache";
+    const pickPreviewCacheDirectory = vi.fn(() => null);
+    const ports = Object.assign(makePorts({ previewCacheDirectory: currentDirectory }), {
+      pickPreviewCacheDirectory,
+    });
+    openSettingsModal(ports as SettingsPanelPorts);
+
+    document.querySelector<HTMLButtonElement>('[data-action="pick-preview-cache-directory"]')!.click();
+
+    expect(pickPreviewCacheDirectory).toHaveBeenCalledWith(currentDirectory);
+  });
+
   // Feature: 外部プレビューキャッシュ保存場所の設定画面
   // Scenario: キャッシュ全削除を注入したportへ委譲する
   // Given: キャッシュ全削除portが利用できる

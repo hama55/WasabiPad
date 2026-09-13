@@ -95,7 +95,7 @@
 }
 .settings-layout {
   display: grid;
-  grid-template-columns: 132px minmax(0, 1fr);
+  grid-template-columns: 200px minmax(0, 1fr);
   gap: 12px;
   min-height: 0;
   flex: 1 1 auto;
@@ -109,6 +109,7 @@
   border-right: 1px solid var(--border);
 }
 .settings-tab {
+  box-sizing: border-box;
   width: 100%;
   padding: 7px 8px;
   border: 1px solid transparent;
@@ -117,6 +118,9 @@
   color: var(--fg-dim);
   font: 13px var(--font-ui);
   text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   cursor: default;
 }
 .settings-tab:hover { background: var(--hover); color: var(--fg); }

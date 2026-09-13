@@ -25,7 +25,7 @@ export interface SettingsPanelPorts {
   applyIndent: (size: number) => void;
   applyPreviewFontSize: (size: number) => void;
   applyMarkdownSoftBreaks: (enabled: boolean) => void;
-  pickPreviewCacheDirectory?: () => string | null | Promise<string | null>;
+  pickPreviewCacheDirectory?: (defaultPath?: string) => string | null | Promise<string | null>;
   clearPreviewCache?: () => void | Promise<void>;
   getPreviewCacheInfo?: () => PreviewCacheInfo | null | Promise<PreviewCacheInfo | null>;
   openSearchSettings: () => void;
@@ -230,6 +230,7 @@ export function openSettingsModal(
     tab.setAttribute("aria-controls", spec.id);
     tab.setAttribute("aria-selected", "false");
     tab.textContent = spec.name;
+    tab.title = spec.name;
     tab.addEventListener("click", () => {
       const section = renderedSections.find((current) => current.id === spec.id);
       if (!section) return;
@@ -616,7 +617,7 @@ function previewCacheField(ports: SettingsPanelPorts): HTMLElement {
   pick.addEventListener("click", () => {
     const pickDirectory = ports.pickPreviewCacheDirectory;
     if (!pickDirectory) return;
-    void Promise.resolve(pickDirectory()).then((directory) => {
+    void Promise.resolve(pickDirectory(currentDirectory ?? undefined)).then((directory) => {
       if (typeof directory !== "string" || directory.trim().length === 0) return;
       currentDirectory = directory;
       ports.setSetting("previewCacheDirectory", directory);

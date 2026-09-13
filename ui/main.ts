@@ -603,9 +603,9 @@ settingsPorts = {
   },
   applyPreviewFontSize: (size) => inlinePreview.setFontSize(size),
   applyMarkdownSoftBreaks: (enabled) => inlinePreview.setMarkdownSoftBreaks(enabled),
-  pickPreviewCacheDirectory: async () => {
+  pickPreviewCacheDirectory: async (defaultPath?: string) => {
     try {
-      const selected = await openDialog({ directory: true, multiple: false });
+      const selected = await openDialog({ directory: true, multiple: false, defaultPath });
       return typeof selected === "string" ? selected : null;
     } catch (error) {
       await reportBackgroundError("プレビューキャッシュ保存場所を選べませんでした", error);
