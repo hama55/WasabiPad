@@ -8,6 +8,7 @@ import {
   createSettingsOpener,
   openSettingsModal,
   returnToSettings,
+  type SettingsModalState,
   type SettingsPanelPorts,
 } from "./settings-panel";
 
@@ -82,6 +83,26 @@ describe("Feature: settings modal", () => {
     await returnToSettings(async () => {}, reopen);
 
     expect(reopen).toHaveBeenCalledOnce();
+  });
+
+  // Given: 設定モーダルを任意の位置までスクロールしている
+  // When: 子ダイアログを開くために設定モーダルを閉じ、同じ位置で再表示する
+  // Then: 設定モーダルのスクロール位置を保持する
+  it("Scenario: 子ダイアログから設定画面へ戻ると編集位置を保持する", () => {
+    const closedStates: SettingsModalState[] = [];
+    const modal = openSettingsModal(makePorts(), (state) => closedStates.push(state));
+    const content = document.querySelector<HTMLElement>(".settings-content")!;
+    Object.defineProperty(content, "scrollTop", { configurable: true, writable: true, value: 320 });
+
+    modal.close();
+
+    expect(closedStates[0].scrollTop).toBe(320);
+    expect(closedStates[0].activeSectionId).toBe("settings-general");
+    openSettingsModal(makePorts(), undefined, closedStates[0]);
+
+    expect(document.querySelector<HTMLElement>(".settings-content")!.scrollTop).toBe(320);
+    expect(document.querySelector<HTMLButtonElement>('[data-settings-tab="一般"]')!
+      .getAttribute("aria-selected")).toBe("true");
   });
 
   // Given: 現在のアプリ設定

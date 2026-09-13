@@ -49,6 +49,7 @@ import {
   createSettingsOpener,
   openSettingsModal,
   returnToSettings,
+  type SettingsModalState,
   type SettingsPanelPorts,
 } from "./settings-panel";
 import { searchResultGoto } from "./search-results";
@@ -641,7 +642,15 @@ settingsPorts = {
   },
 };
 
-const openSettings = createSettingsOpener((onClose) => openSettingsModal(settingsPorts, onClose));
+let settingsModalState: SettingsModalState | undefined;
+const openSettings = createSettingsOpener((onClose) => {
+  const initialState = settingsModalState;
+  settingsModalState = undefined;
+  return openSettingsModal(settingsPorts, (state) => {
+    settingsModalState = state;
+    onClose();
+  }, initialState);
+});
 
 const workspaceHost = new WorkspaceHost(
   {

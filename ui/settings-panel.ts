@@ -38,6 +38,11 @@ export interface SettingsCloseHandle {
   close: () => void;
 }
 
+export interface SettingsModalState {
+  scrollTop: number;
+  activeSectionId: string;
+}
+
 export function createSettingsOpener(
   open: (onClose: () => void) => SettingsCloseHandle,
 ): () => void {
@@ -84,7 +89,11 @@ const EDITOR_SETTING_KEYS = ["fontFamily", "editorFontSize", "indent"] as const;
 // Aboutの表示値はversion-policy.jsonを読む共有releaseTagで生成する。
 const APP_VERSION = releaseTag(packageInfo.version);
 
-export function openSettingsModal(ports: SettingsPanelPorts, onClose?: () => void): SettingsCloseHandle {
+export function openSettingsModal(
+  ports: SettingsPanelPorts,
+  onClose?: (state: SettingsModalState) => void,
+  initialState?: SettingsModalState,
+): SettingsCloseHandle {
   let closed = false;
   const { box, close: closeModal } = openModal({ onCancel: () => close() }, "settings-box");
   box.setAttribute("role", "dialog");
@@ -180,7 +189,7 @@ export function openSettingsModal(ports: SettingsPanelPorts, onClose?: () => voi
 
   const tabs = new Map<string, HTMLButtonElement>();
   let renderedSections: HTMLElement[] = [];
-  let activeSectionId: string = sectionSpecs[0].id;
+  let activeSectionId = initialState?.activeSectionId ?? sectionSpecs[0].id;
 
   const setActiveSection = (sectionId: string) => {
     activeSectionId = sectionId;
@@ -236,14 +245,16 @@ export function openSettingsModal(ports: SettingsPanelPorts, onClose?: () => voi
     })();
   });
   render();
+  content.scrollTop = initialState?.scrollTop ?? 0;
   closeButton.focus();
   return { close };
 
   function close() {
     if (closed) return;
     closed = true;
+    const state = { scrollTop: content.scrollTop, activeSectionId };
     closeModal();
-    onClose?.();
+    onClose?.(state);
   }
 }
 
