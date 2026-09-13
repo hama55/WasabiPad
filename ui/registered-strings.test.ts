@@ -11,6 +11,7 @@ import {
   loadRegisteredStrings,
   registeredStringLabel,
   removeRegisteredString,
+  updateRegisteredString,
 } from "./registered-strings";
 import { initSettings } from "./settings";
 
@@ -35,6 +36,20 @@ describe("Feature: registered strings", () => {
     addRegisteredString("b");
     removeRegisteredString("a");
     expect(loadRegisteredStrings()).toEqual(["b"]);
+  });
+
+  // Given: `a`、`b`を登録済み
+  // When: `a`を`b`へ変更し、次に`c`へ変更する
+  // Then: 重複する変更は保存せず、有効な変更だけを反映する
+  it("Scenario: 登録文字列の編集で重複を保存しない", () => {
+    addRegisteredString("a");
+    addRegisteredString("b");
+
+    updateRegisteredString("a", "b");
+    expect(loadRegisteredStrings()).toEqual(["a", "b"]);
+
+    updateRegisteredString("a", "c");
+    expect(loadRegisteredStrings()).toEqual(["c", "b"]);
   });
 
   // Given: 改行文字列、60文字、空文字を入力

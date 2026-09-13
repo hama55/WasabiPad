@@ -4,8 +4,7 @@ import packageInfo from "../package.json";
 import { releaseTag } from "../version-policy.mjs";
 import { APP_NAME } from "./app-config";
 import type { Settings } from "./settings";
-import { openSettingsMenu, openSettingsModal, type SettingsPanelPorts } from "./settings-panel";
-import { DEFAULT_SEARCH_OPTIONS } from "./workspace-search-options";
+import { createSettingsOpener, openSettingsModal, type SettingsPanelPorts } from "./settings-panel";
 
 function makePorts(initial: Partial<Settings> = {}): SettingsPanelPorts {
   const values: Settings = {
@@ -23,7 +22,6 @@ function makePorts(initial: Partial<Settings> = {}): SettingsPanelPorts {
     openTabs: { tabs: [], activeId: null },
     ...initial,
   };
-  let searchOptions = { ...DEFAULT_SEARCH_OPTIONS };
   const setSetting = vi.fn(<K extends keyof Settings>(key: K, value: Settings[K]) => {
     values[key] = value;
   });
@@ -37,95 +35,38 @@ function makePorts(initial: Partial<Settings> = {}): SettingsPanelPorts {
     applyIndent: vi.fn(),
     applyPreviewFontSize: vi.fn(),
     applyMarkdownSoftBreaks: vi.fn(),
-    getSearchOptions: () => searchOptions,
-    updateSearchOptions: vi.fn((next) => {
-      searchOptions = next;
-    }),
+    openSearchSettings: vi.fn(),
+    openRegisteredString: vi.fn(),
+    openRegisteredCommand: vi.fn(),
     confirmReset: vi.fn(async () => true),
     resetSettings: vi.fn(),
   };
 }
 
-describe("Feature: settings quick menu", () => {
-  afterEach(() => document.body.replaceChildren());
-
-  // Given: 設定ギアを表示できるanchorと現在の設定
-  // When: クイック設定を開く
-  // Then: テーマ・フォント・文字サイズ・インデント・プレビュー文字サイズと詳細入口を表示する
-  it("Scenario: 頻繁な設定と詳細設定の入口を表示する", () => {
-    const anchor = document.createElement("button");
-    document.body.append(anchor);
-    const ports = makePorts();
-    const onOpenAll = vi.fn();
-    const onClose = vi.fn();
-
-    const menu = openSettingsMenu(anchor, ports, onOpenAll, onClose);
-
-    expect(document.querySelector(".settings-popover")).not.toBeNull();
-    for (const key of ["theme", "font-family", "font-size", "indent-size", "preview-font-size"]) {
-      expect(document.querySelector(`[data-setting="${key}"]`)).not.toBeNull();
-    }
-    expect(document.querySelector('[data-setting="markdown-soft-breaks"]')).toBeNull();
-    document.querySelector<HTMLButtonElement>(".settings-open-all")!.click();
-    expect(onOpenAll).toHaveBeenCalledOnce();
-
-    menu.close();
-  });
-
-  // Given: クイック設定を開いている
-  // When: テーマとインデント幅を変更する
-  // Then: 変更内容をportへ即時通知する
-  it("Scenario: クイック設定の変更を即時反映する", () => {
-    const anchor = document.createElement("button");
-    document.body.append(anchor);
-    const ports = makePorts();
-    const menu = openSettingsMenu(anchor, ports, vi.fn());
-
-    const theme = document.querySelector<HTMLSelectElement>('[data-setting="theme"]')!;
-    theme.value = "light";
-    theme.dispatchEvent(new Event("change", { bubbles: true }));
-    const indent = document.querySelector<HTMLSelectElement>('[data-setting="indent-size"]')!;
-    indent.value = "4";
-    indent.dispatchEvent(new Event("change", { bubbles: true }));
-
-    expect(ports.setTheme).toHaveBeenCalledWith("light");
-    expect(ports.setSetting).toHaveBeenCalledWith("indentSize", 4);
-    expect(ports.applyIndent).toHaveBeenCalledWith(4);
-
-    menu.close();
-  });
-
-  // Given: クイック設定を開いている
-  // When: 外側をクリックする
-  // Then: クイック設定を閉じる
-  it("Scenario: 外側クリックでクイック設定を閉じる", () => {
-    const anchor = document.createElement("button");
-    const outside = document.createElement("div");
-    document.body.append(anchor, outside);
-    openSettingsMenu(anchor, makePorts(), vi.fn());
-
-    outside.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
-
-    expect(document.querySelector(".settings-popover")).toBeNull();
-  });
-
-  // Given: クイック設定を開いている
-  // When: Escapeで閉じる
-  // Then: 親へcloseを通知して、次のギア操作で再表示できる状態にする
-  it("Scenario: クイック設定を閉じたことを通知する", () => {
-    const anchor = document.createElement("button");
-    document.body.append(anchor);
-    const onClose = vi.fn();
-    openSettingsMenu(anchor, makePorts(), vi.fn(), onClose);
-
-    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
-
-    expect(onClose).toHaveBeenCalledOnce();
-  });
-});
-
 describe("Feature: settings modal", () => {
   afterEach(() => document.body.replaceChildren());
+
+  // Given: 設定モーダルを開く処理と閉じる処理を注入する
+  // When: ギア相当の開閉処理を開く・閉じる・再表示の順に呼ぶ
+  // Then: 同じモーダルを閉じ、閉じた後だけ新しいモーダルを開く
+  it("Scenario: 設定ギアは全設定モーダルを開閉できる", () => {
+    const close = vi.fn();
+    const onClose: (() => void)[] = [];
+    const open = vi.fn((closed: () => void) => {
+      onClose.push(closed);
+      return { close };
+    });
+    const toggle = createSettingsOpener(open);
+
+    toggle();
+    toggle();
+    expect(open).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
+
+    onClose[0]();
+    toggle();
+    expect(open).toHaveBeenCalledTimes(2);
+  });
 
   // Given: 現在のアプリ設定
   // When: 詳細設定を開く
@@ -180,6 +121,80 @@ describe("Feature: settings modal", () => {
     expect(about.textContent).toContain(APP_NAME);
     expect(about.querySelector('[data-about-value="version"]')?.textContent)
       .toBe(releaseTag(packageInfo.version));
+  });
+
+  // Given: 複雑な設定を含む現在のアプリ設定
+  // When: 設定モーダルを開く
+  // Then: 詳細編集ではなく、既存ダイアログを開く入口を表示する
+  it("Scenario: 複雑な設定は編集ボタンから既存ダイアログを開く", () => {
+    const ports = makePorts({
+      registeredStrings: ["one"],
+      registeredCommands: [{ label: "Editor", prefix: "", command: "code {file}" }],
+    });
+
+    openSettingsModal(ports);
+
+    const search = document.querySelector<HTMLElement>('[data-setting-group="workspace-search"]')!;
+    const strings = document.querySelector<HTMLElement>('[data-setting-group="registered-strings"]')!;
+    const commands = document.querySelector<HTMLElement>('[data-setting-group="registered-commands"]')!;
+    expect(search.querySelector('[data-action="edit-search-settings"]')).not.toBeNull();
+    expect(search.querySelector(".ss-columns")).toBeNull();
+    expect(strings.querySelector('[data-action="add-registered-string"]')).not.toBeNull();
+    expect(strings.querySelector('[data-action="edit-registered-string"]')).not.toBeNull();
+    expect(commands.querySelector('[data-action="add-registered-command-file"]')).not.toBeNull();
+    expect(commands.querySelector('[data-action="add-registered-command-string"]')).not.toBeNull();
+    expect(commands.querySelector('[data-action="edit-registered-command"]')).not.toBeNull();
+    expect(commands.querySelector('[data-setting^="registered-command-"]')).toBeNull();
+  });
+
+  // Given: 設定モーダルを開いている
+  // When: 検索設定の編集ボタンを押す
+  // Then: 親モーダルを閉じて検索設定ダイアログの入口へ委譲する
+  it("Scenario: 検索設定の編集入口をportへ委譲する", () => {
+    const ports = makePorts();
+    openSettingsModal(ports);
+
+    document.querySelector<HTMLButtonElement>('[data-action="edit-search-settings"]')!.click();
+
+    expect(ports.openSearchSettings).toHaveBeenCalledOnce();
+    expect(document.querySelector(".settings-box")).toBeNull();
+  });
+
+  // Given: 登録文字列と登録コマンドが設定済み
+  // When: 登録文字列の編集と登録コマンドの編集を選ぶ
+  // Then: 種別と対象をportへ渡して親モーダルを閉じる
+  it("Scenario: 登録項目の編集入口をportへ委譲する", () => {
+    const command = { label: "Editor", prefix: "", command: "code {file}" };
+    const ports = makePorts({ registeredStrings: ["one"], registeredCommands: [command] });
+    openSettingsModal(ports);
+
+    document.querySelector<HTMLButtonElement>('[data-action="edit-registered-string"]')!.click();
+    expect(ports.openRegisteredString).toHaveBeenCalledWith("one");
+    expect(document.querySelector(".settings-box")).toBeNull();
+
+    openSettingsModal(ports);
+    document.querySelector<HTMLButtonElement>('[data-action="edit-registered-command"]')!.click();
+    expect(ports.openRegisteredCommand).toHaveBeenCalledWith("file", command);
+    expect(document.querySelector(".settings-box")).toBeNull();
+  });
+
+  // Given: 登録設定を開いている
+  // When: 登録文字列とファイル用・文字列用コマンドの追加入口を選ぶ
+  // Then: 対応するダイアログのportへ委譲する
+  it("Scenario: 登録項目の追加入口をportへ委譲する", () => {
+    const ports = makePorts();
+    openSettingsModal(ports);
+
+    document.querySelector<HTMLButtonElement>('[data-action="add-registered-string"]')!.click();
+    expect(ports.openRegisteredString).toHaveBeenCalledWith(undefined);
+
+    openSettingsModal(ports);
+    document.querySelector<HTMLButtonElement>('[data-action="add-registered-command-file"]')!.click();
+    expect(ports.openRegisteredCommand).toHaveBeenCalledWith("file", undefined);
+
+    openSettingsModal(ports);
+    document.querySelector<HTMLButtonElement>('[data-action="add-registered-command-string"]')!.click();
+    expect(ports.openRegisteredCommand).toHaveBeenCalledWith("string", undefined);
   });
 
   // Given: 設定モーダルを開いている
@@ -245,11 +260,11 @@ describe("Feature: settings modal", () => {
   });
 
   // Feature: 登録コマンドの設定画面
-  // Scenario: 登録コマンドを編集して同じ種類の順序をD&Dで変更する
+  // Scenario: 登録コマンドの同じ種類の順序をD&Dで変更する
   // Given: ファイル用2件と文字列用1件の登録コマンドがある
-  // When: 表示名を編集し、ファイル用の2件目を1件目へドロップする
-  // Then: 編集内容と種類別の順序を設定ストアへ即時保存する
-  it("Scenario: 登録コマンドを設定画面で編集して並べ替える", () => {
+  // When: ファイル用の2件目を1件目へドロップする
+  // Then: 種類別の順序を設定ストアへ即時保存する
+  it("Scenario: 登録コマンドを設定画面で並べ替える", () => {
     const ports = makePorts({
       registeredCommands: [
         { label: "Editor", prefix: "", command: "code {file}" },
@@ -260,13 +275,6 @@ describe("Feature: settings modal", () => {
     openSettingsModal(ports);
 
     const section = document.querySelector<HTMLElement>("[data-settings-section=登録]")!;
-    const label = section.querySelector<HTMLInputElement>('[data-setting="registered-command-0-label"]')!;
-    const command = section.querySelector<HTMLTextAreaElement>('[data-setting="registered-command-0-command"]')!;
-    label.value = "VS Code";
-    label.dispatchEvent(new Event("change", { bubbles: true }));
-    command.value = "code --reuse-window {file}";
-    command.dispatchEvent(new Event("change", { bubbles: true }));
-
     const first = section.querySelector<HTMLElement>('[data-command-index="0"]')!;
     const second = section.querySelector<HTMLElement>('[data-command-index="2"]')!;
     second.dispatchEvent(new Event("dragstart", { bubbles: true }));
@@ -275,7 +283,7 @@ describe("Feature: settings modal", () => {
     expect(ports.getSetting("registeredCommands")).toEqual([
       { label: "Notepad", prefix: "", command: "notepad {file}" },
       { label: "Browser", prefix: "", command: "open {string}", valueKind: "string" },
-      { label: "VS Code", prefix: "", command: "code --reuse-window {file}" },
+      { label: "Editor", prefix: "", command: "code {file}" },
     ]);
   });
 
@@ -300,37 +308,6 @@ describe("Feature: settings modal", () => {
     expect(ports.getSetting("registeredCommands")).toEqual([
       { label: "Notepad", prefix: "", command: "notepad {file}" },
       { label: "Editor", prefix: "", command: "code {file}" },
-    ]);
-  });
-
-  // Feature: 登録コマンドの設定画面
-  // Scenario: 登録コマンドの編集値を正規化する
-  // Given: ファイル用2件の登録コマンドがある
-  // When: 1件目を空欄または2件目と同じ内容へ変更する
-  // Then: 無効な編集結果や重複は設定ストアへ保存しない
-  it("Scenario: 登録コマンド編集時に空欄と重複を保存しない", () => {
-    const ports = makePorts({
-      registeredCommands: [
-        { label: "Editor", prefix: "", command: "code {file}" },
-        { label: "Notepad", prefix: "", command: "code {file}" },
-      ],
-    });
-    openSettingsModal(ports);
-
-    const label = document.querySelector<HTMLInputElement>(
-      '[data-setting="registered-command-0-label"]',
-    )!;
-    label.value = "   ";
-    label.dispatchEvent(new Event("change", { bubbles: true }));
-    expect(ports.getSetting("registeredCommands")[0]).toEqual({
-      label: "Editor", prefix: "", command: "code {file}",
-    });
-
-    label.value = "Notepad";
-    label.dispatchEvent(new Event("change", { bubbles: true }));
-    expect(ports.getSetting("registeredCommands")).toEqual([
-      { label: "Editor", prefix: "", command: "code {file}" },
-      { label: "Notepad", prefix: "", command: "code {file}" },
     ]);
   });
 
@@ -407,19 +384,16 @@ describe("Feature: settings modal", () => {
     expect(clearPreviewCache).toHaveBeenCalledOnce();
   });
 
-  // Given: 詳細設定を開いている
-  // When: 検索条件のチェックを変更する
-  // Then: 同じ設定モーダルから現在値を更新し、モーダルは閉じない
-  it("Scenario: 検索条件を詳細設定内で編集する", () => {
+  // Given: 設定モーダルを開いている
+  // When: 検索設定の編集ボタンを押す
+  // Then: 既存の検索設定ダイアログのportへ委譲する
+  it("Scenario: 検索設定を既存ダイアログで編集する", () => {
     const ports = makePorts();
     openSettingsModal(ports);
 
-    const searchSection = document.querySelector<HTMLElement>("[data-settings-section=検索]")!;
-    const toggle = searchSection.querySelector<HTMLInputElement>(".ss-toggle input")!;
-    toggle.click();
+    document.querySelector<HTMLButtonElement>('[data-action="edit-search-settings"]')!.click();
 
-    expect(ports.updateSearchOptions).toHaveBeenCalledWith(expect.objectContaining({ search_file_names: false }));
-    expect(document.querySelector(".settings-box")).not.toBeNull();
+    expect(ports.openSearchSettings).toHaveBeenCalledOnce();
   });
 
   // Given: 詳細設定のエディタ文字サイズを20へ変更している
@@ -464,8 +438,8 @@ describe("Feature: settings modal", () => {
 
     const strings = document.querySelector<HTMLElement>('[data-setting-group="registered-strings"]')!;
     const commands = document.querySelector<HTMLElement>('[data-setting-group="registered-commands"]')!;
-    strings.querySelector<HTMLButtonElement>(".settings-list-row button")!.click();
-    strings.querySelector<HTMLButtonElement>(".settings-list-row button")!.click();
+    strings.querySelector<HTMLButtonElement>('[title="登録文字列を削除"]')!.click();
+    strings.querySelector<HTMLButtonElement>('[title="登録文字列を削除"]')!.click();
     commands.querySelector<HTMLButtonElement>('[title="登録コマンドを削除"]')!.click();
 
     expect(ports.setSetting).toHaveBeenCalledWith("registeredStrings", ["two"]);

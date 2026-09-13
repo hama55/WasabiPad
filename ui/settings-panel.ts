@@ -1,15 +1,12 @@
-import type { WorkspaceSearchOptions } from "./api";
 import packageInfo from "../package.json";
 import { releaseTag } from "../version-policy.mjs";
 import { APP_NAME } from "./app-config";
 import { formatByteSize, formatFontFamily } from "./format";
 import { FONT_FAMILIES, INDENT_SIZES, isValidFontSize, MAX_FONT_SIZE, MIN_FONT_SIZE } from "./font-controls";
 import { openModal } from "./modal";
-import { commandValueKind } from "./registered-command-model";
-import { updateRegisteredCommands } from "./registered-commands";
+import { commandValueKind, type CommandValueKind, type RegisteredCommand } from "./registered-command-model";
 import { registeredStringLabel } from "./registered-strings";
 import type { Settings } from "./settings";
-import { createSearchSettingsEditor } from "./search-settings-dialog";
 import { THEME_LABELS, THEMES, type Theme } from "./theme";
 
 export interface SettingsPanelPorts {
@@ -25,8 +22,9 @@ export interface SettingsPanelPorts {
   pickPreviewCacheDirectory?: () => string | null | Promise<string | null>;
   clearPreviewCache?: () => void | Promise<void>;
   getPreviewCacheInfo?: () => PreviewCacheInfo | null | Promise<PreviewCacheInfo | null>;
-  getSearchOptions: () => WorkspaceSearchOptions;
-  updateSearchOptions: (options: WorkspaceSearchOptions) => void;
+  openSearchSettings: () => void;
+  openRegisteredString: (current?: string) => void;
+  openRegisteredCommand: (kind: CommandValueKind, command?: RegisteredCommand) => void;
   confirmReset: () => boolean | Promise<boolean>;
   resetSettings: () => void | Promise<void>;
 }
@@ -38,6 +36,20 @@ export interface PreviewCacheInfo {
 
 export interface SettingsCloseHandle {
   close: () => void;
+}
+
+export function createSettingsOpener(
+  open: (onClose: () => void) => SettingsCloseHandle,
+): () => void {
+  let current: SettingsCloseHandle | null = null;
+  return () => {
+    if (current) {
+      current.close();
+      current = null;
+      return;
+    }
+    current = open(() => { current = null; });
+  };
 }
 
 type CommonSettingKey =
@@ -56,61 +68,12 @@ const SETTING_FIELD_BUILDERS: Record<CommonSettingKey, (ports: SettingsPanelPort
   previewFontSize: previewFontSizeField,
   markdownSoftBreaks: markdownSoftBreaksField,
 };
-const QUICK_SETTING_KEYS = ["theme", "fontFamily", "editorFontSize", "indent", "previewFontSize"] as const;
 const EDITOR_SETTING_KEYS = ["fontFamily", "editorFontSize", "indent"] as const;
 // package.jsonのversionはsync-versionによりCargo.tomlのworkspace versionから同期される。
 // Aboutの表示値はversion-policy.jsonを読む共有releaseTagで生成する。
 const APP_VERSION = releaseTag(packageInfo.version);
 
-export function openSettingsMenu(
-  anchor: HTMLElement,
-  ports: SettingsPanelPorts,
-  onOpenAll: () => void,
-  onClose?: () => void,
-): SettingsCloseHandle {
-  const popover = document.createElement("div");
-  popover.className = "settings-popover";
-  popover.setAttribute("role", "dialog");
-  popover.setAttribute("aria-label", "クイック設定");
-
-  popover.append(...buildCommonSettingFields(ports, QUICK_SETTING_KEYS));
-
-  const all = document.createElement("button");
-  all.type = "button";
-  all.className = "settings-open-all";
-  all.textContent = "すべての設定";
-  all.addEventListener("click", onOpenAll);
-  popover.append(all);
-
-  let closed = false;
-  const close = () => {
-    if (closed) return;
-    closed = true;
-    popover.remove();
-    document.removeEventListener("mousedown", onDocumentMouseDown, true);
-    window.removeEventListener("keydown", onKeyDown, true);
-    onClose?.();
-  };
-  const onDocumentMouseDown = (event: MouseEvent) => {
-    const target = event.target as Node | null;
-    if (target && !popover.contains(target) && !anchor.contains(target)) close();
-  };
-  const onKeyDown = (event: KeyboardEvent) => {
-    if (event.key !== "Escape") return;
-    event.preventDefault();
-    close();
-  };
-
-  document.body.append(popover);
-  const rect = anchor.getBoundingClientRect();
-  popover.style.top = `${rect.bottom + 4}px`;
-  popover.style.right = `${Math.max(8, window.innerWidth - rect.right)}px`;
-  document.addEventListener("mousedown", onDocumentMouseDown, true);
-  window.addEventListener("keydown", onKeyDown, true);
-  return { close };
-}
-
-export function openSettingsModal(ports: SettingsPanelPorts): SettingsCloseHandle {
+export function openSettingsModal(ports: SettingsPanelPorts, onClose?: () => void): SettingsCloseHandle {
   let closed = false;
   const { box, close: closeModal } = openModal({ onCancel: () => close() }, "settings-box");
   box.setAttribute("role", "dialog");
@@ -178,14 +141,23 @@ export function openSettingsModal(ports: SettingsPanelPorts): SettingsCloseHandl
     {
       name: "検索",
       id: "settings-search",
-      build: () => [createSearchSettingsEditor(ports.getSearchOptions(), ports.updateSearchOptions)],
+      build: () => [searchSettingsField(() => {
+        close();
+        ports.openSearchSettings();
+      })],
     },
     {
       name: "登録",
       id: "settings-registered",
       build: () => [
-        registeredStringsField(ports),
-        registeredCommandsField(ports),
+        registeredStringsField(ports, (current) => {
+          close();
+          ports.openRegisteredString(current);
+        }),
+        registeredCommandsField(ports, (kind, command) => {
+          close();
+          ports.openRegisteredCommand(kind, command);
+        }),
       ],
     },
     {
@@ -260,6 +232,7 @@ export function openSettingsModal(ports: SettingsPanelPorts): SettingsCloseHandl
     if (closed) return;
     closed = true;
     closeModal();
+    onClose?.();
   }
 }
 
@@ -323,24 +296,66 @@ function startupPathField(ports: SettingsPanelPorts): HTMLElement {
   return row;
 }
 
-function registeredStringsField(ports: SettingsPanelPorts): HTMLElement {
-  const group = registeredListField(
-    "登録文字列",
-    () => ports.getSetting("registeredStrings"),
-    (items) => ports.setSetting("registeredStrings", items),
-    (text) => ({ text: registeredStringLabel(text), title: text }),
-    "登録文字列を削除",
-  );
-  group.dataset.settingGroup = "registered-strings";
+function searchSettingsField(onEdit: () => void): HTMLElement {
+  const group = document.createElement("div");
+  group.className = "settings-list-group";
+  group.dataset.settingGroup = "workspace-search";
+  const title = document.createElement("h3");
+  title.textContent = "フォルダ検索設定";
+  const summary = document.createElement("p");
+  summary.className = "settings-summary";
+  summary.textContent = "ファイル名・本文、除外条件、打ち切り条件を設定";
+  group.append(title, summary, settingsActionButton("編集", "フォルダ検索設定を編集", "edit-search-settings", onEdit));
   return group;
 }
 
-function registeredCommandsField(ports: SettingsPanelPorts): HTMLElement {
+function registeredStringsField(
+  ports: SettingsPanelPorts,
+  openDialog: (current?: string) => void,
+): HTMLElement {
+  const group = document.createElement("div");
+  group.className = "settings-list-group";
+  group.dataset.settingGroup = "registered-strings";
+  const title = document.createElement("h3");
+  title.textContent = "登録文字列";
+  const add = settingsActionButton("登録文字列を登録", "登録文字列を追加", "add-registered-string", () => openDialog());
+  group.append(title, add);
+  for (const text of ports.getSetting("registeredStrings")) {
+    const row = document.createElement("div");
+    row.className = "settings-list-row";
+    const value = document.createElement("span");
+    value.textContent = registeredStringLabel(text);
+    value.title = text;
+    const actions = document.createElement("div");
+    actions.className = "settings-list-actions";
+    const edit = settingsActionButton("編集", "登録文字列を編集", "edit-registered-string", () => openDialog(text));
+    const remove = settingsActionButton("削除", "登録文字列を削除", null, () => {
+      ports.setSetting("registeredStrings", ports.getSetting("registeredStrings").filter((item) => item !== text));
+      row.remove();
+    });
+    actions.append(edit, remove);
+    row.append(value, actions);
+    group.append(row);
+  }
+  if (!ports.getSetting("registeredStrings").length) group.append(emptySettingsNotice("登録なし"));
+  return group;
+}
+
+function registeredCommandsField(
+  ports: SettingsPanelPorts,
+  openDialog: (kind: CommandValueKind, command?: RegisteredCommand) => void,
+): HTMLElement {
   const group = document.createElement("div");
   group.className = "settings-list-group";
   group.dataset.settingGroup = "registered-commands";
   const title = document.createElement("h3");
   title.textContent = "登録コマンド";
+  const addActions = document.createElement("div");
+  addActions.className = "settings-group-actions";
+  addActions.append(
+    settingsActionButton("ファイル用を登録", "ファイル用コマンドを追加", "add-registered-command-file", () => openDialog("file")),
+    settingsActionButton("文字列用を登録", "文字列用コマンドを追加", "add-registered-command-string", () => openDialog("string")),
+  );
   let draggingIndex: number | null = null;
 
   const reorder = (from: number, to: number) => {
@@ -360,18 +375,8 @@ function registeredCommandsField(ports: SettingsPanelPorts): HTMLElement {
     render();
   };
 
-  const update = (index: number, key: "label" | "prefix" | "command", value: string) => {
-    const commands = ports.getSetting("registeredCommands");
-    const command = commands[index];
-    if (!command) return;
-    const changes = { label: command.label, prefix: command.prefix, command: command.command };
-    changes[key] = value;
-    const next = updateRegisteredCommands(commands, command, changes);
-    if (next) ports.setSetting("registeredCommands", next);
-  };
-
   const render = () => {
-    group.replaceChildren(title);
+    group.replaceChildren(title, addActions);
     const commands = ports.getSetting("registeredCommands");
     if (!commands.length) {
       group.append(emptySettingsNotice("登録なし。エディタやファイルツリーの右クリックから登録できる。"));
@@ -405,28 +410,10 @@ function registeredCommandsField(ports: SettingsPanelPorts): HTMLElement {
           if (source !== null) reorder(source, index);
         });
 
-        for (const [key, labelText] of [
-          ["label", "表示名"],
-          ["prefix", "前置き"],
-          ["command", "コマンド"],
-        ] as const) {
-          const field = document.createElement("label");
-          field.className = "settings-command-field";
-          const label = document.createElement("span");
-          label.textContent = labelText;
-          const input = key === "command"
-            ? document.createElement("textarea")
-            : document.createElement("input");
-          if (input instanceof HTMLInputElement) input.type = "text";
-          if (input instanceof HTMLTextAreaElement) input.rows = 2;
-          input.dataset.setting = `registered-command-${index}-${key}`;
-          input.setAttribute("aria-label", `${command.label}の${labelText}`);
-          input.value = command[key];
-          input.spellcheck = false;
-          input.addEventListener("change", () => update(index, key, input.value));
-          field.append(label, input);
-          row.append(field);
-        }
+        const value = document.createElement("span");
+        value.textContent = command.label;
+        value.title = command.command;
+        row.append(value);
 
         const actions = document.createElement("div");
         actions.className = "settings-command-actions";
@@ -448,6 +435,10 @@ function registeredCommandsField(ports: SettingsPanelPorts): HTMLElement {
           });
           actions.append(move);
         }
+        const edit = settingsActionButton("編集", "登録コマンドを編集", "edit-registered-command", () =>
+          openDialog(kind, command));
+        edit.dataset.commandIndex = String(index);
+        actions.append(edit);
         const remove = document.createElement("button");
         remove.type = "button";
         remove.textContent = "削除";
@@ -467,42 +458,19 @@ function registeredCommandsField(ports: SettingsPanelPorts): HTMLElement {
   return group;
 }
 
-function registeredListField<T>(
-  titleText: string,
-  getItems: () => readonly T[],
-  setItems: (items: T[]) => void,
-  display: (item: T) => { text: string; title: string; rowClass?: string },
-  removeTitle: string,
-): HTMLElement {
-  const group = document.createElement("div");
-  group.className = "settings-list-group";
-  const title = document.createElement("h3");
-  title.textContent = titleText;
-  group.append(title);
-  const items = getItems();
-  if (!items.length) {
-    group.append(emptySettingsNotice("登録なし"));
-    return group;
-  }
-  items.forEach((item) => {
-    const shown = display(item);
-    const row = document.createElement("div");
-    row.className = `settings-list-row${shown.rowClass ? ` ${shown.rowClass}` : ""}`;
-    const value = document.createElement("span");
-    value.textContent = shown.text;
-    value.title = shown.title;
-    const remove = document.createElement("button");
-    remove.type = "button";
-    remove.textContent = "削除";
-    remove.title = removeTitle;
-    remove.addEventListener("click", () => {
-      setItems(getItems().filter((current) => current !== item));
-      row.remove();
-    });
-    row.append(value, remove);
-    group.append(row);
-  });
-  return group;
+function settingsActionButton(
+  text: string,
+  title: string,
+  action: string | null,
+  onClick: () => void,
+): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = text;
+  button.title = title;
+  if (action) button.dataset.action = action;
+  button.addEventListener("click", onClick);
+  return button;
 }
 
 function emptySettingsNotice(text: string): HTMLElement {

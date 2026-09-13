@@ -24,11 +24,11 @@ import { lineNumberGroups } from "./line-number";
 import { blockRangeForLine, Selection } from "./selection";
 import { MAX_SAFE_HEIGHT, ViewportMetrics } from "./viewport-metrics";
 import {
-  addRegisteredString,
   loadRegisteredStrings,
   registeredStringLabel,
   removeRegisteredString,
 } from "./registered-strings";
+import { promptAndSaveRegisteredString } from "./registered-string-dialog";
 import { flushSettings } from "./settings";
 import {
   charClass,
@@ -2175,14 +2175,21 @@ export class VirtualEditor {
             label: registeredStringLabel(text),
             iconClass: MENU_ICON.registeredString,
             action: () => this.dispatch("登録文字列を挿入できませんでした", () => this.insertText(text)),
-            trailing: {
-              label: "×",
-              title: "登録文字列を削除",
-              action: () => this.dispatch("登録文字列を削除できませんでした", async () => {
-                removeRegisteredString(text);
-                await flushSettings();
-              }),
-            },
+            trailing: [
+              {
+                label: "⚙",
+                title: "この登録文字列を編集",
+                action: () => this.dispatch("登録文字列を編集できませんでした", () => this.editRegisteredString(text)),
+              },
+              {
+                label: "×",
+                title: "登録文字列を削除",
+                action: () => this.dispatch("登録文字列を削除できませんでした", async () => {
+                  removeRegisteredString(text);
+                  await flushSettings();
+                }),
+              },
+            ],
           })),
         });
       }
@@ -2233,8 +2240,16 @@ export class VirtualEditor {
 
   private async addSelectionAsRegisteredString() {
     const [start, end] = this.sel.norm();
-    addRegisteredString(await this.lineCache.textInRange(start, end));
-    await flushSettings();
+    const selected = await this.lineCache.textInRange(start, end);
+    await promptAndSaveRegisteredString(
+      this.registeredCommandPorts.promptFields,
+      undefined,
+      selected,
+    );
+  }
+
+  private async editRegisteredString(previous: string) {
+    await promptAndSaveRegisteredString(this.registeredCommandPorts.promptFields, previous);
   }
 
   // ---- ガター(行番号) ----

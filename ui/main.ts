@@ -45,10 +45,14 @@ import {
   setSetting,
 } from "./settings";
 import { normalizeTheme, THEME_STORAGE_KEY } from "./theme";
-import { openSettingsMenu, openSettingsModal, type SettingsCloseHandle, type SettingsPanelPorts } from "./settings-panel";
+import { createSettingsOpener, openSettingsModal, type SettingsPanelPorts } from "./settings-panel";
 import { searchResultGoto } from "./search-results";
 import { runAsyncBoundary, reportUnhandledRejection } from "./async-boundary";
 import { openPath as openPathInTabs } from "./path-opener";
+import { promptRegisteredCommand, saveRegisteredCommand } from "./registered-command-menu";
+import type { CommandValueKind, RegisteredCommand } from "./registered-commands";
+import { promptAndSaveRegisteredString } from "./registered-string-dialog";
+import { openSearchSettings as openSearchSettingsDialog } from "./search-settings-dialog";
 import {
   isAssetViewerFormat,
   sourcePathForViewer,
@@ -134,7 +138,6 @@ let fileStatusbar: WorkspaceHost["fileStatusbar"];
 let editingStatusbar: EditingSurfaceHost["statusbar"];
 let inlinePreview: EditingSurfaceHost["preview"];
 let editor: EditingSurfaceHost["editor"];
-let settingsMenu: SettingsCloseHandle | null = null;
 let settingsPorts: SettingsPanelPorts;
 let restoringEditorFont = true;
 let previewingEditorFont = false;
@@ -455,6 +458,34 @@ const registeredCommandPorts = {
   writeClipboardText,
 };
 
+function openRegisteredStringSettings(current?: string) {
+  void runBackground("登録文字列を保存できませんでした", () =>
+    promptAndSaveRegisteredString(promptFields, current));
+}
+
+function openRegisteredCommandSettings(kind: CommandValueKind, current?: RegisteredCommand) {
+  void runBackground("登録コマンドを保存できませんでした", async () => {
+    const value = await promptRegisteredCommand(
+      registeredCommandPorts,
+      current === undefined ? "コマンドを登録" : "登録コマンドを編集",
+      kind,
+      current,
+    );
+    if (!value) return;
+    await saveRegisteredCommand(kind, value, current);
+  });
+}
+
+function openSearchSettingsFromSettings() {
+  openSearchSettingsDialog(loadSearchOptions(), {
+    onChange: (options) => {
+      saveSearchOptions(options);
+      sidebar?.setSearchOptions(options);
+    },
+    onClose: () => {},
+  });
+}
+
 function previewEditorFont(family: string, size: number, changed: "family" | "size") {
   previewingEditorFont = true;
   try {
@@ -586,11 +617,9 @@ settingsPorts = {
       return null;
     }
   },
-  getSearchOptions: loadSearchOptions,
-  updateSearchOptions: (options) => {
-    saveSearchOptions(options);
-    sidebar?.setSearchOptions(options);
-  },
+  openSearchSettings: openSearchSettingsFromSettings,
+  openRegisteredString: openRegisteredStringSettings,
+  openRegisteredCommand: openRegisteredCommandSettings,
   confirmReset: () => confirmMessage(
     "設定を初期化",
     "アプリ設定を初期値へ戻します。再開タブは保持されます。",
@@ -603,20 +632,7 @@ settingsPorts = {
   },
 };
 
-function openSettings() {
-  if (settingsMenu) {
-    settingsMenu.close();
-    settingsMenu = null;
-    return;
-  }
-  settingsMenu = openSettingsMenu($("addressbar-settings"), settingsPorts, () => {
-    settingsMenu?.close();
-    settingsMenu = null;
-    openSettingsModal(settingsPorts);
-  }, () => {
-    settingsMenu = null;
-  });
-}
+const openSettings = createSettingsOpener((onClose) => openSettingsModal(settingsPorts, onClose));
 
 const workspaceHost = new WorkspaceHost(
   {
@@ -634,7 +650,7 @@ const workspaceHost = new WorkspaceHost(
       onFind: () => editor.openSearch(),
       onPick: () => runBackground("ファイルを開けませんでした", () => pickAndOpen(false)),
       onFavorite: () => runBackground("お気に入りに追加できませんでした", () => favbar.addCurrent()),
-      onSettings: () => openSettings(),
+      onSettings: openSettings,
     },
     sidebar: {
       onSelect: async (relPath, newTab) => {
