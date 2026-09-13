@@ -14,6 +14,7 @@ import {
 import { commandsForKind } from "./registered-commands";
 import { MENU_ICON } from "./menu-icons";
 import { MENU_LABELS } from "./menu-labels";
+import { REGISTERED_COMMAND_LABELS } from "./registered-command-model";
 import { createOpenAsMenu } from "./open-as-menu";
 import { viewerFormatIcon, VIEWER_FORMAT_LABELS } from "./format";
 import { viewerFormatForPath } from "./viewer-formats";
@@ -2161,37 +2162,42 @@ export class VirtualEditor {
       customStarted = true;
     };
     if (!this.readOnly) {
-      if (this.sel.hasSel()) addCustomItem({
+      const addRegisteredString: MenuItem = {
         label: "選択範囲を登録文字列に追加",
         iconClass: MENU_ICON.registeredString,
         action: () => this.dispatch("登録文字列に追加できませんでした", () => this.addSelectionAsRegisteredString()),
-      });
+      };
       const registered = loadRegisteredStrings();
       if (registered.length) {
         addCustomItem({
           label: "登録文字列",
           iconClass: MENU_ICON.registeredString,
-          sub: registered.map((text) => ({
-            label: registeredStringLabel(text),
-            iconClass: MENU_ICON.registeredString,
-            action: () => this.dispatch("登録文字列を挿入できませんでした", () => this.insertText(text)),
-            trailing: [
-              {
-                label: "⚙",
-                title: "この登録文字列を編集",
-                action: () => this.dispatch("登録文字列を編集できませんでした", () => this.editRegisteredString(text)),
-              },
-              {
-                label: "×",
-                title: "登録文字列を削除",
-                action: () => this.dispatch("登録文字列を削除できませんでした", async () => {
-                  removeRegisteredString(text);
-                  await flushSettings();
-                }),
-              },
-            ],
-          })),
+          sub: [
+            ...registered.map((text) => ({
+              label: registeredStringLabel(text),
+              iconClass: MENU_ICON.registeredString,
+              action: () => this.dispatch("登録文字列を挿入できませんでした", () => this.insertText(text)),
+              trailing: [
+                {
+                  label: "⚙",
+                  title: "この登録文字列を編集",
+                  action: () => this.dispatch("登録文字列を編集できませんでした", () => this.editRegisteredString(text)),
+                },
+                {
+                  label: "×",
+                  title: "登録文字列を削除",
+                  action: () => this.dispatch("登録文字列を削除できませんでした", async () => {
+                    removeRegisteredString(text);
+                    await flushSettings();
+                  }),
+                },
+              ],
+            })),
+            ...(this.sel.hasSel() ? [{ ...addRegisteredString, sep: true }] : []),
+          ],
         });
+      } else if (this.sel.hasSel()) {
+        addCustomItem(addRegisteredString);
       }
     }
     if (this.registeredCommandPath) {
@@ -2201,7 +2207,7 @@ export class VirtualEditor {
       };
       const hasFileCommands = commandsForKind("file").length > 0;
       const fileMenu = createRegisteredCommandMenu({ path: this.registeredCommandPath, valueKind: "file" }, registeredCommandServices);
-      if (hasFileCommands) fileMenu.label = "登録コマンド（ファイル）";
+      if (hasFileCommands) fileMenu.label = REGISTERED_COMMAND_LABELS.file;
       if (!this.sel.hasSel() || hasFileCommands) addCustomItem(fileMenu);
       if (this.sel.hasSel()) {
         const [start, end] = this.sel.norm();
@@ -2210,7 +2216,7 @@ export class VirtualEditor {
           value: () => this.sel.blockBounds() ? this.blockText() : this.lineCache.textInRange(start, end),
           valueKind: "string",
         }, registeredCommandServices);
-        if (commandsForKind("string").length) stringMenu.label = "登録コマンド（選択文字列）";
+        if (commandsForKind("string").length) stringMenu.label = REGISTERED_COMMAND_LABELS.string;
         addCustomItem(stringMenu);
       }
     }

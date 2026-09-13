@@ -118,7 +118,9 @@ describe("Feature: settings modal", () => {
     expect(document.querySelector("[data-settings-section=エディタ]")).not.toBeNull();
     expect(document.querySelector("[data-settings-section=プレビュー]")).not.toBeNull();
     expect(document.querySelector("[data-settings-section=検索]")).not.toBeNull();
-    expect(document.querySelector("[data-settings-section=登録]")).not.toBeNull();
+    expect(document.querySelector("[data-settings-section=登録文字列]")).not.toBeNull();
+    expect(document.querySelector("[data-settings-section='登録コマンド（ファイル）']")).not.toBeNull();
+    expect(document.querySelector("[data-settings-section='登録コマンド（選択文字列）']")).not.toBeNull();
     expect(document.querySelector('[data-setting="startup-path"]')).not.toBeNull();
     expect(document.querySelector(".settings-reset")).not.toBeNull();
   });
@@ -141,7 +143,9 @@ describe("Feature: settings modal", () => {
       "エディタ",
       "プレビュー",
       "検索",
-      "登録",
+      "登録文字列",
+      "登録コマンド（ファイル）",
+      "登録コマンド（選択文字列）",
       "About",
     ]);
     expect(sections.map((section) => section.dataset.settingsSection)).toEqual([
@@ -149,7 +153,9 @@ describe("Feature: settings modal", () => {
       "エディタ",
       "プレビュー",
       "検索",
-      "登録",
+      "登録文字列",
+      "登録コマンド（ファイル）",
+      "登録コマンド（選択文字列）",
       "About",
     ]);
     expect(tabs[0].getAttribute("aria-selected")).toBe("true");
@@ -173,17 +179,17 @@ describe("Feature: settings modal", () => {
 
     const search = document.querySelector<HTMLElement>('[data-setting-group="workspace-search"]')!;
     const strings = document.querySelector<HTMLElement>('[data-setting-group="registered-strings"]')!;
-    const commands = document.querySelector<HTMLElement>('[data-setting-group="registered-commands"]')!;
+    const fileCommands = document.querySelector<HTMLElement>('[data-setting-group="registered-commands-file"]')!;
+    const stringCommands = document.querySelector<HTMLElement>('[data-setting-group="registered-commands-string"]')!;
     expect(search.querySelector('[data-action="edit-search-settings"]')).not.toBeNull();
     expect(search.querySelector(".ss-columns")).toBeNull();
     expect(strings.querySelector('[data-action="add-registered-string"]')).not.toBeNull();
     expect(strings.querySelector('[data-action="edit-registered-string"]')).not.toBeNull();
-    expect(commands.querySelector('[data-action="add-registered-command-file"]')).not.toBeNull();
-    expect(commands.querySelector('[data-action="add-registered-command-string"]')).not.toBeNull();
-    expect(commands.querySelector('[data-action="edit-registered-command"]')).not.toBeNull();
-    expect([...commands.querySelectorAll<HTMLElement>(".settings-command-kind-group")]
-      .map((group) => group.dataset.commandKind)).toEqual(["file", "string"]);
-    expect(commands.querySelector('[data-setting^="registered-command-"]')).toBeNull();
+    expect(fileCommands.querySelector('[data-action="add-registered-command-file"]')).not.toBeNull();
+    expect(stringCommands.querySelector('[data-action="add-registered-command-string"]')).not.toBeNull();
+    expect(fileCommands.querySelector('[data-action="edit-registered-command"]')).not.toBeNull();
+    expect(stringCommands.querySelector('[data-action="edit-registered-command"]')).toBeNull();
+    expect(fileCommands.querySelector('[data-setting^="registered-command-"]')).toBeNull();
   });
 
   // Given: 登録文字列とファイル用・文字列用コマンドが設定済み
@@ -205,13 +211,16 @@ describe("Feature: settings modal", () => {
     expect(strings.querySelector('[data-action="edit-registered-string"]')?.textContent).toBe("⚙");
     expect(strings.querySelector('[data-action="delete-registered-string"]')?.textContent).toBe("×");
 
-    const commands = document.querySelector<HTMLElement>('[data-setting-group="registered-commands"]')!;
-    for (const kind of ["file", "string"] as const) {
-      const group = commands.querySelector<HTMLElement>(`[data-command-kind="${kind}"]`)!;
-      expect(group.querySelector("[data-action^=add-registered-command-] .menu-icon-command")).not.toBeNull();
+    expect(strings.lastElementChild).toBe(strings.querySelector('[data-action="add-registered-string"]'));
+
+    const fileCommands = document.querySelector<HTMLElement>('[data-setting-group="registered-commands-file"]')!;
+    const stringCommands = document.querySelector<HTMLElement>('[data-setting-group="registered-commands-string"]')!;
+    for (const [kind, group] of [["file", fileCommands], ["string", stringCommands]] as const) {
+      expect(group.querySelector(`[data-action="add-registered-command-${kind}"] .menu-icon-command`)).not.toBeNull();
       expect(group.querySelector('[data-action^="add-registered-command-"]')?.textContent).toBe("コマンドを登録...");
       expect(group.querySelector('[data-action="edit-registered-command"]')?.textContent).toBe("⚙");
       expect(group.querySelector('[data-action="delete-registered-command"]')?.textContent).toBe("×");
+      expect(group.lastElementChild).toBe(group.querySelector(`[data-action="add-registered-command-${kind}"]`));
     }
   });
 
@@ -342,7 +351,7 @@ describe("Feature: settings modal", () => {
     });
     openSettingsModal(ports);
 
-    const section = document.querySelector<HTMLElement>("[data-settings-section=登録]")!;
+    const section = document.querySelector<HTMLElement>("[data-settings-section='登録コマンド（ファイル）']")!;
     const first = section.querySelector<HTMLElement>('[data-command-index="0"]')!;
     const second = section.querySelector<HTMLElement>('[data-command-index="2"]')!;
     second.dispatchEvent(new Event("dragstart", { bubbles: true }));
@@ -376,6 +385,32 @@ describe("Feature: settings modal", () => {
     expect(ports.getSetting("registeredCommands")).toEqual([
       { label: "Notepad", prefix: "", command: "notepad {file}" },
       { label: "Editor", prefix: "", command: "code {file}" },
+    ]);
+  });
+
+  // Given: ファイル用1件、文字列用2件、ファイル用1件の登録コマンドがある
+  // When: ファイル用の先頭を削除してから、文字列用の2件目を上へ移動し、1件目を削除する
+  // Then: 別種別の削除で配列位置が変わっても対象コマンドを正しく操作する
+  it("Scenario: 種類の異なるコマンド削除後も別一覧の操作対象を維持する", () => {
+    const ports = makePorts({
+      registeredCommands: [
+        { label: "Editor", prefix: "", command: "code {file}" },
+        { label: "Browser", prefix: "", command: "open {string}", valueKind: "string" },
+        { label: "Terminal", prefix: "", command: "wt {string}", valueKind: "string" },
+        { label: "Notepad", prefix: "", command: "notepad {file}" },
+      ],
+    });
+    openSettingsModal(ports);
+
+    const fileCommands = document.querySelector<HTMLElement>('[data-setting-group="registered-commands-file"]')!;
+    const stringCommands = document.querySelector<HTMLElement>('[data-setting-group="registered-commands-string"]')!;
+    fileCommands.querySelector<HTMLButtonElement>('[data-action="delete-registered-command"][data-command-index="0"]')!.click();
+    stringCommands.querySelector<HTMLButtonElement>('[data-action="move-registered-command-up"][data-command-index="2"]')!.click();
+    stringCommands.querySelector<HTMLButtonElement>('[data-action="delete-registered-command"][data-command-index="1"]')!.click();
+
+    expect(ports.getSetting("registeredCommands")).toEqual([
+      { label: "Terminal", prefix: "", command: "wt {string}", valueKind: "string" },
+      { label: "Notepad", prefix: "", command: "notepad {file}" },
     ]);
   });
 
@@ -505,7 +540,7 @@ describe("Feature: settings modal", () => {
     openSettingsModal(ports);
 
     const strings = document.querySelector<HTMLElement>('[data-setting-group="registered-strings"]')!;
-    const commands = document.querySelector<HTMLElement>('[data-setting-group="registered-commands"]')!;
+    const commands = document.querySelector<HTMLElement>('[data-setting-group="registered-commands-file"]')!;
     strings.querySelector<HTMLButtonElement>('[title="登録文字列を削除"]')!.click();
     strings.querySelector<HTMLButtonElement>('[title="登録文字列を削除"]')!.click();
     commands.querySelector<HTMLButtonElement>('[title="このコマンドの登録を解除"]')!.click();

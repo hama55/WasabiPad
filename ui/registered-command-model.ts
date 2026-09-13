@@ -1,5 +1,9 @@
 export type CommandValueKind = "file" | "string";
 export const DEFAULT_COMMAND_VALUE_KIND: CommandValueKind = "file";
+export const REGISTERED_COMMAND_LABELS: Record<CommandValueKind, string> = {
+  file: "登録コマンド（ファイル）",
+  string: "登録コマンド（選択文字列）",
+};
 
 export interface RegisteredCommand {
   label: string;

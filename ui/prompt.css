@@ -77,12 +77,12 @@
 .settings-field input:focus, .settings-field select:focus { border-color: var(--bg-status); }
 .settings-checkbox { flex-direction: row; align-items: center; gap: 8px; }
 .settings-checkbox input { width: auto; padding: 0; border: 0; background: transparent; }
-.settings-section > button, .settings-list-group > button, .settings-group-actions button {
+.settings-section > button, .settings-list-group > button {
   align-self: stretch; background: var(--bg-editor); color: var(--fg);
   border: 1px solid var(--border-strong); border-radius: 4px;
   padding: 5px 8px; font: 13px var(--font-ui); cursor: default;
 }
-.settings-section > button:hover, .settings-list-group > button:hover, .settings-group-actions button:hover {
+.settings-section > button:hover, .settings-list-group > button:hover {
   background: var(--hover);
 }
 .settings-box {
@@ -170,17 +170,9 @@
   font: 12px var(--font-ui); cursor: default;
 }
 .settings-list-row button:hover { background: var(--hover); color: var(--fg); }
-.settings-command-kind-group {
-  display: flex; flex-direction: column; gap: 5px;
-  padding-top: 8px; border-top: 1px solid var(--border);
-}
-.settings-command-kind-group > h4 {
-  margin: 0; color: var(--fg); font-size: 12px; font-weight: 600;
-}
 .settings-command-row { flex-wrap: wrap; }
 .settings-command-actions { display: flex; gap: 4px; }
-.settings-group-actions { display: flex; flex-wrap: wrap; gap: 5px; }
-.settings-group-actions button, .settings-list-row button {
+.settings-list-row button {
   display: inline-flex; align-items: center; gap: 5px;
 }
 .settings-command-row[draggable="true"] { cursor: grab; }

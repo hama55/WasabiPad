@@ -1499,10 +1499,10 @@ describe("Feature: VirtualEditor", () => {
   });
 
   // Feature: エディタの登録文字列
-  // Scenario: 選択範囲をダイアログで登録し、既存項目を編集・削除する
+  // Scenario: 選択範囲をサブメニューからダイアログで登録し、既存項目を編集・削除する
   // Given: エディタに「before」が表示され、登録文字列のダイアログ入力が用意されている
-  // When: 選択範囲を登録し、既存の登録文字列を歯車で編集して×で削除する
-  // Then: 登録・編集は共通ダイアログを通り、メニューの操作ボタンは登録コマンドと同じ順序になる
+  // When: 選択範囲を登録文字列サブメニューから登録し、既存の登録文字列を歯車で編集して×で削除する
+  // Then: 登録・編集は共通ダイアログを通り、追加は選択時だけ既存項目の後ろに表示する
   it("Scenario: 右クリックの登録文字列をダイアログで管理する", async () => {
     loadSettings.mockResolvedValue(JSON.stringify({ registeredStrings: ["before"] }));
     await initSettings();
@@ -1533,6 +1533,8 @@ describe("Feature: VirtualEditor", () => {
     await editor.selectRange(0, 0, 6);
     showContextMenu();
     [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "登録文字列 ▸")!.click();
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-submenu .dd-item")]
       .find((item) => item.textContent === "選択範囲を登録文字列に追加")!.click();
     await vi.waitFor(() => expect(promptFields).toHaveBeenCalledOnce());
     await vi.waitFor(() => expect(loadRegisteredStrings()).toEqual(["before", "after"]));
@@ -1542,6 +1544,8 @@ describe("Feature: VirtualEditor", () => {
       .find((item) => item.textContent === "登録文字列 ▸")!.click();
     const registeredItem = [...dropdown.querySelectorAll<HTMLElement>(".dd-submenu .dd-item")]
       .find((item) => item.textContent?.startsWith("before"))!;
+    expect([...dropdown.querySelectorAll<HTMLElement>(".dd-submenu .dd-item")].at(-1)?.textContent)
+      .toBe("選択範囲を登録文字列に追加");
     expect([...registeredItem.querySelectorAll<HTMLButtonElement>(".dd-trailing")]
       .map((button) => button.textContent)).toEqual(["⚙", "×"]);
     registeredItem.querySelectorAll<HTMLButtonElement>(".dd-trailing")[0].click();
@@ -1554,6 +1558,13 @@ describe("Feature: VirtualEditor", () => {
       .find((item) => item.textContent?.startsWith("edited"))!;
     editedItem.querySelectorAll<HTMLButtonElement>(".dd-trailing")[1].click();
     await vi.waitFor(() => expect(loadRegisteredStrings()).toEqual(["after"]));
+
+    editor.goTo(0, 0);
+    showContextMenu();
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "登録文字列 ▸")!.click();
+    expect([...dropdown.querySelectorAll<HTMLElement>(".dd-submenu .dd-item")]
+      .map((item) => item.textContent)).not.toContain("選択範囲を登録文字列に追加");
   });
 
   // Given: 文書が「https://example.com」、選択範囲がURL全体、promptFields が「ブラウザ」「open {string_in_url}」を返し、外部パスが「C:\work\memo.txt」

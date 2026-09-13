@@ -5,7 +5,12 @@ import { formatByteSize, formatFontFamily } from "./format";
 import { FONT_FAMILIES, INDENT_SIZES, isValidFontSize, MAX_FONT_SIZE, MIN_FONT_SIZE } from "./font-controls";
 import { openModal } from "./modal";
 import { createMenuIcon, MENU_ICON, type MenuItemIconClass } from "./menu-icons";
-import { commandValueKind, type CommandValueKind, type RegisteredCommand } from "./registered-command-model";
+import {
+  commandValueKind,
+  REGISTERED_COMMAND_LABELS,
+  type CommandValueKind,
+  type RegisteredCommand,
+} from "./registered-command-model";
 import { registeredStringLabel } from "./registered-strings";
 import type { Settings } from "./settings";
 import { THEME_LABELS, THEMES, type Theme } from "./theme";
@@ -135,6 +140,16 @@ export function openSettingsModal(
   actions.append(reset, closeButton);
   box.append(actions);
 
+  const openRegisteredCommandDialog = (kind: CommandValueKind, command?: RegisteredCommand) => {
+    close();
+    ports.openRegisteredCommand(kind, command);
+  };
+  const registeredCommandSection = (kind: CommandValueKind) => ({
+    name: REGISTERED_COMMAND_LABELS[kind],
+    id: `settings-registered-commands-${kind}`,
+    build: () => [registeredCommandsField(ports, kind, openRegisteredCommandDialog)],
+  });
+
   const sectionSpecs = [
     {
       name: "一般",
@@ -168,19 +183,15 @@ export function openSettingsModal(
       })],
     },
     {
-      name: "登録",
-      id: "settings-registered",
-      build: () => [
-        registeredStringsField(ports, (current) => {
-          close();
-          ports.openRegisteredString(current);
-        }),
-        registeredCommandsField(ports, (kind, command) => {
-          close();
-          ports.openRegisteredCommand(kind, command);
-        }),
-      ],
+      name: "登録文字列",
+      id: "settings-registered-strings",
+      build: () => [registeredStringsField(ports, (current) => {
+        close();
+        ports.openRegisteredString(current);
+      })],
     },
+    registeredCommandSection("file"),
+    registeredCommandSection("string"),
     {
       name: "About",
       id: "settings-about",
@@ -339,8 +350,6 @@ function registeredStringsField(
   const group = document.createElement("div");
   group.className = "settings-list-group";
   group.dataset.settingGroup = "registered-strings";
-  const title = document.createElement("h3");
-  title.textContent = "登録文字列";
   const add = settingsActionButton(
     "登録文字列を追加",
     "登録文字列を追加",
@@ -348,7 +357,6 @@ function registeredStringsField(
     () => openDialog(),
     MENU_ICON.registeredString,
   );
-  group.append(title, add);
   for (const text of ports.getSetting("registeredStrings")) {
     const row = document.createElement("div");
     row.className = "settings-list-row";
@@ -367,24 +375,27 @@ function registeredStringsField(
     group.append(row);
   }
   if (!ports.getSetting("registeredStrings").length) group.append(emptySettingsNotice("登録なし"));
+  group.append(add);
   return group;
 }
 
 function registeredCommandsField(
   ports: SettingsPanelPorts,
+  kind: CommandValueKind,
   openDialog: (kind: CommandValueKind, command?: RegisteredCommand) => void,
 ): HTMLElement {
   const group = document.createElement("div");
   group.className = "settings-list-group";
-  group.dataset.settingGroup = "registered-commands";
-  const title = document.createElement("h3");
-  title.textContent = "登録コマンド";
-  let draggingIndex: number | null = null;
+  group.dataset.settingGroup = `registered-commands-${kind}`;
+  let draggingCommand: RegisteredCommand | null = null;
+  const kindLabel = kind === "file" ? "ファイル" : "選択文字列";
 
-  const reorder = (from: number, to: number) => {
+  const reorder = (fromCommand: RegisteredCommand, toCommand: RegisteredCommand) => {
     const commands = ports.getSetting("registeredCommands");
-    const kind = commands[from] && commandValueKind(commands[from]);
-    if (!kind || !commands[to] || commandValueKind(commands[to]) !== kind || from === to) return;
+    const from = commands.indexOf(fromCommand);
+    const to = commands.indexOf(toCommand);
+    if (from < 0 || to < 0 || commandValueKind(fromCommand) !== kind
+      || commandValueKind(toCommand) !== kind || from === to) return;
     const kindIndexes = commands.flatMap((command, index) => commandValueKind(command) === kind ? [index] : []);
     const fromKindIndex = kindIndexes.indexOf(from);
     const toKindIndex = kindIndexes.indexOf(to);
@@ -399,89 +410,76 @@ function registeredCommandsField(
   };
 
   const render = () => {
-    group.replaceChildren(title);
+    group.replaceChildren();
     const commands = ports.getSetting("registeredCommands");
-    for (const kind of ["file", "string"] as const) {
-      const kindIndexes = commands.flatMap((command, index) => commandValueKind(command) === kind ? [index] : []);
-      const kindGroup = document.createElement("div");
-      kindGroup.className = "settings-command-kind-group";
-      kindGroup.dataset.commandKind = kind;
-      const kindTitle = document.createElement("h4");
-      kindTitle.textContent = kind === "file" ? "ファイル用コマンド" : "文字列用コマンド";
-      const addActions = document.createElement("div");
-      addActions.className = "settings-group-actions";
-      addActions.append(settingsActionButton(
-        "コマンドを登録...",
-        `${kindTitle.textContent}を追加`,
-        `add-registered-command-${kind}`,
-        () => openDialog(kind),
-        MENU_ICON.command,
-      ));
-      kindGroup.append(kindTitle, addActions);
-      if (!kindIndexes.length) {
-        kindGroup.append(emptySettingsNotice("登録なし"));
-        group.append(kindGroup);
-        continue;
-      }
-      for (const index of kindIndexes) {
-        const command = commands[index];
-        const row = document.createElement("div");
-        row.className = "settings-list-row settings-command-row";
-        row.dataset.commandIndex = String(index);
-        row.draggable = true;
-        row.addEventListener("dragstart", () => { draggingIndex = index; });
-        row.addEventListener("dragend", () => { draggingIndex = null; });
-        row.addEventListener("dragover", (event) => {
-          if (draggingIndex === null || draggingIndex === index
-            || commandValueKind(commands[draggingIndex]) !== kind) return;
-          event.preventDefault();
-        });
-        row.addEventListener("drop", (event) => {
-          event.preventDefault();
-          const source = draggingIndex;
-          draggingIndex = null;
-          if (source !== null) reorder(source, index);
-        });
+    const kindIndexes = commands.flatMap((command, index) => commandValueKind(command) === kind ? [index] : []);
+    for (const index of kindIndexes) {
+      const command = commands[index];
+      const row = document.createElement("div");
+      row.className = "settings-list-row settings-command-row";
+      row.dataset.commandIndex = String(index);
+      row.draggable = true;
+      row.addEventListener("dragstart", () => { draggingCommand = command; });
+      row.addEventListener("dragend", () => { draggingCommand = null; });
+      row.addEventListener("dragover", (event) => {
+        if (draggingCommand === null || draggingCommand === command
+          || commandValueKind(draggingCommand) !== kind) return;
+        event.preventDefault();
+      });
+      row.addEventListener("drop", (event) => {
+        event.preventDefault();
+        const source = draggingCommand;
+        draggingCommand = null;
+        if (source !== null) reorder(source, command);
+      });
 
-        const value = document.createElement("span");
-        value.textContent = command.label;
-        value.title = command.command;
-        row.append(value);
+      const value = document.createElement("span");
+      value.textContent = command.label;
+      value.title = command.command;
+      row.append(value);
 
-        const actions = document.createElement("div");
-        actions.className = "settings-command-actions";
-        const position = kindIndexes.indexOf(index);
-        for (const [direction, text, titleText] of [
-          ["up", "↑", "上へ移動"],
-          ["down", "↓", "下へ移動"],
-        ] as const) {
-          const move = document.createElement("button");
-          move.type = "button";
-          move.textContent = text;
-          move.title = titleText;
-          move.dataset.action = `move-registered-command-${direction}`;
-          move.dataset.commandIndex = String(index);
-          const target = kindIndexes[position + (direction === "up" ? -1 : 1)];
-          move.disabled = target === undefined;
-          move.addEventListener("click", () => {
-            if (target !== undefined) reorder(index, target);
-          });
-          actions.append(move);
-        }
-        const edit = settingsActionButton("⚙", "このコマンドを編集", "edit-registered-command", () =>
-          openDialog(kind, command));
-        edit.dataset.commandIndex = String(index);
-        actions.append(edit);
-        const remove = settingsActionButton("×", "このコマンドの登録を解除", "delete-registered-command", () => {
-          ports.setSetting("registeredCommands", ports.getSetting("registeredCommands").filter((_, current) => current !== index));
-          render();
+      const actions = document.createElement("div");
+      actions.className = "settings-command-actions";
+      const position = kindIndexes.indexOf(index);
+      for (const [direction, text, titleText] of [
+        ["up", "↑", "上へ移動"],
+        ["down", "↓", "下へ移動"],
+      ] as const) {
+        const move = document.createElement("button");
+        move.type = "button";
+        move.textContent = text;
+        move.title = titleText;
+        move.dataset.action = `move-registered-command-${direction}`;
+        move.dataset.commandIndex = String(index);
+        const targetIndex = kindIndexes[position + (direction === "up" ? -1 : 1)];
+        const target = targetIndex === undefined ? undefined : commands[targetIndex];
+        move.disabled = target === undefined;
+        move.addEventListener("click", () => {
+          if (target !== undefined) reorder(command, target);
         });
-        actions.append(remove);
-        row.append(actions);
-        kindGroup.append(row);
+        actions.append(move);
       }
-      group.append(kindGroup);
+      const edit = settingsActionButton("⚙", "このコマンドを編集", "edit-registered-command", () =>
+        openDialog(kind, command));
+      edit.dataset.commandIndex = String(index);
+      actions.append(edit);
+      const remove = settingsActionButton("×", "このコマンドの登録を解除", "delete-registered-command", () => {
+        ports.setSetting("registeredCommands", ports.getSetting("registeredCommands").filter((item) => item !== command));
+        render();
+      });
+      remove.dataset.commandIndex = String(index);
+      actions.append(remove);
+      row.append(actions);
+      group.append(row);
     }
+    if (!kindIndexes.length) group.append(emptySettingsNotice("登録なし"));
+    group.append(settingsActionButton(
+      "コマンドを登録...",
+      `登録コマンド（${kindLabel}）を追加`,
+      `add-registered-command-${kind}`,
+      () => openDialog(kind),
+      MENU_ICON.command,
+    ));
   };
   render();
   return group;
