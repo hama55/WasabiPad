@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import * as sharedVersion from "../version-policy.mjs";
@@ -63,20 +62,6 @@ describe("Feature: リリースタグとアプリバージョンの一致検査"
   it("Scenario: 未タグの開発ビルドを許可する", () => {
     expect(checkReleaseVersion({ actual: null, headTag: null, versions: versionCopies("1.5.8") }))
       .toEqual({ checked: false, tag: null });
-  });
-
-  // Scenario: GitHubの通常ブランチビルドでGITHUB_REF_NAMEだけが設定されている
-  // Given: GITHUB_REF_TYPEがbranchでGITHUB_REF_NAMEがv1.5.7、HEADがリリースタグでもある
-  // When: CLIのバージョン検査を実行する
-  // Then: branch名をリリースタグと誤認せず、開発ビルドとして継続する
-  it("Scenario: 通常のブランチビルドをリリース検査で止めない", () => {
-    const output = execFileSync(process.execPath, ["scripts/check-release-version.mjs"], {
-      cwd: root,
-      encoding: "utf8",
-      env: { ...process.env, GITHUB_REF_NAME: "v1.5.7", GITHUB_REF_TYPE: "branch" },
-    });
-
-    expect(output).toContain("version check skipped for development build");
   });
 
   // Scenario: ブランチビルドのHEADが過去のリリースタグでもある

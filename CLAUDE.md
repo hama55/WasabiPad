@@ -20,3 +20,6 @@
 - リリースは `npm run release -- <major.minor.patch>` を実行する。
 - このコマンドは版番号の同期、検証、コミット、注釈付きタグ作成、GitHubへのpushまで行う。
 - 通常の `git push` でリリース処理を行わない。
+- `package.json`・`package-lock.json`・`src-tauri/tauri.conf.json`・`Cargo.toml`は個別に版番号を変更せず、リリーススクリプトで同期する。
+- `GITHUB_REF_TYPE=branch` のビルドは、HEADが過去のリリースタグでも開発ビルドとして扱う。タグ実行だけをリリース検査の対象にする。
+- リリースCIが失敗した場合、同じタグを作り直さず、原因を修正して次のパッチ版をリリースする。
