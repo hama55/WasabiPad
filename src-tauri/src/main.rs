@@ -534,6 +534,7 @@ fn preview_cache_from_directory(cache_directory: Option<String>) -> Result<Previ
 #[tauri::command]
 fn preview_cache_info(cache_directory: Option<String>) -> Result<PreviewCacheInfo, String> {
     let cache = preview_cache_from_directory(cache_directory)?;
+    std::fs::create_dir_all(cache.directory()).map_err(|error| error.to_string())?;
     let bytes = cache.total_bytes().map_err(|error| error.to_string())?;
     Ok(PreviewCacheInfo {
         directory: cache.directory().to_string_lossy().into_owned(),
@@ -555,7 +556,8 @@ fn take_pending_window_requests(state: tauri::State<'_, InstanceServer>) -> Vec<
 
 #[cfg(test)]
 mod window_request_tests {
-    use super::parse_window_request;
+    use super::{parse_window_request, preview_cache_info};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn internal_request_round_trips_as_one_json_argument() {
@@ -579,6 +581,27 @@ mod window_request_tests {
         assert!(!request.secondary);
         assert_eq!(request.path.as_deref(), Some(r"C:\work\memo.txt"));
         assert_eq!(request.goto.unwrap().col, 2);
+    }
+
+    // Feature: 外部プレビューキャッシュ保存場所
+    // Scenario: 保存場所の情報確認で未作成のキャッシュフォルダを用意する
+    // Given: まだ存在しないプレビューキャッシュ保存場所が指定されている
+    // When: 保存場所と使用量を取得する
+    // Then: 表示対象のキャッシュフォルダが作成される
+    #[test]
+    fn preview_cache_info_creates_missing_storage_directory() {
+        let root = std::env::temp_dir().join(format!(
+            "wasabipad-preview-info-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let info = preview_cache_info(Some(root.to_string_lossy().into_owned())).unwrap();
+
+        assert!(std::path::Path::new(&info.directory).is_dir());
+        let _ = std::fs::remove_dir_all(root);
     }
 }
 

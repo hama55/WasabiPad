@@ -584,6 +584,7 @@ function previewCacheField(ports: SettingsPanelPorts): HTMLElement {
   size.textContent = "使用量: 確認中…";
   locationRow.append(size);
 
+  let previewCacheInfoRequest: Promise<PreviewCacheInfo | null> | null = null;
   const refreshInfo = () => {
     const getInfo = ports.getPreviewCacheInfo;
     if (!getInfo) {
@@ -592,12 +593,17 @@ function previewCacheField(ports: SettingsPanelPorts): HTMLElement {
       location.title = location.textContent;
       return;
     }
-    void Promise.resolve(getInfo()).then((info) => {
+    const request = Promise.resolve(getInfo());
+    previewCacheInfoRequest = request;
+    void request.then((info) => {
       if (!info) {
         size.textContent = "使用量: 確認できません";
         return;
       }
-      if (currentDirectory === null) location.textContent = info.directory;
+      if (currentDirectory === null) {
+        currentDirectory = info.directory;
+        location.textContent = info.directory;
+      }
       location.title = info.directory;
       size.textContent = `使用量: ${formatByteSize(info.bytes)}`;
     }).catch(() => {
@@ -609,6 +615,7 @@ function previewCacheField(ports: SettingsPanelPorts): HTMLElement {
   const actions = document.createElement("div");
   actions.className = "settings-list-row";
 
+  let choosingPreviewCacheDirectory = false;
   const pick = document.createElement("button");
   pick.type = "button";
   pick.dataset.action = "pick-preview-cache-directory";
@@ -616,14 +623,21 @@ function previewCacheField(ports: SettingsPanelPorts): HTMLElement {
   pick.disabled = !ports.pickPreviewCacheDirectory;
   pick.addEventListener("click", () => {
     const pickDirectory = ports.pickPreviewCacheDirectory;
-    if (!pickDirectory) return;
-    void Promise.resolve(pickDirectory(currentDirectory ?? undefined)).then((directory) => {
+    if (!pickDirectory || choosingPreviewCacheDirectory) return;
+    choosingPreviewCacheDirectory = true;
+    void (async () => {
+      if (previewCacheInfoRequest) {
+        await previewCacheInfoRequest.catch(() => null);
+      }
+      const directory = await pickDirectory(currentDirectory ?? undefined);
       if (typeof directory !== "string" || directory.trim().length === 0) return;
       currentDirectory = directory;
       ports.setSetting("previewCacheDirectory", directory);
       location.textContent = directory;
       location.title = directory;
       refreshInfo();
+    })().finally(() => {
+      choosingPreviewCacheDirectory = false;
     });
   });
 

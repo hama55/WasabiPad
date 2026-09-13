@@ -449,6 +449,82 @@ describe("Feature: settings modal", () => {
     });
   });
 
+  // Given: 保存場所は未指定で、バックエンドが実際の既定場所を返す
+  // When: 既定場所の取得中に「保存場所を変更」ボタンを押す
+  // Then: 表示中の既定場所からフォルダ選択ダイアログを開く
+  it("Scenario: 未設定のプレビューキャッシュ選択を表示中の既定場所から開く", async () => {
+    const defaultDirectory = "C:\\Users\\test\\AppData\\Local\\WasabiPad\\.wasabipad-preview-cache";
+    const getPreviewCacheInfo = vi.fn(async () => ({ directory: defaultDirectory, bytes: 0 }));
+    const pickPreviewCacheDirectory = vi.fn(() => null);
+    const ports = Object.assign(makePorts(), { getPreviewCacheInfo, pickPreviewCacheDirectory });
+    openSettingsModal(ports as SettingsPanelPorts);
+
+    const previewSection = document.querySelector<HTMLElement>("[data-settings-section=プレビュー]")!;
+    previewSection.querySelector<HTMLButtonElement>('[data-action="pick-preview-cache-directory"]')!.click();
+
+    await vi.waitFor(() => expect(pickPreviewCacheDirectory).toHaveBeenCalledWith(defaultDirectory));
+  });
+
+  // Given: 保存場所の既定値の取得に失敗している
+  // When: 「保存場所を変更」ボタンを押す
+  // Then: 既定値なしでフォルダ選択ダイアログを開く
+  it("Scenario: プレビューキャッシュ場所の確認に失敗しても選択を続ける", async () => {
+    const getPreviewCacheInfo = vi.fn(async () => {
+      throw new Error("info unavailable");
+    });
+    const pickPreviewCacheDirectory = vi.fn(() => null);
+    const ports = Object.assign(makePorts(), { getPreviewCacheInfo, pickPreviewCacheDirectory });
+    openSettingsModal(ports as SettingsPanelPorts);
+
+    document.querySelector<HTMLButtonElement>('[data-action="pick-preview-cache-directory"]')!.click();
+
+    await vi.waitFor(() => expect(pickPreviewCacheDirectory).toHaveBeenCalledWith(undefined));
+  });
+
+  // Given: 保存場所の既定値を取得中である
+  // When: 「保存場所を変更」ボタンを連続して押す
+  // Then: フォルダ選択ダイアログを一度だけ開く
+  it("Scenario: プレビューキャッシュ場所の選択を連続実行しない", async () => {
+    const defaultDirectory = "C:\\Users\\test\\AppData\\Local\\WasabiPad\\.wasabipad-preview-cache";
+    let resolveInfo: ((info: { directory: string; bytes: number }) => void) | undefined;
+    const getPreviewCacheInfo = vi.fn(() => new Promise<{ directory: string; bytes: number }>((resolve) => {
+      resolveInfo = resolve;
+    }));
+    const pickPreviewCacheDirectory = vi.fn(() => null);
+    const ports = Object.assign(makePorts(), { getPreviewCacheInfo, pickPreviewCacheDirectory });
+    openSettingsModal(ports as SettingsPanelPorts);
+
+    const pick = document.querySelector<HTMLButtonElement>('[data-action="pick-preview-cache-directory"]')!;
+    pick.click();
+    pick.click();
+    resolveInfo!({ directory: defaultDirectory, bytes: 0 });
+
+    await vi.waitFor(() => expect(pickPreviewCacheDirectory).toHaveBeenCalledOnce());
+  });
+
+  // Given: 設定済みの保存場所を作成中である
+  // When: 「保存場所を変更」ボタンを押す
+  // Then: 保存場所の準備完了後に現在のフォルダから選択を始める
+  it("Scenario: 設定済みプレビューキャッシュ場所の準備完了を待つ", async () => {
+    const currentDirectory = "D:\\WasabiPad\\preview-cache";
+    let resolveInfo: ((info: { directory: string; bytes: number }) => void) | undefined;
+    const getPreviewCacheInfo = vi.fn(() => new Promise<{ directory: string; bytes: number }>((resolve) => {
+      resolveInfo = resolve;
+    }));
+    const pickPreviewCacheDirectory = vi.fn(() => null);
+    const ports = Object.assign(makePorts({ previewCacheDirectory: currentDirectory }), {
+      getPreviewCacheInfo,
+      pickPreviewCacheDirectory,
+    });
+    openSettingsModal(ports as SettingsPanelPorts);
+
+    document.querySelector<HTMLButtonElement>('[data-action="pick-preview-cache-directory"]')!.click();
+    expect(pickPreviewCacheDirectory).not.toHaveBeenCalled();
+    resolveInfo!({ directory: `${currentDirectory}\\.wasabipad-preview-cache`, bytes: 0 });
+
+    await vi.waitFor(() => expect(pickPreviewCacheDirectory).toHaveBeenCalledWith(currentDirectory));
+  });
+
   // Feature: 外部プレビューキャッシュ保存場所の設定画面
   // Scenario: 選択した保存場所だけをSettingsへ保存する
   // Given: フォルダ選択portが `D:\\WasabiPad\\preview-cache` を返す
