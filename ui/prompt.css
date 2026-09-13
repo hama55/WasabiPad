@@ -170,13 +170,19 @@
   font: 12px var(--font-ui); cursor: default;
 }
 .settings-list-row button:hover { background: var(--hover); color: var(--fg); }
-.settings-command-kind-group { display: flex; flex-direction: column; gap: 5px; }
+.settings-command-kind-group {
+  display: flex; flex-direction: column; gap: 5px;
+  padding-top: 8px; border-top: 1px solid var(--border);
+}
 .settings-command-kind-group > h4 {
-  margin: 0; color: var(--fg-dim); font-size: 12px; font-weight: 400;
+  margin: 0; color: var(--fg); font-size: 12px; font-weight: 600;
 }
 .settings-command-row { flex-wrap: wrap; }
 .settings-command-actions { display: flex; gap: 4px; }
 .settings-group-actions { display: flex; flex-wrap: wrap; gap: 5px; }
+.settings-group-actions button, .settings-list-row button {
+  display: inline-flex; align-items: center; gap: 5px;
+}
 .settings-command-row[draggable="true"] { cursor: grab; }
 .settings-command-row[draggable="true"]:active { cursor: grabbing; }
 .settings-empty { color: var(--fg-dim); font-size: 12px; }

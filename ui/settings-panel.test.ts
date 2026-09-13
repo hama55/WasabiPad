@@ -181,7 +181,38 @@ describe("Feature: settings modal", () => {
     expect(commands.querySelector('[data-action="add-registered-command-file"]')).not.toBeNull();
     expect(commands.querySelector('[data-action="add-registered-command-string"]')).not.toBeNull();
     expect(commands.querySelector('[data-action="edit-registered-command"]')).not.toBeNull();
+    expect([...commands.querySelectorAll<HTMLElement>(".settings-command-kind-group")]
+      .map((group) => group.dataset.commandKind)).toEqual(["file", "string"]);
     expect(commands.querySelector('[data-setting^="registered-command-"]')).toBeNull();
+  });
+
+  // Given: 登録文字列とファイル用・文字列用コマンドが設定済み
+  // When: 設定画面の追加・編集・削除操作を表示する
+  // Then: 右クリックメニューと同じアイコンと記号を表示する
+  it("Scenario: 登録項目の操作表示を右クリックメニューと揃える", () => {
+    const ports = makePorts({
+      registeredStrings: ["one"],
+      registeredCommands: [
+        { label: "Editor", prefix: "", command: "code {file}" },
+        { label: "Browser", prefix: "", command: "open {string}", valueKind: "string" },
+      ],
+    });
+    openSettingsModal(ports);
+
+    const strings = document.querySelector<HTMLElement>('[data-setting-group="registered-strings"]')!;
+    expect(strings.querySelector('[data-action="add-registered-string"] .menu-icon-registered-string')).not.toBeNull();
+    expect(strings.querySelector('[data-action="add-registered-string"]')?.textContent).toBe("登録文字列を追加");
+    expect(strings.querySelector('[data-action="edit-registered-string"]')?.textContent).toBe("⚙");
+    expect(strings.querySelector('[data-action="delete-registered-string"]')?.textContent).toBe("×");
+
+    const commands = document.querySelector<HTMLElement>('[data-setting-group="registered-commands"]')!;
+    for (const kind of ["file", "string"] as const) {
+      const group = commands.querySelector<HTMLElement>(`[data-command-kind="${kind}"]`)!;
+      expect(group.querySelector("[data-action^=add-registered-command-] .menu-icon-command")).not.toBeNull();
+      expect(group.querySelector('[data-action^="add-registered-command-"]')?.textContent).toBe("コマンドを登録...");
+      expect(group.querySelector('[data-action="edit-registered-command"]')?.textContent).toBe("⚙");
+      expect(group.querySelector('[data-action="delete-registered-command"]')?.textContent).toBe("×");
+    }
   });
 
   // Given: 設定モーダルを開いている
@@ -477,7 +508,7 @@ describe("Feature: settings modal", () => {
     const commands = document.querySelector<HTMLElement>('[data-setting-group="registered-commands"]')!;
     strings.querySelector<HTMLButtonElement>('[title="登録文字列を削除"]')!.click();
     strings.querySelector<HTMLButtonElement>('[title="登録文字列を削除"]')!.click();
-    commands.querySelector<HTMLButtonElement>('[title="登録コマンドを削除"]')!.click();
+    commands.querySelector<HTMLButtonElement>('[title="このコマンドの登録を解除"]')!.click();
 
     expect(ports.setSetting).toHaveBeenCalledWith("registeredStrings", ["two"]);
     expect(ports.setSetting).toHaveBeenCalledWith("registeredStrings", []);

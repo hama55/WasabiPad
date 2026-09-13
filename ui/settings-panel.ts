@@ -4,6 +4,7 @@ import { APP_NAME } from "./app-config";
 import { formatByteSize, formatFontFamily } from "./format";
 import { FONT_FAMILIES, INDENT_SIZES, isValidFontSize, MAX_FONT_SIZE, MIN_FONT_SIZE } from "./font-controls";
 import { openModal } from "./modal";
+import { createMenuIcon, MENU_ICON, type MenuItemIconClass } from "./menu-icons";
 import { commandValueKind, type CommandValueKind, type RegisteredCommand } from "./registered-command-model";
 import { registeredStringLabel } from "./registered-strings";
 import type { Settings } from "./settings";
@@ -340,7 +341,13 @@ function registeredStringsField(
   group.dataset.settingGroup = "registered-strings";
   const title = document.createElement("h3");
   title.textContent = "登録文字列";
-  const add = settingsActionButton("登録文字列を登録", "登録文字列を追加", "add-registered-string", () => openDialog());
+  const add = settingsActionButton(
+    "登録文字列を追加",
+    "登録文字列を追加",
+    "add-registered-string",
+    () => openDialog(),
+    MENU_ICON.registeredString,
+  );
   group.append(title, add);
   for (const text of ports.getSetting("registeredStrings")) {
     const row = document.createElement("div");
@@ -350,8 +357,8 @@ function registeredStringsField(
     value.title = text;
     const actions = document.createElement("div");
     actions.className = "settings-list-actions";
-    const edit = settingsActionButton("編集", "登録文字列を編集", "edit-registered-string", () => openDialog(text));
-    const remove = settingsActionButton("削除", "登録文字列を削除", null, () => {
+    const edit = settingsActionButton("⚙", "この登録文字列を編集", "edit-registered-string", () => openDialog(text));
+    const remove = settingsActionButton("×", "登録文字列を削除", "delete-registered-string", () => {
       ports.setSetting("registeredStrings", ports.getSetting("registeredStrings").filter((item) => item !== text));
       row.remove();
     });
@@ -372,12 +379,6 @@ function registeredCommandsField(
   group.dataset.settingGroup = "registered-commands";
   const title = document.createElement("h3");
   title.textContent = "登録コマンド";
-  const addActions = document.createElement("div");
-  addActions.className = "settings-group-actions";
-  addActions.append(
-    settingsActionButton("ファイル用を登録", "ファイル用コマンドを追加", "add-registered-command-file", () => openDialog("file")),
-    settingsActionButton("文字列用を登録", "文字列用コマンドを追加", "add-registered-command-string", () => openDialog("string")),
-  );
   let draggingIndex: number | null = null;
 
   const reorder = (from: number, to: number) => {
@@ -398,20 +399,30 @@ function registeredCommandsField(
   };
 
   const render = () => {
-    group.replaceChildren(title, addActions);
+    group.replaceChildren(title);
     const commands = ports.getSetting("registeredCommands");
-    if (!commands.length) {
-      group.append(emptySettingsNotice("登録なし。エディタやファイルツリーの右クリックから登録できる。"));
-      return;
-    }
     for (const kind of ["file", "string"] as const) {
       const kindIndexes = commands.flatMap((command, index) => commandValueKind(command) === kind ? [index] : []);
-      if (!kindIndexes.length) continue;
       const kindGroup = document.createElement("div");
       kindGroup.className = "settings-command-kind-group";
+      kindGroup.dataset.commandKind = kind;
       const kindTitle = document.createElement("h4");
-      kindTitle.textContent = kind === "file" ? "ファイル用" : "文字列用";
-      kindGroup.append(kindTitle);
+      kindTitle.textContent = kind === "file" ? "ファイル用コマンド" : "文字列用コマンド";
+      const addActions = document.createElement("div");
+      addActions.className = "settings-group-actions";
+      addActions.append(settingsActionButton(
+        "コマンドを登録...",
+        `${kindTitle.textContent}を追加`,
+        `add-registered-command-${kind}`,
+        () => openDialog(kind),
+        MENU_ICON.command,
+      ));
+      kindGroup.append(kindTitle, addActions);
+      if (!kindIndexes.length) {
+        kindGroup.append(emptySettingsNotice("登録なし"));
+        group.append(kindGroup);
+        continue;
+      }
       for (const index of kindIndexes) {
         const command = commands[index];
         const row = document.createElement("div");
@@ -457,15 +468,11 @@ function registeredCommandsField(
           });
           actions.append(move);
         }
-        const edit = settingsActionButton("編集", "登録コマンドを編集", "edit-registered-command", () =>
+        const edit = settingsActionButton("⚙", "このコマンドを編集", "edit-registered-command", () =>
           openDialog(kind, command));
         edit.dataset.commandIndex = String(index);
         actions.append(edit);
-        const remove = document.createElement("button");
-        remove.type = "button";
-        remove.textContent = "削除";
-        remove.title = "登録コマンドを削除";
-        remove.addEventListener("click", () => {
+        const remove = settingsActionButton("×", "このコマンドの登録を解除", "delete-registered-command", () => {
           ports.setSetting("registeredCommands", ports.getSetting("registeredCommands").filter((_, current) => current !== index));
           render();
         });
@@ -485,10 +492,12 @@ function settingsActionButton(
   title: string,
   action: string | null,
   onClick: () => void,
+  iconClass?: MenuItemIconClass,
 ): HTMLButtonElement {
   const button = document.createElement("button");
   button.type = "button";
-  button.textContent = text;
+  if (iconClass) button.append(createMenuIcon(iconClass), document.createTextNode(text));
+  else button.textContent = text;
   button.title = title;
   if (action) button.dataset.action = action;
   button.addEventListener("click", onClick);
