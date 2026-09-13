@@ -52,6 +52,17 @@ export function createSettingsOpener(
   };
 }
 
+export async function returnToSettings(
+  operation: () => void | Promise<void>,
+  reopen: () => void,
+): Promise<void> {
+  try {
+    await operation();
+  } finally {
+    reopen();
+  }
+}
+
 type CommonSettingKey =
   | "theme"
   | "fontFamily"

@@ -4,7 +4,12 @@ import packageInfo from "../package.json";
 import { releaseTag } from "../version-policy.mjs";
 import { APP_NAME } from "./app-config";
 import type { Settings } from "./settings";
-import { createSettingsOpener, openSettingsModal, type SettingsPanelPorts } from "./settings-panel";
+import {
+  createSettingsOpener,
+  openSettingsModal,
+  returnToSettings,
+  type SettingsPanelPorts,
+} from "./settings-panel";
 
 function makePorts(initial: Partial<Settings> = {}): SettingsPanelPorts {
   const values: Settings = {
@@ -66,6 +71,17 @@ describe("Feature: settings modal", () => {
     onClose[0]();
     toggle();
     expect(open).toHaveBeenCalledTimes(2);
+  });
+
+  // Given: 設定画面から開いた子ダイアログと、設定画面を再表示する処理がある
+  // When: 子ダイアログの処理が完了する
+  // Then: 設定画面を再表示する
+  it("Scenario: 子ダイアログを閉じると設定画面へ戻る", async () => {
+    const reopen = vi.fn();
+
+    await returnToSettings(async () => {}, reopen);
+
+    expect(reopen).toHaveBeenCalledOnce();
   });
 
   // Given: 現在のアプリ設定

@@ -45,7 +45,12 @@ import {
   setSetting,
 } from "./settings";
 import { normalizeTheme, THEME_STORAGE_KEY } from "./theme";
-import { createSettingsOpener, openSettingsModal, type SettingsPanelPorts } from "./settings-panel";
+import {
+  createSettingsOpener,
+  openSettingsModal,
+  returnToSettings,
+  type SettingsPanelPorts,
+} from "./settings-panel";
 import { searchResultGoto } from "./search-results";
 import { runAsyncBoundary, reportUnhandledRejection } from "./async-boundary";
 import { openPath as openPathInTabs } from "./path-opener";
@@ -459,12 +464,12 @@ const registeredCommandPorts = {
 };
 
 function openRegisteredStringSettings(current?: string) {
-  void runBackground("登録文字列を保存できませんでした", () =>
+  runSettingsChild("登録文字列を保存できませんでした", () =>
     promptAndSaveRegisteredString(promptFields, current));
 }
 
 function openRegisteredCommandSettings(kind: CommandValueKind, current?: RegisteredCommand) {
-  void runBackground("登録コマンドを保存できませんでした", async () => {
+  runSettingsChild("登録コマンドを保存できませんでした", async () => {
     const value = await promptRegisteredCommand(
       registeredCommandPorts,
       current === undefined ? "コマンドを登録" : "登録コマンドを編集",
@@ -476,13 +481,17 @@ function openRegisteredCommandSettings(kind: CommandValueKind, current?: Registe
   });
 }
 
+function runSettingsChild(title: string, operation: () => void | Promise<void>) {
+  void runBackground(title, () => returnToSettings(operation, openSettings));
+}
+
 function openSearchSettingsFromSettings() {
   openSearchSettingsDialog(loadSearchOptions(), {
     onChange: (options) => {
       saveSearchOptions(options);
       sidebar?.setSearchOptions(options);
     },
-    onClose: () => {},
+    onClose: openSettings,
   });
 }
 
