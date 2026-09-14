@@ -1,10 +1,29 @@
 import type { ViewerSelection } from "./api";
+import { INLINE_PREVIEW_MESSAGES } from "./inline-preview-protocol";
 import { scrollViewerCaret } from "./viewer-scroll";
 
 const IMG_ATTRIBUTES = ["src", "alt", "title", "width", "height"];
 const ANCHOR_ATTRIBUTES = ["id", "name"];
 
 type SafeAnchor = HTMLAnchorElement | HTMLSpanElement;
+
+export function applyMarkdownHeadingUnderlinesToRoot(root: HTMLElement, enabled: boolean): boolean {
+  root.classList.toggle("markdown-heading-underlines", enabled);
+  return enabled;
+}
+
+export function applyMarkdownHeadingUnderlinesMessage(
+  root: HTMLElement,
+  current: boolean,
+  data: unknown,
+): boolean {
+  if (!data || typeof data !== "object") return current;
+  const message = data as { type?: unknown; enabled?: unknown };
+  if (message.type !== INLINE_PREVIEW_MESSAGES.MARKDOWN_HEADING_UNDERLINES_MESSAGE
+    || typeof message.enabled !== "boolean"
+    || message.enabled === current) return current;
+  return applyMarkdownHeadingUnderlinesToRoot(root, message.enabled);
+}
 
 function isSafeAnchor(node: Node): node is SafeAnchor {
   return (node instanceof HTMLAnchorElement || node instanceof HTMLSpanElement)

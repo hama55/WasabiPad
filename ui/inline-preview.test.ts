@@ -220,6 +220,28 @@ describe("Feature: inline preview", () => {
     }, window.location.origin);
   });
 
+  // Given: エディタがMarkdown見出し下線設定を変更している
+  // When: iframeの準備完了通知を受け取る
+  // Then: 保留していた見出し下線設定をプレビューへ送る
+  it("Scenario: sends a queued Markdown heading underline setting after the iframe is ready", async () => {
+    const { host, preview } = mount();
+    const frame = host.querySelector("iframe")!;
+    const postMessage = vi.spyOn(frame.contentWindow!, "postMessage");
+    await preview.open("markdown", "# heading", null);
+    preview.setMarkdownHeadingUnderlines(true);
+
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
+    }));
+
+    expect(postMessage).toHaveBeenCalledWith({
+      type: INLINE_PREVIEW_MESSAGES.MARKDOWN_HEADING_UNDERLINES_MESSAGE,
+      enabled: true,
+    }, window.location.origin);
+  });
+
   // Given: アーカイブ内Markdownの本文と、画像解決に必要なアーカイブ情報を設定している
   // When: プレビューを開いてiframeの準備完了通知を受け取る
   // Then: アーカイブパスとエントリ名をビューへ渡す

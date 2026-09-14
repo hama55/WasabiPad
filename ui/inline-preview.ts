@@ -15,6 +15,7 @@ const {
   FONT_SIZE_MESSAGE,
   MARKDOWN_SOFT_BREAKS_MESSAGE,
   MARKDOWN_LINE_HEIGHT_MESSAGE,
+  MARKDOWN_HEADING_UNDERLINES_MESSAGE,
   FONT_CHANGE_MESSAGE,
   FULLSCREEN_CHANGE_MESSAGE,
   FULLSCREEN_STATE_MESSAGE,
@@ -47,6 +48,7 @@ export class InlinePreview {
   private fontSize: number | null = null;
   private markdownSoftBreaks = true;
   private markdownLineHeight: number | null = null;
+  private markdownHeadingUnderlines: boolean | null = null;
   private fullscreen = false;
   private pendingMarkdownFragment: string | null = null;
   private previewFocused = false;
@@ -141,6 +143,11 @@ export class InlinePreview {
     this.sendMarkdownLineHeight();
   }
 
+  setMarkdownHeadingUnderlines(enabled: boolean) {
+    this.markdownHeadingUnderlines = enabled;
+    this.sendMarkdownHeadingUnderlines();
+  }
+
   setFullscreen(fullscreen: boolean) {
     if (this.fullscreen === fullscreen) return;
     this.fullscreen = fullscreen;
@@ -218,6 +225,7 @@ export class InlinePreview {
     }, window.location.origin);
     this.sendMarkdownSoftBreaks();
     this.sendMarkdownLineHeight();
+    this.sendMarkdownHeadingUnderlines();
     if (!this.payload) return;
     // 区切り文字の変更は、現在のビューがCSVなら再描画を開始する。
     // 本文を先に送ると、その再描画が非同期の本文描画を中断するため、
@@ -267,6 +275,14 @@ export class InlinePreview {
     this.frame.contentWindow?.postMessage({
       type: MARKDOWN_LINE_HEIGHT_MESSAGE,
       lineHeight: this.markdownLineHeight,
+    }, window.location.origin);
+  }
+
+  private sendMarkdownHeadingUnderlines() {
+    if (!this.ready || this.markdownHeadingUnderlines === null) return;
+    this.frame.contentWindow?.postMessage({
+      type: MARKDOWN_HEADING_UNDERLINES_MESSAGE,
+      enabled: this.markdownHeadingUnderlines,
     }, window.location.origin);
   }
 

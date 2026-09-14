@@ -137,6 +137,15 @@ describe("Feature: settings", () => {
     expect(parseSettings(JSON.stringify({ markdownLineHeight: "1.8" })).markdownLineHeight).toBe(1.65);
   });
 
+  // Given: Markdown見出し下線設定が未設定・有効値・不正値として保存されている
+  // When: `parseSettings`を呼ぶ
+  // Then: 既定値は無効、有効なbooleanだけ復元し、不正値は無効へ戻す
+  it("Scenario: Markdown見出し下線設定を安全に復元する", () => {
+    expect(parseSettings("{}").markdownHeadingUnderlines).toBe(false);
+    expect(parseSettings(JSON.stringify({ markdownHeadingUnderlines: true })).markdownHeadingUnderlines).toBe(true);
+    expect(parseSettings(JSON.stringify({ markdownHeadingUnderlines: "true" })).markdownHeadingUnderlines).toBe(false);
+  });
+
   // Given: エディタ用サイズ16とプレビュー用サイズ20を保存
   // When: `parseSettings`を呼ぶ
   // Then: それぞれのサイズを独立して復元する
@@ -199,6 +208,7 @@ describe("Feature: settings", () => {
     setSetting("fontSize", 20);
     setSetting("markdownSoftBreaks", false);
     setSetting("markdownLineHeight", 1.9);
+    setSetting("markdownHeadingUnderlines", true);
     setSetting("startupPath", "C:\\work");
     setSetting("registeredStrings", ["snippet"]);
     await flushSettings();
@@ -210,6 +220,7 @@ describe("Feature: settings", () => {
     expect(getSetting("fontSize")).toBe(14);
     expect(getSetting("markdownSoftBreaks")).toBe(true);
     expect(getSetting("markdownLineHeight")).toBe(1.65);
+    expect(getSetting("markdownHeadingUnderlines")).toBe(false);
     expect(getSetting("startupPath")).toBeNull();
     expect(getSetting("registeredStrings")).toEqual([]);
     expect(getSetting("openTabs")).toEqual(openTabs);
@@ -264,6 +275,17 @@ describe("Feature: settings", () => {
     await flushSettings();
 
     expect(updateSettingMock).toHaveBeenCalledWith("markdownLineHeight", "1.8");
+  });
+
+  // Given: Markdown見出し下線を有効にする
+  // When: 設定保存をflushする
+  // Then: 専用キーへboolean値を保存する
+  it("Scenario: Markdown見出し下線設定は専用キーへ保存する", async () => {
+    setSetting("markdownHeadingUnderlines", true);
+
+    await flushSettings();
+
+    expect(updateSettingMock).toHaveBeenCalledWith("markdownHeadingUnderlines", "true");
   });
 
   // Given: `workspaceSearchOptions`未設定または`{ max_files: 5 }`

@@ -168,6 +168,7 @@
 }
 .settings-list-row:last-child { border-bottom: 0; }
 .settings-list-row > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
+.settings-preview-cache-title > span { color: var(--fg-dim); font-size: 12px; }
 .settings-list-row button {
   flex: none; background: var(--bg-editor); color: var(--fg-dim);
   border: 1px solid var(--border); border-radius: 3px; padding: 3px 6px;

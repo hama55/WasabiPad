@@ -198,6 +198,10 @@ article :where(h1, h2, h3, h4, h5, h6) {
   margin-block: 1.1em .55em;
   line-height: 1.3;
 }
+:root.markdown-heading-underlines article :where(h1, h2, h3, h4, h5, h6) {
+  border-bottom: 1px solid var(--border-strong);
+  padding-bottom: .25em;
+}
 article :where(p, blockquote, pre, table) { margin-block: .75em; }
 article :where(ul, ol) { margin-block: .45em; padding-inline-start: 2em; }
 article li + li { margin-block-start: .25em; }

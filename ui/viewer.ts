@@ -26,6 +26,8 @@ import { WindowControls } from "./window-controls";
 import { reportWindowOperationError, runWindowOperation } from "./window-operation";
 import { imageExtensionOf, imageMimeType } from "./image-formats";
 import {
+  applyMarkdownHeadingUnderlinesMessage,
+  applyMarkdownHeadingUnderlinesToRoot,
   scrollMarkdownFragment,
   scrollMarkdownCaret,
 } from "./viewer-markdown";
@@ -124,6 +126,7 @@ let fontFamily = getSetting("fontFamily");
 let fontSize = getSetting("previewFontSize");
 let markdownSoftBreaks = getSetting("markdownSoftBreaks");
 let markdownLineHeight = getSetting("markdownLineHeight");
+let markdownHeadingUnderlines = getSetting("markdownHeadingUnderlines");
 const viewerUpdateListener = createAsyncUnlisten();
 const viewerDomListeners = new AbortController();
 let windowControls: WindowControls | null = null;
@@ -331,6 +334,10 @@ function applyFontSize(size: number, persist = true) {
 function applyMarkdownLineHeight(value: number) {
   markdownLineHeight = value;
   document.documentElement.style.setProperty("--markdown-line-height", String(value));
+}
+
+function applyMarkdownHeadingUnderlines(enabled: boolean) {
+  markdownHeadingUnderlines = applyMarkdownHeadingUnderlinesToRoot(document.documentElement, enabled);
 }
 
 function applyFont(family: string, size: number, persist = true) {
@@ -1092,6 +1099,7 @@ async function start() {
     bindViewerControls();
     applyFont(fontFamily, fontSize, false);
     applyMarkdownLineHeight(markdownLineHeight);
+    applyMarkdownHeadingUnderlines(markdownHeadingUnderlines);
     themeButton.addEventListener("click", () => {
       runViewerOperation("配色を変更できませんでした", () => {
         applyTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light");
@@ -1153,6 +1161,14 @@ async function start() {
           if (!isValidMarkdownLineHeight(lineHeight)) return;
           if (markdownLineHeight === lineHeight) return;
           applyMarkdownLineHeight(lineHeight);
+          return;
+        }
+        if (event.data?.type === INLINE_PREVIEW_MESSAGES.MARKDOWN_HEADING_UNDERLINES_MESSAGE) {
+          markdownHeadingUnderlines = applyMarkdownHeadingUnderlinesMessage(
+            document.documentElement,
+            markdownHeadingUnderlines,
+            event.data,
+          );
           return;
         }
         if (event.data?.type === INLINE_PREVIEW_MESSAGES.DELIMITER_MESSAGE) {

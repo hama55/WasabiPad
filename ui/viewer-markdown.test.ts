@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
+import { INLINE_PREVIEW_MESSAGES } from "./inline-preview-protocol";
 import {
+  applyMarkdownHeadingUnderlinesMessage,
   markdownHeadingSlug,
   markdownBlockSelected,
   markdownHighlightTargets,
@@ -17,6 +19,31 @@ const escape = (text: string) => {
 };
 
 describe("Feature: Markdown viewer specifications", () => {
+  // Feature: inline viewerのMarkdown見出し下線設定
+  // Scenario: iframeメッセージで見出し下線を切り替える
+  // Given: 下線が無効なviewerのroot要素
+  // When: 有効化と無効化の設定メッセージを順に受け取る
+  // Then: rootのCSSクラスを設定値に合わせて切り替える
+  it("Scenario: iframeの見出し下線設定メッセージをrootへ反映する", () => {
+    const root = document.documentElement;
+    root.classList.remove("markdown-heading-underlines");
+    let current = false;
+
+    current = applyMarkdownHeadingUnderlinesMessage(root, current, {
+      type: INLINE_PREVIEW_MESSAGES.MARKDOWN_HEADING_UNDERLINES_MESSAGE,
+      enabled: true,
+    });
+    expect(current).toBe(true);
+    expect(root.classList.contains("markdown-heading-underlines")).toBe(true);
+
+    current = applyMarkdownHeadingUnderlinesMessage(root, current, {
+      type: INLINE_PREVIEW_MESSAGES.MARKDOWN_HEADING_UNDERLINES_MESSAGE,
+      enabled: false,
+    });
+    expect(current).toBe(false);
+    expect(root.classList.contains("markdown-heading-underlines")).toBe(false);
+  });
+
   // Given: 空行を挟む`first.png`と`second.png`のimgタグ
   // When: `renderRawHtml`をtemplateへ設定
   // Then: img要素2個を生成し、srcは入力順

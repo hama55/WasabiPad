@@ -3,6 +3,7 @@ import { releaseTag } from "../version-policy.mjs";
 import { APP_NAME } from "./app-config";
 import { formatByteSize, formatFontFamily } from "./format";
 import { FONT_FAMILIES, INDENT_SIZES, isValidFontSize, MAX_FONT_SIZE, MIN_FONT_SIZE } from "./font-controls";
+import { iconButton } from "./icon-button";
 import { openModal } from "./modal";
 import { createMenuIcon, MENU_ICON, type MenuItemIconClass } from "./menu-icons";
 import {
@@ -12,6 +13,7 @@ import {
   type RegisteredCommand,
 } from "./registered-command-model";
 import { registeredStringLabel } from "./registered-strings";
+import { showMessage } from "./prompt";
 import {
   isValidMarkdownLineHeight,
   MAX_MARKDOWN_LINE_HEIGHT,
@@ -31,6 +33,7 @@ export interface SettingsPanelPorts {
   applyPreviewFontSize: (size: number) => void;
   applyMarkdownSoftBreaks: (enabled: boolean) => void;
   applyMarkdownLineHeight: (value: number) => void;
+  applyMarkdownHeadingUnderlines: (enabled: boolean) => void;
   pickPreviewCacheDirectory?: (defaultPath?: string) => string | null | Promise<string | null>;
   clearPreviewCache?: () => void | Promise<void>;
   getPreviewCacheInfo?: () => PreviewCacheInfo | null | Promise<PreviewCacheInfo | null>;
@@ -87,7 +90,8 @@ type CommonSettingKey =
   | "indent"
   | "previewFontSize"
   | "markdownSoftBreaks"
-  | "markdownLineHeight";
+  | "markdownLineHeight"
+  | "markdownHeadingUnderlines";
 
 const SETTING_FIELD_BUILDERS: Record<CommonSettingKey, (ports: SettingsPanelPorts) => HTMLElement> = {
   theme: themeField,
@@ -97,11 +101,18 @@ const SETTING_FIELD_BUILDERS: Record<CommonSettingKey, (ports: SettingsPanelPort
   previewFontSize: previewFontSizeField,
   markdownSoftBreaks: markdownSoftBreaksField,
   markdownLineHeight: markdownLineHeightField,
+  markdownHeadingUnderlines: markdownHeadingUnderlinesField,
 };
 const EDITOR_SETTING_KEYS = ["fontFamily", "editorFontSize", "indent"] as const;
 // package.jsonのversionはsync-versionによりCargo.tomlのworkspace versionから同期される。
 // Aboutの表示値はversion-policy.jsonを読む共有releaseTagで生成する。
 const APP_VERSION = releaseTag(packageInfo.version);
+const PREVIEW_CACHE_HELP = [
+  "画像プレビューや、パスワードなしのアーカイブ内画像を表示するときに、読み込み・展開結果を保存して再表示を速くします。",
+  "Markdown本文内のローカル画像、通常の文書本文、PDFは対象外です。パスワード付き7zも、安全のためキャッシュしません。",
+  "キャッシュは元ファイルのサイズや更新日時が変わると再利用されません。",
+  "保存場所を未指定の場合は、バックエンドの既定場所を使います。",
+].join("\n\n");
 
 export function openSettingsModal(
   ports: SettingsPanelPorts,
@@ -178,7 +189,12 @@ export function openSettingsModal(
       name: "プレビュー",
       id: "settings-preview",
       build: () => [
-        ...buildCommonSettingFields(ports, ["previewFontSize", "markdownSoftBreaks", "markdownLineHeight"]),
+        ...buildCommonSettingFields(ports, [
+          "previewFontSize",
+          "markdownSoftBreaks",
+          "markdownLineHeight",
+          "markdownHeadingUnderlines",
+        ]),
         previewCacheField(ports),
       ],
     },
@@ -567,18 +583,46 @@ function markdownLineHeightField(ports: SettingsPanelPorts): HTMLElement {
 }
 
 function markdownSoftBreaksField(ports: SettingsPanelPorts): HTMLElement {
+  return checkboxField(
+    "Markdownの通常改行を表示",
+    "markdown-soft-breaks",
+    ports.getSetting("markdownSoftBreaks"),
+    (enabled) => {
+      ports.setSetting("markdownSoftBreaks", enabled);
+      ports.applyMarkdownSoftBreaks(enabled);
+    },
+  );
+}
+
+function markdownHeadingUnderlinesField(ports: SettingsPanelPorts): HTMLElement {
+  return checkboxField(
+    "Markdown見出しに下線を表示",
+    "markdown-heading-underlines",
+    ports.getSetting("markdownHeadingUnderlines"),
+    (enabled) => {
+      ports.setSetting("markdownHeadingUnderlines", enabled);
+      ports.applyMarkdownHeadingUnderlines(enabled);
+    },
+  );
+}
+
+function checkboxField(
+  labelText: string,
+  setting: string,
+  initial: boolean,
+  onChange: (enabled: boolean) => void,
+): HTMLElement {
   const row = document.createElement("label");
   row.className = "settings-field settings-checkbox";
   const input = document.createElement("input");
   input.type = "checkbox";
-  input.dataset.setting = "markdown-soft-breaks";
-  input.checked = ports.getSetting("markdownSoftBreaks");
+  input.dataset.setting = setting;
+  input.checked = initial;
   input.addEventListener("change", () => {
-    ports.setSetting("markdownSoftBreaks", input.checked);
-    ports.applyMarkdownSoftBreaks(input.checked);
+    onChange(input.checked);
   });
   const label = document.createElement("span");
-  label.textContent = "Markdownの通常改行を表示";
+  label.textContent = labelText;
   row.append(input, label);
   return row;
 }
@@ -587,8 +631,16 @@ function previewCacheField(ports: SettingsPanelPorts): HTMLElement {
   const group = document.createElement("div");
   group.className = "settings-field settings-preview-cache";
 
+  const titleRow = document.createElement("div");
+  titleRow.className = "settings-list-row settings-preview-cache-title";
   const title = document.createElement("span");
   title.textContent = "プレビューキャッシュ保存場所";
+  const help = iconButton("settings-help", "?", "プレビューキャッシュ保存場所の説明");
+  help.dataset.action = "show-preview-cache-help";
+  help.addEventListener("click", () => {
+    void showMessage("プレビューキャッシュ保存場所", PREVIEW_CACHE_HELP);
+  });
+  titleRow.append(title, help);
 
   const locationRow = document.createElement("div");
   locationRow.className = "settings-list-row";
@@ -671,7 +723,7 @@ function previewCacheField(ports: SettingsPanelPorts): HTMLElement {
   });
 
   actions.append(pick, clear);
-  group.append(title, locationRow, actions);
+  group.append(titleRow, locationRow, actions);
   return group;
 }
 

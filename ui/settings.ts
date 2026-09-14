@@ -29,6 +29,7 @@ export interface Settings {
   previewFontSize: number;
   markdownSoftBreaks: boolean;
   markdownLineHeight: number;
+  markdownHeadingUnderlines: boolean;
   previewCacheDirectory: string | null;
   startupPath: string | null;
   registeredStrings: string[];
@@ -46,6 +47,7 @@ const DEFAULTS: Settings = {
   previewFontSize: DEFAULT_EDITOR_CONFIG.fontSize,
   markdownSoftBreaks: true,
   markdownLineHeight: DEFAULT_MARKDOWN_LINE_HEIGHT,
+  markdownHeadingUnderlines: false,
   previewCacheDirectory: null,
   startupPath: null,
   registeredStrings: [],
@@ -105,6 +107,9 @@ export function parseSettingsResult(text: string): SettingsParseResult {
     markdownLineHeight: isValidMarkdownLineHeight(value.markdownLineHeight)
       ? value.markdownLineHeight
       : DEFAULTS.markdownLineHeight,
+    markdownHeadingUnderlines: typeof value.markdownHeadingUnderlines === "boolean"
+      ? value.markdownHeadingUnderlines
+      : DEFAULTS.markdownHeadingUnderlines,
     previewCacheDirectory: typeof value.previewCacheDirectory === "string" && value.previewCacheDirectory.trim().length > 0
       ? value.previewCacheDirectory
       : DEFAULTS.previewCacheDirectory,
@@ -177,6 +182,7 @@ export function resetUserSettings(): void {
   setSetting("previewFontSize", DEFAULTS.previewFontSize);
   setSetting("markdownSoftBreaks", DEFAULTS.markdownSoftBreaks);
   setSetting("markdownLineHeight", DEFAULTS.markdownLineHeight);
+  setSetting("markdownHeadingUnderlines", DEFAULTS.markdownHeadingUnderlines);
   setSetting("previewCacheDirectory", DEFAULTS.previewCacheDirectory);
   setSetting("startupPath", DEFAULTS.startupPath);
   setSetting("registeredStrings", []);

@@ -21,6 +21,7 @@ function makePorts(initial: Partial<Settings> = {}): SettingsPanelPorts {
     previewFontSize: 14,
     markdownSoftBreaks: true,
     markdownLineHeight: 1.65,
+    markdownHeadingUnderlines: false,
     previewCacheDirectory: null,
     startupPath: null,
     registeredStrings: [],
@@ -43,6 +44,7 @@ function makePorts(initial: Partial<Settings> = {}): SettingsPanelPorts {
     applyPreviewFontSize: vi.fn(),
     applyMarkdownSoftBreaks: vi.fn(),
     applyMarkdownLineHeight: vi.fn(),
+    applyMarkdownHeadingUnderlines: vi.fn(),
     openSearchSettings: vi.fn(),
     openRegisteredString: vi.fn(),
     openRegisteredCommand: vi.fn(),
@@ -125,6 +127,7 @@ describe("Feature: settings modal", () => {
     expect(document.querySelector("[data-settings-section='登録コマンド（選択文字列）']")).not.toBeNull();
     expect(document.querySelector('[data-setting="startup-path"]')).not.toBeNull();
     expect(document.querySelector('[data-setting="markdown-line-height"]')).not.toBeNull();
+    expect(document.querySelector('[data-setting="markdown-heading-underlines"]')).not.toBeNull();
     expect(document.querySelector(".settings-reset")).not.toBeNull();
   });
 
@@ -358,6 +361,22 @@ describe("Feature: settings modal", () => {
     expect(ports.applyMarkdownLineHeight).toHaveBeenCalledWith(1.8);
   });
 
+  // Given: Markdown見出し下線を無効にした現在のアプリ設定
+  // When: プレビュー設定の見出し下線を有効にする
+  // Then: 設定を保存し、表示中のプレビューへ即時反映する
+  it("Scenario: Markdown見出し下線をプレビュー設定から切り替える", () => {
+    const ports = makePorts();
+    openSettingsModal(ports);
+
+    const input = document.querySelector<HTMLInputElement>('[data-setting="markdown-heading-underlines"]')!;
+    expect(input.type).toBe("checkbox");
+    expect(input.checked).toBe(false);
+    input.click();
+
+    expect(ports.setSetting).toHaveBeenCalledWith("markdownHeadingUnderlines", true);
+    expect(ports.applyMarkdownHeadingUnderlines).toHaveBeenCalledWith(true);
+  });
+
   // Feature: 登録コマンドの設定画面
   // Scenario: 登録コマンドの同じ種類の順序をD&Dで変更する
   // Given: ファイル用2件と文字列用1件の登録コマンドがある
@@ -447,6 +466,28 @@ describe("Feature: settings modal", () => {
     const previewSection = document.querySelector<HTMLElement>("[data-settings-section=プレビュー]")!;
     expect(previewSection.querySelector('[data-setting="preview-cache-directory"]')?.textContent)
       .toBe("D:\\WasabiPad\\preview-cache");
+  });
+
+  // Given: プレビューキャッシュ保存場所の設定を表示している
+  // When: 設定画面の「?」をクリックする
+  // Then: キャッシュを使う場面と対象外の場面を説明モーダルで表示する
+  it("Scenario: プレビューキャッシュ保存場所の説明を表示する", () => {
+    openSettingsModal(makePorts());
+
+    const previewSection = document.querySelector<HTMLElement>("[data-settings-section=プレビュー]")!;
+    const help = previewSection.querySelector<HTMLButtonElement>('[data-action="show-preview-cache-help"]')!;
+
+    help.click();
+
+    const message = document.querySelector<HTMLElement>(".pf-message")!;
+    expect(message.textContent).toContain("画像プレビュー");
+    expect(message.textContent).toContain("アーカイブ内画像");
+    expect(message.textContent).toContain("Markdown本文内のローカル画像");
+    expect(message.textContent).toContain("PDF");
+    expect(message.textContent).toContain("パスワード付き7z");
+    expect(message.textContent).toContain("サイズや更新日時");
+    message.parentElement!.querySelector<HTMLButtonElement>(".pf-ok")!.click();
+    expect(document.querySelector(".pf-message")).toBeNull();
   });
 
   // Feature: 外部プレビューキャッシュ保存場所の設定画面
