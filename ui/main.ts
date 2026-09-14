@@ -585,6 +585,7 @@ function applySettingsToUi() {
   inlinePreview.setFontFamily(getSetting("fontFamily"));
   inlinePreview.setFontSize(getSetting("previewFontSize"));
   inlinePreview.setMarkdownSoftBreaks(getSetting("markdownSoftBreaks"));
+  inlinePreview.setMarkdownLineHeight(getSetting("markdownLineHeight"));
   sidebar?.setSearchOptions(loadSearchOptions());
 }
 
@@ -603,6 +604,7 @@ settingsPorts = {
   },
   applyPreviewFontSize: (size) => inlinePreview.setFontSize(size),
   applyMarkdownSoftBreaks: (enabled) => inlinePreview.setMarkdownSoftBreaks(enabled),
+  applyMarkdownLineHeight: (value) => inlinePreview.setMarkdownLineHeight(value),
   pickPreviewCacheDirectory: async (defaultPath?: string) => {
     try {
       const selected = await openDialog({ directory: true, multiple: false, defaultPath });

@@ -4,7 +4,7 @@ import { EVENT_NAMES, openExternalUrl, openInDefaultBrowser, takeViewerPayload, 
 import { formatFontFamily } from "./format";
 import { basename } from "./path";
 import { isViewerFormat, viewerFormatSpec } from "./viewer-formats";
-import { getSetting, initSettings, setSetting } from "./settings";
+import { getSetting, initSettings, isValidMarkdownLineHeight, setSetting } from "./settings";
 import { clampFontSize, promptFontFamily, promptFontSize as promptFontSizeDialog } from "./font-controls";
 import {
   csvColumnAt,
@@ -123,6 +123,7 @@ let csvColumnWidths: number[] = [];
 let fontFamily = getSetting("fontFamily");
 let fontSize = getSetting("previewFontSize");
 let markdownSoftBreaks = getSetting("markdownSoftBreaks");
+let markdownLineHeight = getSetting("markdownLineHeight");
 const viewerUpdateListener = createAsyncUnlisten();
 const viewerDomListeners = new AbortController();
 let windowControls: WindowControls | null = null;
@@ -325,6 +326,11 @@ function applyFontSize(size: number, persist = true) {
   document.documentElement.style.setProperty("--viewer-font-size", `${size}px`);
   fontSizeButton.textContent = `${size}px`;
   if (persist) setSetting("previewFontSize", size);
+}
+
+function applyMarkdownLineHeight(value: number) {
+  markdownLineHeight = value;
+  document.documentElement.style.setProperty("--markdown-line-height", String(value));
 }
 
 function applyFont(family: string, size: number, persist = true) {
@@ -1085,6 +1091,7 @@ async function start() {
     );
     bindViewerControls();
     applyFont(fontFamily, fontSize, false);
+    applyMarkdownLineHeight(markdownLineHeight);
     themeButton.addEventListener("click", () => {
       runViewerOperation("配色を変更できませんでした", () => {
         applyTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light");
@@ -1139,6 +1146,13 @@ async function start() {
           if (currentFormat === "markdown") {
             runViewerOperation("ビューを更新できませんでした", renderCurrentViewer);
           }
+          return;
+        }
+        if (event.data?.type === INLINE_PREVIEW_MESSAGES.MARKDOWN_LINE_HEIGHT_MESSAGE) {
+          const lineHeight = event.data.lineHeight;
+          if (!isValidMarkdownLineHeight(lineHeight)) return;
+          if (markdownLineHeight === lineHeight) return;
+          applyMarkdownLineHeight(lineHeight);
           return;
         }
         if (event.data?.type === INLINE_PREVIEW_MESSAGES.DELIMITER_MESSAGE) {

@@ -20,6 +20,7 @@ function makePorts(initial: Partial<Settings> = {}): SettingsPanelPorts {
     fontSize: 14,
     previewFontSize: 14,
     markdownSoftBreaks: true,
+    markdownLineHeight: 1.65,
     previewCacheDirectory: null,
     startupPath: null,
     registeredStrings: [],
@@ -41,6 +42,7 @@ function makePorts(initial: Partial<Settings> = {}): SettingsPanelPorts {
     applyIndent: vi.fn(),
     applyPreviewFontSize: vi.fn(),
     applyMarkdownSoftBreaks: vi.fn(),
+    applyMarkdownLineHeight: vi.fn(),
     openSearchSettings: vi.fn(),
     openRegisteredString: vi.fn(),
     openRegisteredCommand: vi.fn(),
@@ -122,6 +124,7 @@ describe("Feature: settings modal", () => {
     expect(document.querySelector("[data-settings-section='登録コマンド（ファイル）']")).not.toBeNull();
     expect(document.querySelector("[data-settings-section='登録コマンド（選択文字列）']")).not.toBeNull();
     expect(document.querySelector('[data-setting="startup-path"]')).not.toBeNull();
+    expect(document.querySelector('[data-setting="markdown-line-height"]')).not.toBeNull();
     expect(document.querySelector(".settings-reset")).not.toBeNull();
   });
 
@@ -334,6 +337,25 @@ describe("Feature: settings modal", () => {
     expect(ports.setSetting).toHaveBeenCalledWith("markdownSoftBreaks", false);
     expect(ports.applyMarkdownSoftBreaks).toHaveBeenCalledWith(false);
     expect(document.querySelector(".settings-box")).not.toBeNull();
+  });
+
+  // Given: Markdown行間1.65の現在のアプリ設定
+  // When: プレビュー設定の行間を1.8へ変更する
+  // Then: 設定を保存し、表示中のプレビューへ即時反映する
+  it("Scenario: Markdown行間をプレビュー設定から変更する", () => {
+    const ports = makePorts();
+    openSettingsModal(ports);
+
+    const input = document.querySelector<HTMLInputElement>('[data-setting="markdown-line-height"]')!;
+    expect(input.type).toBe("number");
+    expect(input.min).toBe("1.4");
+    expect(input.max).toBe("2");
+    expect(input.step).toBe("0.05");
+    input.value = "1.8";
+    input.dispatchEvent(new Event("change"));
+
+    expect(ports.setSetting).toHaveBeenCalledWith("markdownLineHeight", 1.8);
+    expect(ports.applyMarkdownLineHeight).toHaveBeenCalledWith(1.8);
   });
 
   // Feature: 登録コマンドの設定画面

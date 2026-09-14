@@ -12,6 +12,15 @@ import { SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MIN_WIDTH } from "./preview-layout";
 
 export type { RegisteredCommand } from "./registered-command-model";
 
+export const DEFAULT_MARKDOWN_LINE_HEIGHT = 1.65;
+export const MIN_MARKDOWN_LINE_HEIGHT = 1.4;
+export const MAX_MARKDOWN_LINE_HEIGHT = 2;
+
+export function isValidMarkdownLineHeight(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value)
+    && value >= MIN_MARKDOWN_LINE_HEIGHT && value <= MAX_MARKDOWN_LINE_HEIGHT;
+}
+
 export interface Settings {
   indentSize: number;
   sidebarWidth: number;
@@ -19,6 +28,7 @@ export interface Settings {
   fontSize: number;
   previewFontSize: number;
   markdownSoftBreaks: boolean;
+  markdownLineHeight: number;
   previewCacheDirectory: string | null;
   startupPath: string | null;
   registeredStrings: string[];
@@ -35,6 +45,7 @@ const DEFAULTS: Settings = {
   fontSize: DEFAULT_EDITOR_CONFIG.fontSize,
   previewFontSize: DEFAULT_EDITOR_CONFIG.fontSize,
   markdownSoftBreaks: true,
+  markdownLineHeight: DEFAULT_MARKDOWN_LINE_HEIGHT,
   previewCacheDirectory: null,
   startupPath: null,
   registeredStrings: [],
@@ -91,6 +102,9 @@ export function parseSettingsResult(text: string): SettingsParseResult {
     markdownSoftBreaks: typeof value.markdownSoftBreaks === "boolean"
       ? value.markdownSoftBreaks
       : DEFAULTS.markdownSoftBreaks,
+    markdownLineHeight: isValidMarkdownLineHeight(value.markdownLineHeight)
+      ? value.markdownLineHeight
+      : DEFAULTS.markdownLineHeight,
     previewCacheDirectory: typeof value.previewCacheDirectory === "string" && value.previewCacheDirectory.trim().length > 0
       ? value.previewCacheDirectory
       : DEFAULTS.previewCacheDirectory,
@@ -162,6 +176,7 @@ export function resetUserSettings(): void {
   setSetting("fontSize", DEFAULTS.fontSize);
   setSetting("previewFontSize", DEFAULTS.previewFontSize);
   setSetting("markdownSoftBreaks", DEFAULTS.markdownSoftBreaks);
+  setSetting("markdownLineHeight", DEFAULTS.markdownLineHeight);
   setSetting("previewCacheDirectory", DEFAULTS.previewCacheDirectory);
   setSetting("startupPath", DEFAULTS.startupPath);
   setSetting("registeredStrings", []);

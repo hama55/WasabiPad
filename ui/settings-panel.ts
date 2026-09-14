@@ -12,7 +12,12 @@ import {
   type RegisteredCommand,
 } from "./registered-command-model";
 import { registeredStringLabel } from "./registered-strings";
-import type { Settings } from "./settings";
+import {
+  isValidMarkdownLineHeight,
+  MAX_MARKDOWN_LINE_HEIGHT,
+  MIN_MARKDOWN_LINE_HEIGHT,
+  type Settings,
+} from "./settings";
 import { THEME_LABELS, THEMES, type Theme } from "./theme";
 
 export interface SettingsPanelPorts {
@@ -25,6 +30,7 @@ export interface SettingsPanelPorts {
   applyIndent: (size: number) => void;
   applyPreviewFontSize: (size: number) => void;
   applyMarkdownSoftBreaks: (enabled: boolean) => void;
+  applyMarkdownLineHeight: (value: number) => void;
   pickPreviewCacheDirectory?: (defaultPath?: string) => string | null | Promise<string | null>;
   clearPreviewCache?: () => void | Promise<void>;
   getPreviewCacheInfo?: () => PreviewCacheInfo | null | Promise<PreviewCacheInfo | null>;
@@ -80,7 +86,8 @@ type CommonSettingKey =
   | "editorFontSize"
   | "indent"
   | "previewFontSize"
-  | "markdownSoftBreaks";
+  | "markdownSoftBreaks"
+  | "markdownLineHeight";
 
 const SETTING_FIELD_BUILDERS: Record<CommonSettingKey, (ports: SettingsPanelPorts) => HTMLElement> = {
   theme: themeField,
@@ -89,6 +96,7 @@ const SETTING_FIELD_BUILDERS: Record<CommonSettingKey, (ports: SettingsPanelPort
   indent: indentField,
   previewFontSize: previewFontSizeField,
   markdownSoftBreaks: markdownSoftBreaksField,
+  markdownLineHeight: markdownLineHeightField,
 };
 const EDITOR_SETTING_KEYS = ["fontFamily", "editorFontSize", "indent"] as const;
 // package.jsonのversionはsync-versionによりCargo.tomlのworkspace versionから同期される。
@@ -170,7 +178,7 @@ export function openSettingsModal(
       name: "プレビュー",
       id: "settings-preview",
       build: () => [
-        ...buildCommonSettingFields(ports, ["previewFontSize", "markdownSoftBreaks"]),
+        ...buildCommonSettingFields(ports, ["previewFontSize", "markdownSoftBreaks", "markdownLineHeight"]),
         previewCacheField(ports),
       ],
     },
@@ -546,6 +554,18 @@ function previewFontSizeField(ports: SettingsPanelPorts): HTMLElement {
   });
 }
 
+function markdownLineHeightField(ports: SettingsPanelPorts): HTMLElement {
+  return numberField("Markdown行間", "markdown-line-height", ports.getSetting("markdownLineHeight"), (value) => {
+    ports.setSetting("markdownLineHeight", value);
+    ports.applyMarkdownLineHeight(value);
+  }, {
+    min: MIN_MARKDOWN_LINE_HEIGHT,
+    max: MAX_MARKDOWN_LINE_HEIGHT,
+    step: 0.05,
+    isValid: isValidMarkdownLineHeight,
+  });
+}
+
 function markdownSoftBreaksField(ports: SettingsPanelPorts): HTMLElement {
   const row = document.createElement("label");
   row.className = "settings-field settings-checkbox";
@@ -691,6 +711,12 @@ function numberField(
   setting: string,
   initial: number,
   onChange: (value: number) => void,
+  options: {
+    min?: number;
+    max?: number;
+    step?: number;
+    isValid?: (value: number) => boolean;
+  } = {},
 ): HTMLElement {
   let current = initial;
   const row = document.createElement("label");
@@ -700,13 +726,13 @@ function numberField(
   const input = document.createElement("input");
   input.type = "number";
   input.dataset.setting = setting;
-  input.min = String(MIN_FONT_SIZE);
-  input.max = String(MAX_FONT_SIZE);
-  input.step = "1";
+  input.min = String(options.min ?? MIN_FONT_SIZE);
+  input.max = String(options.max ?? MAX_FONT_SIZE);
+  input.step = String(options.step ?? 1);
   input.value = String(current);
   input.addEventListener("change", () => {
     const value = Number(input.value);
-    if (!isValidFontSize(value)) {
+    if (!(options.isValid ?? isValidFontSize)(value)) {
       input.value = String(current);
       return;
     }

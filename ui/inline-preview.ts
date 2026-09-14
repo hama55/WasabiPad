@@ -14,6 +14,7 @@ const {
   FONT_MESSAGE,
   FONT_SIZE_MESSAGE,
   MARKDOWN_SOFT_BREAKS_MESSAGE,
+  MARKDOWN_LINE_HEIGHT_MESSAGE,
   FONT_CHANGE_MESSAGE,
   FULLSCREEN_CHANGE_MESSAGE,
   FULLSCREEN_STATE_MESSAGE,
@@ -45,6 +46,7 @@ export class InlinePreview {
   private fontFamily: string | null = null;
   private fontSize: number | null = null;
   private markdownSoftBreaks = true;
+  private markdownLineHeight: number | null = null;
   private fullscreen = false;
   private pendingMarkdownFragment: string | null = null;
   private previewFocused = false;
@@ -134,6 +136,11 @@ export class InlinePreview {
     this.sendMarkdownSoftBreaks();
   }
 
+  setMarkdownLineHeight(value: number) {
+    this.markdownLineHeight = value;
+    this.sendMarkdownLineHeight();
+  }
+
   setFullscreen(fullscreen: boolean) {
     if (this.fullscreen === fullscreen) return;
     this.fullscreen = fullscreen;
@@ -210,6 +217,7 @@ export class InlinePreview {
       fullscreen: this.fullscreen,
     }, window.location.origin);
     this.sendMarkdownSoftBreaks();
+    this.sendMarkdownLineHeight();
     if (!this.payload) return;
     // 区切り文字の変更は、現在のビューがCSVなら再描画を開始する。
     // 本文を先に送ると、その再描画が非同期の本文描画を中断するため、
@@ -251,6 +259,14 @@ export class InlinePreview {
     this.frame.contentWindow?.postMessage({
       type: MARKDOWN_SOFT_BREAKS_MESSAGE,
       enabled: this.markdownSoftBreaks,
+    }, window.location.origin);
+  }
+
+  private sendMarkdownLineHeight() {
+    if (!this.ready || this.markdownLineHeight === null) return;
+    this.frame.contentWindow?.postMessage({
+      type: MARKDOWN_LINE_HEIGHT_MESSAGE,
+      lineHeight: this.markdownLineHeight,
     }, window.location.origin);
   }
 

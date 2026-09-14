@@ -126,6 +126,17 @@ describe("Feature: settings", () => {
     expect(parseSettings(JSON.stringify({ markdownSoftBreaks: "false" })).markdownSoftBreaks).toBe(true);
   });
 
+  // Given: Markdown行間が未設定・有効値・範囲外として保存されている
+  // When: `parseSettings`を呼ぶ
+  // Then: 既定値は1.65、有効値は復元し、範囲外は既定値へ戻す
+  it("Scenario: Markdown行間設定を安全に復元する", () => {
+    expect(parseSettings("{}").markdownLineHeight).toBe(1.65);
+    expect(parseSettings(JSON.stringify({ markdownLineHeight: 1.9 })).markdownLineHeight).toBe(1.9);
+    expect(parseSettings(JSON.stringify({ markdownLineHeight: 1.39 })).markdownLineHeight).toBe(1.65);
+    expect(parseSettings(JSON.stringify({ markdownLineHeight: 2.01 })).markdownLineHeight).toBe(1.65);
+    expect(parseSettings(JSON.stringify({ markdownLineHeight: "1.8" })).markdownLineHeight).toBe(1.65);
+  });
+
   // Given: エディタ用サイズ16とプレビュー用サイズ20を保存
   // When: `parseSettings`を呼ぶ
   // Then: それぞれのサイズを独立して復元する
@@ -187,6 +198,7 @@ describe("Feature: settings", () => {
     setSetting("openTabs", openTabs);
     setSetting("fontSize", 20);
     setSetting("markdownSoftBreaks", false);
+    setSetting("markdownLineHeight", 1.9);
     setSetting("startupPath", "C:\\work");
     setSetting("registeredStrings", ["snippet"]);
     await flushSettings();
@@ -197,6 +209,7 @@ describe("Feature: settings", () => {
 
     expect(getSetting("fontSize")).toBe(14);
     expect(getSetting("markdownSoftBreaks")).toBe(true);
+    expect(getSetting("markdownLineHeight")).toBe(1.65);
     expect(getSetting("startupPath")).toBeNull();
     expect(getSetting("registeredStrings")).toEqual([]);
     expect(getSetting("openTabs")).toEqual(openTabs);
@@ -240,6 +253,17 @@ describe("Feature: settings", () => {
     await flushSettings();
 
     expect(updateSettingMock).toHaveBeenCalledWith("markdownSoftBreaks", "false");
+  });
+
+  // Given: Markdown行間を1.8へ変更する
+  // When: 設定保存をflushする
+  // Then: 専用キーへ数値を保存する
+  it("Scenario: Markdown行間設定は専用キーへ保存する", async () => {
+    setSetting("markdownLineHeight", 1.8);
+
+    await flushSettings();
+
+    expect(updateSettingMock).toHaveBeenCalledWith("markdownLineHeight", "1.8");
   });
 
   // Given: `workspaceSearchOptions`未設定または`{ max_files: 5 }`

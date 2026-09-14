@@ -198,6 +198,28 @@ describe("Feature: inline preview", () => {
     }, window.location.origin);
   });
 
+  // Given: エディタがMarkdown行間設定を変更している
+  // When: iframeの準備完了通知を受け取る
+  // Then: 保留していた行間設定をプレビューへ送る
+  it("Scenario: sends a queued Markdown line-height setting after the iframe is ready", async () => {
+    const { host, preview } = mount();
+    const frame = host.querySelector("iframe")!;
+    const postMessage = vi.spyOn(frame.contentWindow!, "postMessage");
+    await preview.open("markdown", "first\nsecond", null);
+    preview.setMarkdownLineHeight(1.8);
+
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
+    }));
+
+    expect(postMessage).toHaveBeenCalledWith({
+      type: INLINE_PREVIEW_MESSAGES.MARKDOWN_LINE_HEIGHT_MESSAGE,
+      lineHeight: 1.8,
+    }, window.location.origin);
+  });
+
   // Given: アーカイブ内Markdownの本文と、画像解決に必要なアーカイブ情報を設定している
   // When: プレビューを開いてiframeの準備完了通知を受け取る
   // Then: アーカイブパスとエントリ名をビューへ渡す

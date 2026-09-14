@@ -7,6 +7,7 @@ export const INLINE_PREVIEW_MESSAGES = {
   FONT_MESSAGE: "wasabipad-viewer-font",
   FONT_SIZE_MESSAGE: "wasabipad-viewer-font-size",
   MARKDOWN_SOFT_BREAKS_MESSAGE: "wasabipad-viewer-markdown-soft-breaks",
+  MARKDOWN_LINE_HEIGHT_MESSAGE: "wasabipad-viewer-markdown-line-height",
   FONT_CHANGE_MESSAGE: "wasabipad-viewer-font-change",
   FULLSCREEN_CHANGE_MESSAGE: "wasabipad-viewer-fullscreen-change",
   FULLSCREEN_STATE_MESSAGE: "wasabipad-viewer-fullscreen-state",

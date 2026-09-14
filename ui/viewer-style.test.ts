@@ -26,4 +26,18 @@ describe("Feature: viewer viewport layout", () => {
     expect(style).toMatch(/\.viewer-image-wrap\s*\{[^}]*min-width:\s*0;/s);
     expect(style).toMatch(/\.viewer-pdf,\s*\.viewer-html\s*\{[^}]*max-width:\s*100%;/s);
   });
+
+  // Feature: Markdown本文の可読性
+  // Scenario: 見出し・本文・列挙のCSSを表示する
+  // Given: Markdown viewerのCSS
+  // When: 本文のレイアウト規則を検査する
+  // Then: 見出しに下線はなく、設定可能な行間と読みやすいブロック間隔を使う
+  it("Scenario: Markdown本文の行間とブロック間隔を読みやすくする", () => {
+    expect(style).not.toMatch(/article\s+h[1-6][^{]*\{[^}]*border-bottom/s);
+    expect(style).toContain("line-height: var(--markdown-line-height, 1.65);");
+    expect(style).toMatch(/article\s+:where\(h1,\s*h2,\s*h3,\s*h4,\s*h5,\s*h6\)\s*\{[^}]*margin-block:/s);
+    expect(style).toMatch(/article\s+:where\(p,\s*blockquote,\s*pre,\s*table\)\s*\{[^}]*margin-block:/s);
+    expect(style).toMatch(/article\s+:where\(ul,\s*ol\)\s*\{[^}]*margin-block:/s);
+    expect(style).toMatch(/article\s+li\s*\+\s*li\s*\{[^}]*margin-block-start:/s);
+  });
 });
