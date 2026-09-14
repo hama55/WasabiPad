@@ -21,6 +21,13 @@ interface CommandDependencies {
   reopenClosedTab: () => Promise<unknown>;
 }
 
+type ClosestTarget = EventTarget & { closest?: (selector: string) => Element | null };
+
+export interface FindCommandActions {
+  openEditorSearch: () => void;
+  focusWorkspaceSearch: () => void;
+}
+
 export function createCommandRegistry(deps: CommandDependencies): CommandRegistry {
   return {
     new: { label: "新規", shortcut: "Ctrl+N", globalShortcut: true, run: deps.newFile },
@@ -30,7 +37,7 @@ export function createCommandRegistry(deps: CommandDependencies): CommandRegistr
     saveAs: { label: "名前を付けて保存...", shortcut: "Ctrl+Shift+S", globalShortcut: true, run: deps.saveAs },
     refresh: { label: "ファイルを更新", shortcut: "F5", globalShortcut: true, run: deps.refresh },
     quit: { label: "終了", run: deps.quit },
-    find: { label: "検索と置換", shortcut: "Ctrl+F", run: deps.find },
+    find: { label: "検索と置換", shortcut: "Ctrl+F", globalShortcut: true, run: deps.find },
     reopenClosedTab: {
       label: "閉じたタブを復活",
       shortcut: "Ctrl+Shift+T",
@@ -38,6 +45,23 @@ export function createCommandRegistry(deps: CommandDependencies): CommandRegistr
       run: deps.reopenClosedTab,
     },
   };
+}
+
+export function runFindForTarget(
+  target: EventTarget | null,
+  actions: FindCommandActions,
+): void {
+  const element = target as ClosestTarget | null;
+  if (element?.closest?.(".fv-tree") || element?.closest?.(".ws-search")) {
+    actions.focusWorkspaceSearch();
+    return;
+  }
+  if (element?.closest?.(".ve-find")) return;
+  if (element?.closest?.(".ve")) actions.openEditorSearch();
+}
+
+export function isFindShortcut(event: KeyboardEvent): boolean {
+  return event.ctrlKey && !event.altKey && !event.metaKey && event.key.toLowerCase() === "f";
 }
 
 function shortcutFromEvent(event: KeyboardEvent): string {
@@ -53,10 +77,12 @@ export function globalCommandForEvent(
   event: KeyboardEvent
 ): Command | undefined {
   if (event.defaultPrevented) return undefined;
-  const target = event.target as (EventTarget & { closest?: (selector: string) => Element | null }) | null;
-  if (target?.closest?.(".pf-overlay")) return undefined;
+  const target = event.target as ClosestTarget | null;
   const shortcut = shortcutFromEvent(event);
-  return Object.values(registry).find(
+  const command = Object.values(registry).find(
     (command) => command.globalShortcut && command.shortcut === shortcut
   );
+  if (command === registry.find && !isFindShortcut(event)) return undefined;
+  if (target?.closest?.(".pf-overlay") && command !== registry.find) return undefined;
+  return command;
 }

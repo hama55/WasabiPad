@@ -16,6 +16,12 @@ export function removeRegisteredString(text: string): void {
   setSetting("registeredStrings", loadRegisteredStrings().filter((item) => item !== text));
 }
 
+export function updateRegisteredString(previous: string, next: string): void {
+  const strings = loadRegisteredStrings();
+  if (!next || !strings.includes(previous) || strings.some((item) => item !== previous && item === next)) return;
+  setSetting("registeredStrings", strings.map((item) => item === previous ? next : item));
+}
+
 export function registeredStringLabel(text: string): string {
   return text.replaceAll("\n", "↵").slice(0, 48) || "(空文字列)";
 }

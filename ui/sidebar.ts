@@ -6,12 +6,14 @@ import {
 } from "./workspace-search-panel";
 import { archiveEntryPath, splitArchiveEntryPath } from "./archive-path";
 import type { ContextTarget } from "./context-target";
-import { isMiddleClick } from "./interaction-constants";
+import { preventMiddleClickDefault } from "./interaction-constants";
 import { iconButton } from "./icon-button";
+import { createMenuIcon, MENU_ICON } from "./menu-icons";
 import { runAsyncBoundary } from "./async-boundary";
 import { isDescendantPath } from "./path";
 import type { FileTreeDropRequest, FileTreeDropResult } from "./file-tree-drop";
 import { clampSearchOptions } from "./workspace-search-options";
+import { isFindShortcut } from "./commands";
 export type { ContextTarget } from "./context-target";
 export type SidebarFileCommand = "copy" | "cut" | "paste" | "rename" | "delete" | "undo" | "redo";
 
@@ -37,6 +39,7 @@ export interface SidebarViewState {
   kind: "folder" | "archive" | null;
   expandedRelPaths: string[];
   search: WorkspaceSearchViewState | null;
+  fileTreeWidth?: number;
 }
 
 interface PointerDrag {
@@ -78,7 +81,7 @@ export interface SidebarPorts extends Omit<WorkspaceSearchPorts, "onViewChange" 
   onDropEntries: (request: FileTreeDropRequest) => Promise<FileTreeDropResult>;
   onUndoLastDrop: () => Promise<boolean>;
   onCreateFolder: (relDir: string) => void | Promise<void>;
-  onCreateNote: () => void | Promise<void>;
+  onCreateNote: (relDir: string) => void | Promise<void>;
   onTreeError: (error: unknown) => Promise<void>;
 }
 
@@ -170,7 +173,7 @@ export class Sidebar {
     const createFolder = document.createElement("button");
     createFolder.type = "button";
     createFolder.className = "fv-create-folder";
-    createFolder.textContent = "＋ フォルダ";
+    createFolder.append(createMenuIcon(MENU_ICON.newFolder), document.createTextNode("フォルダ"));
     createFolder.title = "新規フォルダ";
     createFolder.addEventListener("click", () => runAsyncBoundary(
       () => ports.onCreateFolder(this.selectedFolderRelDir()),
@@ -179,10 +182,10 @@ export class Sidebar {
     const createNote = document.createElement("button");
     createNote.type = "button";
     createNote.className = "fv-create-note";
-    createNote.textContent = "＋ メモ";
+    createNote.append(createMenuIcon(MENU_ICON.newMemo), document.createTextNode("メモ"));
     createNote.title = "新規メモ";
     createNote.addEventListener("click", () => runAsyncBoundary(
-      ports.onCreateNote,
+      () => ports.onCreateNote(this.selectedFolderRelDir()),
       (error) => this.reportTreeError(error),
     ));
     this.createActions.append(createFolder, createNote);
@@ -204,6 +207,10 @@ export class Sidebar {
     this.workspaceRoot = folderRoot;
     this.viewKind = folderRoot === null ? null : "folder";
     this.panel.setFolderRoot(folderRoot);
+  }
+
+  focusWorkspaceSearch() {
+    this.panel.focusSearch();
   }
 
   refreshWorkspaceSearch(relPath: string, edits: EditManyItem[]) {
@@ -294,8 +301,7 @@ export class Sidebar {
       if (!archiveRelPath || !entryName) return Promise.resolve(false);
       const key = `archive:${archiveRelPath.toLowerCase()}`;
       const names = existence.get(key) ?? this.onExpandArchive(archiveRelPath)
-        .then((entries) => new Set(entries.map(pathKey)))
-        .catch(() => new Set<string>());
+        .then((entries) => new Set(entries.map(pathKey)));
       existence.set(key, names);
       return names.then((available) => available.has(pathKey(entryName)));
     }
@@ -304,8 +310,7 @@ export class Sidebar {
     const name = normalized.slice(parent ? parent.length + 1 : 0);
     const key = `folder:${parent.toLowerCase()}`;
     const names = existence.get(key) ?? this.onExpandFolder(parent)
-      .then((entries) => new Set(entries.map((entry) => pathKey(entry.name))))
-      .catch(() => new Set<string>());
+      .then((entries) => new Set(entries.map((entry) => pathKey(entry.name))));
     existence.set(key, names);
     return names.then((available) => available.has(pathKey(name)));
   }
@@ -1053,6 +1058,12 @@ export class Sidebar {
         input.addEventListener("click", (event) => event.stopPropagation());
         input.addEventListener("pointerdown", (event) => event.stopPropagation());
         input.addEventListener("keydown", (event) => {
+          if (isFindShortcut(event)) {
+            event.preventDefault();
+            event.stopPropagation();
+            this.focusWorkspaceSearch();
+            return;
+          }
           event.stopPropagation();
           if (event.key === "Enter") {
             event.preventDefault();
@@ -1102,13 +1113,13 @@ export class Sidebar {
           (error) => this.reportTreeError(error),
         );
       });
+      div.addEventListener("mousedown", preventMiddleClickDefault);
       div.addEventListener("auxclick", (e) => {
-        if (isMiddleClick(e)) {
-          runAsyncBoundary(
-            () => activate(true),
-            (error) => this.reportTreeError(error),
-          );
-        }
+        if (!preventMiddleClickDefault(e)) return;
+        runAsyncBoundary(
+          () => activate(true),
+          (error) => this.reportTreeError(error),
+        );
       });
       if (r.kind !== "archiveEntry" && r.kind !== "archiveDir") {
         // archiveEntry/archiveDir はアーカイブ内の仮想エントリなので、実ファイル向けの

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
-    Arc, OnceLock,
+    Arc, Condvar, Mutex, OnceLock,
 };
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
@@ -15,6 +15,49 @@ use std::time::{Duration, Instant, SystemTime};
 // パスワード入力ダイアログへ差し替える)。
 pub const PASSWORD_ERROR_MARKER: &str = crate::protocol::PASSWORD_ERROR_MARKER;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
+const MAX_PARALLEL_EXTRACTS: usize = 3;
+
+struct ExtractGate {
+    active: Mutex<usize>,
+    available: Condvar,
+}
+
+struct ExtractPermit {
+    gate: &'static ExtractGate,
+}
+
+static EXTRACT_GATE: OnceLock<ExtractGate> = OnceLock::new();
+
+fn acquire_extract_permit() -> ExtractPermit {
+    let gate = EXTRACT_GATE.get_or_init(|| ExtractGate {
+        active: Mutex::new(0),
+        available: Condvar::new(),
+    });
+    let mut active = gate
+        .active
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    while *active >= MAX_PARALLEL_EXTRACTS {
+        active = gate
+            .available
+            .wait(active)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+    }
+    *active += 1;
+    ExtractPermit { gate }
+}
+
+impl Drop for ExtractPermit {
+    fn drop(&mut self) {
+        let mut active = self
+            .gate
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *active = active.saturating_sub(1);
+        self.gate.available.notify_one();
+    }
+}
 
 pub fn is_7z_path(path: &Path) -> bool {
     path.extension()
@@ -273,6 +316,7 @@ fn extract_with_limit(
 }
 
 pub fn extract(archive: &Path, entry: &str, password: &str) -> io::Result<Vec<u8>> {
+    let _permit = acquire_extract_permit();
     extract_with_limit(archive, entry, password, crate::ziptext::MAX_ENTRY)
 }
 
@@ -443,6 +487,45 @@ mod tests {
     // 7z.exe が無い環境ではスキップ (CI 想定)。このマシンでは実行される。
     fn have_7z() -> bool {
         available()
+    }
+
+    // Feature: 7z展開の共有並列数
+    // Scenario: 複数ビューから独立したエントリを同時に展開する
+    // Given: 7z展開用の共有ゲートがある
+    // When: 3件を超える展開処理が同時にゲートへ入ろうとする
+    // Then: 実行中の展開処理は3件を超えない
+    #[test]
+    fn extract_gate_caps_process_wide_parallelism() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let handles: Vec<_> = (0..(MAX_PARALLEL_EXTRACTS + 4))
+            .map(|_| {
+                let active = Arc::clone(&active);
+                let peak = Arc::clone(&peak);
+                thread::spawn(move || {
+                    let _permit = acquire_extract_permit();
+                    let current = active.fetch_add(1, Ordering::Relaxed) + 1;
+                    let mut observed = peak.load(Ordering::Relaxed);
+                    while current > observed {
+                        match peak.compare_exchange(
+                            observed,
+                            current,
+                            Ordering::Relaxed,
+                            Ordering::Relaxed,
+                        ) {
+                            Ok(_) => break,
+                            Err(next) => observed = next,
+                        }
+                    }
+                    thread::sleep(Duration::from_millis(20));
+                    active.fetch_sub(1, Ordering::Relaxed);
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        assert!(peak.load(Ordering::Relaxed) <= MAX_PARALLEL_EXTRACTS);
     }
 
     fn temp_root(tag: &str) -> PathBuf {

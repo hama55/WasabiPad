@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createCommandRegistry, globalCommandForEvent } from "./commands";
+import { createCommandRegistry, globalCommandForEvent, runFindForTarget } from "./commands";
 
 const noop = vi.fn();
 const registry = createCommandRegistry({
@@ -29,9 +29,9 @@ describe("Feature: command registry", () => {
 
   // Given: Ctrl-Fイベントと、defaultPrevented=trueのCtrl-Sイベント
   // When: `globalCommandForEvent`を呼ぶ
-  // Then: どちらも`undefined`
-  it("Scenario: does not dispatch events already handled by the editor", () => {
-    expect(globalCommandForEvent(registry, key("f"))).toBeUndefined();
+  // Then: Ctrl-Fは検索command、処理済みイベントは`undefined`
+  it("Scenario: Ctrl-Fを検索commandへ渡し処理済みイベントは無視する", () => {
+    expect(globalCommandForEvent(registry, key("f"))).toBe(registry.find);
     expect(globalCommandForEvent(registry, key("s", false, true))).toBeUndefined();
   });
 
@@ -63,5 +63,38 @@ describe("Feature: command registry", () => {
     } as unknown as KeyboardEvent;
 
     expect(globalCommandForEvent(registry, event)).toBeUndefined();
+  });
+
+  // Scenario: モーダル内のCtrl-Fでも標準検索を起動しない
+  // Given: .pf-overlay内の入力欄から発生したCtrl-Fイベント
+  // When: globalCommandForEventでcommandを判定する
+  // Then: 検索commandを返してmain側で既定動作を抑止する
+  it("Scenario: モーダル内のCtrl-Fを標準検索へ漏らさない", () => {
+    const event = {
+      ...key("f"),
+      target: { closest: (selector: string) => selector === ".pf-overlay" ? {} : null },
+    } as unknown as KeyboardEvent;
+
+    expect(globalCommandForEvent(registry, event)).toBe(registry.find);
+  });
+
+  // Feature: 正規検索のフォーカス振り分け
+  // Scenario: ファイルツリーとエディタだけがCtrl-Fの検索先になる
+  // Given: 検索先ごとの操作を持つ検索command
+  // When: 各領域をフォーカスした状態で検索commandを実行する
+  // Then: ファイルツリーは全ファイル検索、エディタはエディタ検索、それ以外は何もしない
+  it("Scenario: 正規検索をフォーカス領域へ振り分ける", () => {
+    const openEditorSearch = vi.fn();
+    const focusWorkspaceSearch = vi.fn();
+    const target = (selectors: string[]) => ({
+      closest: (selector: string) => selectors.includes(selector) ? {} as Element : null,
+    }) as unknown as EventTarget;
+
+    runFindForTarget(target([".fv-tree"]), { openEditorSearch, focusWorkspaceSearch });
+    runFindForTarget(target([".ve"]), { openEditorSearch, focusWorkspaceSearch });
+    runFindForTarget(target([".doc-tab"]), { openEditorSearch, focusWorkspaceSearch });
+
+    expect(focusWorkspaceSearch).toHaveBeenCalledOnce();
+    expect(openEditorSearch).toHaveBeenCalledOnce();
   });
 });

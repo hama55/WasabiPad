@@ -4137,7 +4137,7 @@ dependencies = [
 
 [[package]]
 name = "wasabipad"
-version = "1.5.6"
+version = "1.5.11"
 dependencies = [
  "serde",
  "serde_json",
@@ -4147,12 +4147,13 @@ dependencies = [
  "tauri-plugin-dialog",
  "ts-rs",
  "wasabipad-core",
+ "webview2-com",
  "windows-sys 0.59.0",
 ]
 
 [[package]]
 name = "wasabipad-core"
-version = "1.5.6"
+version = "1.5.11"
 dependencies = [
  "encoding_rs",
  "grep-matcher",

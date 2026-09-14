@@ -16,6 +16,23 @@ describe("Feature: PDF viewer", () => {
     expect(wrapper.querySelector("iframe")).toBe(frame);
   });
 
+  // Feature: 設計外検索の標準動作抑止
+  // Scenario: PDFプレビューのCtrl-Fで標準検索を起動しない
+  // Given: PDFプレビューのiframe
+  // When: iframeへCtrl-Fイベントを送る
+  // Then: iframeの既定検索動作を抑止する
+  it("Scenario: PDFプレビュー内のCtrl-Fを標準検索へ漏らさない", () => {
+    const { frame } = createPdfPreview("manual.pdf");
+    const child = document.implementation.createHTMLDocument("pdf-preview");
+    Object.defineProperty(frame, "contentDocument", { configurable: true, value: child });
+    frame.dispatchEvent(new Event("load"));
+    const event = new KeyboardEvent("keydown", { key: "f", ctrlKey: true, cancelable: true });
+
+    child.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+  });
+
   // Given: a PDF iframe whose load failed
   // When: the failure state is marked
   // Then: the source is removed and the title reports the failure

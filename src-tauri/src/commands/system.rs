@@ -85,11 +85,16 @@ pub(crate) fn open_in_other_app(path: String) -> Result<(), String> {
     }
 }
 
-pub(crate) fn open_in_default_browser(path: String) -> Result<(), String> {
+pub(crate) fn open_in_default_browser(
+    path: String,
+    effective_extension: Option<String>,
+) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         let target = PathBuf::from(path);
-        let extension = target.extension().and_then(|value| value.to_str());
+        let extension = effective_extension
+            .as_deref()
+            .or_else(|| target.extension().and_then(|value| value.to_str()));
         if !target.is_file()
             || !matches!(
                 extension.map(str::to_ascii_lowercase).as_deref(),
@@ -98,13 +103,54 @@ pub(crate) fn open_in_default_browser(path: String) -> Result<(), String> {
         {
             return Err("HTMLファイルが見つかりません".to_string());
         }
-        shell_execute_open(&target.to_string_lossy())
+        shell_execute_open(&browser_target(&target, effective_extension.as_deref()))
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = path;
+        let _ = (path, effective_extension);
         Err("この機能はWindowsでのみ使用できます".to_string())
     }
+}
+
+#[cfg(target_os = "windows")]
+fn browser_target(path: &std::path::Path, effective_extension: Option<&str>) -> String {
+    let physical_extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase);
+    let effective_is_html = matches!(
+        effective_extension.map(str::to_ascii_lowercase).as_deref(),
+        Some("html" | "htm")
+    );
+    let physical_is_html = matches!(physical_extension.as_deref(), Some("html" | "htm"));
+    if effective_is_html && !physical_is_html {
+        file_uri_for_path(path)
+    } else {
+        path.to_string_lossy().into_owned()
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn file_uri_for_path(path: &std::path::Path) -> String {
+    use std::fmt::Write as _;
+
+    let path = path.to_string_lossy().replace('\\', "/");
+    let (prefix, uri_path) = if path.starts_with("//") {
+        ("file://", path.trim_start_matches('/').to_string())
+    } else if path.starts_with('/') {
+        ("file://", path)
+    } else {
+        ("file://", format!("/{path}"))
+    };
+    let mut encoded = String::with_capacity(uri_path.len());
+    for byte in uri_path.as_bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/' | b':') {
+            encoded.push(*byte as char);
+        } else {
+            let _ = write!(&mut encoded, "%{byte:02X}");
+        }
+    }
+    format!("{prefix}{encoded}")
 }
 
 pub(crate) fn is_external_url(url: &str) -> bool {
@@ -173,28 +219,10 @@ pub(crate) fn open_external_url(url: String) -> Result<(), String> {
 }
 
 #[cfg(target_os = "windows")]
-struct ProcessHandles {
-    thread: windows_sys::Win32::Foundation::HANDLE,
-    process: windows_sys::Win32::Foundation::HANDLE,
-}
-
-#[cfg(target_os = "windows")]
-impl Drop for ProcessHandles {
-    fn drop(&mut self) {
-        use windows_sys::Win32::Foundation::CloseHandle;
-
-        unsafe {
-            let _ = CloseHandle(self.thread);
-            let _ = CloseHandle(self.process);
-        }
-    }
-}
-
-#[cfg(target_os = "windows")]
 fn spawn_command_line(command: &str) -> Result<(), String> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Foundation::GetLastError;
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
     use windows_sys::Win32::System::Threading::{
         CreateProcessW, PROCESS_INFORMATION, STARTUPINFOW,
     };
@@ -225,33 +253,38 @@ fn spawn_command_line(command: &str) -> Result<(), String> {
         return Err(std::io::Error::from_raw_os_error(error as i32).to_string());
     }
 
-    let _handles = ProcessHandles {
-        thread: process_info.hThread,
-        process: process_info.hProcess,
-    };
+    unsafe {
+        let _ = CloseHandle(process_info.hThread);
+        let _ = CloseHandle(process_info.hProcess);
+    }
     Ok(())
 }
 
 pub(crate) fn run_external_command(command: String, path: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        let target = PathBuf::from(path);
-        if !target.is_file() {
-            return Err("対象ファイルが見つかりません".to_string());
-        }
-        let command = command.trim();
-        if command.is_empty() {
-            return Err("コマンドが空です".to_string());
-        }
+        let command = validated_external_command(command, path)?;
         // {file}の置換とプレフィックスの連結はUI側で済ませ、確認欄と同じ文字列をそのまま実行する。
         // コンソールを隠さず起動するが、アプリ側は子プロセスの終了を待たずに戻る。
-        spawn_command_line(command)
+        spawn_command_line(&command)
     }
     #[cfg(not(target_os = "windows"))]
     {
         let _ = (command, path);
         Err("この機能はWindowsでのみ使用できます".to_string())
     }
+}
+
+#[cfg(target_os = "windows")]
+fn validated_external_command(command: String, path: String) -> Result<String, String> {
+    if !PathBuf::from(path).is_file() {
+        return Err("対象ファイルが見つかりません".to_string());
+    }
+    let command = command.trim();
+    if command.is_empty() {
+        return Err("コマンドが空です".to_string());
+    }
+    Ok(command.to_string())
 }
 
 #[cfg(all(test, target_os = "windows"))]
@@ -310,6 +343,11 @@ mod tests {
         assert!(super::explorer_args(&path, true).is_err());
     }
 
+    // Feature: 登録コマンドの外部実行
+    // Scenario: 完成したコマンドラインをそのまま起動する
+    // Given: すぐ終了するcmd.exeコマンドがある
+    // When: 登録コマンドの実行処理を呼ぶ
+    // Then: シェルを追加せずに起動できる
     #[test]
     fn runs_the_complete_command_line_without_adding_a_shell() {
         super::spawn_command_line("cmd.exe /D /C exit 0").unwrap();
@@ -360,6 +398,48 @@ mod tests {
         .unwrap();
 
         assert_eq!(opened.as_deref(), Some("https://example.com/manual?lang=ja#top"));
+    }
+
+    // Feature: 形式指定したHTMLの既定ブラウザ起動
+    // Scenario: 実拡張子がHTMLでないファイルをHTMLとして開く
+    // Given: 空白と`#`を含む実ファイルパスがある
+    // When: 有効拡張子をhtmlにしてブラウザ起動先を作る
+    // Then: 実パスをfile URIへ変換し、Windowsの拡張子関連付けに依存しない
+    #[test]
+    fn uses_a_file_uri_for_html_with_a_different_physical_extension() {
+        let path = std::path::Path::new(r"C:\work\memo #1.bin");
+
+        assert_eq!(
+            super::browser_target(path, Some("html")),
+            "file:///C:/work/memo%20%231.bin"
+        );
+    }
+
+    // Feature: 形式指定したHTMLの既定ブラウザ起動
+    // Scenario: UNC上の実ファイルをHTMLとして開く
+    // Given: UNC共有上に空白と`#`を含む実ファイルパスがある
+    // When: 有効拡張子をhtmlにしてブラウザ起動先を作る
+    // Then: UNCホストをfile URIのauthorityとして保持する
+    #[test]
+    fn uses_a_unc_authority_for_html_with_a_different_physical_extension() {
+        let path = std::path::Path::new(r"\\server\share\memo #1.bin");
+
+        assert_eq!(
+            super::browser_target(path, Some("html")),
+            "file://server/share/memo%20%231.bin"
+        );
+    }
+
+    // Feature: 通常HTMLの既定ブラウザ起動
+    // Scenario: 実拡張子がHTMLのファイルを開く
+    // Given: `.html`の実ファイルパスがある
+    // When: ブラウザ起動先を作る
+    // Then: 実パスをそのままWindowsへ渡す
+    #[test]
+    fn keeps_the_physical_path_for_a_genuine_html_file() {
+        let path = std::path::Path::new(r"C:\work\index.html");
+
+        assert_eq!(super::browser_target(path, None), r"C:\work\index.html");
     }
 }
 

@@ -21,15 +21,17 @@ vi.mock("./api", async (importOriginal) => ({
 import { fakeDocument, installDomStubs, settle } from "./test-doubles";
 import { VirtualEditor, type EditorPorts } from "./editor";
 import { initSettings } from "./settings";
+import { promptFields as promptFieldsImpl } from "./prompt";
 import type { RegisteredCommandMenuPorts } from "./registered-command-menu";
 import { MENU_ICON } from "./menu-icons";
+import { loadRegisteredStrings } from "./registered-strings";
 
 installDomStubs();
 
 function mount(
   initial: string,
   saveImage?: EditorPorts["saveImage"],
-  overrides: Partial<Pick<EditorPorts, "revealInExplorer" | "openInNewWindow" | "registeredCommandPorts" | "openViewer">> = {},
+  overrides: Partial<Pick<EditorPorts, "revealInExplorer" | "openInNewTab" | "openInNewWindow" | "openAs" | "registeredCommandPorts" | "openViewer">> = {},
 ) {
   const host = document.createElement("div");
   document.body.replaceChildren(host);
@@ -45,7 +47,9 @@ function mount(
     onCursor: (line, col) => { events.cursor = [line, col]; },
     onFontChange: (family, size, changed) => { events.fontChanges.push({ family, size, changed }); },
     openExternally: () => {},
+    openInNewTab: overrides.openInNewTab,
     openInNewWindow: overrides.openInNewWindow,
+    openAs: overrides.openAs,
     revealInExplorer: overrides.revealInExplorer,
     registeredCommandPorts: overrides.registeredCommandPorts ?? {
       promptFields: async () => null,
@@ -58,6 +62,11 @@ function mount(
     saveImage,
   };
   const editor = new VirtualEditor(host, ports, undefined, doc.client);
+  const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
+  Object.defineProperties(scroll, {
+    clientHeight: { configurable: true, value: 100 },
+    clientWidth: { configurable: true, value: 300 },
+  });
   const input = host.querySelector<HTMLTextAreaElement>(".ve-input")!;
   const type = (value: string) => {
     input.value = value;
@@ -105,6 +114,31 @@ function installMouseLayout(host: HTMLElement) {
   };
 }
 
+function installWrappedMouseHitTesting(host: HTMLElement) {
+  const original = document.elementFromPoint;
+  const hadOwnProperty = Object.prototype.hasOwnProperty.call(document, "elementFromPoint");
+  const gutter = host.querySelector<HTMLElement>(".ve-gutter")!;
+  const hitTest = vi.fn((cx: number, cy: number): Element | null => {
+    if (cx < 60) return gutter;
+    const line = Math.floor(cy / 20);
+    return host.querySelector<HTMLElement>(`.ve-line[data-line="${line}"]`)
+      ?? host.querySelector<HTMLElement>(".ve-scroll");
+  });
+  Object.defineProperty(document, "elementFromPoint", {
+    configurable: true,
+    value: hitTest,
+  });
+  return {
+    restore: () => {
+      if (hadOwnProperty) {
+        Object.defineProperty(document, "elementFromPoint", { configurable: true, value: original });
+      } else {
+        Reflect.deleteProperty(document, "elementFromPoint");
+      }
+    },
+  };
+}
+
 function mockBlockSelectionPoints(editor: VirtualEditor) {
   // jsdomのRange座標差を避け、Alt+D&D処理へ渡す文字位置だけを固定する。
   return vi.spyOn(
@@ -144,6 +178,45 @@ describe("Feature: VirtualEditor", () => {
     editor.open(3, false);
     await settle();
     expect(doc.calls.some((call) => call.startsWith("lines("))).toBe(true);
+  });
+
+  // Given: window最小化中のためeditor viewportが0×0である
+  // When: 文書を開いてから復元後の有効なResizeObserver通知を受け取る
+  // Then: 0寸法では空の描画を確定せず、復元後に可視行を描画する
+  it("Scenario: 0寸法のviewportを描画へ確定せず復元後に再描画する", async () => {
+    const originalResizeObserver = globalThis.ResizeObserver;
+    let notifyResize: ResizeObserverCallback | undefined;
+    (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = class {
+      constructor(callback: ResizeObserverCallback) {
+        notifyResize = callback;
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    };
+    try {
+      const { editor, host } = mount("line");
+      const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
+      Object.defineProperties(scroll, {
+        clientHeight: { configurable: true, value: 0 },
+        clientWidth: { configurable: true, value: 0 },
+      });
+
+      editor.open(1, false);
+
+      expect(host.querySelector(".ve-line")).toBeNull();
+
+      Object.defineProperties(scroll, {
+        clientHeight: { configurable: true, value: 100 },
+        clientWidth: { configurable: true, value: 300 },
+      });
+      notifyResize?.([], {} as ResizeObserver);
+      await vi.waitFor(() => {
+        expect(host.querySelector<HTMLElement>(".ve-line")?.textContent).toBe("line");
+      });
+    } finally {
+      (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = originalResizeObserver;
+    }
   });
 
   // Feature: フォルダ検索の一致単位置換
@@ -515,6 +588,120 @@ describe("Feature: VirtualEditor", () => {
 
     expect(editor.captureViewState().caret).toEqual({ line: 1, col: 3 });
     layout.restore();
+  });
+
+  // Feature: 折り返し表示中の本文選択境界
+  // Scenario: 本文の選択を行番号領域へドラッグしても選択終点をEOFへ拡張しない
+  // Given: 「abcdefghij\nklmnopqrst\nuvwxyz」を折り返し表示している
+  // When: 本文で選択を開始し、本文内で移動した後、行番号領域を経由して本文へ戻りmouseupする
+  // Then: 行番号領域上では直前の本文位置を維持し、本文へ戻ると選択更新を再開する
+  it("Scenario: 行番号領域へドラッグしても本文選択をEOFへ拡張しない", async () => {
+    const { editor, host } = mount("abcdefghij\nklmnopqrst\nuvwxyz");
+    editor.open(3, false);
+    await settle();
+    const layout = installMouseLayout(host);
+    const hitTesting = installWrappedMouseHitTesting(host);
+    editor.setWrap(true);
+    const scroll = layout.scroll;
+
+    try {
+      scroll.dispatchEvent(new MouseEvent("mousedown", {
+        bubbles: true, button: 0, clientX: 68, clientY: 10,
+      }));
+      window.dispatchEvent(new MouseEvent("mousemove", {
+        bubbles: true, clientX: 98, clientY: 10,
+      }));
+      window.dispatchEvent(new MouseEvent("mousemove", {
+        bubbles: true, clientX: 20, clientY: 10,
+      }));
+      expect(editor.captureViewState().caret).toEqual({ line: 0, col: 9 });
+      window.dispatchEvent(new MouseEvent("mousemove", {
+        bubbles: true, clientX: 78, clientY: 30,
+      }));
+      window.dispatchEvent(new MouseEvent("mouseup", {
+        bubbles: true, clientX: 78, clientY: 30,
+      }));
+
+      const state = editor.captureViewState();
+      expect(state.anchor).toEqual({ line: 0, col: 6 });
+      expect(state.caret).toEqual({ line: 1, col: 7 });
+    } finally {
+      hitTesting.restore();
+      layout.restore();
+    }
+  });
+
+  // Feature: 折り返し中の既存選択のドロップ境界
+  // Scenario: 既存選択を本文内へドロップした後に行番号領域でmouseupする
+  // Given: 「abcDEFGHIj\nklmnopqrst」の5〜9列目を選択している
+  // When: 選択範囲を本文内の行1列7へドラッグし、行番号領域へ移動してmouseupする
+  // Then: ドロップ位置は行番号領域ではなく、直前の本文位置として扱う
+  it("Scenario: 行番号領域でmouseupしても既存選択のドロップ位置を保つ", async () => {
+    const { editor, doc, host } = mount("abcDEFGHIj\nklmnopqrst");
+    editor.open(2, false);
+    await settle();
+    const layout = installMouseLayout(host);
+    const hitTesting = installWrappedMouseHitTesting(host);
+    await editor.selectRange(0, 5, 9);
+    editor.setWrap(true);
+    const scroll = layout.scroll;
+
+    try {
+      scroll.dispatchEvent(new MouseEvent("mousedown", {
+        bubbles: true, button: 0, clientX: 68, clientY: 10,
+      }));
+      window.dispatchEvent(new MouseEvent("mousemove", {
+        bubbles: true, clientX: 78, clientY: 30,
+      }));
+      window.dispatchEvent(new MouseEvent("mousemove", {
+        bubbles: true, clientX: 20, clientY: 30,
+      }));
+      window.dispatchEvent(new MouseEvent("mouseup", {
+        bubbles: true, clientX: 20, clientY: 30,
+      }));
+      await settle();
+
+      expect(doc.text()).toBe("abcDEj\nklmnopqFGHIrst");
+      expect(editor.captureViewState().caret).toEqual({ line: 1, col: 11 });
+    } finally {
+      hitTesting.restore();
+      layout.restore();
+    }
+  });
+
+  // Feature: 選択開始直後の行番号領域ドラッグ
+  // Scenario: 有効な本文ドロップ位置を得る前に行番号領域でmouseupする
+  // Given: 「abcDEFGHIj\nklmnopqrst」の5〜9列目を選択している
+  // When: 選択範囲内からドラッグを開始し、本文を経由せず行番号領域でmouseupする
+  // Then: 元の選択範囲を維持し、文書も変更しない
+  it("Scenario: 有効なドロップ位置がない行番号領域mouseupは元の選択を保つ", async () => {
+    const { editor, doc, host } = mount("abcDEFGHIj\nklmnopqrst");
+    editor.open(2, false);
+    await settle();
+    const layout = installMouseLayout(host);
+    const hitTesting = installWrappedMouseHitTesting(host);
+    await editor.selectRange(0, 5, 9);
+    editor.setWrap(true);
+    const scroll = layout.scroll;
+
+    try {
+      scroll.dispatchEvent(new MouseEvent("mousedown", {
+        bubbles: true, button: 0, clientX: 68, clientY: 10,
+      }));
+      window.dispatchEvent(new MouseEvent("mousemove", {
+        bubbles: true, clientX: 20, clientY: 10,
+      }));
+      window.dispatchEvent(new MouseEvent("mouseup", {
+        bubbles: true, clientX: 20, clientY: 10,
+      }));
+
+      expect(doc.text()).toBe("abcDEFGHIj\nklmnopqrst");
+      expect(editor.captureViewState().anchor).toEqual({ line: 0, col: 5 });
+      expect(editor.captureViewState().caret).toEqual({ line: 0, col: 9 });
+    } finally {
+      hitTesting.restore();
+      layout.restore();
+    }
   });
 
   // Given: Alt+D&Dで0〜2行目の1〜3列を矩形選択している
@@ -998,8 +1185,13 @@ describe("Feature: VirtualEditor", () => {
   // Then: revealInExplorer が実ファイルのパスで1回だけ呼ばれる
   it("Scenario: 保存済みメモの右クリックから実ファイルをExplorerで開く", async () => {
     const revealInExplorer = vi.fn();
+    const openInNewTab = vi.fn();
+    const openAs = vi.fn();
     const { editor, host } = mount("memo", undefined, {
       revealInExplorer,
+      openInNewTab,
+      openAs,
+      openInNewWindow: vi.fn(),
     });
     const dropdown = document.createElement("div");
     dropdown.id = "dropdown";
@@ -1012,6 +1204,9 @@ describe("Feature: VirtualEditor", () => {
     );
     expect([...dropdown.querySelectorAll<HTMLElement>(".dd-label")].map((element) => element.textContent)).toEqual([
       "エクスプローラで開く",
+      "新規タブで開く",
+      "新規ウィンドウで開く",
+      "形式を指定して開く ▸",
       "元に戻す",
       "やり直し",
       "切り取り",
@@ -1019,16 +1214,20 @@ describe("Feature: VirtualEditor", () => {
       "貼り付け",
       "削除",
       "すべて選択",
+      "コマンドを登録...",
       "CSVビュー",
       "Markdownビュー",
       "Imageビュー",
       "PDFビュー",
       "html(静的)",
-      "アプリで開く",
+      "Windowsアプリで開く",
     ]);
     expect(dropdown.querySelector<HTMLElement>(".dd-label")?.textContent).toBe("エクスプローラで開く");
     const editorIcons = [
       ["エクスプローラで開く", MENU_ICON.explorer],
+      ["新規タブで開く", MENU_ICON.newTab],
+      ["新規ウィンドウで開く", MENU_ICON.newWindow],
+      ["形式を指定して開く ▸", MENU_ICON.more],
       ["元に戻す", MENU_ICON.undo],
       ["やり直し", MENU_ICON.redo],
       ["切り取り", MENU_ICON.cut],
@@ -1041,20 +1240,38 @@ describe("Feature: VirtualEditor", () => {
       ["Imageビュー", MENU_ICON.image],
       ["PDFビュー", MENU_ICON.pdf],
       ["html(静的)", MENU_ICON.html],
-      ["アプリで開く", MENU_ICON.external],
+      ["Windowsアプリで開く", MENU_ICON.external],
     ] as const;
     for (const [label, icon] of editorIcons) {
       const menuItem = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
         .find((element) => element.textContent === label);
       expect(menuItem?.querySelector(`.${icon}`), label).not.toBeNull();
     }
-    expect(dropdown.querySelectorAll(".dd-sep")).toHaveLength(4);
+    expect(dropdown.querySelectorAll(".dd-sep")).toHaveLength(6);
     const item = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
       .find((element) => element.textContent === "エクスプローラで開く");
     item?.click();
     await settle();
 
     expect(revealInExplorer).toHaveBeenCalledWith("C:\\work\\memo.txt", false);
+
+    host.querySelector<HTMLElement>(".ve-scroll")!.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, clientX: 0, clientY: 0 }),
+    );
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((element) => element.textContent === "新規タブで開く")!.click();
+    await settle();
+    expect(openInNewTab).toHaveBeenCalledOnce();
+
+    host.querySelector<HTMLElement>(".ve-scroll")!.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, clientX: 0, clientY: 0 }),
+    );
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((element) => element.textContent === "形式を指定して開く ▸")!.click();
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-submenu .dd-item")]
+      .find((element) => element.textContent === ".md")!.click();
+    await settle();
+    expect(openAs).toHaveBeenCalledWith("md");
   });
 
   // Given: 外部ファイルパスと新規ウィンドウ操作がある
@@ -1120,6 +1337,30 @@ describe("Feature: VirtualEditor", () => {
       .not.toContain("エクスプローラで開く");
   });
 
+  // Given: 未保存の新規メモを表示している
+  // When: エディタ本文のコンテキストメニューを開く
+  // Then: 新規タブと形式指定は表示しない
+  it("Scenario: 未保存メモでは文書を開く操作を表示しない", async () => {
+    const { editor, host } = mount("memo", undefined, {
+      openInNewTab: vi.fn(),
+      openAs: vi.fn(),
+    });
+    const dropdown = document.createElement("div");
+    dropdown.id = "dropdown";
+    document.body.appendChild(dropdown);
+    editor.open(1, false);
+    await settle();
+
+    host.querySelector<HTMLElement>(".ve-scroll")!.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, clientX: 0, clientY: 0 }),
+    );
+
+    const labels = [...dropdown.querySelectorAll<HTMLElement>(".dd-label")]
+      .map((item) => item.textContent);
+    expect(labels).not.toContain("新規タブで開く");
+    expect(labels).not.toContain("形式を指定して開く ▸");
+  });
+
   // Given: 外部ファイルパスがあり、Explorer起動がError("explorer failed")で拒否される
   // When: 保存済みメモの右クリックから「エクスプローラで開く」をクリックする
   // Then: エディタのエラー境界から「エクスプローラで開けませんでした」を通知する
@@ -1152,6 +1393,9 @@ describe("Feature: VirtualEditor", () => {
   it("Scenario: 閲覧専用メモの右クリック項目を編集なしで並べる", async () => {
     const { editor, host } = mount("memo", undefined, {
       revealInExplorer: vi.fn(),
+      openInNewTab: vi.fn(),
+      openInNewWindow: vi.fn(),
+      openAs: vi.fn(),
     });
     const dropdown = document.createElement("div");
     dropdown.id = "dropdown";
@@ -1165,16 +1409,20 @@ describe("Feature: VirtualEditor", () => {
 
     expect([...dropdown.querySelectorAll<HTMLElement>(".dd-label")].map((item) => item.textContent)).toEqual([
       "エクスプローラで開く",
+      "新規タブで開く",
+      "新規ウィンドウで開く",
+      "形式を指定して開く ▸",
       "コピー",
       "すべて選択",
+      "コマンドを登録...",
       "CSVビュー",
       "Markdownビュー",
       "Imageビュー",
       "PDFビュー",
       "html(静的)",
-      "アプリで開く",
+      "Windowsアプリで開く",
     ]);
-    expect(dropdown.querySelectorAll(".dd-sep")).toHaveLength(3);
+    expect(dropdown.querySelectorAll(".dd-sep")).toHaveLength(5);
     for (const [label, icon] of [
       ["エクスプローラで開く", MENU_ICON.explorer],
       ["コピー", MENU_ICON.copy],
@@ -1184,7 +1432,7 @@ describe("Feature: VirtualEditor", () => {
       ["Imageビュー", MENU_ICON.image],
       ["PDFビュー", MENU_ICON.pdf],
       ["html(静的)", MENU_ICON.html],
-      ["アプリで開く", MENU_ICON.external],
+      ["Windowsアプリで開く", MENU_ICON.external],
     ] as const) {
       const item = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
         .find((element) => element.textContent === label);
@@ -1213,15 +1461,124 @@ describe("Feature: VirtualEditor", () => {
       .not.toContain("エクスプローラで開く");
   });
 
-  // Given: 文書が「https://example.com」、選択範囲がURL全体、promptFields が「ブラウザ」「open {string}」を返し、外部パスが「C:\work\memo.txt」
+  // Feature: エディタの登録コマンド
+  // Scenario: 選択範囲がない保存済みファイルへファイル用コマンドを表示する
+  // Given: ファイル用の登録コマンドと保存済みファイルがある
+  // When: エディタ本文の右クリックから登録コマンドを実行する
+  // Then: {file}を現在のファイルパスへ置換して実行する
+  it("Scenario: エディタの右クリックでファイル用登録コマンドを実行する", async () => {
+    loadSettings.mockResolvedValue(JSON.stringify({
+      registeredCommands: [{ label: "VS Code", prefix: "", command: 'code "{file}"' }],
+    }));
+    await initSettings();
+    const runExternalCommand = vi.fn(async () => {});
+    const { editor, host } = mount("memo", undefined, {
+      registeredCommandPorts: {
+        promptFields: async () => null,
+        runExternalCommand,
+      },
+    });
+    const dropdown = document.createElement("div");
+    dropdown.id = "dropdown";
+    document.body.appendChild(dropdown);
+    editor.open(1, false, false, "C:\\work\\memo.md");
+    await settle();
+
+    host.querySelector<HTMLElement>(".ve-scroll")!.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, clientX: 0, clientY: 0 }),
+    );
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "登録コマンド（ファイル） ▸")!.click();
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-submenu .dd-item")]
+      .find((item) => item.textContent?.startsWith("VS Code"))!.click();
+
+    await vi.waitFor(() => expect(runExternalCommand).toHaveBeenCalledWith(
+      'code "C:\\work\\memo.md"',
+      "C:\\work\\memo.md",
+    ));
+  });
+
+  // Feature: エディタの登録文字列
+  // Scenario: 選択範囲をサブメニューからダイアログで登録し、既存項目を編集・削除する
+  // Given: エディタに「before」が表示され、登録文字列のダイアログ入力が用意されている
+  // When: 選択範囲を登録文字列サブメニューから登録し、既存の登録文字列を歯車で編集して×で削除する
+  // Then: 登録・編集は共通ダイアログを通り、追加は選択時だけ既存項目の後ろに表示する
+  it("Scenario: 右クリックの登録文字列をダイアログで管理する", async () => {
+    loadSettings.mockResolvedValue(JSON.stringify({ registeredStrings: ["before"] }));
+    await initSettings();
+    const promptFields = vi.fn(async (...args: Parameters<typeof promptFieldsImpl>) => {
+      if (args[0] === "登録文字列を登録") {
+        expect(args[1][0].value).toBe("before");
+        return ["after"];
+      }
+      expect(args[0]).toBe("登録文字列を編集");
+      expect(args[1][0].value).toBe("before");
+      return ["edited"];
+    });
+    const { editor, host } = mount("before", undefined, {
+      registeredCommandPorts: {
+        promptFields,
+        runExternalCommand: vi.fn(async () => {}),
+      },
+    });
+    const dropdown = document.createElement("div");
+    dropdown.id = "dropdown";
+    document.body.appendChild(dropdown);
+    editor.open(1, false, false, "C:\\work\\memo.md");
+    await settle();
+
+    const showContextMenu = () => host.querySelector<HTMLElement>(".ve-scroll")!.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, clientX: 0, clientY: 0 }),
+    );
+    await editor.selectRange(0, 0, 6);
+    showContextMenu();
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "登録文字列 ▸")!.click();
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-submenu .dd-item")]
+      .find((item) => item.textContent === "選択範囲を登録文字列に追加")!.click();
+    await vi.waitFor(() => expect(promptFields).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(loadRegisteredStrings()).toEqual(["before", "after"]));
+
+    showContextMenu();
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "登録文字列 ▸")!.click();
+    const registeredItem = [...dropdown.querySelectorAll<HTMLElement>(".dd-submenu .dd-item")]
+      .find((item) => item.textContent?.startsWith("before"))!;
+    expect([...dropdown.querySelectorAll<HTMLElement>(".dd-submenu .dd-item")].at(-1)?.textContent)
+      .toBe("選択範囲を登録文字列に追加");
+    expect([...registeredItem.querySelectorAll<HTMLButtonElement>(".dd-trailing")]
+      .map((button) => button.textContent)).toEqual(["⚙", "×"]);
+    registeredItem.querySelectorAll<HTMLButtonElement>(".dd-trailing")[0].click();
+    await vi.waitFor(() => expect(loadRegisteredStrings()).toEqual(["edited", "after"]));
+
+    showContextMenu();
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "登録文字列 ▸")!.click();
+    const editedItem = [...dropdown.querySelectorAll<HTMLElement>(".dd-submenu .dd-item")]
+      .find((item) => item.textContent?.startsWith("edited"))!;
+    editedItem.querySelectorAll<HTMLButtonElement>(".dd-trailing")[1].click();
+    await vi.waitFor(() => expect(loadRegisteredStrings()).toEqual(["after"]));
+
+    editor.goTo(0, 0);
+    showContextMenu();
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "登録文字列 ▸")!.click();
+    expect([...dropdown.querySelectorAll<HTMLElement>(".dd-submenu .dd-item")]
+      .map((item) => item.textContent)).not.toContain("選択範囲を登録文字列に追加");
+  });
+
+  // Given: 文書が「https://example.com」、選択範囲がURL全体、promptFields が「ブラウザ」「open {string_in_url}」を返し、外部パスが「C:\work\memo.txt」
   // When: 「コマンドを登録...」を選び、登録されたコマンドを選んで実行し、その後実行失敗も発生させる
-  // Then: 第2入力欄のラベルがplaceholderの説明付きで、成功時に runExternalCommand('open https://example.com', 'C:\work\memo.txt') が呼ばれ、失敗時に「登録コマンドを実行できませんでした」と Error を含むイベントが通知される
+  // Then: 第2入力欄のラベルがplaceholderの説明付きで、成功時にURLエンコードした文字列が実行され、失敗時に「登録コマンドを実行できませんでした」と Error を含むイベントが通知される
   it("Scenario: メモビューの登録コマンドへ選択文字列を渡す", async () => {
-    const promptFields = vi.fn(async () => ["ブラウザ", "open {string}"]);
+    const promptFields = vi.fn(async () => ["ブラウザ", "open {string_in_url}"]);
     const runExternalCommand = vi.fn(async () => {});
     const registeredCommandPorts: RegisteredCommandMenuPorts = { promptFields, runExternalCommand };
     const { editor, host, events } = mount("https://example.com", undefined, {
       revealInExplorer: vi.fn(),
+      openInNewTab: vi.fn(),
+      openInNewWindow: vi.fn(),
+      openAs: vi.fn(),
       registeredCommandPorts,
     });
     const dropdown = document.createElement("div");
@@ -1242,6 +1599,9 @@ describe("Feature: VirtualEditor", () => {
     showContextMenu();
     expect([...dropdown.querySelectorAll<HTMLElement>(".dd-label")].map((item) => item.textContent)).toEqual([
       "エクスプローラで開く",
+      "新規タブで開く",
+      "新規ウィンドウで開く",
+      "形式を指定して開く ▸",
       "元に戻す",
       "やり直し",
       "切り取り",
@@ -1256,7 +1616,7 @@ describe("Feature: VirtualEditor", () => {
       "Imageビュー",
       "PDFビュー",
       "html(静的)",
-      "アプリで開く",
+      "Windowsアプリで開く",
     ]);
     for (const [label, icon] of [
       ["エクスプローラで開く", MENU_ICON.explorer],
@@ -1276,19 +1636,19 @@ describe("Feature: VirtualEditor", () => {
 
     showContextMenu();
     [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
-      .find((item) => item.textContent === "登録コマンド ▸")!.click();
+      .find((item) => item.textContent === "登録コマンド（選択文字列） ▸")!.click();
     const commandItem = dropdown.querySelector<HTMLElement>(".dd-submenu .dd-item");
     commandItem?.click();
 
     await vi.waitFor(() => expect(runExternalCommand).toHaveBeenCalledWith(
-      "open https://example.com",
+      "open https%3A%2F%2Fexample.com",
       "C:\\work\\memo.txt",
     ));
 
     runExternalCommand.mockRejectedValueOnce(new Error("command failed"));
     showContextMenu();
     [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
-      .find((item) => item.textContent === "登録コマンド ▸")!.click();
+      .find((item) => item.textContent === "登録コマンド（選択文字列） ▸")!.click();
     dropdown.querySelector<HTMLElement>(".dd-submenu .dd-item")!.click();
     await vi.waitFor(() => expect(events.errors).toContainEqual({
       message: "登録コマンドを実行できませんでした",

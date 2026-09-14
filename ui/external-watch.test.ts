@@ -93,6 +93,7 @@ describe("Feature: ExternalWatch", () => {
       byte_len: 99,
       is_huge: false,
       modified_at: 1730000000000,
+      effective_extension: null,
     } satisfies api.DocInfo;
     vi.spyOn(api, "ackExternal").mockResolvedValueOnce(acknowledged);
 

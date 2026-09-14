@@ -22,13 +22,13 @@ export function relativePathFromRoot(root: string, absolutePath: string): string
   return absolutePath.slice(root.length).replace(/^[\\/]/, "").replace(/\\/g, "/");
 }
 
-function comparable(path: string): string {
+export function comparablePath(path: string): string {
   return path.replace(/\\/g, "/").replace(/\/+$/, "").toLocaleLowerCase("en-US");
 }
 
 export function relativePathWithinRoot(root: string, absolutePath: string): string | null {
-  const normalizedRoot = comparable(root);
-  const normalizedPath = comparable(absolutePath);
+  const normalizedRoot = comparablePath(root);
+  const normalizedPath = comparablePath(absolutePath);
   if (normalizedPath !== normalizedRoot && !normalizedPath.startsWith(`${normalizedRoot}/`)) return null;
   return absolutePath.replace(/\\/g, "/").slice(root.replace(/\\/g, "/").replace(/\/+$/, "").length).replace(/^\//, "");
 }
@@ -58,7 +58,7 @@ export function movedRelativePath(
 }
 
 export function isDescendantPath(path: string, parent: string): boolean {
-  const normalizedPath = path.replace(/\\/g, "/").replace(/\/$/, "").toLocaleLowerCase("en-US");
-  const normalizedParent = parent.replace(/\\/g, "/").replace(/\/$/, "").toLocaleLowerCase("en-US");
+  const normalizedPath = comparablePath(path);
+  const normalizedParent = comparablePath(parent);
   return normalizedPath.startsWith(`${normalizedParent}/`);
 }

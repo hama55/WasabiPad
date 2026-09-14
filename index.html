@@ -58,31 +58,34 @@
     <button id="preview-toggle" title="プレビューを開く">&#xE76C;</button>
   </div>
   <div id="statusbar">
-    <span id="st-mode"></span>
-    <span id="st-binary" title="バイナリファイルのため編集できません" hidden></span>
-    <label id="st-delimiter" hidden title="CSV区切り文字">区切り <input id="st-delimiter-input" value="," aria-label="CSV区切り文字" /></label>
-    <button id="st-pos" title="指定行へ移動">1行 1列</button>
-    <span class="st-sep" aria-hidden="true"></span>
-    <span id="st-size"></span>
-    <span class="st-sep" aria-hidden="true"></span>
-    <span id="st-modified" title="ファイル保存日時"></span>
-    <span class="st-sep" aria-hidden="true"></span>
-    <button id="st-lines" title="最後の行へ移動">1 行</button>
-    <span class="st-spacer"></span>
-    <button id="st-font" title="フォントを変更"></button>
-    <button id="st-font-size" title="フォントサイズを変更"></button>
-    <span class="st-sep" aria-hidden="true"></span>
-    <select id="st-indent" title="タブの表示幅">
-    </select>
-    <span class="st-sep" aria-hidden="true"></span>
-    <button id="st-wrap" title="折り返し切替">折り返し: オフ</button>
-    <span class="st-sep" aria-hidden="true"></span>
-    <select id="st-source-enc" title="読込文字コード">
-    </select>
-    <span class="st-sep" aria-hidden="true"></span>
-    <span id="st-eol" title="読込改行コード"></span>
-    <span class="st-sep" aria-hidden="true"></span>
-    <button id="st-theme" title="配色モード切替"></button>
+    <div id="file-statusbar">
+      <span id="st-size"></span>
+      <span class="st-sep" aria-hidden="true"></span>
+      <span id="st-modified" title="ファイル保存日時"></span>
+    </div>
+    <div id="editing-statusbar">
+      <span id="st-mode"></span>
+      <span id="st-binary" title="バイナリファイルのため編集できません" hidden></span>
+      <label id="st-delimiter" hidden title="CSV区切り文字">区切り <input id="st-delimiter-input" value="," aria-label="CSV区切り文字" /></label>
+      <button id="st-pos" title="指定行へ移動">1行 1列</button>
+      <span class="st-sep" aria-hidden="true"></span>
+      <button id="st-lines" title="最後の行へ移動">1 行</button>
+      <span class="st-spacer"></span>
+      <select id="st-font" title="フォントを変更" aria-label="フォント">
+      </select>
+      <select id="st-font-size" title="フォントサイズを変更" aria-label="フォントサイズ">
+      </select>
+      <span class="st-sep" aria-hidden="true"></span>
+      <select id="st-indent" title="タブの表示幅">
+      </select>
+      <span class="st-sep" aria-hidden="true"></span>
+      <button id="st-wrap" title="折り返し切替">折り返し: オフ</button>
+      <span class="st-sep" aria-hidden="true"></span>
+      <select id="st-source-enc" title="読込文字コード">
+      </select>
+      <span class="st-sep" aria-hidden="true"></span>
+      <span id="st-eol" title="読込改行コード"></span>
+    </div>
   </div>
   <div id="dropdown" hidden></div>
   <script type="module" src="/ui/main.ts"></script>

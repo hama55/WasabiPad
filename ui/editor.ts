@@ -11,8 +11,11 @@ import {
   createRegisteredCommandMenu,
   type RegisteredCommandMenuPorts,
 } from "./registered-command-menu";
+import { commandsForKind } from "./registered-commands";
 import { MENU_ICON } from "./menu-icons";
 import { MENU_LABELS } from "./menu-labels";
+import { REGISTERED_COMMAND_LABELS } from "./registered-command-model";
+import { createOpenAsMenu } from "./open-as-menu";
 import { viewerFormatIcon, VIEWER_FORMAT_LABELS } from "./format";
 import { viewerFormatForPath } from "./viewer-formats";
 import { LineCache } from "./line-cache";
@@ -22,11 +25,11 @@ import { lineNumberGroups } from "./line-number";
 import { blockRangeForLine, Selection } from "./selection";
 import { MAX_SAFE_HEIGHT, ViewportMetrics } from "./viewport-metrics";
 import {
-  addRegisteredString,
   loadRegisteredStrings,
   registeredStringLabel,
   removeRegisteredString,
 } from "./registered-strings";
+import { promptAndSaveRegisteredString } from "./registered-string-dialog";
 import { flushSettings } from "./settings";
 import {
   charClass,
@@ -42,6 +45,7 @@ import {
 } from "./editor-math";
 import type { EditorViewState } from "./editor-view-state";
 import { selectedLineRange } from "./editor-edit-plan";
+import type { SearchHighlightQuery } from "./workspace-search-options";
 
 const OVERSCAN = 8;
 
@@ -61,7 +65,9 @@ export interface EditorPorts {
   onCursor: (line: number, col: number) => void;
   onFontChange: (fontFamily: string, fontSize: number, changed: "family" | "size" | "both") => void;
   openExternally: (path: string) => void | Promise<unknown>;
+  openInNewTab?: () => void | Promise<unknown>;
   openInNewWindow?: (path: string) => void | Promise<unknown>;
+  openAs?: (openAs: api.OpenAs) => void | Promise<unknown>;
   registeredCommandPorts: RegisteredCommandMenuPorts;
   revealInExplorer?: (path: string, isDir: boolean) => void | Promise<unknown>;
   onError: (message: string, error: unknown) => Promise<void>;
@@ -125,7 +131,7 @@ export class VirtualEditor {
   private mutation: EditorMutationController;
   private findGen = 0; // 検索ループの世代。closeやEnter連打で古いループを打ち切るため
   private lastFindMatch: { start: Pos; end: Pos; pat: string; matchCase: boolean } | null = null; // 連続置換が対象にしてよい直前の一致
-  private activeFind: { pat: string; matchCase: boolean; useRegex: boolean; wholeWord: boolean } | null = null;
+  private activeFind: SearchHighlightQuery | null = null;
   private findHighlights: api.FindResult[] = [];
   private findHighlightRequestKey = "";
   private findHighlightGeneration = 0;
@@ -135,9 +141,12 @@ export class VirtualEditor {
   private onCursor: (line: number, col: number) => void;
   private onFontChange: (fontFamily: string, fontSize: number, changed: "family" | "size" | "both") => void;
   private externalFilePath: string | null = null;
+  private registeredCommandPath: string | null = null;
   private markdown = false;
   private openExternally: (path: string) => void | Promise<unknown>;
+  private openInNewTab?: () => void | Promise<unknown>;
   private openInNewWindow?: (path: string) => void | Promise<unknown>;
+  private openAs?: (openAs: api.OpenAs) => void | Promise<unknown>;
   private registeredCommandPorts: RegisteredCommandMenuPorts;
   private revealInExplorer?: (path: string, isDir: boolean) => void | Promise<unknown>;
   private onError: (message: string, error: unknown) => Promise<void>;
@@ -184,7 +193,9 @@ export class VirtualEditor {
     this.onCursor = ports.onCursor;
     this.onFontChange = ports.onFontChange;
     this.openExternally = ports.openExternally;
+    this.openInNewTab = ports.openInNewTab;
     this.openInNewWindow = ports.openInNewWindow;
+    this.openAs = ports.openAs;
     this.registeredCommandPorts = ports.registeredCommandPorts;
     this.revealInExplorer = ports.revealInExplorer;
     this.onError = ports.onError;
@@ -309,6 +320,7 @@ export class VirtualEditor {
     window.visualViewport?.addEventListener("scroll", () => this.syncImeAnchorAfterLayout());
 
     new ResizeObserver(() => {
+      if (!this.hasUsableViewport()) return;
       const topLine = this.wrap || this.metrics.scaleMode ? this.topLineF : this.pxToLine(this.scroll.scrollTop);
       const intraLinePx = this.wrapIntraLinePx;
       const wasAtBottom = topLine >= this.maxTopLine();
@@ -337,6 +349,7 @@ export class VirtualEditor {
     this.dragCleanup?.();
     this.clearDragCaret();
     this.externalFilePath = externalFilePath;
+    this.registeredCommandPath = externalFilePath;
     this.markdown = markdown;
     this.rectangularClipboard.clear();
     this.documentGeneration++;
@@ -374,7 +387,12 @@ export class VirtualEditor {
     markdown = viewerFormatForPath(path ?? "") === "markdown",
   ) {
     this.externalFilePath = path;
+    this.registeredCommandPath = path;
     this.markdown = markdown;
+  }
+
+  setRegisteredCommandPath(path: string | null) {
+    this.registeredCommandPath = path;
   }
 
   focus() {
@@ -428,6 +446,7 @@ export class VirtualEditor {
 
   syncWindowGeometry() {
     this.syncImeAnchorAfterLayout();
+    this.schedule();
     window.clearTimeout(this.imeBlurTimer);
     this.imeBlurTimer = undefined;
     if (document.activeElement !== this.input) {
@@ -717,6 +736,10 @@ export class VirtualEditor {
     });
   }
 
+  private hasUsableViewport(): boolean {
+    return this.scroll.clientWidth > 0 && this.scroll.clientHeight > 0;
+  }
+
   private onScroll() {
     if (this.wrap && this.scrollbarDragging) {
       const anchor = this.wrapAnchorFromPx(this.scroll.scrollTop);
@@ -730,6 +753,7 @@ export class VirtualEditor {
   }
 
   private render() {
+    if (!this.hasUsableViewport()) return;
     const top = this.scroll.scrollTop;
     const h = this.scroll.clientHeight;
     const topLine = Math.round(this.topLineF);
@@ -1184,6 +1208,19 @@ export class VirtualEditor {
     this.activeFind = next;
     this.invalidateFindHighlights();
     this.schedule();
+  }
+
+  captureFindHighlightQuery(): SearchHighlightQuery | null {
+    return this.activeFind ? { ...this.activeFind } : null;
+  }
+
+  restoreFindHighlightQuery(query: SearchHighlightQuery | null) {
+    this.setFindHighlightQuery(
+      query?.pat ?? "",
+      query?.matchCase ?? false,
+      query?.useRegex ?? false,
+      query?.wholeWord ?? false,
+    );
   }
 
   private invalidateFindHighlights() {
@@ -1954,8 +1991,8 @@ export class VirtualEditor {
         const upSelection = (ev: MouseEvent) => {
           try {
             updateSelectionDrag(ev);
-            if (dragging && drop) {
-              if (cmp(drop, s) >= 0 && cmp(drop, end) <= 0) {
+            if (dragging) {
+              if (!drop || (cmp(drop, s) >= 0 && cmp(drop, end) <= 0)) {
                 this.sel.anchor = originalAnchor;
                 this.sel.caret = originalCaret;
                 this.render();
@@ -2011,8 +2048,10 @@ export class VirtualEditor {
   }
 
   private posFromPoint(cx: number, cy: number): Pos | null {
+    const hit = document.elementFromPoint?.(cx, cy);
+    if (hit?.closest(".ve-gutter")) return null;
     if (this.wrap) {
-      const target = document.elementFromPoint?.(cx, cy)?.closest<HTMLElement>(".ve-line");
+      const target = hit?.closest<HTMLElement>(".ve-line");
       if (!target?.dataset.line) {
         // 行のない空白 (新規メモの本文下など) でもクリックを捨てず、文書末尾へ置く。
         const line = this.lineCount - 1;
@@ -2061,7 +2100,9 @@ export class VirtualEditor {
     this.focus();
     const items: MenuItem[] = [];
     const commandPath = this.externalFilePath;
-    const hasOpenItems = Boolean(commandPath && (this.revealInExplorer || this.openInNewWindow));
+    const hasOpenItems = Boolean(commandPath && (
+      this.revealInExplorer || this.openInNewTab || this.openInNewWindow || this.openAs
+    ));
     if (commandPath && this.revealInExplorer) {
       items.push({
         label: MENU_LABELS.explorer,
@@ -2069,11 +2110,27 @@ export class VirtualEditor {
         action: () => this.dispatch("エクスプローラで開けませんでした", () => this.revealInExplorer?.(commandPath, false)),
       });
     }
+    if (commandPath && this.openInNewTab) {
+      items.push({
+        label: MENU_LABELS.newTab,
+        iconClass: MENU_ICON.newTab,
+        sep: Boolean(this.revealInExplorer),
+        action: () => this.dispatch("新規タブで開けませんでした", () => this.openInNewTab?.()),
+      });
+    }
     if (commandPath && this.openInNewWindow) {
       items.push({
         label: MENU_LABELS.newWindow,
         iconClass: MENU_ICON.newWindow,
         action: () => this.dispatch("新規ウィンドウで開けませんでした", () => this.openInNewWindow?.(commandPath)),
+      });
+    }
+    if (commandPath && this.openAs) {
+      items.push({
+        ...createOpenAsMenu((openAs) => this.dispatch(
+          "指定した形式で開けませんでした",
+          () => this.openAs?.(openAs),
+        )),
       });
     }
     if (!this.readOnly) {
@@ -2105,44 +2162,63 @@ export class VirtualEditor {
       customStarted = true;
     };
     if (!this.readOnly) {
-      if (this.sel.hasSel()) addCustomItem({
+      const addRegisteredString: MenuItem = {
         label: "選択範囲を登録文字列に追加",
         iconClass: MENU_ICON.registeredString,
         action: () => this.dispatch("登録文字列に追加できませんでした", () => this.addSelectionAsRegisteredString()),
-      });
+      };
       const registered = loadRegisteredStrings();
       if (registered.length) {
         addCustomItem({
           label: "登録文字列",
           iconClass: MENU_ICON.registeredString,
-          sub: registered.map((text) => ({
-            label: registeredStringLabel(text),
-            iconClass: MENU_ICON.registeredString,
-            action: () => this.dispatch("登録文字列を挿入できませんでした", () => this.insertText(text)),
-            trailing: {
-              label: "×",
-              title: "登録文字列を削除",
-              action: () => this.dispatch("登録文字列を削除できませんでした", async () => {
-                removeRegisteredString(text);
-                await flushSettings();
-              }),
-            },
-          })),
+          sub: [
+            ...registered.map((text) => ({
+              label: registeredStringLabel(text),
+              iconClass: MENU_ICON.registeredString,
+              action: () => this.dispatch("登録文字列を挿入できませんでした", () => this.insertText(text)),
+              trailing: [
+                {
+                  label: "⚙",
+                  title: "この登録文字列を編集",
+                  action: () => this.dispatch("登録文字列を編集できませんでした", () => this.editRegisteredString(text)),
+                },
+                {
+                  label: "×",
+                  title: "登録文字列を削除",
+                  action: () => this.dispatch("登録文字列を削除できませんでした", async () => {
+                    removeRegisteredString(text);
+                    await flushSettings();
+                  }),
+                },
+              ],
+            })),
+            ...(this.sel.hasSel() ? [{ ...addRegisteredString, sep: true }] : []),
+          ],
         });
+      } else if (this.sel.hasSel()) {
+        addCustomItem(addRegisteredString);
       }
     }
-    if (this.sel.hasSel() && commandPath) {
-      const [start, end] = this.sel.norm();
-      addCustomItem({
-        ...createRegisteredCommandMenu({
-          path: commandPath,
+    if (this.registeredCommandPath) {
+      const registeredCommandServices = {
+        ...this.registeredCommandPorts,
+        run: (title: string, operation: () => void | Promise<unknown>) => this.dispatch(title, operation),
+      };
+      const hasFileCommands = commandsForKind("file").length > 0;
+      const fileMenu = createRegisteredCommandMenu({ path: this.registeredCommandPath, valueKind: "file" }, registeredCommandServices);
+      if (hasFileCommands) fileMenu.label = REGISTERED_COMMAND_LABELS.file;
+      if (!this.sel.hasSel() || hasFileCommands) addCustomItem(fileMenu);
+      if (this.sel.hasSel()) {
+        const [start, end] = this.sel.norm();
+        const stringMenu = createRegisteredCommandMenu({
+          path: this.registeredCommandPath,
           value: () => this.sel.blockBounds() ? this.blockText() : this.lineCache.textInRange(start, end),
           valueKind: "string",
-        }, {
-          ...this.registeredCommandPorts,
-          run: (title, operation) => this.dispatch(title, operation),
-        }),
-      });
+        }, registeredCommandServices);
+        if (commandsForKind("string").length) stringMenu.label = REGISTERED_COMMAND_LABELS.string;
+        addCustomItem(stringMenu);
+      }
     }
     const viewerFormats = Object.entries(VIEWER_FORMAT_LABELS) as [api.ViewerFormat, string][];
     items.push(
@@ -2157,7 +2233,7 @@ export class VirtualEditor {
       items.push({
         label: MENU_LABELS.external,
         iconClass: MENU_ICON.external,
-        action: () => this.dispatch("アプリで開けませんでした", () => this.openExternally(commandPath)),
+        action: () => this.dispatch("Windowsアプリで開けませんでした", () => this.openExternally(commandPath)),
         sep: true,
       });
     }
@@ -2170,8 +2246,16 @@ export class VirtualEditor {
 
   private async addSelectionAsRegisteredString() {
     const [start, end] = this.sel.norm();
-    addRegisteredString(await this.lineCache.textInRange(start, end));
-    await flushSettings();
+    const selected = await this.lineCache.textInRange(start, end);
+    await promptAndSaveRegisteredString(
+      this.registeredCommandPorts.promptFields,
+      undefined,
+      selected,
+    );
+  }
+
+  private async editRegisteredString(previous: string) {
+    await promptAndSaveRegisteredString(this.registeredCommandPorts.promptFields, previous);
   }
 
   // ---- ガター(行番号) ----

@@ -2,4 +2,4 @@
 import type { ViewerFormat } from "./ViewerFormat";
 import type { ViewerSelection } from "./ViewerSelection";
 
-export type ViewerPayload = { format: ViewerFormat, text: string, selection: ViewerSelection | null, source_path: string | null, archive_path: string | null, archive_entry: string | null, };
+export type ViewerPayload = { format: ViewerFormat, text: string, selection: ViewerSelection | null, source_path: string | null, effective_extension: string | null, archive_path: string | null, archive_entry: string | null, };

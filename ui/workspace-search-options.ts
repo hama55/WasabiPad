@@ -41,6 +41,14 @@ export const DEFAULT_SEARCH_OPTIONS: WorkspaceSearchOptions = {
   workers: 0,
 };
 
+// 検索結果を開いた文書全体へ表示する一致条件。検索窓とエディタで同じ条件を使う。
+export interface SearchHighlightQuery {
+  pat: string;
+  matchCase: boolean;
+  useRegex: boolean;
+  wholeWord: boolean;
+}
+
 // 項目のキーは型から引く。画面ごとに手で並べると、項目を足したときに片方だけ古くなる
 type KeysOfType<T> = {
   [K in keyof WorkspaceSearchOptions]: WorkspaceSearchOptions[K] extends T ? K : never;

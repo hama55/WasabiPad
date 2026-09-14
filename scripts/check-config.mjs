@@ -1,30 +1,10 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { workspaceVersion } from "./version.mjs";
+import { assertSynchronizedVersions, read } from "./version.mjs";
 
-const root = resolve(import.meta.dirname, "..");
-const read = (path) => readFileSync(resolve(root, path), "utf8");
-const packageJson = JSON.parse(read("package.json"));
-const packageLock = JSON.parse(read("package-lock.json"));
+const versions = assertSynchronizedVersions();
 const tauri = JSON.parse(read("src-tauri/tauri.conf.json"));
 const appConfig = JSON.parse(read("app-config.json"));
 const vite = read("vite.config.ts");
 const uiAppConfig = read("ui/app-config.ts");
-
-const cargoVersion = workspaceVersion();
-// package-lock も sync:version が書き換える対象なので、同期漏れをここで検出する
-const versions = new Set([
-  packageJson.version,
-  packageLock.version,
-  packageLock.packages[""].version,
-  tauri.version,
-  cargoVersion,
-]);
-if (versions.size !== 1) {
-  throw new Error(
-    `Version mismatch: package=${packageJson.version}, lock=${packageLock.version}/${packageLock.packages[""].version}, tauri=${tauri.version}, cargo=${cargoVersion}`
-  );
-}
 
 const devPort = Number(new URL(tauri.build.devUrl).port);
 const vitePort = vite.includes("port: DEV_PORT") && uiAppConfig.includes('from "../app-config.json"')
@@ -65,4 +45,4 @@ if (viewerTitle !== expectedViewerTitle) {
   throw new Error(`Viewer title mismatch: expected ${expectedViewerTitle}, received ${viewerTitle ?? "<not found>"}`);
 }
 
-console.log(`Config OK: ${appName} version ${packageJson.version}, development port ${devPort}.`);
+console.log(`Config OK: ${appName} version ${versions.package}, development port ${devPort}.`);

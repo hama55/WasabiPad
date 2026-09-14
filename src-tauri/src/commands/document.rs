@@ -3,8 +3,8 @@ use tauri::{AppHandle, Emitter};
 
 use wasabipad_core::{
     Doc, DocInfo, EditManyItem, EditManyResult, EditResult, EncodingId, Eol, ExternalCheck,
-    ExternalMergePreview, FindCursor, FindOutcome, FindResult, FolderEntry, PosC,
-    ReplaceChunkResult, SaveOutcome,
+    ExternalMergePreview, FindCursor, FindOutcome, FindResult, FolderEntry, OpenAs, PosC,
+    PreviewCache, ReplaceChunkResult, SaveOutcome,
 };
 
 use crate::state::{with_doc, State};
@@ -19,7 +19,12 @@ struct DocumentLoadProgress {
     percent: u8,
 }
 
-pub(crate) fn open_path(path: String, state: State, app: AppHandle) -> Result<DocInfo, String> {
+pub(crate) fn open_path(
+    path: String,
+    open_as: Option<OpenAs>,
+    state: State,
+    app: AppHandle,
+) -> Result<DocInfo, String> {
     let mut report = |loaded: u64, total: u64| {
         let percent = if total == 0 {
             100
@@ -33,7 +38,7 @@ pub(crate) fn open_path(path: String, state: State, app: AppHandle) -> Result<Do
             eprintln!("文書読み込み進捗の通知に失敗しました: {error}");
         }
     };
-    let mut d = Doc::open_with_progress(&PathBuf::from(&path), Some(&mut report))
+    let mut d = Doc::open_with_progress_as(&PathBuf::from(&path), open_as, Some(&mut report))
         .map_err(|e| e.to_string())?;
     // フォルダを開いた場合 d.path は先頭の実ファイルを指す (フォルダ自体は保存先を持たない)
     let info_path = d
@@ -64,8 +69,17 @@ pub(crate) fn line_char_len(line: usize, state: State) -> Result<usize, String> 
     with_doc(&state, |doc| doc.line_char_len(line))
 }
 
-pub(crate) fn select_entry(rel_path: String, state: State) -> Result<DocInfo, String> {
-    let result = with_doc(&state, |doc| doc.select_entry(&rel_path))?;
+pub(crate) fn select_entry(
+    rel_path: String,
+    open_as: Option<OpenAs>,
+    cache_directory: Option<String>,
+    state: State,
+) -> Result<DocInfo, String> {
+    let cache = preview_cache(cache_directory);
+    let result = with_doc(&state, |doc| match open_as {
+        Some(open_as) => doc.select_entry_as_with_cache(&rel_path, open_as, cache.as_ref()),
+        None => doc.select_entry_with_cache(&rel_path, cache.as_ref()),
+    })?;
     result
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "no entry".into())
@@ -108,7 +122,7 @@ pub(crate) fn create_note(
         .map_err(|e| e.to_string())
 }
 
-pub(crate) fn create_folder(rel_dir: String, name: String, state: State) -> Result<(), String> {
+pub(crate) fn create_folder(rel_dir: String, name: String, state: State) -> Result<String, String> {
     with_doc(&state, |doc| doc.create_folder(&rel_dir, &name))?
         .map_err(|e| e.to_string())
 }
@@ -353,9 +367,32 @@ pub(crate) fn reload_with_encoding(enc: EncodingId, state: State) -> Result<DocI
 pub(crate) fn read_archive_asset(
     archive_path: String,
     entry: String,
+    cache_directory: Option<String>,
     state: State,
 ) -> Result<Vec<u8>, String> {
     let archive = PathBuf::from(archive_path);
-    with_doc(&state, |doc| doc.read_archive_asset(&archive, &entry))?
+    let cache = preview_cache(cache_directory);
+    let plan = with_doc(&state, |doc| doc.prepare_archive_asset_read(&archive, &entry))?
+        .map_err(|error| error.to_string())?;
+    plan.read_with_cache(cache.as_ref())
         .map_err(|error| error.to_string())
+}
+
+pub(crate) fn read_file_asset(
+    path: String,
+    cache_directory: Option<String>,
+    state: State,
+) -> Result<Vec<u8>, String> {
+    let path = PathBuf::from(path);
+    let cache = preview_cache(cache_directory);
+    with_doc(&state, |doc| doc.read_file_asset_with_cache(&path, cache.as_ref()))?
+        .map_err(|error| error.to_string())
+}
+
+fn preview_cache(cache_directory: Option<String>) -> Option<PreviewCache> {
+    let root = cache_directory
+        .filter(|directory| !directory.trim().is_empty())
+        .map(PathBuf::from)
+        .or_else(|| PreviewCache::default_root().ok())?;
+    Some(PreviewCache::new(root))
 }

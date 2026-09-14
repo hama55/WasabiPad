@@ -37,7 +37,17 @@ export interface RegisteredCommandTarget {
   valueKind?: CommandValueKind;
 }
 
-type RegisteredCommandValues = Pick<RegisteredCommand, "label" | "prefix" | "command">;
+export type RegisteredCommandValues = Pick<RegisteredCommand, "label" | "prefix" | "command">;
+
+export async function saveRegisteredCommand(
+  kind: CommandValueKind,
+  value: RegisteredCommandValues,
+  previous?: RegisteredCommand,
+): Promise<void> {
+  if (previous === undefined) addRegisteredCommand({ valueKind: kind, ...value });
+  else updateRegisteredCommand(previous, value);
+  await flushSettings();
+}
 
 function targetOf(target: string | RegisteredCommandTarget): RegisteredCommandTarget {
   return typeof target === "string" ? { path: target } : target;
@@ -60,21 +70,32 @@ function promptCommand(
 }
 
 function promptCommandWithValue(
-  services: RegisteredCommandMenuServices,
+  services: RegisteredCommandMenuPorts,
   title: string,
   target: RegisteredCommandTarget,
-  value: string,
+  value: string | undefined,
   initial?: RegisteredCommandValues,
+  defaultLabel = basename(target.path),
 ): Promise<RegisteredCommandValues | null> {
-  const path = target.path;
   const valueTarget = COMMAND_VALUE_TARGETS[commandValueKind(target)];
   const commandHelp = commandValueKind(target) === "string"
     ? `${valueTarget.placeholder}=${valueTarget.label}、${STRING_ONE_LINE_PLACEHOLDER}=改行をスペース化、${COPY_STRING_CLIPBOARD_PLACEHOLDER}=クリップボードへコピー、${STRING_IN_URL_PLACEHOLDER}=URL用エンコード文字列、引用符不要`
     : `${valueTarget.placeholder}=${valueTarget.label}、引用符不要`;
+  const options = value === undefined ? undefined : {
+    preview: {
+      label: "実行文字列（確認用）",
+      render: (values: string[]) => commandLineForValue(
+        "",
+        values[1] ?? "",
+        value,
+        commandValueKind(target),
+      ),
+    },
+  };
   return services.promptFields(title, [
     {
       label: "表示名",
-      value: initial?.label ?? basename(path),
+      value: initial?.label ?? defaultLabel,
       validate: (value) => value.trim() ? null : "表示名を入力してください",
     },
     {
@@ -83,24 +104,29 @@ function promptCommandWithValue(
       multiline: true,
       validate: (value) => value.trim() ? null : "コマンドを入力してください",
     },
-  ], {
-    preview: {
-      label: "実行文字列（確認用）",
-      render: (values) => commandLineForValue(
-        "",
-        values[1] ?? "",
-        value,
-        commandValueKind(target),
-      ),
-    },
-  }).then((values) => values ? { label: values[0], prefix: "", command: values[1] } : null);
+  ], options).then((values) => values ? { label: values[0], prefix: "", command: values[1] } : null);
+}
+
+export function promptRegisteredCommand(
+  ports: RegisteredCommandMenuPorts,
+  title: string,
+  kind: CommandValueKind,
+  initial?: RegisteredCommandValues,
+): Promise<RegisteredCommandValues | null> {
+  return promptCommandWithValue(
+    ports,
+    title,
+    { path: "", valueKind: kind },
+    undefined,
+    initial,
+    kind === "file" ? "ファイル用コマンド" : "文字列用コマンド",
+  );
 }
 
 async function registerCommand(services: RegisteredCommandMenuServices, target: RegisteredCommandTarget) {
   const result = await promptCommand(services, "コマンドを登録", target);
   if (!result) return;
-  addRegisteredCommand({ valueKind: commandValueKind(target), ...result });
-  await flushSettings();
+  await saveRegisteredCommand(commandValueKind(target), result);
 }
 
 async function editCommand(
@@ -110,8 +136,7 @@ async function editCommand(
 ) {
   const result = await promptCommand(services, "登録コマンドを編集", target, command);
   if (!result) return;
-  updateRegisteredCommand(command, result);
-  await flushSettings();
+  await saveRegisteredCommand(commandValueKind(target), result, command);
 }
 
 export function createRegisteredCommandMenu(

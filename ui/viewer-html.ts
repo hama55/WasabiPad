@@ -1,3 +1,5 @@
+import { isFindShortcut } from "./commands";
+
 const STATIC_HTML_CSP = [
   "default-src 'none'",
   "base-uri asset: http://asset.localhost",
@@ -60,6 +62,9 @@ function bindStaticDocument(frame: HTMLIFrameElement, onContextMenu: HtmlPreview
   const child = frame.contentDocument;
   if (!child || child.documentElement.dataset.wasabiStaticHtml === "true") return;
   child.documentElement.dataset.wasabiStaticHtml = "true";
+  child.addEventListener("keydown", (event) => {
+    if (isFindShortcut(event)) event.preventDefault();
+  });
   child.addEventListener("contextmenu", (event) => {
     event.preventDefault();
     const rect = frame.getBoundingClientRect();

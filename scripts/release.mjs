@@ -1,14 +1,14 @@
 import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { read, root, VERSION_PATTERN, workspaceVersion } from "./version.mjs";
+import { read, releaseTag, root, VERSION_PATTERN, workspaceVersion } from "./version.mjs";
 
 const version = process.argv[2];
 if (!VERSION_PATTERN.test(version ?? "")) {
   throw new Error("Usage: npm run release -- <major.minor.patch>");
 }
 
-const tag = `v${version}`;
+const tag = releaseTag(version);
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 
 function run(command, args) {

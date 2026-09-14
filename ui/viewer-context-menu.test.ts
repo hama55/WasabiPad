@@ -2,7 +2,10 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { MENU_ICON } from "./menu-icons";
-import { createViewerBrowserMenuItem, createViewerChartMenuItem } from "./viewer-context-menu";
+import {
+  createViewerBrowserMenuItem,
+  createViewerChartMenuItem,
+} from "./viewer-context-menu";
 
 describe("Feature: viewer context menu", () => {
   // Given: グラフ作成アクションを渡したビューアのメニュー項目
@@ -34,4 +37,5 @@ describe("Feature: viewer context menu", () => {
     item.click();
     expect(onClick).toHaveBeenCalledOnce();
   });
+
 });

@@ -13,6 +13,8 @@ import { hideMenu, showMenu } from "./menu";
 import { promptFields as promptFieldsImpl } from "./prompt";
 import {
   createRegisteredCommandMenu,
+  promptRegisteredCommand,
+  saveRegisteredCommand,
   type RegisteredCommandMenuServices,
 } from "./registered-command-menu";
 import { commandsForKind } from "./registered-commands";
@@ -28,6 +30,41 @@ describe("Feature: shared registered-command context menu", () => {
     updateSetting.mockReset();
     updateSetting.mockResolvedValue(undefined);
     await initSettings();
+  });
+
+  // Given: 設定モーダルから開くファイル用の登録コマンドダイアログ
+  // When: 共通ダイアログへ対象種別だけを渡す
+  // Then: 右クリックと同じ入力欄を表示し、設定からも登録値を受け取れる
+  it("Scenario: 対象種別を指定して登録コマンドダイアログを開く", async () => {
+    const promptFields = vi.fn(async (...args: Parameters<typeof promptFieldsImpl>) => {
+      expect(args[0]).toBe("コマンドを登録");
+      expect(args[1][0].value).toBe("ファイル用コマンド");
+      expect(args[1][1].label).toContain("{file}=対象ファイル");
+      expect(args[2]).toBeUndefined();
+      return ["VS Code", "code {file}"];
+    });
+
+    await expect(promptRegisteredCommand(
+      { promptFields, runExternalCommand: vi.fn(async () => {}) },
+      "コマンドを登録",
+      "file",
+    )).resolves.toEqual({ label: "VS Code", prefix: "", command: "code {file}" });
+  });
+
+  // Given: ファイル用の登録コマンドを保存済み
+  // When: 共通保存処理へ編集値を渡す
+  // Then: 同じ種別の既存項目を更新し、設定保存を完了する
+  it("Scenario: 共通登録コマンド保存処理で既存項目を更新する", async () => {
+    await saveRegisteredCommand("file", { label: "Editor", prefix: "", command: "code {file}" });
+    const previous = commandsForKind()[0];
+
+    await saveRegisteredCommand("file", {
+      label: "VS Code", prefix: "cmd.exe /D /C", command: "code --reuse-window {file}",
+    }, previous);
+
+    expect(commandsForKind()).toEqual([{
+      label: "VS Code", prefix: "cmd.exe /D /C", command: "code --reuse-window {file}",
+    }]);
   });
 
   // Given: memo.mdを対象にし、選択文字列を現在値として返す共通メニューと入力値

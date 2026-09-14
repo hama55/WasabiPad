@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { root, VERSION_PATTERN } from "./version.mjs";
+import { isReleaseTag, root } from "./version.mjs";
 
 const DEFAULT_ATTEMPTS = 5;
 
@@ -89,7 +89,7 @@ function releaseAssets() {
 
 if (resolve(process.argv[1] ?? "") === fileURLToPath(import.meta.url)) {
   const tag = process.argv[2];
-  if (!tag?.startsWith("v") || !VERSION_PATTERN.test(tag.slice(1))) {
+  if (!isReleaseTag(tag)) {
     throw new Error("Usage: node scripts/publish-release.mjs <vmajor.minor.patch>");
   }
   await publishRelease(tag, releaseAssets());

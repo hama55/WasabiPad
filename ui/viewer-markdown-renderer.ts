@@ -22,6 +22,18 @@ export interface MarkdownRenderResult {
 export interface MarkdownRenderOptions {
   sourcePath?: string | null;
   archivePath?: string | null;
+  breaks?: boolean;
+}
+
+export const MARKDOWN_IMAGE_SOURCE_ATTRIBUTE = "data-wasabipad-src";
+
+function deferMarkdownImageSources(article: HTMLElement) {
+  article.querySelectorAll<HTMLImageElement>("img[src]").forEach((image) => {
+    const source = image.getAttribute("src");
+    if (source === null) return;
+    image.setAttribute(MARKDOWN_IMAGE_SOURCE_ATTRIBUTE, source);
+    image.removeAttribute("src");
+  });
 }
 
 function decorateTaskListItems(article: HTMLElement) {
@@ -87,7 +99,12 @@ export function renderMarkdownDocument(
 ): MarkdownRenderResult {
   const article = document.createElement("article");
   const sourceLines = text.split(/\r?\n/);
-  const markdown = new MarkdownIt({ breaks: false, html: true, linkify: true, typographer: false });
+  const markdown = new MarkdownIt({
+    breaks: options.breaks ?? true,
+    html: true,
+    linkify: true,
+    typographer: false,
+  });
   const rawHtml = (tokens: { content: string }[], index: number) =>
     renderRawHtml(tokens[index].content, markdown.utils.escapeHtml);
   markdown.renderer.rules.html_block = rawHtml;
@@ -101,6 +118,8 @@ export function renderMarkdownDocument(
     }
   });
   article.innerHTML = markdown.renderer.render(tokens, markdown.options, {});
+  // DOM挿入直後のブラウザ任せの全件読込を止め、viewer.tsの上限付きローダーへ渡す。
+  deferMarkdownImageSources(article);
   decorateTaskListItems(article);
   assignMarkdownHeadingIds(article);
   const sourceElements = [...article.querySelectorAll<HTMLElement>("[data-source-start]")];

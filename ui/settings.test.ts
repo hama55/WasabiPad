@@ -90,6 +90,18 @@ describe("Feature: settings", () => {
     expect(parseSettings(JSON.stringify({ indentSize: 3 })).indentSize).toBe(8);
   });
 
+  // Feature: サイドバー幅の設定
+  // Scenario: 保存済みの幅を復元し、不安全な値は画面に収まる範囲へ丸める
+  // Given: 正常値・小さすぎる値・大きすぎる値を設定ファイルへ保存する
+  // When: `parseSettings`を呼ぶ
+  // Then: 正常値は維持し、範囲外は安全な境界値へ戻す
+  it("Scenario: サイドバー幅を安全に復元する", () => {
+    expect(parseSettings(JSON.stringify({ sidebarWidth: 360 })).sidebarWidth).toBe(360);
+    expect(parseSettings(JSON.stringify({ sidebarWidth: 1 })).sidebarWidth).toBe(120);
+    expect(parseSettings(JSON.stringify({ sidebarWidth: 9999 })).sidebarWidth).toBe(640);
+    expect(parseSettings("{}").sidebarWidth).toBe(220);
+  });
+
   // Given: 有効なフォント設定と空文字/小数サイズの設定
   // When: `parseSettings`を呼ぶ
   // Then: 有効値は復元し、不正値は既定フォントと14に戻す
@@ -105,6 +117,35 @@ describe("Feature: settings", () => {
     expect(invalid.previewFontSize).toBe(14);
   });
 
+  // Given: Markdownの通常改行設定が未設定・`false`・不正値として保存されている
+  // When: `parseSettings`を呼ぶ
+  // Then: 既定値は有効、明示したbooleanだけ復元し、不正値は既定値へ戻す
+  it("Scenario: Markdown通常改行設定を安全に復元する", () => {
+    expect(parseSettings("{}").markdownSoftBreaks).toBe(true);
+    expect(parseSettings(JSON.stringify({ markdownSoftBreaks: false })).markdownSoftBreaks).toBe(false);
+    expect(parseSettings(JSON.stringify({ markdownSoftBreaks: "false" })).markdownSoftBreaks).toBe(true);
+  });
+
+  // Given: Markdown行間が未設定・有効値・範囲外として保存されている
+  // When: `parseSettings`を呼ぶ
+  // Then: 既定値は1.65、有効値は復元し、範囲外は既定値へ戻す
+  it("Scenario: Markdown行間設定を安全に復元する", () => {
+    expect(parseSettings("{}").markdownLineHeight).toBe(1.65);
+    expect(parseSettings(JSON.stringify({ markdownLineHeight: 1.9 })).markdownLineHeight).toBe(1.9);
+    expect(parseSettings(JSON.stringify({ markdownLineHeight: 1.39 })).markdownLineHeight).toBe(1.65);
+    expect(parseSettings(JSON.stringify({ markdownLineHeight: 2.01 })).markdownLineHeight).toBe(1.65);
+    expect(parseSettings(JSON.stringify({ markdownLineHeight: "1.8" })).markdownLineHeight).toBe(1.65);
+  });
+
+  // Given: Markdown見出し下線設定が未設定・有効値・不正値として保存されている
+  // When: `parseSettings`を呼ぶ
+  // Then: 既定値は無効、有効なbooleanだけ復元し、不正値は無効へ戻す
+  it("Scenario: Markdown見出し下線設定を安全に復元する", () => {
+    expect(parseSettings("{}").markdownHeadingUnderlines).toBe(false);
+    expect(parseSettings(JSON.stringify({ markdownHeadingUnderlines: true })).markdownHeadingUnderlines).toBe(true);
+    expect(parseSettings(JSON.stringify({ markdownHeadingUnderlines: "true" })).markdownHeadingUnderlines).toBe(false);
+  });
+
   // Given: エディタ用サイズ16とプレビュー用サイズ20を保存
   // When: `parseSettings`を呼ぶ
   // Then: それぞれのサイズを独立して復元する
@@ -112,6 +153,47 @@ describe("Feature: settings", () => {
     const saved = parseSettings(JSON.stringify({ fontSize: 16, previewFontSize: 20 }));
     expect(saved.fontSize).toBe(16);
     expect(saved.previewFontSize).toBe(20);
+  });
+
+  // Feature: 拡張子別連携設定の削除
+  // Scenario: 旧設定キーを含む設定JSONを復元する
+  // Given: 旧版のexternalEditorCommandsとexternalPreviewCommandsが保存されている
+  // When: parseSettingsを呼ぶ
+  // Then: 旧設定は読み込まず、現在の登録コマンドだけを復元する
+  it("Scenario: 旧版の拡張子別連携設定を無視する", () => {
+    const settings = parseSettings(JSON.stringify({
+      externalEditorCommands: { txt: [{ name: "メモ帳", command: "notepad {file}" }] },
+      externalPreviewCommands: { image: "viewer {file}" },
+      registeredCommands: [{ label: "メモ帳", command: "notepad {file}" }],
+    }));
+
+    expect(settings.registeredCommands).toEqual([
+      { label: "メモ帳", prefix: "", command: "notepad {file}" },
+    ]);
+    expect(settings).not.toHaveProperty("externalEditorCommands");
+    expect(settings).not.toHaveProperty("externalPreviewCommands");
+  });
+
+  // Feature: 外部プレビューキャッシュ保存場所の設定
+  // Scenario: 未設定はバックエンド既定場所として復元し、保存済みの場所は保持する
+  // Given: プレビューキャッシュ保存場所が未設定または `D:\\WasabiPad\\preview-cache` として保存されている
+  // When: `parseSettings`を呼ぶ
+  // Then: 未設定は`null`、保存済みの場所は同じ文字列になる
+  it("Scenario: プレビューキャッシュ保存場所を復元する", () => {
+    expect(parseSettings("{}").previewCacheDirectory).toBeNull();
+    expect(parseSettings(JSON.stringify({ previewCacheDirectory: "D:\\WasabiPad\\preview-cache" }))
+      .previewCacheDirectory).toBe("D:\\WasabiPad\\preview-cache");
+  });
+
+  // Feature: 外部プレビューキャッシュ保存場所の設定
+  // Scenario: 不正な保存場所は未設定へ戻す
+  // Given: 数値・空文字・配列をプレビューキャッシュ保存場所として保存する
+  // When: `parseSettings`を呼ぶ
+  // Then: どの値も`null`として復元する
+  it("Scenario: 不正なプレビューキャッシュ保存場所を無効化する", () => {
+    expect(parseSettings(JSON.stringify({ previewCacheDirectory: 42 })).previewCacheDirectory).toBeNull();
+    expect(parseSettings(JSON.stringify({ previewCacheDirectory: "" })).previewCacheDirectory).toBeNull();
+    expect(parseSettings(JSON.stringify({ previewCacheDirectory: [] })).previewCacheDirectory).toBeNull();
   });
 
   // Given: フォント・起動パス・登録項目を変更し、再開タブも保存済み
@@ -124,6 +206,9 @@ describe("Feature: settings", () => {
     };
     setSetting("openTabs", openTabs);
     setSetting("fontSize", 20);
+    setSetting("markdownSoftBreaks", false);
+    setSetting("markdownLineHeight", 1.9);
+    setSetting("markdownHeadingUnderlines", true);
     setSetting("startupPath", "C:\\work");
     setSetting("registeredStrings", ["snippet"]);
     await flushSettings();
@@ -133,10 +218,30 @@ describe("Feature: settings", () => {
     await flushSettings();
 
     expect(getSetting("fontSize")).toBe(14);
+    expect(getSetting("markdownSoftBreaks")).toBe(true);
+    expect(getSetting("markdownLineHeight")).toBe(1.65);
+    expect(getSetting("markdownHeadingUnderlines")).toBe(false);
     expect(getSetting("startupPath")).toBeNull();
     expect(getSetting("registeredStrings")).toEqual([]);
     expect(getSetting("openTabs")).toEqual(openTabs);
     expect(updateSettingMock).not.toHaveBeenCalledWith("openTabs", expect.anything());
+  });
+
+  // Feature: 外部プレビューキャッシュ保存場所の設定
+  // Scenario: アプリ設定の初期化でプレビューキャッシュ保存場所を既定値へ戻す
+  // Given: プレビューキャッシュ保存場所を `D:\\WasabiPad\\preview-cache` へ変更している
+  // When: アプリ設定だけを初期化する
+  // Then: 保存場所は`null`へ戻り、その値を保存する
+  it("Scenario: 設定初期化でプレビューキャッシュ保存場所を戻す", async () => {
+    setSetting("previewCacheDirectory", "D:\\WasabiPad\\preview-cache");
+    await flushSettings();
+    updateSettingMock.mockClear();
+
+    resetUserSettings();
+    await flushSettings();
+
+    expect(getSetting("previewCacheDirectory")).toBeNull();
+    expect(updateSettingMock).toHaveBeenCalledWith("previewCacheDirectory", "null");
   });
 
   // Given: プレビュー用文字サイズを20へ変更する
@@ -148,6 +253,39 @@ describe("Feature: settings", () => {
     await flushSettings();
 
     expect(updateSettingMock).toHaveBeenCalledWith("previewFontSize", "20");
+  });
+
+  // Given: Markdown通常改行を無効にする
+  // When: 設定保存をflushする
+  // Then: 専用キーへboolean値を保存する
+  it("Scenario: Markdown通常改行設定は専用キーへ保存する", async () => {
+    setSetting("markdownSoftBreaks", false);
+
+    await flushSettings();
+
+    expect(updateSettingMock).toHaveBeenCalledWith("markdownSoftBreaks", "false");
+  });
+
+  // Given: Markdown行間を1.8へ変更する
+  // When: 設定保存をflushする
+  // Then: 専用キーへ数値を保存する
+  it("Scenario: Markdown行間設定は専用キーへ保存する", async () => {
+    setSetting("markdownLineHeight", 1.8);
+
+    await flushSettings();
+
+    expect(updateSettingMock).toHaveBeenCalledWith("markdownLineHeight", "1.8");
+  });
+
+  // Given: Markdown見出し下線を有効にする
+  // When: 設定保存をflushする
+  // Then: 専用キーへboolean値を保存する
+  it("Scenario: Markdown見出し下線設定は専用キーへ保存する", async () => {
+    setSetting("markdownHeadingUnderlines", true);
+
+    await flushSettings();
+
+    expect(updateSettingMock).toHaveBeenCalledWith("markdownHeadingUnderlines", "true");
   });
 
   // Given: `workspaceSearchOptions`未設定または`{ max_files: 5 }`
@@ -171,6 +309,23 @@ describe("Feature: settings", () => {
     }));
 
     expect(settings.openTabs.tabs).toEqual([]);
+  });
+
+  // Given: `openTabs`の一つに不正なfileTreeWidthがある
+  // When: `parseSettings`を呼ぶ
+  // Then: タブを保持し、幅だけを未設定へ戻す
+  it("Scenario: 不正なタブ別幅だけを既定扱いへ戻す", () => {
+    const settings = parseSettings(JSON.stringify({
+      openTabs: {
+        tabs: [{ id: "tab-1", path: "memo.txt", kind: "file", label: "memo", fileTreeWidth: "wide" }],
+        activeId: "tab-1",
+      },
+    }));
+
+    expect(settings.openTabs).toEqual({
+      tabs: [{ id: "tab-1", path: "memo.txt", kind: "file", label: "memo" }],
+      activeId: "tab-1",
+    });
   });
 
   // Given: `openTabs`保存は`"openTabs failed"`で失敗し、次の保存は成功

@@ -7,11 +7,11 @@ import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialo
 import { writeText as writeClipboardText } from "@tauri-apps/plugin-clipboard-manager";
 import * as api from "./api";
 import { applyDocumentLoadProgress } from "./document-load-progress";
-import { VirtualEditor } from "./editor";
-import { Sidebar } from "./sidebar";
-import { FavBar } from "./favbar";
-import { AddressBar } from "./addressbar";
-import { StatusBar } from "./statusbar";
+import type { EditorPorts } from "./editor";
+import { EditingSurfaceHost } from "./editing-surface-host";
+import type { InlinePreviewPorts } from "./inline-preview";
+import { WorkspaceHost } from "./workspace-host";
+import type { StatusBarPorts } from "./statusbar";
 import { WindowChrome } from "./window-chrome";
 import { canPollExternalDocument, ExternalWatch } from "./external-watch";
 import { confirmExternalMerge, isExternalMergeRetryError } from "./external-merge";
@@ -32,10 +32,11 @@ import { promptSaveFormat, saveFormatFields, saveFormatFromValues } from "./save
 import { isPasswordCancelled, withArchivePassword } from "./archive-password";
 import { archiveRelOf } from "./archive-path";
 import { joinWindowsRoot } from "./path";
-import { createCommandRegistry, globalCommandForEvent } from "./commands";
+import { createCommandRegistry, globalCommandForEvent, runFindForTarget } from "./commands";
 import { TabManager } from "./tabs";
 import {
   getSetting,
+  clampSidebarWidth,
   flushSettings,
   initSettings,
   loadSearchOptions,
@@ -44,18 +45,27 @@ import {
   setSetting,
 } from "./settings";
 import { normalizeTheme, THEME_STORAGE_KEY } from "./theme";
-import { openSettingsMenu, openSettingsModal, type SettingsCloseHandle, type SettingsPanelPorts } from "./settings-panel";
+import {
+  createSettingsOpener,
+  openSettingsModal,
+  returnToSettings,
+  type SettingsModalState,
+  type SettingsPanelPorts,
+} from "./settings-panel";
 import { searchResultGoto } from "./search-results";
 import { runAsyncBoundary, reportUnhandledRejection } from "./async-boundary";
 import { openPath as openPathInTabs } from "./path-opener";
-import { InlinePreview } from "./inline-preview";
+import { promptRegisteredCommand, saveRegisteredCommand } from "./registered-command-menu";
+import type { CommandValueKind, RegisteredCommand } from "./registered-commands";
+import { promptAndSaveRegisteredString } from "./registered-string-dialog";
+import { openSearchSettings as openSearchSettingsDialog } from "./search-settings-dialog";
 import {
   isAssetViewerFormat,
   sourcePathForViewer,
   viewerFormatForPath,
   viewerFormatForPreviewToggle,
 } from "./viewer-formats";
-import { documentPathOf, type DocumentSession } from "./session";
+import { classificationPathOf, documentPathOf, type DocumentSession } from "./session";
 import {
   effectivePreviewFormat,
   isCurrentPreviewDocument,
@@ -63,16 +73,28 @@ import {
   isPreviewShown,
   isPreviewSplitterShown,
   PREVIEW_MIN_WIDTH,
+  SIDEBAR_DEFAULT_WIDTH,
+  SIDEBAR_MIN_WIDTH,
+  PANE_SPLITTER_WIDTH,
+  resolvePaneVisibility,
   shouldKeepPreviewFullscreen,
   type PreviewDocument,
 } from "./preview-layout";
 import { bindPreviewResize } from "./preview-resize";
-import { paneToggleView, previewToggleLeft, sidebarToggleLeft } from "./pane-toggle";
+import {
+  PREVIEW_TOGGLE_DEFAULT_WIDTH,
+  isPreviewTogglePeekPoint,
+  paneToggleView,
+  previewToggleLeft,
+  sidebarToggleLeft,
+} from "./pane-toggle";
 import { reportErrorSafely } from "./report-error";
 import { processExternalWindowRequests } from "./external-window-request";
 import { canCloseWindow } from "./close-request";
 import { createAsyncUnlisten } from "./async-unlisten";
 import { markdownLinkActionOf } from "./markdown-link-navigation";
+import { type WindowViewport } from "./window-layout";
+import { createWindowLayoutRuntime, type WindowLayoutRuntime } from "./window-layout-runtime";
 
 const win = getCurrentWindow();
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -101,7 +123,11 @@ const previewEl = $("preview");
 const previewToggle = $<HTMLButtonElement>("preview-toggle");
 const loading = $("loading");
 const loadingMessage = $("loading-message");
+document.documentElement.style.setProperty("--sidebar-default-width", `${SIDEBAR_DEFAULT_WIDTH}px`);
+document.documentElement.style.setProperty("--sidebar-min-width", `${SIDEBAR_MIN_WIDTH}px`);
+document.documentElement.style.setProperty("--pane-splitter-width", `${PANE_SPLITTER_WIDTH}px`);
 mainEl.style.setProperty("--preview-min-width", `${PREVIEW_MIN_WIDTH}px`);
+mainEl.style.setProperty("--preview-toggle-width", `${PREVIEW_TOGGLE_DEFAULT_WIDTH}px`);
 
 let sidebarAvailable = false;
 let sidebarCollapsed = false;
@@ -111,16 +137,23 @@ let previewFullscreen = false;
 let previewFullscreenTabId: string | null = null;
 let currentLine = 1;
 let tabs: TabManager;
-let sidebar: Sidebar;
-let settingsMenu: SettingsCloseHandle | null = null;
+let sidebar: WorkspaceHost["sidebar"];
+let addressbar: WorkspaceHost["addressbar"];
+let favbar: WorkspaceHost["favbar"];
+let fileStatusbar: WorkspaceHost["fileStatusbar"];
+let editingStatusbar: EditingSurfaceHost["statusbar"];
+let inlinePreview: EditingSurfaceHost["preview"];
+let editor: EditingSurfaceHost["editor"];
 let settingsPorts: SettingsPanelPorts;
 let restoringEditorFont = true;
+let previewingEditorFont = false;
 let imageCleanupTimer: number | undefined;
 let externalRequestChain = Promise.resolve();
 const workspaceSearchListener = createAsyncUnlisten();
 const documentLoadListener = createAsyncUnlisten();
 const externalWindowListener = createAsyncUnlisten();
 const dragDropListener = createAsyncUnlisten();
+let layoutRuntime: WindowLayoutRuntime | null = null;
 
 function setLoading(active: boolean, message = "読み込み中…") {
   loading.hidden = !active;
@@ -181,51 +214,106 @@ function drainExternalWindowRequests() {
 function setSidebar(on: boolean, label = "") {
   sidebarAvailable = on;
   updateSidebarVisibility();
-  statusbar.setMode(label);
+  editingStatusbar.setMode(label);
 }
 
-function updateSidebarVisibility() {
-  const shown = sidebarAvailable && !sidebarCollapsed;
-  sidebarEl.hidden = !shown;
-  splitter.hidden = !shown;
-  const toggle = $<HTMLButtonElement>("sidebar-toggle");
-  const view = paneToggleView("sidebar", shown);
-  toggle.hidden = !sidebarAvailable;
-  toggle.textContent = view.icon;
-  toggle.title = view.title;
-  toggle.setAttribute("aria-label", toggle.title);
-  toggle.style.left = `${sidebarToggleLeft(shown, sidebarEl.getBoundingClientRect().width)}px`;
+function measuredMainWidth(): number {
+  const width = mainEl.getBoundingClientRect().width;
+  return Number.isFinite(width) && width > 0 ? width : 0;
 }
 
-function updatePreviewVisibility() {
-  const state = { available: previewAvailable, collapsed: previewCollapsed, fullscreen: previewFullscreen };
-  const shown = isPreviewShown(state);
-  const fullscreen = isPreviewFullscreen(state);
-  previewEl.hidden = !shown;
-  previewSplitter.hidden = !isPreviewSplitterShown(state);
+function setSidebarWidth(width: unknown) {
+  sidebarEl.style.width = `${clampSidebarWidth(width)}px`;
+}
+
+function readSidebarWidth(): number {
+  const width = Number.parseFloat(sidebarEl.style.width);
+  return Number.isFinite(width) ? clampSidebarWidth(width) : clampSidebarWidth(getSetting("sidebarWidth"));
+}
+
+function paneVisibilityAt(mainWidth: number) {
+  const sidebarWidth = Number.parseFloat(sidebarEl.style.width)
+    || Math.max(SIDEBAR_MIN_WIDTH, sidebarEl.getBoundingClientRect().width || SIDEBAR_DEFAULT_WIDTH);
+  const configuredPreviewWidth = Number.parseFloat(previewEl.style.width);
+  return resolvePaneVisibility({
+    mainWidth,
+    sidebarAvailable,
+    sidebarCollapsed,
+    sidebarWidth,
+    previewAvailable,
+    previewCollapsed,
+    previewWidth: Number.isFinite(configuredPreviewWidth) ? configuredPreviewWidth : undefined,
+    fullscreen: previewFullscreen,
+  });
+}
+
+function applyPaneVisibility(mainWidth: number) {
+  if (!Number.isFinite(mainWidth) || mainWidth <= 0) {
+    layoutRuntime?.coordinator.request();
+    return;
+  }
+  const layout = paneVisibilityAt(mainWidth);
+  const sidebarShown = layout.sidebarShown;
+  sidebarEl.hidden = !sidebarShown;
+  splitter.hidden = !sidebarShown;
+  const sidebarToggle = $<HTMLButtonElement>("sidebar-toggle");
+  const sidebarView = paneToggleView("sidebar", sidebarShown);
+  sidebarToggle.hidden = !sidebarAvailable;
+  sidebarToggle.textContent = sidebarView.icon;
+  sidebarToggle.title = sidebarView.title;
+  sidebarToggle.setAttribute("aria-label", sidebarView.title);
+  sidebarToggle.style.left = `${sidebarToggleLeft(sidebarShown, sidebarEl.getBoundingClientRect().width)}px`;
+
+  const previewState = {
+    available: previewAvailable,
+    collapsed: !layout.previewShown,
+    fullscreen: layout.fullscreen,
+  };
+  const previewShown = isPreviewShown(previewState);
+  const fullscreen = isPreviewFullscreen(previewState);
+  previewEl.hidden = !previewShown;
+  previewSplitter.hidden = !isPreviewSplitterShown(previewState);
   mainEl.classList.toggle("preview-fullscreen", fullscreen);
   inlinePreview.setFullscreen(fullscreen);
-  const view = paneToggleView("preview", shown);
+  const previewView = paneToggleView("preview", previewShown);
   previewToggle.hidden = false;
-  previewToggle.textContent = view.icon;
-  previewToggle.title = view.title;
-  previewToggle.setAttribute("aria-label", previewToggle.title);
+  previewToggle.textContent = previewView.icon;
+  previewToggle.title = previewView.title;
+  previewToggle.setAttribute("aria-label", previewView.title);
   const mainRect = mainEl.getBoundingClientRect();
   previewToggle.style.left = `${previewToggleLeft(
-    shown,
+    previewShown,
     mainRect.left,
     previewEl.getBoundingClientRect().left,
-    mainEl.clientWidth,
+    mainEl.clientWidth || mainWidth,
     previewToggle.offsetWidth,
   )}px`;
 }
 
-const inlinePreview = new InlinePreview(previewEl, {
+function updateSidebarVisibility() {
+  const width = measuredMainWidth();
+  if (width <= 0) {
+    layoutRuntime?.coordinator.request();
+    return;
+  }
+  applyPaneVisibility(width);
+}
+
+function updatePreviewVisibility() {
+  const width = measuredMainWidth();
+  if (width <= 0) {
+    layoutRuntime?.coordinator.request();
+    return;
+  }
+  applyPaneVisibility(width);
+}
+
+const inlinePreviewPorts = {
   onAvailabilityChange: (available) => {
     previewAvailable = available;
     if (!available) {
       previewDocument = null;
-      statusbar.setPreviewFormat(null);
+      editingStatusbar.setPreviewFormat(null);
     }
     if (available) previewCollapsed = false;
     updatePreviewVisibility();
@@ -269,7 +357,7 @@ const inlinePreview = new InlinePreview(previewEl, {
     updatePreviewVisibility();
   },
   onError: (error) => reportBackgroundError("プレビュー通知を処理できませんでした", error),
-});
+} satisfies InlinePreviewPorts;
 
 let previewDocument: PreviewDocument | null = null;
 function runPreviewBackground(
@@ -295,8 +383,13 @@ function openPreviewFormat(
   fragment: string | null = null,
 ) {
   const sourcePath = sourcePathForViewer(format, session.savePath, session.displayPath);
-  inlinePreview.setSourcePath(sourcePath, session.archivePath, session.archiveEntry);
-  statusbar.setPreviewFormat(format);
+  inlinePreview.setSourcePath(
+    sourcePath,
+    session.archivePath,
+    session.archiveEntry,
+    session.effectiveExtension,
+  );
+  editingStatusbar.setPreviewFormat(format);
   runPreviewBackground(
     { ownerTabId: tabs?.state.activeId ?? null, path, format },
     "ビューを表示できませんでした",
@@ -310,7 +403,12 @@ function openPreviewFormat(
 function syncPreviewDocument(session: Readonly<DocumentSession>, force = false, fragment: string | null = null) {
   const path = documentPathOf(session);
   const activeTabId = tabs?.state.activeId ?? null;
-  const format = effectivePreviewFormat(path, viewerFormatForPath(path), activeTabId, previewDocument);
+  const format = effectivePreviewFormat(
+    path,
+    viewerFormatForPath(classificationPathOf(session)),
+    activeTabId,
+    previewDocument,
+  );
   if (previewFullscreen && !shouldKeepPreviewFullscreen(
     previewFullscreenTabId,
     tabs?.state.activeId ?? null,
@@ -324,18 +422,20 @@ function syncPreviewDocument(session: Readonly<DocumentSession>, force = false, 
   if (!format) {
     inlinePreview.setSourcePath(null, session.archivePath, session.archiveEntry);
     previewDocument = null;
-    statusbar.setPreviewFormat(null);
+    editingStatusbar.setPreviewFormat(null);
     inlinePreview.clear();
     return;
   }
   openPreviewFormat(session, path, format, fragment);
 }
 
-// ---- 部品 ----
-const statusbar = new StatusBar($("statusbar"), {
+// ---- 編集・プレビュー側 ----
+const editingStatusbarPorts = {
   onGoTo: (line) => editor.goTo(line, 0),
   onFontFamily: (family) => editor.setFont(family, getSetting("fontSize"), "family"),
   onFontSize: (size) => editor.setFont(getSetting("fontFamily"), size, "size"),
+  onPreviewFontFamily: (family) => previewEditorFont(family, getSetting("fontSize"), "family"),
+  onPreviewFontSize: (size) => previewEditorFont(getSetting("fontFamily"), size, "size"),
   onPreviewDelimiter: (delimiter) => inlinePreview.setDelimiter(delimiter),
   onWrap: (on) => editor.setWrap(on),
   onIndent: (size) => {
@@ -347,21 +447,15 @@ const statusbar = new StatusBar($("statusbar"), {
     return doc.reloadWithEncoding(encoding);
   },
   onError: showError,
-});
-statusbar.restoreTheme(localStorage.getItem(THEME_STORAGE_KEY));
-window.addEventListener("storage", (event) => {
-  if (event.key === THEME_STORAGE_KEY) statusbar.restoreTheme(event.newValue);
-});
+} satisfies StatusBarPorts;
+function applyTheme(theme: ReturnType<typeof normalizeTheme>) {
+  document.documentElement.setAttribute("data-theme", theme);
+  localStorage.setItem(THEME_STORAGE_KEY, theme);
+}
 
-const addressbar = new AddressBar($("topbar"), {
-  onOpen: (path, newTab) => runBackground("開けませんでした", () => openPathInTabs(tabs, path, newTab)),
-  onSave: () => runBackground("保存できませんでした", () => doc.save()),
-  onSaveAs: () => runBackground("名前を付けて保存できませんでした", () => doc.saveAs()),
-  onNew: () => runBackground("新規ウィンドウを開けませんでした", launchNewWindow),
-  onFind: () => editor.openSearch(),
-  onPick: () => runBackground("ファイルを開けませんでした", () => pickAndOpen(false)),
-  onFavorite: () => runBackground("お気に入りに追加できませんでした", () => favbar.addCurrent()),
-  onSettings: () => openSettings(),
+applyTheme(normalizeTheme(localStorage.getItem(THEME_STORAGE_KEY)));
+window.addEventListener("storage", (event) => {
+  if (event.key === THEME_STORAGE_KEY) applyTheme(normalizeTheme(event.newValue));
 });
 
 const registeredCommandPorts = {
@@ -370,21 +464,63 @@ const registeredCommandPorts = {
   writeClipboardText,
 };
 
-// 部品どうしが相互に参照するため、型注釈で推論の循環を切る
-const editor: VirtualEditor = new VirtualEditor(editorHost, {
+function openRegisteredStringSettings(current?: string) {
+  runSettingsChild("登録文字列を保存できませんでした", () =>
+    promptAndSaveRegisteredString(promptFields, current));
+}
+
+function openRegisteredCommandSettings(kind: CommandValueKind, current?: RegisteredCommand) {
+  runSettingsChild("登録コマンドを保存できませんでした", async () => {
+    const value = await promptRegisteredCommand(
+      registeredCommandPorts,
+      current === undefined ? "コマンドを登録" : "登録コマンドを編集",
+      kind,
+      current,
+    );
+    if (!value) return;
+    await saveRegisteredCommand(kind, value, current);
+  });
+}
+
+function runSettingsChild(title: string, operation: () => void | Promise<void>) {
+  void runBackground(title, () => returnToSettings(operation, openSettings));
+}
+
+function openSearchSettingsFromSettings() {
+  openSearchSettingsDialog(loadSearchOptions(), {
+    onChange: (options) => {
+      saveSearchOptions(options);
+      sidebar?.setSearchOptions(options);
+    },
+    onClose: openSettings,
+  });
+}
+
+function previewEditorFont(family: string, size: number, changed: "family" | "size") {
+  previewingEditorFont = true;
+  try {
+    editor.setFont(family, size, changed);
+  } finally {
+    previewingEditorFont = false;
+  }
+  if (changed === "family") inlinePreview.setFontFamily(family);
+}
+
+const editorPorts = {
   onDocChange: (lineCount, edits) => {
     doc.onEdit(lineCount);
-    statusbar.setLineCount(lineCount);
+    editingStatusbar.setLineCount(lineCount);
     sidebar?.refreshWorkspaceSearch(doc.current.selectedRelPath, edits ?? []);
     scheduleImageCleanup();
   },
   onCursor: (line, col) => {
     currentLine = line;
-    statusbar.setCursor(line, col);
+    editingStatusbar.setCursor(line, col);
     tabs?.syncCursor(line - 1);
   },
   onFontChange: (family, size, changed) => {
-    statusbar.setFont(family, size);
+    if (previewingEditorFont) return;
+    editingStatusbar.setFont(family, size);
     if (changed !== "size") inlinePreview.setFontFamily(family);
     if (!restoringEditorFont) {
       if (changed !== "size") setSetting("fontFamily", family);
@@ -393,12 +529,14 @@ const editor: VirtualEditor = new VirtualEditor(editorHost, {
   },
   registeredCommandPorts,
   openExternally: (path) => openInOtherApp(path),
+  openInNewTab: () => runBackground("新規タブで開けませんでした", () => tabs.openCurrentInNewTab()),
   openInNewWindow: (path) => runBackground("新規ウィンドウで開けませんでした", () => launchNewWindow({ path })),
+  openAs: (openAs) => runBackground("指定した形式で開けませんでした", () => tabs.openCurrentAs(openAs)),
   revealInExplorer: (path, isDir) => revealInExplorer(path, isDir),
   onError: (message, error) => showError(message, error),
   openViewer: async (format, text, selection) => {
     const path = documentPathOf(doc.current);
-    statusbar.setPreviewFormat(format);
+    editingStatusbar.setPreviewFormat(format);
     const label = await inlinePreview.open(format, text, selection);
     if (isCurrentPreviewDocument(previewDocument, tabs?.state.activeId ?? null, path)) {
       previewDocument.format = format;
@@ -413,14 +551,42 @@ const editor: VirtualEditor = new VirtualEditor(editorHost, {
       () => api.savePastedImage(bytes, mimeType),
     );
   },
+} satisfies EditorPorts;
+
+const editingSurfaceHost = new EditingSurfaceHost(
+  { editor: editorHost, preview: previewEl, statusbar: $("editing-statusbar") },
+  { editor: editorPorts, preview: inlinePreviewPorts, statusbar: editingStatusbarPorts },
+);
+editor = editingSurfaceHost.editor;
+inlinePreview = editingSurfaceHost.preview;
+editingStatusbar = editingSurfaceHost.statusbar;
+
+layoutRuntime = createWindowLayoutRuntime(window, {
+  measure: (): WindowViewport => {
+    const rect = mainEl.getBoundingClientRect();
+    return { width: rect.width, height: rect.height };
+  },
+  apply: (viewport) => {
+    try {
+      applyPaneVisibility(viewport.width);
+      editor.syncWindowGeometry();
+    } catch (error) {
+      void reportBackgroundError("画面レイアウトを更新できませんでした", error);
+    }
+  },
 });
+
 function applySettingsToUi() {
+  setSidebarWidth(getSetting("sidebarWidth"));
   restoringEditorFont = true;
   editor.setFont(getSetting("fontFamily"), getSetting("fontSize"));
   restoringEditorFont = false;
-  editor.setTabSize(statusbar.setIndent(getSetting("indentSize")));
+  editor.setTabSize(editingStatusbar.setIndent(getSetting("indentSize")));
   inlinePreview.setFontFamily(getSetting("fontFamily"));
   inlinePreview.setFontSize(getSetting("previewFontSize"));
+  inlinePreview.setMarkdownSoftBreaks(getSetting("markdownSoftBreaks"));
+  inlinePreview.setMarkdownLineHeight(getSetting("markdownLineHeight"));
+  inlinePreview.setMarkdownHeadingUnderlines(getSetting("markdownHeadingUnderlines"));
   sidebar?.setSearchOptions(loadSearchOptions());
 }
 
@@ -428,21 +594,46 @@ applySettingsToUi();
 
 settingsPorts = {
   getTheme: () => normalizeTheme(document.documentElement.getAttribute("data-theme")),
-  setTheme: (theme) => statusbar.restoreTheme(theme),
+  setTheme: applyTheme,
   getSetting,
   setSetting,
   applyFontFamily: (family) => editor.setFont(family, getSetting("fontSize"), "family"),
   applyFontSize: (size) => editor.setFont(getSetting("fontFamily"), size, "size"),
   applyIndent: (size) => {
     editor.setTabSize(size);
-    statusbar.setIndent(size);
+    editingStatusbar.setIndent(size);
   },
   applyPreviewFontSize: (size) => inlinePreview.setFontSize(size),
-  getSearchOptions: loadSearchOptions,
-  updateSearchOptions: (options) => {
-    saveSearchOptions(options);
-    sidebar?.setSearchOptions(options);
+  applyMarkdownSoftBreaks: (enabled) => inlinePreview.setMarkdownSoftBreaks(enabled),
+  applyMarkdownLineHeight: (value) => inlinePreview.setMarkdownLineHeight(value),
+  applyMarkdownHeadingUnderlines: (enabled) => inlinePreview.setMarkdownHeadingUnderlines(enabled),
+  pickPreviewCacheDirectory: async (defaultPath?: string) => {
+    try {
+      const selected = await openDialog({ directory: true, multiple: false, defaultPath });
+      return typeof selected === "string" ? selected : null;
+    } catch (error) {
+      await reportBackgroundError("プレビューキャッシュ保存場所を選べませんでした", error);
+      return null;
+    }
   },
+  clearPreviewCache: async () => {
+    try {
+      await api.clearPreviewCache(getSetting("previewCacheDirectory"));
+    } catch (error) {
+      await reportBackgroundError("プレビューキャッシュを削除できませんでした", error);
+    }
+  },
+  getPreviewCacheInfo: async () => {
+    try {
+      return await api.getPreviewCacheInfo(getSetting("previewCacheDirectory"));
+    } catch (error) {
+      console.error("プレビューキャッシュの情報を取得できませんでした", error);
+      return null;
+    }
+  },
+  openSearchSettings: openSearchSettingsFromSettings,
+  openRegisteredString: openRegisteredStringSettings,
+  openRegisteredCommand: openRegisteredCommandSettings,
   confirmReset: () => confirmMessage(
     "設定を初期化",
     "アプリ設定を初期値へ戻します。再開タブは保持されます。",
@@ -450,76 +641,104 @@ settingsPorts = {
   ),
   resetSettings: () => {
     resetUserSettings();
-    statusbar.restoreTheme("dark");
+    applyTheme("dark");
     applySettingsToUi();
   },
 };
 
-function openSettings() {
-  if (settingsMenu) {
-    settingsMenu.close();
-    settingsMenu = null;
-    return;
-  }
-  settingsMenu = openSettingsMenu($("addressbar-settings"), settingsPorts, () => {
-    settingsMenu?.close();
-    settingsMenu = null;
-    openSettingsModal(settingsPorts);
-  }, () => {
-    settingsMenu = null;
-  });
-}
+let settingsModalState: SettingsModalState | undefined;
+const openSettings = createSettingsOpener((onClose) => {
+  const initialState = settingsModalState;
+  settingsModalState = undefined;
+  return openSettingsModal(settingsPorts, (state) => {
+    settingsModalState = state;
+    onClose();
+  }, initialState);
+});
 
-sidebar = new Sidebar(sidebarEl, {
-  onSelect: async (relPath, newTab) => {
-    if (newTab) return openInNewTab(relPath);
-    return tabs.navigateEntry(relPath);
+const workspaceHost = new WorkspaceHost(
+  {
+    topbar: $("topbar"),
+    sidebar: sidebarEl,
+    favbar: $("favbar"),
+    fileStatusbar: $("file-statusbar"),
   },
-  onContextMenu: (x, y, target, selected) => folderActions.showContextMenu(x, y, target, selected),
-  onFileCommand: (command, selected) => folderActions.executeCommand(command, selected),
-  onRenameEntry: (relPath, newName) => folderActions.renameEntry(relPath, newName),
-  isCut: (relPath) => folderActions.isCut(relPath),
-  onExpandArchive: (relPath) =>
-    withArchivePassword(relPath, () => api.listArchiveEntries(relPath)),
-  onExpandFolder: (relDir) => api.listFolderEntries(relDir),
-  onDropEntries: (request) => folderActions.dropEntries(request),
-  onUndoLastDrop: () => folderActions.undoLastDrop(),
-  onCreateFolder: (relDir) => folderActions.createFolder(relDir),
-  onCreateNote: () => folderActions.createNote(null),
-  onTreeError: async (error) => {
-    if (!isPasswordCancelled(error)) await showError("フォルダを展開できませんでした", error);
+  {
+    addressbar: {
+      onOpen: (path, newTab) => runBackground("開けませんでした", () => openPathInTabs(tabs, path, newTab)),
+      onSave: () => runBackground("保存できませんでした", () => doc.save()),
+      onSaveAs: () => runBackground("名前を付けて保存できませんでした", () => doc.saveAs()),
+      onNew: () => runBackground("新規ウィンドウを開けませんでした", launchNewWindow),
+      onFind: () => editor.openSearch(),
+      onPick: () => runBackground("ファイルを開けませんでした", () => pickAndOpen(false)),
+      onFavorite: () => runBackground("お気に入りに追加できませんでした", () => favbar.addCurrent()),
+      onSettings: openSettings,
+    },
+    sidebar: {
+      onSelect: async (relPath, newTab) => {
+        if (newTab) return openInNewTab(relPath);
+        return tabs.navigateEntry(relPath);
+      },
+      onContextMenu: (x, y, target, selected) => folderActions.showContextMenu(x, y, target, selected),
+      onFileCommand: (command, selected) => folderActions.executeCommand(command, selected),
+      onRenameEntry: (relPath, newName) => folderActions.renameEntry(relPath, newName),
+      isCut: (relPath) => folderActions.isCut(relPath),
+      onExpandArchive: (relPath) =>
+        withArchivePassword(relPath, () => api.listArchiveEntries(relPath)),
+      onExpandFolder: (relDir) => api.listFolderEntries(relDir),
+      onDropEntries: (request) => folderActions.dropEntries(request),
+      onUndoLastDrop: () => folderActions.undoLastDrop(),
+      onCreateFolder: (relDir) => folderActions.createFolder(relDir),
+      onCreateNote: (relDir) => folderActions.createNote(relDir),
+      onTreeError: async (error) => {
+        if (!isPasswordCancelled(error)) await showError("フォルダを展開できませんでした", error);
+      },
+      onSearch: (pat, options, searchId) => api.workspaceSearch(pat, options, searchId),
+      onCancel: (searchId) => api.workspaceSearchCancel(searchId),
+      onCancelError: (error) => showError("検索を中止できませんでした", error),
+      onError: (error) => showError("フォルダを検索できませんでした", error),
+      onOptionsChange: saveSearchOptions,
+      onOpen: async (result, newTab, query) => {
+        if (newTab) {
+          if (!(await openInNewTab(result.rel_path, searchResultGoto(result)))) return false;
+        } else if (!(await tabs.navigateEntry(result.rel_path))) {
+          return false;
+        }
+        // 当たった長さは backend が返す範囲から取る。正規表現や大小の畳み込みでは
+        // 入力したパターンの長さと一致しない。
+        const [, length] = result.highlights[0] ?? [0, 0];
+        if (result.is_filename) {
+          editor.setFindHighlightQuery("", false);
+          if (!newTab) editor.goTo(result.line, result.col);
+        } else {
+          editor.setFindHighlightQuery(query.pat, query.matchCase, query.useRegex, query.wholeWord);
+          if (!newTab) await editor.selectRange(result.line, result.col, result.col + length);
+        }
+        return true;
+      },
+      onReplace: async (result, replacement) => {
+        if (result.is_filename) return false;
+        if (!(await tabs.navigateEntry(result.rel_path))) return false;
+        const [, length] = result.highlights[0] ?? [0, 0];
+        if (!length) return false;
+        return editor.replaceRange(result.line, result.col, result.col + length, replacement);
+      },
+    },
+    favbar: {
+      onOpen: (path, newTab) => runBackground("お気に入りを開けませんでした", () => openPathInTabs(tabs, path, newTab)),
+      onOpenInNewWindow: (path) => launchNewWindow({ path }),
+      onAddGroupToTabs: (items) => tabs.addLinks(items),
+      revealInExplorer,
+      currentFile: () => addressbar.path || null,
+      onError: (error) => showError("お気に入りを移動できませんでした", error),
+    },
   },
-  onSearch: (pat, options, searchId) => api.workspaceSearch(pat, options, searchId),
-  onCancel: (searchId) => api.workspaceSearchCancel(searchId),
-  onCancelError: (error) => showError("検索を中止できませんでした", error),
-  onError: (error) => showError("フォルダを検索できませんでした", error),
-  onOptionsChange: saveSearchOptions,
-  onOpen: async (result, newTab, query) => {
-    if (newTab) {
-      if (!(await openInNewTab(result.rel_path, searchResultGoto(result)))) return false;
-    } else if (!(await tabs.navigateEntry(result.rel_path))) {
-      return false;
-    }
-    // 当たった長さは backend が返す範囲から取る。正規表現や大小の畳み込みでは
-    // 入力したパターンの長さと一致しない。
-    const [, length] = result.highlights[0] ?? [0, 0];
-    if (result.is_filename) {
-      editor.setFindHighlightQuery("", false);
-      if (!newTab) editor.goTo(result.line, result.col);
-    } else {
-      editor.setFindHighlightQuery(query.pat, query.matchCase, query.useRegex, query.wholeWord);
-      if (!newTab) await editor.selectRange(result.line, result.col, result.col + length);
-    }
-    return true;
-  },
-  onReplace: async (result, replacement) => {
-    if (result.is_filename) return false;
-    if (!(await tabs.navigateEntry(result.rel_path))) return false;
-    const [, length] = result.highlights[0] ?? [0, 0];
-    if (!length) return false;
-    return editor.replaceRange(result.line, result.col, result.col + length, replacement);
-  },
-}, loadSearchOptions());
+  loadSearchOptions(),
+);
+addressbar = workspaceHost.addressbar;
+sidebar = workspaceHost.sidebar;
+favbar = workspaceHost.favbar;
+fileStatusbar = workspaceHost.fileStatusbar;
 
 // 検索の途中経過。確定を待たずに届いた分から並べる
 void api.onWorkspaceSearchBatch((batch) => runBackground("検索結果を画面へ反映できませんでした", () =>
@@ -538,7 +757,7 @@ void api.onDocumentLoadProgress((progress) => {
 async function openInNewTab(relPath: string, goto?: api.Pos): Promise<boolean> {
   const root = doc.current.folderRoot;
   if (!root) return false;
-  return tabs.open(joinWindowsRoot(root, relPath), goto);
+  return tabs.openInNewTab(joinWindowsRoot(root, relPath), goto);
 }
 
 const windowChrome = new WindowChrome($("titlebar"), win, {
@@ -547,13 +766,23 @@ const windowChrome = new WindowChrome($("titlebar"), win, {
     flushSettings,
     onSettingsError: (error) => showError("設定を保存できませんでした", error),
   }),
-  onGeometryChange: () => editor.syncWindowGeometry(),
+  onGeometryChange: () => layoutRuntime?.coordinator.request(),
+  onStateChange: (state) => {
+    if (state !== "minimized") layoutRuntime?.coordinator.request();
+  },
   onError: showError,
 }, $("save-notice"));
 
+const cacheAwareDocumentApi = {
+  ...api,
+  selectEntry: (relPath: string, openAs?: api.OpenAs) =>
+    api.selectEntry(relPath, openAs, getSetting("previewCacheDirectory")),
+};
+
 const doc: DocumentController = new DocumentController({
   editor,
-  statusbar,
+  statusbar: editingStatusbar,
+  fileStatusbar,
   addressbar,
   sidebar,
   setSidebar,
@@ -579,7 +808,7 @@ const doc: DocumentController = new DocumentController({
     return path ?? null;
   },
 }, {
-  api,
+  api: cacheAwareDocumentApi,
   showError,
   confirmSaveDiscard,
   promptFields,
@@ -597,8 +826,8 @@ function applyExternalInfo(info: api.DocInfo) {
 }
 
 function applyExternalMetadata(info: api.DocInfo) {
-  statusbar.setByteSize(info.byte_len, info.is_huge);
-  statusbar.setModifiedAt(info.modified_at);
+  fileStatusbar.setByteSize(info.byte_len, info.is_huge);
+  fileStatusbar.setModifiedAt(info.modified_at);
 }
 
 const externalWatch = new ExternalWatch($("external-banner"), {
@@ -644,31 +873,27 @@ window.addEventListener("beforeunload", () => {
   documentLoadListener.dispose();
   externalWindowListener.dispose();
   dragDropListener.dispose();
+  layoutRuntime?.dispose();
+  layoutRuntime = null;
   windowChrome.dispose();
   externalWatch.dispose();
   favbar.dispose();
-});
-
-const favbar = new FavBar($("favbar"), {
-  onOpen: (path, newTab) => runBackground("お気に入りを開けませんでした", () => openPathInTabs(tabs, path, newTab)),
-  onOpenInNewWindow: (path) => launchNewWindow({ path }),
-  onAddGroupToTabs: (items) => tabs.addLinks(items),
-  revealInExplorer,
-  currentFile: () => addressbar.path || null,
-  onError: (error) => showError("お気に入りを移動できませんでした", error),
 });
 
 const folderActions = new FolderActions(doc, {
   sidebar,
   onOpenInNewTab: (relPath, goto) => runBackground("新規タブで開けませんでした", () => openInNewTab(relPath, goto)),
   onOpenInNewWindow: (path, goto) => launchNewWindow({ path, goto: goto ?? null }),
+  onOpenAs: (relPath, openAs) => {
+    runBackground("指定した形式で開けませんでした", () => tabs.navigateEntry(relPath, openAs));
+  },
   onAddFavorite: (path) => runBackground("お気に入りに追加できませんでした", () => favbar.addExternal(path)),
   onSetStartupPath: (path) => setSetting("startupPath", path),
   onOpenPath: (path) => {
     runBackground("開けませんでした", () => openPathInTabs(tabs, path));
   },
 }, {
-  api,
+  api: cacheAwareDocumentApi,
   showError,
   confirmMessage,
   promptFields,
@@ -718,18 +943,23 @@ $("toggle-bars").addEventListener("click", () => {
   $("navbars").hidden = !$("navbars").hidden;
 });
 $("sidebar-toggle").addEventListener("click", () => {
-  sidebarCollapsed = !sidebarCollapsed;
+  const currentlyShown = paneVisibilityAt(measuredMainWidth()).sidebarShown;
+  // 幅不足による自動退避中は、利用者の開いた状態を保持する。
+  if (currentlyShown || sidebarCollapsed) sidebarCollapsed = !sidebarCollapsed;
   updateSidebarVisibility();
 });
 previewToggle.addEventListener("click", () => {
   if (!previewAvailable) {
     const session = doc.current;
     const path = documentPathOf(session);
-    const format = viewerFormatForPreviewToggle(path);
+    const format = viewerFormatForPreviewToggle(classificationPathOf(session));
     if (format) openPreviewFormat(session, path, format);
     return;
   }
-  previewCollapsed = !previewCollapsed;
+  const layoutWidth = measuredMainWidth();
+  const currentlyShown = paneVisibilityAt(layoutWidth).previewShown;
+  // 幅不足による自動退避と、利用者が明示的に閉じた状態を区別する。
+  previewCollapsed = currentlyShown;
   if (previewCollapsed) {
     previewFullscreen = false;
     previewFullscreenTabId = null;
@@ -738,20 +968,65 @@ previewToggle.addEventListener("click", () => {
   updatePreviewVisibility();
   if (!previewCollapsed) inlinePreview.resend();
 });
-window.addEventListener("resize", updatePreviewVisibility);
 
+// プレビュー切替は本文上へ常駐させず、エディタと縦スクロールバーの境界へ
+// ポインターを近づけたときだけ見せる。キーボード操作中はfocus-visibleで表示する。
+let previewToggleHovered = false;
+let previewTogglePeekTimer: number | undefined;
+function showPreviewTogglePeek() {
+  window.clearTimeout(previewTogglePeekTimer);
+  previewTogglePeekTimer = undefined;
+  mainEl.classList.add("preview-toggle-peek");
+}
+function hidePreviewTogglePeekLater() {
+  window.clearTimeout(previewTogglePeekTimer);
+  previewTogglePeekTimer = window.setTimeout(() => {
+    previewTogglePeekTimer = undefined;
+    if (!previewToggleHovered && document.activeElement !== previewToggle) {
+      mainEl.classList.remove("preview-toggle-peek");
+    }
+  }, 450);
+}
+function pointerNearPreviewBoundary(clientX: number): boolean {
+  const boundary = previewEl.hidden
+    ? mainEl.getBoundingClientRect().right
+    : previewEl.getBoundingClientRect().left;
+  return isPreviewTogglePeekPoint(
+    clientX,
+    boundary,
+    previewToggle.offsetWidth || PREVIEW_TOGGLE_DEFAULT_WIDTH,
+  );
+}
+mainEl.addEventListener("pointermove", (event) => {
+  if (pointerNearPreviewBoundary(event.clientX)) showPreviewTogglePeek();
+  else if (!previewToggleHovered) hidePreviewTogglePeekLater();
+});
+
+mainEl.addEventListener("pointerleave", hidePreviewTogglePeekLater);
+previewToggle.addEventListener("pointerenter", () => {
+  previewToggleHovered = true;
+  showPreviewTogglePeek();
+});
+previewToggle.addEventListener("pointerleave", () => {
+  previewToggleHovered = false;
+  hidePreviewTogglePeekLater();
+});
+previewToggle.addEventListener("focus", showPreviewTogglePeek);
+previewToggle.addEventListener("blur", hidePreviewTogglePeekLater);
 document.addEventListener("contextmenu", (e) => e.preventDefault());
 
 // サイドバー幅のドラッグ変更
 splitter.addEventListener("mousedown", (e) => {
   e.preventDefault();
   const move = (ev: MouseEvent) => {
-    sidebarEl.style.width = `${Math.max(120, ev.clientX)}px`;
+    setSidebarWidth(ev.clientX);
     updateSidebarVisibility();
   };
   const up = () => {
     window.removeEventListener("mousemove", move);
     window.removeEventListener("mouseup", up);
+    const width = Number.parseFloat(sidebarEl.style.width);
+    if (Number.isFinite(width)) setSetting("sidebarWidth", clampSidebarWidth(width));
   };
   window.addEventListener("mousemove", move);
   window.addEventListener("mouseup", up);
@@ -769,12 +1044,21 @@ bindPreviewResize(previewSplitter, {
   onStop: () => document.body.classList.remove("preview-resizing"),
 });
 
-// グローバルショートカット (ファイル操作のみ。編集系はエディタが処理)
+// グローバルショートカット（検索はフォーカス領域へ振り分ける）
 window.addEventListener("keydown", (e) => {
   const command = globalCommandForEvent(commands, e);
   if (!command) return;
   e.preventDefault();
-  runBackground(`${command.label}を実行できませんでした`, () => command.run());
+  runBackground(`${command.label}を実行できませんでした`, () => {
+    if (command === commands.find) {
+      runFindForTarget(e.target, {
+        openEditorSearch: () => editor.openSearch(),
+        focusWorkspaceSearch: () => sidebar.focusWorkspaceSearch(),
+      });
+      return;
+    }
+    return command.run();
+  });
 });
 
 // お気に入りバー上へのdropは登録、それ以外は従来どおり開く
@@ -797,7 +1081,7 @@ void getCurrentWebview().onDragDropEvent((ev) => {
 let folderRefreshRunning = false;
 let folderRefreshErrorReported = false;
 window.setInterval(async () => {
-  statusbar.refreshModifiedAt();
+  fileStatusbar.refreshModifiedAt();
   if (!doc.current.folderRoot || folderRefreshRunning) return;
   folderRefreshRunning = true;
   try {
@@ -816,13 +1100,15 @@ window.setInterval(async () => {
 
 // ---- 起動 ----
 try {
-  await windowChrome.syncMaxIcon();
+  layoutRuntime?.coordinator.refresh();
+  await windowChrome.syncWindowState();
 } catch (error) {
   await reportBackgroundError("ウィンドウ状態を取得できませんでした", error);
 }
 // 以降はファイルエラーなどでユーザー操作待ちになるため、先に操作可能な画面を出す。
 try {
   await win.show();
+  layoutRuntime?.coordinator.request();
 } catch (error) {
   await reportBackgroundError("ウィンドウを表示できませんでした", error);
 }
@@ -837,9 +1123,17 @@ tabs = new TabManager($("tabs"), doc, {
     if (!secondaryInstance) setSetting("openTabs", state);
   },
   workspace: {
-    capture: () => sidebar.captureViewState(),
+    capture: () => ({ ...sidebar.captureViewState(), fileTreeWidth: readSidebarWidth() }),
     reset: () => sidebar.resetViewState(),
-    restore: (state) => sidebar.restoreViewState(state),
+    restore: (state) => {
+      setSidebarWidth(state?.fileTreeWidth ?? getSetting("sidebarWidth"));
+      updateSidebarVisibility();
+      return sidebar.restoreViewState(state);
+    },
+  },
+  findHighlight: {
+    capture: () => editor.captureFindHighlightQuery(),
+    restore: (query) => editor.restoreFindHighlightQuery(query),
   },
   onError: (error, message = "タブを操作できませんでした") => reportBackgroundError(message, error),
   onDetach: (request) => launchNewWindow(request),

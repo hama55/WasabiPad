@@ -4,4 +4,4 @@ import type { Encoding } from "./Encoding";
 import type { Eol } from "./Eol";
 import type { FolderEntry } from "./FolderEntry";
 
-export type DocInfo = { kind: DocKind, line_count: number, enc: Encoding, eol: Eol, path: string, entries: Array<string> | null, folder_entries: Array<FolderEntry> | null, folder_root: string | null, view_only: boolean, is_binary: boolean, byte_len: number, is_huge: boolean, modified_at: number | null, };
+export type DocInfo = { kind: DocKind, line_count: number, enc: Encoding, eol: Eol, path: string, entries: Array<string> | null, folder_entries: Array<FolderEntry> | null, folder_root: string | null, view_only: boolean, is_binary: boolean, byte_len: number, is_huge: boolean, modified_at: number | null, effective_extension: string | null, };

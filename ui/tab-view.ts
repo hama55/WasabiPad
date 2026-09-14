@@ -4,6 +4,7 @@ import { DRAG_THRESHOLD, isMiddleClick } from "./interaction-constants";
 import { runAsyncBoundary } from "./async-boundary";
 import { MENU_ICON } from "./menu-icons";
 import { MENU_LABELS } from "./menu-labels";
+import { comparablePath } from "./path";
 import type { StoredTab } from "./stored-tabs";
 
 export type TabDropSpot = { targetId: string | null; after: boolean; el?: HTMLElement };
@@ -43,6 +44,7 @@ export class TabBarView {
 
   render(state: TabBarViewState) {
     this.state = state;
+    const duplicateOccurrences = new Map<string, number>();
     const buttons = state.tabs.map((tab) => {
       const button = document.createElement("button");
       button.className = "doc-tab";
@@ -50,7 +52,11 @@ export class TabBarView {
       button.classList.toggle("active", tab.id === state.activeId);
       button.title = tab.path ?? "無題";
       button.innerHTML = `<span class="doc-tab-icon">${tab.kind === "folder" ? "📁" : "📄"}</span><span class="doc-tab-label"></span><span class="doc-tab-close">×</span>`;
-      button.querySelector(".doc-tab-label")!.textContent = `${tab.id === state.activeId && state.dirty ? "● " : ""}${tab.label}`;
+      const key = tab.path ? comparablePath(tab.path) : null;
+      const occurrence = key ? (duplicateOccurrences.get(key) ?? 0) + 1 : 0;
+      if (key) duplicateOccurrences.set(key, occurrence);
+      const label = `${tab.label}${occurrence > 1 ? ` (${occurrence})` : ""}`;
+      button.querySelector(".doc-tab-label")!.textContent = `${tab.id === state.activeId && state.dirty ? "● " : ""}${label}`;
       button.addEventListener("click", (event) => {
         if (this.justDragged) {
           this.justDragged = false;
@@ -96,16 +102,31 @@ export class TabBarView {
         }),
       });
       if (tab.kind === "file") {
-        items.push(createRegisteredCommandMenu(tab.path, {
-          ...this.ports.registeredCommandPorts,
-          run: (title, operation) => this.run(operation, title),
-        }));
+        items.push({
+          ...createRegisteredCommandMenu(tab.path, {
+            ...this.ports.registeredCommandPorts,
+            run: (title, operation) => this.run(operation, title),
+          }),
+          sep: true,
+        });
       }
       if (this.ports.onOpenInNewWindow) {
         items.splice(tab.kind === "file" ? 1 : items.length, 0, {
           label: MENU_LABELS.newWindow,
           iconClass: MENU_ICON.newWindow,
+          sep: true,
           action: () => this.run(() => this.ports.onOpenInNewWindow!(tab), "新規ウィンドウで開けませんでした"),
+        });
+      }
+      const writeClipboardText = this.ports.registeredCommandPorts.writeClipboardText;
+      if (writeClipboardText) {
+        items.push({
+          label: MENU_LABELS.copyPath,
+          iconClass: MENU_ICON.copy,
+          action: () => this.run(
+            () => writeClipboardText(tab.path!),
+            "パスをコピーできませんでした",
+          ),
         });
       }
     }

@@ -12,6 +12,7 @@ export interface StoredTab {
   viewState?: EditorViewState;
   selectedRelPath?: string;
   selectedLine?: number;
+  fileTreeWidth?: number;
 }
 
 export interface StoredTabs {
@@ -43,6 +44,8 @@ export function isStoredTab(value: unknown): value is StoredTab {
     && (!("selectedRelPath" in candidate) || candidate.selectedRelPath === undefined || typeof candidate.selectedRelPath === "string")
     && (!("selectedLine" in candidate) || candidate.selectedLine === undefined
       || (typeof candidate.selectedLine === "number" && Number.isInteger(candidate.selectedLine) && candidate.selectedLine >= 0))
+    && (!("fileTreeWidth" in candidate) || candidate.fileTreeWidth === undefined
+      || (typeof candidate.fileTreeWidth === "number" && Number.isFinite(candidate.fileTreeWidth)))
     && (!("viewState" in candidate) || candidate.viewState === undefined || isEditorViewState(candidate.viewState));
 }
 
@@ -52,4 +55,22 @@ export function isStoredTabs(value: unknown): value is StoredTabs {
   return Array.isArray(candidate.tabs)
     && candidate.tabs.every(isStoredTab)
     && (typeof candidate.activeId === "string" || candidate.activeId === null);
+}
+
+export function normalizeStoredTabs(value: unknown): StoredTabs | null {
+  if (isStoredTabs(value)) return value;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const candidate = value as Partial<StoredTabs>;
+  if (!Array.isArray(candidate.tabs)
+    || (typeof candidate.activeId !== "string" && candidate.activeId !== null)) return null;
+  const tabs = candidate.tabs.map((tab) => {
+    if (isStoredTab(tab)) return tab;
+    if (typeof tab !== "object" || tab === null || Array.isArray(tab)) return null;
+    const withoutInvalidWidth = { ...(tab as Record<string, unknown>) };
+    delete withoutInvalidWidth.fileTreeWidth;
+    return isStoredTab(withoutInvalidWidth) ? withoutInvalidWidth : null;
+  });
+  return tabs.every((tab): tab is StoredTab => tab !== null)
+    ? { tabs, activeId: candidate.activeId }
+    : null;
 }

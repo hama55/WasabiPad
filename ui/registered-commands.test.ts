@@ -11,6 +11,7 @@ import {
   commandLineForValue,
   commandsForKind,
   removeRegisteredCommand,
+  updateRegisteredCommands,
   updateRegisteredCommand,
 } from "./registered-commands";
 
@@ -147,5 +148,22 @@ describe("Feature: registered commands", () => {
     expect(commandsForKind()).toEqual([
       { label: "Chrome Dev", prefix: "cmd.exe /D /C", command: "chrome --incognito {file}" },
     ]);
+  });
+
+  // Given: 同じ種類で内容が重なる2件の登録コマンドがある
+  // When: 1件目を空欄または2件目と同じ表示名へ更新する
+  // Then: 無効な編集結果や重複は保存候補にならない
+  it("Scenario: 登録コマンド編集時に空欄と重複を保存しない", () => {
+    const commands = [
+      { label: "Editor", prefix: "", command: "code {file}" },
+      { label: "Notepad", prefix: "", command: "code {file}" },
+    ];
+
+    expect(updateRegisteredCommands(commands, commands[0], {
+      label: "   ", prefix: "", command: "code {file}",
+    })).toBeNull();
+    expect(updateRegisteredCommands(commands, commands[0], {
+      label: "Notepad", prefix: "", command: "code {file}",
+    })).toBeNull();
   });
 });

@@ -15,13 +15,14 @@ use instance::{
 };
 use state::{DocState, State};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
-use viewer::ViewerStore;
+use viewer::{FindShortcutGuard, ViewerStore};
 use wasabipad_core::{
     self, BookmarkNode, Doc, DocInfo, EditManyItem, EditManyResult, EditResult, EncodingId, Eol,
-    ExternalCheck, ExternalMergePreview, FindCursor, FindOutcome, FindResult, FolderEntry, PosC,
-    ReplaceChunkResult, SaveOutcome, SearchOptions, WorkspaceSearchOutcome,
+    ExternalCheck, ExternalMergePreview, FindCursor, FindOutcome, FindResult, FolderEntry, OpenAs, PosC,
+    PreviewCache, ReplaceChunkResult, SaveOutcome, SearchOptions, WorkspaceSearchOutcome,
 };
 
 const EVENT_EXTERNAL_WINDOW_REQUEST: &str = "external-window-request";
@@ -64,6 +65,13 @@ struct WorkspaceSearchBatch {
     results: Vec<wasabipad_core::WorkspaceSearchResult>,
 }
 
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PreviewCacheInfo {
+    directory: String,
+    bytes: u64,
+}
+
 // 受理する形式はこの enum が単一の定義。表示名はフロント (ui/format.ts) だけが持つ。
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize, ts_rs::TS)]
 #[ts(export)]
@@ -88,6 +96,8 @@ struct ViewerPayload {
     selection: Option<ViewerSelection>,
     // Markdown 内の相対パス画像は元ファイルの位置からしか解決できない (未保存なら None)
     source_path: Option<String>,
+    // 形式指定で開いた場合も、実パスは資産読込用にそのまま保持する。
+    effective_extension: Option<String>,
     // アーカイブ内メモの画像は、アーカイブエントリを IPC 経由で読む。
     archive_path: Option<String>,
     archive_entry: Option<String>,
@@ -101,8 +111,13 @@ struct ViewerSelection {
 }
 
 #[tauri::command]
-fn open_path(path: String, state: State, app: AppHandle) -> Result<DocInfo, String> {
-    document::open_path(path, state, app)
+fn open_path(
+    path: String,
+    open_as: Option<OpenAs>,
+    state: State,
+    app: AppHandle,
+) -> Result<DocInfo, String> {
+    document::open_path(path, open_as, state, app)
 }
 
 #[tauri::command]
@@ -126,10 +141,15 @@ fn line_char_len(line: usize, state: State) -> Result<usize, String> {
 }
 
 #[tauri::command]
-async fn select_entry(rel_path: String, app: AppHandle) -> Result<DocInfo, String> {
+async fn select_entry(
+    rel_path: String,
+    open_as: Option<OpenAs>,
+    cache_directory: Option<String>,
+    app: AppHandle,
+) -> Result<DocInfo, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Mutex<DocState>>();
-        document::select_entry(rel_path, state)
+        document::select_entry(rel_path, open_as, cache_directory, state)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -191,7 +211,7 @@ fn create_note(
 }
 
 #[tauri::command]
-fn create_folder(rel_dir: String, name: String, state: State) -> Result<(), String> {
+fn create_folder(rel_dir: String, name: String, state: State) -> Result<String, String> {
     document::create_folder(rel_dir, name, state)
 }
 
@@ -277,8 +297,8 @@ fn open_in_other_app(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn open_in_default_browser(path: String) -> Result<(), String> {
-    system::open_in_default_browser(path)
+fn open_in_default_browser(path: String, effective_extension: Option<String>) -> Result<(), String> {
+    system::open_in_default_browser(path, effective_extension)
 }
 
 #[tauri::command]
@@ -475,15 +495,58 @@ fn initial_window_request() -> Result<WindowRequest, String> {
 async fn read_archive_asset(
     archive_path: String,
     entry: String,
+    cache_directory: Option<String>,
     app: AppHandle,
 ) -> Result<tauri::ipc::Response, String> {
     let bytes = tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Mutex<DocState>>();
-        document::read_archive_asset(archive_path, entry, state)
+        document::read_archive_asset(archive_path, entry, cache_directory, state)
     })
     .await
     .map_err(|error| error.to_string())??;
     Ok(tauri::ipc::Response::new(bytes))
+}
+
+#[tauri::command]
+async fn read_file_asset(
+    path: String,
+    cache_directory: Option<String>,
+    app: AppHandle,
+) -> Result<tauri::ipc::Response, String> {
+    let bytes = tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<DocState>>();
+        document::read_file_asset(path, cache_directory, state)
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+fn preview_cache_from_directory(cache_directory: Option<String>) -> Result<PreviewCache, String> {
+    let root = cache_directory
+        .filter(|directory| !directory.trim().is_empty())
+        .map(PathBuf::from)
+        .or_else(|| PreviewCache::default_root().ok())
+        .ok_or_else(|| "プレビューキャッシュの既定保存場所を取得できません".to_string())?;
+    Ok(PreviewCache::new(root))
+}
+
+#[tauri::command]
+fn preview_cache_info(cache_directory: Option<String>) -> Result<PreviewCacheInfo, String> {
+    let cache = preview_cache_from_directory(cache_directory)?;
+    std::fs::create_dir_all(cache.directory()).map_err(|error| error.to_string())?;
+    let bytes = cache.total_bytes().map_err(|error| error.to_string())?;
+    Ok(PreviewCacheInfo {
+        directory: cache.directory().to_string_lossy().into_owned(),
+        bytes,
+    })
+}
+
+#[tauri::command]
+fn clear_preview_cache(cache_directory: Option<String>) -> Result<(), String> {
+    preview_cache_from_directory(cache_directory)?
+        .clear()
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -493,7 +556,8 @@ fn take_pending_window_requests(state: tauri::State<'_, InstanceServer>) -> Vec<
 
 #[cfg(test)]
 mod window_request_tests {
-    use super::parse_window_request;
+    use super::{parse_window_request, preview_cache_info};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn internal_request_round_trips_as_one_json_argument() {
@@ -518,6 +582,27 @@ mod window_request_tests {
         assert_eq!(request.path.as_deref(), Some(r"C:\work\memo.txt"));
         assert_eq!(request.goto.unwrap().col, 2);
     }
+
+    // Feature: 外部プレビューキャッシュ保存場所
+    // Scenario: 保存場所の情報確認で未作成のキャッシュフォルダを用意する
+    // Given: まだ存在しないプレビューキャッシュ保存場所が指定されている
+    // When: 保存場所と使用量を取得する
+    // Then: 表示対象のキャッシュフォルダが作成される
+    #[test]
+    fn preview_cache_info_creates_missing_storage_directory() {
+        let root = std::env::temp_dir().join(format!(
+            "wasabipad-preview-info-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let info = preview_cache_info(Some(root.to_string_lossy().into_owned())).unwrap();
+
+        assert!(std::path::Path::new(&info.directory).is_dir());
+        let _ = std::fs::remove_dir_all(root);
+    }
 }
 
 // Windowsでは同期command中のWebView生成がイベントループを塞ぐためasyncで実行する。
@@ -527,11 +612,27 @@ async fn open_viewer(
     text: String,
     selection: Option<ViewerSelection>,
     source_path: Option<String>,
+    effective_extension: Option<String>,
     app: AppHandle,
     doc_state: State<'_>,
     state: tauri::State<'_, ViewerStore>,
 ) -> Result<String, String> {
-    viewer::open_viewer(format, text, selection, source_path, app, doc_state, state).await
+    viewer::open_viewer(
+        format,
+        text,
+        selection,
+        source_path,
+        effective_extension,
+        app,
+        doc_state,
+        state,
+    )
+    .await
+}
+
+#[tauri::command]
+fn set_inline_preview_focus(focused: bool, state: tauri::State<'_, FindShortcutGuard>) {
+    state.set(focused);
 }
 
 #[tauri::command]
@@ -589,10 +690,17 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(Mutex::new(DocState(Doc::empty())))
         .manage(ViewerStore(Mutex::new(HashMap::new())))
+        .manage(FindShortcutGuard::default())
         .manage(search::SearchCancel(Mutex::new(None)))
         .manage(instance_server)
         .setup(|app| {
             app.state::<InstanceServer>().start(app.handle());
+            if let Some(window) = app.get_webview_window("main") {
+                viewer::install_find_shortcut_guard(
+                    &window,
+                    app.state::<FindShortcutGuard>().0.clone(),
+                );
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -620,6 +728,9 @@ fn main() {
             save_pasted_image,
             cleanup_unused_images,
             read_archive_asset,
+            read_file_asset,
+            preview_cache_info,
+            clear_preview_cache,
             reveal_in_explorer,
             open_in_other_app,
             open_in_default_browser,
@@ -653,6 +764,7 @@ fn main() {
             initial_window_request,
             take_pending_window_requests,
             open_viewer,
+            set_inline_preview_focus,
             take_viewer_payload,
             update_viewer,
             close_viewer,

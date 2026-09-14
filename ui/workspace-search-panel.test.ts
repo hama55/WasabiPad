@@ -626,6 +626,29 @@ describe("Feature: WorkspaceSearchPanel", () => {
     expect(text(host, ".ws-empty")).toContain("検索を中止しました");
   });
 
+  // Feature: ファイルツリー検索の中止理由表示
+  // Scenario: 中止後に表示している結果が途中結果だけだと説明する
+  // Given: 未完了検索に a.txt の途中結果があり、検索結果欄に「検索を中止しました」が表示されている
+  // When: 検索結果欄の中止メッセージを確認する
+  // Then: 検索を中止したことと、ここまでの途中結果だけを表示していることが説明される
+  it("Scenario: 中止理由と途中結果であることを結果欄に説明する", async () => {
+    vi.useFakeTimers();
+    let searchId = 0;
+    const host = mount((_pat, _options, id) => {
+      searchId = id;
+      return new Promise<WorkspaceSearchOutcome>(() => {});
+    });
+    await search(host, "needle");
+    mounted.acceptBatch(searchId, [hit("a.txt", 0, "needle")]);
+    await vi.advanceTimersByTimeAsync(100);
+
+    host.querySelector<HTMLButtonElement>(".ws-stop")!.click();
+
+    expect(text(host, ".ws-empty-detail")).toBe(
+      "検索を中止したため、ここまでに見つかった途中結果だけを表示しています。"
+    );
+  });
+
   // Feature: タブ別ファイルツリー検索状態
   // Scenario: 表示部品を別のフォルダへ切り替えても検索状態を共有しない
   // Given: C:\workspace で needle の a.txt 1件を表示している

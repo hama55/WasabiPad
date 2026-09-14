@@ -6,6 +6,7 @@ import {
   isPreviewSplitterShown,
   previewWidthFromPointer,
   PREVIEW_MIN_WIDTH,
+  resolvePaneVisibility,
   shouldKeepPreviewFullscreen,
 } from "./preview-layout";
 
@@ -30,6 +31,72 @@ describe("Feature: preview layout", () => {
   it("Scenario: プレビュー幅にメイン領域の最大値を設ける", () => {
     expect(previewWidthFromPointer(1200, 0, 100)).toBe(1100);
     expect(previewWidthFromPointer(1200, 0, 220)).toBe(980);
+  });
+
+  // Given: サイドバーとプレビューを表示したまま、エディタに必要な幅を確保できない
+  // When: 現在のメイン領域に実効レイアウトを求める
+  // Then: プレビューを先に縮退させ、さらに狭ければサイドバーも縮退させる
+  it("Scenario: 狭いwindowでは本文領域を優先してペインを縮退する", () => {
+    expect(resolvePaneVisibility({
+      mainWidth: 600,
+      sidebarAvailable: true,
+      sidebarCollapsed: false,
+      sidebarWidth: 220,
+      previewAvailable: true,
+      previewCollapsed: false,
+      fullscreen: false,
+    })).toEqual({ sidebarShown: true, previewShown: false, fullscreen: false });
+
+    expect(resolvePaneVisibility({
+      mainWidth: 250,
+      sidebarAvailable: true,
+      sidebarCollapsed: false,
+      sidebarWidth: 220,
+      previewAvailable: true,
+      previewCollapsed: false,
+      fullscreen: false,
+    })).toEqual({ sidebarShown: false, previewShown: false, fullscreen: false });
+  });
+
+  // Feature: 利用者が変更したプレビュー幅
+  // Scenario: 広いプレビューを保ったままwindowを狭くする
+  // Given: プレビュー幅を600pxへ手動変更している
+  // When: 本文最小幅を確保できない幅までwindowを縮める
+  // Then: プレビューを一時退避して本文の表示領域を守る
+  it("Scenario: 手動で広げたプレビューが本文を押し潰さない", () => {
+    expect(resolvePaneVisibility({
+      mainWidth: 700,
+      sidebarAvailable: false,
+      sidebarCollapsed: false,
+      sidebarWidth: 220,
+      previewAvailable: true,
+      previewCollapsed: false,
+      previewWidth: 600,
+      fullscreen: false,
+    })).toEqual({ sidebarShown: false, previewShown: false, fullscreen: false });
+  });
+
+  // Given: プレビュー全画面中のwindowがサイドバー幅より狭い
+  // When: 実効レイアウトを求める
+  // Then: サイドバーを退避し、プレビューだけを利用可能な幅で表示する
+  it("Scenario: プレビュー全画面では狭いwindowからサイドバーを退避する", () => {
+    expect(resolvePaneVisibility({
+      mainWidth: 250,
+      sidebarAvailable: true,
+      sidebarCollapsed: false,
+      sidebarWidth: 220,
+      previewAvailable: true,
+      previewCollapsed: false,
+      fullscreen: true,
+    })).toEqual({ sidebarShown: false, previewShown: true, fullscreen: true });
+  });
+
+  // Given: メイン領域そのものがプレビューの標準最小幅より狭い
+  // When: splitterの位置からプレビュー幅を求める
+  // Then: 画面外へはみ出さず、利用可能な幅へ収める
+  it("Scenario: 標準最小幅より狭いwindowでもプレビュー幅を画面内へ収める", () => {
+    expect(previewWidthFromPointer(200, 0)).toBe(200);
+    expect(previewWidthFromPointer(200, 180)).toBe(200);
   });
 
   // Given: プレビューの可用/開閉/全画面状態を指定

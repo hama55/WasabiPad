@@ -2,6 +2,63 @@ use crate::fileio::{EncodingId, Eol};
 use crate::folder::FolderEntry;
 use serde::Serialize;
 
+#[derive(Serialize, serde::Deserialize, Clone, Copy, PartialEq, Eq, Debug, ts_rs::TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(export)]
+pub enum OpenAs {
+    Txt,
+    Md,
+    Csv,
+    Html,
+    Pdf,
+    Svg,
+    Png,
+    Jpg,
+    Gif,
+    Webp,
+    Bmp,
+    Ico,
+    Avif,
+    Apng,
+    Zip,
+    #[serde(rename = "7z")]
+    SevenZip,
+    Xlsx,
+    Xls,
+    #[serde(rename = "image-auto")]
+    ImageAuto,
+}
+
+impl OpenAs {
+    pub(crate) fn extension(self) -> Option<&'static str> {
+        match self {
+            Self::Txt => Some("txt"),
+            Self::Md => Some("md"),
+            Self::Csv => Some("csv"),
+            Self::Html => Some("html"),
+            Self::Pdf => Some("pdf"),
+            Self::Svg => Some("svg"),
+            Self::Png => Some("png"),
+            Self::Jpg => Some("jpg"),
+            Self::Gif => Some("gif"),
+            Self::Webp => Some("webp"),
+            Self::Bmp => Some("bmp"),
+            Self::Ico => Some("ico"),
+            Self::Avif => Some("avif"),
+            Self::Apng => Some("apng"),
+            Self::Zip => Some("zip"),
+            Self::SevenZip => Some("7z"),
+            Self::Xlsx => Some("xlsx"),
+            Self::Xls => Some("xls"),
+            Self::ImageAuto => None,
+        }
+    }
+
+    pub(crate) fn is_archive(self) -> bool {
+        matches!(self, Self::Zip | Self::SevenZip | Self::Xlsx | Self::Xls)
+    }
+}
+
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug, ts_rs::TS)]
 #[serde(rename_all = "lowercase")]
 #[ts(export)]
@@ -26,6 +83,7 @@ pub struct DocInfo {
     pub byte_len: u64,
     pub is_huge: bool,
     pub modified_at: Option<u64>,
+    pub effective_extension: Option<String>,
 }
 
 #[derive(Serialize, serde::Deserialize, Clone, Copy, ts_rs::TS)]

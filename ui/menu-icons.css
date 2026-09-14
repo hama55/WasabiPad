@@ -34,6 +34,7 @@
 .menu-icon-paste::before { content: "▣"; }
 .menu-icon-registered-string::before { content: "❝"; }
 .menu-icon-select-all::before { content: "☷"; }
+.menu-icon-text::before { content: "T"; }
 .menu-icon-csv::before { content: "▤"; }
 .menu-icon-markdown::before { content: "▧"; }
 .menu-icon-image::before { content: "▨"; }

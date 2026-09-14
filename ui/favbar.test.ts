@@ -257,7 +257,10 @@ describe("Feature: FavBar", () => {
       buttons[0].dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
       expect([...document.querySelectorAll("#dropdown .dd-label")].map((label) => label.textContent))
       .toEqual(["エクスプローラで開く", "新規タブで開く", "新規ウィンドウで開く", "編集...", "移動 ▸", "削除"]);
-      expect(document.querySelectorAll("#dropdown .dd-sep")).toHaveLength(2);
+      expect(document.querySelectorAll("#dropdown .dd-sep")).toHaveLength(3);
+      const firstSeparator = document.querySelector<HTMLElement>("#dropdown .dd-sep");
+      expect(firstSeparator?.previousElementSibling?.textContent).toBe("エクスプローラで開く");
+      expect(firstSeparator?.nextElementSibling?.textContent).toBe("新規タブで開く");
       const itemIcons = [
         ["エクスプローラで開く", MENU_ICON.explorer],
         ["新規タブで開く", MENU_ICON.newTab],

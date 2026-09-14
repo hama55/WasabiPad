@@ -190,7 +190,7 @@ export class FavBar {
       items.push(
         { label: MENU_LABELS.explorer, iconClass: MENU_ICON.explorer, action: () =>
           this.runMutation(() => this.revealInExplorer(node.path, node.kind === "directory")) },
-        { label: MENU_LABELS.newTab, iconClass: MENU_ICON.newTab, action: () => this.runOpen(node.path, true) },
+        { label: MENU_LABELS.newTab, iconClass: MENU_ICON.newTab, action: () => this.runOpen(node.path, true), sep: true },
         { label: MENU_LABELS.newWindow, iconClass: MENU_ICON.newWindow, action: () => this.runOpenInNewWindow(node.path) },
         { label: "編集...", iconClass: MENU_ICON.rename, action: () => this.runMutation(() => this.editPath(path)), sep: true }
       );

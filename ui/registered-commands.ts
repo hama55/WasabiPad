@@ -74,30 +74,39 @@ export function addRegisteredCommand(command: RegisteredCommandInput): void {
   const normalized = normalizeRegisteredCommand(command);
   if (!normalized.label || !normalized.command) return;
   const commands = getSetting("registeredCommands");
-  if (commands.some((item) => item.label === normalized.label
-    && item.prefix === normalized.prefix
-    && item.command === normalized.command
-    && commandValueKind(item) === commandValueKind(normalized))) return;
+  if (commands.some((item) => sameRegisteredCommand(item, normalized))) return;
   setSetting("registeredCommands", [...commands, normalized]);
+}
+
+function sameRegisteredCommand(a: RegisteredCommand, b: RegisteredCommand): boolean {
+  return a.label === b.label
+    && a.prefix === b.prefix
+    && a.command === b.command
+    && commandValueKind(a) === commandValueKind(b);
+}
+
+export function updateRegisteredCommands(
+  commands: readonly RegisteredCommand[],
+  previous: RegisteredCommand,
+  changes: Pick<RegisteredCommand, "label" | "prefix" | "command">,
+): RegisteredCommand[] | null {
+  const updated = normalizeRegisteredCommand({ ...previous, ...changes });
+  if (!updated.label || !updated.command) return null;
+  const index = commands.indexOf(previous);
+  if (index < 0) return null;
+  if (commands.some((item, itemIndex) => itemIndex !== index && sameRegisteredCommand(item, updated))) return null;
+  const next = [...commands];
+  next[index] = updated;
+  return next;
 }
 
 export function updateRegisteredCommand(
   previous: RegisteredCommand,
   changes: Pick<RegisteredCommand, "label" | "prefix" | "command">,
 ): void {
-  const updated = normalizeRegisteredCommand({ ...previous, ...changes });
-  if (!updated.label || !updated.command) return;
   const commands = getSetting("registeredCommands");
-  const index = commands.indexOf(previous);
-  if (index < 0) return;
-  if (commands.some((item, itemIndex) => itemIndex !== index
-    && item.label === updated.label
-    && item.prefix === updated.prefix
-    && item.command === updated.command
-    && commandValueKind(item) === commandValueKind(updated))) return;
-  const next = [...commands];
-  next[index] = updated;
-  setSetting("registeredCommands", next);
+  const next = updateRegisteredCommands(commands, previous, changes);
+  if (next) setSetting("registeredCommands", next);
 }
 
 export function removeRegisteredCommand(command: RegisteredCommand): void {
