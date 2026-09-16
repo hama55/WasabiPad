@@ -383,6 +383,13 @@ function openPreviewFormat(
   fragment: string | null = null,
 ) {
   const sourcePath = sourcePathForViewer(format, session.savePath, session.displayPath);
+  if (format === "sqlite" && !sqlitePreviewSourcePath(session)) {
+    inlinePreview.setSourcePath(null, session.archivePath, session.archiveEntry);
+    previewDocument = null;
+    editingStatusbar.setPreviewFormat(null);
+    inlinePreview.clear();
+    return;
+  }
   inlinePreview.setSourcePath(
     sourcePath,
     session.archivePath,
@@ -398,6 +405,11 @@ function openPreviewFormat(
       if (fragment !== null && format === "markdown") inlinePreview.setMarkdownFragment(fragment);
     },
   );
+}
+
+function sqlitePreviewSourcePath(session: Readonly<DocumentSession>): string | null {
+  if (session.archivePath !== null || session.archiveEntry !== null) return null;
+  return sourcePathForViewer("sqlite", session.savePath, session.displayPath);
 }
 
 function syncPreviewDocument(session: Readonly<DocumentSession>, force = false, fragment: string | null = null) {
@@ -418,6 +430,13 @@ function syncPreviewDocument(session: Readonly<DocumentSession>, force = false, 
     previewFullscreenTabId = null;
   }
   const isAssetPreview = isAssetViewerFormat(format);
+  if (format === "sqlite" && !sqlitePreviewSourcePath(session)) {
+    inlinePreview.setSourcePath(null, session.archivePath, session.archiveEntry);
+    previewDocument = null;
+    editingStatusbar.setPreviewFormat(null);
+    inlinePreview.clear();
+    return;
+  }
   if (!force && isCurrentPreviewDocument(previewDocument, activeTabId, path) && !isAssetPreview) return;
   if (!format) {
     inlinePreview.setSourcePath(null, session.archivePath, session.archiveEntry);
@@ -536,6 +555,16 @@ const editorPorts = {
   onError: (message, error) => showError(message, error),
   openViewer: async (format, text, selection) => {
     const path = documentPathOf(doc.current);
+    if (format === "sqlite") {
+      const sourcePath = sqlitePreviewSourcePath(doc.current);
+      if (!sourcePath) throw new Error("SQLiteプレビューは保存済みの通常ファイルだけ対応しています");
+      inlinePreview.setSourcePath(
+        sourcePath,
+        doc.current.archivePath,
+        doc.current.archiveEntry,
+        doc.current.effectiveExtension,
+      );
+    }
     editingStatusbar.setPreviewFormat(format);
     const label = await inlinePreview.open(format, text, selection);
     if (isCurrentPreviewDocument(previewDocument, tabs?.state.activeId ?? null, path)) {

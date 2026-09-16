@@ -15,6 +15,11 @@ export type { RegisteredCommand } from "./registered-command-model";
 export const DEFAULT_MARKDOWN_LINE_HEIGHT = 1.65;
 export const MIN_MARKDOWN_LINE_HEIGHT = 1.4;
 export const MAX_MARKDOWN_LINE_HEIGHT = 2;
+export const DEFAULT_SQLITE_PREVIEW_ROWS = 100;
+
+export function isValidSqlitePreviewRows(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && Number.isInteger(value) && value > 0;
+}
 
 export function isValidMarkdownLineHeight(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value)
@@ -30,6 +35,7 @@ export interface Settings {
   markdownSoftBreaks: boolean;
   markdownLineHeight: number;
   markdownHeadingUnderlines: boolean;
+  sqlitePreviewRows: number;
   previewCacheDirectory: string | null;
   startupPath: string | null;
   registeredStrings: string[];
@@ -48,6 +54,7 @@ const DEFAULTS: Settings = {
   markdownSoftBreaks: true,
   markdownLineHeight: DEFAULT_MARKDOWN_LINE_HEIGHT,
   markdownHeadingUnderlines: false,
+  sqlitePreviewRows: DEFAULT_SQLITE_PREVIEW_ROWS,
   previewCacheDirectory: null,
   startupPath: null,
   registeredStrings: [],
@@ -110,6 +117,9 @@ export function parseSettingsResult(text: string): SettingsParseResult {
     markdownHeadingUnderlines: typeof value.markdownHeadingUnderlines === "boolean"
       ? value.markdownHeadingUnderlines
       : DEFAULTS.markdownHeadingUnderlines,
+    sqlitePreviewRows: isValidSqlitePreviewRows(value.sqlitePreviewRows)
+      ? value.sqlitePreviewRows
+      : DEFAULTS.sqlitePreviewRows,
     previewCacheDirectory: typeof value.previewCacheDirectory === "string" && value.previewCacheDirectory.trim().length > 0
       ? value.previewCacheDirectory
       : DEFAULTS.previewCacheDirectory,
@@ -183,6 +193,7 @@ export function resetUserSettings(): void {
   setSetting("markdownSoftBreaks", DEFAULTS.markdownSoftBreaks);
   setSetting("markdownLineHeight", DEFAULTS.markdownLineHeight);
   setSetting("markdownHeadingUnderlines", DEFAULTS.markdownHeadingUnderlines);
+  setSetting("sqlitePreviewRows", DEFAULTS.sqlitePreviewRows);
   setSetting("previewCacheDirectory", DEFAULTS.previewCacheDirectory);
   setSetting("startupPath", DEFAULTS.startupPath);
   setSetting("registeredStrings", []);

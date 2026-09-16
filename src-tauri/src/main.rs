@@ -22,7 +22,8 @@ use viewer::{FindShortcutGuard, ViewerStore};
 use wasabipad_core::{
     self, BookmarkNode, Doc, DocInfo, EditManyItem, EditManyResult, EditResult, EncodingId, Eol,
     ExternalCheck, ExternalMergePreview, FindCursor, FindOutcome, FindResult, FolderEntry, OpenAs, PosC,
-    PreviewCache, ReplaceChunkResult, SaveOutcome, SearchOptions, WorkspaceSearchOutcome,
+    read_sqlite_preview as read_sqlite_preview_core, PreviewCache, ReplaceChunkResult,
+    SaveOutcome, SearchOptions, SqlitePreview, WorkspaceSearchOutcome,
 };
 
 const EVENT_EXTERNAL_WINDOW_REQUEST: &str = "external-window-request";
@@ -86,6 +87,8 @@ enum ViewerFormat {
     Pdf,
     #[serde(rename = "html")]
     Html,
+    #[serde(rename = "sqlite")]
+    Sqlite,
 }
 
 #[derive(Clone, serde::Serialize, ts_rs::TS)]
@@ -663,6 +666,25 @@ fn close_viewer(
     viewer::close_viewer(label, app, state)
 }
 
+#[tauri::command]
+async fn read_sqlite_preview(
+    path: String,
+    selected_name: Option<String>,
+    offset: usize,
+    limit: usize,
+) -> Result<SqlitePreview, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        read_sqlite_preview_core(
+            std::path::Path::new(&path),
+            selected_name.as_deref(),
+            offset,
+            limit,
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 fn main() {
     let initial_request = match parse_window_request(std::env::args().skip(1)) {
         Ok(request) => request,
@@ -768,6 +790,7 @@ fn main() {
             take_viewer_payload,
             update_viewer,
             close_viewer,
+            read_sqlite_preview,
         ])
         .build(tauri::generate_context!())
     {

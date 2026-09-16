@@ -146,6 +146,17 @@ describe("Feature: settings", () => {
     expect(parseSettings(JSON.stringify({ markdownHeadingUnderlines: "true" })).markdownHeadingUnderlines).toBe(false);
   });
 
+  // Given: SQLiteプレビュー行数が未設定・大きな正整数・0・小数として保存されている
+  // When: `parseSettings`を呼ぶ
+  // Then: 既定値100、大きな正整数を復元し、不正値は既定値へ戻す
+  it("Scenario: SQLiteプレビュー行数を上限なしで安全に復元する", () => {
+    expect(parseSettings("{}").sqlitePreviewRows).toBe(100);
+    expect(parseSettings(JSON.stringify({ sqlitePreviewRows: 1000000 })).sqlitePreviewRows).toBe(1000000);
+    expect(parseSettings(JSON.stringify({ sqlitePreviewRows: 0 })).sqlitePreviewRows).toBe(100);
+    expect(parseSettings(JSON.stringify({ sqlitePreviewRows: 1.5 })).sqlitePreviewRows).toBe(100);
+    expect(parseSettings(JSON.stringify({ sqlitePreviewRows: "100" })).sqlitePreviewRows).toBe(100);
+  });
+
   // Given: エディタ用サイズ16とプレビュー用サイズ20を保存
   // When: `parseSettings`を呼ぶ
   // Then: それぞれのサイズを独立して復元する
@@ -209,6 +220,7 @@ describe("Feature: settings", () => {
     setSetting("markdownSoftBreaks", false);
     setSetting("markdownLineHeight", 1.9);
     setSetting("markdownHeadingUnderlines", true);
+    setSetting("sqlitePreviewRows", 250);
     setSetting("startupPath", "C:\\work");
     setSetting("registeredStrings", ["snippet"]);
     await flushSettings();
@@ -221,6 +233,7 @@ describe("Feature: settings", () => {
     expect(getSetting("markdownSoftBreaks")).toBe(true);
     expect(getSetting("markdownLineHeight")).toBe(1.65);
     expect(getSetting("markdownHeadingUnderlines")).toBe(false);
+    expect(getSetting("sqlitePreviewRows")).toBe(100);
     expect(getSetting("startupPath")).toBeNull();
     expect(getSetting("registeredStrings")).toEqual([]);
     expect(getSetting("openTabs")).toEqual(openTabs);

@@ -14,6 +14,7 @@ export const MENU_ICON = {
   image: "menu-icon-image",
   pdf: "menu-icon-pdf",
   html: "menu-icon-html",
+  sqlite: "menu-icon-sqlite",
   external: "menu-icon-external",
   newTab: "menu-icon-new-tab",
   newWindow: "menu-icon-new-window",

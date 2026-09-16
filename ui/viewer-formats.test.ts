@@ -12,7 +12,7 @@ import {
 import { MENU_ICON } from "./menu-icons";
 
 describe("Feature: viewer formats", () => {
-  // Given: `report.CSV`、`notes.Markdown`、`photo.PNG`、`manual.PDF`、`manual.HTML`、`notes.txt`を指定
+  // Given: `report.CSV`、`notes.Markdown`、`photo.PNG`、`manual.PDF`、`manual.HTML`、`data.SQLITE3`、`notes.txt`を指定
   // When: `viewerFormatForPath`を呼ぶ
   // Then: それぞれ`csv`、`markdown`、`image`、`pdf`、`html`、`null`
   it("Scenario: resolves registered extensions case-insensitively", () => {
@@ -21,6 +21,7 @@ describe("Feature: viewer formats", () => {
     expect(viewerFormatForPath("photo.PNG")).toBe("image");
     expect(viewerFormatForPath("manual.PDF")).toBe("pdf");
     expect(viewerFormatForPath("manual.HTML")).toBe("html");
+    expect(viewerFormatForPath("data.SQLITE3")).toBe("sqlite");
     expect(viewerFormatForPath("notes.txt")).toBeNull();
   });
 
@@ -31,6 +32,7 @@ describe("Feature: viewer formats", () => {
   // Then: 登録形式を優先し、未登録拡張子はMarkdownで手動表示できる
   it("Scenario: 未登録拡張子のテキストをMarkdownビューで開く", () => {
     expect(viewerFormatForPreviewToggle("data.csv")).toBe("csv");
+    expect(viewerFormatForPreviewToggle("data.sqlite")).toBe("sqlite");
     expect(viewerFormatForPreviewToggle("animation.gif")).toBe("image");
     expect(viewerFormatForPreviewToggle("notes.txt")).toBe("markdown");
     expect(viewerFormatForPreviewToggle("payload.bin")).toBe("markdown");
@@ -47,6 +49,9 @@ describe("Feature: viewer formats", () => {
     expect(canRenderViewerFormat("csv", "notes.md")).toBe(true);
     expect(canRenderViewerFormat("markdown", null)).toBe(true);
     expect(canRenderViewerFormat("image", null)).toBe(false);
+    expect(canRenderViewerFormat("sqlite", "data.sqlite")).toBe(true);
+    expect(canRenderViewerFormat("csv", "data.sqlite")).toBe(false);
+    expect(canRenderViewerFormat("sqlite", null)).toBe(false);
   });
 
   // Given: 画像・PDF・テキストのビュー形式
@@ -66,6 +71,9 @@ describe("Feature: viewer formats", () => {
     expect(sourcePathForViewer("pdf", null, "C:\\work\\manual.pdf"))
       .toBe("C:\\work\\manual.pdf");
     expect(sourcePathForViewer("markdown", null, "C:\\work\\notes.md")).toBeNull();
+    expect(sourcePathForViewer("sqlite", null, "C:\\work\\data.sqlite")).toBeNull();
+    expect(sourcePathForViewer("sqlite", "C:\\work\\data.sqlite", "C:\\work\\data.sqlite"))
+      .toBe("C:\\work\\data.sqlite");
   });
 
   // Given: csv/markdown/image/pdf/htmlの形式レジストリ
@@ -98,6 +106,7 @@ describe("Feature: viewer formats", () => {
     expect(isViewerFormat("image")).toBe(true);
     expect(isViewerFormat("pdf")).toBe(true);
     expect(isViewerFormat("html")).toBe(true);
+    expect(isViewerFormat("sqlite")).toBe(true);
     expect(isViewerFormat("unknown")).toBe(false);
     expect(isViewerFormat(null)).toBe(false);
   });
@@ -111,8 +120,10 @@ describe("Feature: viewer formats", () => {
     const imageRenderer = vi.fn();
     const pdfRenderer = vi.fn();
     const htmlRenderer = vi.fn();
+    const sqliteRenderer = vi.fn();
     const handlers = createViewerFormatHandlers({
       csv: csvRenderer, markdown: markdownRenderer, image: imageRenderer, pdf: pdfRenderer, html: htmlRenderer,
+      sqlite: sqliteRenderer,
     });
 
     expect(handlers.csv.render).toBe(csvRenderer);
@@ -120,6 +131,7 @@ describe("Feature: viewer formats", () => {
     expect(handlers.image.render).toBe(imageRenderer);
     expect(handlers.pdf.render).toBe(pdfRenderer);
     expect(handlers.html.render).toBe(htmlRenderer);
+    expect(handlers.sqlite.render).toBe(sqliteRenderer);
     expect(handlers.csv.title).toBe("CSV");
     expect(handlers.markdown.title).toBe("Markdown");
   });

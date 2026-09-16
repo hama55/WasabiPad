@@ -1,6 +1,6 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
-import { EVENT_NAMES, openExternalUrl, openInDefaultBrowser, takeViewerPayload, type ViewerFormat, type ViewerPayload, type ViewerSelection } from "./api";
+import { EVENT_NAMES, openExternalUrl, openInDefaultBrowser, readSqlitePreview, takeViewerPayload, type ViewerFormat, type ViewerPayload, type ViewerSelection } from "./api";
 import { formatFontFamily } from "./format";
 import { basename } from "./path";
 import { isViewerFormat, viewerFormatSpec } from "./viewer-formats";
@@ -64,6 +64,7 @@ import {
 } from "./viewer-image";
 import { createPdfPreview, markPdfLoadFailure } from "./viewer-pdf";
 import { createHtmlPreview } from "./viewer-html";
+import { createSqlitePreviewController, type SqlitePreviewController } from "./viewer-sqlite";
 import { createAsyncUnlisten } from "./async-unlisten";
 import { comparePos } from "./editor-math";
 import {
@@ -119,6 +120,7 @@ let markdownReadyForFragment = false;
 let renderGeneration = 0;
 let imageZoom = DEFAULT_IMAGE_ZOOM;
 let disposeImagePan: (() => void) | null = null;
+let disposeSqlitePreview: (() => void) | null = null;
 const archiveAssetTracker = new ViewerAssetTracker(revokeImageUrl);
 const archiveAssetSession = createArchiveAssetSession();
 let csvColumnWidths: number[] = [];
@@ -359,6 +361,8 @@ function disposeViewer() {
   renderGeneration += 1;
   disposeImagePan?.();
   disposeImagePan = null;
+  disposeSqlitePreview?.();
+  disposeSqlitePreview = null;
   content.classList.remove("viewer-loading");
   viewerMain.classList.remove("viewer-loading");
   content.removeAttribute("aria-busy");
@@ -963,6 +967,38 @@ async function renderMarkdown(
   }
 }
 
+async function renderSqlite(
+  _text: string,
+  state: ViewerRenderState,
+): Promise<boolean> {
+  const generation = beginRender();
+  disposeSqlitePreview?.();
+  disposeSqlitePreview = null;
+  disposeImagePan?.();
+  disposeImagePan = null;
+  currentRows = [];
+  chartController.clear();
+  revokeArchiveAssetUrls();
+  let controller: SqlitePreviewController | null = null;
+  try {
+    if (!state.sourcePath || state.archivePath !== null || state.archiveEntry !== null) {
+      replaceWithViewerError(content, "保存済みの通常SQLiteファイルのパスがありません");
+      summary.classList.add("warning");
+      summary.textContent = "SQLiteを読み込めません";
+      return true;
+    }
+    controller = createSqlitePreviewController(content, summary, state.sourcePath, {
+      read: readSqlitePreview,
+      getRowLimit: () => getSetting("sqlitePreviewRows"),
+    });
+    disposeSqlitePreview = controller.dispose;
+    return await controller.load();
+  } finally {
+    if (generation !== renderGeneration) controller?.dispose();
+    finishRender(generation);
+  }
+}
+
 type ViewerStateRenderer = (
   text: string,
   state: ViewerRenderState,
@@ -975,6 +1011,7 @@ const VIEWER_RENDERERS: Record<ViewerFormat, ViewerStateRenderer> = {
   image: renderImage,
   pdf: renderPdf,
   html: renderHtml,
+  sqlite: renderSqlite,
 };
 
 async function renderViewerState(state: ViewerRenderState, nextImageZoom: number): Promise<boolean> {
@@ -999,6 +1036,10 @@ async function renderPayload(payload: ViewerPayload) {
   const formatChanged = nextState.format !== previousState.format;
   const nextImageZoom = sourceChanged ? DEFAULT_IMAGE_ZOOM : imageZoom;
   if (sourceChanged) archiveAssetSession.clearCachedAssets();
+  if (nextState.format !== "sqlite") {
+    disposeSqlitePreview?.();
+    disposeSqlitePreview = null;
+  }
   const committed = await renderViewerState(nextState, nextImageZoom);
   if (viewerDisposed || !committed) return;
   if (formatChanged || sourceChanged) csvColumnWidths = [];

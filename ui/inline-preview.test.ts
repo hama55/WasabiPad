@@ -299,7 +299,7 @@ describe("Feature: inline preview", () => {
   // Given: ビューアiframeが準備完了している
   // When: 各形式の文書をプレビューへ開く
   // Then: 区切り設定の同期が本文payloadより先に送られ、本文描画を中断しない
-  it.each(["markdown", "html", "csv", "image", "pdf"] as ViewerFormat[])(
+  it.each(["markdown", "html", "csv", "image", "pdf", "sqlite"] as ViewerFormat[])(
     "Scenario: %s本文の初回描画を付随設定が中断しない",
     async (format) => {
       const { host, preview } = mount();
