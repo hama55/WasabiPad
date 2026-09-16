@@ -123,7 +123,7 @@ export function sourcePathForViewer(
   savePath: string | null,
   displayPath: string,
 ): string | null {
-  return savePath ?? (isAssetViewerFormat(format) ? displayPath : null);
+  return savePath ?? (isAssetViewerFormat(format) || format === "sqlite" ? displayPath : null);
 }
 
 export function canRenderViewerFormat(format: ViewerFormat, sourcePath: string | null): boolean {

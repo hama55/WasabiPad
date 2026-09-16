@@ -65,7 +65,7 @@ import {
   viewerFormatForPath,
   viewerFormatForPreviewToggle,
 } from "./viewer-formats";
-import { classificationPathOf, documentPathOf, type DocumentSession } from "./session";
+import { classificationPathOf, documentPathOf, isFolderDraftInfo, type DocumentSession } from "./session";
 import {
   effectivePreviewFormat,
   isCurrentPreviewDocument,
@@ -409,6 +409,7 @@ function openPreviewFormat(
 
 function sqlitePreviewSourcePath(session: Readonly<DocumentSession>): string | null {
   if (session.archivePath !== null || session.archiveEntry !== null) return null;
+  if (isFolderDraftInfo({ path: session.displayPath, folder_root: session.folderRoot })) return null;
   return sourcePathForViewer("sqlite", session.savePath, session.displayPath);
 }
 
@@ -557,7 +558,7 @@ const editorPorts = {
     const path = documentPathOf(doc.current);
     if (format === "sqlite") {
       const sourcePath = sqlitePreviewSourcePath(doc.current);
-      if (!sourcePath) throw new Error("SQLiteプレビューは保存済みの通常ファイルだけ対応しています");
+      if (!sourcePath) throw new Error("SQLiteプレビューには実ファイルのパスが必要です");
       inlinePreview.setSourcePath(
         sourcePath,
         doc.current.archivePath,

@@ -982,7 +982,7 @@ async function renderSqlite(
   let controller: SqlitePreviewController | null = null;
   try {
     if (!state.sourcePath || state.archivePath !== null || state.archiveEntry !== null) {
-      replaceWithViewerError(content, "保存済みの通常SQLiteファイルのパスがありません");
+      replaceWithViewerError(content, "SQLiteプレビューには実ファイルのパスが必要です");
       summary.classList.add("warning");
       summary.textContent = "SQLiteを読み込めません";
       return true;

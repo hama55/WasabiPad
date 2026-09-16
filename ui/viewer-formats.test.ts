@@ -64,14 +64,15 @@ describe("Feature: viewer formats", () => {
     expect(isAssetViewerFormat(null)).toBe(false);
   });
 
-  // Given: 保存先を持たないPDFと、通常のMarkdown文書
+  // Given: 保存先を持たないPDF/SQLite、保存先を持つSQLite、通常のMarkdown文書
   // When: ビューへ渡す実ファイルパスを求める
-  // Then: PDFは表示パス、Markdownはnullになる
-  it("Scenario: keeps the direct path for a read-only PDF preview", () => {
+  // Then: PDFとSQLiteは表示パス、Markdownはnullになる
+  it("Scenario: keeps the direct path for read-only asset and SQLite previews", () => {
     expect(sourcePathForViewer("pdf", null, "C:\\work\\manual.pdf"))
       .toBe("C:\\work\\manual.pdf");
     expect(sourcePathForViewer("markdown", null, "C:\\work\\notes.md")).toBeNull();
-    expect(sourcePathForViewer("sqlite", null, "C:\\work\\data.sqlite")).toBeNull();
+    expect(sourcePathForViewer("sqlite", null, "C:\\work\\data.sqlite"))
+      .toBe("C:\\work\\data.sqlite");
     expect(sourcePathForViewer("sqlite", "C:\\work\\data.sqlite", "C:\\work\\data.sqlite"))
       .toBe("C:\\work\\data.sqlite");
   });
