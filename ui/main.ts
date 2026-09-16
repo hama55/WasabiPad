@@ -77,6 +77,7 @@ import {
   SIDEBAR_MIN_WIDTH,
   PANE_SPLITTER_WIDTH,
   resolvePaneVisibility,
+  shouldResendPreviewOnRestore,
   shouldKeepPreviewFullscreen,
   type PreviewDocument,
 } from "./preview-layout";
@@ -996,7 +997,7 @@ previewToggle.addEventListener("click", () => {
     previewEl.style.removeProperty("width");
   }
   updatePreviewVisibility();
-  if (!previewCollapsed) inlinePreview.resend();
+  if (!previewCollapsed && shouldResendPreviewOnRestore(previewDocument?.format ?? null)) inlinePreview.resend();
 });
 
 // プレビュー切替は本文上へ常駐させず、エディタと縦スクロールバーの境界へ

@@ -151,7 +151,7 @@ export class InlinePreview {
   setFullscreen(fullscreen: boolean) {
     if (this.fullscreen === fullscreen) return;
     this.fullscreen = fullscreen;
-    this.send();
+    this.sendFullscreenState();
   }
 
   setMarkdownFragment(fragment: string) {
@@ -219,10 +219,7 @@ export class InlinePreview {
 
   private send() {
     if (!this.ready) return;
-    this.frame.contentWindow?.postMessage({
-      type: FULLSCREEN_STATE_MESSAGE,
-      fullscreen: this.fullscreen,
-    }, window.location.origin);
+    this.sendFullscreenState();
     this.sendMarkdownSoftBreaks();
     this.sendMarkdownLineHeight();
     this.sendMarkdownHeadingUnderlines();
@@ -244,6 +241,14 @@ export class InlinePreview {
     }
     this.sendFontFamily();
     this.sendFontSize();
+  }
+
+  private sendFullscreenState() {
+    if (!this.ready) return;
+    this.frame.contentWindow?.postMessage({
+      type: FULLSCREEN_STATE_MESSAGE,
+      fullscreen: this.fullscreen,
+    }, window.location.origin);
   }
 
   private sendFontFamily() {

@@ -2,4 +2,4 @@
 import type { SqliteCell } from "./SqliteCell";
 import type { SqliteObject } from "./SqliteObject";
 
-export type SqlitePreview = { objects: Array<SqliteObject>, selectedName: string | null, columns: Array<string>, rows: Array<Array<SqliteCell>>, hasMore: boolean, };
+export type SqlitePreview = { objects: Array<SqliteObject>, selectedName: string | null, columns: Array<string>, rows: Array<Array<SqliteCell>>, hasMore: boolean, totalRows: number | null, viewDefinition: string | null, metadataError: string | null, };

@@ -508,6 +508,34 @@ describe("Feature: inline preview", () => {
     }, window.location.origin);
   });
 
+  // Given: SQLiteプレビューの内容がiframeへ表示されている
+  // When: 親画面で全画面状態だけを切り替える
+  // Then: SQLite payloadを再送せず、既存ビューアの状態を維持する
+  it("Scenario: fullscreen change does not resend the preview payload", async () => {
+    const { host, preview } = mount();
+    const frame = host.querySelector("iframe")!;
+    const postMessage = vi.spyOn(frame.contentWindow!, "postMessage");
+    await preview.open("sqlite", "", null);
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
+    }));
+    postMessage.mockClear();
+
+    preview.setFullscreen(true);
+
+    expect(postMessage).toHaveBeenCalledTimes(1);
+    expect(postMessage).toHaveBeenCalledWith({
+      type: INLINE_PREVIEW_MESSAGES.FULLSCREEN_STATE_MESSAGE,
+      fullscreen: true,
+    }, window.location.origin);
+    expect(postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE }),
+      window.location.origin,
+    );
+  });
+
   // Given: iframeが準備完了していて、全画面状態がすでに同期済み
   // When: 同じ全画面状態をもう一度設定する
   // Then: 内容の再送信を発生させない

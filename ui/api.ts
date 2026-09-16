@@ -323,9 +323,11 @@ export const readSqlitePreview = (
   selectedName: string | null,
   offset: number,
   limit: number,
+  includeMetadata: boolean,
 ) => invoke<SqlitePreview>(IPC_COMMANDS.readSqlitePreview, {
   path,
   selectedName,
   offset,
   limit,
+  includeMetadata,
 });

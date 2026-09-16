@@ -672,6 +672,7 @@ async fn read_sqlite_preview(
     selected_name: Option<String>,
     offset: usize,
     limit: usize,
+    include_metadata: bool,
 ) -> Result<SqlitePreview, String> {
     tauri::async_runtime::spawn_blocking(move || {
         read_sqlite_preview_core(
@@ -679,6 +680,7 @@ async fn read_sqlite_preview(
             selected_name.as_deref(),
             offset,
             limit,
+            include_metadata,
         )
     })
     .await
