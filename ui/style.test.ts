@@ -89,6 +89,15 @@ describe("Feature: pane toggle placement", () => {
     expect(style).toMatch(/#editorhost\.ve-search-open\s*~\s*#preview-toggle\s*\{[^}]*top:\s*44px;/s);
   });
 
+  // Feature: 検索バー表示中のファイルツリー開閉操作
+  // Scenario: ファイルツリーを畳んでいても検索バーに遮られず展開できる
+  // Given: ファイルツリーが非表示で、エディタ検索バーが表示されている
+  // When: ファイルツリー開閉ボタンの配置規則を検査する
+  // Then: ボタンは検索バーの下へ移り、検索バーがない通常時の位置は維持する
+  it("Scenario: 検索バー表示中はファイルツリー開閉ボタンを検索バーの下へ移す", () => {
+    expect(style).toMatch(/#main:has\(#editorhost\.ve-search-open\)\s*>\s*#sidebar\[hidden\]\s*~\s*#sidebar-toggle\s*\{[^}]*top:\s*44px;/s);
+  });
+
   // Feature: ファイルツリー下端の新規作成操作
   // Scenario: 項目が少なくても作成ボタンをサイドバー最下端へ固定する
   // Given: サイドバー・ツリー・作成欄のCSS
