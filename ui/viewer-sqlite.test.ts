@@ -39,7 +39,7 @@ describe("Feature: SQLite viewer", () => {
 
   // Given: 通常テーブルとsqlite_schemaを含む初回読取結果
   // When: SQLiteプレビューを開始する
-  // Then: テーブル選択、レコード表、総行数、行順の注意を表示し、さらに表示を置かない
+  // Then: テーブル選択、レコード表、表示範囲、総行数、行順の注意を表示し、さらに表示を置かない
   it("Scenario: 初回読込で選択欄とレコード表を表示する", async () => {
     const host = document.createElement("div");
     const summary = document.createElement("span");
@@ -55,7 +55,7 @@ describe("Feature: SQLite viewer", () => {
     expect(host.querySelector<HTMLSelectElement>("[data-sqlite-table]")?.value).toBe("items");
     expect(host.querySelector(".sqlite-data-row td")?.textContent).toBe("1");
     expect(host.textContent).toContain("現在の結果順の位置です。再読み込みやDB更新後に同じ行を指す保証はありません");
-    expect(host.textContent).toContain("表示中 1 / 全 1 行");
+    expect(host.textContent).toContain("表示範囲 1〜1 / 全 1 行");
     expect(host.querySelector("[data-action=sqlite-more]")).toBeNull();
     controller.dispose();
   });
@@ -143,6 +143,7 @@ describe("Feature: SQLite viewer", () => {
     await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2));
 
     expect(read).toHaveBeenLastCalledWith("C:\\work\\data.sqlite", "items", 100, 100, false);
+    expect(host.textContent).toContain("表示範囲 81〜124 / 全 250 行");
     expect(host.querySelectorAll("tbody tr.sqlite-data-row").length).toBeLessThanOrEqual(50);
     expect(host.querySelector("[data-action=sqlite-more]")).toBeNull();
     controller.dispose();
@@ -281,6 +282,7 @@ describe("Feature: SQLite viewer", () => {
 
     expect(read).toHaveBeenLastCalledWith("C:\\work\\data.sqlite", "items", 500, 100, false);
     await vi.waitFor(() => expect(host.textContent).toContain("501"));
+    expect(host.textContent).toContain("表示範囲 501〜600 / 全 1,000 行");
     controller.dispose();
   });
 

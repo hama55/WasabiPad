@@ -153,10 +153,13 @@ export function createSqlitePreviewController(
   function setSummary() {
     const table = selectedName ?? "SQLite";
     const end = currentWindowEnd;
+    const range = end > currentWindowStart
+      ? `${(currentWindowStart + 1).toLocaleString("ja-JP")}〜${end.toLocaleString("ja-JP")}`
+      : "0";
     const error = metadataError ? ` / ${metadataError}` : "";
     const text = totalRows === null
-      ? `${table}: ${end.toLocaleString("ja-JP")}行表示${error}`
-      : `${table}: 表示中 ${Math.max(0, end - currentWindowStart).toLocaleString("ja-JP")} / 全 ${totalRows.toLocaleString("ja-JP")} 行${error}`;
+      ? `${table}: 表示範囲 ${range}行${error}`
+      : `${table}: 表示範囲 ${range} / 全 ${totalRows.toLocaleString("ja-JP")} 行${error}`;
     count.textContent = text;
     summary.classList.toggle("warning", metadataError !== null);
     summary.title = "";
