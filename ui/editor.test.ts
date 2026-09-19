@@ -2073,6 +2073,54 @@ describe("Feature: VirtualEditor", () => {
     expect(host.querySelector<HTMLElement>(".ve-find")?.hidden).toBe(true);
   });
 
+  // Feature: エディタの表示範囲置換
+  // Scenario: 表示中の論理行だけを全置換する
+  // Given: 画面外にもneedleがあり、1行目と2行目を表示している
+  // When: 「画面内を全置換」を押す
+  // Then: 表示中の2行だけが置換され、画面外の一致は残る
+  it("Scenario: 画面内の一致だけを全置換する", async () => {
+    const { editor, doc, host } = mount("outside\nneedle\nneedle\noutside\nneedle");
+    const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
+    Object.defineProperty(scroll, "clientHeight", { configurable: true, value: 40 });
+    editor.open(5, false);
+    await settle();
+    await editor.restoreViewState({
+      anchor: { line: 1, col: 0 },
+      caret: { line: 1, col: 0 },
+      topLine: 1,
+      wrapIntraLinePx: 0,
+      scrollLeft: 0,
+    });
+
+    editor.openSearch();
+    host.querySelector<HTMLInputElement>(".ve-find-in")!.value = "needle";
+    host.querySelector<HTMLInputElement>(".ve-rep-in")!.value = "hit";
+    host.querySelector<HTMLButtonElement>(".ve-rep-visible")!.click();
+    await settle();
+
+    expect(doc.text()).toBe("outside\nhit\nhit\noutside\nneedle");
+  });
+
+  // Feature: エディタの表示範囲置換
+  // Scenario: 閲覧専用文書では画面内全置換を実行しない
+  // Given: needleを含む閲覧専用文書を表示している
+  // When: 「画面内を全置換」を押す
+  // Then: 本文と編集系のbackend呼び出しは変わらない
+  it("Scenario: 閲覧専用文書では画面内全置換を実行しない", async () => {
+    const { editor, doc, host } = mount("needle");
+    editor.open(1, true);
+    await settle();
+
+    editor.openSearch();
+    host.querySelector<HTMLInputElement>(".ve-find-in")!.value = "needle";
+    host.querySelector<HTMLInputElement>(".ve-rep-in")!.value = "hit";
+    host.querySelector<HTMLButtonElement>(".ve-rep-visible")!.click();
+    await settle();
+
+    expect(doc.text()).toBe("needle");
+    expect(doc.calls.filter((call) => call.startsWith("edit"))).toEqual([]);
+  });
+
   // Scenario: 可視範囲の強調検索が一度だけ失敗する
   // Given: 初回のfindAllInRangeが失敗し、次回はneedleの一致を返す
   // When: 同じ検索語・表示範囲のままスクロールして再描画する
@@ -2129,7 +2177,7 @@ describe("Feature: VirtualEditor", () => {
   // Given: 文書が「needle」、最初の検索は一致し、failed=true 後の検索は Error("find failed") で失敗する
   // When: 1回目の検索後に2回目の検索を失敗させ、「changed」を入力して置換次へをクリックする
   // Then: edit( で始まる呼び出しが0件で、直前の一致を使った置換を実行しない
-  it("Scenario: 本文検索に失敗した後、連続置換が直前の一致を再利用しない", async () => {
+  it("Scenario: 本文検索に失敗した後、置換が直前の一致を再利用しない", async () => {
     const { editor, doc, host } = mount("needle");
     let failed = false;
     doc.client.findStep = async () => {

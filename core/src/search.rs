@@ -9,6 +9,7 @@ use crate::doc::FindCursor;
 use grep_matcher::Matcher;
 use grep_regex::{RegexMatcher, RegexMatcherBuilder};
 
+#[cfg(test)]
 pub(crate) const MAX_FIND_HIGHLIGHTS: usize = 2_000;
 
 // use_regex=false でも grep-regex を通すのは、大小文字無視を ASCII だけに
@@ -52,6 +53,7 @@ pub(crate) fn find_all_in_range(
     match_case: bool,
     use_regex: bool,
     whole_word: bool,
+    max_matches: usize,
 ) -> Result<Vec<(Pos, Pos)>, String> {
     if pat.is_empty() || pat.contains('\n') {
         return Ok(Vec::new());
@@ -66,9 +68,9 @@ pub(crate) fn find_all_in_range(
                 Pos { line, col: found.start() },
                 Pos { line, col: found.end() },
             ));
-            matches.len() < MAX_FIND_HIGHLIGHTS
+            max_matches == 0 || matches.len() < max_matches
         });
-        if matches.len() == MAX_FIND_HIGHLIGHTS {
+        if max_matches > 0 && matches.len() == max_matches {
             return Ok(matches);
         }
     }

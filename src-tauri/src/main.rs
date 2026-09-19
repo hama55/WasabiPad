@@ -362,6 +362,7 @@ fn find_all_in_range(
     match_case: bool,
     use_regex: bool,
     whole_word: bool,
+    max_matches: usize,
     state: State,
 ) -> Result<Vec<FindResult>, String> {
     document::find_all_in_range(
@@ -371,6 +372,7 @@ fn find_all_in_range(
         match_case,
         use_regex,
         whole_word,
+        max_matches,
         state,
     )
 }

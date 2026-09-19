@@ -202,6 +202,8 @@ export const findAllInRange = (
   matchCase: boolean,
   useRegex = false,
   wholeWord = false,
+  // 0 means unlimited; the default keeps the highlight result bounded.
+  maxMatches = 2_000,
 ) => invoke<FindResult[]>(IPC_COMMANDS.findAllInRange, {
   pat,
   firstLine,
@@ -209,6 +211,7 @@ export const findAllInRange = (
   matchCase,
   useRegex,
   wholeWord,
+  maxMatches,
 });
 
 // 前方検索 (次へ) 用。1回で最大 budget 行だけ走査し、続きがあれば cursor を返す。

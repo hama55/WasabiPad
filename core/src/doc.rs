@@ -2536,6 +2536,7 @@ impl Doc {
         match_case: bool,
         use_regex: bool,
         whole_word: bool,
+        max_matches: usize,
     ) -> Result<Vec<FindResult>, String> {
         crate::search::find_all_in_range(
             &self.buf,
@@ -2545,6 +2546,7 @@ impl Doc {
             match_case,
             use_regex,
             whole_word,
+            max_matches,
         )
             .map(|matches| matches.into_iter().map(|(start, end)| FindResult {
                 start: self.to_char(start),
@@ -3900,7 +3902,7 @@ mod tests {
     fn find_all_in_visible_range_returns_every_match() {
         let d = doc("needle x needle\nnone\nneedle");
 
-        let found = d.find_all_in_range("needle", 0, 2, true, false, false).unwrap();
+        let found = d.find_all_in_range("needle", 0, 2, true, false, false, crate::search::MAX_FIND_HIGHLIGHTS).unwrap();
 
         let positions: Vec<_> = found.into_iter()
             .map(|result| (result.start.line, result.start.col, result.end.col))
@@ -3917,7 +3919,7 @@ mod tests {
     fn find_all_in_visible_range_uses_workspace_match_options() {
         let d = doc("cat1 cat1x CAT2");
 
-        let found = d.find_all_in_range(r"cat\d", 0, 1, false, true, true).unwrap();
+        let found = d.find_all_in_range(r"cat\d", 0, 1, false, true, true, crate::search::MAX_FIND_HIGHLIGHTS).unwrap();
 
         let positions: Vec<_> = found.into_iter()
             .map(|result| (result.start.col, result.end.col))
@@ -3934,9 +3936,24 @@ mod tests {
     fn find_all_in_visible_range_caps_match_count() {
         let d = doc(&"a".repeat(crate::search::MAX_FIND_HIGHLIGHTS + 100));
 
-        let found = d.find_all_in_range("a", 0, 1, true, false, false).unwrap();
+        let found = d.find_all_in_range("a", 0, 1, true, false, false, crate::search::MAX_FIND_HIGHLIGHTS).unwrap();
 
         assert_eq!(found.len(), crate::search::MAX_FIND_HIGHLIGHTS);
+    }
+
+    // Feature: 表示範囲内の全置換用検索
+    // Scenario: 表示範囲の一致件数上限を無効化する
+    // Given: 強調表示上限より多いaを含む1行文書
+    // When: 上限0で表示範囲の全一致を検索する
+    // Then: すべての一致位置を返す
+    #[test]
+    fn find_all_in_visible_range_can_return_all_matches() {
+        let count = crate::search::MAX_FIND_HIGHLIGHTS + 100;
+        let d = doc(&"a".repeat(count));
+
+        let found = d.find_all_in_range("a", 0, 1, true, false, false, 0).unwrap();
+
+        assert_eq!(found.len(), count);
     }
 
     #[test]

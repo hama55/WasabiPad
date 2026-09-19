@@ -8,6 +8,7 @@ export class FindBar {
   private onFind: (pat: string, forward: boolean, matchCase: boolean) => Promise<boolean>;
   private onReplaceAll: (pat: string, rep: string, matchCase: boolean) => Promise<number>;
   private onReplaceNext: (pat: string, rep: string, matchCase: boolean) => Promise<boolean>;
+  private onReplaceVisible: (pat: string, rep: string, matchCase: boolean) => Promise<number>;
   private onDone: () => void;
   private onError: (message: string, error: unknown) => void | Promise<void>;
   private onInitialQuery?: (pat: string, matchCase: boolean) => void;
@@ -18,6 +19,7 @@ export class FindBar {
     private host: HTMLElement,
     onFind: (pat: string, forward: boolean, matchCase: boolean) => Promise<boolean>,
     onReplaceAll: (pat: string, rep: string, matchCase: boolean) => Promise<number>,
+    onReplaceVisible: (pat: string, rep: string, matchCase: boolean) => Promise<number>,
     onReplaceNext: (pat: string, rep: string, matchCase: boolean) => Promise<boolean>,
     onDone: () => void,
     onError: (message: string, error: unknown) => void | Promise<void>,
@@ -29,6 +31,7 @@ export class FindBar {
     this.onDone = onDone;
     this.onError = onError;
     this.onInitialQuery = onInitialQuery;
+    this.onReplaceVisible = onReplaceVisible;
 
     this.root = document.createElement("div");
     this.root.className = "ve-find";
@@ -41,7 +44,7 @@ export class FindBar {
         <button class="ve-find-next" title="次へ (Enter)">▼</button>
         <span class="ve-find-status"></span>
         <input class="ve-rep-in" placeholder="置換" spellcheck="false" />
-        <div class="ve-rep-actions"><button class="ve-rep-next">連続置換</button><button class="ve-rep-all">すべて置換</button></div>
+        <div class="ve-rep-actions"><button class="ve-rep-next">置換</button><button class="ve-rep-visible">画面内を全置換</button><button class="ve-rep-all">ファイル内を全置換</button></div>
         <button class="ve-find-close" title="閉じる (Esc)">✕</button>
       </div>`;
     host.appendChild(this.root);
@@ -69,6 +72,7 @@ export class FindBar {
     this.root.querySelector(".ve-find-prev")!.addEventListener("click", () => this.runFind(false));
     this.root.querySelector(".ve-find-close")!.addEventListener("click", () => this.close());
     this.root.querySelector(".ve-rep-all")!.addEventListener("click", () => this.run(() => this.replaceAll()));
+    this.root.querySelector(".ve-rep-visible")!.addEventListener("click", () => this.run(() => this.replaceVisible()));
     this.root.querySelector(".ve-rep-next")!.addEventListener("click", () => this.run(() => this.replaceNext()));
   }
 
@@ -124,6 +128,13 @@ export class FindBar {
     const pat = this.findIn.value;
     if (!pat) return;
     const n = await this.onReplaceAll(pat, this.repIn.value, this.caseChk.checked);
+    this.status.textContent = `${n}件置換`;
+  }
+
+  private async replaceVisible() {
+    const pat = this.findIn.value;
+    if (!pat) return;
+    const n = await this.onReplaceVisible(pat, this.repIn.value, this.caseChk.checked);
     this.status.textContent = `${n}件置換`;
   }
 

@@ -132,7 +132,7 @@ export class VirtualEditor {
   private composing = false;
   private mutation: EditorMutationController;
   private findGen = 0; // 検索ループの世代。closeやEnter連打で古いループを打ち切るため
-  private lastFindMatch: { start: Pos; end: Pos; pat: string; matchCase: boolean } | null = null; // 連続置換が対象にしてよい直前の一致
+  private lastFindMatch: { start: Pos; end: Pos; pat: string; matchCase: boolean } | null = null; // 置換が対象にしてよい直前の一致
   private activeFind: SearchHighlightQuery | null = null;
   private findHighlights: api.FindResult[] = [];
   private findHighlightRequestKey = "";
@@ -247,6 +247,7 @@ export class VirtualEditor {
       this.host,
       (pat, forward, mc) => this.doFind(pat, forward, mc),
       (pat, rep, mc) => this.doReplaceAll(pat, rep, mc),
+      (pat, rep, mc) => this.doReplaceVisible(pat, rep, mc),
       (pat, rep, mc) => this.doReplaceNext(pat, rep, mc),
       () => {
         this.findGen++;
@@ -2402,7 +2403,7 @@ export class VirtualEditor {
     return true;
   }
 
-  // 現在の選択が直前の検索結果そのものであれば置換してから次を検索する (連続置換)。
+  // 現在の選択が直前の検索結果そのものであれば置換してから次を検索する。
   // そうでなければ (まだ何も検索していない等) 次の一致を探すだけに留める。
   private async doReplaceNext(pat: string, rep: string, matchCase: boolean): Promise<boolean> {
     if (this.readOnly) return this.doFind(pat, true, matchCase);
@@ -2422,6 +2423,54 @@ export class VirtualEditor {
       this.notifyCursor();
     }
     return this.doFind(pat, true, matchCase);
+  }
+
+  private visibleLogicalLineRange(): { first: number; last: number } {
+    if (this.lineCount <= 0 || this.scroll.clientHeight <= 0) return { first: 0, last: 0 };
+    const viewportTop = this.viewTop;
+    const viewportBottom = viewportTop + this.scroll.clientHeight;
+    const visibleLines = [...this.linesLayer.querySelectorAll<HTMLElement>(":scope > .ve-line")]
+      .map((line) => Number(line.dataset.line))
+      .filter((line) => Number.isInteger(line) && line >= 0 && line < this.lineCount)
+      .filter((line) => {
+        const top = this.rowTop(line);
+        const bottom = top + this.wrappedLineHeight(line);
+        return top < viewportBottom && bottom > viewportTop;
+      });
+    if (visibleLines.length > 0) {
+      return {
+        first: Math.min(...visibleLines),
+        last: Math.max(...visibleLines) + 1,
+      };
+    }
+    return { first: 0, last: 0 };
+  }
+
+  private async doReplaceVisible(pat: string, rep: string, matchCase: boolean): Promise<number> {
+    if (this.readOnly || this.busy) return 0;
+    const p = unescapePattern(pat);
+    if (!p) return 0;
+    const r = unescapePattern(rep);
+    const generation = this.documentGeneration;
+    this.render();
+    const { first, last } = this.visibleLogicalLineRange();
+    if (first >= last) return 0;
+
+    this.busy = true;
+    try {
+      const matches = await this.doc.findAllInRange(p, first, last, matchCase, false, false, 0);
+      if (generation !== this.documentGeneration || matches.length === 0) return 0;
+      const edits = matches.map(({ start, end }) => ({ start, end, text: r }));
+      const primaryIndex = edits.length - 1;
+      const result = await this.doc.editMany(edits, this.sel.caret, primaryIndex);
+      this.applyResult({ caret: result.carets[primaryIndex] ?? this.sel.caret, line_count: result.line_count }, first, edits);
+      this.ensureVisible();
+      this.render();
+      this.notifyCursor();
+      return edits.length;
+    } finally {
+      this.busy = false;
+    }
   }
 
   private async doReplaceAll(pat: string, rep: string, matchCase: boolean): Promise<number> {
