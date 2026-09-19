@@ -461,6 +461,8 @@ body.fv-dragging { cursor: grabbing; user-select: none; }
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   width: 100%;
+  padding-left: calc(var(--ve-pad-left) + var(--ve-wrap-indent, 0px));
+  text-indent: calc(-1 * var(--ve-wrap-indent, 0px));
 }
 .ve-sel {
   position: absolute; height: var(--line-h);

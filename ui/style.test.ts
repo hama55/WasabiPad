@@ -17,6 +17,16 @@ describe("Feature: editor caret style", () => {
   });
 });
 
+describe("Feature: 折り返し字下げ style", () => {
+  // Given: 折り返し行へ表示幅のCSS変数を渡している
+  // When: 先頭表示行と後続表示行の配置規則を検査する
+  // Then: 先頭行は元の位置を保ち、後続行は同じ字下げ位置から始まる
+  it("Scenario: 折り返し行の先頭と後続を同じ字下げ位置へ揃える", () => {
+    expect(style).toMatch(/\.ve-scroll\.wrap \.ve-line\s*\{[^}]*padding-left:\s*calc\(var\(--ve-pad-left\)\s*\+\s*var\(--ve-wrap-indent,\s*0px\)\);/s);
+    expect(style).toMatch(/\.ve-scroll\.wrap \.ve-line\s*\{[^}]*text-indent:\s*calc\(-1\s*\*\s*var\(--ve-wrap-indent,\s*0px\)\);/s);
+  });
+});
+
 describe("Feature: pane toggle placement", () => {
   // Given: pane toggleのCSSを読み込む
   // When: フォルダビューとプレビューの開閉ボタン位置を検査する

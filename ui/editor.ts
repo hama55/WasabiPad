@@ -4,7 +4,7 @@ import { readText as readClipboardText, writeText as writeClipboardText } from "
 import { RectangularClipboard } from "./editor-clipboard";
 import { findForward } from "./editor-find-loop";
 import { FindBar } from "./findbar";
-import { clampFontSize } from "./font-controls";
+import { clampFontSize, DEFAULT_INDENT_SIZE } from "./font-controls";
 import { DEFAULT_EDITOR_CONFIG, EditorConfig } from "./editor-config";
 import { showMenu, type MenuItem } from "./menu";
 import {
@@ -108,6 +108,8 @@ export class VirtualEditor {
   private readonly paddingLeft: number;
   private readonly gutterWidth: number;
   private wrap = false;
+  private tabSize = DEFAULT_INDENT_SIZE;
+  private wrapIndentContext: CanvasRenderingContext2D | null | undefined;
   private wrapIntraLinePx = 0;
   private wrapHeights = new WrapHeightMap(1, 1);
   private wrapMeasureWidth = -1;
@@ -565,7 +567,8 @@ export class VirtualEditor {
   }
 
   setTabSize(size: number) {
-    this.scroll.parentElement!.style.setProperty("--ve-tab-size", String(Math.max(1, Math.min(16, size))));
+    this.tabSize = Math.max(1, Math.min(16, size));
+    this.scroll.parentElement!.style.setProperty("--ve-tab-size", String(this.tabSize));
     this.maxWidth = 0;
     this.resetWrapHeights();
     this.updateMetrics();
@@ -892,6 +895,7 @@ export class VirtualEditor {
     for (let i = topLine; i < last; i++) {
       const line = this.lineElem(i);
       if (!line) continue;
+      this.applyWrapIndent(line, this.lineCache.peek(i) ?? "");
       this.localRowTops.set(i, y);
       line.style.top = `${y}px`;
       const height = Math.max(this.metrics.lineHeight, line.getBoundingClientRect().height);
@@ -904,6 +908,7 @@ export class VirtualEditor {
     for (let i = topLine - 1; i >= first; i--) {
       const line = this.lineElem(i);
       if (!line) continue;
+      this.applyWrapIndent(line, this.lineCache.peek(i) ?? "");
       const height = Math.max(this.metrics.lineHeight, line.getBoundingClientRect().height);
       if (!this.scrollbarDragging) {
         heightsChanged = this.wrapHeights.set(i, height) || heightsChanged;
@@ -917,6 +922,38 @@ export class VirtualEditor {
       this.scroll.scrollTop = this.wrapAnchorToPx(this.topLineF, this.wrapIntraLinePx);
       this.schedule();
     }
+  }
+
+  private applyWrapIndent(line: HTMLElement, text: string) {
+    const leading = /^[ \t]+/.exec(text)?.[0];
+    if (!leading || leading.length === text.length) {
+      line.style.setProperty("--ve-wrap-indent", "0px");
+      return;
+    }
+    if (this.wrapIndentContext === undefined) {
+      this.wrapIndentContext = document.createElement("canvas").getContext("2d");
+    }
+    const context = this.wrapIndentContext;
+    if (!context) {
+      line.style.setProperty("--ve-wrap-indent", "0px");
+      return;
+    }
+    context.font = `${this.fontSize}px ${this.fontFamily}`;
+    const spaceWidth = context.measureText(" ").width;
+    if (!(spaceWidth > 0)) {
+      line.style.setProperty("--ve-wrap-indent", "0px");
+      return;
+    }
+    let width = 0;
+    for (const char of leading) {
+      if (char === "\t") {
+        const tabWidth = spaceWidth * this.tabSize;
+        width += tabWidth - (width % tabWidth);
+      } else {
+        width += spaceWidth;
+      }
+    }
+    line.style.setProperty("--ve-wrap-indent", `${Math.max(0, width)}px`);
   }
 
   private updateWidth() {

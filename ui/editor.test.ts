@@ -590,6 +590,156 @@ describe("Feature: VirtualEditor", () => {
     layout.restore();
   });
 
+  // Feature: 折り返し字下げ
+  // Scenario: 行頭の空白幅を折り返し後の表示行へ引き継ぐ
+  // Given: タブ、スペース、混在、字下げなしの長文を折り返し表示している
+  // When: 可視行を描画する
+  // Then: 行頭空白の表示幅が折り返し字下げとして設定され、字下げなしは0になる
+  it.each([
+    ["\tlong", "64px"],
+    ["  long", "16px"],
+    ["\t  long", "80px"],
+    ["long", "0px"],
+    ["", "0px"],
+    ["   ", "0px"],
+    [" ".repeat(25) + "long", "200px"],
+  ])("Scenario: %s の折り返し字下げを表示幅で揃える", async (text, expectedIndent) => {
+    const { editor, host } = mount(text);
+    editor.open(1, false);
+    await settle();
+    editor.setWrap(true);
+    await settle();
+
+    expect(host.querySelector<HTMLElement>(".ve-line")?.style.getPropertyValue("--ve-wrap-indent"))
+      .toBe(expectedIndent);
+  });
+
+  // Feature: 折り返し字下げの再計算
+  // Scenario: 文自体が変わったときに表示幅を更新する
+  // Given: 1つのスペースで始まる文を折り返し表示している
+  // When: 行頭へタブを入力する
+  // Then: 折り返し字下げは変更後のタブとスペースの表示幅になる
+  it("Scenario: 文の変更後に折り返し字下げを再計算する", async () => {
+    const { editor, host, type } = mount(" long");
+    editor.open(1, false);
+    await settle();
+    editor.setWrap(true);
+    await settle();
+    expect(host.querySelector<HTMLElement>(".ve-line")?.style.getPropertyValue("--ve-wrap-indent"))
+      .toBe("8px");
+
+    type("\t");
+    await settle();
+
+    expect(host.querySelector<HTMLElement>(".ve-line")?.style.getPropertyValue("--ve-wrap-indent"))
+      .toBe("72px");
+  });
+
+  // Feature: 折り返し字下げのタブ幅追従
+  // Scenario: タブ表示幅を変更すると表示幅を更新する
+  // Given: タブで始まる文を折り返し表示している
+  // When: タブ表示幅を4へ変更する
+  // Then: 折り返し字下げは4文字分の表示幅になる
+  it("Scenario: タブ表示幅の変更後に折り返し字下げを再計算する", async () => {
+    const { editor, host } = mount("\tlong");
+    editor.open(1, false);
+    await settle();
+    editor.setWrap(true);
+    await settle();
+
+    editor.setTabSize(4);
+    await settle();
+
+    expect(host.querySelector<HTMLElement>(".ve-line")?.style.getPropertyValue("--ve-wrap-indent"))
+      .toBe("32px");
+  });
+
+  // Feature: 折り返し字下げのフォント追従
+  // Scenario: フォント変更後に表示幅を更新する
+  // Given: 1つのスペースで始まる文を折り返し表示している
+  // When: フォント設定を変更し、スペース幅が変わる
+  // Then: 折り返し字下げは変更後の表示幅になる
+  it("Scenario: フォント変更後に折り返し字下げを再計算する", async () => {
+    let spaceWidth = 8;
+    const getContext = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation((type) => {
+      if (type !== "2d") return null;
+      return {
+        font: "",
+        measureText: () => ({ width: spaceWidth }),
+      } as unknown as CanvasRenderingContext2D;
+    });
+    try {
+      const { editor, host } = mount(" long");
+      editor.open(1, false);
+      await settle();
+      editor.setWrap(true);
+      await settle();
+      expect(host.querySelector<HTMLElement>(".ve-line")?.style.getPropertyValue("--ve-wrap-indent"))
+        .toBe("8px");
+
+      spaceWidth = 12;
+      editor.setFont("Meiryo, sans-serif", 20);
+
+      expect(host.querySelector<HTMLElement>(".ve-line")?.style.getPropertyValue("--ve-wrap-indent"))
+        .toBe("12px");
+    } finally {
+      getContext.mockRestore();
+    }
+  });
+
+  // Feature: 折り返し字下げの表示領域追従
+  // Scenario: 本文領域の幅変更後に表示幅を更新する
+  // Given: 1つのスペースで始まる文を折り返し表示している
+  // When: 本文領域の幅を変更してウィンドウのresizeを通知する
+  // Then: 折り返し字下げを再計算する
+  it("Scenario: 本文領域の幅変更後に折り返し字下げを再計算する", async () => {
+    let spaceWidth = 8;
+    const getContext = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation((type) => {
+      if (type !== "2d") return null;
+      return {
+        font: "",
+        measureText: () => ({ width: spaceWidth }),
+      } as unknown as CanvasRenderingContext2D;
+    });
+    try {
+      const { editor, host } = mount(" long");
+      const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
+      editor.open(1, false);
+      await settle();
+      editor.setWrap(true);
+      await settle();
+      expect(host.querySelector<HTMLElement>(".ve-line")?.style.getPropertyValue("--ve-wrap-indent"))
+        .toBe("8px");
+
+      Object.defineProperty(scroll, "clientWidth", { configurable: true, value: 180 });
+      spaceWidth = 10;
+      window.dispatchEvent(new Event("resize"));
+      await settle();
+
+      expect(host.querySelector<HTMLElement>(".ve-line")?.style.getPropertyValue("--ve-wrap-indent"))
+        .toBe("10px");
+    } finally {
+      getContext.mockRestore();
+    }
+  });
+
+  // Feature: 折り返し字下げの表示限定
+  // Scenario: 折り返しをオフにしても本文を変更しない
+  // Given: タブ字下げの文を折り返し表示している
+  // When: 折り返しをオフにする
+  // Then: 本文は元のままで、折り返し状態だけが解除される
+  it("Scenario: 折り返しをオフにしても本文を変更しない", async () => {
+    const { editor, host, doc } = mount("\tlong");
+    editor.open(1, false);
+    await settle();
+    editor.setWrap(true);
+    await settle();
+    editor.setWrap(false);
+
+    expect(doc.text()).toBe("\tlong");
+    expect(host.querySelector(".ve-scroll")?.classList.contains("wrap")).toBe(false);
+  });
+
   // Feature: 折り返し表示中の本文選択境界
   // Scenario: 本文の選択を行番号領域へドラッグしても選択終点をEOFへ拡張しない
   // Given: 「abcdefghij\nklmnopqrst\nuvwxyz」を折り返し表示している
