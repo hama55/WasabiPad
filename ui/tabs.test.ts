@@ -288,6 +288,31 @@ describe("Feature: TabManager", () => {
     expect(doc.current.dirty).toBe(true);
   });
 
+  // Feature: アーカイブ内文書の同一性
+  // Scenario: 外側のWindowsパスだけ大小文字が異なる同じ項目を再選択する
+  // Given: folder tabが`Docs/Data.zip::Readme.txt`を編集中
+  // When: `docs/data.zip::Readme.txt`へnavigateEntryする
+  // Then: 内部名のcaseを保った同一項目として、確認も再読込もしない
+  it("Scenario: アーカイブ外側の大小文字差では同じ項目を再読込しない", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init({
+      tabs: [{ id: "folder", path: "C:\\work", kind: "folder", label: "work" }],
+      activeId: "folder",
+    }, null, null);
+    doc.current.folderRoot = "C:\\work";
+    doc.current.selectedRelPath = "Docs/Data.zip::Readme.txt";
+    doc.current.dirty = true;
+    vi.mocked(doc.confirmDiscard).mockClear();
+    vi.mocked(doc.selectEntry).mockClear();
+
+    await expect(manager.navigateEntry("docs/data.zip::Readme.txt")).resolves.toBe(true);
+
+    expect(doc.confirmDiscard).not.toHaveBeenCalled();
+    expect(doc.selectEntry).not.toHaveBeenCalled();
+    expect(doc.current.dirty).toBe(true);
+  });
+
   // Feature: 形式を指定してファイルを開く
   // Scenario: 選択中の同じファイルへ指定形式を適用する
   // Given: folder tab が `memo.bin` を通常表示している
@@ -525,6 +550,34 @@ describe("Feature: TabManager", () => {
 
     expect(doc.selectEntry).toHaveBeenNthCalledWith(1, "archive.bin", "7z");
     expect(doc.selectEntry).toHaveBeenNthCalledWith(2, "archive.bin::memo.txt", "txt");
+  });
+
+  // Feature: case差を含むアーカイブ内形式の復元
+  // Scenario: 外側のWindowsパスだけcaseが変わった項目へ形式指定を復元する
+  // Given: `Docs/Archive.bin`を7z、内部の`Readme.txt`をtxtとして開いている
+  // When: 保存選択の外側だけ小文字になった後、別タブから戻る
+  // Then: 7z指定とtxt指定を失わずに復元する
+  it("Scenario: アーカイブ外側のcaseが変わっても形式指定を復元する", async () => {
+    const { doc, host } = folderTabViewFixture();
+    const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
+    await manager.init({
+      tabs: [
+        { id: "folder", path: "C:\\work", kind: "folder", label: "work" },
+        { id: "other", path: "C:\\work\\other.txt", kind: "file", label: "other.txt" },
+      ],
+      activeId: "folder",
+    }, null, null);
+    await manager.navigateEntry("Docs/Archive.bin", "7z");
+    await manager.navigateEntry("Docs/Archive.bin::Readme.txt", "txt");
+    doc.current.selectedRelPath = "docs/archive.bin::Readme.txt";
+    manager.syncActive(doc.current);
+    await manager.activate("other");
+    vi.mocked(doc.selectEntry).mockClear();
+
+    await manager.activate("folder");
+
+    expect(doc.selectEntry).toHaveBeenNthCalledWith(1, "docs/archive.bin", "7z");
+    expect(doc.selectEntry).toHaveBeenNthCalledWith(2, "docs/archive.bin::Readme.txt", "txt");
   });
 
   // Feature: 偽装アーカイブの書庫形式保持

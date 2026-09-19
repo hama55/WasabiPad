@@ -3,6 +3,7 @@
 // doc が Tauri/GUI から叩く高レベルAPI(可視行取得・編集・検索・保存)を提供する。
 mod archive;
 mod archive_port;
+mod atomic_file;
 mod bookmarks;
 mod buffer;
 mod doc;
@@ -39,6 +40,10 @@ pub use doc::{
 pub use fileio::{Encoding, EncodingId, Eol};
 pub use filename::{next_available_path, validate_windows_file_name};
 pub use preview_cache::PreviewCache;
+pub use protocol::{
+    EVENT_DOCUMENT_LOAD_PROGRESS, EVENT_EXTERNAL_WINDOW_REQUEST, EVENT_VIEWER_UPDATE,
+    EVENT_WORKSPACE_SEARCH_BATCH,
+};
 pub use settings::{load as load_settings, update as update_setting};
 pub use sqlite_preview::{read_sqlite_preview, SqliteCell, SqliteObject, SqlitePreview};
 pub use workspace_search::{search_workspace, FileNameMatchMode, SearchOptions, WorkspaceSearchOutcome};

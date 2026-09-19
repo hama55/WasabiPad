@@ -45,7 +45,9 @@ export interface Settings {
   openTabs: StoredTabs;
 }
 
-const DEFAULTS: Settings = {
+type UserSettingKey = Exclude<keyof Settings, "openTabs">;
+
+const DEFAULT_USER_SETTINGS: Pick<Settings, UserSettingKey> = {
   indentSize: DEFAULT_INDENT_SIZE,
   sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
   fontFamily: DEFAULT_EDITOR_CONFIG.fontFamily,
@@ -60,6 +62,10 @@ const DEFAULTS: Settings = {
   registeredStrings: [],
   registeredCommands: [],
   workspaceSearchOptions: null,
+};
+
+const DEFAULTS: Settings = {
+  ...DEFAULT_USER_SETTINGS,
   openTabs: { tabs: [], activeId: null },
 };
 
@@ -185,20 +191,13 @@ export function setSetting<K extends keyof Settings>(key: K, value: Settings[K])
 
 // アプリ設定だけを既定値へ戻す。openTabs は作業再開に必要なセッション状態なので触らない。
 export function resetUserSettings(): void {
-  setSetting("indentSize", DEFAULTS.indentSize);
-  setSetting("sidebarWidth", DEFAULTS.sidebarWidth);
-  setSetting("fontFamily", DEFAULTS.fontFamily);
-  setSetting("fontSize", DEFAULTS.fontSize);
-  setSetting("previewFontSize", DEFAULTS.previewFontSize);
-  setSetting("markdownSoftBreaks", DEFAULTS.markdownSoftBreaks);
-  setSetting("markdownLineHeight", DEFAULTS.markdownLineHeight);
-  setSetting("markdownHeadingUnderlines", DEFAULTS.markdownHeadingUnderlines);
-  setSetting("sqlitePreviewRows", DEFAULTS.sqlitePreviewRows);
-  setSetting("previewCacheDirectory", DEFAULTS.previewCacheDirectory);
-  setSetting("startupPath", DEFAULTS.startupPath);
-  setSetting("registeredStrings", []);
-  setSetting("registeredCommands", []);
-  setSetting("workspaceSearchOptions", DEFAULTS.workspaceSearchOptions);
+  for (const key of Object.keys(DEFAULT_USER_SETTINGS) as UserSettingKey[]) {
+    resetUserSetting(key);
+  }
+}
+
+function resetUserSetting<K extends UserSettingKey>(key: K): void {
+  setSetting(key, DEFAULT_USER_SETTINGS[key] as Settings[K]);
 }
 
 export async function flushSettings(): Promise<void> {

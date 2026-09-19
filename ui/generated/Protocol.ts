@@ -1,17 +1,28 @@
 // This file was generated from shared/protocol.json by scripts/sync-protocol.mjs.
 export const ARCHIVE_ENTRY_SEPARATOR = "::" as const;
 export const PASSWORD_ERROR_MARKER = "7z-password" as const;
+export const ARCHIVE_FORMATS = ["zip","7z","xlsx","xls"] as const;
+export function isArchiveFormat(value: string | null | undefined): value is (typeof ARCHIVE_FORMATS)[number] {
+  return typeof value === "string" && ARCHIVE_FORMATS.some((format) => format === value.toLowerCase());
+}
+export const EVENT_NAMES = {
+  "externalWindowRequest": "external-window-request",
+  "workspaceSearchBatch": "workspace-search-batch",
+  "documentLoadProgress": "document-load-progress",
+  "viewerUpdate": "viewer-update"
+} as const;
+export const IMAGE_FORMATS = ["svg","png","jpg","gif","webp","bmp","ico","avif","apng"] as const;
 export const IMAGE_MIME_TYPES = {
-  "apng": "image/apng",
-  "avif": "image/avif",
-  "bmp": "image/bmp",
-  "gif": "image/gif",
-  "ico": "image/x-icon",
+  "svg": "image/svg+xml",
+  "png": "image/png",
   "jpeg": "image/jpeg",
   "jpg": "image/jpeg",
-  "png": "image/png",
-  "svg": "image/svg+xml",
-  "webp": "image/webp"
+  "gif": "image/gif",
+  "webp": "image/webp",
+  "bmp": "image/bmp",
+  "ico": "image/x-icon",
+  "avif": "image/avif",
+  "apng": "image/apng"
 } as const;
 export const ENCODING_LABELS = {
   "utf8": "UTF-8",

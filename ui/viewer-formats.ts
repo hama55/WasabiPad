@@ -1,4 +1,4 @@
-import type { ViewerFormat } from "./api";
+import type { OpenAs, ViewerFormat } from "./api";
 import { IMAGE_MIME_TYPES } from "./image-formats";
 import { MENU_ICON, type MenuIconClass } from "./menu-icons";
 
@@ -12,6 +12,7 @@ export interface ViewerFormatSpec {
   readonly supportsDelimiter: boolean;
   readonly supportsChart: boolean;
   readonly supportsDefaultBrowser: boolean;
+  readonly openAs?: { readonly id: OpenAs; readonly order: number };
 }
 
 export type ViewerRenderer = (text: string) => void | Promise<void>;
@@ -28,6 +29,7 @@ export const VIEWER_FORMATS: Record<ViewerFormat, ViewerFormatSpec> = {
     supportsDelimiter: true,
     supportsChart: true,
     supportsDefaultBrowser: false,
+    openAs: { id: "csv", order: 1 },
   },
   markdown: {
     id: "markdown",
@@ -39,6 +41,7 @@ export const VIEWER_FORMATS: Record<ViewerFormat, ViewerFormatSpec> = {
     supportsDelimiter: false,
     supportsChart: false,
     supportsDefaultBrowser: false,
+    openAs: { id: "md", order: 0 },
   },
   image: {
     id: "image",
@@ -61,6 +64,7 @@ export const VIEWER_FORMATS: Record<ViewerFormat, ViewerFormatSpec> = {
     supportsDelimiter: false,
     supportsChart: false,
     supportsDefaultBrowser: false,
+    openAs: { id: "pdf", order: 3 },
   },
   html: {
     id: "html",
@@ -72,6 +76,7 @@ export const VIEWER_FORMATS: Record<ViewerFormat, ViewerFormatSpec> = {
     supportsDelimiter: false,
     supportsChart: false,
     supportsDefaultBrowser: true,
+    openAs: { id: "html", order: 2 },
   },
   sqlite: {
     id: "sqlite",

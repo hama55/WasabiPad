@@ -15,8 +15,12 @@ export function paneToggleView(kind: PaneToggleKind, shown: boolean) {
   return { icon, title: shown ? closing : opening };
 }
 
-export function sidebarToggleLeft(shown: boolean, sidebarWidth: number): number {
-  return shown ? Math.max(4, sidebarWidth - 32) : 4;
+export function sidebarToggleLeft(
+  shown: boolean,
+  sidebarWidth: number,
+  buttonWidth = PREVIEW_TOGGLE_DEFAULT_WIDTH,
+): number {
+  return shown ? Math.max(4, sidebarWidth - buttonWidth - 4) : 4;
 }
 
 export function previewToggleLeft(

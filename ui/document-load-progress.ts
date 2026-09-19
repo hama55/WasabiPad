@@ -4,8 +4,6 @@ export interface DocumentLoadProgress {
   percent: number;
 }
 
-export const DOCUMENT_LOAD_PROGRESS_EVENT = "document-load-progress";
-
 export function documentLoadProgressMessage(progress: Pick<DocumentLoadProgress, "percent">): string {
   const percent = Math.max(0, Math.min(100, Math.round(progress.percent)));
   return `読み込み中… ${percent}%`;

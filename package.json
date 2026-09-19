@@ -15,7 +15,7 @@
     "sync:version": "node scripts/sync-version.mjs",
     "release": "node scripts/release.mjs",
     "test": "vitest run",
-    "build": "npm test && npm run sync:config && npm run check:config && npm run sync:ipc && npm run check:ipc && tsc --noEmit && vite build",
+    "build": "npm test && npm run sync:config && npm run check:config && npm run sync:ipc && npm run sync:protocol && npm run check:ipc && tsc --noEmit && vite build",
     "tauri": "tauri"
   },
   "dependencies": {

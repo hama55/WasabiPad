@@ -1,6 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { DOCUMENT_LOAD_PROGRESS_EVENT } from "./document-load-progress";
 import type { DocumentLoadProgress } from "./document-load-progress";
 import { IPC_COMMANDS } from "./generated/IpcCommands";
 import type { EditManyItem } from "./generated/EditManyItem";
@@ -32,6 +31,7 @@ import type { WorkspaceSearchBatch } from "./generated/WorkspaceSearchBatch";
 import type { WorkspaceSearchOptions } from "./generated/WorkspaceSearchOptions";
 import type { WorkspaceSearchOutcome } from "./generated/WorkspaceSearchOutcome";
 import type { WorkspaceSearchResult } from "./generated/WorkspaceSearchResult";
+import { EVENT_NAMES } from "./generated/Protocol";
 
 export type {
   EditManyItem,
@@ -68,12 +68,7 @@ export type {
 export const READ_ENCODINGS = ["utf8", "sjis", "utf16le"] as const;
 export type ReadEncoding = (typeof READ_ENCODINGS)[number];
 
-export const EVENT_NAMES = {
-  externalWindowRequest: "external-window-request",
-  workspaceSearchBatch: "workspace-search-batch",
-  documentLoadProgress: DOCUMENT_LOAD_PROGRESS_EVENT,
-  viewerUpdate: "viewer-update",
-} as const;
+export { EVENT_NAMES } from "./generated/Protocol";
 
 export type { DocumentLoadProgress } from "./document-load-progress";
 

@@ -24,12 +24,9 @@ use wasabipad_core::{
     ExternalCheck, ExternalMergePreview, FindCursor, FindOutcome, FindResult, FolderEntry, OpenAs, PosC,
     read_sqlite_preview as read_sqlite_preview_core, PreviewCache, ReplaceChunkResult,
     SaveOutcome, SearchOptions, SqlitePreview, WorkspaceSearchOutcome,
+    EVENT_DOCUMENT_LOAD_PROGRESS, EVENT_EXTERNAL_WINDOW_REQUEST, EVENT_VIEWER_UPDATE,
+    EVENT_WORKSPACE_SEARCH_BATCH,
 };
-
-const EVENT_EXTERNAL_WINDOW_REQUEST: &str = "external-window-request";
-const EVENT_WORKSPACE_SEARCH_BATCH: &str = "workspace-search-batch";
-pub(crate) const EVENT_DOCUMENT_LOAD_PROGRESS: &str = "document-load-progress";
-const EVENT_VIEWER_UPDATE: &str = "viewer-update";
 
 fn viewer_label(id: u64) -> String {
     format!("viewer-{}", id)

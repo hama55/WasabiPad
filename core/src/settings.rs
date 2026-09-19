@@ -2,74 +2,23 @@
 // core はキー単位でJSON値を差し替え、複数プロセスが古い設定全体を上書きしないようにする。
 use std::fs::OpenOptions;
 use std::io;
-use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 // ディレクトリ名は app-config.json から scripts/sync-app-config.mjs が同期する。
 // インストーラは exe を %LOCALAPPDATA%\WasabiPad\ へ置く。設定もそこへ揃えると
 // インストール版では従来の「exe 隣」と同じ場所になり、保存先が分かれない。
-pub(crate) fn config_path(file: &str) -> io::Result<PathBuf> {
+pub(crate) fn app_data_root() -> io::Result<PathBuf> {
     let local = std::env::var_os("LOCALAPPDATA")
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "LOCALAPPDATA が取得できません"))?;
-    Ok(PathBuf::from(local).join("WasabiPad").join(file))
+    Ok(PathBuf::from(local).join("WasabiPad"))
+}
+
+pub(crate) fn config_path(file: &str) -> io::Result<PathBuf> {
+    Ok(app_data_root()?.join(file))
 }
 
 pub(crate) fn write_config(path: PathBuf, contents: &str) -> io::Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let temp = path.with_extension(format!("tmp-{}-{timestamp}-{id}", std::process::id()));
-    let result = (|| {
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temp)?;
-        file.write_all(contents.as_bytes())?;
-        file.sync_all()?;
-        replace_file(&temp, &path)
-    })();
-    if result.is_err() {
-        if let Err(error) = std::fs::remove_file(&temp) {
-            eprintln!("設定の一時ファイルを削除できませんでした: {error}");
-        }
-    }
-    result
-}
-
-#[cfg(target_os = "windows")]
-fn replace_file(source: &std::path::Path, target: &std::path::Path) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{
-        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-    };
-
-    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
-    let target: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
-    let moved = unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            target.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if moved == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn replace_file(source: &std::path::Path, target: &std::path::Path) -> io::Result<()> {
-    std::fs::rename(source, target)
+    crate::atomic_file::atomic_write(&path, &[contents.as_bytes()])
 }
 
 pub fn load() -> io::Result<String> {

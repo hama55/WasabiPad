@@ -228,7 +228,7 @@ body.viewer-resizing * {
 article {
   max-width: 900px; margin: 0 auto; padding: 24px 36px 64px;
   font: var(--viewer-font-size) var(--font-mono);
-  line-height: var(--markdown-line-height, 1.65);
+  line-height: var(--markdown-line-height);
 }
 article :where(h1, h2, h3, h4, h5, h6) {
   margin-block: 1.1em .55em;

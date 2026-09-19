@@ -22,12 +22,12 @@ describe("Feature: pane toggle controls", () => {
     expect(paneToggleView("preview", false)).toEqual({ icon: "\uE76B", title: "プレビューを開く" });
   });
 
-  // Given: フォルダビュー幅が220px
+  // Given: フォルダビュー幅が220px、開閉ボタン幅が36px
   // When: フォルダビューが表示/非表示のボタン位置を求める
   // Then: 表示時は右端、非表示時は左端になる
   it("Scenario: anchors the sidebar toggle to the correct edge", () => {
-    expect(sidebarToggleLeft(true, 220)).toBe(188);
-    expect(sidebarToggleLeft(false, 220)).toBe(4);
+    expect(sidebarToggleLeft(true, 220, 36)).toBe(180);
+    expect(sidebarToggleLeft(false, 220, 36)).toBe(4);
   });
 
   // Given: メイン領域左端が100px、プレビュー左端が900px、幅が1200px

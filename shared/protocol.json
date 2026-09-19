@@ -1,16 +1,23 @@
 {
   "archiveEntrySeparator": "::",
   "passwordErrorMarker": "7z-password",
+  "archiveFormats": ["zip", "7z", "xlsx", "xls"],
+  "events": {
+    "externalWindowRequest": "external-window-request",
+    "workspaceSearchBatch": "workspace-search-batch",
+    "documentLoadProgress": "document-load-progress",
+    "viewerUpdate": "viewer-update"
+  },
   "imageFormats": [
-    { "extensions": ["apng"], "mimeTypes": ["image/apng"] },
-    { "extensions": ["avif"], "mimeTypes": ["image/avif"] },
-    { "extensions": ["bmp"], "mimeTypes": ["image/bmp"] },
-    { "extensions": ["gif"], "mimeTypes": ["image/gif"] },
-    { "extensions": ["ico"], "mimeTypes": ["image/x-icon", "image/vnd.microsoft.icon"] },
-    { "extensions": ["jpeg", "jpg"], "canonicalExtension": "jpg", "mimeTypes": ["image/jpeg"] },
-    { "extensions": ["png"], "mimeTypes": ["image/png"] },
     { "extensions": ["svg"], "mimeTypes": ["image/svg+xml"] },
-    { "extensions": ["webp"], "mimeTypes": ["image/webp"] }
+    { "extensions": ["png"], "mimeTypes": ["image/png"] },
+    { "extensions": ["jpeg", "jpg"], "canonicalExtension": "jpg", "mimeTypes": ["image/jpeg"] },
+    { "extensions": ["gif"], "mimeTypes": ["image/gif"] },
+    { "extensions": ["webp"], "mimeTypes": ["image/webp"] },
+    { "extensions": ["bmp"], "mimeTypes": ["image/bmp"] },
+    { "extensions": ["ico"], "mimeTypes": ["image/x-icon", "image/vnd.microsoft.icon"] },
+    { "extensions": ["avif"], "mimeTypes": ["image/avif"] },
+    { "extensions": ["apng"], "mimeTypes": ["image/apng"] }
   ],
   "encodingLabels": {
     "utf8": "UTF-8",

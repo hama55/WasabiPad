@@ -1,7 +1,6 @@
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::fs::{self, File};
+use std::io::{self, Read};
+use std::path::PathBuf;
 
 const CACHE_DIRECTORY: &str = ".wasabipad-preview-cache";
 const CACHE_SUFFIX: &str = ".wasabipad-preview";
@@ -12,7 +11,6 @@ const MAX_CACHE_FILE_BYTES: u64 = MAX_CACHE_PAYLOAD_BYTES
     + CACHE_MAGIC.len() as u64
     + std::mem::size_of::<u64>() as u64
     + MAX_FINGERPRINT_BYTES as u64;
-static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 /// 外部プレビューキャッシュを管理する。保存先は利用者が選んだディレクトリで、
 /// 実データは専用の子ディレクトリにだけ保存する。
@@ -22,10 +20,7 @@ pub struct PreviewCache {
 
 impl PreviewCache {
     pub fn default_root() -> io::Result<PathBuf> {
-        let local = std::env::var_os("LOCALAPPDATA").ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, "LOCALAPPDATA が取得できません")
-        })?;
-        Ok(PathBuf::from(local).join("WasabiPad"))
+        crate::settings::app_data_root()
     }
 
     pub fn new(root: PathBuf) -> Self {
@@ -67,31 +62,12 @@ impl PreviewCache {
                 "プレビューキャッシュの識別情報が長すぎます",
             ));
         }
-        let directory = self.storage_root();
-        fs::create_dir_all(&directory)?;
         let path = self.cache_path(key);
-        let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
-        let temp = directory.join(format!(
-            ".{file_name}.tmp-{}-{id}",
-            std::process::id(),
-            file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or("entry"),
-        ));
-        let result = (|| {
-            let mut file = OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(&temp)?;
-            file.write_all(CACHE_MAGIC)?;
-            file.write_all(&(fingerprint.len() as u64).to_le_bytes())?;
-            file.write_all(fingerprint.as_bytes())?;
-            file.write_all(bytes)?;
-            file.sync_all()?;
-            replace_file(&temp, &path)
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(&temp);
-        }
-        result
+        let fingerprint_len = (fingerprint.len() as u64).to_le_bytes();
+        crate::atomic_file::atomic_write(
+            &path,
+            &[CACHE_MAGIC, &fingerprint_len, fingerprint.as_bytes(), bytes],
+        )
     }
 
     pub fn clear(&self) -> io::Result<()> {
@@ -173,34 +149,6 @@ fn decode_cache<'a>(encoded: &'a [u8], fingerprint: &str) -> Option<&'a [u8]> {
     let payload_start = fingerprint_start.checked_add(fingerprint_len)?;
     let stored = encoded.get(fingerprint_start..payload_start)?;
     (stored == fingerprint.as_bytes()).then(|| encoded.get(payload_start..)).flatten()
-}
-
-#[cfg(target_os = "windows")]
-fn replace_file(source: &Path, target: &Path) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{
-        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-    };
-
-    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
-    let target: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
-    let moved = unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            target.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if moved == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn replace_file(source: &Path, target: &Path) -> io::Result<()> {
-    fs::rename(source, target)
 }
 
 #[cfg(test)]

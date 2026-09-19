@@ -6,11 +6,7 @@ const read = (path) => readFileSync(resolve(root, path), "utf8");
 const backend = read("src-tauri/src/main.rs");
 const documentTypes = read("core/src/document_types.rs");
 const fileio = read("core/src/fileio.rs");
-const protocol = JSON.parse(read("shared/protocol.json"));
-const generatedProtocol = read("ui/generated/Protocol.ts");
-const rustProtocol = read("core/src/protocol.rs");
 const frontend = read("ui/api.ts");
-const documentLoadProgress = read("ui/document-load-progress.ts");
 const folder = read("core/src/folder.rs");
 const workspaceSearch = read("core/src/workspace_search.rs");
 const generatedSearchOptions = read("ui/generated/WorkspaceSearchOptions.ts");
@@ -272,50 +268,6 @@ for (const [source, structName, typeName, renameAll] of wireStructs) {
   assertSameSet(`${structName} generated wire fields`, wireFields, generatedStructFields(typeName));
 }
 
-// 機械プロトコルは shared/protocol.json から生成され、Rust/TypeScript双方が同じ値を使う。
-const generatedProtocolValue = (source, name, pattern) => source.match(pattern)?.[1];
-const protocolValues = [
-  ["archive entry separator", protocol.archiveEntrySeparator,
-    generatedProtocolValue(generatedProtocol, "ARCHIVE_ENTRY_SEPARATOR", /export const ARCHIVE_ENTRY_SEPARATOR = "([^"]+)"/),
-    generatedProtocolValue(rustProtocol, "ARCHIVE_ENTRY_SEPARATOR", /ARCHIVE_ENTRY_SEPARATOR: &str = "([^"]+)"/)],
-  ["archive password marker", protocol.passwordErrorMarker,
-    generatedProtocolValue(generatedProtocol, "PASSWORD_ERROR_MARKER", /export const PASSWORD_ERROR_MARKER = "([^"]+)"/),
-    generatedProtocolValue(rustProtocol, "PASSWORD_ERROR_MARKER", /PASSWORD_ERROR_MARKER: &str = "([^"]+)"/)],
-];
-for (const [label, expected, ...actuals] of protocolValues) {
-  if (!expected || actuals.some((actual) => actual !== expected)) {
-    fail(`${label}; expected=${expected ?? "<not found>"}, actual=[${actuals.join(", ")}]`);
-  }
-}
-for (const [label, labels] of [
-  ["encoding", protocol.encodingLabels],
-  ["EOL", protocol.eolLabels],
-]) {
-  for (const [key, expected] of Object.entries(labels)) {
-    const uiValue = generatedProtocol.match(new RegExp(`\\"${key}\\": \\"([^\\"]+)\\"`))?.[1];
-    const rustValue = rustProtocol.match(new RegExp(`\\"${key}\\" => \\"([^\\"]+)\\"`))?.[1];
-    if (uiValue !== expected || rustValue !== expected) {
-      fail(`${label} label ${key}; expected=${expected}, ui=${uiValue ?? "<not found>"}, rust=${rustValue ?? "<not found>"}`);
-    }
-  }
-}
-
-for (const [uiName, rustName] of [
-  ["externalWindowRequest", "EVENT_EXTERNAL_WINDOW_REQUEST"],
-  ["workspaceSearchBatch", "EVENT_WORKSPACE_SEARCH_BATCH"],
-  ["documentLoadProgress", "EVENT_DOCUMENT_LOAD_PROGRESS"],
-  ["viewerUpdate", "EVENT_VIEWER_UPDATE"],
-]) {
-  const rustEvent = backend.match(new RegExp(`const ${rustName}: &str = "([^"]+)"`))?.[1];
-  const uiEvent = frontend.match(new RegExp(`${uiName}: "([^"]+)"`))?.[1]
-    ?? (uiName === "documentLoadProgress"
-      ? documentLoadProgress.match(/DOCUMENT_LOAD_PROGRESS_EVENT = "([^"]+)"/)?.[1]
-      : undefined);
-  if (!rustEvent || !uiEvent || rustEvent !== uiEvent) {
-    fail(`event name ${uiName}; core=${rustEvent ?? "<not found>"}, ui=${uiEvent ?? "<not found>"}`);
-  }
-}
-
 const readEncodingBlock = frontend.match(/export const READ_ENCODINGS = \[([^\]]+)\]/)?.[1];
 if (!readEncodingBlock) fail("cannot find READ_ENCODINGS");
 const readEncodings = names(/"([^"]+)"/g, readEncodingBlock);
@@ -331,4 +283,4 @@ if (!capabilities.windows.includes(`${viewerLabelPrefix}-*`)) {
   fail(`viewer window capability; label prefix=${viewerLabelPrefix}-, windows=[${capabilities.windows.join(", ")}]`);
 }
 
-console.log(`IPC contract OK: ${commands.length} commands, wire enums, structs, and shared constants match.`);
+console.log(`IPC contract OK: ${commands.length} commands, wire enums, and structs match.`);

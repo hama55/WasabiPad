@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  ARCHIVE_FORMATS,
   ARCHIVE_ENTRY_SEPARATOR,
   ENCODING_LABELS,
   EOL_LABELS,
+  EVENT_NAMES,
+  IMAGE_FORMATS,
   IMAGE_MIME_TYPES,
+  isArchiveFormat,
   PASSWORD_ERROR_MARKER,
 } from "./generated/Protocol";
 
@@ -28,5 +32,23 @@ describe("Feature: 共有プロトコル定数", () => {
       utf16le: "UTF-16LE",
     });
     expect(EOL_LABELS).toEqual({ crlf: "CRLF", lf: "LF" });
+  });
+
+  // Feature: アーカイブ形式とTauriイベントの共有契約
+  // Scenario: UIが生成済みの形式集合とイベント名を参照する
+  // Given: shared/protocol.jsonを正本とする生成プロトコル
+  // When: アーカイブ形式とイベント名を取得する
+  // Then: 対応形式と4イベントを一つの生成物から取得できる
+  it("Scenario: アーカイブ形式とイベント名を共有正本から取得する", () => {
+    expect(ARCHIVE_FORMATS).toEqual(["zip", "7z", "xlsx", "xls"]);
+    expect(IMAGE_FORMATS).toEqual(["svg", "png", "jpg", "gif", "webp", "bmp", "ico", "avif", "apng"]);
+    expect(EVENT_NAMES).toEqual({
+      externalWindowRequest: "external-window-request",
+      workspaceSearchBatch: "workspace-search-batch",
+      documentLoadProgress: "document-load-progress",
+      viewerUpdate: "viewer-update",
+    });
+    expect(isArchiveFormat("7Z")).toBe(true);
+    expect(isArchiveFormat("txt")).toBe(false);
   });
 });

@@ -263,7 +263,11 @@ function applyPaneVisibility(mainWidth: number) {
   sidebarToggle.textContent = sidebarView.icon;
   sidebarToggle.title = sidebarView.title;
   sidebarToggle.setAttribute("aria-label", sidebarView.title);
-  sidebarToggle.style.left = `${sidebarToggleLeft(sidebarShown, sidebarEl.getBoundingClientRect().width)}px`;
+  sidebarToggle.style.left = `${sidebarToggleLeft(
+    sidebarShown,
+    sidebarEl.getBoundingClientRect().width,
+    sidebarToggle.offsetWidth || PREVIEW_TOGGLE_DEFAULT_WIDTH,
+  )}px`;
 
   const previewState = {
     available: previewAvailable,
@@ -377,6 +381,13 @@ function runPreviewBackground(
   });
 }
 
+function clearPreview(session: Readonly<DocumentSession>) {
+  inlinePreview.setSourcePath(null, session.archivePath, session.archiveEntry);
+  previewDocument = null;
+  editingStatusbar.setPreviewFormat(null);
+  inlinePreview.clear();
+}
+
 function openPreviewFormat(
   session: Readonly<DocumentSession>,
   path: string,
@@ -385,10 +396,7 @@ function openPreviewFormat(
 ) {
   const sourcePath = sourcePathForViewer(format, session.savePath, session.displayPath);
   if (format === "sqlite" && !sqlitePreviewSourcePath(session)) {
-    inlinePreview.setSourcePath(null, session.archivePath, session.archiveEntry);
-    previewDocument = null;
-    editingStatusbar.setPreviewFormat(null);
-    inlinePreview.clear();
+    clearPreview(session);
     return;
   }
   inlinePreview.setSourcePath(
@@ -433,18 +441,12 @@ function syncPreviewDocument(session: Readonly<DocumentSession>, force = false, 
   }
   const isAssetPreview = isAssetViewerFormat(format);
   if (format === "sqlite" && !sqlitePreviewSourcePath(session)) {
-    inlinePreview.setSourcePath(null, session.archivePath, session.archiveEntry);
-    previewDocument = null;
-    editingStatusbar.setPreviewFormat(null);
-    inlinePreview.clear();
+    clearPreview(session);
     return;
   }
   if (!force && isCurrentPreviewDocument(previewDocument, activeTabId, path) && !isAssetPreview) return;
   if (!format) {
-    inlinePreview.setSourcePath(null, session.archivePath, session.archiveEntry);
-    previewDocument = null;
-    editingStatusbar.setPreviewFormat(null);
-    inlinePreview.clear();
+    clearPreview(session);
     return;
   }
   openPreviewFormat(session, path, format, fragment);

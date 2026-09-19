@@ -1,7 +1,10 @@
 use crate::buffer::TextBuffer;
 use std::collections::HashSet;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+const MARKDOWN_IMAGE_DIRECTORY: &str = "image_markdown";
+pub(crate) const PASTED_IMAGE_STEM: &str = "pasted-image";
 
 // 貼り付け画像とアーカイブ内画像のパス規則、および不要画像の掃除だけを担当する。
 pub(crate) fn archive_entry_parent(entry: &str) -> &str {
@@ -32,23 +35,43 @@ pub(crate) fn valid_archive_entry_path(entry: &str) -> bool {
         && !entry.split(['/', '\\']).any(|part| part == "..")
 }
 
+pub(crate) fn markdown_asset_dir(path: &Path) -> Option<PathBuf> {
+    let extension = path.extension()?.to_str()?;
+    if !extension.eq_ignore_ascii_case("md") && !extension.eq_ignore_ascii_case("markdown") {
+        return None;
+    }
+    let stem = path.file_stem()?.to_str()?;
+    if stem.is_empty() {
+        return None;
+    }
+    Some(path.parent()?.join(MARKDOWN_IMAGE_DIRECTORY).join(stem))
+}
+
+pub(crate) fn markdown_image_relative_dir(memo: &str) -> String {
+    format!("{MARKDOWN_IMAGE_DIRECTORY}/{memo}")
+}
+
+pub(crate) fn markdown_image_relative_path(memo: &str, name: &str) -> String {
+    format!("{}/{name}", markdown_image_relative_dir(memo))
+}
+
 pub(crate) fn next_archive_image_name(
     entries: &[String],
     directory: &str,
     extension: &str,
 ) -> io::Result<String> {
-    let prefix = format!("{}/", directory.replace('\\', "/").to_lowercase());
+    let prefix = format!("{}/", directory.replace('\\', "/"));
     for index in 1..=10_000usize {
         let stem = if index == 1 {
-            "pasted-image".to_string()
+            PASTED_IMAGE_STEM.to_string()
         } else {
-            format!("pasted-image-{index}")
+            format!("{PASTED_IMAGE_STEM}-{index}")
         };
         let name = format!("{stem}.{extension}");
-        let full = format!("{prefix}{}", name.to_lowercase());
+        let full = format!("{prefix}{name}");
         if !entries
             .iter()
-            .any(|entry| entry.replace('\\', "/").to_lowercase() == full)
+            .any(|entry| entry.replace('\\', "/") == full)
         {
             return Ok(name);
         }
@@ -154,21 +177,18 @@ fn image_src_in_tag(tag: &str) -> Option<String> {
 }
 
 fn image_name_from_src(src: &str) -> Option<String> {
-    let parts: Vec<String> = src
-        .replace('\\', "/")
-        .split('/')
-        .map(|part| part.to_lowercase())
-        .collect();
+    let normalized = src.replace('\\', "/");
+    let parts: Vec<&str> = normalized.split('/').collect();
     match parts.as_slice() {
-        [root, name] if root == "image" && valid_image_path_part(name) => {
+        [root, name] if root.eq_ignore_ascii_case("image") && valid_image_path_part(name) => {
             Some(format!("image/{name}"))
         }
         [root, memo, name]
-            if root == "image_markdown"
+            if root.eq_ignore_ascii_case(MARKDOWN_IMAGE_DIRECTORY)
                 && valid_image_path_part(memo)
                 && valid_image_path_part(name) =>
         {
-            Some(format!("image_markdown/{memo}/{name}"))
+            Some(markdown_image_relative_path(memo, name))
         }
         _ => None,
     }
@@ -187,8 +207,10 @@ pub(crate) fn cleanup_image_dir(dir: &Path, prefix: &str, referenced: &HashSet<S
         if !entry.file_type()?.is_file() {
             continue;
         }
-        let name = entry.file_name().to_string_lossy().to_lowercase();
-        if !referenced.contains(&format!("{prefix}/{name}")) {
+        let file_name = entry.file_name();
+        let name = file_name.to_string_lossy();
+        let key = format!("{prefix}/{name}").to_lowercase();
+        if !referenced.iter().any(|reference| reference.to_lowercase() == key) {
             std::fs::remove_file(entry.path())?;
         }
     }
@@ -243,11 +265,28 @@ mod tests {
             "png",
         )
         .unwrap();
-        // Then: 大文字小文字を吸収し、未使用名を返す
-        assert!(referenced.contains("image/keep.png"));
+        // Then: アーカイブ内部名の大小文字を保持し、未使用名を返す
+        assert!(referenced.contains("image/keep.PNG"));
         assert!(referenced.contains("image_markdown/memo/pasted-image-2.jpg"));
-        assert!(referenced.contains("image_markdown/memo/pasted-image-3.png"));
+        assert!(referenced.contains("image_markdown/memo/pasted-image-3.PNG"));
         assert!(referenced.contains("image/kept.jpg"));
         assert_eq!(next, "pasted-image-3.png");
+    }
+
+    // Feature: アーカイブ内部画像名の同一性
+    // Scenario: 大文字小文字だけ異なる画像名を別項目として扱う
+    // Given: `Pasted-Image.png`だけが存在するアーカイブ内画像フォルダ
+    // When: 次の貼り付け画像名を求める
+    // Then: 小文字の`pasted-image.png`を別名として利用できる
+    #[test]
+    fn archive_image_name_collision_preserves_entry_case() {
+        let next = next_archive_image_name(
+            &["image/Pasted-Image.png".to_string()],
+            "image",
+            "png",
+        )
+        .unwrap();
+
+        assert_eq!(next, "pasted-image.png");
     }
 }

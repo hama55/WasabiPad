@@ -1,5 +1,7 @@
 # SQLiteプレビューを採用する
 
+状態維持と段階読込については [ADR 0016](0016-sqlite-preview-state-and-incremental-browsing.md) が本ADRを更新する。
+
 `.sqlite` と `.sqlite3` の保存済み実ファイルを、既存のプレビュー領域で読み取り専用表示する。Rust側に `rusqlite` の `bundled` 構成を同梱し、固定クエリでテーブル・ビュー・SQLite内部テーブルと `sqlite_schema` を読む。利用者がSQLを実行したり、データを編集・保存・エクスポートしたりする機能は追加しない。
 
 ## 決定

@@ -1,5 +1,6 @@
 import type { DocInfo, Encoding, Eol, ReadEncoding } from "./api";
 import { splitArchiveEntryPath } from "./archive-path";
+import { isArchiveFormat } from "./generated/Protocol";
 import { basename } from "./path";
 
 // BOM の有無は読込時に自動判定される (指定して読み直す対象ではない) ため、
@@ -84,14 +85,10 @@ export function classificationPathOf(
   if (!path || !session.effectiveExtension) return path;
   if (session.archiveEntry || splitArchiveEntryPath(path)) {
     // archive形式は書庫を開くための指定であり、内部項目の分類には使わない。
-    if (isArchiveExtension(session.effectiveExtension)) return path;
+    if (isArchiveFormat(session.effectiveExtension)) return path;
     return `${path}.${session.effectiveExtension}`;
   }
   return documentPathOf(session);
-}
-
-function isArchiveExtension(extension: string): boolean {
-  return ["zip", "7z", "xlsx", "xls"].includes(extension.toLowerCase());
 }
 
 export function sessionFromDocInfo(

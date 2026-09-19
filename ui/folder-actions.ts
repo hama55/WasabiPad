@@ -8,13 +8,17 @@ import type { confirmMessage, promptFields } from "./prompt";
 import type { showError } from "./dialogs";
 import {
   basename,
+  comparableDocumentPath,
+  comparablePath,
   isDescendantPath,
+  isSameOrDescendantDocumentPath,
   joinWindowsRoot,
   movedRelativePath,
   rebaseWindowsPath,
   relativePathFromRoot,
   type PathRebase,
 } from "./path";
+import { isArchiveEntryPath } from "./archive-path";
 import { createRegisteredCommandMenu, type RegisteredCommandMenuPorts } from "./registered-command-menu";
 import { MENU_ICON } from "./menu-icons";
 import { MENU_LABELS } from "./menu-labels";
@@ -134,11 +138,7 @@ export class FolderActions {
   }
 
   private pathContains(selectedRelPath: string, relPath: string): boolean {
-    const selected = selectedRelPath.replace(/\\/g, "/").replace(/\/$/, "").toLocaleLowerCase("en-US");
-    const target = relPath.replace(/\\/g, "/").replace(/\/$/, "").toLocaleLowerCase("en-US");
-    return !!target && (selected === target
-      || selected.startsWith(`${target}/`)
-      || selected.startsWith(`${target}::`));
+    return !!relPath && isSameOrDescendantDocumentPath(selectedRelPath, relPath);
   }
 
   private async reloadSelectedEntry(selectedRelPath: string, affectedRelPath: string): Promise<void> {
@@ -342,9 +342,9 @@ export class FolderActions {
     const seen = new Set<string>();
     const result: ContextTarget[] = [];
     for (const item of candidates) {
-      const comparablePath = item.relPath.replace(/\\/g, "/").toLocaleLowerCase("en-US");
-      if (!item.relPath || item.relPath.includes("::") || seen.has(comparablePath)) continue;
-      seen.add(comparablePath);
+      const comparable = comparableDocumentPath(item.relPath);
+      if (!item.relPath || isArchiveEntryPath(item.relPath) || seen.has(comparable)) continue;
+      seen.add(comparable);
       if (result.some((parent) => parent.isDir && isDescendantPath(item.relPath, parent.relPath))) continue;
       for (let i = result.length - 1; i >= 0; i--) {
         if (item.isDir && isDescendantPath(result[i].relPath, item.relPath)) result.splice(i, 1);
@@ -955,8 +955,7 @@ function parentRelPath(relPath: string): string {
 
 function sameWindowsPath(left: string | null, right: string | null): boolean {
   if (left === null || right === null) return left === right;
-  return left.replace(/\\/g, "/").replace(/\/$/, "").toLocaleLowerCase("en-US")
-    === right.replace(/\\/g, "/").replace(/\/$/, "").toLocaleLowerCase("en-US");
+  return comparablePath(left) === comparablePath(right);
 }
 
 export async function revealInExplorer(path: string, isDir: boolean) {

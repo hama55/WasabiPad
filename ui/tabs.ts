@@ -1,7 +1,16 @@
 import type { OpenAs, Pos, WindowRequest } from "./api";
 import type { DocumentSession } from "./session";
+import { isArchiveFormat } from "./generated/Protocol";
 import { cloneEditorViewState, type EditorViewState } from "./editor-view-state";
-import { basename, comparablePath, rebaseWindowsPath, type PathRebase } from "./path";
+import {
+  basename,
+  comparableDocumentPath,
+  comparablePath,
+  rebaseDocumentPath,
+  rebaseWindowsPath,
+  type PathRebase,
+} from "./path";
+import { splitArchiveEntryPath } from "./archive-path";
 import { TabBarView, type TabDropSpot } from "./tab-view";
 import type { RegisteredCommandMenuPorts } from "./registered-command-menu";
 import type { SidebarViewState } from "./sidebar";
@@ -52,31 +61,13 @@ interface TabPorts {
 
 const newId = () => `tab-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-function rebaseRelativePath(path: string, oldPrefix: string, newPrefix: string): string | null {
-  const normalizedPath = path.replace(/\\/g, "/").replace(/\/$/, "");
-  const normalizedOld = oldPrefix.replace(/\\/g, "/").replace(/\/$/, "");
-  const normalizedNew = newPrefix.replace(/\\/g, "/").replace(/\/$/, "");
-  const comparablePath = normalizedPath.toLocaleLowerCase("en-US");
-  const comparableOld = normalizedOld.toLocaleLowerCase("en-US");
-  if (
-    comparablePath !== comparableOld
-    && !comparablePath.startsWith(`${comparableOld}/`)
-    && !comparablePath.startsWith(`${comparableOld}::`)
-  ) return null;
-  return `${normalizedNew}${normalizedPath.slice(normalizedOld.length)}`.replace(/^\//, "");
-}
-
 function sameTabPath(a: string | null, b: string | null): boolean {
   if (a === null || b === null) return a === b;
   return comparablePath(a) === comparablePath(b);
 }
 
-function isArchiveOpenAs(openAs: OpenAs | undefined): openAs is OpenAs {
-  return openAs === "zip" || openAs === "7z" || openAs === "xlsx" || openAs === "xls";
-}
-
 function archiveScopeOf(relPath: string): string {
-  return relPath.split("::", 1)[0].replace(/\\/g, "/").toLocaleLowerCase("en-US");
+  return comparablePath(splitArchiveEntryPath(relPath)?.archiveRelPath ?? relPath);
 }
 
 function cloneFindHighlightQuery(query: SearchHighlightQuery | null): SearchHighlightQuery | null {
@@ -207,7 +198,7 @@ export class TabManager {
         }
       }
       if (tab.selectedRelPath && oldRelPath) {
-        const rebased = rebaseRelativePath(tab.selectedRelPath, oldRelPath, newRelPath);
+        const rebased = rebaseDocumentPath(tab.selectedRelPath, oldRelPath, newRelPath);
         if (rebased !== null && rebased !== tab.selectedRelPath) {
           tab.selectedRelPath = rebased;
           const openAsState = this.openAsStates.get(tab.id);
@@ -305,7 +296,7 @@ export class TabManager {
           this.openAsStates.set(this.activeId, {
             relPath: selectedRelPath,
             openAs,
-            ...(isArchiveOpenAs(openAs)
+            ...(isArchiveFormat(openAs)
               ? { archiveOpenAs: openAs }
               : remembered?.archiveOpenAs
                 ? { archiveOpenAs: remembered.archiveOpenAs }
@@ -398,13 +389,13 @@ export class TabManager {
       && archiveScopeOf(rememberedOpenAs.relPath) === archiveScopeOf(relPath)
     );
     const inheritedOpenAs = rememberedOpenAs
-      && isArchiveOpenAs(rememberedOpenAs.openAs)
+      && isArchiveFormat(rememberedOpenAs.openAs)
       && sameArchive
       ? rememberedOpenAs.openAs
       : undefined;
     const inheritedArchiveOpenAs = sameArchive
       ? rememberedOpenAs?.archiveOpenAs
-        ?? (rememberedOpenAs && isArchiveOpenAs(rememberedOpenAs.openAs)
+        ?? (rememberedOpenAs && isArchiveFormat(rememberedOpenAs.openAs)
           ? rememberedOpenAs.openAs
           : undefined)
       : undefined;
@@ -413,7 +404,7 @@ export class TabManager {
     // 同じファイルを検索結果から再度選んだだけなら、再読込も確認も不要。
     // dirty と編集中のバッファを維持したまま、呼び出し側が一致位置を扱う。
     if (!requestedOpenAs && this.doc.current.folderRoot
-      && this.doc.current.selectedRelPath.replace(/\\/g, "/") === relPath.replace(/\\/g, "/")) {
+      && comparableDocumentPath(this.doc.current.selectedRelPath) === comparableDocumentPath(relPath)) {
       return Promise.resolve(true);
     }
     return this.runNavigationCommand(() =>
@@ -428,7 +419,7 @@ export class TabManager {
             openAs: requestedOpenAs,
             ...(inheritedArchiveOpenAs
               ? { archiveOpenAs: inheritedArchiveOpenAs }
-              : requestedOpenAs && isArchiveOpenAs(requestedOpenAs)
+              : requestedOpenAs && isArchiveFormat(requestedOpenAs)
                 ? { archiveOpenAs: requestedOpenAs }
                 : {}),
           });
@@ -755,14 +746,14 @@ export class TabManager {
       const tab = this.active()!;
       const rememberedRelPath = tab.selectedRelPath;
       const rememberedOpenAs = this.openAsStates.get(tab.id);
-      const openAs = rememberedOpenAs
-        && rememberedOpenAs.relPath.replace(/\\/g, "/") === (rememberedRelPath ?? "").replace(/\\/g, "/")
+      const rememberedFormatApplies = rememberedOpenAs
+        && comparableDocumentPath(rememberedOpenAs.relPath) === comparableDocumentPath(rememberedRelPath ?? "");
+      const openAs = rememberedFormatApplies
         ? rememberedOpenAs.openAs
         : undefined;
-      const archiveOpenAs = rememberedOpenAs
-        && rememberedOpenAs.relPath.replace(/\\/g, "/") === (rememberedRelPath ?? "").replace(/\\/g, "/")
+      const archiveOpenAs = rememberedFormatApplies
         ? rememberedOpenAs.archiveOpenAs
-          ?? (isArchiveOpenAs(rememberedOpenAs.openAs) ? rememberedOpenAs.openAs : undefined)
+          ?? (isArchiveFormat(rememberedOpenAs.openAs) ? rememberedOpenAs.openAs : undefined)
         : undefined;
       const rememberedViewState = tab.viewState ? cloneEditorViewState(tab.viewState) : undefined;
       const rememberedLine = tab.selectedLine ?? (tab.kind === "folder" ? rememberedViewState?.caret.line : undefined);
@@ -789,8 +780,9 @@ export class TabManager {
             // 偽装拡張子の書庫でも、まずコンテナを明示形式で選択してから
             // 内部項目の指定形式を適用する。
             let archiveReady = true;
-            if (tab.kind === "folder" && archiveOpenAs && rememberedRelPath.includes("::")) {
-              const archiveRelPath = rememberedRelPath.split("::", 1)[0];
+            const archiveEntry = splitArchiveEntryPath(rememberedRelPath);
+            if (tab.kind === "folder" && archiveOpenAs && archiveEntry) {
+              const archiveRelPath = archiveEntry.archiveRelPath;
               if ((await this.doc.selectEntry(archiveRelPath, archiveOpenAs)) !== true) {
                 archiveReady = false;
               }

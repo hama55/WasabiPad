@@ -86,7 +86,9 @@ describe("Feature: pane toggle placement", () => {
   // When: ボタンの最小幅指定とCSS変数の設定を検査する
   // Then: CSSは固定値を持たず、共有CSS変数を参照する
   it("Scenario: プレビュー開閉ボタン幅を共有CSS変数から取得する", () => {
+    expect(style).toMatch(/#sidebar-toggle\s*\{[^}]*min-width:\s*var\(--preview-toggle-width\);/s);
     expect(style).toMatch(/#preview-toggle\s*\{[^}]*min-width:\s*var\(--preview-toggle-width\);/s);
+    expect(style).not.toMatch(/#sidebar-toggle\s*\{[^}]*min-width:\s*28px;/s);
     expect(style).not.toMatch(/#preview-toggle\s*\{[^}]*min-width:\s*28px;/s);
   });
 

@@ -1,6 +1,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { EVENT_NAMES, openExternalUrl, openInDefaultBrowser, readSqlitePreview, takeViewerPayload, type ViewerFormat, type ViewerPayload, type ViewerSelection } from "./api";
+import { isArchiveFormat } from "./generated/Protocol";
 import { formatFontFamily } from "./format";
 import { basename } from "./path";
 import { isViewerFormat, viewerFormatSpec } from "./viewer-formats";
@@ -147,8 +148,7 @@ interface ViewerRenderState {
 }
 
 function archiveFormatExtension(extension: string | null, archiveEntry: string | null): boolean {
-  return !!archiveEntry && !!extension
-    && ["zip", "7z", "xlsx", "xls"].includes(extension.toLowerCase());
+  return !!archiveEntry && isArchiveFormat(extension);
 }
 
 function currentViewerRenderState(): ViewerRenderState {
