@@ -44,7 +44,7 @@ export class FindBar {
         <button class="ve-find-next" title="次へ (Enter)">▼</button>
         <span class="ve-find-status"></span>
         <input class="ve-rep-in" placeholder="置換" spellcheck="false" />
-        <div class="ve-rep-actions"><button class="ve-rep-next">置換</button><button class="ve-rep-visible">画面内を全置換</button><button class="ve-rep-all">ファイル内を全置換</button></div>
+        <div class="ve-rep-actions"><button class="ve-rep-next">置換</button><button class="ve-rep-visible">画面内</button><button class="ve-rep-all">全置換</button></div>
         <button class="ve-find-close" title="閉じる (Esc)">✕</button>
       </div>`;
     host.appendChild(this.root);

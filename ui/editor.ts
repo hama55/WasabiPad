@@ -325,6 +325,7 @@ export class VirtualEditor {
     window.visualViewport?.addEventListener("scroll", () => this.syncImeAnchorAfterLayout());
 
     new ResizeObserver(() => {
+      this.syncFindLayout();
       if (!this.hasUsableViewport()) return;
       const topLine = this.wrap || this.metrics.scaleMode ? this.topLineF : this.pxToLine(this.scroll.scrollTop);
       const intraLinePx = this.wrapIntraLinePx;
@@ -340,6 +341,7 @@ export class VirtualEditor {
       this.syncImeAnchorAfterLayout();
       this.schedule();
     }).observe(this.scroll);
+    this.syncFindLayout();
   }
 
   // ---- 文書ロード ----
@@ -744,6 +746,13 @@ export class VirtualEditor {
 
   private hasUsableViewport(): boolean {
     return this.scroll.clientWidth > 0 && this.scroll.clientHeight > 0;
+  }
+
+  private syncFindLayout() {
+    this.host.classList.toggle(
+      "ve-find-wrap",
+      this.host.clientWidth > 0 && this.host.clientWidth <= VirtualEditor.FIND_WRAP_MAX_WIDTH,
+    );
   }
 
   private onScroll() {
@@ -2360,6 +2369,7 @@ export class VirtualEditor {
   private static readonly FIND_BUDGET = 20_000;
   private static readonly REPLACE_BUDGET = 2_000;
   private static readonly REPLACE_WARN_THRESHOLD = 5_000;
+  private static readonly FIND_WRAP_MAX_WIDTH = 720;
 
   private async doFind(pat: string, forward: boolean, matchCase: boolean): Promise<boolean> {
     const myGen = ++this.findGen;

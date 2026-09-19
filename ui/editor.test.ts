@@ -197,6 +197,7 @@ describe("Feature: VirtualEditor", () => {
     try {
       const { editor, host } = mount("line");
       const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
+      Object.defineProperty(host, "clientWidth", { configurable: true, value: 300 });
       Object.defineProperties(scroll, {
         clientHeight: { configurable: true, value: 0 },
         clientWidth: { configurable: true, value: 0 },
@@ -213,6 +214,7 @@ describe("Feature: VirtualEditor", () => {
       notifyResize?.([], {} as ResizeObserver);
       await vi.waitFor(() => {
         expect(host.querySelector<HTMLElement>(".ve-line")?.textContent).toBe("line");
+        expect(host.classList.contains("ve-find-wrap")).toBe(true);
       });
     } finally {
       (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = originalResizeObserver;
@@ -2076,7 +2078,7 @@ describe("Feature: VirtualEditor", () => {
   // Feature: エディタの表示範囲置換
   // Scenario: 表示中の論理行だけを全置換する
   // Given: 画面外にもneedleがあり、1行目と2行目を表示している
-  // When: 「画面内を全置換」を押す
+  // When: 「画面内」を押す
   // Then: 表示中の2行だけが置換され、画面外の一致は残る
   it("Scenario: 画面内の一致だけを全置換する", async () => {
     const { editor, doc, host } = mount("outside\nneedle\nneedle\noutside\nneedle");
@@ -2104,7 +2106,7 @@ describe("Feature: VirtualEditor", () => {
   // Feature: エディタの表示範囲置換
   // Scenario: 閲覧専用文書では画面内全置換を実行しない
   // Given: needleを含む閲覧専用文書を表示している
-  // When: 「画面内を全置換」を押す
+  // When: 「画面内」を押す
   // Then: 本文と編集系のbackend呼び出しは変わらない
   it("Scenario: 閲覧専用文書では画面内全置換を実行しない", async () => {
     const { editor, doc, host } = mount("needle");

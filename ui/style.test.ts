@@ -69,9 +69,17 @@ describe("Feature: pane toggle placement", () => {
   it("Scenario: 検索欄を占有表示しプレビュー開閉ボタンを必要時だけ見せる", () => {
     expect(style).toMatch(/\.ve-find\s*\{[^}]*top:\s*0;[^}]*left:\s*0;[^}]*right:\s*0;/s);
     expect(style).toMatch(/\.ve-find-row\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(110px,\s*1fr\)[^;]*minmax\(110px,\s*1fr\)/s);
-    expect(style).toMatch(/\.ve-rep-in\s*\{[^}]*grid-column:\s*6;/s);
-    expect(style).toMatch(/\.ve-rep-actions\s*\{[^}]*grid-column:\s*7\s*\/\s*9;/s);
-    expect(style).toMatch(/\.ve-find-close\s*\{[^}]*grid-column:\s*9;/s);
+    expect(style).toContain('grid-template-areas: "find case prev next status rep actions actions close";');
+    expect(style).toMatch(/\.ve-rep-in\s*\{[^}]*grid-area:\s*rep;/s);
+    expect(style).toMatch(/\.ve-rep-actions\s*\{[^}]*grid-area:\s*actions;/s);
+    expect(style).toMatch(/\.ve-find-close\s*\{[^}]*grid-area:\s*close;/s);
+    expect(style).toMatch(/\.ve-find button\s*\{[^}]*white-space:\s*nowrap;/s);
+    expect(style).toMatch(/\.ve-find-wrap \.ve-find\s*\{[^}]*height:\s*72px;/s);
+    expect(style).toContain('.ve-find-wrap .ve-find-row {');
+    expect(style).toContain('grid-template-areas: "find case prev next status close" "rep rep rep rep actions actions";');
+    expect(style).toMatch(/\.ve-find-wrap \.ve-rep-actions\s*\{[^}]*overflow-x:\s*auto;/s);
+    expect(style).toMatch(/\.ve-find-wrap \.ve-rep-actions button\s*\{[^}]*flex:\s*none;/s);
+    expect(style).toMatch(/\.ve-find-wrap\.ve-search-open \.ve-gutter,[\s\S]*\.ve-find-wrap\.ve-search-open \.ve-scroll\s*\{[^}]*top:\s*72px;/s);
     expect(style).not.toContain(".ve-find-toggle");
     expect(style).not.toContain(".ve-find.with-rep");
     expect(style).toMatch(/\.ve-search-open\s+\.ve-gutter,[\s\S]*\.ve-search-open\s+\.ve-scroll\s*\{[^}]*top:\s*40px;/s);
@@ -99,6 +107,7 @@ describe("Feature: pane toggle placement", () => {
   // Then: プレビュー開閉ボタンは検索バーの下の44px位置へ移り、検索バーと重ならない
   it("Scenario: 検索バー表示中はプレビュー開閉ボタンを検索バーの下へ移す", () => {
     expect(style).toMatch(/#editorhost\.ve-search-open\s*~\s*#preview-toggle\s*\{[^}]*top:\s*44px;/s);
+    expect(style).toMatch(/#editorhost\.ve-find-wrap\.ve-search-open\s*~\s*#preview-toggle\s*\{[^}]*top:\s*76px;/s);
   });
 
   // Feature: 検索バー表示中のファイルツリー開閉操作
@@ -108,6 +117,7 @@ describe("Feature: pane toggle placement", () => {
   // Then: ボタンは検索バーの下へ移り、検索バーがない通常時の位置は維持する
   it("Scenario: 検索バー表示中はファイルツリー開閉ボタンを検索バーの下へ移す", () => {
     expect(style).toMatch(/#main:has\(#editorhost\.ve-search-open\)\s*>\s*#sidebar\[hidden\]\s*~\s*#sidebar-toggle\s*\{[^}]*top:\s*44px;/s);
+    expect(style).toMatch(/#main:has\(#editorhost\.ve-find-wrap\.ve-search-open\)\s*>\s*#sidebar\[hidden\]\s*~\s*#sidebar-toggle\s*\{[^}]*top:\s*76px;/s);
   });
 
   // Feature: ファイルツリー下端の新規作成操作
