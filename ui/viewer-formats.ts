@@ -73,6 +73,17 @@ export const VIEWER_FORMATS: Record<ViewerFormat, ViewerFormatSpec> = {
     supportsChart: false,
     supportsDefaultBrowser: true,
   },
+  sqlite: {
+    id: "sqlite",
+    label: "SQLiteビュー",
+    title: "SQLite",
+    previewOrder: 5,
+    iconClass: MENU_ICON.sqlite,
+    extensions: [".sqlite", ".sqlite3"],
+    supportsDelimiter: false,
+    supportsChart: false,
+    supportsDefaultBrowser: false,
+  },
 };
 
 export function viewerFormatSpec(format: ViewerFormat): ViewerFormatSpec {
@@ -112,11 +123,13 @@ export function sourcePathForViewer(
   savePath: string | null,
   displayPath: string,
 ): string | null {
-  return savePath ?? (isAssetViewerFormat(format) ? displayPath : null);
+  return savePath ?? (isAssetViewerFormat(format) || format === "sqlite" ? displayPath : null);
 }
 
 export function canRenderViewerFormat(format: ViewerFormat, sourcePath: string | null): boolean {
   const sourceFormat = sourcePath ? viewerFormatForPath(sourcePath) : null;
+  if (sourceFormat === "sqlite") return format === "sqlite";
+  if (format === "sqlite") return false;
   if (isAssetViewerFormat(format)) return sourceFormat === format;
   return sourceFormat !== "image" && sourceFormat !== "pdf";
 }

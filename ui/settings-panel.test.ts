@@ -22,6 +22,7 @@ function makePorts(initial: Partial<Settings> = {}): SettingsPanelPorts {
     markdownSoftBreaks: true,
     markdownLineHeight: 1.65,
     markdownHeadingUnderlines: false,
+    sqlitePreviewRows: 100,
     previewCacheDirectory: null,
     startupPath: null,
     registeredStrings: [],
@@ -128,6 +129,7 @@ describe("Feature: settings modal", () => {
     expect(document.querySelector('[data-setting="startup-path"]')).not.toBeNull();
     expect(document.querySelector('[data-setting="markdown-line-height"]')).not.toBeNull();
     expect(document.querySelector('[data-setting="markdown-heading-underlines"]')).not.toBeNull();
+    expect(document.querySelector('[data-setting="sqlite-preview-rows"]')).not.toBeNull();
     expect(document.querySelector(".settings-reset")).not.toBeNull();
   });
 
@@ -359,6 +361,23 @@ describe("Feature: settings modal", () => {
 
     expect(ports.setSetting).toHaveBeenCalledWith("markdownLineHeight", 1.8);
     expect(ports.applyMarkdownLineHeight).toHaveBeenCalledWith(1.8);
+  });
+
+  // Given: SQLiteプレビュー行数100の現在のアプリ設定
+  // When: 設定画面で上限なしの1000000行へ変更する
+  // Then: その値を設定ストアへ保存し、入力要素にmax属性を付けない
+  it("Scenario: SQLiteプレビュー行数を上限なしで変更する", () => {
+    const ports = makePorts();
+    openSettingsModal(ports);
+
+    const input = document.querySelector<HTMLInputElement>('[data-setting="sqlite-preview-rows"]')!;
+    expect(input.type).toBe("number");
+    expect(input.min).toBe("1");
+    expect(input.max).toBe("");
+    input.value = "1000000";
+    input.dispatchEvent(new Event("change"));
+
+    expect(ports.setSetting).toHaveBeenCalledWith("sqlitePreviewRows", 1000000);
   });
 
   // Given: Markdown見出し下線を無効にした現在のアプリ設定

@@ -299,7 +299,7 @@ describe("Feature: inline preview", () => {
   // Given: ビューアiframeが準備完了している
   // When: 各形式の文書をプレビューへ開く
   // Then: 区切り設定の同期が本文payloadより先に送られ、本文描画を中断しない
-  it.each(["markdown", "html", "csv", "image", "pdf"] as ViewerFormat[])(
+  it.each(["markdown", "html", "csv", "image", "pdf", "sqlite"] as ViewerFormat[])(
     "Scenario: %s本文の初回描画を付随設定が中断しない",
     async (format) => {
       const { host, preview } = mount();
@@ -506,6 +506,34 @@ describe("Feature: inline preview", () => {
       type: INLINE_PREVIEW_MESSAGES.FULLSCREEN_STATE_MESSAGE,
       fullscreen: true,
     }, window.location.origin);
+  });
+
+  // Given: SQLiteプレビューの内容がiframeへ表示されている
+  // When: 親画面で全画面状態だけを切り替える
+  // Then: SQLite payloadを再送せず、既存ビューアの状態を維持する
+  it("Scenario: fullscreen change does not resend the preview payload", async () => {
+    const { host, preview } = mount();
+    const frame = host.querySelector("iframe")!;
+    const postMessage = vi.spyOn(frame.contentWindow!, "postMessage");
+    await preview.open("sqlite", "", null);
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
+    }));
+    postMessage.mockClear();
+
+    preview.setFullscreen(true);
+
+    expect(postMessage).toHaveBeenCalledTimes(1);
+    expect(postMessage).toHaveBeenCalledWith({
+      type: INLINE_PREVIEW_MESSAGES.FULLSCREEN_STATE_MESSAGE,
+      fullscreen: true,
+    }, window.location.origin);
+    expect(postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE }),
+      window.location.origin,
+    );
   });
 
   // Given: iframeが準備完了していて、全画面状態がすでに同期済み

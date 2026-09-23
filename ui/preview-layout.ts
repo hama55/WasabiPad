@@ -47,6 +47,10 @@ export function isPreviewSplitterShown(state: PreviewLayoutState): boolean {
   return isPreviewShown(state) && !state.fullscreen;
 }
 
+export function shouldResendPreviewOnRestore(format: ViewerFormat | null): boolean {
+  return format !== "sqlite";
+}
+
 export function shouldKeepPreviewFullscreen(
   ownerTabId: string | null,
   activeTabId: string | null,

@@ -153,6 +153,7 @@ export class VirtualEditor {
   private onPasteImage?: (bytes: number[], mimeType: string) => Promise<string>;
   private rectangularClipboard = new RectangularClipboard();
   private liveViewers: LiveViewers;
+  private openViewer: EditorPorts["openViewer"];
 
   constructor(
     private host: HTMLElement,
@@ -168,6 +169,7 @@ export class VirtualEditor {
       config.fontSize + config.lineHeightExtra
     );
     this.lineCache = new LineCache(doc);
+    this.openViewer = ports.openViewer;
     this.liveViewers = new LiveViewers({
       openViewer: ports.openViewer,
       updateViewer: ports.updateViewer,
@@ -1590,6 +1592,12 @@ export class VirtualEditor {
 
 
   async openTextViewer(format: api.ViewerFormat, keepPreviewRange = false) {
+    if (format === "sqlite") {
+      this.liveViewers.clear();
+      const opened = await this.openViewer(format, "", null);
+      this.render();
+      return opened;
+    }
     const [selectionStart, selectionEnd] = this.sel.norm();
     const selection = { start: selectionStart, end: selectionEnd };
     const previewRange = keepPreviewRange ? this.liveViewers.previewRange() : null;

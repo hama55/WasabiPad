@@ -6,6 +6,7 @@ import {
   documentPathOf,
   externalFilePathOf,
   initialSession,
+  isFolderDraftInfo,
   registeredCommandPathOf,
   readEncodingOf,
   sessionFromDocInfo,
@@ -96,6 +97,15 @@ describe("Feature: DocumentSession", () => {
       path: "C:\\work\\memo.txt",
       folder_root: "C:\\work",
     }))).toBe("C:\\work\\memo.txt");
+  });
+
+  // Feature: SQLiteプレビューの実ファイル判定
+  // Given: `C:\\work`のフォルダルートと、その配下の`data.sqlite`
+  // When: フォルダルート判定を行う
+  // Then: フォルダルートだけを仮想項目として除外できる
+  it("Scenario: SQLiteプレビューでフォルダルートを実ファイル扱いしない", () => {
+    expect(isFolderDraftInfo({ path: "C:\\work", folder_root: "C:\\work" })).toBe(true);
+    expect(isFolderDraftInfo({ path: "C:\\work\\data.sqlite", folder_root: "C:\\work" })).toBe(false);
   });
 
   // Given: 通常ファイルの保存先、アーカイブ内項目、未保存文書のセッションがある

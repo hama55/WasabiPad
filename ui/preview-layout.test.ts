@@ -7,6 +7,7 @@ import {
   previewWidthFromPointer,
   PREVIEW_MIN_WIDTH,
   resolvePaneVisibility,
+  shouldResendPreviewOnRestore,
   shouldKeepPreviewFullscreen,
 } from "./preview-layout";
 
@@ -115,6 +116,17 @@ describe("Feature: preview layout", () => {
     expect(isPreviewShown({ available: true, collapsed: true, fullscreen: false })).toBe(false);
     expect(isPreviewSplitterShown({ available: true, collapsed: true, fullscreen: true })).toBe(false);
     expect(isPreviewFullscreen({ available: true, collapsed: true, fullscreen: true })).toBe(false);
+  });
+
+  // Feature: SQLiteプレビューの表示状態
+  // Scenario: SQLiteプレビューを折りたたんでから再表示する
+  // Given: SQLiteまたは通常形式のプレビューが開いている
+  // When: プレビューの再表示時にpayload再送可否を求める
+  // Then: SQLiteだけ既存iframeの状態を保持するため再送しない
+  it("Scenario: SQLiteプレビューの再表示ではpayloadを再送しない", () => {
+    expect(shouldResendPreviewOnRestore("sqlite")).toBe(false);
+    expect(shouldResendPreviewOnRestore("markdown")).toBe(true);
+    expect(shouldResendPreviewOnRestore(null)).toBe(true);
   });
 
   // Feature: プレビュー最大化状態の所有権

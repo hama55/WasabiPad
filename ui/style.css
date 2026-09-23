@@ -196,6 +196,7 @@ body {
   transition: opacity 120ms ease;
 }
 #editorhost.ve-search-open ~ #preview-toggle { top: 44px; }
+#main:has(#editorhost.ve-search-open) > #sidebar[hidden] ~ #sidebar-toggle { top: 44px; }
 #preview-toggle:hover { background: var(--hover); color: var(--fg); }
 #main.preview-toggle-peek #preview-toggle,
 #preview-toggle:focus-visible {

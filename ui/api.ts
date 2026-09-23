@@ -25,6 +25,9 @@ import type { SaveOutcome } from "./generated/SaveOutcome";
 import type { ViewerFormat } from "./generated/ViewerFormat";
 import type { ViewerPayload } from "./generated/ViewerPayload";
 import type { ViewerSelection } from "./generated/ViewerSelection";
+import type { SqliteCell } from "./generated/SqliteCell";
+import type { SqliteObject } from "./generated/SqliteObject";
+import type { SqlitePreview } from "./generated/SqlitePreview";
 import type { WorkspaceSearchBatch } from "./generated/WorkspaceSearchBatch";
 import type { WorkspaceSearchOptions } from "./generated/WorkspaceSearchOptions";
 import type { WorkspaceSearchOutcome } from "./generated/WorkspaceSearchOutcome";
@@ -53,6 +56,9 @@ export type {
   ViewerFormat,
   ViewerPayload,
   ViewerSelection,
+  SqliteCell,
+  SqliteObject,
+  SqlitePreview,
   WorkspaceSearchBatch,
   WorkspaceSearchOptions,
   WorkspaceSearchOutcome,
@@ -312,3 +318,16 @@ export const updateViewer = (label: string, text: string, selection: ViewerSelec
   invoke<boolean>(IPC_COMMANDS.updateViewer, { label, text, selection });
 export const closeViewer = (label: string) =>
   invoke<void>(IPC_COMMANDS.closeViewer, { label });
+export const readSqlitePreview = (
+  path: string,
+  selectedName: string | null,
+  offset: number,
+  limit: number,
+  includeMetadata: boolean,
+) => invoke<SqlitePreview>(IPC_COMMANDS.readSqlitePreview, {
+  path,
+  selectedName,
+  offset,
+  limit,
+  includeMetadata,
+});

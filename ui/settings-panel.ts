@@ -15,6 +15,7 @@ import {
 import { registeredStringLabel } from "./registered-strings";
 import { showMessage } from "./prompt";
 import {
+  isValidSqlitePreviewRows,
   isValidMarkdownLineHeight,
   MAX_MARKDOWN_LINE_HEIGHT,
   MIN_MARKDOWN_LINE_HEIGHT,
@@ -195,6 +196,7 @@ export function openSettingsModal(
           "markdownLineHeight",
           "markdownHeadingUnderlines",
         ]),
+        sqlitePreviewRowsField(ports),
         previewCacheField(ports),
       ],
     },
@@ -606,6 +608,16 @@ function markdownHeadingUnderlinesField(ports: SettingsPanelPorts): HTMLElement 
   );
 }
 
+function sqlitePreviewRowsField(ports: SettingsPanelPorts): HTMLElement {
+  return numberField(
+    "SQLiteプレビューの表示行数",
+    "sqlite-preview-rows",
+    ports.getSetting("sqlitePreviewRows"),
+    (value) => ports.setSetting("sqlitePreviewRows", value),
+    { min: 1, max: null, isValid: isValidSqlitePreviewRows },
+  );
+}
+
 function checkboxField(
   labelText: string,
   setting: string,
@@ -765,7 +777,7 @@ function numberField(
   onChange: (value: number) => void,
   options: {
     min?: number;
-    max?: number;
+    max?: number | null;
     step?: number;
     isValid?: (value: number) => boolean;
   } = {},
@@ -779,7 +791,8 @@ function numberField(
   input.type = "number";
   input.dataset.setting = setting;
   input.min = String(options.min ?? MIN_FONT_SIZE);
-  input.max = String(options.max ?? MAX_FONT_SIZE);
+  if (options.max === null) input.removeAttribute("max");
+  else input.max = String(options.max ?? MAX_FONT_SIZE);
   input.step = String(options.step ?? 1);
   input.value = String(current);
   input.addEventListener("change", () => {
