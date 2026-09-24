@@ -64,5 +64,6 @@ export const IPC_COMMANDS = {
   takeViewerPayload: "take_viewer_payload",
   updateViewer: "update_viewer",
   closeViewer: "close_viewer",
+  probeSqlitePreview: "probe_sqlite_preview",
   readSqlitePreview: "read_sqlite_preview",
 } as const;

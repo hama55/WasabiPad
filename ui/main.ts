@@ -61,9 +61,11 @@ import { promptAndSaveRegisteredString } from "./registered-string-dialog";
 import { openSearchSettings as openSearchSettingsDialog } from "./search-settings-dialog";
 import {
   isAssetViewerFormat,
+  resolveSqlitePreviewAction,
   sourcePathForViewer,
-  viewerFormatForPath,
+  viewerFormatForAutomaticPreview,
   viewerFormatForPreviewToggle,
+  type SqlitePreviewFallback,
 } from "./viewer-formats";
 import { classificationPathOf, documentPathOf, isFolderDraftInfo, type DocumentSession } from "./session";
 import {
@@ -317,13 +319,20 @@ const inlinePreviewPorts = {
   onAvailabilityChange: (available) => {
     previewAvailable = available;
     if (!available) {
+      previewRequestGeneration++;
       previewDocument = null;
       editingStatusbar.setPreviewFormat(null);
     }
     if (available) previewCollapsed = false;
     updatePreviewVisibility();
   },
-  onFormatChange: (format) => runBackground("ビューを切り替えられませんでした", () => editor.openTextViewer(format, true)),
+  onFormatChange: (format) => openPreviewFormat(
+    doc.current,
+    documentPathOf(doc.current),
+    format,
+    null,
+    { sqliteMismatch: "keep", keepPreviewRange: true, errorTitle: "ビューを切り替えられませんでした" },
+  ),
   onDelimiterChange: (delimiter) => inlinePreview.setDelimiter(delimiter),
   onFontFamilyChange: (family) => editor.setFont(family, getSetting("fontSize"), "family"),
   onSelectionChange: (selection) =>
@@ -365,25 +374,14 @@ const inlinePreviewPorts = {
 } satisfies InlinePreviewPorts;
 
 let previewDocument: PreviewDocument | null = null;
-function runPreviewBackground(
-  document: PreviewDocument,
-  title: string,
-  operation: () => void | Promise<unknown>,
-) {
-  previewDocument = document;
-  runBackground(title, async () => {
-    try {
-      await operation();
-    } catch (error) {
-      if (previewDocument === document) previewDocument = null;
-      throw error;
-    }
-  });
-}
+let previewRequestGeneration = 0;
 
 function clearPreview(session: Readonly<DocumentSession>) {
+  previewRequestGeneration++;
   inlinePreview.setSourcePath(null, session.archivePath, session.archiveEntry);
   previewDocument = null;
+  previewFullscreen = false;
+  previewFullscreenTabId = null;
   editingStatusbar.setPreviewFormat(null);
   inlinePreview.clear();
 }
@@ -393,27 +391,64 @@ function openPreviewFormat(
   path: string,
   format: api.ViewerFormat,
   fragment: string | null = null,
+  options: {
+    sqliteMismatch?: SqlitePreviewFallback;
+    keepPreviewRange?: boolean;
+    errorTitle?: string;
+  } = {},
 ) {
-  const sourcePath = sourcePathForViewer(format, session.savePath, session.displayPath);
-  if (format === "sqlite" && !sqlitePreviewSourcePath(session)) {
-    clearPreview(session);
-    return;
-  }
-  inlinePreview.setSourcePath(
-    sourcePath,
-    session.archivePath,
-    session.archiveEntry,
-    session.effectiveExtension,
-  );
-  editingStatusbar.setPreviewFormat(format);
-  runPreviewBackground(
-    { ownerTabId: tabs?.state.activeId ?? null, path, format },
-    "ビューを表示できませんでした",
-    async () => {
-      await editor.openTextViewer(format);
-      if (fragment !== null && format === "markdown") inlinePreview.setMarkdownFragment(fragment);
-    },
-  );
+  const {
+    sqliteMismatch = "markdown",
+    keepPreviewRange = false,
+    errorTitle = "ビューを表示できませんでした",
+  } = options;
+  const previousPreviewDocument = previewDocument;
+  const document = { ownerTabId: tabs?.state.activeId ?? null, path, format };
+  const requestGeneration = ++previewRequestGeneration;
+  const isCurrentRequest = () => requestGeneration === previewRequestGeneration
+    && document.ownerTabId === (tabs?.state.activeId ?? null)
+    && document.path === documentPathOf(doc.current);
+  runBackground(errorTitle, async () => {
+    try {
+      let resolvedFormat = format;
+      let effectiveExtension = session.effectiveExtension;
+      if (format === "sqlite") {
+        const action = await resolveSqlitePreviewAction(
+          sqlitePreviewSourcePath(session),
+          sqliteMismatch,
+          api.probeSqlitePreview,
+        );
+        if (!isCurrentRequest()) return;
+        if (action === "keep") {
+          previewDocument = previousPreviewDocument;
+          return;
+        }
+        if (action === "clear") {
+          clearPreview(session);
+          return;
+        }
+        if (action === "markdown") {
+          resolvedFormat = action;
+          document.format = action;
+          effectiveExtension = null;
+        }
+      }
+      if (!isCurrentRequest()) return;
+      previewDocument = document;
+      inlinePreview.setSourcePath(
+        sourcePathForViewer(resolvedFormat, session.savePath, session.displayPath),
+        session.archivePath,
+        session.archiveEntry,
+        effectiveExtension,
+      );
+      editingStatusbar.setPreviewFormat(resolvedFormat);
+      await editor.openTextViewer(resolvedFormat, keepPreviewRange, resolvedFormat === "sqlite");
+      if (fragment !== null && resolvedFormat === "markdown") inlinePreview.setMarkdownFragment(fragment);
+    } catch (error) {
+      if (previewDocument === document) previewDocument = null;
+      throw error;
+    }
+  });
 }
 
 function sqlitePreviewSourcePath(session: Readonly<DocumentSession>): string | null {
@@ -425,9 +460,10 @@ function sqlitePreviewSourcePath(session: Readonly<DocumentSession>): string | n
 function syncPreviewDocument(session: Readonly<DocumentSession>, force = false, fragment: string | null = null) {
   const path = documentPathOf(session);
   const activeTabId = tabs?.state.activeId ?? null;
+  const classificationPath = classificationPathOf(session);
   const format = effectivePreviewFormat(
     path,
-    viewerFormatForPath(classificationPathOf(session)),
+    viewerFormatForAutomaticPreview(classificationPath),
     activeTabId,
     previewDocument,
   );
@@ -449,7 +485,9 @@ function syncPreviewDocument(session: Readonly<DocumentSession>, force = false, 
     clearPreview(session);
     return;
   }
-  openPreviewFormat(session, path, format, fragment);
+  openPreviewFormat(session, path, format, fragment, {
+    sqliteMismatch: format === "sqlite" ? "clear" : "markdown",
+  });
 }
 
 // ---- 編集・プレビュー側 ----
@@ -557,21 +595,36 @@ const editorPorts = {
   openAs: (openAs) => runBackground("指定した形式で開けませんでした", () => tabs.openCurrentAs(openAs)),
   revealInExplorer: (path, isDir) => revealInExplorer(path, isDir),
   onError: (message, error) => showError(message, error),
-  openViewer: async (format, text, selection) => {
-    const path = documentPathOf(doc.current);
+  openViewer: async (format, text, selection, sqliteHeaderChecked = false) => {
+    const session = doc.current;
+    const path = documentPathOf(session);
+    const ownerTabId = tabs?.state.activeId ?? null;
+    let sqliteRequestGeneration = previewRequestGeneration;
+    const isCurrentSqliteRequest = () => sqliteRequestGeneration === previewRequestGeneration
+      && ownerTabId === (tabs?.state.activeId ?? null)
+      && path === documentPathOf(doc.current);
     if (format === "sqlite") {
-      const sourcePath = sqlitePreviewSourcePath(doc.current);
+      const sourcePath = sqlitePreviewSourcePath(session);
       if (!sourcePath) throw new Error("SQLiteプレビューには実ファイルのパスが必要です");
+      if (!sqliteHeaderChecked) {
+        sqliteRequestGeneration = ++previewRequestGeneration;
+        const action = await resolveSqlitePreviewAction(sourcePath, "keep", api.probeSqlitePreview);
+        if (action !== "sqlite" || !isCurrentSqliteRequest()) return null;
+      } else if (!isCurrentSqliteRequest()) {
+        return null;
+      }
       inlinePreview.setSourcePath(
         sourcePath,
-        doc.current.archivePath,
-        doc.current.archiveEntry,
-        doc.current.effectiveExtension,
+        session.archivePath,
+        session.archiveEntry,
+        session.effectiveExtension,
       );
     }
     editingStatusbar.setPreviewFormat(format);
     const label = await inlinePreview.open(format, text, selection);
-    if (isCurrentPreviewDocument(previewDocument, tabs?.state.activeId ?? null, path)) {
+    if (format === "sqlite" && isCurrentSqliteRequest()) {
+      previewDocument = { ownerTabId, path, format };
+    } else if (isCurrentPreviewDocument(previewDocument, ownerTabId, path)) {
       previewDocument.format = format;
     }
     return label;

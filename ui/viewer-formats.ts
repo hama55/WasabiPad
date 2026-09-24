@@ -115,8 +115,28 @@ export function viewerFormatForPath(path: string): ViewerFormat | null {
   return format?.id ?? null;
 }
 
+export function isSqliteCandidatePath(path: string): boolean {
+  const lowerPath = path.toLowerCase();
+  return lowerPath.endsWith(".db") || lowerPath.endsWith(".sqlite") || lowerPath.endsWith(".sqlite3");
+}
+
+export type SqlitePreviewFallback = "markdown" | "clear" | "keep";
+
+export async function resolveSqlitePreviewAction(
+  sourcePath: string | null,
+  fallback: SqlitePreviewFallback,
+  probe: (path: string) => Promise<boolean>,
+): Promise<"sqlite" | SqlitePreviewFallback> {
+  if (sourcePath === null) return fallback === "keep" ? "keep" : "clear";
+  return isSqliteCandidatePath(sourcePath) && await probe(sourcePath) ? "sqlite" : fallback;
+}
+
+export function viewerFormatForAutomaticPreview(path: string): ViewerFormat | null {
+  return isSqliteCandidatePath(path) ? "sqlite" : viewerFormatForPath(path);
+}
+
 export function viewerFormatForPreviewToggle(path: string): ViewerFormat | null {
-  return viewerFormatForPath(path) ?? "markdown";
+  return viewerFormatForAutomaticPreview(path) ?? "markdown";
 }
 
 export function isAssetViewerFormat(format: ViewerFormat | null): format is "image" | "pdf" {
@@ -132,6 +152,7 @@ export function sourcePathForViewer(
 }
 
 export function canRenderViewerFormat(format: ViewerFormat, sourcePath: string | null): boolean {
+  if (sourcePath && isSqliteCandidatePath(sourcePath)) return format === "sqlite";
   const sourceFormat = sourcePath ? viewerFormatForPath(sourcePath) : null;
   if (sourceFormat === "sqlite") return format === "sqlite";
   if (format === "sqlite") return false;

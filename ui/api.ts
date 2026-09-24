@@ -316,6 +316,8 @@ export const updateViewer = (label: string, text: string, selection: ViewerSelec
   invoke<boolean>(IPC_COMMANDS.updateViewer, { label, text, selection });
 export const closeViewer = (label: string) =>
   invoke<void>(IPC_COMMANDS.closeViewer, { label });
+export const probeSqlitePreview = (path: string) =>
+  invoke<boolean>(IPC_COMMANDS.probeSqlitePreview, { path });
 export const readSqlitePreview = (
   path: string,
   selectedName: string | null,

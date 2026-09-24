@@ -666,6 +666,15 @@ fn close_viewer(
 }
 
 #[tauri::command]
+async fn probe_sqlite_preview(path: String) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        wasabipad_core::is_sqlite_preview_eligible(std::path::Path::new(&path))
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn read_sqlite_preview(
     path: String,
     selected_name: Option<String>,
@@ -791,6 +800,7 @@ fn main() {
             take_viewer_payload,
             update_viewer,
             close_viewer,
+            probe_sqlite_preview,
             read_sqlite_preview,
         ])
         .build(tauri::generate_context!())

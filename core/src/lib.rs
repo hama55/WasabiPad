@@ -45,5 +45,7 @@ pub use protocol::{
     EVENT_WORKSPACE_SEARCH_BATCH,
 };
 pub use settings::{load as load_settings, update as update_setting};
-pub use sqlite_preview::{read_sqlite_preview, SqliteCell, SqliteObject, SqlitePreview};
+pub use sqlite_preview::{
+    is_sqlite_preview_eligible, read_sqlite_preview, SqliteCell, SqliteObject, SqlitePreview,
+};
 pub use workspace_search::{search_workspace, FileNameMatchMode, SearchOptions, WorkspaceSearchOutcome};

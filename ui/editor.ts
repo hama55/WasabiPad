@@ -71,7 +71,12 @@ export interface EditorPorts {
   registeredCommandPorts: RegisteredCommandMenuPorts;
   revealInExplorer?: (path: string, isDir: boolean) => void | Promise<unknown>;
   onError: (message: string, error: unknown) => Promise<void>;
-  openViewer: (format: api.ViewerFormat, text: string, selection: api.ViewerSelection | null) => Promise<string | null>;
+  openViewer: (
+    format: api.ViewerFormat,
+    text: string,
+    selection: api.ViewerSelection | null,
+    sqliteHeaderChecked?: boolean,
+  ) => Promise<string | null>;
   updateViewer: (label: string, text: string, selection: api.ViewerSelection | null) => Promise<boolean>;
   closeViewer: (label: string) => Promise<void>;
   saveImage?: (bytes: number[], mimeType: string) => Promise<string>;
@@ -1638,11 +1643,13 @@ export class VirtualEditor {
   }
 
 
-  async openTextViewer(format: api.ViewerFormat, keepPreviewRange = false) {
+  async openTextViewer(format: api.ViewerFormat, keepPreviewRange = false, sqliteHeaderChecked = false) {
     if (format === "sqlite") {
-      this.liveViewers.clear();
-      const opened = await this.openViewer(format, "", null);
-      this.render();
+      const opened = await this.openViewer(format, "", null, sqliteHeaderChecked);
+      if (opened) {
+        this.liveViewers.clear();
+        this.render();
+      }
       return opened;
     }
     const [selectionStart, selectionEnd] = this.sel.norm();

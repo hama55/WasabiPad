@@ -3,8 +3,11 @@ import {
   createViewerFormatHandlers,
   canRenderViewerFormat,
   isAssetViewerFormat,
+  isSqliteCandidatePath,
   isViewerFormat,
+  resolveSqlitePreviewAction,
   sourcePathForViewer,
+  viewerFormatForAutomaticPreview,
   viewerFormatForPreviewToggle,
   viewerFormatForPath,
   viewerFormatSpec,
@@ -22,7 +25,20 @@ describe("Feature: viewer formats", () => {
     expect(viewerFormatForPath("manual.PDF")).toBe("pdf");
     expect(viewerFormatForPath("manual.HTML")).toBe("html");
     expect(viewerFormatForPath("data.SQLITE3")).toBe("sqlite");
+    expect(viewerFormatForPath("data.DB")).toBeNull();
     expect(viewerFormatForPath("notes.txt")).toBeNull();
+  });
+
+  // Feature: 自動プレビューのSQLite候補
+  // Scenario: SQLite候補拡張子だけをSQLiteプローブへ送る
+  // Given: .db、既存のSQLite拡張子、通常の未知拡張子
+  // When: 自動プレビュー形式を判定する
+  // Then: 候補3拡張子をSQLiteへ送り、その他は従来どおり未分類にする
+  it("Scenario: 自動プレビューでは候補拡張子だけをSQLiteへ送る", () => {
+    expect(viewerFormatForAutomaticPreview("data.db")).toBe("sqlite");
+    expect(viewerFormatForAutomaticPreview("data.sqlite")).toBe("sqlite");
+    expect(viewerFormatForAutomaticPreview("data.sqlite3")).toBe("sqlite");
+    expect(viewerFormatForAutomaticPreview("payload.bin")).toBeNull();
   });
 
   // Feature: 常時表示プレビューボタンの既定形式
@@ -33,9 +49,42 @@ describe("Feature: viewer formats", () => {
   it("Scenario: 未登録拡張子のテキストをMarkdownビューで開く", () => {
     expect(viewerFormatForPreviewToggle("data.csv")).toBe("csv");
     expect(viewerFormatForPreviewToggle("data.sqlite")).toBe("sqlite");
+    expect(viewerFormatForPreviewToggle("data.DB")).toBe("sqlite");
     expect(viewerFormatForPreviewToggle("animation.gif")).toBe("image");
     expect(viewerFormatForPreviewToggle("notes.txt")).toBe("markdown");
     expect(viewerFormatForPreviewToggle("payload.bin")).toBe("markdown");
+  });
+
+  // Feature: SQLiteプレビュー候補を限定する
+  // Scenario: .db、.sqlite、.sqlite3だけをヘッダー検査候補とする
+  // Given: 候補拡張子と対象外拡張子のパス
+  // When: SQLite候補判定を行う
+  // Then: 候補拡張子を大文字小文字を問わず判定し、その他を除外する
+  it("Scenario: SQLite候補拡張子を大文字小文字を問わず判定する", () => {
+    expect(isSqliteCandidatePath("C:\\work\\data.db")).toBe(true);
+    expect(isSqliteCandidatePath("C:\\work\\data.SQLITE")).toBe(true);
+    expect(isSqliteCandidatePath("C:\\work\\data.Sqlite3")).toBe(true);
+    expect(isSqliteCandidatePath("C:\\work\\data.sqlite3.txt")).toBe(false);
+    expect(isSqliteCandidatePath("C:\\work\\data.bin")).toBe(false);
+  });
+
+  // Feature: すべてのSQLite起動経路でヘッダープローブ結果を共有する
+  // Scenario: 一致、不一致、実ファイルパスなしを各経路の結果へ割り当てる
+  // Given: SQLiteヘッダープローブと自動同期・プレビューボタン・形式切替の方針
+  // When: SQLiteプレビュー動作を解決する
+  // Then: 一致ならSQLite、不一致なら各経路の既定動作、対象外パスならプローブなしでクリアする
+  it("Scenario: SQLiteプローブ結果を各起動経路の動作へ割り当てる", async () => {
+    const probe = vi.fn(async () => true);
+    expect(await resolveSqlitePreviewAction("C:\\work\\data.db", "clear", probe)).toBe("sqlite");
+
+    probe.mockResolvedValue(false);
+    expect(await resolveSqlitePreviewAction("C:\\work\\data.sqlite", "clear", probe)).toBe("clear");
+    expect(await resolveSqlitePreviewAction("C:\\work\\data.sqlite3", "markdown", probe)).toBe("markdown");
+    expect(await resolveSqlitePreviewAction("C:\\work\\data.db", "keep", probe)).toBe("keep");
+    expect(await resolveSqlitePreviewAction(null, "markdown", probe)).toBe("clear");
+    expect(await resolveSqlitePreviewAction(null, "keep", probe)).toBe("keep");
+    expect(await resolveSqlitePreviewAction("C:\\work\\data.bin", "markdown", probe)).toBe("markdown");
+    expect(probe).toHaveBeenCalledTimes(4);
   });
 
   // Given: markdown/png/pdf/未指定のデータ
@@ -51,6 +100,8 @@ describe("Feature: viewer formats", () => {
     expect(canRenderViewerFormat("image", null)).toBe(false);
     expect(canRenderViewerFormat("sqlite", "data.sqlite")).toBe(true);
     expect(canRenderViewerFormat("csv", "data.sqlite")).toBe(false);
+    expect(canRenderViewerFormat("sqlite", "data.db")).toBe(true);
+    expect(canRenderViewerFormat("markdown", "data.db")).toBe(false);
     expect(canRenderViewerFormat("sqlite", null)).toBe(false);
   });
 

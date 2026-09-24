@@ -31,7 +31,7 @@ installDomStubs();
 function mount(
   initial: string,
   saveImage?: EditorPorts["saveImage"],
-  overrides: Partial<Pick<EditorPorts, "revealInExplorer" | "openInNewTab" | "openInNewWindow" | "openAs" | "registeredCommandPorts" | "openViewer">> = {},
+  overrides: Partial<Pick<EditorPorts, "revealInExplorer" | "openInNewTab" | "openInNewWindow" | "openAs" | "registeredCommandPorts" | "openViewer" | "closeViewer">> = {},
 ) {
   const host = document.createElement("div");
   document.body.replaceChildren(host);
@@ -58,7 +58,7 @@ function mount(
     onError: async (message, error) => { events.errors.push({ message, error }); },
     openViewer: overrides.openViewer ?? (async () => null),
     updateViewer: async () => true,
-    closeViewer: async () => {},
+    closeViewer: overrides.closeViewer ?? (async () => {}),
     saveImage,
   };
   const editor = new VirtualEditor(host, ports, undefined, doc.client);
@@ -2775,6 +2775,27 @@ describe("Feature: VirtualEditor", () => {
 
     expect(openViewer.mock.calls[1][0]).toBe("markdown");
     expect(openViewer.mock.calls[1][1]).toBe("two\nthree");
+  });
+
+  // Feature: SQLite適格性確認で不一致になった場合は表示中ビューを維持する
+  // Scenario: SQLiteビューを開けなかった場合に既存の追随ビューを閉じない
+  // Given: Markdownビューが開いておりSQLiteを開く要求は拒否される
+  // When: SQLiteビューを開く
+  // Then: 既存ビューのクローズ要求を出さず、そのまま残す
+  it("Scenario: keeps the current live viewer when SQLite opening is rejected", async () => {
+    const openViewer = vi.fn<EditorPorts["openViewer"]>()
+      .mockResolvedValueOnce("markdown-viewer")
+      .mockResolvedValueOnce(null);
+    const closeViewer = vi.fn(async () => {});
+    const { editor } = mount("notes", undefined, { openViewer, closeViewer });
+    editor.open(1, false);
+    await settle();
+
+    await editor.openTextViewer("markdown");
+    await editor.openTextViewer("sqlite");
+    await settle();
+
+    expect(closeViewer).not.toHaveBeenCalled();
   });
 
   // Given: プレビューが開いている
