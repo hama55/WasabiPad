@@ -215,8 +215,7 @@ main.viewer-loading > * { pointer-events: none; }
 }
 
 .viewer-caret-line {
-  border-left: 2px solid var(--accent);
-  padding-left: 8px;
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--accent) 30%, transparent);
 }
 
 body.viewer-resizing,
