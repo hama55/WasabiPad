@@ -1310,6 +1310,94 @@ describe("Feature: VirtualEditor", () => {
     expect(events.errors[0].message).toBe("クリップボードへコピーできませんでした");
   });
 
+  // Given: クリップボードにPNG画像と「123456」のtext/plainが同時にある
+  // When: エディタのpasteイベントへそのクリップボードを渡す
+  // Then: pasteイベントを止めず、数値を文書へ挿入し、画像保存へ回さない
+  it("Scenario: 混在するクリップボードでは文字の貼り付けを優先する", async () => {
+    const saveImage = vi.fn(async () => "image_markdown/memo/pasted-image.png");
+    const { editor, doc, input } = mount("", saveImage);
+    editor.open(1, false);
+    await settle();
+    const image = new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" });
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", {
+      value: {
+        items: [{ type: "image/png", getAsFile: () => image }],
+        getData: (type: string) => type === "text/plain" ? "123456" : "",
+      },
+    });
+
+    input.dispatchEvent(event);
+    if (!event.defaultPrevented) {
+      input.value = "123456";
+      input.dispatchEvent(new InputEvent("input", {
+        bubbles: true,
+        inputType: "insertFromPaste",
+        data: "123456",
+      }));
+    }
+    await settle();
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(doc.text()).toBe("123456");
+    expect(saveImage).not.toHaveBeenCalled();
+  });
+
+  // Given: readTextの結果が「123456」、空文字、または読み込みエラーで、clipboard.readにPNG画像がある場合とない場合がある
+  // When: エディタの右クリックメニューから「貼り付け」を選ぶ
+  // Then: 文字があれば文字を挿入し、なければ画像へフォールバックする
+  // Examples: 文字あり→文字を挿入、空文字/読み込みエラーと画像あり→画像を挿入
+  it.each([
+    { scenario: "文字があれば画像より優先する", text: "123456", hasImage: true, readError: undefined },
+    { scenario: "文字のみを貼り付ける", text: "123456", hasImage: false, readError: undefined },
+    { scenario: "文字が空なら画像へフォールバックする", text: "", hasImage: true, readError: undefined },
+    { scenario: "文字の読み込みに失敗したら画像へフォールバックする", text: "", hasImage: true, readError: new Error("text unavailable") },
+  ])("Scenario: 貼り付けメニューは$scenario", async ({ text, hasImage, readError }) => {
+    const saveImage = vi.fn(async () => "image_markdown/memo/pasted-image.png");
+    const { editor, doc, events, host } = mount("", saveImage);
+    editor.open(1, false);
+    await settle();
+    const image = new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" });
+    const clipboardRead = vi.fn(async () => hasImage ? [{
+      types: ["image/png"],
+      getType: async () => image,
+    }] : []);
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { read: clipboardRead },
+    });
+    const dropdown = document.createElement("div");
+    dropdown.id = "dropdown";
+    document.body.appendChild(dropdown);
+
+    try {
+      if (readError) readClipboardText.mockRejectedValueOnce(readError);
+      else readClipboardText.mockResolvedValueOnce(text);
+      host.querySelector<HTMLElement>(".ve-scroll")!.dispatchEvent(
+        new MouseEvent("contextmenu", { bubbles: true, clientX: 0, clientY: 0 }),
+      );
+      [...dropdown.querySelectorAll<HTMLElement>(".dd-label")]
+        .find((item) => item.textContent === "貼り付け")!.closest<HTMLElement>(".dd-item")!.click();
+      await settle();
+
+      if (text) {
+        expect(doc.text()).toBe(text);
+        expect(clipboardRead).not.toHaveBeenCalled();
+        expect(saveImage).not.toHaveBeenCalled();
+      } else {
+        expect(clipboardRead).toHaveBeenCalledOnce();
+        expect(saveImage).toHaveBeenCalledWith([1, 2, 3], "image/png");
+        expect(doc.text()).toContain("<img src=\"image_markdown/memo/pasted-image.png\"");
+      }
+      expect(events.errors).toHaveLength(0);
+    } finally {
+      if (originalClipboard) Object.defineProperty(navigator, "clipboard", originalClipboard);
+      else Reflect.deleteProperty(navigator, "clipboard");
+      dropdown.remove();
+    }
+  });
+
   // Given: 文書が「memo」、画像BlobがPNG形式でバイト列 [1,2,3]、saveImage が相対パスを返す
   // When: その画像を clipboardData.items から paste する
   // Then: paste が preventDefault され、saveImage([1,2,3], "image/png") が呼ばれ、文書に `<img src="image_markdown/memo/pasted-image.png" alt="貼り付け画像" width="900">` が含まれる
@@ -1321,7 +1409,10 @@ describe("Feature: VirtualEditor", () => {
     const image = new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" });
     const event = new Event("paste", { bubbles: true, cancelable: true });
     Object.defineProperty(event, "clipboardData", {
-      value: { items: [{ type: "image/png", getAsFile: () => image }] },
+      value: {
+        items: [{ type: "image/png", getAsFile: () => image }],
+        getData: () => "",
+      },
     });
 
     input.dispatchEvent(event);

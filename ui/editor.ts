@@ -1670,32 +1670,47 @@ export class VirtualEditor {
 
   private async paste() {
     if (this.readOnly) return;
-    const image = await this.readClipboardImage();
-    if (image && this.onPasteImage) {
-      await this.insertImage(image.bytes, image.mimeType);
-      return;
+    let text = "";
+    let textReadFailed = false;
+    let textReadError: unknown;
+    try {
+      text = normalizeClipboardText(await readClipboardText());
+    } catch (error) {
+      textReadFailed = true;
+      textReadError = error;
     }
-    const text = normalizeClipboardText(await readClipboardText());
+
     const rows = this.rectangularClipboard.rowsFor(text);
-    if (rows) {
-      await this.mutation.pasteBlock(rows);
+    if (text && !rows) {
+      await this.insertText(text);
       return;
     }
-    if (text) await this.insertText(text);
+
+    if (!text) {
+      const image = await this.readClipboardImage();
+      if (image && this.onPasteImage) {
+        await this.insertImage(image.bytes, image.mimeType);
+        return;
+      }
+      if (textReadFailed) throw textReadError;
+    }
+    if (rows) await this.mutation.pasteBlock(rows);
   }
 
   private onPaste(event: ClipboardEvent) {
     if (this.readOnly) return;
-    const item = [...(event.clipboardData?.items ?? [])]
-      .find((candidate) => candidate.type.toLowerCase().startsWith("image/"));
-    const file = item?.getAsFile();
-    if (file) {
-      event.preventDefault();
-      this.dispatch("クリップボードから画像を貼り付けできませんでした", () => this.insertImageBlob(file));
-      return;
-    }
     const text = normalizeClipboardText(event.clipboardData?.getData("text/plain") ?? "");
     const rows = this.rectangularClipboard.rowsFor(text);
+    if (!text) {
+      const item = [...(event.clipboardData?.items ?? [])]
+        .find((candidate) => candidate.type.toLowerCase().startsWith("image/"));
+      const file = item?.getAsFile();
+      if (file) {
+        event.preventDefault();
+        this.dispatch("クリップボードから画像を貼り付けできませんでした", () => this.insertImageBlob(file));
+        return;
+      }
+    }
     if (!rows) return;
     event.preventDefault();
     this.dispatch(
