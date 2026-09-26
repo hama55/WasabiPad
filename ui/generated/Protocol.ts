@@ -9,7 +9,8 @@ export const EVENT_NAMES = {
   "externalWindowRequest": "external-window-request",
   "workspaceSearchBatch": "workspace-search-batch",
   "documentLoadProgress": "document-load-progress",
-  "viewerUpdate": "viewer-update"
+  "viewerUpdate": "viewer-update",
+  "musicAddonChanged": "music-addon-changed"
 } as const;
 export const IMAGE_FORMATS = ["svg","png","jpg","gif","webp","bmp","ico","avif","apng"] as const;
 export const IMAGE_MIME_TYPES = {

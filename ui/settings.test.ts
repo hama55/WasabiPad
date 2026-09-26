@@ -207,6 +207,20 @@ describe("Feature: settings", () => {
     expect(parseSettings(JSON.stringify({ previewCacheDirectory: [] })).previewCacheDirectory).toBeNull();
   });
 
+  // Feature: LilyPond実行ファイルの設定
+  // Scenario: 未設定・保存済み・不正な値を安全に復元する
+  // Given: LilyPond実行ファイルのパスを未設定、文字列、または不正な型で保存する
+  // When: `parseSettings`を呼ぶ
+  // Then: 未設定と不正値は`null`、有効な文字列は保持される
+  it("Scenario: LilyPond実行ファイルのパスを安全に復元する", () => {
+    const path = "C:\\Program Files\\LilyPond\\usr\\bin\\lilypond.exe";
+    expect(parseSettings("{}").lilypondExecutablePath).toBeNull();
+    expect(parseSettings(JSON.stringify({ lilypondExecutablePath: path })).lilypondExecutablePath).toBe(path);
+    expect(parseSettings(JSON.stringify({ lilypondExecutablePath: 42 })).lilypondExecutablePath).toBeNull();
+    expect(parseSettings(JSON.stringify({ lilypondExecutablePath: "" })).lilypondExecutablePath).toBeNull();
+    expect(parseSettings(JSON.stringify({ lilypondExecutablePath: [] })).lilypondExecutablePath).toBeNull();
+  });
+
   // Given: フォント・起動パス・登録項目を変更し、再開タブも保存済み
   // When: アプリ設定だけを初期化する
   // Then: ユーザー設定は既定値へ戻り、再開タブは保持する
@@ -255,6 +269,37 @@ describe("Feature: settings", () => {
 
     expect(getSetting("previewCacheDirectory")).toBeNull();
     expect(updateSettingMock).toHaveBeenCalledWith("previewCacheDirectory", "null");
+  });
+
+  // Feature: LilyPond実行ファイルの設定
+  // Scenario: アプリ設定初期化でパスを未設定へ戻す
+  // Given: LilyPond実行ファイルのパスを設定している
+  // When: アプリ設定だけを初期化する
+  // Then: パスは`null`へ戻り、その値を保存する
+  it("Scenario: 設定初期化でLilyPond実行ファイルのパスを戻す", async () => {
+    setSetting("lilypondExecutablePath", "C:\\LilyPond\\bin\\lilypond.exe");
+    await flushSettings();
+    updateSettingMock.mockClear();
+
+    resetUserSettings();
+    await flushSettings();
+
+    expect(getSetting("lilypondExecutablePath")).toBeNull();
+    expect(updateSettingMock).toHaveBeenCalledWith("lilypondExecutablePath", "null");
+  });
+
+  // Feature: LilyPond実行ファイルの設定
+  // Scenario: 指定した実行ファイルのパスを保存する
+  // Given: LilyPond実行ファイルのパスが入力される
+  // When: `setSetting`で保存する
+  // Then: 専用キーへ文字列として保存する
+  it("Scenario: LilyPond実行ファイルのパスを専用キーへ保存する", async () => {
+    const path = "D:\\Apps\\LilyPond\\lilypond.exe";
+    setSetting("lilypondExecutablePath", path);
+
+    await flushSettings();
+
+    expect(updateSettingMock).toHaveBeenCalledWith("lilypondExecutablePath", JSON.stringify(path));
   });
 
   // Given: プレビュー用文字サイズを20へ変更する

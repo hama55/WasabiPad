@@ -2,8 +2,13 @@
 // 文書本体は core::Doc が所有し、フロントへは可視スライスだけを渡す (全文は渡さない)。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod addin_assets;
+mod addin_catalog;
+pub mod addin_manager;
 mod commands;
 mod instance;
+mod lilypond_runner;
+mod music_ipc;
 mod state;
 mod viewer;
 
@@ -16,16 +21,16 @@ use instance::{
 use state::{DocState, State};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
-use tauri::{AppHandle, Manager};
+use std::sync::{Mutex, MutexGuard};
+use tauri::{AppHandle, Emitter, Manager};
 use viewer::{FindShortcutGuard, ViewerStore};
 use wasabipad_core::{
-    self, BookmarkNode, Doc, DocInfo, EditManyItem, EditManyResult, EditResult, EncodingId, Eol,
-    ExternalCheck, ExternalMergePreview, FindCursor, FindOutcome, FindResult, FolderEntry, OpenAs, PosC,
-    read_sqlite_preview as read_sqlite_preview_core, PreviewCache, ReplaceChunkResult,
-    SaveOutcome, SearchOptions, SqlitePreview, WorkspaceSearchOutcome,
-    EVENT_DOCUMENT_LOAD_PROGRESS, EVENT_EXTERNAL_WINDOW_REQUEST, EVENT_VIEWER_UPDATE,
-    EVENT_WORKSPACE_SEARCH_BATCH,
+    self, read_sqlite_preview as read_sqlite_preview_core, BookmarkNode, Doc, DocInfo,
+    EditManyItem, EditManyResult, EditResult, EncodingId, Eol, ExternalCheck, ExternalMergePreview,
+    FindCursor, FindOutcome, FindResult, FolderEntry, OpenAs, PosC, PreviewCache,
+    ReplaceChunkResult, SaveOutcome, SearchOptions, SqlitePreview, WorkspaceSearchOutcome,
+    EVENT_DOCUMENT_LOAD_PROGRESS, EVENT_EXTERNAL_WINDOW_REQUEST, EVENT_MUSIC_ADDON_CHANGED,
+    EVENT_VIEWER_UPDATE, EVENT_WORKSPACE_SEARCH_BATCH,
 };
 
 fn viewer_label(id: u64) -> String {
@@ -86,6 +91,10 @@ enum ViewerFormat {
     Html,
     #[serde(rename = "sqlite")]
     Sqlite,
+    #[serde(rename = "abc")]
+    Abc,
+    #[serde(rename = "lilypond")]
+    Lilypond,
 }
 
 #[derive(Clone, serde::Serialize, ts_rs::TS)]
@@ -246,7 +255,13 @@ fn copy_entry_as(
     overwrite: bool,
     state: State,
 ) -> Result<DocInfo, String> {
-    document::copy_entry_as(source_rel_path, target_rel_dir, target_name, overwrite, state)
+    document::copy_entry_as(
+        source_rel_path,
+        target_rel_dir,
+        target_name,
+        overwrite,
+        state,
+    )
 }
 
 #[tauri::command]
@@ -257,7 +272,13 @@ fn move_entry_as(
     overwrite: bool,
     state: State,
 ) -> Result<DocInfo, String> {
-    document::move_entry_as(source_rel_path, target_rel_dir, target_name, overwrite, state)
+    document::move_entry_as(
+        source_rel_path,
+        target_rel_dir,
+        target_name,
+        overwrite,
+        state,
+    )
 }
 
 #[tauri::command]
@@ -297,7 +318,10 @@ fn open_in_other_app(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn open_in_default_browser(path: String, effective_extension: Option<String>) -> Result<(), String> {
+fn open_in_default_browser(
+    path: String,
+    effective_extension: Option<String>,
+) -> Result<(), String> {
     system::open_in_default_browser(path, effective_extension)
 }
 
@@ -695,6 +719,148 @@ async fn read_sqlite_preview(
     .map_err(|error| error.to_string())?
 }
 
+fn lock_music_manager(lock: &Mutex<()>) -> Result<MutexGuard<'_, ()>, String> {
+    lock.lock()
+        .map_err(|_| "Music addin state lock is unavailable.".to_owned())
+}
+
+#[tauri::command]
+async fn music_addon_status(
+    id: String,
+    operations: tauri::State<'_, music_ipc::MusicOperations>,
+) -> Result<addin_manager::LocalAddonStatus, String> {
+    let manager_lock = operations.manager_lock.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = lock_music_manager(&manager_lock)?;
+        let root = wasabipad_core::app_data_root().map_err(|error| error.to_string())?;
+        music_ipc::local_addon_status(&root, &id)
+    })
+    .await
+    .map_err(|error| format!("Read music addin status failed: {error}"))?
+}
+
+#[tauri::command]
+async fn music_addon_catalog() -> Result<Vec<addin_catalog::OfficialAddon>, String> {
+    tauri::async_runtime::spawn_blocking(addin_catalog::fetch_official_catalog)
+        .await
+        .map_err(|error| format!("Fetch music addin catalog failed: {error}"))?
+}
+
+fn emit_music_addon_changed(app: &AppHandle, id: &str) {
+    if let Err(error) = app.emit(EVENT_MUSIC_ADDON_CHANGED, id) {
+        eprintln!("Music addin change notification failed: {error}");
+    }
+}
+
+#[tauri::command]
+async fn music_addon_install(
+    id: String,
+    operations: tauri::State<'_, music_ipc::MusicOperations>,
+    app: AppHandle,
+) -> Result<(), String> {
+    let changed_id = id.clone();
+    let manager_lock = operations.manager_lock.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = lock_music_manager(&manager_lock)?;
+        let root = wasabipad_core::app_data_root().map_err(|error| error.to_string())?;
+        addin_catalog::install_or_update_official(&root, &id)
+    })
+    .await
+    .map_err(|error| format!("Install music addin failed: {error}"))??;
+    emit_music_addon_changed(&app, &changed_id);
+    Ok(())
+}
+
+#[tauri::command]
+async fn music_addon_set_enabled(
+    id: String,
+    enabled: bool,
+    operations: tauri::State<'_, music_ipc::MusicOperations>,
+    app: AppHandle,
+) -> Result<(), String> {
+    let changed_id = id.clone();
+    let manager_lock = operations.manager_lock.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = lock_music_manager(&manager_lock)?;
+        let root = wasabipad_core::app_data_root().map_err(|error| error.to_string())?;
+        addin_manager::set_enabled(&root, &id, enabled)
+    })
+    .await
+    .map_err(|error| format!("Update music addin state failed: {error}"))??;
+    emit_music_addon_changed(&app, &changed_id);
+    Ok(())
+}
+
+#[tauri::command]
+async fn music_addon_remove(
+    id: String,
+    operations: tauri::State<'_, music_ipc::MusicOperations>,
+    app: AppHandle,
+) -> Result<(), String> {
+    let changed_id = id.clone();
+    let manager_lock = operations.manager_lock.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = lock_music_manager(&manager_lock)?;
+        let root = wasabipad_core::app_data_root().map_err(|error| error.to_string())?;
+        addin_manager::remove(&root, &id)
+    })
+    .await
+    .map_err(|error| format!("Remove music addin failed: {error}"))??;
+    emit_music_addon_changed(&app, &changed_id);
+    Ok(())
+}
+
+#[tauri::command]
+async fn lilypond_generate(
+    text: String,
+    source_path: Option<String>,
+    request_id: String,
+    operations: tauri::State<'_, music_ipc::MusicOperations>,
+) -> Result<lilypond_runner::LilyOutput, String> {
+    let cancelled = {
+        let mut jobs = operations
+            .jobs
+            .lock()
+            .map_err(|_| "LilyPond job registry is unavailable.".to_owned())?;
+        jobs.register(&request_id)?
+    };
+    let jobs = operations.jobs.clone();
+    let cleanup_request_id = request_id.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = music_ipc::ActiveJobGuard::new(jobs, cleanup_request_id, cancelled.clone());
+        let source_path = music_ipc::saved_source_path(source_path)?;
+        let settings = wasabipad_core::load_settings().map_err(|error| error.to_string())?;
+        let configured = music_ipc::configured_lilypond_path(&settings)?;
+        let candidates = music_ipc::lilypond_executable_candidates();
+        let executable =
+            music_ipc::resolve_lilypond_executable(configured.as_deref(), &candidates)?;
+        let app_root = wasabipad_core::app_data_root().map_err(|error| error.to_string())?;
+        let work_root = app_root.join("music-jobs");
+        lilypond_runner::run_lilypond(
+            &executable,
+            source_path.as_deref(),
+            &text,
+            &work_root,
+            std::time::Duration::from_secs(30),
+            &cancelled,
+        )
+    })
+    .await
+    .map_err(|error| format!("LilyPond generation failed: {error}"))?
+}
+
+#[tauri::command]
+fn lilypond_cancel(
+    request_id: String,
+    operations: tauri::State<'_, music_ipc::MusicOperations>,
+) -> Result<(), String> {
+    operations
+        .jobs
+        .lock()
+        .map_err(|_| "LilyPond job registry is unavailable.".to_owned())?
+        .cancel(&request_id)
+}
+
 fn main() {
     let initial_request = match parse_window_request(std::env::args().skip(1)) {
         Ok(request) => request,
@@ -718,10 +884,17 @@ fn main() {
         }
     };
     let app = match tauri::Builder::default()
+        .register_uri_scheme_protocol("wasabi-addin", |_context, request| {
+            match wasabipad_core::app_data_root() {
+                Ok(data_dir) => addin_assets::handle_request(&data_dir, request),
+                Err(_) => addin_assets::not_found_response(),
+            }
+        })
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(Mutex::new(DocState(Doc::empty())))
         .manage(ViewerStore(Mutex::new(HashMap::new())))
+        .manage(music_ipc::MusicOperations::default())
         .manage(FindShortcutGuard::default())
         .manage(search::SearchCancel(Mutex::new(None)))
         .manage(instance_server)
@@ -802,6 +975,13 @@ fn main() {
             close_viewer,
             probe_sqlite_preview,
             read_sqlite_preview,
+            music_addon_status,
+            music_addon_catalog,
+            music_addon_install,
+            music_addon_set_enabled,
+            music_addon_remove,
+            lilypond_generate,
+            lilypond_cancel,
         ])
         .build(tauri::generate_context!())
     {

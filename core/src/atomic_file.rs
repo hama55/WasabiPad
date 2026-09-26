@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
-pub(crate) fn atomic_write(path: &Path, chunks: &[&[u8]]) -> io::Result<()> {
+pub fn atomic_write(path: &Path, chunks: &[&[u8]]) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }

@@ -89,6 +89,28 @@ export const VIEWER_FORMATS: Record<ViewerFormat, ViewerFormatSpec> = {
     supportsChart: false,
     supportsDefaultBrowser: false,
   },
+  abc: {
+    id: "abc",
+    label: "ABC楽譜",
+    title: "ABC",
+    previewOrder: 6,
+    iconClass: MENU_ICON.text,
+    extensions: [".abc"],
+    supportsDelimiter: false,
+    supportsChart: false,
+    supportsDefaultBrowser: false,
+  },
+  lilypond: {
+    id: "lilypond",
+    label: "LilyPond楽譜",
+    title: "LilyPond",
+    previewOrder: 7,
+    iconClass: MENU_ICON.text,
+    extensions: [".ly"],
+    supportsDelimiter: false,
+    supportsChart: false,
+    supportsDefaultBrowser: false,
+  },
 };
 
 export function viewerFormatSpec(format: ViewerFormat): ViewerFormatSpec {

@@ -17,35 +17,36 @@ mod folder;
 mod fuzzy;
 mod hugebuf;
 mod merge;
-mod protocol;
 mod preview_cache;
+mod protocol;
 mod search;
 mod search_replace;
 mod settings;
-mod sqlite_preview;
 mod sevenz;
+mod sqlite_preview;
 mod undo;
 mod workspace_search;
 mod xlstext;
 mod ziptext;
 
+pub use atomic_file::atomic_write;
 pub use bookmarks::{load as load_bookmarks, save as save_bookmarks, Node as BookmarkNode};
 pub use doc::{
-    ArchiveAssetReadPlan, Doc, DocInfo, EditManyItem, EditManyResult, EditResult, ExternalCheck, ExternalMergeChange,
-    ExternalMergeContextLine, ExternalMergePreview, FindCursor, FindOutcome, FindResult,
-    FolderEntry, OpenAs, PosC,
-    ReplaceChunkResult, SaveOutcome,
-    WorkspaceSearchResult,
+    ArchiveAssetReadPlan, Doc, DocInfo, EditManyItem, EditManyResult, EditResult, ExternalCheck,
+    ExternalMergeChange, ExternalMergeContextLine, ExternalMergePreview, FindCursor, FindOutcome,
+    FindResult, FolderEntry, OpenAs, PosC, ReplaceChunkResult, SaveOutcome, WorkspaceSearchResult,
 };
 pub use fileio::{Encoding, EncodingId, Eol};
 pub use filename::{next_available_path, validate_windows_file_name};
 pub use preview_cache::PreviewCache;
 pub use protocol::{
-    EVENT_DOCUMENT_LOAD_PROGRESS, EVENT_EXTERNAL_WINDOW_REQUEST, EVENT_VIEWER_UPDATE,
+    EVENT_DOCUMENT_LOAD_PROGRESS, EVENT_EXTERNAL_WINDOW_REQUEST, EVENT_MUSIC_ADDON_CHANGED, EVENT_VIEWER_UPDATE,
     EVENT_WORKSPACE_SEARCH_BATCH,
 };
-pub use settings::{load as load_settings, update as update_setting};
+pub use settings::{app_data_root, load as load_settings, update as update_setting};
 pub use sqlite_preview::{
     is_sqlite_preview_eligible, read_sqlite_preview, SqliteCell, SqliteObject, SqlitePreview,
 };
-pub use workspace_search::{search_workspace, FileNameMatchMode, SearchOptions, WorkspaceSearchOutcome};
+pub use workspace_search::{
+    search_workspace, FileNameMatchMode, SearchOptions, WorkspaceSearchOutcome,
+};

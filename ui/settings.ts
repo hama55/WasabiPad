@@ -37,6 +37,7 @@ export interface Settings {
   markdownHeadingUnderlines: boolean;
   sqlitePreviewRows: number;
   previewCacheDirectory: string | null;
+  lilypondExecutablePath: string | null;
   startupPath: string | null;
   registeredStrings: string[];
   registeredCommands: RegisteredCommand[];
@@ -58,6 +59,7 @@ const DEFAULT_USER_SETTINGS: Pick<Settings, UserSettingKey> = {
   markdownHeadingUnderlines: false,
   sqlitePreviewRows: DEFAULT_SQLITE_PREVIEW_ROWS,
   previewCacheDirectory: null,
+  lilypondExecutablePath: null,
   startupPath: null,
   registeredStrings: [],
   registeredCommands: [],
@@ -129,6 +131,10 @@ export function parseSettingsResult(text: string): SettingsParseResult {
     previewCacheDirectory: typeof value.previewCacheDirectory === "string" && value.previewCacheDirectory.trim().length > 0
       ? value.previewCacheDirectory
       : DEFAULTS.previewCacheDirectory,
+    lilypondExecutablePath: typeof value.lilypondExecutablePath === "string"
+      && value.lilypondExecutablePath.trim().length > 0
+      ? value.lilypondExecutablePath
+      : DEFAULTS.lilypondExecutablePath,
     startupPath: typeof value.startupPath === "string" ? value.startupPath : null,
     registeredStrings: Array.isArray(value.registeredStrings)
       ? value.registeredStrings.filter((item): item is string => typeof item === "string" && item.length > 0)

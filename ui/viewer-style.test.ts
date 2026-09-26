@@ -55,4 +55,10 @@ describe("Feature: viewer viewport layout", () => {
     expect(style).not.toMatch(/\.viewer-caret-line\s*\{[^}]*border-left:/s);
     expect(style).not.toMatch(/\.viewer-caret-line\s*\{[^}]*padding-left:/s);
   });
+
+  it("Scenario: 楽譜アドインの操作と全ページを本文幅に収める", () => {
+    expect(style).toMatch(/\.viewer-abc-preview,\s*\.viewer-lilypond-preview\s*\{[^}]*min-width:\s*0;[^}]*min-height:\s*100%;/s);
+    expect(style).toMatch(/\.abc-preview-toolbar,\s*\.lilypond-preview-toolbar\s*\{[^}]*display:\s*flex;[^}]*gap:\s*8px;/s);
+    expect(style).toMatch(/\.abc-preview-score\s+svg,\s*\.lilypond-preview-pages\s+img\s*\{[^}]*max-width:\s*100%;[^}]*height:\s*auto;/s);
+  });
 });

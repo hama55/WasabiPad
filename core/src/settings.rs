@@ -7,7 +7,7 @@ use std::path::PathBuf;
 // ディレクトリ名は app-config.json から scripts/sync-app-config.mjs が同期する。
 // インストーラは exe を %LOCALAPPDATA%\WasabiPad\ へ置く。設定もそこへ揃えると
 // インストール版では従来の「exe 隣」と同じ場所になり、保存先が分かれない。
-pub(crate) fn app_data_root() -> io::Result<PathBuf> {
+pub fn app_data_root() -> io::Result<PathBuf> {
     let local = std::env::var_os("LOCALAPPDATA")
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "LOCALAPPDATA が取得できません"))?;
     Ok(PathBuf::from(local).join("WasabiPad"))

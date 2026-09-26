@@ -693,6 +693,11 @@ settingsPorts = {
   applyMarkdownSoftBreaks: (enabled) => inlinePreview.setMarkdownSoftBreaks(enabled),
   applyMarkdownLineHeight: (value) => inlinePreview.setMarkdownLineHeight(value),
   applyMarkdownHeadingUnderlines: (enabled) => inlinePreview.setMarkdownHeadingUnderlines(enabled),
+  getMusicAddonStatus: (id) => api.musicAddonStatus(id),
+  getMusicAddonCatalog: () => api.musicAddonCatalog(),
+  installMusicAddon: (id) => api.musicAddonInstall(id),
+  setMusicAddonEnabled: (id, enabled) => api.musicAddonSetEnabled(id, enabled),
+  removeMusicAddon: (id) => api.musicAddonRemove(id),
   pickPreviewCacheDirectory: async (defaultPath?: string) => {
     try {
       const selected = await openDialog({ directory: true, multiple: false, defaultPath });

@@ -10,6 +10,13 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
 import {
   clearPreviewCache,
   getPreviewCacheInfo,
+  lilypondCancel,
+  lilypondGenerate,
+  musicAddonCatalog,
+  musicAddonInstall,
+  musicAddonRemove,
+  musicAddonSetEnabled,
+  musicAddonStatus,
   readArchiveAsset,
   readFileAsset,
   selectEntry,
@@ -74,5 +81,30 @@ describe("Feature: preview cache IPC", () => {
       openAs: "pdf",
       cacheDirectory: "D:\\WasabiPad\\cache",
     });
+  });
+
+  it("Scenario: official add-in and LilyPond IPC wrappers forward typed arguments", async () => {
+    // Given: 公式アドイン状態、一覧、導入状態、楽譜生成の操作が必要
+    // When: 7つの公式アドインIPCを呼ぶ
+    await musicAddonStatus("abc");
+    await musicAddonCatalog();
+    await musicAddonInstall("lilypond");
+    await musicAddonSetEnabled("abc", false);
+    await musicAddonRemove("lilypond");
+    await lilypondGenerate("\\score { { c'4 } }", "C:/score.ly", "request-1");
+    await lilypondCancel("request-1");
+
+    // Then: 生成済みコマンド名とRust側のcamelCase引数でinvokeする
+    expect(invokeMock).toHaveBeenNthCalledWith(1, IPC_COMMANDS.musicAddonStatus, { id: "abc" });
+    expect(invokeMock).toHaveBeenNthCalledWith(2, IPC_COMMANDS.musicAddonCatalog);
+    expect(invokeMock).toHaveBeenNthCalledWith(3, IPC_COMMANDS.musicAddonInstall, { id: "lilypond" });
+    expect(invokeMock).toHaveBeenNthCalledWith(4, IPC_COMMANDS.musicAddonSetEnabled, { id: "abc", enabled: false });
+    expect(invokeMock).toHaveBeenNthCalledWith(5, IPC_COMMANDS.musicAddonRemove, { id: "lilypond" });
+    expect(invokeMock).toHaveBeenNthCalledWith(6, IPC_COMMANDS.lilypondGenerate, {
+      text: "\\score { { c'4 } }",
+      sourcePath: "C:/score.ly",
+      requestId: "request-1",
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(7, IPC_COMMANDS.lilypondCancel, { requestId: "request-1" });
   });
 });

@@ -66,4 +66,11 @@ export const IPC_COMMANDS = {
   closeViewer: "close_viewer",
   probeSqlitePreview: "probe_sqlite_preview",
   readSqlitePreview: "read_sqlite_preview",
+  musicAddonStatus: "music_addon_status",
+  musicAddonCatalog: "music_addon_catalog",
+  musicAddonInstall: "music_addon_install",
+  musicAddonSetEnabled: "music_addon_set_enabled",
+  musicAddonRemove: "music_addon_remove",
+  lilypondGenerate: "lilypond_generate",
+  lilypondCancel: "lilypond_cancel",
 } as const;

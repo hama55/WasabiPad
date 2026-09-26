@@ -29,6 +29,63 @@ describe("Feature: viewer formats", () => {
     expect(viewerFormatForPath("notes.txt")).toBeNull();
   });
 
+  // Feature: 楽譜ファイルのプレビュー形式判定
+  // Scenario: ABCとLilyPondを各プレビュー入口から判定する
+  // Given: .abc/.lyと大文字拡張子のファイルパス
+  // When: ファイル表示、自動プレビュー、プレビュー切替の形式を求める
+  // Then: 3つの入口すべてでABCまたはLilyPondとして判定する
+  it("Scenario: resolves ABC and LilyPond through every preview entry point", () => {
+    for (const path of ["score.abc", "score.ABC"]) {
+      expect(viewerFormatForPath(path)).toBe("abc");
+      expect(viewerFormatForAutomaticPreview(path)).toBe("abc");
+      expect(viewerFormatForPreviewToggle(path)).toBe("abc");
+    }
+    for (const path of ["piece.ly", "piece.LY"]) {
+      expect(viewerFormatForPath(path)).toBe("lilypond");
+      expect(viewerFormatForAutomaticPreview(path)).toBe("lilypond");
+      expect(viewerFormatForPreviewToggle(path)).toBe("lilypond");
+    }
+  });
+
+  // Feature: ABCとLilyPondのプレビュー形式登録
+  // Scenario: 楽譜形式を既存形式の後ろに限定機能で登録する
+  // Given: ABCとLilyPondの形式仕様
+  // When: 形式レジストリを参照する
+  // Then: 拡張子・表示名・順序だけを追加し既存形式の操作機能は付与しない
+  it("Scenario: registers ABC and LilyPond as preview-only formats", () => {
+    const abc = viewerFormatSpec("abc");
+    const lilypond = viewerFormatSpec("lilypond");
+
+    expect(abc.extensions).toEqual([".abc"]);
+    expect(abc.label).toBe("ABC楽譜");
+    expect(abc.openAs).toBeUndefined();
+    expect(abc.supportsDelimiter).toBe(false);
+    expect(abc.supportsChart).toBe(false);
+    expect(abc.supportsDefaultBrowser).toBe(false);
+    expect(abc.previewOrder).toBeGreaterThan(viewerFormatSpec("sqlite").previewOrder);
+    expect(abc.iconClass).toBe(MENU_ICON.text);
+
+    expect(lilypond.extensions).toEqual([".ly"]);
+    expect(lilypond.label).toBe("LilyPond楽譜");
+    expect(lilypond.openAs).toBeUndefined();
+    expect(lilypond.supportsDelimiter).toBe(false);
+    expect(lilypond.supportsChart).toBe(false);
+    expect(lilypond.supportsDefaultBrowser).toBe(false);
+    expect(lilypond.previewOrder).toBeGreaterThan(abc.previewOrder);
+    expect(lilypond.iconClass).toBe(MENU_ICON.text);
+  });
+
+  // Feature: アドイン未導入時の楽譜プレビュー
+  // Scenario: 形式ごとに異なる未導入状態を既存ビュー領域へ表示する
+  // Given: ABCまたはLilyPond形式でアドインが未導入
+  // When: 既存ビュー領域でプレビューを開く
+  // Then: 対応する「ABCアドイン未導入」または「LilyPondアドイン未導入」を表示する
+  it.skip("Scenario: shows the distinct missing-addin state for each score format", () => {
+    // Given: 実機ビュー領域でABCまたはLilyPondアドインが未導入（jsdomでは未検証）
+    // When: 各楽譜形式の文書をプレビューする
+    // Then: 形式ごとに対応する未導入案内を表示する
+  });
+
   // Feature: 自動プレビューのSQLite候補
   // Scenario: SQLite候補拡張子だけをSQLiteプローブへ送る
   // Given: .db、既存のSQLite拡張子、通常の未知拡張子
@@ -163,7 +220,7 @@ describe("Feature: viewer formats", () => {
     expect(isViewerFormat(null)).toBe(false);
   });
 
-  // Given: csv/markdown/image/pdf/html用のrenderer mockを登録
+  // Given: csv/markdown/image/pdf/html/sqlite/abc/lilypond用のrenderer mockを登録
   // When: `createViewerFormatHandlers`を呼ぶ
   // Then: 各形式の`render`はmock、markdownのlabelは`Markdownビュー`
   it("Scenario: combines metadata and renderers through one typed registry", () => {
@@ -173,9 +230,11 @@ describe("Feature: viewer formats", () => {
     const pdfRenderer = vi.fn();
     const htmlRenderer = vi.fn();
     const sqliteRenderer = vi.fn();
+    const abcRenderer = vi.fn();
+    const lilypondRenderer = vi.fn();
     const handlers = createViewerFormatHandlers({
       csv: csvRenderer, markdown: markdownRenderer, image: imageRenderer, pdf: pdfRenderer, html: htmlRenderer,
-      sqlite: sqliteRenderer,
+      sqlite: sqliteRenderer, abc: abcRenderer, lilypond: lilypondRenderer,
     });
 
     expect(handlers.csv.render).toBe(csvRenderer);
@@ -184,6 +243,8 @@ describe("Feature: viewer formats", () => {
     expect(handlers.pdf.render).toBe(pdfRenderer);
     expect(handlers.html.render).toBe(htmlRenderer);
     expect(handlers.sqlite.render).toBe(sqliteRenderer);
+    expect(handlers.abc.render).toBe(abcRenderer);
+    expect(handlers.lilypond.render).toBe(lilypondRenderer);
     expect(handlers.csv.title).toBe("CSV");
     expect(handlers.markdown.title).toBe("Markdown");
   });

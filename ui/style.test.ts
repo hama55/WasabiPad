@@ -4,6 +4,25 @@ import { describe, expect, it } from "vitest";
 
 const style = readFileSync(new URL("./style.css", import.meta.url), "utf8");
 const indexHtml = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+const tauriConfig = JSON.parse(
+  readFileSync(new URL("../src-tauri/tauri.conf.json", import.meta.url), "utf8"),
+);
+
+describe("Feature: LilyPond WASM CSP", () => {
+  // Given: production/devのTauri CSP設定を読み込む
+  // When: LilyPondアドインのscript-srcを検査する
+  // Then: WASM実行だけを許可し、汎用unsafe-evalは許可しない
+  it("Scenario: allows WASM evaluation without enabling generic eval", () => {
+    for (const policy of [
+      tauriConfig.app.security.csp,
+      tauriConfig.app.security.devCsp,
+    ]) {
+      const tokens = policy["script-src"].split(/\s+/);
+      expect(tokens).toContain("'wasm-unsafe-eval'");
+      expect(tokens).not.toContain("'unsafe-eval'");
+    }
+  });
+});
 
 describe("Feature: editor caret style", () => {
   // Given: `style.css`のキャレット描画規則と入力用textarea規則を読み込む
