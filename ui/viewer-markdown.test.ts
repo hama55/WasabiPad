@@ -160,15 +160,22 @@ describe("Feature: Markdown viewer specifications", () => {
     const heading = document.createElement("h1");
     heading.dataset.sourceStart = "0";
     heading.dataset.sourceEnd = "1";
-    heading.dataset.sourceText = "# hello";
-    heading.textContent = "hello";
+    const text = document.createElement("span");
+    text.dataset.sourceOffsetStart = "2";
+    text.dataset.sourceOffsetEnd = "7";
+    text.textContent = "hello";
+    heading.appendChild(text);
 
-    placeMarkdownCaret([heading], {
+    placeMarkdownCaret([heading], "# hello", {
       start: { line: 0, col: 4 },
       end: { line: 0, col: 4 },
     });
 
-    expect(heading.innerHTML).toBe("he<span class=\"viewer-markdown-caret\" aria-hidden=\"true\"></span>llo");
+    const caret = heading.querySelector(".viewer-markdown-caret")!;
+    const range = document.createRange();
+    range.selectNodeContents(heading);
+    range.setEndBefore(caret);
+    expect(range.toString()).toBe("he");
   });
 
   // Given: source範囲`4..6`の要素と4行目のキャレット

@@ -57,15 +57,21 @@ describe("Feature: viewer source selection mapping", () => {
   // When: 表示文字列の先頭と末尾を原文位置へ変換する
   // Then: Markdown記号を飛ばした原文列2〜7へ対応する
   it("Scenario: markdown syntax is excluded from source caret columns", () => {
+    const article = document.createElement("article");
+    article.dataset.markdownSource = "# title";
     const block = document.createElement("h1");
     block.dataset.sourceStart = "0";
     block.dataset.sourceEnd = "1";
-    block.dataset.sourceText = "# title";
-    block.textContent = "title";
-    document.body.appendChild(block);
+    const text = document.createElement("span");
+    text.dataset.sourceOffsetStart = "2";
+    text.dataset.sourceOffsetEnd = "7";
+    text.textContent = "title";
+    block.append(text);
+    article.append(block);
+    document.body.append(article);
 
-    expect(sourcePositionFromPoint(block.firstChild!, 0)).toEqual({ line: 0, col: 2 });
-    expect(sourcePositionFromPoint(block.firstChild!, 5)).toEqual({ line: 0, col: 7 });
+    expect(sourcePositionFromPoint(text.firstChild!, 0)).toEqual({ line: 0, col: 2 });
+    expect(sourcePositionFromPoint(text.firstChild!, 5)).toEqual({ line: 0, col: 7 });
   });
 
   // Given: 選択範囲がないviewer selection

@@ -87,7 +87,7 @@ export function resolveArchiveAssetEntry(sourceEntry: string | null, src: string
   return base.length ? base.join("/") : null;
 }
 
-// markdown-it は出力時に src をパーセントエンコードするため、実パスへ戻す
+// Markdown renderer は src をパーセントエンコードする場合があるため、実パスへ戻す
 function decodeSrc(src: string): string {
   try {
     return decodeURIComponent(src);

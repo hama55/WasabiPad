@@ -1,8 +1,248 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
 import { MARKDOWN_IMAGE_SOURCE_ATTRIBUTE, renderMarkdownDocument } from "./viewer-markdown-renderer";
+import { viewerSelectionFromDom } from "./viewer-selection";
 
 describe("Feature: Markdown viewer drawing boundary", () => {
+  // Given: 箇条書き本文に同じ`Git`が2回あり、エディタ位置は1つ目の直前
+  // When: Markdown rendererで本文を描画する
+  // Then: プレビューのキャレットも1つ目の`Git`直前に置く
+  it("Scenario: repeated text keeps the editor caret on the matching source occurrence", () => {
+    const source = '- 通常のビルドはGitの作業ツリー状態に依存させない。`npm run build` では生成ファイルのGit差分を検査しない。';
+    const firstGit = source.indexOf("Git");
+    const { article } = renderMarkdownDocument(source, {
+      start: { line: 0, col: [...source.slice(0, firstGit)].length },
+      end: { line: 0, col: [...source.slice(0, firstGit)].length },
+    });
+    const caret = article.querySelector(".viewer-markdown-caret");
+    const range = document.createRange();
+    range.selectNodeContents(article.querySelector("li")!);
+    range.setEndBefore(caret!);
+
+    expect(range.toString()).toBe("通常のビルドは");
+  });
+
+  // Given: プレビュー本文に同じ`Git`が2回ある
+  // When: 1つ目の`Git`の前を選択し、ソース位置へ変換する
+  // Then: エディタ側も1つ目の`Git`直前を返す
+  it("Scenario: repeated preview text maps back to its own source occurrence", () => {
+    const source = '- 通常のビルドはGitの作業ツリー状態に依存させない。`npm run build` では生成ファイルのGit差分を検査しない。';
+    const { article } = renderMarkdownDocument(source, null);
+    document.body.append(article);
+    const mappedText = [...article.querySelectorAll<HTMLElement>("[data-source-offset-start]")]
+      .find((span) => span.textContent?.includes("Git"));
+    const text = mappedText?.firstChild;
+    expect(text).toBeInstanceOf(Text);
+    const offset = (text?.textContent ?? "").indexOf("Git");
+    window.getSelection()?.setBaseAndExtent(text!, offset, text!, offset);
+
+    expect(viewerSelectionFromDom(article)).toEqual({
+      start: { line: 0, col: [...source.slice(0, source.indexOf("Git"))].length },
+      end: { line: 0, col: [...source.slice(0, source.indexOf("Git"))].length },
+    });
+  });
+
+  // Given: プレビュー上で通常改行がbr要素に変換されている
+  // When: 改行の直前と直後をそれぞれ選択位置としてエディタへ戻す
+  // Then: 原文の改行前後の境界を返す
+  it.each([
+    { lineEnding: "LF", value: "\n" },
+    { lineEnding: "CRLF", value: "\r\n" },
+    { lineEnding: "CR", value: "\r" },
+  ])("Scenario: preview $lineEnding line breaks map back to both source boundaries", ({ value }) => {
+    const source = `first line${value}second line`;
+    const { article } = renderMarkdownDocument(source, null);
+    document.body.append(article);
+    const lineBreak = article.querySelector("br")!;
+    const paragraph = lineBreak.parentElement!;
+    const childIndex = [...paragraph.childNodes].indexOf(lineBreak);
+    const selection = window.getSelection()!;
+    selection.setBaseAndExtent(paragraph, childIndex, paragraph, childIndex);
+    expect(viewerSelectionFromDom(article)).toEqual({
+      start: { line: 0, col: 10 },
+      end: { line: 0, col: 10 },
+    });
+
+    selection.setBaseAndExtent(paragraph, childIndex + 1, paragraph, childIndex + 1);
+    expect(viewerSelectionFromDom(article)).toEqual({
+      start: { line: 1, col: 0 },
+      end: { line: 1, col: 0 },
+    });
+  });
+
+  // Given: 改行文字を表す文字参照を含むMarkdown本文
+  // When: 段落内の改行表示を有効にして描画する
+  // Then: 文字参照を実際のソース改行と誤認してbr要素へ変換しない
+  it.each(["&NewLine;", "&#10;", "&#13;"])("Scenario: $0 remains inline text instead of a source line break", (entity) => {
+    const { article } = renderMarkdownDocument(`before${entity}after`, null);
+
+    expect(article.querySelector("br")).toBeNull();
+  });
+
+  // Given: CR文字参照の後に実際のソース改行を含むMarkdown本文
+  // When: 段落内の改行表示を有効にして描画する
+  // Then: 文字参照は文字のまま、実際の改行だけをbr要素へ変換する
+  it("Scenario: a CR character reference does not hide a following source line break", () => {
+    const { article } = renderMarkdownDocument("before&#13;\nafter", null);
+
+    expect(article.querySelectorAll("br")).toHaveLength(1);
+  });
+
+  // Given: バックスラッシュでエスケープした記号と、その後の本文
+  // When: エディタ位置をエスケープ後の最初の単語の直前に置く
+  // Then: プレビュー上も表示された記号の直後に対応する
+  it("Scenario: escaped Markdown punctuation preserves the following caret position", () => {
+    const source = String.raw`\*Git* and Git`;
+    const firstGit = source.indexOf("Git");
+    const { article } = renderMarkdownDocument(source, {
+      start: { line: 0, col: [...source.slice(0, firstGit)].length },
+      end: { line: 0, col: [...source.slice(0, firstGit)].length },
+    });
+    const caret = article.querySelector(".viewer-markdown-caret")!;
+    const range = document.createRange();
+    range.selectNodeContents(article);
+    range.setEndBefore(caret);
+
+    expect(range.toString()).toBe("*");
+  });
+
+  // Given: UTF-16では2単位になる絵文字の後ろにMarkdown本文がある
+  // When: エディタ位置を本文中の単語の直前へ置く
+  // Then: 絵文字を1文字として数え、プレビューの同じ位置へ対応する
+  it("Scenario: supplementary Unicode characters preserve caret columns", () => {
+    const source = "🌱 Git";
+    const column = [...source.slice(0, source.indexOf("Git"))].length;
+    const { article } = renderMarkdownDocument(source, {
+      start: { line: 0, col: column },
+      end: { line: 0, col: column },
+    });
+    const caret = article.querySelector(".viewer-markdown-caret")!;
+    const range = document.createRange();
+    range.selectNodeContents(article);
+    range.setEndBefore(caret);
+
+    expect(range.toString()).toBe("🌱 ");
+  });
+
+  // Given: 閉じフェンスのない有効なコードブロック
+  // When: エディタ位置を2行目の先頭に置く
+  // Then: コード表示の同じ行頭へキャレットを置く
+  it("Scenario: unclosed fenced code blocks keep source positions", () => {
+    const source = "```\nalpha\nbeta";
+    const { article } = renderMarkdownDocument(source, {
+      start: { line: 2, col: 0 },
+      end: { line: 2, col: 0 },
+    });
+    const caret = article.querySelector(".viewer-markdown-caret")!;
+    const range = document.createRange();
+    range.selectNodeContents(article);
+    range.setEndBefore(caret);
+
+    expect(range.toString()).toBe("alpha\n");
+    document.body.append(article);
+    const mappedText = article.querySelector<HTMLElement>("[data-source-offset-start]")?.firstChild;
+    window.getSelection()?.setBaseAndExtent(mappedText!, "alpha\n".length, mappedText!, "alpha\n".length);
+    expect(viewerSelectionFromDom(article)).toEqual({
+      start: { line: 2, col: 0 },
+      end: { line: 2, col: 0 },
+    });
+  });
+
+  // Given: 4スペース字下げのコードブロック
+  // When: エディタ位置を2行目のコード本文先頭に置く
+  // Then: 字下げを除いたコード表示の同じ位置へキャレットを置く
+  it("Scenario: indented code blocks keep source positions", () => {
+    const source = "    alpha\n    beta";
+    const { article } = renderMarkdownDocument(source, {
+      start: { line: 1, col: 4 },
+      end: { line: 1, col: 4 },
+    });
+    const caret = article.querySelector(".viewer-markdown-caret")!;
+    const range = document.createRange();
+    range.selectNodeContents(article);
+    range.setEndBefore(caret);
+
+    expect(range.toString()).toBe("alpha\n");
+    document.body.append(article);
+    const codeText = [...article.querySelectorAll<HTMLElement>("[data-source-offset-start]")]
+      .find((span) => span.textContent === "beta")?.firstChild;
+    window.getSelection()?.setBaseAndExtent(codeText!, 0, codeText!, 0);
+    expect(viewerSelectionFromDom(article)).toEqual({
+      start: { line: 1, col: 4 },
+      end: { line: 1, col: 4 },
+    });
+  });
+
+  // Given: CR単独の改行で区切られたMarkdownリスト
+  // When: 2行目の本文でエディタとプレビューの選択位置を相互変換する
+  // Then: どちらの方向も2行目の同じ文字位置を返す
+  it("Scenario: lone carriage-return line breaks preserve source positions", () => {
+    const source = "- alpha\r- beta";
+    const { article } = renderMarkdownDocument(source, {
+      start: { line: 1, col: 4 },
+      end: { line: 1, col: 4 },
+    });
+    const secondItem = article.querySelectorAll("li")[1]!;
+    const caret = secondItem.querySelector(".viewer-markdown-caret")!;
+    const range = document.createRange();
+    range.selectNodeContents(secondItem);
+    range.setEndBefore(caret);
+    expect(range.toString()).toBe("be");
+
+    document.body.append(article);
+    const text = [...secondItem.querySelectorAll<HTMLElement>("[data-source-offset-start]")]
+      .find((span) => span.textContent === "beta")?.firstChild;
+    window.getSelection()?.setBaseAndExtent(text!, 2, text!, 2);
+    expect(viewerSelectionFromDom(article)).toEqual({
+      start: { line: 1, col: 4 },
+      end: { line: 1, col: 4 },
+    });
+  });
+
+  // Given: タブと空白を混ぜて字下げしたコードブロック
+  // When: エディタ位置を2行目のコード本文先頭に置く
+  // Then: 字下げの幅に関係なくソース位置を保つ
+  it("Scenario: tab-indented code blocks keep source positions", () => {
+    const source = "\talpha\n \tbeta";
+    const { article } = renderMarkdownDocument(source, {
+      start: { line: 1, col: 2 },
+      end: { line: 1, col: 2 },
+    });
+    const caret = article.querySelector(".viewer-markdown-caret")!;
+    const range = document.createRange();
+    range.selectNodeContents(article);
+    range.setEndBefore(caret);
+
+    expect(range.toString()).toBe("alpha\n");
+  });
+
+  // Given: リスト内と引用内にフェンス付きコードブロックがある
+  // When: 引用内コードの2行目本文先頭にエディタ位置を置く
+  // Then: コンテナ記号を飛ばして引用内コードの同じ位置へ対応する
+  it("Scenario: nested code blocks keep source positions", () => {
+    const source = "- ```\n  alpha\n  ```\n> ```\n> beta\n> ```";
+    const list = renderMarkdownDocument(source, {
+      start: { line: 1, col: 2 },
+      end: { line: 1, col: 2 },
+    }).article;
+    const listCaret = list.querySelectorAll("pre")[0]?.querySelector(".viewer-markdown-caret");
+    const listRange = document.createRange();
+    listRange.selectNodeContents(list.querySelectorAll("pre")[0]!);
+    listRange.setEndBefore(listCaret!);
+    expect(listRange.toString()).toBe("");
+
+    const { article } = renderMarkdownDocument(source, {
+      start: { line: 4, col: 2 },
+      end: { line: 4, col: 2 },
+    });
+    const caret = article.querySelectorAll("pre")[1]?.querySelector(".viewer-markdown-caret");
+    const range = document.createRange();
+    range.selectNodeContents(article.querySelectorAll("pre")[1]!);
+    range.setEndBefore(caret!);
+
+    expect(range.toString()).toBe("");
+  });
+
   // Given: 見出しと外部リンクを含み、見出し行の途中にあるキャレット
   // When: Markdown専用rendererで文書を描画する
   // Then: 対応する要素を選択位置へ表示し、リンクを安全な別タブへ設定する
@@ -87,6 +327,60 @@ describe("Feature: Markdown viewer drawing boundary", () => {
     expect(checkboxes[0].disabled).toBe(true);
     expect(checkboxes[0].checked).toBe(false);
     expect(checkboxes[1].checked).toBe(true);
+  });
+
+  // Feature: GFM形式の互換性
+  // Scenario: 表・取り消し線・URL自動リンクを描画する
+  // Given: GFMの表、取り消し線、URLを含むMarkdown
+  // When: Markdown専用rendererで描画する
+  // Then: GFM要素として表示する
+  it("Scenario: GFMの表、取り消し線、自動リンクを描画する", () => {
+    const { article } = renderMarkdownDocument(
+      "| item |\n| --- |\n| ~~old~~ |\n\n~~old~~ ~single~\n\nhttps://example.com",
+      null,
+    );
+
+    expect(article.querySelector("table td del")?.textContent).toBe("old");
+    expect(article.querySelector("p del")?.textContent).toBe("old");
+    expect(article.querySelector("p")?.textContent).toContain("~single~");
+    expect(article.querySelector('a[href="https://example.com"]')?.textContent)
+      .toBe("https://example.com");
+  });
+
+  // Feature: Markdown生HTMLの安全性
+  // Scenario: 実行要素と許可画像を同じ文書に含める
+  // Given: scriptタグとイベント属性付き画像を含むMarkdown
+  // When: Markdown専用rendererで描画する
+  // Then: scriptを要素化せず、画像のイベント属性を除去する
+  it("Scenario: Markdown生HTMLを既存の安全境界内で描画する", () => {
+    const { article } = renderMarkdownDocument(
+      '<script>alert(1)</script>\n\n<img src="diagram.png" onerror="alert(1)">',
+      null,
+    );
+
+    expect(article.querySelector("script")).toBeNull();
+    expect(article.textContent).toContain("<script>alert(1)</script>");
+    expect(article.querySelector("img")?.hasAttribute("onerror")).toBe(false);
+    expect(article.querySelector("img")?.getAttribute(MARKDOWN_IMAGE_SOURCE_ATTRIBUTE))
+      .toBe("diagram.png");
+  });
+
+  // Given: 引用符が正規化される空アンカーと、その後の本文
+  // When: エディタ位置を本文の先頭に置く
+  // Then: HTML変換後も後続本文を原文位置へ正しく対応する
+  it("Scenario: raw HTML normalization does not shift following source positions", () => {
+    const source = "<a id='legacy'></a> Git";
+    const firstGit = source.indexOf("Git");
+    const { article } = renderMarkdownDocument(source, {
+      start: { line: 0, col: [...source.slice(0, firstGit)].length },
+      end: { line: 0, col: [...source.slice(0, firstGit)].length },
+    });
+    const caret = article.querySelector(".viewer-markdown-caret")!;
+    const range = document.createRange();
+    range.selectNodeContents(article);
+    range.setEndBefore(caret);
+
+    expect(range.toString()).toBe("</a> ");
   });
 
   // Feature: Markdownプレビューの通常改行

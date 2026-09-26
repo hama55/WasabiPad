@@ -1,6 +1,12 @@
 import type { ViewerSelection } from "./api";
 import { INLINE_PREVIEW_MESSAGES } from "./inline-preview-protocol";
 import { scrollViewerCaret } from "./viewer-scroll";
+import {
+  MARKDOWN_SOURCE_OFFSET_END,
+  MARKDOWN_SOURCE_OFFSET_START,
+  markdownDisplayOffsetForSourceOffset,
+  markdownSourceOffsetAtPosition,
+} from "./viewer-markdown-source-map";
 
 const IMG_ATTRIBUTES = ["src", "alt", "title", "width", "height"];
 const ANCHOR_ATTRIBUTES = ["id", "name"];
@@ -94,22 +100,9 @@ function markdownTargetForLine(sourceElements: HTMLElement[], line: number): HTM
   });
 }
 
-function renderedPrefixForSource(source: string, sourceOffset: number, rendered: string): string {
-  const renderedChars = [...rendered];
-  let renderedIndex = 0;
-  for (const char of [...source.slice(0, sourceOffset)]) {
-    if (renderedChars[renderedIndex] === char) {
-      renderedIndex += 1;
-      continue;
-    }
-    const next = renderedChars.indexOf(char, renderedIndex);
-    if (next >= 0) renderedIndex = next + 1;
-  }
-  return renderedChars.slice(0, renderedIndex).join("");
-}
-
 export function placeMarkdownCaret(
   sourceElements: HTMLElement[],
+  sourceText: string,
   selection: ViewerSelection | null,
 ): HTMLElement | null {
   sourceElements.forEach((element) => {
@@ -120,32 +113,30 @@ export function placeMarkdownCaret(
   )) return null;
   const target = markdownTargetForLine(sourceElements, selection.start.line);
   if (!target) return null;
-  const sourceStart = Number(target.dataset.sourceStart);
-  const source = target.dataset.sourceText ?? "";
-  const lines = source.split("\n");
-  const relativeLine = Math.max(0, Math.min(lines.length - 1, selection.start.line - sourceStart));
-  const column = Math.max(0, Math.min([...lines[relativeLine]].length, selection.start.col));
-  const sourceOffset = lines
-    .slice(0, relativeLine)
-    .reduce((total, line) => total + line.length + 1, 0)
-    + [...lines[relativeLine]].slice(0, column).join("").length;
-  const renderedPrefix = renderedPrefixForSource(source, sourceOffset, target.textContent ?? "");
+  const sourceOffset = markdownSourceOffsetAtPosition(sourceText, selection.start);
+  const mappedSpans = [...target.querySelectorAll<HTMLElement>(
+    `[${MARKDOWN_SOURCE_OFFSET_START}][${MARKDOWN_SOURCE_OFFSET_END}]`,
+  )];
+  let best: { span: HTMLElement; offset: number; distance: number } | null = null;
+  for (const span of mappedSpans) {
+    const start = Number(span.getAttribute(MARKDOWN_SOURCE_OFFSET_START));
+    const end = Number(span.getAttribute(MARKDOWN_SOURCE_OFFSET_END));
+    const textLength = span.textContent?.length ?? 0;
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end < start || !textLength) continue;
+    const distance = sourceOffset < start ? start - sourceOffset : sourceOffset > end ? sourceOffset - end : 0;
+    const offset = markdownDisplayOffsetForSourceOffset(start, end, textLength, sourceOffset);
+    if (!best || distance < best.distance) best = { span, offset, distance };
+  }
+  if (!best) return null;
+
   const caret = document.createElement("span");
   caret.className = "viewer-markdown-caret";
   caret.setAttribute("aria-hidden", "true");
-  const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT);
-  let remaining = renderedPrefix.length;
-  let node: Node | null;
-  while ((node = walker.nextNode())) {
-    const text = node.textContent ?? "";
-    if (remaining <= text.length) {
-      const after = (node as Text).splitText(remaining);
-      node.parentNode?.insertBefore(caret, after);
-      return caret;
-    }
-    remaining -= text.length;
-  }
-  target.appendChild(caret);
+  const walker = document.createTreeWalker(best.span, NodeFilter.SHOW_TEXT);
+  const text = walker.nextNode();
+  if (!(text instanceof Text)) return null;
+  const after = text.splitText(Math.max(0, Math.min(text.length, best.offset)));
+  after.parentNode?.insertBefore(caret, after);
   return caret;
 }
 
