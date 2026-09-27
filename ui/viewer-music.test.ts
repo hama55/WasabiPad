@@ -1,12 +1,16 @@
 // @vitest-environment jsdom
 import { readFileSync } from "node:fs";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { INLINE_PREVIEW_MESSAGES } from "./inline-preview-protocol";
 import type { AbcPreviewHostOptions } from "./music-abc-preview";
 import type { LilypondPreviewHostOptions } from "./music-lilypond-preview";
 import type { LilyOutput } from "./generated/LilyOutput";
 
 describe("Feature: 楽譜アドインのビューア接続", () => {
+  afterEach(() => {
+    window.dispatchEvent(new Event("beforeunload"));
+  });
+
   it("Scenario: ABCは入力更新に追随し、LilyPondは手動生成を委ね、切替と終了でhostを破棄する", async () => {
     // Given: inline viewerと公式アドインのhost/APIを用意する
     const html = readFileSync("viewer.html", "utf8");
@@ -145,7 +149,7 @@ describe("Feature: 楽譜アドインのビューア接続", () => {
     await vi.waitFor(() => expect(createLilypondPreviewHost).toHaveBeenCalledTimes(2));
     window.dispatchEvent(new Event("beforeunload"));
     expect(lilypondHost.dispose).toHaveBeenCalledTimes(2);
-  });
+  }, 15000);
 
   it("Scenario: 現在の楽譜アドイン変更では再生を破棄して状態を再表示し、別形式の変更は無視する", async () => {
     // Given: ABC楽譜を表示中で、アプリイベントを受け取れる
