@@ -6,6 +6,7 @@ mod addin_assets;
 mod addin_catalog;
 pub mod addin_manager;
 mod commands;
+mod external_preview_runner;
 mod instance;
 mod lilypond_runner;
 mod music_ipc;
@@ -110,6 +111,8 @@ struct ViewerPayload {
     // アーカイブ内メモの画像は、アーカイブエントリを IPC 経由で読む。
     archive_path: Option<String>,
     archive_entry: Option<String>,
+    // 外部プレビューアダプタが生成した、WasabiPad所有の一時生成物。
+    external_output_path: Option<String>,
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
@@ -333,6 +336,54 @@ fn open_external_url(url: String) -> Result<(), String> {
 #[tauri::command]
 fn run_external_command(command: String, path: String) -> Result<(), String> {
     system::run_external_command(command, path)
+}
+
+#[tauri::command]
+async fn external_preview_generate(
+    request: external_preview_runner::ExternalPreviewRequest,
+    operations: tauri::State<'_, external_preview_runner::ExternalPreviewOperations>,
+) -> Result<String, String> {
+    let operations = operations.inner().clone();
+    let request_id = request.request_id.clone();
+    let input_path = PathBuf::from(&request.input_path);
+    let (cancelled, input_path) = operations.register(&request_id, &input_path)?;
+    let guard = operations.guard(request_id, cancelled.clone());
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = guard;
+        let executable = PathBuf::from(request.executable);
+        let result = external_preview_runner::run_external_preview(
+            &executable,
+            &request.args,
+            &input_path,
+            request.output_format,
+            &external_preview_runner::default_work_root(),
+            std::time::Duration::from_secs(30),
+            &cancelled,
+        )?;
+        operations.finish_success(&request.request_id, &cancelled, &result.output_path)?;
+        Ok(result.output_path.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|error| format!("External preview generation failed: {error}"))?
+}
+
+#[tauri::command]
+fn external_preview_cancel(
+    request_id: String,
+    operations: tauri::State<'_, external_preview_runner::ExternalPreviewOperations>,
+) -> Result<(), String> {
+    operations.cancel(&request_id)
+}
+
+#[tauri::command]
+fn external_preview_cleanup(
+    output_path: String,
+    operations: tauri::State<'_, external_preview_runner::ExternalPreviewOperations>,
+) -> Result<(), String> {
+    let output_path = PathBuf::from(output_path);
+    external_preview_runner::cleanup_job(&output_path, &external_preview_runner::default_work_root())?;
+    operations.release_output(&output_path);
+    Ok(())
 }
 
 #[tauri::command]
@@ -899,10 +950,16 @@ fn main() {
         .manage(Mutex::new(DocState(Doc::empty())))
         .manage(ViewerStore(Mutex::new(HashMap::new())))
         .manage(music_ipc::MusicOperations::default())
+        .manage(external_preview_runner::ExternalPreviewOperations::default())
         .manage(FindShortcutGuard::default())
         .manage(search::SearchCancel(Mutex::new(None)))
         .manage(instance_server)
         .setup(|app| {
+            if let Err(error) = external_preview_runner::cleanup_stale_jobs(
+                &external_preview_runner::default_work_root(),
+            ) {
+                eprintln!("Could not clean stale external preview jobs: {error}");
+            }
             app.state::<InstanceServer>().start(app.handle());
             if let Some(window) = app.get_webview_window("main") {
                 viewer::install_find_shortcut_guard(
@@ -945,6 +1002,9 @@ fn main() {
             open_in_default_browser,
             open_external_url,
             run_external_command,
+            external_preview_generate,
+            external_preview_cancel,
+            external_preview_cleanup,
             edit,
             edit_many,
             undo,

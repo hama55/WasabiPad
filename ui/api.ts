@@ -28,6 +28,8 @@ import type { SqliteCell } from "./generated/SqliteCell";
 import type { SqliteObject } from "./generated/SqliteObject";
 import type { SqlitePreview } from "./generated/SqlitePreview";
 import type { LilyOutput } from "./generated/LilyOutput";
+import type { ExternalPreviewFormat } from "./generated/ExternalPreviewFormat";
+import type { ExternalPreviewRequest } from "./generated/ExternalPreviewRequest";
 import type { LocalAddonStatus } from "./generated/LocalAddonStatus";
 import type { OfficialAddon } from "./generated/OfficialAddon";
 import type { WorkspaceSearchBatch } from "./generated/WorkspaceSearchBatch";
@@ -63,6 +65,8 @@ export type {
   SqliteObject,
   SqlitePreview,
   LilyOutput,
+  ExternalPreviewFormat,
+  ExternalPreviewRequest,
   LocalAddonStatus,
   OfficialAddon,
   WorkspaceSearchBatch,
@@ -352,3 +356,10 @@ export const lilypondGenerate = (text: string, sourcePath: string | null, reques
   invoke<LilyOutput>(IPC_COMMANDS.lilypondGenerate, { text, sourcePath, requestId });
 export const lilypondCancel = (requestId: string) =>
   invoke<void>(IPC_COMMANDS.lilypondCancel, { requestId });
+
+export const externalPreviewGenerate = (request: ExternalPreviewRequest) =>
+  invoke<string>(IPC_COMMANDS.externalPreviewGenerate, { request });
+export const externalPreviewCancel = (requestId: string) =>
+  invoke<void>(IPC_COMMANDS.externalPreviewCancel, { requestId });
+export const externalPreviewCleanup = (outputPath: string) =>
+  invoke<void>(IPC_COMMANDS.externalPreviewCleanup, { outputPath });

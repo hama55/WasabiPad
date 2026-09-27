@@ -28,6 +28,7 @@ function makePorts(initial: Partial<Settings> = {}): SettingsPanelPorts {
     startupPath: null,
     registeredStrings: [],
     registeredCommands: [],
+    externalPreviewAdapters: [],
     workspaceSearchOptions: null,
     openTabs: { tabs: [], activeId: null },
     ...initial,
@@ -57,6 +58,7 @@ function makePorts(initial: Partial<Settings> = {}): SettingsPanelPorts {
     openSearchSettings: vi.fn(),
     openRegisteredString: vi.fn(),
     openRegisteredCommand: vi.fn(),
+    openExternalPreviewAdapter: vi.fn(),
     confirmReset: vi.fn(async () => true),
     resetSettings: vi.fn(),
   };
@@ -64,6 +66,32 @@ function makePorts(initial: Partial<Settings> = {}): SettingsPanelPorts {
 
 describe("Feature: settings modal", () => {
   afterEach(() => document.body.replaceChildren());
+
+  // Feature: 外部プレビューアダプタの設定画面
+  // Scenario: 一覧から追加・削除の操作を各portへ委譲する
+  // Given: 外部プレビューアダプタが1件登録されている
+  // When: 設定画面で追加と削除を操作する
+  // Then: 追加ダイアログと設定保存portへ通知される
+  it("Scenario: 外部プレビューアダプタ一覧を編集する", () => {
+    const adapter = {
+      extensions: ["abc"],
+      command: "renderer",
+      args: "{file} {output}",
+      outputFormat: "html" as const,
+      preferExternal: false,
+    };
+    const ports = makePorts({ externalPreviewAdapters: [adapter] });
+    openSettingsModal(ports);
+
+    const group = document.querySelector<HTMLElement>('[data-setting-group="external-preview-adapters"]')!;
+    expect(group.querySelector('[data-external-preview-row]')?.textContent).toContain(".abc → renderer");
+    group.querySelector<HTMLButtonElement>('[data-action="add-external-preview-adapter"]')!.click();
+    expect(ports.openExternalPreviewAdapter).toHaveBeenCalledOnce();
+
+    group.querySelector<HTMLButtonElement>('[data-action="delete-external-preview-adapter"]')!.click();
+    expect(ports.setSetting).toHaveBeenCalledWith("externalPreviewAdapters", []);
+    expect(group.querySelector('[data-external-preview-row]')).toBeNull();
+  });
 
   // Given: 設定モーダルを開く処理と閉じる処理を注入する
   // When: ギア相当の開閉処理を開く・閉じる・再表示の順に呼ぶ

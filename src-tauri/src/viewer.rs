@@ -109,6 +109,7 @@ pub(crate) async fn open_viewer(
                     .as_ref()
                     .map(|(path, _)| path.to_string_lossy().into_owned()),
                 archive_entry: archive_source.map(|(_, entry)| entry),
+                external_output_path: None,
             },
         );
 
@@ -228,6 +229,7 @@ mod tests {
             effective_extension: None,
             archive_path: None,
             archive_entry: None,
+            external_output_path: None,
         };
 
         let next = next_viewer_payload(&current, "new".to_string(), None);

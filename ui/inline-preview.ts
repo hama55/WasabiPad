@@ -43,6 +43,7 @@ export class InlinePreview {
   private effectiveExtension: string | null = null;
   private archivePath: string | null = null;
   private archiveEntry: string | null = null;
+  private externalOutputPath: string | null = null;
   private delimiter = DEFAULT_CSV_DELIMITER;
   private fontFamily: string | null = null;
   private fontSize: number | null = null;
@@ -116,6 +117,10 @@ export class InlinePreview {
     this.archivePath = archivePath;
     this.archiveEntry = archiveEntry;
     this.effectiveExtension = effectiveExtension;
+  }
+
+  setExternalOutputPath(path: string | null) {
+    this.externalOutputPath = path;
   }
 
   setDelimiter(delimiter: string) {
@@ -214,6 +219,7 @@ export class InlinePreview {
       effective_extension: this.effectiveExtension,
       archive_path: this.archivePath,
       archive_entry: this.archiveEntry,
+      external_output_path: this.externalOutputPath,
     };
   }
 

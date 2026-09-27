@@ -22,6 +22,7 @@ import {
   MIN_MARKDOWN_LINE_HEIGHT,
   type Settings,
 } from "./settings";
+import type { ExternalPreviewAdapter } from "./external-preview-adapter-model";
 import { THEME_LABELS, THEMES, type Theme } from "./theme";
 
 export interface SettingsPanelPorts {
@@ -47,6 +48,7 @@ export interface SettingsPanelPorts {
   openSearchSettings: () => void;
   openRegisteredString: (current?: string) => void;
   openRegisteredCommand: (kind: CommandValueKind, command?: RegisteredCommand) => void;
+  openExternalPreviewAdapter: (adapter?: ExternalPreviewAdapter) => void;
   confirmReset: () => boolean | Promise<boolean>;
   resetSettings: () => void | Promise<void>;
 }
@@ -210,7 +212,7 @@ export function openSettingsModal(
     {
       name: "アドイン",
       id: "settings-addons",
-      build: () => [musicAddons.element],
+      build: () => [musicAddons.element, externalPreviewAdaptersField(ports)],
     },
     {
       name: "検索",
@@ -743,6 +745,53 @@ function registeredCommandsField(
       `登録コマンド（${kindLabel}）を追加`,
       `add-registered-command-${kind}`,
       () => openDialog(kind),
+      MENU_ICON.command,
+    ));
+  };
+  render();
+  return group;
+}
+
+function externalPreviewAdaptersField(ports: SettingsPanelPorts): HTMLElement {
+  const group = document.createElement("div");
+  group.className = "settings-list-group settings-external-preview-adapters";
+  group.dataset.settingGroup = "external-preview-adapters";
+  const title = document.createElement("h3");
+  title.textContent = "外部プレビューアダプタ";
+  const summary = document.createElement("p");
+  summary.className = "settings-summary";
+  summary.textContent = "保存済みファイルの拡張子に応じて外部プログラムを実行し、HTMLまたはSVGを表示します。";
+  group.append(title, summary);
+
+  const render = () => {
+    group.querySelectorAll<HTMLElement>("[data-external-preview-row]").forEach((row) => row.remove());
+    const adapters = ports.getSetting("externalPreviewAdapters");
+    adapters.forEach((adapter) => {
+      const row = document.createElement("div");
+      row.className = "settings-list-row";
+      row.dataset.externalPreviewRow = "true";
+      const value = document.createElement("span");
+      value.textContent = `.${adapter.extensions.join(", .")} → ${adapter.command}`;
+      value.title = adapter.args;
+      const actions = document.createElement("div");
+      actions.className = "settings-list-actions";
+      actions.append(
+        settingsActionButton("⚙", "外部プレビューアダプタを編集", "edit-external-preview-adapter", () =>
+          ports.openExternalPreviewAdapter(adapter)),
+        settingsActionButton("×", "外部プレビューアダプタを削除", "delete-external-preview-adapter", () => {
+          ports.setSetting("externalPreviewAdapters", ports.getSetting("externalPreviewAdapters").filter((item) => item !== adapter));
+          render();
+        }),
+      );
+      row.append(value, actions);
+      group.append(row);
+    });
+    if (!adapters.length) group.append(emptySettingsNotice("登録なし"));
+    group.append(settingsActionButton(
+      "外部プレビューアダプタを追加...",
+      "外部プレビューアダプタを追加",
+      "add-external-preview-adapter",
+      () => ports.openExternalPreviewAdapter(),
       MENU_ICON.command,
     ));
   };

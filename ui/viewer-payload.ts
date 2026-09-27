@@ -27,5 +27,6 @@ export function isViewerPayload(value: unknown): value is ViewerPayload {
     && isNullableString(payload.source_path)
     && isNullableString(payload.effective_extension)
     && isNullableString(payload.archive_path)
-    && isNullableString(payload.archive_entry);
+    && isNullableString(payload.archive_entry)
+    && (payload.external_output_path === undefined || isNullableString(payload.external_output_path));
 }

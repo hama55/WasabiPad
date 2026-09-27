@@ -57,6 +57,13 @@ import { runAsyncBoundary, reportUnhandledRejection } from "./async-boundary";
 import { openPath as openPathInTabs } from "./path-opener";
 import { promptRegisteredCommand, saveRegisteredCommand } from "./registered-command-menu";
 import type { CommandValueKind, RegisteredCommand } from "./registered-commands";
+import { promptExternalPreviewAdapter } from "./external-preview-adapter-dialog";
+import {
+  externalPreviewAdapterForPath,
+  parseExternalPreviewArguments,
+  previewSelectionForAdapter,
+  type ExternalPreviewAdapter,
+} from "./external-preview-adapter-model";
 import { promptAndSaveRegisteredString } from "./registered-string-dialog";
 import { openSearchSettings as openSearchSettingsDialog } from "./search-settings-dialog";
 import {
@@ -181,8 +188,12 @@ async function reportBackgroundError(title: string, error: unknown) {
   await reportErrorSafely(showError, title, error);
 }
 
-function runBackground(title: string, operation: () => void | Promise<unknown>) {
-  runAsyncBoundary(() => Promise.resolve().then(operation), (error) => reportBackgroundError(title, error));
+function runBackground(
+  title: string,
+  operation: () => void | Promise<unknown>,
+  onError: (error: unknown) => void | Promise<void> = (error) => reportBackgroundError(title, error),
+) {
+  runAsyncBoundary(() => Promise.resolve().then(operation), onError);
 }
 
 async function launchNewWindow(request: Partial<api.WindowRequest> = {}): Promise<boolean> {
@@ -320,6 +331,7 @@ const inlinePreviewPorts = {
     previewAvailable = available;
     if (!available) {
       previewRequestGeneration++;
+      clearExternalPreviewOutput();
       previewDocument = null;
       editingStatusbar.setPreviewFormat(null);
     }
@@ -375,9 +387,41 @@ const inlinePreviewPorts = {
 
 let previewDocument: PreviewDocument | null = null;
 let previewRequestGeneration = 0;
+let externalPreviewRequestId: string | null = null;
+let externalPreviewOutputPath: string | null = null;
+
+function cleanupExternalPreviewOutput(path: string | null) {
+  if (!path) return;
+  void api.externalPreviewCleanup(path).catch((error) => {
+    console.warn("外部プレビューの一時生成物を削除できませんでした", error);
+  });
+}
+
+function clearExternalPreviewOutput() {
+  const oldRequestId = externalPreviewRequestId;
+  externalPreviewRequestId = null;
+  const oldOutputPath = externalPreviewOutputPath;
+  externalPreviewOutputPath = null;
+  inlinePreview?.setExternalOutputPath(null);
+  if (oldRequestId) {
+    void api.externalPreviewCancel(oldRequestId).catch((error) => {
+      console.warn("外部プレビューの実行を取り消せませんでした", error);
+      cleanupExternalPreviewOutput(oldOutputPath);
+    });
+  } else {
+    cleanupExternalPreviewOutput(oldOutputPath);
+  }
+}
+
+function externalPreviewInputPath(session: Readonly<DocumentSession>): string | null {
+  if (!session.savePath || session.archivePath !== null || session.archiveEntry !== null) return null;
+  if (isFolderDraftInfo({ path: session.displayPath, folder_root: session.folderRoot })) return null;
+  return session.savePath;
+}
 
 function clearPreview(session: Readonly<DocumentSession>) {
   previewRequestGeneration++;
+  clearExternalPreviewOutput();
   inlinePreview.setSourcePath(null, session.archivePath, session.archiveEntry);
   previewDocument = null;
   previewFullscreen = false;
@@ -395,12 +439,14 @@ function openPreviewFormat(
     sqliteMismatch?: SqlitePreviewFallback;
     keepPreviewRange?: boolean;
     errorTitle?: string;
+    externalAdapter?: ExternalPreviewAdapter;
   } = {},
 ) {
   const {
     sqliteMismatch = "markdown",
     keepPreviewRange = false,
     errorTitle = "ビューを表示できませんでした",
+    externalAdapter,
   } = options;
   const previousPreviewDocument = previewDocument;
   const document = { ownerTabId: tabs?.state.activeId ?? null, path, format };
@@ -409,9 +455,35 @@ function openPreviewFormat(
     && document.ownerTabId === (tabs?.state.activeId ?? null)
     && document.path === documentPathOf(doc.current);
   runBackground(errorTitle, async () => {
+    let requestId: string | null = null;
     try {
       let resolvedFormat = format;
       let effectiveExtension = session.effectiveExtension;
+      let generatedOutputPath: string | null = null;
+      if (externalAdapter) {
+        const inputPath = externalPreviewInputPath(session);
+        if (!inputPath) throw new Error("外部プレビューは保存済みの通常ファイルだけに対応しています");
+        clearExternalPreviewOutput();
+        requestId = window.crypto.randomUUID();
+        externalPreviewRequestId = requestId;
+        generatedOutputPath = await api.externalPreviewGenerate({
+          inputPath,
+          executable: externalAdapter.command,
+          args: parseExternalPreviewArguments(externalAdapter.args),
+          outputFormat: externalAdapter.outputFormat,
+          requestId,
+        });
+        if (!isCurrentRequest()) {
+          cleanupExternalPreviewOutput(generatedOutputPath);
+          return;
+        }
+        externalPreviewOutputPath = generatedOutputPath;
+        inlinePreview.setExternalOutputPath(generatedOutputPath);
+        resolvedFormat = externalAdapter.outputFormat === "svg" ? "image" : "html";
+        effectiveExtension = null;
+      } else {
+        clearExternalPreviewOutput();
+      }
       if (format === "sqlite") {
         const action = await resolveSqlitePreviewAction(
           sqlitePreviewSourcePath(session),
@@ -445,10 +517,22 @@ function openPreviewFormat(
       await editor.openTextViewer(resolvedFormat, keepPreviewRange, resolvedFormat === "sqlite");
       if (fragment !== null && resolvedFormat === "markdown") inlinePreview.setMarkdownFragment(fragment);
     } catch (error) {
+      if (requestId && externalPreviewRequestId === requestId) clearExternalPreviewOutput();
       if (previewDocument === document) previewDocument = null;
       throw error;
+    } finally {
+      if (requestId && externalPreviewRequestId === requestId) externalPreviewRequestId = null;
     }
-  });
+  }, externalAdapter ? async (error) => {
+    if (!isCurrentRequest()) return;
+    const detail = error instanceof Error ? error.message : String(error);
+    const retry = await confirmMessage(
+      "外部プレビューを表示できませんでした",
+      `${detail}\n再実行しますか？`,
+      "再実行",
+    );
+    if (retry && isCurrentRequest()) openPreviewFormat(session, path, format, fragment, options);
+  } : undefined);
 }
 
 function sqlitePreviewSourcePath(session: Readonly<DocumentSession>): string | null {
@@ -461,9 +545,29 @@ function syncPreviewDocument(session: Readonly<DocumentSession>, force = false, 
   const path = documentPathOf(session);
   const activeTabId = tabs?.state.activeId ?? null;
   const classificationPath = classificationPathOf(session);
+  const standardFormat = viewerFormatForAutomaticPreview(classificationPath);
+  const externalAdapter = externalPreviewAdapterForPath(
+    classificationPath,
+    getSetting("externalPreviewAdapters"),
+  );
+  const externalSelection = previewSelectionForAdapter(externalAdapter, standardFormat !== null);
+  if (previewAvailable
+    && externalAdapter
+    && externalSelection === "external"
+    && externalPreviewInputPath(session)) {
+    if (!force && isCurrentPreviewDocument(previewDocument, activeTabId, path)) return;
+    openPreviewFormat(
+      session,
+      path,
+      externalAdapter.outputFormat === "svg" ? "image" : "html",
+      fragment,
+      { sqliteMismatch: "clear", externalAdapter },
+    );
+    return;
+  }
   const format = effectivePreviewFormat(
     path,
-    viewerFormatForAutomaticPreview(classificationPath),
+    standardFormat,
     activeTabId,
     previewDocument,
   );
@@ -540,6 +644,22 @@ function openRegisteredCommandSettings(kind: CommandValueKind, current?: Registe
     );
     if (!value) return;
     await saveRegisteredCommand(kind, value, current);
+  });
+}
+
+function openExternalPreviewAdapterSettings(current?: ExternalPreviewAdapter) {
+  runSettingsChild("外部プレビューアダプタを保存できませんでした", async () => {
+    const value = await promptExternalPreviewAdapter({ promptFields }, current);
+    if (!value) return;
+    const adapters = getSetting("externalPreviewAdapters");
+    const others = current ? adapters.filter((adapter) => adapter !== current) : adapters;
+    if (value.extensions.some((extension) => others.some((adapter) => adapter.extensions.includes(extension)))) {
+      throw new Error("同じ拡張子の外部プレビューアダプタは登録できません");
+    }
+    setSetting("externalPreviewAdapters", current
+      ? adapters.map((adapter) => adapter === current ? value : adapter)
+      : [...adapters, value]);
+    await flushSettings();
   });
 }
 
@@ -732,6 +852,7 @@ settingsPorts = {
   openSearchSettings: openSearchSettingsFromSettings,
   openRegisteredString: openRegisteredStringSettings,
   openRegisteredCommand: openRegisteredCommandSettings,
+  openExternalPreviewAdapter: openExternalPreviewAdapterSettings,
   confirmReset: () => confirmMessage(
     "設定を初期化",
     "アプリ設定を初期値へ戻します。再開タブは保持されます。",
@@ -967,6 +1088,7 @@ const externalWatch = new ExternalWatch($("external-banner"), {
   },
 }, api);
 window.addEventListener("beforeunload", () => {
+  clearExternalPreviewOutput();
   workspaceSearchListener.dispose();
   documentLoadListener.dispose();
   externalWindowListener.dispose();
@@ -1050,7 +1172,24 @@ previewToggle.addEventListener("click", () => {
   if (!previewAvailable) {
     const session = doc.current;
     const path = documentPathOf(session);
-    const format = viewerFormatForPreviewToggle(classificationPathOf(session));
+    const classificationPath = classificationPathOf(session);
+    const standardFormat = viewerFormatForAutomaticPreview(classificationPath);
+    const adapter = externalPreviewAdapterForPath(
+      classificationPath,
+      getSetting("externalPreviewAdapters"),
+    );
+    const selection = previewSelectionForAdapter(adapter, standardFormat !== null);
+    if (adapter && selection === "external" && externalPreviewInputPath(session)) {
+      openPreviewFormat(
+        session,
+        path,
+        adapter.outputFormat === "svg" ? "image" : "html",
+        null,
+        { sqliteMismatch: "clear", externalAdapter: adapter },
+      );
+      return;
+    }
+    const format = viewerFormatForPreviewToggle(classificationPath);
     if (format) openPreviewFormat(session, path, format);
     return;
   }

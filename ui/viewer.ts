@@ -77,6 +77,10 @@ import {
 } from "./viewer-image";
 import { createPdfPreview, markPdfLoadFailure } from "./viewer-pdf";
 import { createHtmlPreview } from "./viewer-html";
+import {
+  createTrustedExternalHtmlPreview,
+  resolveExternalOutputSource,
+} from "./viewer-external-output";
 import { createSqlitePreviewController, type SqlitePreviewController } from "./viewer-sqlite";
 import {
   createAbcPreviewHost,
@@ -138,6 +142,7 @@ let currentSourcePath: string | null = null;
 let currentEffectiveExtension: string | null = null;
 let currentArchivePath: string | null = null;
 let currentArchiveEntry: string | null = null;
+let currentExternalOutputPath: string | null = null;
 let pendingMarkdownFragment: string | null = null;
 let markdownReadyForFragment = false;
 let renderGeneration = 0;
@@ -173,6 +178,7 @@ interface ViewerRenderState {
   effectiveExtension: string | null;
   archivePath: string | null;
   archiveEntry: string | null;
+  externalOutputPath: string | null;
 }
 
 function archiveFormatExtension(extension: string | null, archiveEntry: string | null): boolean {
@@ -188,6 +194,7 @@ function currentViewerRenderState(): ViewerRenderState {
     effectiveExtension: currentEffectiveExtension,
     archivePath: currentArchivePath,
     archiveEntry: currentArchiveEntry,
+    externalOutputPath: currentExternalOutputPath,
   };
 }
 
@@ -217,6 +224,7 @@ function viewerRenderStateOf(payload: ViewerPayload): ViewerRenderState {
     effectiveExtension: payload.effective_extension,
     archivePath: payload.archive_path,
     archiveEntry: payload.archive_entry,
+    externalOutputPath: payload.external_output_path ?? null,
   };
 }
 
@@ -228,6 +236,7 @@ function publishViewerRenderState(state: ViewerRenderState, nextImageZoom: numbe
   currentEffectiveExtension = state.effectiveExtension;
   currentArchivePath = state.archivePath;
   currentArchiveEntry = state.archiveEntry;
+  currentExternalOutputPath = state.externalOutputPath;
   imageZoom = nextImageZoom;
   const classificationSource = state.effectiveExtension && !archiveFormatExtension(state.effectiveExtension, state.archiveEntry)
     ? `${state.archiveEntry ?? state.sourcePath ?? "source"}.${state.effectiveExtension}`
@@ -958,6 +967,79 @@ async function renderHtml(
   }
 }
 
+async function renderExternalOutput(
+  state: ViewerRenderState,
+): Promise<boolean> {
+  const outputPath = state.externalOutputPath;
+  if (!outputPath) return false;
+  const generation = beginRender();
+  const previousDisposeImagePan = disposeImagePan;
+  let wrapper: HTMLElement | null = null;
+  let dispose: (() => void) | undefined;
+  try {
+    const source = resolveExternalOutputSource(outputPath);
+    if (source.format === "html") {
+      const preview = createTrustedExternalHtmlPreview(outputPath);
+      wrapper = preview.wrapper;
+      wrapper.classList.add("viewer-pending");
+      content.appendChild(wrapper);
+      const ready = await waitForFrameLayout(preview.frame);
+      if (!ready) replaceWithViewerError(wrapper, basename(outputPath));
+      if (generation !== renderGeneration) {
+        wrapper.remove();
+        return false;
+      }
+      wrapper.classList.remove("viewer-pending");
+      content.replaceChildren(wrapper);
+    } else {
+      const preview = createImagePreview(basename(outputPath));
+      wrapper = preview.wrapper;
+      dispose = bindImagePan(preview.image, content);
+      wrapper.classList.add("viewer-pending");
+      content.appendChild(wrapper);
+      preview.image.src = source.url;
+      const ready = await waitForImageLayout(preview.image);
+      if (!ready) markImageLoadFailure(preview.image, basename(outputPath));
+      if (generation !== renderGeneration) {
+        dispose?.();
+        wrapper.remove();
+        return false;
+      }
+      wrapper.classList.remove("viewer-pending");
+      content.replaceChildren(wrapper);
+      disposeImagePan = dispose;
+    }
+    currentRows = [];
+    chartController.clear();
+    previousDisposeImagePan?.();
+    if (source.format === "html") disposeImagePan = null;
+    revokeArchiveAssetUrls();
+    summary.classList.remove("warning");
+    summary.title = "";
+    summary.textContent = basename(outputPath);
+    return true;
+  } catch (error) {
+    if (generation !== renderGeneration) {
+      dispose?.();
+      wrapper?.remove();
+      return false;
+    }
+    if (wrapper) {
+      wrapper.classList.remove("viewer-pending");
+      replaceWithViewerError(wrapper, basename(outputPath));
+      content.replaceChildren(wrapper);
+      previousDisposeImagePan?.();
+      disposeImagePan = null;
+      summary.classList.add("warning");
+      summary.textContent = String(error);
+      return true;
+    }
+    throw error;
+  } finally {
+    finishRender(generation);
+  }
+}
+
 async function renderMarkdown(
   text: string,
   state: ViewerRenderState = currentViewerRenderState(),
@@ -1167,6 +1249,7 @@ const VIEWER_RENDERERS: Record<ViewerFormat, ViewerStateRenderer> = {
 async function renderViewerState(state: ViewerRenderState, nextImageZoom: number): Promise<boolean> {
   if (viewerDisposed) return false;
   if (musicPreviewHost && state.format !== musicPreviewHost.format) disposeMusicPreviewHost();
+  if (state.externalOutputPath) return renderExternalOutput(state);
   return VIEWER_RENDERERS[state.format](state.text, state, nextImageZoom);
 }
 
@@ -1183,7 +1266,8 @@ async function renderPayload(payload: ViewerPayload) {
   const sourceChanged = nextState.sourcePath !== previousState.sourcePath
     || nextState.effectiveExtension !== previousState.effectiveExtension
     || nextState.archivePath !== previousState.archivePath
-    || nextState.archiveEntry !== previousState.archiveEntry;
+    || nextState.archiveEntry !== previousState.archiveEntry
+    || nextState.externalOutputPath !== previousState.externalOutputPath;
   const formatChanged = nextState.format !== previousState.format;
   const nextImageZoom = sourceChanged ? DEFAULT_IMAGE_ZOOM : imageZoom;
   if (sourceChanged) archiveAssetSession.clearCachedAssets();
@@ -1233,7 +1317,7 @@ function showContextMenu(x: number, y: number) {
       runViewerOperation("グラフ設定を開けませんでした", () => chartController.openDialog());
     }));
   }
-  if (formatSpec.supportsDefaultBrowser && currentSourcePath) {
+  if (formatSpec.supportsDefaultBrowser && currentSourcePath && !currentExternalOutputPath) {
     const path = currentSourcePath;
     contextMenu.appendChild(createViewerBrowserMenuItem(() => {
       contextMenu.hidden = true;
@@ -1307,7 +1391,7 @@ async function start() {
         event.preventDefault();
         runViewerOperation("グラフメニューを表示できませんでした", () => showContextMenu(event.clientX, event.clientY));
       } else if (viewerFormatSpec(currentFormat).supportsDefaultBrowser
-        && currentSourcePath && target.closest(".viewer-html-wrap")) {
+        && currentSourcePath && !currentExternalOutputPath && target.closest(".viewer-html-wrap")) {
         event.preventDefault();
         runViewerOperation("HTMLメニューを表示できませんでした", () => showContextMenu(event.clientX, event.clientY));
       }

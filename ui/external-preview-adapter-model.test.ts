@@ -11,6 +11,7 @@ vi.mock("./api", () => ({
 
 import {
   externalPreviewAdapterForPath,
+  parseExternalPreviewArguments,
   previewSelectionForAdapter,
 } from "./external-preview-adapter-model";
 import {
@@ -42,7 +43,7 @@ describe("Feature: external preview adapter settings", () => {
         {
           extensions: [".ABC", "abc", "", 42, ".SVG"],
           command: "renderer",
-          args: "--input",
+          args: "--input {file} {output}",
           outputFormat: "svg",
           preferExternal: true,
         },
@@ -53,12 +54,19 @@ describe("Feature: external preview adapter settings", () => {
           outputFormat: "pdf",
           preferExternal: false,
         },
+        {
+          extensions: ["ly"],
+          command: "renderer",
+          args: "{file}",
+          outputFormat: "html",
+          preferExternal: false,
+        },
         "not an adapter",
       ],
     })).externalPreviewAdapters).toEqual([{
       extensions: ["abc", "svg"],
       command: "renderer",
-      args: "--input",
+      args: "--input {file} {output}",
       outputFormat: "svg",
       preferExternal: true,
     }]);
@@ -114,6 +122,25 @@ describe("Feature: external preview adapter settings", () => {
     expect(previewSelectionForAdapter(externalFirst, true)).toBe("external");
     expect(previewSelectionForAdapter(standardFirst, false)).toBe("external");
     expect(previewSelectionForAdapter(null, false)).toBeNull();
+  });
+
+  // Feature: 外部プレビュー引数の受け渡し
+  // Scenario: 引用符を外して空白を含む引数を保つ
+  // Given: 外部コマンドの引数欄に引用符付きのパスとプレースホルダーがある
+  // When: 引数を分割する
+  // Then: 各プレースホルダーが1引数として残る
+  it("Scenario: 引用符付き引数を安全に分割する", () => {
+    expect(parseExternalPreviewArguments('--mode "{file}" --output \'{output}\'')).toEqual([
+      "--mode", "{file}", "--output", "{output}",
+    ]);
+    expect(parseExternalPreviewArguments('"" plain')).toEqual(["", "plain"]);
+  });
+
+  // Given: 閉じていない引用符を含む引数欄がある
+  // When: 引数を分割する
+  // Then: 保存前に診断する
+  it("Scenario: 閉じていない引用符を拒否する", () => {
+    expect(() => parseExternalPreviewArguments('"{file}')).toThrow("引用符");
   });
 
   // Feature: 外部プレビューアダプタ設定の初期化
