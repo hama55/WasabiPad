@@ -342,8 +342,8 @@ export const musicAddonStatus = (id: string) =>
   invoke<LocalAddonStatus>(IPC_COMMANDS.musicAddonStatus, { id });
 export const musicAddonCatalog = () =>
   invoke<OfficialAddon[]>(IPC_COMMANDS.musicAddonCatalog);
-export const musicAddonInstall = (id: string) =>
-  invoke<void>(IPC_COMMANDS.musicAddonInstall, { id });
+export const musicAddonInstall = (id: string, archivePath: string) =>
+  invoke<void>(IPC_COMMANDS.musicAddonInstall, { id, archivePath });
 export const musicAddonSetEnabled = (id: string, enabled: boolean) =>
   invoke<void>(IPC_COMMANDS.musicAddonSetEnabled, { id, enabled });
 export const musicAddonRemove = (id: string) =>

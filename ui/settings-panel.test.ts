@@ -114,17 +114,22 @@ describe("Feature: settings modal", () => {
     expect(ports.getMusicAddonStatus).toHaveBeenCalledWith("abc");
     expect(ports.getMusicAddonStatus).toHaveBeenCalledWith("lilypond");
     expect(ports.getMusicAddonCatalog).toHaveBeenCalledOnce();
+    const addFromZip = section.querySelector<HTMLButtonElement>('[data-addon-id="lilypond"] [data-action="music-addon-add"]')!;
+    expect(addFromZip.textContent).toBe("ZIPから追加");
+    expect(addFromZip.disabled).toBe(false);
+    addFromZip.click();
+    await vi.waitFor(() => expect(ports.installMusicAddon).toHaveBeenCalledWith("lilypond"));
     document.querySelector<HTMLButtonElement>(".settings-reset")!.click();
     await vi.waitFor(() => expect(ports.resetSettings).toHaveBeenCalledOnce());
     expect(ports.getMusicAddonCatalog).toHaveBeenCalledOnce();
   });
 
-  // Feature: 公式音楽アドインの互換性表示
-  // Scenario: 非互換版の追加・更新だけを止め、他の行と既存版の操作を保つ
+  // Feature: 公式カタログの互換性表示
+  // Scenario: 非互換カタログでもローカルZIP追加・更新を許可する
   // Given: ABCは互換、導入済みLilyPondは必要版が99.0.0で非互換
-  // When: 設定モーダルを開き、ABC追加とLilyPond有効切替・削除を行う
-  // Then: LilyPondの非互換理由を表示し追加・更新だけ無効化し、他操作をportへ送る
-  it("Scenario: 非互換アドインだけ追加と更新を止める", async () => {
+  // When: 設定モーダルを開き、ZIPから追加・更新とLilyPond有効切替・削除を行う
+  // Then: 非互換理由を表示してもZIP操作は有効で、各操作をportへ送る
+  it("Scenario: 非互換カタログでもZIPから追加と更新できる", async () => {
     const ports = makePorts();
     ports.getMusicAddonStatus = vi.fn(async (id: string) => id === "abc"
       ? { id, version: null, installed: false, enabled: false }
@@ -143,14 +148,21 @@ describe("Feature: settings modal", () => {
     const abcAdd = abc.querySelector<HTMLButtonElement>('[data-action="music-addon-add"]')!;
     const lilypondUpdate = lilypond.querySelector<HTMLButtonElement>('[data-action="music-addon-update"]')!;
     expect(abcAdd.disabled).toBe(false);
+    expect(abcAdd.textContent).toBe("ZIPから追加");
+    expect(abcAdd.getAttribute("aria-label")).toBe("ABC記譜法をZIPから追加");
     expect(lilypond.querySelector('[data-addon-remote-status]')?.textContent)
       .toContain("このWasabiPad版では非互換（必要版 99.0.0）");
-    expect(lilypondUpdate.disabled).toBe(true);
+    expect(lilypondUpdate.textContent).toBe("ZIPから更新");
+    expect(lilypondUpdate.getAttribute("aria-label")).toBe("LilyPondをZIPから更新");
+    expect(lilypondUpdate.disabled).toBe(false);
     expect(lilypond.querySelector<HTMLButtonElement>('[data-action="music-addon-toggle"]')?.disabled).toBe(false);
     expect(lilypond.querySelector<HTMLButtonElement>('[data-action="music-addon-remove"]')?.disabled).toBe(false);
 
     abcAdd.click();
     await vi.waitFor(() => expect(ports.installMusicAddon).toHaveBeenCalledWith("abc"));
+    lilypondUpdate.click();
+    await vi.waitFor(() => expect(ports.installMusicAddon).toHaveBeenCalledWith("lilypond"));
+    await vi.waitFor(() => expect(lilypond.getAttribute("aria-busy")).toBe("false"));
     lilypond.querySelector<HTMLButtonElement>('[data-action="music-addon-toggle"]')!.click();
     await vi.waitFor(() => expect(ports.setMusicAddonEnabled).toHaveBeenCalledWith("lilypond", false));
     await vi.waitFor(() => expect(lilypond.getAttribute("aria-busy")).toBe("false"));
@@ -159,11 +171,11 @@ describe("Feature: settings modal", () => {
   });
 
   // Feature: 公式音楽アドインの設定
-  // Scenario: 追加・有効切替・更新・削除を選んだ行へ反映する
+  // Scenario: ZIPからの追加・有効切替・更新・削除を選んだ行へ反映する
   // Given: ABCは有効で、LilyPondは未インストール
-  // When: LilyPondを追加し、ABCの有効状態を切り替えて更新・削除する
+  // When: LilyPondをZIPから追加し、ABCの有効状態を切り替えて更新・削除する
   // Then: 各操作を対象IDでportへ委譲し、取得したローカル状態を表示する
-  it("Scenario: 公式音楽アドインを追加・切替・更新・削除する", async () => {
+  it("Scenario: 公式音楽アドインをZIPから追加・切替・更新・削除する", async () => {
     const statuses = new Map([
       ["abc", { id: "abc", version: "1.0.0", installed: true, enabled: true }],
       ["lilypond", { id: "lilypond", version: null, installed: false, enabled: false }],
@@ -204,12 +216,12 @@ describe("Feature: settings modal", () => {
     expect(ports.removeMusicAddon).toHaveBeenCalledWith("abc");
   });
 
-  // Feature: 公式音楽アドインの設定
-  // Scenario: 更新中の重複要求を防ぎ、失敗時は既存状態を保つ
+  // Feature: ローカルアドインZIPの設定
+  // Scenario: ZIP更新中の重複要求を防ぎ、失敗時は既存状態を保つ
   // Given: ABCはインストール済みで、更新処理が未完了
-  // When: 更新ボタンを連続して押し、公式配布物の404で失敗する
-  // Then: 追加の更新を送らず、既存状態と404の説明を表示する
-  it("Scenario: アドイン更新エラーを表示し既存状態を保つ", async () => {
+  // When: ZIPから更新を連続して押し、不正なZIPで失敗する
+  // Then: 追加の更新を送らず、既存状態とZIPエラーを表示する
+  it("Scenario: ZIP更新エラーを表示し既存状態を保つ", async () => {
     let rejectInstall!: (error: Error) => void;
     const ports = makePorts();
     ports.getMusicAddonStatus = vi.fn(async (id: string) => ({
@@ -225,9 +237,9 @@ describe("Feature: settings modal", () => {
     update.click();
     expect(update.disabled).toBe(true);
     expect(ports.installMusicAddon).toHaveBeenCalledOnce();
-    rejectInstall(new Error("404 Not Found"));
+    rejectInstall(new Error("invalid addon ZIP"));
 
-    await vi.waitFor(() => expect(abc.querySelector('[data-addon-feedback]')?.textContent).toContain("404"));
+    await vi.waitFor(() => expect(abc.querySelector('[data-addon-feedback]')?.textContent).toContain("invalid addon ZIP"));
     expect(abc.querySelector('[data-addon-local-status]')?.textContent).toContain("1.2.3");
     expect(abc.querySelector('[data-addon-local-status]')?.textContent).toContain("有効");
   });

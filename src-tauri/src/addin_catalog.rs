@@ -1,14 +1,19 @@
-use reqwest::blocking::{Client, Response};
-use reqwest::Url;
 use serde::Deserialize;
 use std::collections::HashSet;
+use url::Url;
+#[cfg(test)]
 use std::fs::File;
+#[cfg(test)]
 use std::io::{Read, Write};
+#[cfg(test)]
 use std::path::{Path, PathBuf};
+#[cfg(test)]
 use std::time::Duration;
 
-const OFFICIAL_CATALOG_URL: &str =
-    "https://raw.githubusercontent.com/hama55/WasabiPad/main/addins/catalog.json";
+#[cfg(test)]
+use reqwest::blocking::{Client, Response};
+
+#[cfg(test)]
 const MAX_CATALOG_BYTES: u64 = 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, ts_rs::TS)]
@@ -42,8 +47,10 @@ struct CatalogAddon {
     sha256: String,
 }
 
+#[cfg(test)]
 struct TemporaryArchive(PathBuf);
 
+#[cfg(test)]
 impl Drop for TemporaryArchive {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
@@ -51,7 +58,17 @@ impl Drop for TemporaryArchive {
 }
 
 pub fn fetch_official_catalog() -> Result<Vec<OfficialAddon>, String> {
-    fetch_catalog_from_url(OFFICIAL_CATALOG_URL)
+    parse_catalog(include_str!("../../addins/catalog.json").as_bytes())
+}
+
+pub fn official_archive_sha256(id: &str, version: &str) -> Result<String, String> {
+    super::addin_manager::validate_id(id)?;
+    super::addin_manager::validate_version(version)?;
+    fetch_official_catalog()?
+        .into_iter()
+        .find(|addon| addon.id == id && addon.version == version)
+        .map(|addon| addon.sha256)
+        .ok_or_else(|| format!("bundled official catalog has no {id} version {version}"))
 }
 
 #[cfg(test)]
@@ -59,6 +76,7 @@ pub(crate) fn fetch_official_catalog_at(url: &str) -> Result<Vec<OfficialAddon>,
     fetch_catalog_from_url(url)
 }
 
+#[cfg(test)]
 fn fetch_catalog_from_url(url: &str) -> Result<Vec<OfficialAddon>, String> {
     let response = client()?
         .get(url)
@@ -68,10 +86,6 @@ fn fetch_catalog_from_url(url: &str) -> Result<Vec<OfficialAddon>, String> {
         .map_err(|error| format!("official addin catalog request failed: {error}"))?;
     let bytes = read_limited(response, MAX_CATALOG_BYTES, "official addin catalog")?;
     parse_catalog(&bytes)
-}
-
-pub fn install_or_update_official(app_data_root: &Path, id: &str) -> Result<(), String> {
-    install_from_catalog(app_data_root, id, fetch_official_catalog()?, None)
 }
 
 #[cfg(test)]
@@ -89,6 +103,7 @@ pub(crate) fn install_or_update_official_at(
     )
 }
 
+#[cfg(test)]
 fn install_from_catalog(
     app_data_root: &Path,
     id: &str,
@@ -107,6 +122,7 @@ fn install_from_catalog(
     download_archive_and_install(app_data_root, &addon, download_url)
 }
 
+#[cfg(test)]
 fn download_archive_and_install(
     app_data_root: &Path,
     addon: &OfficialAddon,
@@ -137,6 +153,7 @@ fn download_archive_and_install(
     )
 }
 
+#[cfg(test)]
 fn stream_archive(mut response: Response, mut file: File) -> Result<(), String> {
     let mut total = 0_u64;
     let mut buffer = [0_u8; 64 * 1024];
@@ -230,6 +247,7 @@ fn safe_release_component(value: &str) -> bool {
         && !value.ends_with('.')
 }
 
+#[cfg(test)]
 fn read_limited(response: Response, limit: u64, label: &str) -> Result<Vec<u8>, String> {
     if response
         .content_length()
@@ -248,6 +266,7 @@ fn read_limited(response: Response, limit: u64, label: &str) -> Result<Vec<u8>, 
     Ok(bytes)
 }
 
+#[cfg(test)]
 fn client() -> Result<Client, String> {
     Client::builder()
         .connect_timeout(Duration::from_secs(10))

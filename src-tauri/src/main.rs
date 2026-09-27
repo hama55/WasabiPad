@@ -20,7 +20,7 @@ use instance::{
 };
 use state::{DocState, State};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use tauri::{AppHandle, Emitter, Manager};
 use viewer::{FindShortcutGuard, ViewerStore};
@@ -755,6 +755,7 @@ fn emit_music_addon_changed(app: &AppHandle, id: &str) {
 #[tauri::command]
 async fn music_addon_install(
     id: String,
+    archive_path: String,
     operations: tauri::State<'_, music_ipc::MusicOperations>,
     app: AppHandle,
 ) -> Result<(), String> {
@@ -763,7 +764,10 @@ async fn music_addon_install(
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = lock_music_manager(&manager_lock)?;
         let root = wasabipad_core::app_data_root().map_err(|error| error.to_string())?;
-        addin_catalog::install_or_update_official(&root, &id)
+        let archive_path = Path::new(&archive_path);
+        let version = addin_manager::local_archive_version(&id, archive_path)?;
+        let expected_sha256 = addin_catalog::official_archive_sha256(&id, &version)?;
+        addin_manager::install_local_archive(&root, &id, archive_path, &expected_sha256)
     })
     .await
     .map_err(|error| format!("Install music addin failed: {error}"))??;

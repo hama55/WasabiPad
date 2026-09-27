@@ -84,11 +84,11 @@ describe("Feature: preview cache IPC", () => {
   });
 
   it("Scenario: official add-in and LilyPond IPC wrappers forward typed arguments", async () => {
-    // Given: 公式アドイン状態、一覧、導入状態、楽譜生成の操作が必要
-    // When: 7つの公式アドインIPCを呼ぶ
+    // Given: 公式アドイン状態、一覧、ローカルZIP導入、楽譜生成の操作が必要
+    // When: ローカルZIP導入を含む7つの公式アドインIPCを呼ぶ
     await musicAddonStatus("abc");
     await musicAddonCatalog();
-    await musicAddonInstall("lilypond");
+    await musicAddonInstall("lilypond", "D:\\Downloads\\lilypond.zip");
     await musicAddonSetEnabled("abc", false);
     await musicAddonRemove("lilypond");
     await lilypondGenerate("\\score { { c'4 } }", "C:/score.ly", "request-1");
@@ -97,7 +97,10 @@ describe("Feature: preview cache IPC", () => {
     // Then: 生成済みコマンド名とRust側のcamelCase引数でinvokeする
     expect(invokeMock).toHaveBeenNthCalledWith(1, IPC_COMMANDS.musicAddonStatus, { id: "abc" });
     expect(invokeMock).toHaveBeenNthCalledWith(2, IPC_COMMANDS.musicAddonCatalog);
-    expect(invokeMock).toHaveBeenNthCalledWith(3, IPC_COMMANDS.musicAddonInstall, { id: "lilypond" });
+    expect(invokeMock).toHaveBeenNthCalledWith(3, IPC_COMMANDS.musicAddonInstall, {
+      id: "lilypond",
+      archivePath: "D:\\Downloads\\lilypond.zip",
+    });
     expect(invokeMock).toHaveBeenNthCalledWith(4, IPC_COMMANDS.musicAddonSetEnabled, { id: "abc", enabled: false });
     expect(invokeMock).toHaveBeenNthCalledWith(5, IPC_COMMANDS.musicAddonRemove, { id: "lilypond" });
     expect(invokeMock).toHaveBeenNthCalledWith(6, IPC_COMMANDS.lilypondGenerate, {

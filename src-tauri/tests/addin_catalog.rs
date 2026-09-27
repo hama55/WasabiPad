@@ -169,6 +169,30 @@ fn fetches_and_parses_valid_catalog_from_local_server() {
     server.join().unwrap();
 }
 
+// Feature: ローカルアドインZIPの公式SHA-256を確認する
+// Scenario: ネット接続なしで同梱カタログを表示し、配布ハッシュを引く
+// Given: tracked catalog.jsonに記載されたABCとLilyPondの版
+// When: 公式カタログを取得し、アドインIDと版から期待SHA-256を取得する
+// Then: 表示内容と導入検証が同じ同梱カタログを使い、未掲載の版は拒否する
+#[test]
+fn resolves_archive_digest_from_bundled_catalog_without_network() {
+    let catalog = addin_catalog::fetch_official_catalog().unwrap();
+    assert_eq!(catalog.len(), 2);
+    assert_eq!(catalog[0].id, "abc");
+    assert_eq!(catalog[0].version, "1.0.0");
+    assert_eq!(catalog[1].id, "lilypond");
+    assert_eq!(catalog[1].version, "1.0.0");
+    assert_eq!(
+        addin_catalog::official_archive_sha256("abc", "1.0.0").unwrap(),
+        "5ea2dcd922f68b679bb5fadcfdc4dead1cc01887a5655cd19ad41961b43d2fda"
+    );
+    assert_eq!(
+        addin_catalog::official_archive_sha256("lilypond", "1.0.0").unwrap(),
+        "01a5cf2a1639eb237c7684cc2334bb6238907e9c8e029806fd52d52574f157fc"
+    );
+    assert!(addin_catalog::official_archive_sha256("abc", "1.0.1").is_err());
+}
+
 // Feature: 公式アドインカタログの互換性表示
 // Scenario: 互換版と将来版を同時に返す
 // Given: 現在版に互換なABCと、より新しいWasabiPadを必要とするLilyPondを含むカタログ

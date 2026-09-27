@@ -382,7 +382,7 @@ function musicAddonsField(ports: SettingsPanelPorts): { element: HTMLElement; sy
 
   const description = document.createElement("p");
   description.className = "settings-summary";
-  description.textContent = "公式のABC・LilyPondプレビューアドインを端末へ追加できます。";
+  description.textContent = "WasabiPad公式配布ZIPから、ABC・LilyPondプレビューアドインを追加・更新できます。";
 
   const catalogStatus = document.createElement("p");
   catalogStatus.className = "settings-summary";
@@ -446,27 +446,24 @@ function musicAddonsField(ports: SettingsPanelPorts): { element: HTMLElement; sy
       label: string,
       action: string,
       run: (button: HTMLButtonElement) => void,
-      incompatible = false,
     ) => {
       const button = document.createElement("button");
       button.type = "button";
       button.textContent = text;
       button.dataset.action = action;
       button.setAttribute("aria-label", `${addon.name}${label}`);
-      button.disabled = busy.has(id) || incompatible;
+      button.disabled = busy.has(id);
       button.addEventListener("click", () => run(button));
       row.actions.append(button);
     };
 
     if (!status.installed) {
-      makeButton("追加", "を追加", "music-addon-add", (button) =>
-        runAddonAction(id, "追加", () => ports.installMusicAddon(id), button),
-      catalog.get(id)?.compatible === false);
+      makeButton("ZIPから追加", "をZIPから追加", "music-addon-add", (button) =>
+        runAddonAction(id, "追加", () => ports.installMusicAddon(id), button));
       return;
     }
-    makeButton("更新", "を更新", "music-addon-update", (button) =>
-      runAddonAction(id, "更新", () => ports.installMusicAddon(id), button),
-    catalog.get(id)?.compatible === false);
+    makeButton("ZIPから更新", "をZIPから更新", "music-addon-update", (button) =>
+      runAddonAction(id, "更新", () => ports.installMusicAddon(id), button));
     makeButton(status.enabled ? "無効にする" : "有効にする", status.enabled ? "を無効にする" : "を有効にする",
       "music-addon-toggle", (button) => runAddonAction(id, status.enabled ? "無効化" : "有効化",
         () => ports.setMusicAddonEnabled(id, !status.enabled), button));

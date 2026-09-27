@@ -695,7 +695,14 @@ settingsPorts = {
   applyMarkdownHeadingUnderlines: (enabled) => inlinePreview.setMarkdownHeadingUnderlines(enabled),
   getMusicAddonStatus: (id) => api.musicAddonStatus(id),
   getMusicAddonCatalog: () => api.musicAddonCatalog(),
-  installMusicAddon: (id) => api.musicAddonInstall(id),
+  installMusicAddon: async (id) => {
+    const selected = await openDialog({
+      directory: false,
+      multiple: false,
+      filters: [{ name: "WasabiPadアドイン", extensions: ["zip"] }],
+    });
+    if (typeof selected === "string") await api.musicAddonInstall(id, selected);
+  },
   setMusicAddonEnabled: (id, enabled) => api.musicAddonSetEnabled(id, enabled),
   removeMusicAddon: (id) => api.musicAddonRemove(id),
   pickPreviewCacheDirectory: async (defaultPath?: string) => {

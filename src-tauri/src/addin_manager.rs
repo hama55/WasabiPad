@@ -142,6 +142,81 @@ pub fn install_verified_archive(
     Ok(())
 }
 
+pub fn install_local_archive(
+    app_data_root: &Path,
+    id: &str,
+    archive_path: &Path,
+    expected_sha256: &str,
+) -> Result<(), String> {
+    validate_sha256(expected_sha256)?;
+    let manifest = read_local_archive_manifest(id, archive_path)?;
+    install_verified_archive(
+        app_data_root,
+        id,
+        &manifest.version,
+        archive_path,
+        expected_sha256,
+    )
+}
+
+pub(crate) fn local_archive_version(id: &str, archive_path: &Path) -> Result<String, String> {
+    Ok(read_local_archive_manifest(id, archive_path)?.version)
+}
+
+fn read_local_archive_manifest(id: &str, archive_path: &Path) -> Result<AddonManifest, String> {
+    validate_id(id)?;
+    let metadata = fs::symlink_metadata(archive_path)
+        .map_err(|error| format!("inspect addin archive: {error}"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err("addin archive must be a regular file".into());
+    }
+    if metadata.len() > MAX_ARCHIVE_BYTES {
+        return Err("addin archive exceeds the compressed size limit".into());
+    }
+
+    let mut archive = ZipArchive::new(
+        File::open(archive_path).map_err(|error| format!("open addin archive: {error}"))?,
+    )
+    .map_err(|error| format!("read addin ZIP: {error}"))?;
+    if archive.len() > MAX_ARCHIVE_ENTRIES {
+        return Err("addin archive contains too many entries".into());
+    }
+    let mut manifest_entry = archive
+        .by_name("addon.json")
+        .map_err(|error| format!("read addon.json from ZIP: {error}"))?;
+    if manifest_entry.is_dir() {
+        return Err("addon.json must be a regular file".into());
+    }
+    if manifest_entry.size() > MAX_MANIFEST_BYTES {
+        return Err("addon.json exceeds the size limit".into());
+    }
+    if let Some(mode) = manifest_entry.unix_mode() {
+        let file_type = mode & 0o170000;
+        if file_type != 0 && file_type != 0o100000 {
+            return Err("addon.json must be a regular file".into());
+        }
+    }
+    let mut manifest_bytes = Vec::with_capacity(manifest_entry.size() as usize);
+    manifest_entry
+        .by_ref()
+        .take(MAX_MANIFEST_BYTES + 1)
+        .read_to_end(&mut manifest_bytes)
+        .map_err(|error| format!("read addon.json from ZIP: {error}"))?;
+    if manifest_bytes.len() as u64 > MAX_MANIFEST_BYTES {
+        return Err("addon.json exceeds the size limit".into());
+    }
+    drop(manifest_entry);
+    drop(archive);
+
+    let manifest = serde_json::from_slice::<AddonManifest>(&manifest_bytes)
+        .map_err(|error| format!("parse addon.json: {error}"))?;
+    if manifest.id != id {
+        return Err("addon.json id does not match the requested package".into());
+    }
+    validate_version(&manifest.version)?;
+    Ok(manifest)
+}
+
 pub fn list_local_status(app_data_root: &Path) -> Result<Vec<LocalAddonStatus>, String> {
     let addins = addins_root(app_data_root, false)?;
     let state = match &addins {
@@ -251,6 +326,7 @@ fn addins_root(app_data_root: &Path, create: bool) -> Result<Option<PathBuf>, St
     Ok(Some(canonical_addins))
 }
 
+#[cfg(test)]
 pub(crate) fn create_download_temp_file(app_data_root: &Path) -> Result<(PathBuf, File), String> {
     let addins_root = addins_root(app_data_root, true)?.expect("created addins directory");
     let downloads = addins_root.join(".downloads");

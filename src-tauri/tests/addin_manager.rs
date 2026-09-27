@@ -2,7 +2,8 @@
 mod addin_manager;
 
 use addin_manager::{
-    install_verified_archive, is_enabled_version, list_local_status, remove, set_enabled,
+    install_local_archive, install_verified_archive, is_enabled_version, list_local_status, remove,
+    set_enabled,
 };
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -102,6 +103,61 @@ fn installs_verified_archive_and_records_enabled_version() {
         serde_json::from_slice(&fs::read(root.path().join("addins/state.json")).unwrap()).unwrap();
     assert_eq!(saved["abc"]["version"], "1.0.0");
     assert_eq!(saved["abc"]["enabled"], true);
+}
+
+// Feature: ローカルZIPからアドインを導入する
+// Scenario: addon.jsonの版を使って選択したZIPを導入する
+// Given: 有効なABCアドインのmanifestとentryを含むローカルZIP
+// When: ZIPのパスとABCのIDを指定して導入する
+// Then: manifest記載の版を有効状態で記録する
+#[test]
+fn installs_local_archive_using_manifest_version() {
+    let root = TestRoot::new();
+    let entries = package_entries("abc", "1.2.3", "1.7.0");
+    let (archive, digest) = make_archive(root.path(), "abc-local.zip", &entries_as_refs(&entries));
+
+    install_local_archive(root.path(), "abc", &archive, &digest).unwrap();
+
+    let status = list_local_status(root.path()).unwrap();
+    let abc = status.iter().find(|addon| addon.id == "abc").unwrap();
+    assert_eq!(abc.version.as_deref(), Some("1.2.3"));
+    assert!(abc.installed && abc.enabled);
+}
+
+// Feature: ローカルZIPからアドインを導入する
+// Scenario: 選択したIDとaddon.jsonのIDが異なるZIPを拒否する
+// Given: ABCのmanifestを含むローカルZIP
+// When: LilyPondのZIPとして導入する
+// Then: 導入を拒否し、ローカル状態を変更しない
+#[test]
+fn rejects_local_archive_with_a_different_addon_id() {
+    let root = TestRoot::new();
+    let entries = package_entries("abc", "1.2.3", "1.7.0");
+    let (archive, digest) = make_archive(root.path(), "abc-local.zip", &entries_as_refs(&entries));
+
+    assert!(install_local_archive(root.path(), "lilypond", &archive, &digest).is_err());
+    assert!(list_local_status(root.path())
+        .unwrap()
+        .iter()
+        .all(|addon| addon.version.is_none()));
+}
+
+// Feature: ローカルZIPの公式配布ハッシュを検証する
+// Scenario: 選択したZIPのSHA-256が公式値と異なれば導入しない
+// Given: 有効なABC ZIPと一致しない公式SHA-256
+// When: 不一致の期待ハッシュを指定して導入する
+// Then: 導入を拒否し、ローカル状態を変更しない
+#[test]
+fn rejects_local_archive_with_a_different_official_digest() {
+    let root = TestRoot::new();
+    let entries = package_entries("abc", "1.2.3", "1.7.0");
+    let (archive, _) = make_archive(root.path(), "abc-local.zip", &entries_as_refs(&entries));
+
+    assert!(install_local_archive(root.path(), "abc", &archive, &"0".repeat(64)).is_err());
+    assert!(list_local_status(root.path())
+        .unwrap()
+        .iter()
+        .all(|addon| addon.version.is_none()));
 }
 
 // Feature: 公式アドインZIPの整合性を検証する
