@@ -9,8 +9,10 @@ import { DEFAULT_EDITOR_CONFIG } from "./editor-config";
 import { DEFAULT_INDENT_SIZE, INDENT_SIZES, isValidFontSize } from "./font-controls";
 import { isRegisteredCommand, normalizeRegisteredCommand, type RegisteredCommand } from "./registered-command-model";
 import { SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MIN_WIDTH } from "./preview-layout";
+import { parseExternalPreviewAdapters, type ExternalPreviewAdapter } from "./external-preview-adapter-model";
 
 export type { RegisteredCommand } from "./registered-command-model";
+export type { ExternalPreviewAdapter } from "./external-preview-adapter-model";
 
 export const DEFAULT_MARKDOWN_LINE_HEIGHT = 1.65;
 export const MIN_MARKDOWN_LINE_HEIGHT = 1.4;
@@ -41,6 +43,7 @@ export interface Settings {
   startupPath: string | null;
   registeredStrings: string[];
   registeredCommands: RegisteredCommand[];
+  externalPreviewAdapters: ExternalPreviewAdapter[];
   // null は「未設定」。既定値は ui/workspace-search-options.ts だけが持つ
   workspaceSearchOptions: WorkspaceSearchOptions | null;
   openTabs: StoredTabs;
@@ -63,6 +66,7 @@ const DEFAULT_USER_SETTINGS: Pick<Settings, UserSettingKey> = {
   startupPath: null,
   registeredStrings: [],
   registeredCommands: [],
+  externalPreviewAdapters: [],
   workspaceSearchOptions: null,
 };
 
@@ -144,6 +148,7 @@ export function parseSettingsResult(text: string): SettingsParseResult {
         .filter(isRegisteredCommand)
         .map(normalizeRegisteredCommand)
       : [],
+    externalPreviewAdapters: parseExternalPreviewAdapters(value.externalPreviewAdapters),
     workspaceSearchOptions:
       typeof value.workspaceSearchOptions === "object" && value.workspaceSearchOptions !== null
         ? value.workspaceSearchOptions
