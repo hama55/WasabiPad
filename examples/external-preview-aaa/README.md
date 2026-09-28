@@ -1,31 +1,35 @@
 # 外部プレビューアダプタ AAA サンプル
 
-`aaa` ファイルを Node.js でHTMLへ変換する、WasabiPad外部プレビューアダプタの最小サンプルです。Node.jsの組み込みモジュールだけを使うため、npm依存はありません。
+`aaa` ファイルを Windows 標準の Windows PowerShell でHTMLへ変換する、WasabiPad外部プレビューアダプタの最小サンプルです。Node.jsやnpmは不要です。
 
-## 設定画面への登録例
+## インストールと登録
 
-WasabiPadの設定画面で、アドインを次のように登録します。
+1. このフォルダを移動しない場所へ置きます。`render-preview.ps1` と `template.html` は同じフォルダに置いてください。
+2. WasabiPadの「設定」→「外部プレビュー」→「外部プレビューを追加」を選び、次のように登録します。
 
-- 拡張子: `aaa`
-- 実行ファイル: `node`（または `node.exe`）
-- 引数:
+   - 対象拡張子: `aaa`
+   - 実行コマンド:
 
-  ```text
-  "C:\Work\20260722_WasabiPad_GitHub\examples\external-preview-aaa\render-preview.cjs" "{file}" "{output}"
-  ```
+     ```text
+     powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Path\To\external-preview-aaa\render-preview.ps1" "{file}" "{output}"
+     ```
 
-- 出力形式: `HTML`
+     `C:\Path\To\external-preview-aaa` は、実際に置いたフォルダの絶対パスに置き換えます。
 
-`{file}` は選択した入力ファイル、`{output}` はWasabiPadが用意する出力先に置き換えられます。
+   - 生成形式: `HTML`
+3. 保存後、拡張子 `aaa` にこのアダプターを選びます。標準プレビューも候補になる環境では、優先順位を「外部プレビューを優先」にします。
+4. 初回実行の確認で許可します。
 
 ## 使い方
 
-1. `sample.aaa` を保存する。
-2. WasabiPadで `aaa` の外部プレビューアダプタを登録する。
-3. 保存済みの `sample.aaa` を選択し、プレビューを開始する。
+保存済みの `sample.aaa` を選択し、通常のプレビューを開きます。`{file}` は入力ファイル、`{output}` はWasabiPadが用意する出力先に置き換わります。
 
-`render-preview.cjs` は実行のたびに同じフォルダの `template.html` を読み込み、ファイル名と本文を埋め込んで指定された出力先へHTMLを書き出します。入力本文のHTMLタグやスクリプト風文字列はHTMLテキストとしてエスケープされ、実行されません。
+`render-preview.ps1` は実行のたびに同じフォルダの `template.html` を読み込み、ファイル名と本文を埋め込んで指定された出力先へHTMLを書き出します。入力本文のHTMLタグやスクリプト風文字列はHTMLテキストとしてエスケープされ、実行されません。
 
-動作確認は `node --test examples/external-preview-aaa/render-preview-check.cjs` で実行できます。
+実行コマンドの `-ExecutionPolicy Bypass` はこの起動プロセスだけに適用され、Windowsの実行ポリシー設定は変更しません。動作確認は次のコマンドで実行できます。
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Path\To\external-preview-aaa\render-preview-check.ps1"
+```
 
 注意: WasabiPadの外部プレビューは、保存済みの通常ファイルでプレビューを開始した時に実行されます。未保存の内容、フォルダ、アーカイブ内の仮想ファイルはこのサンプルの対象外です。
