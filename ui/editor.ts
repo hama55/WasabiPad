@@ -71,11 +71,16 @@ export interface EditorPorts {
   registeredCommandPorts: RegisteredCommandMenuPorts;
   revealInExplorer?: (path: string, isDir: boolean) => void | Promise<unknown>;
   onError: (message: string, error: unknown) => Promise<void>;
+  onViewerFormatSelectionStarting?: () => void | ((succeeded: boolean) => void);
+  onViewerFormatSelected?: (format: api.ViewerFormat, label: string) => void;
+  cancelPendingViewerOpen?: () => Promise<void>;
   openViewer: (
     format: api.ViewerFormat,
     text: string,
     selection: api.ViewerSelection | null,
     sqliteHeaderChecked?: boolean,
+    externalOutputPath?: string | null,
+    isCurrentRequest?: () => boolean,
   ) => Promise<string | null>;
   updateViewer: (label: string, text: string, selection: api.ViewerSelection | null) => Promise<boolean>;
   closeViewer: (label: string) => Promise<void>;
@@ -157,6 +162,8 @@ export class VirtualEditor {
   private registeredCommandPorts: RegisteredCommandMenuPorts;
   private revealInExplorer?: (path: string, isDir: boolean) => void | Promise<unknown>;
   private onError: (message: string, error: unknown) => Promise<void>;
+  private onViewerFormatSelectionStarting?: EditorPorts["onViewerFormatSelectionStarting"];
+  private onViewerFormatSelected?: EditorPorts["onViewerFormatSelected"];
   private onPasteImage?: (bytes: number[], mimeType: string) => Promise<string>;
   private rectangularClipboard = new RectangularClipboard();
   private liveViewers: LiveViewers;
@@ -178,7 +185,13 @@ export class VirtualEditor {
     this.lineCache = new LineCache(doc);
     this.openViewer = ports.openViewer;
     this.liveViewers = new LiveViewers({
-      openViewer: ports.openViewer,
+      openViewer: (format, text, selection, externalOutputPath, isCurrentRequest) => {
+        if (externalOutputPath === undefined && !isCurrentRequest) {
+          return ports.openViewer(format, text, selection);
+        }
+        return ports.openViewer(format, text, selection, false, externalOutputPath, isCurrentRequest);
+      },
+      cancelPendingOpen: () => ports.cancelPendingViewerOpen?.() ?? Promise.resolve(),
       updateViewer: ports.updateViewer,
       closeViewer: ports.closeViewer,
       wholeRange: async () => {
@@ -208,6 +221,8 @@ export class VirtualEditor {
     this.registeredCommandPorts = ports.registeredCommandPorts;
     this.revealInExplorer = ports.revealInExplorer;
     this.onError = ports.onError;
+    this.onViewerFormatSelectionStarting = ports.onViewerFormatSelectionStarting;
+    this.onViewerFormatSelected = ports.onViewerFormatSelected;
     this.onPasteImage = ports.saveImage;
     this.fontFamily = config.fontFamily;
     this.fontSize = config.fontSize;
@@ -1643,9 +1658,20 @@ export class VirtualEditor {
   }
 
 
-  async openTextViewer(format: api.ViewerFormat, keepPreviewRange = false, sqliteHeaderChecked = false) {
+  async openTextViewer(
+    format: api.ViewerFormat,
+    keepPreviewRange = false,
+    sqliteHeaderChecked = false,
+    keepCurrentUntilOpened = false,
+    externalOutputPath?: string | null,
+    isCurrentRequest?: () => boolean,
+  ) {
+    await this.liveViewers.cancelPendingOpen();
+    if (isCurrentRequest && !isCurrentRequest()) return null;
     if (format === "sqlite") {
-      const opened = await this.openViewer(format, "", null, sqliteHeaderChecked);
+      const opened = isCurrentRequest
+        ? await this.openViewer(format, "", null, sqliteHeaderChecked, undefined, isCurrentRequest)
+        : await this.openViewer(format, "", null, sqliteHeaderChecked);
       if (opened) {
         this.liveViewers.clear();
         this.render();
@@ -1658,10 +1684,17 @@ export class VirtualEditor {
     const range = format === "image" ? null : previewRange ?? (this.sel.hasSel()
       ? { start: { ...selectionStart }, end: { ...selectionEnd } }
       : null);
-    this.liveViewers.clear();
-    const opened = await this.liveViewers.open(format, range, selection, this.sel.caret);
+    if (!keepCurrentUntilOpened) this.liveViewers.clear();
+    const opened = await (keepCurrentUntilOpened
+      ? this.liveViewers.replace(format, range, selection, this.sel.caret, externalOutputPath, isCurrentRequest)
+      : this.liveViewers.open(format, range, selection, this.sel.caret, externalOutputPath, isCurrentRequest));
     this.render();
     return opened;
+  }
+
+  cancelPendingTextViewerOpens(): Promise<void> {
+    this.liveViewers.invalidatePendingOpens();
+    return this.liveViewers.cancelPendingOpen();
   }
 
   private moveSelection(start: Pos, end: Pos, target: Pos, copy: boolean) {
@@ -2302,7 +2335,22 @@ export class VirtualEditor {
       ...viewerFormats.map(([format, label], index) => ({
         label,
         iconClass: viewerFormatIcon(format),
-        action: () => this.dispatch("ビューを開けませんでした", () => this.openTextViewer(format)),
+        action: () => {
+          this.liveViewers.invalidatePendingOpens();
+          const finishSelection = this.onViewerFormatSelectionStarting?.();
+          this.dispatch("ビューを開けませんでした", async () => {
+            let succeeded = false;
+            try {
+              const openedLabel = await this.openTextViewer(format);
+              if (openedLabel !== null) {
+                succeeded = true;
+                this.onViewerFormatSelected?.(format, openedLabel);
+              }
+            } finally {
+              if (typeof finishSelection === "function") finishSelection(succeeded);
+            }
+          });
+        },
         sep: index === 0,
       })),
     );

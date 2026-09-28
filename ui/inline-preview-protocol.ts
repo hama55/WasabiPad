@@ -1,6 +1,11 @@
 export const INLINE_PREVIEW_MESSAGES = {
   READY_MESSAGE: "wasabipad-viewer-ready",
   PAYLOAD_MESSAGE: "wasabipad-viewer-payload",
+  // Confirms viewer DOM commit only; external iframe load does not certify HTML semantics.
+  DISPLAY_COMMITTED_MESSAGE: "wasabipad-viewer-display-committed",
+  DISPLAY_FAILED_MESSAGE: "wasabipad-viewer-display-failed",
+  CLEAR_MESSAGE: "wasabipad-viewer-clear",
+  CLEARED_MESSAGE: "wasabipad-viewer-cleared",
   FORMAT_CHANGE_MESSAGE: "wasabipad-viewer-format-change",
   DELIMITER_MESSAGE: "wasabipad-viewer-delimiter",
   DELIMITER_CHANGE_MESSAGE: "wasabipad-viewer-delimiter-change",

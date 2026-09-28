@@ -4580,6 +4580,7 @@ dependencies = [
 name = "wasabipad"
 version = "1.7.0"
 dependencies = [
+ "libc",
  "reqwest",
  "serde",
  "serde_json",

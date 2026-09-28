@@ -24,6 +24,32 @@ describe("Feature: LilyPond WASM CSP", () => {
   });
 });
 
+describe("Feature: trusted external preview CSP", () => {
+  // Given: production/devのTauri CSP設定を読み込む
+  // When: file-backed外部HTML用frame-srcと本体側の実行・通信権限を検査する
+  // Then: file frameだけを許可し、本体UIのscript-src/connect-srcは現行境界を保つ
+  it("Scenario: file-backed external frames do not widen parent script or IPC access", () => {
+    const policies = [
+      {
+        csp: tauriConfig.app.security.csp,
+        script: "'self' 'wasm-unsafe-eval' http://wasabi-addin.localhost",
+        connect: "ipc: http://ipc.localhost http://wasabi-addin.localhost",
+      },
+      {
+        csp: tauriConfig.app.security.devCsp,
+        script: "'self' 'wasm-unsafe-eval' http://wasabi-addin.localhost",
+        connect: "ipc: http://ipc.localhost http://localhost:5173 ws://localhost:5173",
+      },
+    ];
+
+    for (const { csp, script, connect } of policies) {
+      expect(csp["frame-src"].split(/\s+/)).toContain("file:");
+      expect(csp["script-src"]).toBe(script);
+      expect(csp["connect-src"]).toBe(connect);
+    }
+  });
+});
+
 describe("Feature: editor caret style", () => {
   // Given: `style.css`のキャレット描画規則と入力用textarea規則を読み込む
   // When: カスタムキャレットとIME以外の入力欄に適用される表示規則を検査

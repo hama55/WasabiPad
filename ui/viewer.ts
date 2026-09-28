@@ -78,6 +78,7 @@ import {
 import { createPdfPreview, markPdfLoadFailure } from "./viewer-pdf";
 import { createHtmlPreview } from "./viewer-html";
 import {
+  commitTrustedExternalHtmlPreview,
   createTrustedExternalHtmlPreview,
   resolveExternalOutputSource,
 } from "./viewer-external-output";
@@ -146,6 +147,7 @@ let currentExternalOutputPath: string | null = null;
 let pendingMarkdownFragment: string | null = null;
 let markdownReadyForFragment = false;
 let renderGeneration = 0;
+let renderAbortController = new AbortController();
 let imageZoom = DEFAULT_IMAGE_ZOOM;
 let disposeImagePan: (() => void) | null = null;
 let disposeSqlitePreview: (() => void) | null = null;
@@ -254,6 +256,8 @@ function publishViewerRenderState(state: ViewerRenderState, nextImageZoom: numbe
 }
 
 function beginRender(): number {
+  renderAbortController.abort();
+  renderAbortController = new AbortController();
   const generation = ++renderGeneration;
   content.querySelectorAll<HTMLElement>(":scope > .viewer-pending").forEach((pending) => pending.remove());
   content.classList.add("viewer-loading");
@@ -412,6 +416,7 @@ function setFullscreenButton(fullscreen: boolean) {
 function disposeViewer() {
   if (viewerDisposed) return;
   viewerDisposed = true;
+  renderAbortController.abort();
   renderGeneration += 1;
   disposeImagePan?.();
   disposeImagePan = null;
@@ -969,10 +974,12 @@ async function renderHtml(
 
 async function renderExternalOutput(
   state: ViewerRenderState,
+  requireLoadedOutput = false,
 ): Promise<boolean> {
   const outputPath = state.externalOutputPath;
   if (!outputPath) return false;
   const generation = beginRender();
+  const renderSignal = renderAbortController.signal;
   const previousDisposeImagePan = disposeImagePan;
   let wrapper: HTMLElement | null = null;
   let dispose: (() => void) | undefined;
@@ -981,16 +988,13 @@ async function renderExternalOutput(
     if (source.format === "html") {
       const preview = createTrustedExternalHtmlPreview(outputPath);
       wrapper = preview.wrapper;
-      wrapper.classList.add("viewer-pending");
-      content.appendChild(wrapper);
-      const ready = await waitForFrameLayout(preview.frame);
-      if (!ready) replaceWithViewerError(wrapper, basename(outputPath));
-      if (generation !== renderGeneration) {
-        wrapper.remove();
-        return false;
-      }
-      wrapper.classList.remove("viewer-pending");
-      content.replaceChildren(wrapper);
+      if (!await commitTrustedExternalHtmlPreview(
+        content,
+        wrapper,
+        preview.frame,
+        () => generation === renderGeneration,
+        renderSignal,
+      )) return false;
     } else {
       const preview = createImagePreview(basename(outputPath));
       wrapper = preview.wrapper;
@@ -999,6 +1003,11 @@ async function renderExternalOutput(
       content.appendChild(wrapper);
       preview.image.src = source.url;
       const ready = await waitForImageLayout(preview.image);
+      if (!ready && requireLoadedOutput) {
+        dispose?.();
+        wrapper.remove();
+        return false;
+      }
       if (!ready) markImageLoadFailure(preview.image, basename(outputPath));
       if (generation !== renderGeneration) {
         dispose?.();
@@ -1020,6 +1029,11 @@ async function renderExternalOutput(
     return true;
   } catch (error) {
     if (generation !== renderGeneration) {
+      dispose?.();
+      wrapper?.remove();
+      return false;
+    }
+    if (requireLoadedOutput) {
       dispose?.();
       wrapper?.remove();
       return false;
@@ -1246,10 +1260,14 @@ const VIEWER_RENDERERS: Record<ViewerFormat, ViewerStateRenderer> = {
   lilypond: renderLilypond,
 };
 
-async function renderViewerState(state: ViewerRenderState, nextImageZoom: number): Promise<boolean> {
+async function renderViewerState(
+  state: ViewerRenderState,
+  nextImageZoom: number,
+  requireLoadedOutput = false,
+): Promise<boolean> {
   if (viewerDisposed) return false;
   if (musicPreviewHost && state.format !== musicPreviewHost.format) disposeMusicPreviewHost();
-  if (state.externalOutputPath) return renderExternalOutput(state);
+  if (state.externalOutputPath) return renderExternalOutput(state, requireLoadedOutput);
   return VIEWER_RENDERERS[state.format](state.text, state, nextImageZoom);
 }
 
@@ -1259,7 +1277,7 @@ function renderCurrentViewer(): Promise<boolean> {
   return renderViewerState(state, imageZoom);
 }
 
-async function renderPayload(payload: ViewerPayload) {
+async function renderPayload(payload: ViewerPayload, requireLoadedOutput = false): Promise<boolean> {
   if (!isViewerPayload(payload)) throw new Error("ビューのデータが不正です");
   const previousState = currentViewerRenderState();
   const nextState = viewerRenderStateOf(payload);
@@ -1275,10 +1293,11 @@ async function renderPayload(payload: ViewerPayload) {
     disposeSqlitePreview?.();
     disposeSqlitePreview = null;
   }
-  const committed = await renderViewerState(nextState, nextImageZoom);
-  if (viewerDisposed || !committed) return;
+  const committed = await renderViewerState(nextState, nextImageZoom, requireLoadedOutput);
+  if (viewerDisposed || !committed) return false;
   if (formatChanged || sourceChanged) csvColumnWidths = [];
   publishViewerRenderState(nextState, nextImageZoom);
+  return true;
 }
 
 function openDelimiterDialog() {
@@ -1409,7 +1428,48 @@ async function start() {
         if (event.source !== window.parent || event.origin !== window.location.origin) return;
         if (event.data?.type === INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE) {
           if (!isViewerPayload(event.data.payload)) return;
+          const renderId = event.data.render_id;
+          if (typeof renderId === "string") {
+            runViewerOperation("ビューを更新できませんでした", async () => {
+              try {
+                const rendered = await renderPayload(event.data.payload, true);
+                postToParent({
+                  type: rendered
+                    ? INLINE_PREVIEW_MESSAGES.DISPLAY_COMMITTED_MESSAGE
+                    : INLINE_PREVIEW_MESSAGES.DISPLAY_FAILED_MESSAGE,
+                  render_id: renderId,
+                });
+              } catch (error) {
+                postToParent({
+                  type: INLINE_PREVIEW_MESSAGES.DISPLAY_FAILED_MESSAGE,
+                  render_id: renderId,
+                });
+                throw error;
+              }
+            });
+            return;
+          }
           runViewerOperation("ビューを更新できませんでした", () => renderPayload(event.data.payload));
+          return;
+        }
+        if (event.data?.type === INLINE_PREVIEW_MESSAGES.CLEAR_MESSAGE) {
+          if (typeof event.data.render_id !== "string") return;
+          const generation = beginRender();
+          disposeSqlitePreview?.();
+          disposeSqlitePreview = null;
+          disposeMusicPreviewHost();
+          disposeImagePan?.();
+          disposeImagePan = null;
+          chartController.clear();
+          currentRows = [];
+          content.replaceChildren();
+          summary.classList.remove("warning");
+          summary.textContent = "";
+          finishRender(generation);
+          postToParent({
+            type: INLINE_PREVIEW_MESSAGES.CLEARED_MESSAGE,
+            render_id: event.data.render_id,
+          });
           return;
         }
         if (event.data?.type === INLINE_PREVIEW_MESSAGES.MARKDOWN_FRAGMENT_MESSAGE) {

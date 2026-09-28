@@ -69,3 +69,45 @@ export function createTrustedExternalHtmlPreview(
   wrapper.appendChild(frame);
   return { wrapper, frame };
 }
+
+/**
+ * Commits the iframe wrapper after its load event, not after semantic HTML validation.
+ * The runner checks that the entry output is a regular file inside its job before returning it;
+ * browsers may still fire iframe load when navigation fails.
+ */
+export async function commitTrustedExternalHtmlPreview(
+  content: HTMLElement,
+  wrapper: HTMLElement,
+  frame: HTMLIFrameElement,
+  isCurrent: () => boolean,
+  signal: AbortSignal = new AbortController().signal,
+): Promise<boolean> {
+  if (signal.aborted) return false;
+  wrapper.classList.add("viewer-pending");
+  const ready = await new Promise<boolean>((resolve) => {
+    let settled = false;
+    const finish = (loaded: boolean) => {
+      if (settled) return;
+      settled = true;
+      frame.removeEventListener("load", onLoad);
+      frame.removeEventListener("error", onError);
+      signal.removeEventListener("abort", onAbort);
+      resolve(loaded);
+    };
+    const onLoad = () => finish(true);
+    const onError = () => finish(false);
+    const onAbort = () => finish(false);
+    frame.addEventListener("load", onLoad, { once: true });
+    frame.addEventListener("error", onError, { once: true });
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+    else content.appendChild(wrapper);
+  });
+  if (!ready || !isCurrent()) {
+    wrapper.remove();
+    return false;
+  }
+  wrapper.classList.remove("viewer-pending");
+  content.replaceChildren(wrapper);
+  return true;
+}

@@ -9,6 +9,10 @@ import { DEFAULT_CSV_DELIMITER } from "./viewer-delimiter";
 const {
   READY_MESSAGE,
   PAYLOAD_MESSAGE,
+  DISPLAY_COMMITTED_MESSAGE,
+  DISPLAY_FAILED_MESSAGE,
+  CLEAR_MESSAGE,
+  CLEARED_MESSAGE,
   FORMAT_CHANGE_MESSAGE,
   DELIMITER_MESSAGE,
   FONT_MESSAGE,
@@ -22,14 +26,27 @@ const {
   MARKDOWN_FRAGMENT_MESSAGE,
 } = INLINE_PREVIEW_MESSAGES;
 
+interface PendingExternalOpen {
+  renderId: string;
+  label: string;
+  payload: ViewerPayload;
+  isCurrentRequest: () => boolean;
+  resolve: (label: string | null) => void;
+  rollbackRenderId?: string;
+  resolveCancellation?: () => void;
+  rejectCancellation?: (error: Error) => void;
+  cancellation?: Promise<void>;
+}
+
 export interface InlinePreviewPorts {
-  onAvailabilityChange?: (available: boolean) => void;
+  onAvailabilityChange?: (available: boolean, label: string) => void;
   onFormatChange?: (format: ViewerFormat) => void;
   onDelimiterChange?: (delimiter: string) => void;
   onFontFamilyChange?: (family: string) => void;
   onFullscreenChange?: () => void | Promise<void>;
   onSelectionChange?: (selection: ViewerSelection) => void | Promise<void>;
   onMarkdownLink?: (href: string, newTab: boolean) => void | Promise<void>;
+  onExternalOutputReleased?: (path: string) => void | Promise<void>;
   onError?: (error: unknown) => void | Promise<void>;
 }
 
@@ -38,7 +55,10 @@ export class InlinePreview {
   private payload: ViewerPayload | null = null;
   private label = "";
   private nextLabel = 0;
+  private nextRenderId = 0;
   private ready = false;
+  private pendingExternalOpen: PendingExternalOpen | null = null;
+  private pendingClearAcks = new Map<string, () => void>();
   private sourcePath: string | null = null;
   private effectiveExtension: string | null = null;
   private archivePath: string | null = null;
@@ -69,7 +89,26 @@ export class InlinePreview {
       if (event.source !== this.frame.contentWindow || event.origin !== window.location.origin) return;
       if (event.data?.type === READY_MESSAGE) {
         this.ready = true;
-        this.send();
+        if (this.pendingExternalOpen) this.sendPendingExternalOpen();
+        else this.send();
+        return;
+      }
+      if (event.data?.type === DISPLAY_COMMITTED_MESSAGE || event.data?.type === DISPLAY_FAILED_MESSAGE) {
+        if (typeof event.data.render_id !== "string") return;
+        this.handleExternalRenderResult(
+          event.data.render_id,
+          event.data.type === DISPLAY_COMMITTED_MESSAGE,
+        );
+        return;
+      }
+      if (event.data?.type === CLEARED_MESSAGE) {
+        if (typeof event.data.render_id !== "string") return;
+        if (this.pendingExternalOpen?.rollbackRenderId === event.data.render_id) {
+          this.handleExternalRenderResult(event.data.render_id, true);
+          return;
+        }
+        this.pendingClearAcks.get(event.data.render_id)?.();
+        this.pendingClearAcks.delete(event.data.render_id);
         return;
       }
       if (event.data?.type === FORMAT_CHANGE_MESSAGE) {
@@ -121,6 +160,18 @@ export class InlinePreview {
 
   setExternalOutputPath(path: string | null) {
     this.externalOutputPath = path;
+    if (path !== null || !this.payload || this.payload.external_output_path === null) return;
+    this.payload = { ...this.payload, external_output_path: null };
+    this.send();
+  }
+
+  setPendingExternalOutputPath(path: string | null) {
+    this.externalOutputPath = path;
+  }
+
+  mayReferenceExternalOutputPath(path: string) {
+    return this.payload?.external_output_path === path
+      || this.pendingExternalOpen?.payload.external_output_path === path;
   }
 
   setDelimiter(delimiter: string) {
@@ -164,36 +215,106 @@ export class InlinePreview {
     this.send();
   }
 
-  async open(format: ViewerFormat, text: string, selection: ViewerSelection | null): Promise<string> {
-    this.label = `inline-preview-${++this.nextLabel}`;
-    this.payload = this.createPayload(format, text, selection);
+  async open(
+    format: ViewerFormat,
+    text: string,
+    selection: ViewerSelection | null,
+    externalOutputPath?: string | null,
+    isCurrentRequest: () => boolean = () => true,
+  ): Promise<string | null> {
+    const label = `inline-preview-${++this.nextLabel}`;
+    const payload = this.createPayload(format, text, selection, externalOutputPath);
+    if (payload.external_output_path !== null || (this.payload?.external_output_path ?? null) !== null) {
+      return new Promise((resolve) => {
+        const pending: PendingExternalOpen = {
+          renderId: `inline-preview-render-${++this.nextRenderId}`,
+          label,
+          payload,
+          isCurrentRequest,
+          resolve,
+        };
+        this.pendingExternalOpen = pending;
+        if (this.ready) this.sendPendingExternalOpen();
+      });
+    }
+    this.label = label;
+    this.payload = payload;
     this.host.hidden = false;
-    this.notifyPort(() => this.ports.onAvailabilityChange?.(true));
+    this.notifyPort(() => this.ports.onAvailabilityChange?.(true, label));
     this.send();
-    return this.label;
+    return label;
   }
 
   async update(label: string, text: string, selection: ViewerSelection | null): Promise<boolean> {
     if (!this.payload || label !== this.label) return false;
-    this.payload = this.createPayload(this.payload.format, text, selection);
+    const currentPayload = this.payload;
+    this.payload = {
+      ...this.createPayload(currentPayload.format, text, selection),
+      source_path: currentPayload.source_path,
+      effective_extension: currentPayload.effective_extension,
+      archive_path: currentPayload.archive_path,
+      archive_entry: currentPayload.archive_entry,
+      external_output_path: currentPayload.external_output_path,
+    };
     this.send();
     return true;
   }
 
-  async close(label: string): Promise<void> {
+  async close(label: string, viewerAlreadyCleared = false): Promise<void> {
+    if (label !== this.label) return;
+    if (this.pendingExternalOpen) {
+      await this.cancelPendingExternalOpen(false);
+      viewerAlreadyCleared = true;
+    } else if (!viewerAlreadyCleared && this.payload?.external_output_path) {
+      await this.clearViewerAndWait();
+    }
     if (label !== this.label) return;
     this.setPreviewFocused(false);
     this.payload = null;
     this.label = "";
     this.pendingMarkdownFragment = null;
     this.host.hidden = true;
-    this.notifyPort(() => this.ports.onAvailabilityChange?.(false));
+    this.notifyPort(() => this.ports.onAvailabilityChange?.(false, label));
   }
 
   clear() {
-    if (!this.label) return;
     const label = this.label;
-    runAsyncBoundary(() => this.close(label), (error) => this.reportPortError(error));
+    if (!label && !this.pendingExternalOpen) return;
+    runAsyncBoundary(async () => {
+      let viewerAlreadyCleared = false;
+      if (this.pendingExternalOpen) {
+        await this.cancelPendingExternalOpen(false);
+        viewerAlreadyCleared = true;
+      }
+      if (label && label === this.label) await this.close(label, viewerAlreadyCleared);
+    }, (error) => this.reportPortError(error));
+  }
+
+  cancelPendingExternalOpen(restoreCurrent = true): Promise<void> {
+    const pending = this.pendingExternalOpen;
+    if (!pending) return Promise.resolve();
+    if (pending.cancellation) return pending.cancellation;
+    if (!this.ready) {
+      this.pendingExternalOpen = null;
+      pending.resolve(null);
+      this.releasePendingExternalOutput(pending);
+      return Promise.resolve();
+    }
+
+    pending.rollbackRenderId = `inline-preview-render-${++this.nextRenderId}`;
+    pending.cancellation = new Promise<void>((resolve, reject) => {
+      pending.resolveCancellation = resolve;
+      pending.rejectCancellation = reject;
+    });
+    if (restoreCurrent && this.payload) {
+      this.sendPayload(this.payload, pending.rollbackRenderId);
+    } else {
+      this.frame.contentWindow?.postMessage({
+        type: CLEAR_MESSAGE,
+        render_id: pending.rollbackRenderId,
+      }, window.location.origin);
+    }
+    return pending.cancellation;
   }
 
   resend() {
@@ -210,6 +331,7 @@ export class InlinePreview {
     format: ViewerFormat,
     text: string,
     selection: ViewerSelection | null,
+    externalOutputPath = this.externalOutputPath,
   ): ViewerPayload {
     return {
       format,
@@ -219,7 +341,7 @@ export class InlinePreview {
       effective_extension: this.effectiveExtension,
       archive_path: this.archivePath,
       archive_entry: this.archiveEntry,
-      external_output_path: this.externalOutputPath,
+      external_output_path: externalOutputPath,
     };
   }
 
@@ -229,7 +351,11 @@ export class InlinePreview {
     this.sendMarkdownSoftBreaks();
     this.sendMarkdownLineHeight();
     this.sendMarkdownHeadingUnderlines();
-    if (!this.payload) return;
+    const pending = this.pendingExternalOpen;
+    const payload = pending
+      ? pending.rollbackRenderId ? this.payload : pending.payload
+      : this.payload;
+    if (!payload) return;
     // 区切り文字の変更は、現在のビューがCSVなら再描画を開始する。
     // 本文を先に送ると、その再描画が非同期の本文描画を中断するため、
     // 付随設定を先に同期してから本文を送る。
@@ -237,7 +363,11 @@ export class InlinePreview {
       type: DELIMITER_MESSAGE,
       delimiter: this.delimiter,
     }, window.location.origin);
-    this.frame.contentWindow?.postMessage({ type: PAYLOAD_MESSAGE, payload: this.payload }, window.location.origin);
+    this.frame.contentWindow?.postMessage({
+      type: PAYLOAD_MESSAGE,
+      payload,
+      ...(pending ? { render_id: pending.rollbackRenderId ?? pending.renderId } : {}),
+    }, window.location.origin);
     if (this.pendingMarkdownFragment !== null) {
       this.frame.contentWindow?.postMessage({
         type: MARKDOWN_FRAGMENT_MESSAGE,
@@ -247,6 +377,84 @@ export class InlinePreview {
     }
     this.sendFontFamily();
     this.sendFontSize();
+  }
+
+  private sendPendingExternalOpen() {
+    const pending = this.pendingExternalOpen;
+    if (!pending || pending.rollbackRenderId) return;
+    this.sendPayload(pending.payload, pending.renderId);
+  }
+
+  private sendPayload(payload: ViewerPayload, renderId: string) {
+    if (!this.ready) return;
+    this.frame.contentWindow?.postMessage({
+      type: DELIMITER_MESSAGE,
+      delimiter: this.delimiter,
+    }, window.location.origin);
+    this.frame.contentWindow?.postMessage({
+      type: PAYLOAD_MESSAGE,
+      payload,
+      render_id: renderId,
+    }, window.location.origin);
+    this.sendFontFamily();
+    this.sendFontSize();
+  }
+
+  private handleExternalRenderResult(renderId: string, displayCommitted: boolean) {
+    const pending = this.pendingExternalOpen;
+    if (!pending) return;
+    if (pending.rollbackRenderId === renderId) {
+      if (!displayCommitted) {
+        pending.cancellation = undefined;
+        pending.resolveCancellation = undefined;
+        const rejectCancellation = pending.rejectCancellation;
+        pending.rejectCancellation = undefined;
+        pending.resolve(null);
+        rejectCancellation?.(new Error("External preview rollback was not confirmed"));
+        return;
+      }
+      this.pendingExternalOpen = null;
+      pending.resolve(null);
+      pending.resolveCancellation?.();
+      this.releasePendingExternalOutput(pending);
+      return;
+    }
+    if (pending.renderId !== renderId || pending.rollbackRenderId) return;
+    if (!displayCommitted) {
+      this.pendingExternalOpen = null;
+      pending.resolve(null);
+      return;
+    }
+    if (!pending.isCurrentRequest()) {
+      void this.cancelPendingExternalOpen();
+      return;
+    }
+    this.payload = pending.payload;
+    this.label = pending.label;
+    this.externalOutputPath = pending.payload.external_output_path;
+    this.host.hidden = false;
+    this.pendingExternalOpen = null;
+    this.notifyPort(() => this.ports.onAvailabilityChange?.(true, pending.label));
+    pending.resolve(pending.label);
+  }
+
+  private releasePendingExternalOutput(pending: PendingExternalOpen) {
+    const path = pending.payload.external_output_path;
+    if (path && path !== this.payload?.external_output_path) {
+      this.notifyPort(() => this.ports.onExternalOutputReleased?.(path));
+    }
+  }
+
+  private clearViewerAndWait(): Promise<void> {
+    if (!this.ready) return Promise.resolve();
+    const renderId = `inline-preview-render-${++this.nextRenderId}`;
+    return new Promise((resolve) => {
+      this.pendingClearAcks.set(renderId, resolve);
+      this.frame.contentWindow?.postMessage({
+        type: CLEAR_MESSAGE,
+        render_id: renderId,
+      }, window.location.origin);
+    });
   }
 
   private sendFullscreenState() {

@@ -10,7 +10,14 @@ import { type ViewerSelectionWithCaret } from "./viewer-selection";
 const DEBOUNCE_MS = 120;
 
 export interface LiveViewerPorts {
-  openViewer: (format: ViewerFormat, text: string, selection: ViewerSelection | null) => Promise<string | null>;
+  openViewer: (
+    format: ViewerFormat,
+    text: string,
+    selection: ViewerSelection | null,
+    externalOutputPath?: string | null,
+    isCurrentRequest?: () => boolean,
+  ) => Promise<string | null>;
+  cancelPendingOpen?: () => Promise<void>;
   // false は backend がビューの消滅を確認した場合だけ返す。
   updateViewer: (label: string, text: string, selection: ViewerSelection | null) => Promise<boolean>;
   closeViewer?: (label: string) => Promise<void>;
@@ -24,6 +31,7 @@ export class LiveViewers {
   private viewers = new Map<string, { format: ViewerFormat; range: TrackedRange | null; selection: ViewerSelectionWithCaret | null }>();
   private timer: number | undefined;
   private generation = 0;
+  private openGeneration = 0;
   private refreshVersion = 0;
   private refreshPromise: Promise<void> | undefined;
   private refreshRequested = false;
@@ -34,6 +42,7 @@ export class LiveViewers {
   clear() {
     const labels = [...this.viewers.keys()];
     this.generation++;
+    this.openGeneration++;
     this.refreshVersion++;
     this.refreshRequested = false;
     this.refreshPromise = undefined;
@@ -42,6 +51,14 @@ export class LiveViewers {
     window.clearTimeout(this.timer);
     this.timer = undefined;
     this.errorReported = false;
+  }
+
+  invalidatePendingOpens() {
+    this.openGeneration++;
+  }
+
+  cancelPendingOpen(): Promise<void> {
+    return this.ports.cancelPendingOpen?.() ?? Promise.resolve();
   }
 
   private closeViewer(label: string) {
@@ -77,24 +94,64 @@ export class LiveViewers {
   }
 
   // range=null は「全文を映す」= 以後の編集で常に最新の全文へ追随する
-  async open(format: ViewerFormat, range: TrackedRange | null, selection: TrackedRange, caret = selection.end) {
-    const generation = this.generation;
+  async open(
+    format: ViewerFormat,
+    range: TrackedRange | null,
+    selection: TrackedRange,
+    caret = selection.end,
+    externalOutputPath?: string | null,
+    isCurrentRequest?: () => boolean,
+  ): Promise<string | null> {
+    const generation = this.openGeneration;
+    const isCurrent = () => generation === this.openGeneration && (isCurrentRequest?.() ?? true);
     const { start, end } = range ?? (await this.ports.wholeRange());
-    if (generation !== this.generation) return;
+    if (!isCurrent()) return null;
     const viewerSelection = relativeSelection(range, selection, caret);
     const text = await this.ports.textInRange(start, end);
-    if (generation !== this.generation) return;
-    const label = await this.ports.openViewer(format, text, viewerSelection);
-    if (!label) return;
-    if (generation === this.generation) {
+    if (!isCurrent()) return null;
+    const label = externalOutputPath === undefined && !isCurrentRequest
+      ? await this.ports.openViewer(format, text, viewerSelection)
+      : await this.ports.openViewer(format, text, viewerSelection, externalOutputPath, isCurrentRequest);
+    if (!label) return null;
+    if (isCurrent()) {
       this.viewers.set(label, { format, range, selection: viewerSelection });
-      return;
+      return label;
     }
     try {
       await this.ports.closeViewer?.(label);
     } catch (error) {
       this.reportUnexpectedRefreshError(error);
     }
+    return null;
+  }
+
+  async replace(
+    format: ViewerFormat,
+    range: TrackedRange | null,
+    selection: TrackedRange,
+    caret = selection.end,
+    externalOutputPath?: string | null,
+    isCurrentRequest?: () => boolean,
+  ): Promise<string | null> {
+    this.openGeneration++;
+    const label = await this.open(format, range, selection, caret, externalOutputPath, isCurrentRequest);
+    if (!label) return null;
+
+    const retiredLabels = [...this.viewers.keys()].filter((current) => current !== label);
+    if (retiredLabels.length) {
+      this.generation++;
+      this.refreshVersion++;
+      this.refreshRequested = false;
+      this.refreshPromise = undefined;
+      window.clearTimeout(this.timer);
+      this.timer = undefined;
+      this.errorReported = false;
+      for (const current of retiredLabels) {
+        this.viewers.delete(current);
+        this.closeViewer(current);
+      }
+    }
+    return label;
   }
 
   // 編集を各ビューの追跡範囲へ反映する (範囲外の編集なら位置だけずれる)

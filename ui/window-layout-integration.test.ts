@@ -71,7 +71,7 @@ describe("Feature: window layout integration", () => {
     expect(viewerSource).toMatch(/let viewerDisposed = false/);
     expect(viewerSource).toMatch(/function disposeViewer\(\)[\s\S]*?viewerDisposed = true/);
     expect(viewerSource).toMatch(/function beginRender\(\): number[\s\S]*?querySelectorAll<HTMLElement>\("\:scope > \.viewer-pending"\)/s);
-    expect(viewerSource).toMatch(/const committed = await renderViewerState\(nextState, nextImageZoom\);[\s\S]*?if \(viewerDisposed \|\| !committed\) return;[\s\S]*?publishViewerRenderState\(nextState, nextImageZoom\)/s);
+    expect(viewerSource).toMatch(/const committed = await renderViewerState\(nextState, nextImageZoom(?:, requireLoadedOutput)?\);[\s\S]*?if \(viewerDisposed \|\| !committed\) return(?: false)?;[\s\S]*?publishViewerRenderState\(nextState, nextImageZoom\)/s);
     expect(viewerSource).toMatch(/previousDisposeImagePan\?\.\(\)/);
     expect(viewerRustSource).toMatch(/\.inner_size\(960\.0, 700\.0\)\s*\.visible\(false\)/s);
     expect(viewerSource).toMatch(/if \(!isInlineViewer\) await win!\.show\(\);[\s\S]*?await renderPayload\(await takeViewerPayload\(win!\.label\)\);/);

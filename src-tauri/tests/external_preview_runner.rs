@@ -1,13 +1,17 @@
 #[path = "../src/external_preview_runner.rs"]
 mod external_preview_runner;
 
-use external_preview_runner::{cleanup_job, run_external_preview, ExternalPreviewFormat};
+use external_preview_runner::{
+    cleanup_job, cleanup_stale_jobs, run_external_preview, ExternalPreviewFormat,
+    ExternalPreviewOperations,
+};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 static NEXT_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -37,6 +41,148 @@ impl Drop for TestDirectory {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
+}
+
+const OWNER_WORK_ROOT_ENV: &str = "WASABIPAD_TEST_EXTERNAL_PREVIEW_OWNER_ROOT";
+const OWNER_INPUT_PATH_ENV: &str = "WASABIPAD_TEST_EXTERNAL_PREVIEW_OWNER_INPUT";
+const OWNER_READY_PATH_ENV: &str = "WASABIPAD_TEST_EXTERNAL_PREVIEW_OWNER_READY";
+const OWNER_RELEASE_PATH_ENV: &str = "WASABIPAD_TEST_EXTERNAL_PREVIEW_OWNER_RELEASE";
+
+struct PreviewOwnerProcess {
+    child: Option<Child>,
+    ready_path: PathBuf,
+    release_path: PathBuf,
+}
+
+impl PreviewOwnerProcess {
+    fn spawn(directory: &TestDirectory, work_root: &Path) -> Self {
+        let ready_path = directory.path().join("child output ready");
+        let release_path = directory.path().join("release child");
+        let input_path = directory.path().join("child score.abc");
+        let child = Command::new(std::env::current_exe().expect("resolve test executable"))
+            .args([
+                "--exact",
+                "hold_external_preview_job_for_cleanup_test",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(OWNER_WORK_ROOT_ENV, work_root)
+            .env(OWNER_INPUT_PATH_ENV, input_path)
+            .env(OWNER_READY_PATH_ENV, &ready_path)
+            .env(OWNER_RELEASE_PATH_ENV, &release_path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("start a second test process as the live output owner");
+        Self {
+            child: Some(child),
+            ready_path,
+            release_path,
+        }
+    }
+
+    fn output_path(&mut self) -> PathBuf {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            if self.ready_path.is_file() {
+                return PathBuf::from(
+                    fs::read_to_string(&self.ready_path).expect("read child output path"),
+                );
+            }
+            let child = self.child.as_mut().expect("child process is running");
+            if let Some(status) = child.try_wait().expect("check child process") {
+                panic!("child exited before creating its output: {status}");
+            }
+            assert!(
+                Instant::now() < deadline,
+                "child did not create output in time"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn finish(&mut self) {
+        fs::write(&self.release_path, "release").expect("release child process");
+        let mut child = self.child.take().expect("child process is running");
+        let status = child.wait().expect("wait for child process");
+        assert!(status.success(), "child process failed: {status}");
+    }
+}
+
+impl Drop for PreviewOwnerProcess {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = fs::write(&self.release_path, "release");
+            if child.try_wait().ok().flatten().is_none() {
+                let _ = child.kill();
+            }
+            let _ = child.wait();
+        }
+    }
+}
+
+// Feature: 外部プレビューの別process所有ジョブ
+// Scenario: cleanup helper processとして親の指示まで保持する
+// Given: 親テストが子process用のrunner引数を渡している
+// When: 子processが外部プレビュー出力を作って待機する
+// Then: 親が確認した後にだけ子processが終了する
+#[test]
+fn hold_external_preview_job_for_cleanup_test() {
+    let Some(work_root) = std::env::var_os(OWNER_WORK_ROOT_ENV).map(PathBuf::from) else {
+        return;
+    };
+    let input_path = PathBuf::from(
+        std::env::var_os(OWNER_INPUT_PATH_ENV).expect("child input path is configured"),
+    );
+    let ready_path = PathBuf::from(
+        std::env::var_os(OWNER_READY_PATH_ENV).expect("child ready path is configured"),
+    );
+    let release_path = PathBuf::from(
+        std::env::var_os(OWNER_RELEASE_PATH_ENV).expect("child release path is configured"),
+    );
+    let (executable, arguments, input) = external_program();
+    fs::write(&input_path, input).expect("write child input");
+    let result = run_external_preview(
+        &executable,
+        &arguments,
+        &input_path,
+        ExternalPreviewFormat::Html,
+        &work_root,
+        Duration::from_secs(10),
+        &AtomicBool::new(false),
+    )
+    .expect("child external preview succeeds");
+    fs::write(&ready_path, result.output_path.to_string_lossy().as_bytes())
+        .expect("publish child output path");
+    while !release_path.exists() {
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+// Feature: 外部プレビューの起動時掃除
+// Scenario: 別processが表示中の出力は保持し、終了後にstaleとして回収する
+// Given: もう一つのWasabiPad processがrunnerで生成したHTMLを保持している
+// When: 親processがcleanupを行い、その後、所有process終了後に再度cleanupする
+// Then: 生存中の出力は残り、終了したprocessのjobは次回cleanupで削除される
+#[test]
+fn cleanup_stale_jobs_preserves_live_process_output_then_reclaims_it_after_exit() {
+    let directory = TestDirectory::new();
+    let work_root = directory.path().join("shared external preview jobs");
+    let mut owner = PreviewOwnerProcess::spawn(&directory, &work_root);
+    let output_path = owner.output_path();
+
+    cleanup_stale_jobs(&work_root).expect("clean stale jobs without removing live process output");
+    assert!(
+        output_path.is_file(),
+        "a live process still owns the displayed output"
+    );
+
+    owner.finish();
+    cleanup_stale_jobs(&work_root).expect("clean output after its owner exits");
+    assert!(
+        !output_path.exists(),
+        "the crashed/exited process output is reclaimed"
+    );
 }
 
 fn external_program() -> (PathBuf, Vec<String>, &'static str) {
@@ -153,6 +299,145 @@ fn saved_file_with_spaces_is_one_argument_and_each_run_gets_unique_html() {
     assert!(!second.output_path.exists());
     cleanup_job(&second.output_path, &work_root).expect("repeat cleanup is idempotent");
     assert!(cleanup_job(&input_path, &work_root).is_err());
+}
+
+// Feature: 外部プレビューの一時成果物掃除
+// Scenario: 入口HTMLが先に消えても付属資産を回収しIPC記録を解放する
+// Given: 完了済みjobに入口HTMLと大きな付属資産があり、IPC registryが出力を記録している
+// When: 入口HTML消失後に通常のcleanup経路を実行する
+// Then: job全体が削除され、同じrequest IDを再登録できる
+#[test]
+fn cleanup_removes_assets_and_releases_record_when_entry_output_is_missing() {
+    let directory = TestDirectory::new();
+    let input_path = directory.path().join("saved score.abc");
+    let (executable, arguments, input) = external_program();
+    fs::write(&input_path, input).expect("write saved input");
+    let work_root = directory.path().join("run jobs");
+    let operations = ExternalPreviewOperations::default();
+    let (cancelled, _) = operations
+        .register("missing-entry-output", &input_path)
+        .expect("register external preview");
+    let result = run_external_preview(
+        &executable,
+        &arguments,
+        &input_path,
+        ExternalPreviewFormat::Html,
+        &work_root,
+        Duration::from_secs(5),
+        &cancelled,
+    )
+    .expect("external preview succeeds");
+    operations
+        .finish_success("missing-entry-output", &cancelled, &result.output_path)
+        .expect("record completed output");
+    let job_directory = result.output_path.parent().unwrap().to_path_buf();
+    let attachment = job_directory.join("large-audio-library.dat");
+    fs::write(&attachment, vec![0x5a; 1024]).expect("write external attachment");
+    fs::remove_file(&result.output_path).expect("simulate entry HTML removed by viewer");
+
+    // When: IPC cleanupが同じ生成パスを掃除し、完了記録を解放する
+    cleanup_job(&result.output_path, &work_root).expect("clean job without entry HTML");
+    operations.release_output(&result.output_path);
+
+    // Then: 付属資産もなくなり、request IDの記録は残らない
+    assert!(
+        !job_directory.exists(),
+        "the attachment is reclaimed with its job"
+    );
+    assert!(operations
+        .register("missing-entry-output", &input_path)
+        .is_ok());
+    operations.cancel("missing-entry-output").unwrap();
+}
+
+// Feature: 外部プレビュー起動時の孤児フォルダ掃除
+// Scenario: marker作成前のクラッシュ孤児は回収し、稼働中PIDと不正名は保持する
+// Given: markerのないjob名形式の孤児、現在process所有のjob風folder、不正なjob名がある
+// When: cleanup_stale_jobsを実行する
+// Then: 死亡PIDの孤児だけを削除し、稼働中processと不正名の内容は保持する
+#[test]
+fn cleanup_stale_jobs_reclaims_unmarked_orphans_without_touching_live_or_unowned_dirs() {
+    let directory = TestDirectory::new();
+    let work_root = directory.path().join("isolated work root");
+    fs::create_dir_all(&work_root).expect("create isolated work root");
+    let stale_job = work_root.join("external-preview-job-4294967295-12345-1");
+    fs::create_dir(&stale_job).expect("create marker-window orphan");
+    fs::write(stale_job.join("attachment.dat"), "orphan").expect("write orphan asset");
+    let live_job = work_root.join(format!(
+        "external-preview-job-{}-12345-2",
+        std::process::id()
+    ));
+    fs::create_dir(&live_job).expect("create unmarked live job");
+    fs::write(live_job.join("attachment.dat"), "active").expect("write active asset");
+    let unowned_dir = work_root.join("external-preview-job-not-a-job");
+    fs::create_dir(&unowned_dir).expect("create similarly prefixed unrelated directory");
+    fs::write(unowned_dir.join("keep.dat"), "unowned").expect("write unrelated asset");
+
+    cleanup_stale_jobs(&work_root).expect("clean only a verified stale WasabiPad job");
+
+    assert!(
+        !stale_job.exists(),
+        "the dead-PID marker-window orphan is reclaimed"
+    );
+    assert!(
+        live_job.join("attachment.dat").is_file(),
+        "a live owner is preserved"
+    );
+    assert!(
+        unowned_dir.join("keep.dat").is_file(),
+        "a malformed name is not owned"
+    );
+}
+
+// Feature: 外部プレビューの置換と一時成果物の寿命
+// Scenario: 同じ入力の再生成中と失敗後も、表示中の完了済み出力を保持する
+// Given: 完了した外部出力を現在のプレビューが表示している
+// When: 同じ入力で新しい生成を登録し、その生成が失敗する
+// Then: 旧出力は明示的なcleanupまで存在し続ける
+#[test]
+fn keeps_completed_output_until_explicit_cleanup_during_replacement() {
+    let directory = TestDirectory::new();
+    let input_path = directory.path().join("saved score.abc");
+    let (executable, arguments, input) = external_program();
+    fs::write(&input_path, input).expect("write saved input");
+    let work_root = directory.path().join("run jobs");
+    let operations = ExternalPreviewOperations::default();
+
+    let (first_cancelled, _) = operations
+        .register("displayed-output", &input_path)
+        .expect("register first generation");
+    let first = run_external_preview(
+        &executable,
+        &arguments,
+        &input_path,
+        ExternalPreviewFormat::Html,
+        &work_root,
+        Duration::from_secs(5),
+        &first_cancelled,
+    )
+    .expect("first generation succeeds");
+    operations
+        .finish_success("displayed-output", &first_cancelled, &first.output_path)
+        .expect("record displayed output");
+    assert!(first.output_path.is_file());
+
+    let (replacement_cancelled, _) = operations
+        .register("pending-replacement", &input_path)
+        .expect("register replacement generation");
+    assert!(
+        first.output_path.is_file(),
+        "the active preview still references this output"
+    );
+
+    drop(operations.guard("pending-replacement".to_owned(), replacement_cancelled));
+    assert!(
+        first.output_path.is_file(),
+        "a failed replacement must not remove the active output"
+    );
+
+    cleanup_job(&first.output_path, &work_root).expect("clean retired output after replacement");
+    operations.release_output(&first.output_path);
+    assert!(!first.output_path.exists());
 }
 
 // Feature: 外部プレビューの失敗境界

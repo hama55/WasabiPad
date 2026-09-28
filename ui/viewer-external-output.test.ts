@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+  commitTrustedExternalHtmlPreview,
   createTrustedExternalHtmlPreview,
   resolveExternalOutputSource,
 } from "./viewer-external-output";
+import { INLINE_PREVIEW_MESSAGES } from "./inline-preview-protocol";
 
 describe("Feature: trusted external preview output", () => {
   // Feature: 外部プレビュー生成物のURL変換
@@ -55,6 +57,138 @@ describe("Feature: trusted external preview output", () => {
   it("Scenario: rejects SVG output in the HTML DOM helper", () => {
     expect(() => createTrustedExternalHtmlPreview("C:\\work\\score.svg"))
       .toThrow("HTML出力ではありません");
+  });
+
+  // Feature: 外部プレビューのiframe置換
+  // Scenario: iframeのload通知後に表示を確定するがHTMLの意味的成功とはみなさない
+  // Given: 旧生成物が表示され、runnerが通常ファイルと確認した新しいHTMLを読み込み中である
+  // When: ブラウザーからiframeのload通知を受け取る
+  // Then: DOM置換を確定するが、HTMLの意味やアプリ固有の動作は検証しない
+  it("Scenario: displays a new trusted iframe only after its load event", async () => {
+    const content = document.createElement("section");
+    const oldWrapper = document.createElement("div");
+    oldWrapper.dataset.output = "old";
+    content.appendChild(oldWrapper);
+    const wrapper = document.createElement("div");
+    const frame = document.createElement("iframe");
+    wrapper.appendChild(frame);
+
+    const opening = commitTrustedExternalHtmlPreview(content, wrapper, frame, () => true);
+    expect(content.firstElementChild).toBe(oldWrapper);
+    expect(wrapper.classList.contains("viewer-pending")).toBe(true);
+
+    frame.dispatchEvent(new Event("load"));
+
+    expect(await opening).toBe(true);
+    expect(content.children).toHaveLength(1);
+    expect(content.firstElementChild).toBe(wrapper);
+    expect(wrapper.classList.contains("viewer-pending")).toBe(false);
+  });
+
+  // Feature: 外部HTMLプレビューの完了通知契約
+  // Scenario: 表示確定通知をHTMLの意味的成功と混同しない
+  // Given: 外部HTMLのiframe load通知は失敗遷移でも発火し得る
+  // When: WasabiPadが相関付き表示確定通知を送る
+  // Then: 通知名はDOM表示確定を表し、HTML内容の検証を意味しない
+  it("Scenario: names the acknowledgement as a display commit, not semantic HTML success", () => {
+    expect(INLINE_PREVIEW_MESSAGES.DISPLAY_COMMITTED_MESSAGE)
+      .toBe("wasabipad-viewer-display-committed");
+  });
+
+  // Feature: 外部プレビューのiframe置換
+  // Scenario: 添付資産の遅延読込を固定時間で失敗扱いしない
+  // Given: 新しい外部HTMLのiframeが2秒を超えて読み込み中である
+  // When: 遅れてload通知を受け取る
+  // Then: 途中でタイムアウトせず、新しいiframeへ切り替える
+  it("Scenario: keeps waiting for a valid iframe load beyond two seconds", async () => {
+    vi.useFakeTimers();
+    try {
+      const content = document.createElement("section");
+      const oldWrapper = document.createElement("div");
+      content.appendChild(oldWrapper);
+      const wrapper = document.createElement("div");
+      const frame = document.createElement("iframe");
+      wrapper.appendChild(frame);
+      let resolved = false;
+      const opening = commitTrustedExternalHtmlPreview(
+        content,
+        wrapper,
+        frame,
+        () => true,
+        new AbortController().signal,
+      ).then((result) => {
+        resolved = true;
+        return result;
+      });
+
+      await vi.advanceTimersByTimeAsync(2500);
+      expect(resolved).toBe(false);
+      expect(content.firstElementChild).toBe(oldWrapper);
+
+      frame.dispatchEvent(new Event("load"));
+
+      expect(await opening).toBe(true);
+      expect(content.firstElementChild).toBe(wrapper);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Feature: 外部プレビューのiframe置換
+  // Scenario: 後続renderまたはviewer破棄で保留中のload待ちを解除する
+  // Given: 新しい外部HTMLのiframeがload待ちである
+  // When: 対応するrenderがabortされる
+  // Then: 保留中iframeを破棄し、旧表示を保持してfalseで終了する
+  it("Scenario: cancels the iframe load wait when its render is aborted", async () => {
+    const content = document.createElement("section");
+    const oldWrapper = document.createElement("div");
+    content.appendChild(oldWrapper);
+    const wrapper = document.createElement("div");
+    const frame = document.createElement("iframe");
+    wrapper.appendChild(frame);
+    const controller = new AbortController();
+
+    let resolved = false;
+    const opening = commitTrustedExternalHtmlPreview(
+      content,
+      wrapper,
+      frame,
+      () => true,
+      controller.signal,
+    ).then((result) => {
+      resolved = true;
+      return result;
+    });
+    controller.abort();
+    await expect(opening).resolves.toBe(false);
+    frame.dispatchEvent(new Event("load"));
+
+    expect(resolved).toBe(true);
+    expect(content.firstElementChild).toBe(oldWrapper);
+    expect(wrapper.isConnected).toBe(false);
+  });
+
+  // Feature: 外部プレビューのiframe置換
+  // Scenario: 読込中に要求が失効したら旧出力を維持する
+  // Given: 旧生成物が表示され、新しいiframeのload待ちである
+  // When: load後に要求世代が古いと判定される
+  // Then: 新iframeを破棄し、旧表示を維持する
+  it("Scenario: keeps the old output when the iframe request becomes stale", async () => {
+    const content = document.createElement("section");
+    const oldWrapper = document.createElement("div");
+    content.appendChild(oldWrapper);
+    const wrapper = document.createElement("div");
+    const frame = document.createElement("iframe");
+    wrapper.appendChild(frame);
+    let current = true;
+
+    const opening = commitTrustedExternalHtmlPreview(content, wrapper, frame, () => current);
+    current = false;
+    frame.dispatchEvent(new Event("load"));
+
+    expect(await opening).toBe(false);
+    expect(content.firstElementChild).toBe(oldWrapper);
+    expect(wrapper.isConnected).toBe(false);
   });
 
   // Feature: 外部プレビュー生成物の悪い入力診断

@@ -105,6 +105,7 @@ import { createAsyncUnlisten } from "./async-unlisten";
 import { markdownLinkActionOf } from "./markdown-link-navigation";
 import { type WindowViewport } from "./window-layout";
 import { createWindowLayoutRuntime, type WindowLayoutRuntime } from "./window-layout-runtime";
+import { createExternalPreviewOutputLifecycle, createPreviewReplacementLifecycle } from "./preview-replacement";
 
 const win = getCurrentWindow();
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -327,17 +328,26 @@ function updatePreviewVisibility() {
 }
 
 const inlinePreviewPorts = {
-  onAvailabilityChange: (available) => {
-    previewAvailable = available;
-    if (!available) {
-      previewRequestGeneration++;
-      clearExternalPreviewOutput();
-      previewDocument = null;
-      editingStatusbar.setPreviewFormat(null);
+  onAvailabilityChange: (available, label) => {
+    if (available) {
+      previewReplacementLifecycle.onAvailable(
+        label,
+        openingPreviewRequestGeneration,
+        invalidatePreviewRequest,
+      );
+    } else {
+      const isActiveView = previewReplacementLifecycle.onUnavailable(
+        label,
+        previewRequestGeneration,
+        invalidatePreviewRequest,
+      );
+      if (!isActiveView) return;
     }
+    previewAvailable = available;
     if (available) previewCollapsed = false;
     updatePreviewVisibility();
   },
+  onExternalOutputReleased: (path) => externalPreviewOutputLifecycle.discardGeneratedOutput(path),
   onFormatChange: (format) => openPreviewFormat(
     doc.current,
     documentPathOf(doc.current),
@@ -387,8 +397,10 @@ const inlinePreviewPorts = {
 
 let previewDocument: PreviewDocument | null = null;
 let previewRequestGeneration = 0;
+const previewReplacementLifecycle = createPreviewReplacementLifecycle();
+const externalPreviewOutputLifecycle = createExternalPreviewOutputLifecycle(cleanupExternalPreviewOutput);
 let externalPreviewRequestId: string | null = null;
-let externalPreviewOutputPath: string | null = null;
+let openingPreviewRequestGeneration: number | null = null;
 
 function cleanupExternalPreviewOutput(path: string | null) {
   if (!path) return;
@@ -397,20 +409,39 @@ function cleanupExternalPreviewOutput(path: string | null) {
   });
 }
 
-function clearExternalPreviewOutput() {
+function cancelPendingExternalPreviewRequest() {
   const oldRequestId = externalPreviewRequestId;
   externalPreviewRequestId = null;
-  const oldOutputPath = externalPreviewOutputPath;
-  externalPreviewOutputPath = null;
+  if (!oldRequestId) return;
+  void api.externalPreviewCancel(oldRequestId).catch((error) => {
+    console.warn("外部プレビューの実行を取り消せませんでした", error);
+  });
+}
+
+function clearDisplayedExternalPreviewOutput() {
   inlinePreview?.setExternalOutputPath(null);
-  if (oldRequestId) {
-    void api.externalPreviewCancel(oldRequestId).catch((error) => {
-      console.warn("外部プレビューの実行を取り消せませんでした", error);
-      cleanupExternalPreviewOutput(oldOutputPath);
-    });
-  } else {
-    cleanupExternalPreviewOutput(oldOutputPath);
-  }
+  externalPreviewOutputLifecycle.replaceDisplayedOutput(null);
+}
+
+function clearExternalPreviewOutput() {
+  cancelPendingExternalPreviewRequest();
+  openingPreviewRequestGeneration = null;
+  clearDisplayedExternalPreviewOutput();
+}
+
+function invalidatePreviewRequest(clearSelection = true) {
+  previewReplacementLifecycle.invalidateManualSelection();
+  previewRequestGeneration++;
+  clearExternalPreviewOutput();
+  if (!clearSelection) return;
+  previewDocument = null;
+  editingStatusbar.setPreviewFormat(null);
+}
+
+function invalidatePendingPreviewRequest() {
+  previewRequestGeneration++;
+  openingPreviewRequestGeneration = null;
+  cancelPendingExternalPreviewRequest();
 }
 
 function externalPreviewInputPath(session: Readonly<DocumentSession>): string | null {
@@ -420,14 +451,18 @@ function externalPreviewInputPath(session: Readonly<DocumentSession>): string | 
 }
 
 function clearPreview(session: Readonly<DocumentSession>) {
+  previewReplacementLifecycle.invalidateManualSelection();
   previewRequestGeneration++;
-  clearExternalPreviewOutput();
+  openingPreviewRequestGeneration = null;
+  cancelPendingExternalPreviewRequest();
+  inlinePreview.setPendingExternalOutputPath(null);
   inlinePreview.setSourcePath(null, session.archivePath, session.archiveEntry);
   previewDocument = null;
   previewFullscreen = false;
   previewFullscreenTabId = null;
   editingStatusbar.setPreviewFormat(null);
   inlinePreview.clear();
+  if (!previewAvailable) clearDisplayedExternalPreviewOutput();
 }
 
 function openPreviewFormat(
@@ -448,22 +483,27 @@ function openPreviewFormat(
     errorTitle = "ビューを表示できませんでした",
     externalAdapter,
   } = options;
+  previewReplacementLifecycle.invalidateManualSelection();
+  openingPreviewRequestGeneration = null;
+  cancelPendingExternalPreviewRequest();
   const previousPreviewDocument = previewDocument;
   const document = { ownerTabId: tabs?.state.activeId ?? null, path, format };
   const requestGeneration = ++previewRequestGeneration;
+  const pendingViewerOpenCancellation = editor.cancelPendingTextViewerOpens();
   const isCurrentRequest = () => requestGeneration === previewRequestGeneration
     && document.ownerTabId === (tabs?.state.activeId ?? null)
     && document.path === documentPathOf(doc.current);
   runBackground(errorTitle, async () => {
     let requestId: string | null = null;
+    let generatedOutputPath: string | null = null;
     try {
+      await pendingViewerOpenCancellation;
+      if (!isCurrentRequest()) return;
       let resolvedFormat = format;
       let effectiveExtension = session.effectiveExtension;
-      let generatedOutputPath: string | null = null;
       if (externalAdapter) {
         const inputPath = externalPreviewInputPath(session);
         if (!inputPath) throw new Error("外部プレビューは保存済みの通常ファイルだけに対応しています");
-        clearExternalPreviewOutput();
         requestId = window.crypto.randomUUID();
         externalPreviewRequestId = requestId;
         generatedOutputPath = await api.externalPreviewGenerate({
@@ -473,16 +513,16 @@ function openPreviewFormat(
           outputFormat: externalAdapter.outputFormat,
           requestId,
         });
+        if (externalPreviewRequestId === requestId) externalPreviewRequestId = null;
         if (!isCurrentRequest()) {
-          cleanupExternalPreviewOutput(generatedOutputPath);
+          externalPreviewOutputLifecycle.discardGeneratedOutput(
+            generatedOutputPath,
+            inlinePreview.mayReferenceExternalOutputPath(generatedOutputPath),
+          );
           return;
         }
-        externalPreviewOutputPath = generatedOutputPath;
-        inlinePreview.setExternalOutputPath(generatedOutputPath);
         resolvedFormat = externalAdapter.outputFormat === "svg" ? "image" : "html";
         effectiveExtension = null;
-      } else {
-        clearExternalPreviewOutput();
       }
       if (format === "sqlite") {
         const action = await resolveSqlitePreviewAction(
@@ -506,21 +546,76 @@ function openPreviewFormat(
         }
       }
       if (!isCurrentRequest()) return;
-      previewDocument = document;
       inlinePreview.setSourcePath(
         sourcePathForViewer(resolvedFormat, session.savePath, session.displayPath),
         session.archivePath,
         session.archiveEntry,
         effectiveExtension,
       );
+      inlinePreview.setPendingExternalOutputPath(generatedOutputPath);
+      previewReplacementLifecycle.begin(requestGeneration);
+      openingPreviewRequestGeneration = requestGeneration;
+      const openedLabel = await editor.openTextViewer(
+        resolvedFormat,
+        keepPreviewRange,
+        resolvedFormat === "sqlite",
+        true,
+        generatedOutputPath,
+        isCurrentRequest,
+      );
+      if (!isCurrentRequest()) {
+        if (generatedOutputPath) {
+          externalPreviewOutputLifecycle.discardGeneratedOutput(
+            generatedOutputPath,
+            inlinePreview.mayReferenceExternalOutputPath(generatedOutputPath),
+          );
+        }
+        return;
+      }
+      if (openedLabel === null || !previewReplacementLifecycle.isActive(openedLabel)) {
+        if (requestId) {
+          previewReplacementLifecycle.handleOpenResult(openedLabel, () => {
+            if (!previewAvailable && isCurrentRequest()) invalidatePreviewRequest();
+          });
+        }
+        if (generatedOutputPath) {
+          externalPreviewOutputLifecycle.discardGeneratedOutput(
+            generatedOutputPath,
+            inlinePreview.mayReferenceExternalOutputPath(generatedOutputPath),
+          );
+        }
+        return;
+      }
+
+      if (!isCurrentRequest()) return;
+      if (generatedOutputPath) {
+        if (!externalPreviewOutputLifecycle.replaceDisplayedOutput(generatedOutputPath, isCurrentRequest)) {
+          externalPreviewOutputLifecycle.discardGeneratedOutput(
+            generatedOutputPath,
+            inlinePreview.mayReferenceExternalOutputPath(generatedOutputPath),
+          );
+          return;
+        }
+        inlinePreview.setExternalOutputPath(generatedOutputPath);
+      } else {
+        clearDisplayedExternalPreviewOutput();
+      }
+      previewDocument = document;
       editingStatusbar.setPreviewFormat(resolvedFormat);
-      await editor.openTextViewer(resolvedFormat, keepPreviewRange, resolvedFormat === "sqlite");
       if (fragment !== null && resolvedFormat === "markdown") inlinePreview.setMarkdownFragment(fragment);
     } catch (error) {
-      if (requestId && externalPreviewRequestId === requestId) clearExternalPreviewOutput();
-      if (previewDocument === document) previewDocument = null;
+      if (requestId && externalPreviewRequestId === requestId) cancelPendingExternalPreviewRequest();
+      if (generatedOutputPath) {
+        externalPreviewOutputLifecycle.discardGeneratedOutput(
+          generatedOutputPath,
+          inlinePreview.mayReferenceExternalOutputPath(generatedOutputPath),
+        );
+      }
       throw error;
     } finally {
+      inlinePreview.setPendingExternalOutputPath(externalPreviewOutputLifecycle.displayedOutputPath());
+      previewReplacementLifecycle.finish(requestGeneration);
+      if (openingPreviewRequestGeneration === requestGeneration) openingPreviewRequestGeneration = null;
       if (requestId && externalPreviewRequestId === requestId) externalPreviewRequestId = null;
     }
   }, externalAdapter ? async (error) => {
@@ -715,14 +810,45 @@ const editorPorts = {
   openAs: (openAs) => runBackground("指定した形式で開けませんでした", () => tabs.openCurrentAs(openAs)),
   revealInExplorer: (path, isDir) => revealInExplorer(path, isDir),
   onError: (message, error) => showError(message, error),
-  openViewer: async (format, text, selection, sqliteHeaderChecked = false) => {
+  cancelPendingViewerOpen: () => inlinePreview.cancelPendingExternalOpen(),
+  onViewerFormatSelectionStarting: () => {
+    invalidatePendingPreviewRequest();
+    inlinePreview.setPendingExternalOutputPath(null);
+    const selectionGeneration = previewReplacementLifecycle.beginManualSelection();
+    const requestGeneration = previewRequestGeneration;
+    previewReplacementLifecycle.begin(requestGeneration);
+    return (succeeded) => {
+      try {
+        if (!succeeded
+          && !previewAvailable
+          && previewReplacementLifecycle.isCurrentManualSelection(selectionGeneration)) {
+          invalidatePreviewRequest();
+        }
+      } finally {
+        previewReplacementLifecycle.finishManualSelection(selectionGeneration);
+        previewReplacementLifecycle.finish(requestGeneration);
+      }
+    };
+  },
+  onViewerFormatSelected: (format, label) => {
+    if (!previewReplacementLifecycle.isActive(label)) return;
+    clearDisplayedExternalPreviewOutput();
+    previewDocument = {
+      ownerTabId: tabs?.state.activeId ?? null,
+      path: documentPathOf(doc.current),
+      format,
+    };
+    editingStatusbar.setPreviewFormat(format);
+  },
+  openViewer: async (format, text, selection, sqliteHeaderChecked = false, externalOutputPath, isCurrentRequest = () => true) => {
     const session = doc.current;
     const path = documentPathOf(session);
     const ownerTabId = tabs?.state.activeId ?? null;
     let sqliteRequestGeneration = previewRequestGeneration;
     const isCurrentSqliteRequest = () => sqliteRequestGeneration === previewRequestGeneration
       && ownerTabId === (tabs?.state.activeId ?? null)
-      && path === documentPathOf(doc.current);
+      && path === documentPathOf(doc.current)
+      && isCurrentRequest();
     if (format === "sqlite") {
       const sourcePath = sqlitePreviewSourcePath(session);
       if (!sourcePath) throw new Error("SQLiteプレビューには実ファイルのパスが必要です");
@@ -740,11 +866,13 @@ const editorPorts = {
         session.effectiveExtension,
       );
     }
+    const label = await inlinePreview.open(format, text, selection, externalOutputPath, isCurrentRequest);
+    if (!isCurrentRequest()) return null;
     editingStatusbar.setPreviewFormat(format);
-    const label = await inlinePreview.open(format, text, selection);
     if (format === "sqlite" && isCurrentSqliteRequest()) {
       previewDocument = { ownerTabId, path, format };
-    } else if (isCurrentPreviewDocument(previewDocument, ownerTabId, path)) {
+    } else if (openingPreviewRequestGeneration === null
+      && isCurrentPreviewDocument(previewDocument, ownerTabId, path)) {
       previewDocument.format = format;
     }
     return label;

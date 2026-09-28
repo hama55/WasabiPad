@@ -66,7 +66,6 @@ impl ExternalPreviewOperations {
         validate_request_id(request_id)?;
         let input_path = validate_input_path(input_path)?;
         let input_key = input_key(&input_path);
-        let mut cleanup_path = None;
         let cancelled = {
             let mut jobs = self
                 .jobs
@@ -83,9 +82,6 @@ impl ExternalPreviewOperations {
                 if let Some(previous) = jobs.active.get(&previous_id) {
                     previous.cancelled.store(true, Ordering::Release);
                 }
-                if let Some(previous) = jobs.completed.remove(&previous_id) {
-                    cleanup_path = Some(previous.output_path);
-                }
             }
             let cancelled = Arc::new(AtomicBool::new(false));
             jobs.active.insert(
@@ -99,9 +95,6 @@ impl ExternalPreviewOperations {
                 .insert(input_key, request_id.to_owned());
             cancelled
         };
-        if let Some(path) = cleanup_path {
-            let _ = cleanup_job(&path, &default_work_root());
-        }
         Ok((cancelled, input_path))
     }
 
@@ -312,17 +305,91 @@ pub(crate) fn cleanup_stale_jobs(work_root: &Path) -> Result<(), String> {
         let entry =
             entry.map_err(|error| format!("Could not inspect external preview job: {error}"))?;
         let path = entry.path();
-        let is_owned = path.is_dir()
-            && path
-                .file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with(JOB_PREFIX))
-            && is_regular_file(&path.join(JOB_MARKER));
-        if is_owned {
-            fs::remove_dir_all(path)
-                .map_err(|error| format!("Could not clean stale external preview job: {error}"))?;
+        if !entry
+            .file_type()
+            .map_err(|error| format!("Could not inspect external preview job: {error}"))?
+            .is_dir()
+        {
+            continue;
         }
+        let Some(owner_pid) = job_owner_pid(&path) else {
+            continue;
+        };
+        match fs::symlink_metadata(path.join(JOB_MARKER)) {
+            Ok(metadata) if metadata.file_type().is_file() => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            _ => continue,
+        }
+        if process_is_running(owner_pid) {
+            // PID reuse can retain an orphan until that unrelated process exits; never risk a live viewer.
+            continue;
+        }
+        fs::remove_dir_all(path)
+            .map_err(|error| format!("Could not clean stale external preview job: {error}"))?;
     }
     Ok(())
+}
+
+fn job_owner_pid(path: &Path) -> Option<u32> {
+    let mut parts = path
+        .file_name()?
+        .to_str()?
+        .strip_prefix(JOB_PREFIX)?
+        .split('-');
+    let pid = parts.next()?.parse().ok()?;
+    parts.next()?.parse::<u128>().ok()?;
+    parts.next()?.parse::<u64>().ok()?;
+    parts.next().is_none().then_some(pid)
+}
+
+fn process_is_running(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{
+            CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, WAIT_OBJECT_0, WAIT_TIMEOUT,
+        };
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+        };
+
+        // Unknown access/wait failures are treated as live so startup cleanup cannot delete
+        // another process's potentially displayed output.
+        unsafe {
+            let process = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
+            if process.is_null() {
+                return GetLastError() != ERROR_INVALID_PARAMETER;
+            }
+            let status = WaitForSingleObject(process, 0);
+            CloseHandle(process);
+            match status {
+                WAIT_OBJECT_0 => false,
+                WAIT_TIMEOUT => true,
+                _ => true,
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        let Ok(pid) = libc::pid_t::try_from(pid) else {
+            return false;
+        };
+        // EPERM means the process exists but cannot be queried; only ESRCH proves it is gone.
+        unsafe {
+            libc::kill(pid, 0) == 0
+                || io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+        }
+    }
+
+    #[cfg(not(any(windows, unix)))]
+    {
+        // Conservatively preserve output when this target has no process-liveness probe.
+        true
+    }
 }
 
 pub fn run_external_preview(
@@ -409,19 +476,16 @@ pub fn run_external_preview(
 }
 
 pub fn cleanup_job(output_path: &Path, work_root: &Path) -> Result<(), String> {
-    if !output_path.exists() {
-        return Ok(());
-    }
     let root = canonical_directory(work_root, "external preview work root")?;
-    let output = fs::canonicalize(output_path)
-        .map_err(|error| format!("Could not resolve external preview output: {error}"))?;
-    let job = output
+    let job_path = output_path
         .parent()
         .ok_or_else(|| "External preview output has no job directory".to_owned())?;
+    if !job_path.exists() {
+        return Ok(());
+    }
+    let job = canonical_directory(job_path, "external preview job directory")?;
     if job.parent() != Some(root.as_path())
-        || !job
-            .file_name()
-            .is_some_and(|name| name.to_string_lossy().starts_with(JOB_PREFIX))
+        || job_owner_pid(&job).is_none()
         || !is_regular_file(&job.join(JOB_MARKER))
     {
         return Err("Refusing to delete a non-WasabiPad external preview directory".to_owned());
@@ -553,6 +617,8 @@ fn create_job_marker(path: &Path) -> Result<(), String> {
 }
 
 fn verify_output(path: &Path, canonical_job: &Path) -> Result<PathBuf, String> {
+    // This is the WasabiPad-side guarantee: the entry output exists as a regular file in this job.
+    // HTML validity and application-specific meaning belong to the external adapter/browser.
     let canonical = fs::canonicalize(path)
         .map_err(|error| format!("External preview output is missing: {error}"))?;
     if !canonical.starts_with(canonical_job) || !is_regular_file(&canonical) {

@@ -25,13 +25,15 @@ import { promptFields as promptFieldsImpl } from "./prompt";
 import type { RegisteredCommandMenuPorts } from "./registered-command-menu";
 import { MENU_ICON } from "./menu-icons";
 import { loadRegisteredStrings } from "./registered-strings";
+import { InlinePreview, INLINE_PREVIEW_MESSAGES } from "./inline-preview";
+import { createPreviewReplacementLifecycle } from "./preview-replacement";
 
 installDomStubs();
 
 function mount(
   initial: string,
   saveImage?: EditorPorts["saveImage"],
-  overrides: Partial<Pick<EditorPorts, "revealInExplorer" | "openInNewTab" | "openInNewWindow" | "openAs" | "registeredCommandPorts" | "openViewer" | "closeViewer">> = {},
+  overrides: Partial<Pick<EditorPorts, "revealInExplorer" | "openInNewTab" | "openInNewWindow" | "openAs" | "registeredCommandPorts" | "openViewer" | "closeViewer" | "onViewerFormatSelectionStarting" | "onViewerFormatSelected">> = {},
 ) {
   const host = document.createElement("div");
   document.body.replaceChildren(host);
@@ -56,6 +58,8 @@ function mount(
       runExternalCommand: async () => {},
     },
     onError: async (message, error) => { events.errors.push({ message, error }); },
+    onViewerFormatSelectionStarting: overrides.onViewerFormatSelectionStarting,
+    onViewerFormatSelected: overrides.onViewerFormatSelected,
     openViewer: overrides.openViewer ?? (async () => null),
     updateViewer: async () => true,
     closeViewer: overrides.closeViewer ?? (async () => {}),
@@ -1518,6 +1522,549 @@ describe("Feature: VirtualEditor", () => {
       .find((element) => element.textContent === ".md")!.click();
     await settle();
     expect(openAs).toHaveBeenCalledWith("md");
+  });
+
+  // Given: ビューを開くportと形式選択通知がある
+  // When: 右クリックメニューからMarkdownビューを正常に開く
+  // Then: 開いたビューのラベルと形式が選択通知へ渡る
+  it("Scenario: 成功した形式選択を現在のビューとして通知する", async () => {
+    const onViewerFormatSelected = vi.fn();
+    const openViewer = vi.fn(async () => "inline-preview-1");
+    const { host } = mount("memo", undefined, { onViewerFormatSelected, openViewer });
+    const dropdown = document.createElement("div");
+    dropdown.id = "dropdown";
+    document.body.appendChild(dropdown);
+    await settle();
+
+    host.querySelector<HTMLElement>(".ve-scroll")!.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, clientX: 0, clientY: 0 }),
+    );
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "Markdownビュー")!.click();
+    await settle();
+
+    expect(openViewer).toHaveBeenCalledOnce();
+    expect(onViewerFormatSelected).toHaveBeenCalledWith("markdown", "inline-preview-1");
+  });
+
+  // Given: 外部HTMLプレビューが表示中で、SQLite形式の確認が非同期で保留されている
+  // When: エディタメニューからSQLiteビューを選ぶが、ヘッダー確認が不一致になる
+  // Then: 既存プレビューの文書状態・形式・生成物を維持し、選択遷移だけを終了する
+  it("Scenario: failed SQLite selection preserves the current external preview", async () => {
+    const outputPath = "C:\\Temp\\WasabiPad\\sqlite-mismatch\\preview.html";
+    let previewRequestGeneration = 10;
+    let pendingRequestId: string | null = "displayed-output-request";
+    let previewOutputPath: string | null = outputPath;
+    let previewDocument: { path: string; format: string } | null = { path: "sample.db", format: "html" };
+    let previewFormatStatus: string | null = "html";
+    let activeLabel: string | null = null;
+    const cancelledRequestIds: string[] = [];
+    const cleanedPaths: string[] = [];
+    let resolveSqliteCheck!: () => void;
+    const sqliteCheck = new Promise<void>((resolve) => { resolveSqliteCheck = resolve; });
+    let signalSqliteCheckStarted!: () => void;
+    const sqliteCheckStarted = new Promise<void>((resolve) => { signalSqliteCheckStarted = resolve; });
+    let inlinePreview!: InlinePreview;
+    const finishSelection = vi.fn((succeeded: boolean) => {
+      if (succeeded || activeLabel !== null) return;
+      if (previewOutputPath) cleanedPaths.push(previewOutputPath);
+      previewOutputPath = null;
+      inlinePreview.setExternalOutputPath(null);
+      previewDocument = null;
+      previewFormatStatus = null;
+    });
+    const onViewerFormatSelectionStarting = vi.fn(() => {
+      previewRequestGeneration++;
+      const requestId = pendingRequestId;
+      pendingRequestId = null;
+      if (requestId && previewOutputPath === null) cancelledRequestIds.push(requestId);
+      return finishSelection;
+    });
+    const onViewerFormatSelected = vi.fn((format: string, label: string) => {
+      if (activeLabel !== label) return;
+      if (previewOutputPath) cleanedPaths.push(previewOutputPath);
+      previewOutputPath = null;
+      inlinePreview.setExternalOutputPath(null);
+      previewDocument = { path: "sample.db", format };
+      previewFormatStatus = format;
+    });
+    const { editor, host, events } = mount("memo", undefined, {
+      onViewerFormatSelectionStarting,
+      onViewerFormatSelected,
+      openViewer: async (format, text, selection) => {
+        if (format === "sqlite") {
+          signalSqliteCheckStarted();
+          await sqliteCheck;
+          return null;
+        }
+        return inlinePreview.open(format, text, selection);
+      },
+      closeViewer: (label) => inlinePreview.close(label),
+    });
+    const previewHost = document.createElement("div");
+    const frame = document.createElement("iframe");
+    previewHost.appendChild(frame);
+    document.body.appendChild(previewHost);
+    inlinePreview = new InlinePreview(previewHost, {
+      onAvailabilityChange: (available, label) => { activeLabel = available ? label : null; },
+    });
+    const postMessage = vi.spyOn(frame.contentWindow!, "postMessage");
+    const renderId = () => postMessage.mock.calls
+      .map(([message]) => message as { type?: string; render_id?: string })
+      .filter((message) => message.type === INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE)
+      .at(-1)?.render_id;
+    const notifyRendered = (id: string) => window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.DISPLAY_COMMITTED_MESSAGE, render_id: id },
+    }));
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
+    }));
+    inlinePreview.setExternalOutputPath(outputPath);
+    const initialOpen = editor.openTextViewer("html");
+    await vi.waitFor(() => expect(renderId()).toEqual(expect.any(String)));
+    const initialRenderId = renderId()!;
+    notifyRendered(initialRenderId);
+    await initialOpen;
+    await settle();
+
+    const dropdown = document.createElement("div");
+    dropdown.id = "dropdown";
+    document.body.appendChild(dropdown);
+    host.querySelector<HTMLElement>(".ve-scroll")!.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, clientX: 0, clientY: 0 }),
+    );
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "SQLiteビュー")!.click();
+
+    expect(onViewerFormatSelectionStarting).toHaveBeenCalledOnce();
+    expect(previewRequestGeneration).toBe(11);
+    expect(pendingRequestId).toBeNull();
+    expect(cancelledRequestIds).toEqual([]);
+    expect(previewDocument).toEqual({ path: "sample.db", format: "html" });
+    expect(previewFormatStatus).toBe("html");
+    expect(previewOutputPath).toBe(outputPath);
+    await sqliteCheckStarted;
+    resolveSqliteCheck();
+    await vi.waitFor(() => expect(finishSelection).toHaveBeenCalledOnce());
+    expect(finishSelection).toHaveBeenCalledWith(false);
+
+    expect(onViewerFormatSelected).not.toHaveBeenCalled();
+    expect(activeLabel).toBe("inline-preview-1");
+    expect(previewDocument).toEqual({ path: "sample.db", format: "html" });
+    expect(previewFormatStatus).toBe("html");
+    expect(previewOutputPath).toBe(outputPath);
+    expect(cleanedPaths).toEqual([]);
+    expect(events.errors).toEqual([]);
+    let payloads = postMessage.mock.calls
+      .map(([message]) => message as { type?: string; payload?: { format: string; external_output_path: string | null } })
+      .filter((message) => message.type === INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE);
+    expect(payloads.at(-1)?.payload).toMatchObject({ format: "html", external_output_path: outputPath });
+
+    host.querySelector<HTMLElement>(".ve-scroll")!.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, clientX: 0, clientY: 0 }),
+    );
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "Markdownビュー")!.click();
+    expect(previewOutputPath).toBe(outputPath);
+    await vi.waitFor(() => expect(renderId()).not.toBe(initialRenderId));
+    notifyRendered(renderId()!);
+    await vi.waitFor(() => expect(onViewerFormatSelected).toHaveBeenCalledOnce());
+
+    expect(finishSelection).toHaveBeenCalledTimes(2);
+    expect(previewDocument).toEqual({ path: "sample.db", format: "markdown" });
+    expect(previewFormatStatus).toBe("markdown");
+    expect(previewOutputPath).toBeNull();
+    expect(cleanedPaths).toEqual([outputPath]);
+    expect(activeLabel).toBe("inline-preview-2");
+    expect(finishSelection).toHaveBeenLastCalledWith(true);
+    payloads = postMessage.mock.calls
+      .map(([message]) => message as { type?: string; payload?: { format: string; external_output_path: string | null } })
+      .filter((message) => message.type === INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE);
+    expect(payloads.at(-1)?.payload).toMatchObject({ format: "markdown", external_output_path: null });
+  });
+
+  // Given: 外部アダプターの出力はできたが、InlinePreviewを開く処理が保留中で表示中ビューはない
+  // When: SQLite形式を手動選択してヘッダー不一致になる
+  // Then: 保留中のアダプタービューは有効化せず、残るビューがないため状態と出力を掃除する
+  it("Scenario: failed SQLite selection invalidates a pending adapter viewer open", async () => {
+    const outputPath = "C:\\Temp\\WasabiPad\\pending-adapter-open\\preview.html";
+    let previewRequestGeneration = 40;
+    const replacementLifecycle = createPreviewReplacementLifecycle();
+    let externalPreviewRequestId: string | null = "adapter-request";
+    let previewOutputPath: string | null = outputPath;
+    let previewDocument: { path: string; format: string } | null = { path: "sample.aaa", format: "html" };
+    let previewFormatStatus: string | null = "html";
+    let previewAvailable = false;
+    let activeLabel: string | null = null;
+    const cleanedPaths: string[] = [];
+    let resolveAdapterInlineOpen!: () => void;
+    const adapterInlineOpen = new Promise<void>((resolve) => { resolveAdapterInlineOpen = resolve; });
+    let signalAdapterOpenStarted!: () => void;
+    const adapterOpenStarted = new Promise<void>((resolve) => { signalAdapterOpenStarted = resolve; });
+    let resolveSqliteCheck!: () => void;
+    const sqliteCheck = new Promise<void>((resolve) => { resolveSqliteCheck = resolve; });
+    let signalSqliteCheckStarted!: () => void;
+    const sqliteCheckStarted = new Promise<void>((resolve) => { signalSqliteCheckStarted = resolve; });
+    let inlinePreview!: InlinePreview;
+    const finishSelection = vi.fn((succeeded: boolean) => {
+      if (succeeded || previewAvailable) return;
+      if (previewOutputPath) cleanedPaths.push(previewOutputPath);
+      previewOutputPath = null;
+      inlinePreview.setExternalOutputPath(null);
+      previewDocument = null;
+      previewFormatStatus = null;
+    });
+    const onViewerFormatSelectionStarting = vi.fn(() => {
+      previewRequestGeneration++;
+      const selectionGeneration = replacementLifecycle.beginManualSelection();
+      const requestGeneration = previewRequestGeneration;
+      replacementLifecycle.begin(requestGeneration);
+      externalPreviewRequestId = null;
+      return (succeeded: boolean) => {
+        try {
+          if (replacementLifecycle.isCurrentManualSelection(selectionGeneration)) finishSelection(succeeded);
+        } finally {
+          replacementLifecycle.finishManualSelection(selectionGeneration);
+          replacementLifecycle.finish(requestGeneration);
+        }
+      };
+    });
+    const { editor, host, events } = mount("memo", undefined, {
+      onViewerFormatSelectionStarting,
+      openViewer: async (format, text, selection) => {
+        if (format === "html") {
+          signalAdapterOpenStarted();
+          await adapterInlineOpen;
+          return inlinePreview.open(format, text, selection);
+        }
+        if (format === "sqlite") {
+          previewRequestGeneration++;
+          signalSqliteCheckStarted();
+          await sqliteCheck;
+          return null;
+        }
+        return inlinePreview.open(format, text, selection);
+      },
+      closeViewer: (label) => inlinePreview.close(label),
+    });
+    const previewHost = document.createElement("div");
+    const frame = document.createElement("iframe");
+    previewHost.appendChild(frame);
+    document.body.appendChild(previewHost);
+    inlinePreview = new InlinePreview(previewHost, {
+      onAvailabilityChange: (available, label) => {
+        if (available) activeLabel = label;
+        else if (activeLabel === label) activeLabel = null;
+        previewAvailable = activeLabel !== null;
+      },
+    });
+    const postMessage = vi.spyOn(frame.contentWindow!, "postMessage");
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
+    }));
+    inlinePreview.setExternalOutputPath(outputPath);
+
+    const adapterOpening = editor.openTextViewer("html");
+    await adapterOpenStarted;
+    expect(previewOutputPath).toBe(outputPath);
+    expect(previewDocument).toEqual({ path: "sample.aaa", format: "html" });
+
+    const dropdown = document.createElement("div");
+    dropdown.id = "dropdown";
+    document.body.appendChild(dropdown);
+    host.querySelector<HTMLElement>(".ve-scroll")!.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, clientX: 0, clientY: 0 }),
+    );
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "SQLiteビュー")!.click();
+
+    expect(onViewerFormatSelectionStarting).toHaveBeenCalledOnce();
+    expect(externalPreviewRequestId).toBeNull();
+    await sqliteCheckStarted;
+    resolveSqliteCheck();
+    await vi.waitFor(() => expect(finishSelection).toHaveBeenCalledOnce());
+
+    expect(finishSelection).toHaveBeenCalledWith(false);
+    expect(previewOutputPath).toBeNull();
+    expect(previewDocument).toBeNull();
+    expect(previewFormatStatus).toBeNull();
+    expect(previewAvailable).toBe(false);
+    expect(cleanedPaths).toEqual([outputPath]);
+
+    resolveAdapterInlineOpen();
+    expect(await adapterOpening).toBeNull();
+    expect(activeLabel).toBeNull();
+    expect(previewAvailable).toBe(false);
+    expect(events.errors).toEqual([]);
+    const payloads = postMessage.mock.calls
+      .map(([message]) => message as { type?: string; payload?: { format: string; external_output_path: string | null } })
+      .filter((message) => message.type === INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE);
+    expect(payloads.at(-1)?.payload).toMatchObject({ format: "html", external_output_path: null });
+  });
+
+  // Given: 外部HTMLプレビューが表示中で、Markdownビューのopenが保留されている
+  // When: Markdownビューを開く前に旧ビューが閉じ、openがnullで完了する
+  // Then: 旧ビューが残っていないため外部出力・文書・形式状態を掃除する
+  it("Scenario: failed non-SQLite selection clears stale state after the old view closes", async () => {
+    const outputPath = "C:\\Temp\\WasabiPad\\failed-manual-open\\preview.html";
+    let previewRequestGeneration = 30;
+    let previewOutputPath: string | null = outputPath;
+    let previewDocument: { path: string; format: string } | null = { path: "sample.aaa", format: "html" };
+    let previewFormatStatus: string | null = "html";
+    let activeLabel: string | null = null;
+    const cleanedPaths: string[] = [];
+    let resolveManualOpen!: () => void;
+    const manualOpen = new Promise<void>((resolve) => { resolveManualOpen = resolve; });
+    let signalManualOpenStarted!: () => void;
+    const manualOpenStarted = new Promise<void>((resolve) => { signalManualOpenStarted = resolve; });
+    let inlinePreview!: InlinePreview;
+    const finishSelection = vi.fn((succeeded: boolean) => {
+      if (succeeded || activeLabel !== null) return;
+      if (previewOutputPath) cleanedPaths.push(previewOutputPath);
+      previewOutputPath = null;
+      inlinePreview.setExternalOutputPath(null);
+      previewDocument = null;
+      previewFormatStatus = null;
+    });
+    const onViewerFormatSelectionStarting = vi.fn(() => {
+      previewRequestGeneration++;
+      return finishSelection;
+    });
+    const onViewerFormatSelected = vi.fn();
+    const { editor, host, events } = mount("memo", undefined, {
+      onViewerFormatSelectionStarting,
+      onViewerFormatSelected,
+      openViewer: async (format, text, selection) => {
+        if (format === "markdown") {
+          signalManualOpenStarted();
+          await manualOpen;
+          return null;
+        }
+        return inlinePreview.open(format, text, selection);
+      },
+      closeViewer: (label) => inlinePreview.close(label),
+    });
+    const previewHost = document.createElement("div");
+    const frame = document.createElement("iframe");
+    previewHost.appendChild(frame);
+    document.body.appendChild(previewHost);
+    inlinePreview = new InlinePreview(previewHost, {
+      onAvailabilityChange: (available, label) => { activeLabel = available ? label : null; },
+    });
+    const postMessage = vi.spyOn(frame.contentWindow!, "postMessage");
+    const latestMessageId = (type: string) => postMessage.mock.calls
+      .map(([message]) => message as { type?: string; render_id?: string })
+      .filter((message) => message.type === type)
+      .at(-1)?.render_id;
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
+    }));
+    inlinePreview.setExternalOutputPath(outputPath);
+    const initialOpen = editor.openTextViewer("html");
+    await vi.waitFor(() => expect(latestMessageId(INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE)).toEqual(expect.any(String)));
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: window.location.origin,
+      data: {
+        type: INLINE_PREVIEW_MESSAGES.DISPLAY_COMMITTED_MESSAGE,
+        render_id: latestMessageId(INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE),
+      },
+    }));
+    await initialOpen;
+    await settle();
+
+    const dropdown = document.createElement("div");
+    dropdown.id = "dropdown";
+    document.body.appendChild(dropdown);
+    host.querySelector<HTMLElement>(".ve-scroll")!.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, clientX: 0, clientY: 0 }),
+    );
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "Markdownビュー")!.click();
+    expect(onViewerFormatSelectionStarting).toHaveBeenCalledOnce();
+    expect(previewOutputPath).toBe(outputPath);
+    expect(previewDocument).toEqual({ path: "sample.aaa", format: "html" });
+    expect(previewFormatStatus).toBe("html");
+
+    await manualOpenStarted;
+    await vi.waitFor(() => expect(latestMessageId(INLINE_PREVIEW_MESSAGES.CLEAR_MESSAGE)).toEqual(expect.any(String)));
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: window.location.origin,
+      data: {
+        type: INLINE_PREVIEW_MESSAGES.CLEARED_MESSAGE,
+        render_id: latestMessageId(INLINE_PREVIEW_MESSAGES.CLEAR_MESSAGE),
+      },
+    }));
+    await vi.waitFor(() => expect(activeLabel).toBeNull());
+    expect(previewOutputPath).toBe(outputPath);
+    expect(previewDocument).toEqual({ path: "sample.aaa", format: "html" });
+    expect(previewFormatStatus).toBe("html");
+
+    resolveManualOpen();
+    await vi.waitFor(() => expect(finishSelection).toHaveBeenCalledOnce());
+
+    expect(finishSelection).toHaveBeenCalledWith(false);
+    expect(onViewerFormatSelected).not.toHaveBeenCalled();
+    expect(previewOutputPath).toBeNull();
+    expect(previewDocument).toBeNull();
+    expect(previewFormatStatus).toBeNull();
+    expect(cleanedPaths).toEqual([outputPath]);
+    expect(events.errors).toEqual([]);
+  });
+
+  // Given: ビュー形式の手動選択開始通知から終了通知を受け取る
+  // When: ビューを開く処理が例外を投げる
+  // Then: 終了通知へ失敗を渡し、操作エラーも報告する
+  it("Scenario: selection finish receives failure when opening throws", async () => {
+    const finishSelection = vi.fn();
+    const { host, events } = mount("memo", undefined, {
+      onViewerFormatSelectionStarting: () => finishSelection,
+      openViewer: async () => { throw new Error("viewer open failed"); },
+    });
+    const dropdown = document.createElement("div");
+    dropdown.id = "dropdown";
+    document.body.appendChild(dropdown);
+    await settle();
+
+    host.querySelector<HTMLElement>(".ve-scroll")!.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, clientX: 0, clientY: 0 }),
+    );
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "Markdownビュー")!.click();
+    await vi.waitFor(() => expect(finishSelection).toHaveBeenCalledOnce());
+
+    expect(finishSelection).toHaveBeenCalledWith(false);
+    expect(events.errors).toHaveLength(1);
+  });
+
+  // Given: プレビューがなく、外部アダプタの生成が保留中で、手動ビューのopenも待機する
+  // When: 利用者が別形式を選んでからアダプタ生成が先に完了する
+  // Then: 選択開始時点で要求を無効化し、遅れて返る出力を掃除して手動形式を表示する
+  it("Scenario: manual format selection wins while its open is delayed", async () => {
+    const generatedPath = "C:\\Temp\\WasabiPad\\manual-choice\\preview.html";
+    let previewRequestGeneration = 5;
+    let outputPath: string | null = null;
+    let adapterRequestId: string | null = "adapter-request";
+    const cancelledRequestIds: string[] = [];
+    const cleanedPaths: string[] = [];
+    const openedFormats: string[] = [];
+    const selectedFormats: string[] = [];
+    let activeLabel: string | null = null;
+    let resolveGeneratedOutput!: (path: string) => void;
+    const generatedOutput = new Promise<string>((resolve) => {
+      resolveGeneratedOutput = resolve;
+    });
+    let resolveManualOpen!: () => void;
+    const manualOpen = new Promise<void>((resolve) => {
+      resolveManualOpen = resolve;
+    });
+    let signalManualOpenStarted!: () => void;
+    const manualOpenStarted = new Promise<void>((resolve) => {
+      signalManualOpenStarted = resolve;
+    });
+    let inlinePreview!: InlinePreview;
+    const finishSelection = vi.fn();
+    const onViewerFormatSelectionStarting = vi.fn(() => {
+      previewRequestGeneration++;
+      const requestId = adapterRequestId;
+      adapterRequestId = null;
+      if (requestId && outputPath === null) cancelledRequestIds.push(requestId);
+      return finishSelection;
+    });
+    const onViewerFormatSelected = vi.fn((format, label) => {
+      if (activeLabel !== label) return;
+      selectedFormats.push(format);
+      if (outputPath) cleanedPaths.push(outputPath);
+      outputPath = null;
+      inlinePreview.setExternalOutputPath(null);
+    });
+    const { editor, host, events } = mount("memo", undefined, {
+      onViewerFormatSelectionStarting,
+      onViewerFormatSelected,
+      openViewer: async (format, text, selection) => {
+        if (format === "markdown") {
+          signalManualOpenStarted();
+          await manualOpen;
+        }
+        openedFormats.push(format);
+        return inlinePreview.open(format, text, selection);
+      },
+      closeViewer: (label) => inlinePreview.close(label),
+    });
+    const previewHost = document.createElement("div");
+    const frame = document.createElement("iframe");
+    previewHost.appendChild(frame);
+    document.body.appendChild(previewHost);
+    inlinePreview = new InlinePreview(previewHost, {
+      onAvailabilityChange: (available, label) => { activeLabel = available ? label : null; },
+    });
+    const postMessage = vi.spyOn(frame.contentWindow!, "postMessage");
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
+    }));
+    await settle();
+
+    const adapterRequestGeneration = previewRequestGeneration;
+    const adapterOpen = generatedOutput.then(async (path) => {
+      if (adapterRequestGeneration !== previewRequestGeneration) {
+        cleanedPaths.push(path);
+        return null;
+      }
+      outputPath = path;
+      adapterRequestId = null;
+      inlinePreview.setExternalOutputPath(path);
+      return editor.openTextViewer("html");
+    });
+
+    const dropdown = document.createElement("div");
+    dropdown.id = "dropdown";
+    document.body.appendChild(dropdown);
+    host.querySelector<HTMLElement>(".ve-scroll")!.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, clientX: 0, clientY: 0 }),
+    );
+    [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "Markdownビュー")!.click();
+
+    // Selection-start must run in the click stack, before the dispatched async open begins.
+    expect(onViewerFormatSelectionStarting).toHaveBeenCalledOnce();
+    expect(previewRequestGeneration).toBe(6);
+    expect(cancelledRequestIds).toEqual(["adapter-request"]);
+    expect(adapterRequestId).toBeNull();
+    await manualOpenStarted;
+
+    resolveGeneratedOutput(generatedPath);
+    expect(await adapterOpen).toBeNull();
+    expect(adapterRequestId).toBeNull();
+    expect(outputPath).toBeNull();
+    expect(cleanedPaths).toEqual([generatedPath]);
+    expect(openedFormats).toEqual([]);
+
+    resolveManualOpen();
+    await vi.waitFor(() => expect(activeLabel).toBe("inline-preview-1"));
+    expect(events.errors).toEqual([]);
+    await vi.waitFor(() => expect(onViewerFormatSelected).toHaveBeenCalledOnce());
+    expect(finishSelection).toHaveBeenCalledOnce();
+
+    expect(openedFormats).toEqual(["markdown"]);
+    expect(selectedFormats).toEqual(["markdown"]);
+    expect(activeLabel).toBe("inline-preview-1");
+    expect(onViewerFormatSelected).toHaveBeenCalledWith("markdown", "inline-preview-1");
+    expect(finishSelection).toHaveBeenCalledWith(true);
+    const payloads = postMessage.mock.calls
+      .map(([message]) => message as { type?: string; payload?: { format: string; external_output_path: string | null } })
+      .filter((message) => message.type === INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE);
+    expect(payloads.at(-1)?.payload).toMatchObject({ format: "markdown", external_output_path: null });
   });
 
   // Given: 外部ファイルパスと新規ウィンドウ操作がある
