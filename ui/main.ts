@@ -132,6 +132,7 @@ const splitter = $("splitter");
 const previewSplitter = $("preview-splitter");
 const previewEl = $("preview");
 const previewToggle = $<HTMLButtonElement>("preview-toggle");
+const previewClose = $<HTMLButtonElement>("preview-close");
 const loading = $("loading");
 const loadingMessage = $("loading-message");
 document.documentElement.style.setProperty("--sidebar-default-width", `${SIDEBAR_DEFAULT_WIDTH}px`);
@@ -290,12 +291,13 @@ function applyPaneVisibility(mainWidth: number) {
   };
   const previewShown = isPreviewShown(previewState);
   const fullscreen = isPreviewFullscreen(previewState);
+  const returnFocusToCloseButton = previewShown && previewToggle.matches(":focus-visible");
   previewEl.hidden = !previewShown;
   previewSplitter.hidden = !isPreviewSplitterShown(previewState);
   mainEl.classList.toggle("preview-fullscreen", fullscreen);
   inlinePreview.setFullscreen(fullscreen);
-  const previewView = paneToggleView("preview", previewShown);
-  previewToggle.hidden = false;
+  const previewView = paneToggleView("preview", false);
+  previewToggle.hidden = previewShown;
   previewToggle.textContent = previewView.icon;
   previewToggle.title = previewView.title;
   previewToggle.setAttribute("aria-label", previewView.title);
@@ -307,6 +309,7 @@ function applyPaneVisibility(mainWidth: number) {
     mainEl.clientWidth || mainWidth,
     previewToggle.offsetWidth,
   )}px`;
+  if (returnFocusToCloseButton) previewClose.focus();
 }
 
 function updateSidebarVisibility() {
@@ -1286,6 +1289,19 @@ $("sidebar-toggle").addEventListener("click", () => {
   if (currentlyShown || sidebarCollapsed) sidebarCollapsed = !sidebarCollapsed;
   updateSidebarVisibility();
 });
+function closePreview() {
+  const layoutWidth = measuredMainWidth();
+  if (!Number.isFinite(layoutWidth) || layoutWidth <= 0 || !paneVisibilityAt(layoutWidth).previewShown) return;
+  const returnFocusToOpenButton = previewClose.matches(":focus-visible");
+  previewCollapsed = true;
+  previewFullscreen = false;
+  previewFullscreenTabId = null;
+  previewEl.style.removeProperty("width");
+  updatePreviewVisibility();
+  if (returnFocusToOpenButton) previewToggle.focus();
+}
+previewClose.addEventListener("click", closePreview);
+
 previewToggle.addEventListener("click", () => {
   if (!previewAvailable) {
     const session = doc.current;
@@ -1312,17 +1328,9 @@ previewToggle.addEventListener("click", () => {
     if (format) openPreviewFormat(session, path, format);
     return;
   }
-  const layoutWidth = measuredMainWidth();
-  const currentlyShown = paneVisibilityAt(layoutWidth).previewShown;
-  // 幅不足による自動退避と、利用者が明示的に閉じた状態を区別する。
-  previewCollapsed = currentlyShown;
-  if (previewCollapsed) {
-    previewFullscreen = false;
-    previewFullscreenTabId = null;
-    previewEl.style.removeProperty("width");
-  }
+  previewCollapsed = false;
   updatePreviewVisibility();
-  if (!previewCollapsed && shouldResendPreviewOnRestore(previewDocument?.format ?? null)) inlinePreview.resend();
+  if (shouldResendPreviewOnRestore(previewDocument?.format ?? null)) inlinePreview.resend();
 });
 
 // プレビュー切替は本文上へ常駐させず、エディタと縦スクロールバーの境界へ

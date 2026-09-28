@@ -177,6 +177,7 @@ body {
 }
 #sidebar-toggle:hover { background: var(--hover); color: var(--fg); }
 #preview {
+  position: relative;
   width: 38%; min-width: min(var(--preview-min-width), 100%); min-height: 0; flex: none; overflow: hidden;
   background: var(--bg-editor); border-left: 1px solid var(--border-strong);
 }
@@ -186,20 +187,27 @@ body {
   width: var(--pane-splitter-width); cursor: ew-resize; flex: none; background: transparent;
 }
 #preview-splitter:hover { background: var(--bg-status); }
-#preview-toggle {
-  position: absolute; z-index: 8; left: 0; top: 4px;
-  min-width: var(--preview-toggle-width); height: 24px; padding: 0 5px;
+#preview-toggle,
+#preview-close {
+  z-index: 8; min-width: var(--preview-toggle-width); height: 24px; padding: 0 5px;
   border: 1px solid var(--border); border-radius: 4px;
   background: var(--bg-title); color: var(--fg-dim);
   font: 16px/1 "Segoe MDL2 Assets", var(--font-ui);
+}
+#preview-toggle {
+  position: absolute; left: 0; top: 4px;
   opacity: 0; pointer-events: none;
   transition: opacity 120ms ease;
+}
+#preview-close {
+  position: absolute; top: 4px; left: 4px;
 }
 #editorhost.ve-search-open ~ #preview-toggle { top: 44px; }
 #main:has(#editorhost.ve-search-open) > #sidebar[hidden] ~ #sidebar-toggle { top: 44px; }
 #editorhost.ve-find-wrap.ve-search-open ~ #preview-toggle { top: 76px; }
 #main:has(#editorhost.ve-find-wrap.ve-search-open) > #sidebar[hidden] ~ #sidebar-toggle { top: 76px; }
-#preview-toggle:hover { background: var(--hover); color: var(--fg); }
+#preview-toggle:hover,
+#preview-close:hover { background: var(--hover); color: var(--fg); }
 #main.preview-toggle-peek #preview-toggle,
 #preview-toggle:focus-visible {
   opacity: 1; pointer-events: auto;
