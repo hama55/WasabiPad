@@ -72,9 +72,9 @@ describe("Feature: pane toggle placement", () => {
   // Scenario: 検索窓があってもプレビュー行の左端に閉じるボタンを置く
   // Given: プレビュー領域に専用の閉じるボタンがある
   // When: 親領域とボタンの配置規則を検査する
-  // Then: 左端に常時表示し、検索欄による位置変更は開くボタンだけに適用する
+  // Then: 旧来の右向きシェブロンで左端に常時表示し、検索欄による位置変更は開くボタンだけに適用する
   it("Scenario: プレビューを閉じるボタンを検索窓から独立した行左端へ置く", () => {
-    expect(indexHtml).toMatch(/<div id="preview" hidden>[\s\S]*?<button[^>]*id="preview-close"[^>]*aria-label="プレビューを閉じる"[^>]*>[\s\S]*?<\/button>[\s\S]*?<\/div>/s);
+    expect(indexHtml).toMatch(/<div id="preview" hidden>[\s\S]*?<button[^>]*id="preview-close"[^>]*aria-label="プレビューを閉じる"[^>]*>&#xE76C;<\/button>[\s\S]*?<\/div>/s);
     expect(style).toMatch(/#preview\s*\{[^}]*position:\s*relative;/s);
     expect(style).toMatch(/#preview-close\s*\{[^}]*position:\s*absolute;[^}]*top:\s*4px;[^}]*left:\s*4px;/s);
     expect(style).not.toMatch(/#preview-close\s*\{[^}]*opacity:\s*0;/s);
