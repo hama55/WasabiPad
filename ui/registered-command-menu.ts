@@ -113,11 +113,12 @@ export function promptRegisteredCommand(
   kind: CommandValueKind,
   initial?: RegisteredCommandValues,
 ): Promise<RegisteredCommandValues | null> {
+  const previewValue = kind === "file" ? "C:\\preview\\sample.txt" : "確認用の文字列";
   return promptCommandWithValue(
     ports,
     title,
-    { path: "", valueKind: kind },
-    undefined,
+    { path: previewValue, value: previewValue, valueKind: kind },
+    previewValue,
     initial,
     kind === "file" ? "ファイル用コマンド" : "文字列用コマンド",
   );

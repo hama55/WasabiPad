@@ -29,23 +29,23 @@
       },
       "csp": {
         "default-src": "'self' customprotocol: asset:",
-        "script-src": "'self' 'wasm-unsafe-eval' http://wasabi-addin.localhost",
-        "connect-src": "ipc: http://ipc.localhost http://wasabi-addin.localhost",
-        "worker-src": "'self' http://wasabi-addin.localhost",
-        "media-src": "'self' customprotocol: asset: http://asset.localhost http://wasabi-addin.localhost",
-        "img-src": "'self' asset: http://asset.localhost http://wasabi-addin.localhost blob: data:",
+        "script-src": "'self'",
+        "connect-src": "ipc: http://ipc.localhost",
+        "worker-src": "'self'",
+        "media-src": "'self' customprotocol: asset: http://asset.localhost",
+        "img-src": "'self' asset: http://asset.localhost blob: data:",
         "frame-src": "'self' asset: http://asset.localhost blob: file:",
-        "style-src": "'self' 'unsafe-inline' http://wasabi-addin.localhost"
+        "style-src": "'self' 'unsafe-inline'"
       },
       "devCsp": {
         "default-src": "'self' http://localhost:5173",
-        "script-src": "'self' 'wasm-unsafe-eval' http://wasabi-addin.localhost",
+        "script-src": "'self'",
         "connect-src": "ipc: http://ipc.localhost http://localhost:5173 ws://localhost:5173",
-        "worker-src": "'self' http://wasabi-addin.localhost",
-        "media-src": "'self' http://localhost:5173 asset: http://asset.localhost http://wasabi-addin.localhost",
-        "img-src": "'self' asset: http://asset.localhost http://wasabi-addin.localhost blob: data:",
+        "worker-src": "'self'",
+        "media-src": "'self' http://localhost:5173 asset: http://asset.localhost",
+        "img-src": "'self' asset: http://asset.localhost blob: data:",
         "frame-src": "'self' asset: http://asset.localhost blob: file:",
-        "style-src": "'self' 'unsafe-inline' http://wasabi-addin.localhost"
+        "style-src": "'self' 'unsafe-inline'"
       }
     }
   },

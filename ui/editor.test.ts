@@ -1468,8 +1468,6 @@ describe("Feature: VirtualEditor", () => {
       "PDFビュー",
       "html(静的)",
       "SQLiteビュー",
-      "ABC楽譜",
-      "LilyPond楽譜",
       "Windowsアプリで開く",
     ]);
     expect(dropdown.querySelector<HTMLElement>(".dd-label")?.textContent).toBe("エクスプローラで開く");
@@ -2214,8 +2212,6 @@ describe("Feature: VirtualEditor", () => {
       "PDFビュー",
       "html(静的)",
       "SQLiteビュー",
-      "ABC楽譜",
-      "LilyPond楽譜",
       "Windowsアプリで開く",
     ]);
     expect(dropdown.querySelectorAll(".dd-sep")).toHaveLength(5);
@@ -2413,8 +2409,6 @@ describe("Feature: VirtualEditor", () => {
       "PDFビュー",
       "html(静的)",
       "SQLiteビュー",
-      "ABC楽譜",
-      "LilyPond楽譜",
       "Windowsアプリで開く",
     ]);
     for (const [label, icon] of [

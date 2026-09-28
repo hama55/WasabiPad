@@ -6,8 +6,7 @@
     "externalWindowRequest": "external-window-request",
     "workspaceSearchBatch": "workspace-search-batch",
     "documentLoadProgress": "document-load-progress",
-    "viewerUpdate": "viewer-update",
-    "musicAddonChanged": "music-addon-changed"
+    "viewerUpdate": "viewer-update"
   },
   "imageFormats": [
     { "extensions": ["svg"], "mimeTypes": ["image/svg+xml"] },

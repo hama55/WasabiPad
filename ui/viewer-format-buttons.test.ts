@@ -49,9 +49,9 @@ describe("Feature: viewer format select", () => {
     expect(onSelect).not.toHaveBeenCalled();
   });
 
-  // Given: 表示形式プルダウンの置き場と8形式の選択通知
-  // When: プルダウンを生成して8形式を順に選ぶ
-  // Then: レジストリの形式ID順で8形式を表示し、選んだ各形式を通知する
+  // Given: 表示形式プルダウンの置き場と6形式の選択通知
+  // When: プルダウンを生成して6形式を順に選ぶ
+  // Then: レジストリの形式ID順で6形式を表示し、選んだ各形式を通知する
   it("Scenario: 表示形式をプルダウンから選択する", () => {
     const host = document.createElement("select");
     const onSelect = vi.fn();
@@ -59,17 +59,17 @@ describe("Feature: viewer format select", () => {
 
     const options = [...host.querySelectorAll<HTMLOptionElement>("option")];
     expect(options.map((option) => option.textContent)).toEqual([
-      "markdown", "csv", "image", "pdf", "html(静的)", "sqlite", "abc", "lilypond",
+      "markdown", "csv", "image", "pdf", "html(静的)", "sqlite",
     ]);
     expect(options.map((option) => option.value)).toEqual([
-      "markdown", "csv", "image", "pdf", "html", "sqlite", "abc", "lilypond",
+      "markdown", "csv", "image", "pdf", "html", "sqlite",
     ]);
     options.forEach((option) => {
       host.value = option.value;
       host.dispatchEvent(new Event("change", { bubbles: true }));
     });
     expect(onSelect.mock.calls).toEqual([
-      ["markdown"], ["csv"], ["image"], ["pdf"], ["html"], ["sqlite"], ["abc"], ["lilypond"],
+      ["markdown"], ["csv"], ["image"], ["pdf"], ["html"], ["sqlite"],
     ]);
 
     syncViewerFormatButtons(host, "csv");

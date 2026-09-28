@@ -27,11 +27,8 @@ import type { ViewerSelection } from "./generated/ViewerSelection";
 import type { SqliteCell } from "./generated/SqliteCell";
 import type { SqliteObject } from "./generated/SqliteObject";
 import type { SqlitePreview } from "./generated/SqlitePreview";
-import type { LilyOutput } from "./generated/LilyOutput";
 import type { ExternalPreviewFormat } from "./generated/ExternalPreviewFormat";
 import type { ExternalPreviewRequest } from "./generated/ExternalPreviewRequest";
-import type { LocalAddonStatus } from "./generated/LocalAddonStatus";
-import type { OfficialAddon } from "./generated/OfficialAddon";
 import type { WorkspaceSearchBatch } from "./generated/WorkspaceSearchBatch";
 import type { WorkspaceSearchOptions } from "./generated/WorkspaceSearchOptions";
 import type { WorkspaceSearchOutcome } from "./generated/WorkspaceSearchOutcome";
@@ -64,11 +61,8 @@ export type {
   SqliteCell,
   SqliteObject,
   SqlitePreview,
-  LilyOutput,
   ExternalPreviewFormat,
   ExternalPreviewRequest,
-  LocalAddonStatus,
-  OfficialAddon,
   WorkspaceSearchBatch,
   WorkspaceSearchOptions,
   WorkspaceSearchOutcome,
@@ -341,21 +335,6 @@ export const readSqlitePreview = (
   limit,
   includeMetadata,
 });
-
-export const musicAddonStatus = (id: string) =>
-  invoke<LocalAddonStatus>(IPC_COMMANDS.musicAddonStatus, { id });
-export const musicAddonCatalog = () =>
-  invoke<OfficialAddon[]>(IPC_COMMANDS.musicAddonCatalog);
-export const musicAddonInstall = (id: string, archivePath: string) =>
-  invoke<void>(IPC_COMMANDS.musicAddonInstall, { id, archivePath });
-export const musicAddonSetEnabled = (id: string, enabled: boolean) =>
-  invoke<void>(IPC_COMMANDS.musicAddonSetEnabled, { id, enabled });
-export const musicAddonRemove = (id: string) =>
-  invoke<void>(IPC_COMMANDS.musicAddonRemove, { id });
-export const lilypondGenerate = (text: string, sourcePath: string | null, requestId: string) =>
-  invoke<LilyOutput>(IPC_COMMANDS.lilypondGenerate, { text, sourcePath, requestId });
-export const lilypondCancel = (requestId: string) =>
-  invoke<void>(IPC_COMMANDS.lilypondCancel, { requestId });
 
 export const externalPreviewGenerate = (request: ExternalPreviewRequest) =>
   invoke<string>(IPC_COMMANDS.externalPreviewGenerate, { request });

@@ -1,7 +1,6 @@
 import packageInfo from "../package.json";
 import { releaseTag } from "../version-policy.mjs";
 import { APP_NAME } from "./app-config";
-import type { LocalAddonStatus, OfficialAddon } from "./api";
 import { formatByteSize, formatFontFamily } from "./format";
 import { FONT_FAMILIES, INDENT_SIZES, isValidFontSize, MAX_FONT_SIZE, MIN_FONT_SIZE } from "./font-controls";
 import { iconButton } from "./icon-button";
@@ -37,11 +36,6 @@ export interface SettingsPanelPorts {
   applyMarkdownSoftBreaks: (enabled: boolean) => void;
   applyMarkdownLineHeight: (value: number) => void;
   applyMarkdownHeadingUnderlines: (enabled: boolean) => void;
-  getMusicAddonStatus: (id: string) => Promise<LocalAddonStatus>;
-  getMusicAddonCatalog: () => Promise<OfficialAddon[]>;
-  installMusicAddon: (id: string) => Promise<void>;
-  setMusicAddonEnabled: (id: string, enabled: boolean) => Promise<void>;
-  removeMusicAddon: (id: string) => Promise<void>;
   pickPreviewCacheDirectory?: (defaultPath?: string) => string | null | Promise<string | null>;
   clearPreviewCache?: () => void | Promise<void>;
   getPreviewCacheInfo?: () => PreviewCacheInfo | null | Promise<PreviewCacheInfo | null>;
@@ -177,7 +171,6 @@ export function openSettingsModal(
     id: `settings-registered-commands-${kind}`,
     build: () => [registeredCommandsField(ports, kind, openRegisteredCommandDialog)],
   });
-  const musicAddons = musicAddonsField(ports);
 
   const sectionSpecs = [
     {
@@ -210,9 +203,9 @@ export function openSettingsModal(
       ],
     },
     {
-      name: "アドイン",
+      name: "外部プレビュー",
       id: "settings-addons",
-      build: () => [musicAddons.element, externalPreviewAdaptersField(ports)],
+      build: () => [externalPreviewAdaptersField(ports)],
     },
     {
       name: "検索",
@@ -295,7 +288,6 @@ export function openSettingsModal(
       if (!(await ports.confirmReset())) return;
       await ports.resetSettings();
       render();
-      musicAddons.syncLilypondPath();
     })();
   });
   render();
@@ -370,231 +362,6 @@ function startupPathField(ports: SettingsPanelPorts): HTMLElement {
   });
   row.append(label, input);
   return row;
-}
-
-const OFFICIAL_MUSIC_ADDONS = [
-  { id: "abc", name: "ABC記譜法" },
-  { id: "lilypond", name: "LilyPond" },
-] as const;
-
-function musicAddonsField(ports: SettingsPanelPorts): { element: HTMLElement; syncLilypondPath: () => void } {
-  const group = document.createElement("div");
-  group.className = "settings-list-group settings-music-addons";
-  group.dataset.settingGroup = "music-addons";
-
-  const description = document.createElement("p");
-  description.className = "settings-summary";
-  description.textContent = "WasabiPad公式配布ZIPから、ABC・LilyPondプレビューアドインを追加・更新できます。";
-
-  const catalogStatus = document.createElement("p");
-  catalogStatus.className = "settings-summary";
-  catalogStatus.dataset.addonCatalogStatus = "";
-  catalogStatus.setAttribute("role", "status");
-  catalogStatus.setAttribute("aria-live", "polite");
-  catalogStatus.textContent = "公式カタログを確認中…";
-
-  const statuses = new Map<string, LocalAddonStatus>();
-  const statusErrors = new Map<string, unknown>();
-  const busy = new Set<string>();
-  const feedback = new Map<string, string>();
-  const catalog = new Map<string, OfficialAddon>();
-  let catalogReady = false;
-  let catalogError: unknown;
-  let catalogFailed = false;
-
-  const renderRemoteStatus = (id: string, remote: HTMLElement) => {
-    if (catalogFailed) {
-      remote.textContent = `公式カタログ: ${musicAddonErrorDetail(catalogError)}`;
-    } else if (!catalogReady) {
-      remote.textContent = "公式カタログ: 確認中…";
-    } else {
-      const entry = catalog.get(id);
-      remote.textContent = entry
-        ? entry.compatible === false
-          ? `公式配布版: v${entry.version}。このWasabiPad版では非互換（必要版 ${entry.minimumAppVersion}）`
-          : `公式配布版: v${entry.version}`
-        : "公式カタログに掲載なし";
-    }
-  };
-
-  const rows = new Map<string, {
-    root: HTMLElement;
-    local: HTMLElement;
-    remote: HTMLElement;
-    actions: HTMLElement;
-    progress: HTMLElement;
-    message: HTMLElement;
-  }>();
-
-  const renderRow = (id: string) => {
-    const row = rows.get(id);
-    if (!row) return;
-    row.root.setAttribute("aria-busy", String(busy.has(id)));
-    const status = statuses.get(id);
-    row.local.textContent = status
-      ? status.installed
-        ? `${status.enabled ? "有効" : "無効"}${status.version ? ` (v${status.version})` : ""}`
-        : "未インストール"
-      : statusErrors.has(id) ? "端末内の状態を確認できません" : "端末内の状態を確認中…";
-    renderRemoteStatus(id, row.remote);
-    row.progress.textContent = busy.has(id) ? "処理中…" : "";
-    row.message.textContent = feedback.get(id) ?? "";
-    row.actions.replaceChildren();
-    if (!status) return;
-
-    const addon = OFFICIAL_MUSIC_ADDONS.find((item) => item.id === id)!;
-    const makeButton = (
-      text: string,
-      label: string,
-      action: string,
-      run: (button: HTMLButtonElement) => void,
-    ) => {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.textContent = text;
-      button.dataset.action = action;
-      button.setAttribute("aria-label", `${addon.name}${label}`);
-      button.disabled = busy.has(id);
-      button.addEventListener("click", () => run(button));
-      row.actions.append(button);
-    };
-
-    if (!status.installed) {
-      makeButton("ZIPから追加", "をZIPから追加", "music-addon-add", (button) =>
-        runAddonAction(id, "追加", () => ports.installMusicAddon(id), button));
-      return;
-    }
-    makeButton("ZIPから更新", "をZIPから更新", "music-addon-update", (button) =>
-      runAddonAction(id, "更新", () => ports.installMusicAddon(id), button));
-    makeButton(status.enabled ? "無効にする" : "有効にする", status.enabled ? "を無効にする" : "を有効にする",
-      "music-addon-toggle", (button) => runAddonAction(id, status.enabled ? "無効化" : "有効化",
-        () => ports.setMusicAddonEnabled(id, !status.enabled), button));
-    makeButton("削除", "を削除", "music-addon-remove", (button) =>
-      runAddonAction(id, "削除", () => ports.removeMusicAddon(id), button));
-  };
-
-  function runAddonAction(
-    id: string,
-    action: string,
-    operation: () => Promise<void>,
-    button: HTMLButtonElement,
-  ) {
-    if (busy.has(id) || !statuses.has(id)) return;
-    busy.add(id);
-    button.disabled = true;
-    feedback.delete(id);
-    renderRow(id);
-    void (async () => {
-      try {
-        await operation();
-        try {
-          statuses.set(id, await ports.getMusicAddonStatus(id));
-          statusErrors.delete(id);
-          feedback.delete(id);
-        } catch {
-          feedback.set(id, `${action}は完了しましたが、端末内の状態を再取得できませんでした。`);
-        }
-      } catch (error) {
-        feedback.set(id, `${action}できませんでした。${musicAddonErrorDetail(error)}`);
-      } finally {
-        busy.delete(id);
-        renderRow(id);
-      }
-    })();
-  };
-
-  for (const { id, name } of OFFICIAL_MUSIC_ADDONS) {
-    const row = document.createElement("div");
-    row.className = "settings-field settings-music-addon";
-    row.dataset.addonId = id;
-    row.setAttribute("role", "group");
-    row.setAttribute("aria-label", `${name}アドイン`);
-
-    const title = document.createElement("strong");
-    title.textContent = name;
-    const statusRow = document.createElement("div");
-    statusRow.className = "settings-list-row";
-    const local = document.createElement("span");
-    local.dataset.addonLocalStatus = id;
-    local.setAttribute("aria-label", `${name}の端末内状態`);
-    local.setAttribute("role", "status");
-    const remote = document.createElement("span");
-    remote.dataset.addonRemoteStatus = id;
-    remote.setAttribute("aria-label", `${name}の公式カタログ状態`);
-    remote.setAttribute("role", "status");
-    remote.setAttribute("aria-live", "polite");
-    statusRow.append(local, remote);
-
-    const actions = document.createElement("div");
-    actions.className = "settings-list-row";
-    const progress = document.createElement("span");
-    progress.className = "settings-summary";
-    progress.setAttribute("role", "status");
-    progress.setAttribute("aria-live", "polite");
-    const message = document.createElement("span");
-    message.className = "settings-summary";
-    message.dataset.addonFeedback = id;
-    message.setAttribute("role", "status");
-    message.setAttribute("aria-live", "polite");
-    rows.set(id, { root: row, local, remote, actions, progress, message });
-    row.append(title, statusRow, actions, progress, message);
-    group.append(row);
-    renderRow(id);
-  }
-
-  const pathRow = document.createElement("label");
-  pathRow.className = "settings-field settings-lilypond-path";
-  const pathLabel = document.createElement("span");
-  pathLabel.textContent = "LilyPond実行ファイルのパス";
-  const pathInput = document.createElement("input");
-  pathInput.type = "text";
-  pathInput.dataset.setting = "lilypond-executable-path";
-  pathInput.setAttribute("aria-label", "LilyPond実行ファイルのパス");
-  pathInput.spellcheck = false;
-  pathInput.autocomplete = "off";
-  pathInput.placeholder = "未設定";
-  const syncLilypondPath = () => { pathInput.value = ports.getSetting("lilypondExecutablePath") ?? ""; };
-  syncLilypondPath();
-  pathInput.addEventListener("change", () => {
-    ports.setSetting("lilypondExecutablePath", pathInput.value.trim() || null);
-  });
-  pathRow.append(pathLabel, pathInput);
-
-  const pathHelp = document.createElement("p");
-  pathHelp.className = "settings-summary";
-  pathHelp.textContent = "LilyPondは別途インストールが必要です。プレビューの手動更新では、指定したLilyPond実行ファイルで楽譜を実行します。信頼できる楽譜だけをプレビューしてください。";
-  group.append(description, catalogStatus, pathRow, pathHelp);
-
-  void Promise.resolve().then(() => ports.getMusicAddonCatalog()).then((entries) => {
-    for (const entry of entries) catalog.set(entry.id, entry);
-    catalogReady = true;
-    catalogStatus.textContent = "公式カタログを取得しました。端末内の状態は各アドイン欄に表示します。";
-    for (const { id } of OFFICIAL_MUSIC_ADDONS) renderRow(id);
-  }).catch((error: unknown) => {
-    catalogError = error;
-    catalogFailed = true;
-    catalogStatus.textContent = `公式カタログを取得できません。${musicAddonErrorDetail(error)} 端末内の状態は各アドイン欄に表示します。`;
-    for (const { id } of OFFICIAL_MUSIC_ADDONS) renderRow(id);
-  });
-
-  for (const { id } of OFFICIAL_MUSIC_ADDONS) {
-    void Promise.resolve().then(() => ports.getMusicAddonStatus(id)).then((status) => {
-      statuses.set(id, status);
-      statusErrors.delete(id);
-      renderRow(id);
-    }).catch((error: unknown) => {
-      statusErrors.set(id, error);
-      renderRow(id);
-    });
-  }
-  return { element: group, syncLilypondPath };
-}
-
-function musicAddonErrorDetail(error: unknown): string {
-  const detail = error instanceof Error ? error.message : String(error);
-  if (/\b404\b|not found/i.test(detail)) return `公式配布物が見つかりません (404): ${detail}`;
-  if (/network|offline|fetch|connect|timeout/i.test(detail)) return `ネットワーク接続を確認してください: ${detail}`;
-  return detail;
 }
 
 function searchSettingsField(onEdit: () => void): HTMLElement {
@@ -757,39 +524,79 @@ function externalPreviewAdaptersField(ports: SettingsPanelPorts): HTMLElement {
   group.className = "settings-list-group settings-external-preview-adapters";
   group.dataset.settingGroup = "external-preview-adapters";
   const title = document.createElement("h3");
-  title.textContent = "外部プレビューアダプタ";
+  title.textContent = "外部プレビュー";
   const summary = document.createElement("p");
   summary.className = "settings-summary";
-  summary.textContent = "保存済みファイルの拡張子に応じて外部プログラムを実行し、HTMLまたはSVGを表示します。";
+  summary.textContent = "初回の実行確認後、選択した外部プログラムでHTMLまたはSVGのプレビューを表示します。";
   group.append(title, summary);
 
   const render = () => {
-    group.querySelectorAll<HTMLElement>("[data-external-preview-row]").forEach((row) => row.remove());
+    group.querySelectorAll<HTMLElement>("[data-external-preview-row], [data-external-preview-selection]")
+      .forEach((row) => row.remove());
     const adapters = ports.getSetting("externalPreviewAdapters");
     adapters.forEach((adapter) => {
       const row = document.createElement("div");
       row.className = "settings-list-row";
       row.dataset.externalPreviewRow = "true";
       const value = document.createElement("span");
-      value.textContent = `.${adapter.extensions.join(", .")} → ${adapter.command}`;
-      value.title = adapter.args;
+      value.textContent = `.${adapter.extensions.join(", .")} → ${adapter.command} ${adapter.args}`.trim();
       const actions = document.createElement("div");
       actions.className = "settings-list-actions";
       actions.append(
-        settingsActionButton("⚙", "外部プレビューアダプタを編集", "edit-external-preview-adapter", () =>
+        settingsActionButton("⚙", "外部プレビューを編集", "edit-external-preview-adapter", () =>
           ports.openExternalPreviewAdapter(adapter)),
-        settingsActionButton("×", "外部プレビューアダプタを削除", "delete-external-preview-adapter", () => {
+        settingsActionButton("×", "外部プレビューを削除", "delete-external-preview-adapter", () => {
           ports.setSetting("externalPreviewAdapters", ports.getSetting("externalPreviewAdapters").filter((item) => item !== adapter));
+          ports.setSetting("externalPreviewAdapterSelections", Object.fromEntries(
+            Object.entries(ports.getSetting("externalPreviewAdapterSelections"))
+              .filter(([, id]) => id !== adapter.id),
+          ));
+          ports.setSetting("trustedExternalPreviewAdapterIds",
+            ports.getSetting("trustedExternalPreviewAdapterIds").filter((id) => id !== adapter.id));
           render();
         }),
       );
       row.append(value, actions);
       group.append(row);
     });
+    const adaptersByExtension = new Map<string, ExternalPreviewAdapter[]>();
+    for (const adapter of adapters) {
+      for (const extension of adapter.extensions) {
+        adaptersByExtension.set(extension, [...(adaptersByExtension.get(extension) ?? []), adapter]);
+      }
+    }
+    for (const [extension, candidates] of adaptersByExtension) {
+      const row = document.createElement("label");
+      row.className = "settings-field";
+      row.dataset.externalPreviewSelection = extension;
+      const label = document.createElement("span");
+      label.textContent = `.${extension} のプレビュー`;
+      const select = document.createElement("select");
+      select.setAttribute("aria-label", `.${extension} のプレビュー`);
+      const standard = document.createElement("option");
+      standard.value = "";
+      standard.textContent = "標準プレビュー";
+      select.append(standard);
+      for (const adapter of candidates) {
+        const option = document.createElement("option");
+        option.value = adapter.id;
+        option.textContent = adapter.command;
+        select.append(option);
+      }
+      select.value = ports.getSetting("externalPreviewAdapterSelections")[extension] ?? "";
+      select.addEventListener("change", () => {
+        const selections = { ...ports.getSetting("externalPreviewAdapterSelections") };
+        if (select.value) selections[extension] = select.value;
+        else delete selections[extension];
+        ports.setSetting("externalPreviewAdapterSelections", selections);
+      });
+      row.append(label, select);
+      group.append(row);
+    }
     if (!adapters.length) group.append(emptySettingsNotice("登録なし"));
     group.append(settingsActionButton(
-      "外部プレビューアダプタを追加...",
-      "外部プレビューアダプタを追加",
+      "外部プレビューを追加...",
+      "外部プレビューを追加",
       "add-external-preview-adapter",
       () => ports.openExternalPreviewAdapter(),
       MENU_ICON.command,

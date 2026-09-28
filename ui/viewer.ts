@@ -2,9 +2,6 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import {
   EVENT_NAMES,
-  lilypondCancel,
-  lilypondGenerate,
-  musicAddonStatus,
   openExternalUrl,
   openInDefaultBrowser,
   readSqlitePreview,
@@ -83,16 +80,6 @@ import {
   resolveExternalOutputSource,
 } from "./viewer-external-output";
 import { createSqlitePreviewController, type SqlitePreviewController } from "./viewer-sqlite";
-import {
-  createAbcPreviewHost,
-  type AbcPreviewHost,
-  type AbcPreviewHostModule,
-} from "./music-abc-preview";
-import {
-  createLilypondPreviewHost,
-  type LilypondPreviewHost,
-  type LilypondPreviewModule,
-} from "./music-lilypond-preview";
 import { createAsyncUnlisten } from "./async-unlisten";
 import { comparePos } from "./editor-math";
 import {
@@ -151,11 +138,6 @@ let renderAbortController = new AbortController();
 let imageZoom = DEFAULT_IMAGE_ZOOM;
 let disposeImagePan: (() => void) | null = null;
 let disposeSqlitePreview: (() => void) | null = null;
-type MusicPreviewFormat = "abc" | "lilypond";
-type MusicPreviewHost =
-  | { format: "abc"; host: AbcPreviewHost }
-  | { format: "lilypond"; host: LilypondPreviewHost };
-let musicPreviewHost: MusicPreviewHost | null = null;
 const archiveAssetTracker = new ViewerAssetTracker(revokeImageUrl);
 const archiveAssetSession = createArchiveAssetSession();
 let csvColumnWidths: number[] = [];
@@ -165,7 +147,6 @@ let markdownSoftBreaks = getSetting("markdownSoftBreaks");
 let markdownLineHeight = getSetting("markdownLineHeight");
 let markdownHeadingUnderlines = getSetting("markdownHeadingUnderlines");
 const viewerUpdateListener = createAsyncUnlisten();
-const musicAddonChangedListener = createAsyncUnlisten();
 const viewerDomListeners = new AbortController();
 let windowControls: WindowControls | null = null;
 let viewerLayoutCoordinator: WindowLayoutCoordinator | null = null;
@@ -198,23 +179,6 @@ function currentViewerRenderState(): ViewerRenderState {
     archiveEntry: currentArchiveEntry,
     externalOutputPath: currentExternalOutputPath,
   };
-}
-
-function disposeMusicPreviewHost(): void {
-  const active = musicPreviewHost;
-  musicPreviewHost = null;
-  if (!active) return;
-  try {
-    active.host.dispose();
-  } catch (error) {
-    console.error("楽譜プレビューの後始末に失敗しました", error);
-  }
-}
-
-function refreshMusicPreviewForAddonChange(id: string): void {
-  if ((currentFormat !== "abc" && currentFormat !== "lilypond") || currentFormat !== id) return;
-  disposeMusicPreviewHost();
-  runViewerOperation("楽譜アドインの状態を更新できませんでした", renderCurrentViewer);
 }
 
 function viewerRenderStateOf(payload: ViewerPayload): ViewerRenderState {
@@ -420,7 +384,6 @@ function disposeViewer() {
   renderGeneration += 1;
   disposeImagePan?.();
   disposeImagePan = null;
-  disposeMusicPreviewHost();
   disposeSqlitePreview?.();
   disposeSqlitePreview = null;
   content.classList.remove("viewer-loading");
@@ -434,11 +397,6 @@ function disposeViewer() {
     viewerUpdateListener.dispose();
   } catch (error) {
     console.error("ビュー更新の購読解除に失敗しました", error);
-  }
-  try {
-    musicAddonChangedListener.dispose();
-  } catch (error) {
-    console.error("楽譜アドイン更新の購読解除に失敗しました", error);
   }
   try {
     windowControls?.dispose();
@@ -1152,103 +1110,6 @@ type ViewerStateRenderer = (
   nextImageZoom: number,
 ) => boolean | Promise<boolean>;
 
-const OFFICIAL_MUSIC_ADDIN_ENTRY_URLS: Record<MusicPreviewFormat, RegExp> = {
-  abc: /^http:\/\/wasabi-addin\.localhost\/abc\/[A-Za-z0-9][A-Za-z0-9._-]*\/dist\/entry\.js$/,
-  lilypond: /^http:\/\/wasabi-addin\.localhost\/lilypond\/[A-Za-z0-9][A-Za-z0-9._-]*\/dist\/entry\.js$/,
-};
-
-async function getMusicAddonPreviewStatus(id: MusicPreviewFormat) {
-  const status = await musicAddonStatus(id);
-  if (status.id !== id) throw new Error("公式アドインの状態が一致しません。");
-  if (!status.installed || status.version === null) return null;
-  return { version: status.version, enabled: status.enabled };
-}
-
-function loadOfficialMusicAddon<T>(id: MusicPreviewFormat, url: string): Promise<T> {
-  if (!OFFICIAL_MUSIC_ADDIN_ENTRY_URLS[id].test(url)) {
-    return Promise.reject(new Error("公式アドインの読み込み先が不正です。"));
-  }
-  return import(/* @vite-ignore */ url) as Promise<T>;
-}
-
-function prepareMusicPreview(state: ViewerRenderState): void {
-  disposeImagePan?.();
-  disposeImagePan = null;
-  currentRows = [];
-  chartController.clear();
-  revokeArchiveAssetUrls();
-  summary.classList.remove("warning");
-  summary.title = "";
-  summary.textContent = state.sourcePath
-    ? basename(state.sourcePath)
-    : state.format === "abc" ? "ABC楽譜" : "LilyPond楽譜";
-}
-
-function ensureAbcPreviewHost(): AbcPreviewHost {
-  if (musicPreviewHost?.format === "abc") return musicPreviewHost.host;
-  disposeMusicPreviewHost();
-  const host = createAbcPreviewHost(content, {
-    getStatus: () => getMusicAddonPreviewStatus("abc"),
-    loadModule: (url) => loadOfficialMusicAddon<AbcPreviewHostModule>("abc", url),
-    reportError: (error) => showError("ABCプレビューを読み込めませんでした", error),
-  });
-  musicPreviewHost = { format: "abc", host };
-  return host;
-}
-
-function ensureLilypondPreviewHost(): LilypondPreviewHost {
-  if (musicPreviewHost?.format === "lilypond") return musicPreviewHost.host;
-  disposeMusicPreviewHost();
-  let activeRequestId: string | null = null;
-  const host = createLilypondPreviewHost(content, {
-    getStatus: () => getMusicAddonPreviewStatus("lilypond"),
-    loadModule: (url) => loadOfficialMusicAddon<LilypondPreviewModule>("lilypond", url),
-    generate: async (text, sourcePath) => {
-      const requestId = window.crypto.randomUUID();
-      activeRequestId = requestId;
-      try {
-        return await lilypondGenerate(text, sourcePath, requestId);
-      } finally {
-        if (activeRequestId === requestId) activeRequestId = null;
-      }
-    },
-    cancelGeneration: async () => {
-      const requestId = activeRequestId;
-      if (requestId === null) return;
-      activeRequestId = null;
-      await lilypondCancel(requestId);
-    },
-    confirmExecution: async () => window.confirm(
-      "LilyPondの更新では外部プログラムを実行します。楽譜はSchemeを実行できるため、信頼できる文書だけを更新してください。実行しますか？",
-    ),
-    reportError: (error) => showError("LilyPondプレビューを更新できませんでした", error),
-  });
-  musicPreviewHost = { format: "lilypond", host };
-  return host;
-}
-
-async function renderAbc(text: string, state: ViewerRenderState): Promise<boolean> {
-  const generation = beginRender();
-  try {
-    prepareMusicPreview(state);
-    await ensureAbcPreviewHost().render(text);
-    return generation === renderGeneration;
-  } finally {
-    finishRender(generation);
-  }
-}
-
-async function renderLilypond(text: string, state: ViewerRenderState): Promise<boolean> {
-  const generation = beginRender();
-  try {
-    prepareMusicPreview(state);
-    await ensureLilypondPreviewHost().setSource(text, state.sourcePath);
-    return generation === renderGeneration;
-  } finally {
-    finishRender(generation);
-  }
-}
-
 const VIEWER_RENDERERS: Record<ViewerFormat, ViewerStateRenderer> = {
   csv: renderTable,
   markdown: renderMarkdown,
@@ -1256,8 +1117,6 @@ const VIEWER_RENDERERS: Record<ViewerFormat, ViewerStateRenderer> = {
   pdf: renderPdf,
   html: renderHtml,
   sqlite: renderSqlite,
-  abc: renderAbc,
-  lilypond: renderLilypond,
 };
 
 async function renderViewerState(
@@ -1266,7 +1125,6 @@ async function renderViewerState(
   requireLoadedOutput = false,
 ): Promise<boolean> {
   if (viewerDisposed) return false;
-  if (musicPreviewHost && state.format !== musicPreviewHost.format) disposeMusicPreviewHost();
   if (state.externalOutputPath) return renderExternalOutput(state, requireLoadedOutput);
   return VIEWER_RENDERERS[state.format](state.text, state, nextImageZoom);
 }
@@ -1420,9 +1278,6 @@ async function start() {
     }, { signal: viewerDomListeners.signal });
     // PDF/画像の資産取得を待つ間も、空のビューア（読込み中…）を先に表示する。
     if (!isInlineViewer) await win!.show();
-    musicAddonChangedListener.set(await listen<string>(EVENT_NAMES.musicAddonChanged, (event) => {
-      refreshMusicPreviewForAddonChange(event.payload);
-    }));
     if (isInlineViewer) {
       window.addEventListener("message", (event) => {
         if (event.source !== window.parent || event.origin !== window.location.origin) return;
@@ -1457,7 +1312,6 @@ async function start() {
           const generation = beginRender();
           disposeSqlitePreview?.();
           disposeSqlitePreview = null;
-          disposeMusicPreviewHost();
           disposeImagePan?.();
           disposeImagePan = null;
           chartController.clear();

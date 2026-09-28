@@ -32,15 +32,16 @@ describe("Feature: external preview adapter settings", () => {
     await initSettings();
   });
 
-  // Feature: 外部プレビューアダプタ設定の復元
+  // Feature: 外部プレビュー設定の復元
   // Scenario: 拡張子と各フィールドを正規化して不正な設定を捨てる
   // Given: 正規化可能なアダプタと不正なアダプタを含む設定JSONが保存されている
   // When: `parseSettings`を呼ぶ
   // Then: 拡張子はドットなし小文字・重複排除され、不正なアダプタは復元されない
-  it("Scenario: 外部プレビューアダプタを安全に復元する", () => {
+  it("Scenario: 外部プレビューを安全に復元する", () => {
     expect(parseSettings(JSON.stringify({
       externalPreviewAdapters: [
         {
+          id: "svg-renderer",
           extensions: [".ABC", "abc", "", 42, ".SVG"],
           command: "renderer",
           args: "--input {file} {output}",
@@ -48,6 +49,7 @@ describe("Feature: external preview adapter settings", () => {
           preferExternal: true,
         },
         {
+          id: "bad-format",
           extensions: ["txt"],
           command: "renderer",
           args: "",
@@ -55,6 +57,7 @@ describe("Feature: external preview adapter settings", () => {
           preferExternal: false,
         },
         {
+          id: "bad-args",
           extensions: ["ly"],
           command: "renderer",
           args: "{file}",
@@ -64,6 +67,7 @@ describe("Feature: external preview adapter settings", () => {
         "not an adapter",
       ],
     })).externalPreviewAdapters).toEqual([{
+      id: "svg-renderer",
       extensions: ["abc", "svg"],
       command: "renderer",
       args: "--input {file} {output}",
@@ -72,7 +76,7 @@ describe("Feature: external preview adapter settings", () => {
     }]);
   });
 
-  // Feature: 外部プレビューアダプタ設定の後方互換
+  // Feature: 外部プレビュー設定の後方互換
   // Scenario: 既存設定に新しいキーがない
   // Given: 既存形式の設定JSONが保存されている
   // When: `parseSettings`を呼ぶ
@@ -84,13 +88,14 @@ describe("Feature: external preview adapter settings", () => {
     expect(settings.externalPreviewAdapters).toEqual([]);
   });
 
-  // Feature: 外部プレビューアダプタの拡張子一致
+  // Feature: 外部プレビューの拡張子一致
   // Scenario: 大文字拡張子の保存済みファイルを一致させる
   // Given: `abc`を対象拡張子に登録したアダプタがある
   // When: `score.ABC`のアダプタを検索する
-  // Then: 登録したアダプタが返る
+  // Then: 拡張子別に選択済みの場合だけ登録したアダプタが返る
   it("Scenario: 保存済みファイルの拡張子でアダプタを選ぶ", () => {
     const adapter = {
+      id: "abc-renderer",
       extensions: ["abc"],
       command: "renderer",
       args: "",
@@ -98,8 +103,9 @@ describe("Feature: external preview adapter settings", () => {
       preferExternal: false,
     };
 
-    expect(externalPreviewAdapterForPath("C:\\work\\score.ABC", [adapter])).toBe(adapter);
-    expect(externalPreviewAdapterForPath("C:\\work\\score.txt", [adapter])).toBeNull();
+    expect(externalPreviewAdapterForPath("C:\\work\\score.ABC", [adapter])).toBeNull();
+    expect(externalPreviewAdapterForPath("C:\\work\\score.ABC", [adapter], { abc: adapter.id })).toBe(adapter);
+    expect(externalPreviewAdapterForPath("C:\\work\\score.txt", [adapter], { abc: adapter.id })).toBeNull();
   });
 
   // Feature: 標準プレビューと外部プレビューの優先順位
@@ -109,6 +115,7 @@ describe("Feature: external preview adapter settings", () => {
   // Then: 標準形式があれば既定で標準、外部優先なら外部を選ぶ
   it("Scenario: 標準形式優先と外部優先を判定する", () => {
     const standardFirst = {
+      id: "abc-renderer",
       extensions: ["abc"],
       command: "renderer",
       args: "",
@@ -143,13 +150,14 @@ describe("Feature: external preview adapter settings", () => {
     expect(() => parseExternalPreviewArguments('"{file}')).toThrow("引用符");
   });
 
-  // Feature: 外部プレビューアダプタ設定の初期化
+  // Feature: 外部プレビュー設定の初期化
   // Scenario: アプリ設定の初期化でアダプタを既定値へ戻す
-  // Given: 外部プレビューアダプタを保存している
+  // Given: 外部プレビューを保存している
   // When: `resetUserSettings`を呼ぶ
   // Then: アダプタは空配列になり、保存対象にも含まれる
-  it("Scenario: 設定初期化で外部プレビューアダプタを戻す", async () => {
+  it("Scenario: 設定初期化で外部プレビューを戻す", async () => {
     setSetting("externalPreviewAdapters", [{
+      id: "abc-renderer",
       extensions: ["abc"],
       command: "renderer",
       args: "",

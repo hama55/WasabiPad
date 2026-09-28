@@ -40,7 +40,7 @@ pub use fileio::{Encoding, EncodingId, Eol};
 pub use filename::{next_available_path, validate_windows_file_name};
 pub use preview_cache::PreviewCache;
 pub use protocol::{
-    EVENT_DOCUMENT_LOAD_PROGRESS, EVENT_EXTERNAL_WINDOW_REQUEST, EVENT_MUSIC_ADDON_CHANGED, EVENT_VIEWER_UPDATE,
+    EVENT_DOCUMENT_LOAD_PROGRESS, EVENT_EXTERNAL_WINDOW_REQUEST, EVENT_VIEWER_UPDATE,
     EVENT_WORKSPACE_SEARCH_BATCH,
 };
 pub use settings::{app_data_root, load as load_settings, update as update_setting};

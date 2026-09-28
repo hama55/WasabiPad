@@ -8,22 +8,6 @@ const tauriConfig = JSON.parse(
   readFileSync(new URL("../src-tauri/tauri.conf.json", import.meta.url), "utf8"),
 );
 
-describe("Feature: LilyPond WASM CSP", () => {
-  // Given: production/devのTauri CSP設定を読み込む
-  // When: LilyPondアドインのscript-srcを検査する
-  // Then: WASM実行だけを許可し、汎用unsafe-evalは許可しない
-  it("Scenario: allows WASM evaluation without enabling generic eval", () => {
-    for (const policy of [
-      tauriConfig.app.security.csp,
-      tauriConfig.app.security.devCsp,
-    ]) {
-      const tokens = policy["script-src"].split(/\s+/);
-      expect(tokens).toContain("'wasm-unsafe-eval'");
-      expect(tokens).not.toContain("'unsafe-eval'");
-    }
-  });
-});
-
 describe("Feature: trusted external preview CSP", () => {
   // Given: production/devのTauri CSP設定を読み込む
   // When: file-backed外部HTML用frame-srcと本体側の実行・通信権限を検査する
@@ -32,12 +16,12 @@ describe("Feature: trusted external preview CSP", () => {
     const policies = [
       {
         csp: tauriConfig.app.security.csp,
-        script: "'self' 'wasm-unsafe-eval' http://wasabi-addin.localhost",
-        connect: "ipc: http://ipc.localhost http://wasabi-addin.localhost",
+        script: "'self'",
+        connect: "ipc: http://ipc.localhost",
       },
       {
         csp: tauriConfig.app.security.devCsp,
-        script: "'self' 'wasm-unsafe-eval' http://wasabi-addin.localhost",
+        script: "'self'",
         connect: "ipc: http://ipc.localhost http://localhost:5173 ws://localhost:5173",
       },
     ];

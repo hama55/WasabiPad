@@ -39,11 +39,12 @@ export interface Settings {
   markdownHeadingUnderlines: boolean;
   sqlitePreviewRows: number;
   previewCacheDirectory: string | null;
-  lilypondExecutablePath: string | null;
   startupPath: string | null;
   registeredStrings: string[];
   registeredCommands: RegisteredCommand[];
   externalPreviewAdapters: ExternalPreviewAdapter[];
+  externalPreviewAdapterSelections: Record<string, string>;
+  trustedExternalPreviewAdapterIds: string[];
   // null は「未設定」。既定値は ui/workspace-search-options.ts だけが持つ
   workspaceSearchOptions: WorkspaceSearchOptions | null;
   openTabs: StoredTabs;
@@ -62,11 +63,12 @@ const DEFAULT_USER_SETTINGS: Pick<Settings, UserSettingKey> = {
   markdownHeadingUnderlines: false,
   sqlitePreviewRows: DEFAULT_SQLITE_PREVIEW_ROWS,
   previewCacheDirectory: null,
-  lilypondExecutablePath: null,
   startupPath: null,
   registeredStrings: [],
   registeredCommands: [],
   externalPreviewAdapters: [],
+  externalPreviewAdapterSelections: {},
+  trustedExternalPreviewAdapterIds: [],
   workspaceSearchOptions: null,
 };
 
@@ -94,6 +96,7 @@ export function parseSettings(text: string): Settings {
 export interface SettingsParseResult {
   settings: Settings;
   corrupted: boolean;
+  legacyExternalPreviewAdapters?: boolean;
 }
 
 export function parseSettingsResult(text: string): SettingsParseResult {
@@ -106,6 +109,13 @@ export function parseSettingsResult(text: string): SettingsParseResult {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return { settings: { ...DEFAULTS }, corrupted: true };
   }
+  const rawExternalAdapters = value.externalPreviewAdapters;
+  const legacyExternalPreviewAdapters = Array.isArray(rawExternalAdapters)
+    && rawExternalAdapters.some((item) => typeof item === "object" && item !== null
+      && !Array.isArray(item) && !("id" in item));
+  const externalPreviewAdapters = legacyExternalPreviewAdapters
+    ? []
+    : parseExternalPreviewAdapters(rawExternalAdapters);
   const settings: Settings = {
     indentSize: typeof value.indentSize === "number" && INDENT_SIZES.includes(value.indentSize as typeof INDENT_SIZES[number])
       ? value.indentSize
@@ -135,10 +145,6 @@ export function parseSettingsResult(text: string): SettingsParseResult {
     previewCacheDirectory: typeof value.previewCacheDirectory === "string" && value.previewCacheDirectory.trim().length > 0
       ? value.previewCacheDirectory
       : DEFAULTS.previewCacheDirectory,
-    lilypondExecutablePath: typeof value.lilypondExecutablePath === "string"
-      && value.lilypondExecutablePath.trim().length > 0
-      ? value.lilypondExecutablePath
-      : DEFAULTS.lilypondExecutablePath,
     startupPath: typeof value.startupPath === "string" ? value.startupPath : null,
     registeredStrings: Array.isArray(value.registeredStrings)
       ? value.registeredStrings.filter((item): item is string => typeof item === "string" && item.length > 0)
@@ -148,14 +154,36 @@ export function parseSettingsResult(text: string): SettingsParseResult {
         .filter(isRegisteredCommand)
         .map(normalizeRegisteredCommand)
       : [],
-    externalPreviewAdapters: parseExternalPreviewAdapters(value.externalPreviewAdapters),
+    externalPreviewAdapters,
+    externalPreviewAdapterSelections: parseExternalPreviewAdapterSelections(
+      value.externalPreviewAdapterSelections,
+      externalPreviewAdapters,
+    ),
+    trustedExternalPreviewAdapterIds: Array.isArray(value.trustedExternalPreviewAdapterIds)
+      ? [...new Set(value.trustedExternalPreviewAdapterIds.filter((id): id is string =>
+        typeof id === "string" && externalPreviewAdapters.some((adapter) => adapter.id === id),
+      ))]
+      : [],
     workspaceSearchOptions:
       typeof value.workspaceSearchOptions === "object" && value.workspaceSearchOptions !== null
         ? value.workspaceSearchOptions
         : null,
     openTabs: normalizeStoredTabs(value.openTabs) ?? DEFAULTS.openTabs,
   };
-  return { settings, corrupted: false };
+  return { settings, corrupted: false, ...(legacyExternalPreviewAdapters ? { legacyExternalPreviewAdapters: true } : {}) };
+}
+
+function parseExternalPreviewAdapterSelections(
+  value: unknown,
+  adapters: readonly ExternalPreviewAdapter[],
+): Record<string, string> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).flatMap(([extension, id]) => {
+    const normalizedExtension = extension.trim().replace(/^\.+/, "").toLowerCase();
+    return typeof id === "string" && adapters.some((adapter) =>
+      adapter.id === id && adapter.extensions.includes(normalizedExtension),
+    ) ? [[normalizedExtension, id] as const] : [];
+  }));
 }
 
 export async function initSettings(
@@ -166,6 +194,10 @@ export async function initSettings(
   try {
     const parsed = parseSettingsResult(await loadSettingsJson());
     cache = parsed.settings;
+    if (parsed.legacyExternalPreviewAdapters) {
+      setSetting("externalPreviewAdapters", []);
+      await flushSettings();
+    }
     if (parsed.corrupted) {
       warning = new Error("設定JSONが壊れているため、既定値を使用しました");
       shouldWarn = true;

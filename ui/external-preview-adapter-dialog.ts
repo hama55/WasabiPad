@@ -1,4 +1,9 @@
-import { parseExternalPreviewArguments, normalizeExternalPreviewAdapter, type ExternalPreviewAdapter } from "./external-preview-adapter-model";
+import {
+  normalizeExternalPreviewAdapter,
+  parseExternalPreviewArguments,
+  splitExternalPreviewCommandLine,
+  type ExternalPreviewAdapter,
+} from "./external-preview-adapter-model";
 import { promptFields } from "./prompt";
 
 export interface ExternalPreviewAdapterDialogPorts {
@@ -10,7 +15,7 @@ export async function promptExternalPreviewAdapter(
   initial?: ExternalPreviewAdapter,
 ): Promise<ExternalPreviewAdapter | null> {
   const result = await ports.promptFields(
-    initial ? "外部プレビューアダプタを編集" : "外部プレビューアダプタを追加",
+    initial ? "外部プレビューを編集" : "外部プレビューを追加",
     [
       {
         label: "拡張子（カンマ区切り）",
@@ -18,15 +23,10 @@ export async function promptExternalPreviewAdapter(
         validate: (value) => normalizeExtensions(value).length ? null : "拡張子を1つ以上入力してください",
       },
       {
-        label: "実行プログラム（絶対パスまたはPATH）",
-        value: initial?.command ?? "",
-        validate: (value) => value.trim() ? null : "実行プログラムを入力してください",
-      },
-      {
-        label: "引数（{file} と {output} を使用）",
-        value: initial?.args ?? "{file} {output}",
+        label: "実行コマンド（実行ファイルと引数。{file} と {output} を使用）",
+        value: initial ? commandLineForEditing(initial.command, initial.args) : "renderer {file} {output}",
         multiline: true,
-        validate: validateArguments,
+        validate: validateCommandLine,
       },
       {
         label: "生成物",
@@ -41,25 +41,59 @@ export async function promptExternalPreviewAdapter(
         value: initial?.preferExternal ? "external" : "standard",
         options: [
           { label: "標準プレビューを優先", value: "standard" },
-          { label: "外部アダプタを優先", value: "external" },
+          { label: "外部プレビューを優先", value: "external" },
         ],
       },
     ] satisfies Parameters<ExternalPreviewAdapterDialogPorts["promptFields"]>[1],
+    {
+      preview: {
+        label: "実行文字列（確認用）",
+        render: (values) => previewCommandLine(values[1] ?? "", values[2] ?? "html"),
+      },
+    },
   );
   if (!result) return null;
+  const commandLine = splitExternalPreviewCommandLine(result[1]);
   return normalizeExternalPreviewAdapter({
+    id: initial?.id ?? crypto.randomUUID(),
     extensions: normalizeExtensions(result[0]),
-    command: result[1].trim(),
-    args: result[2],
-    outputFormat: result[3],
-    preferExternal: result[4] === "external",
+    command: commandLine.command,
+    args: commandLine.args,
+    outputFormat: result[2],
+    preferExternal: result[3] === "external",
   });
 }
 
-function normalizeExtensions(value: string): string[] {
-  return [...new Set(value.split(",")
-    .map((extension) => extension.trim().replace(/^\.+/, "").toLowerCase())
-    .filter(Boolean))];
+function commandLineForEditing(command: string, args: string): string {
+  const executable = /\s/.test(command) ? `"${command}"` : command;
+  return `${executable} ${args}`.trim();
+}
+
+function validateCommandLine(value: string): string | null {
+  let commandLine: ReturnType<typeof splitExternalPreviewCommandLine>;
+  try {
+    commandLine = splitExternalPreviewCommandLine(value);
+  } catch (error) {
+    return error instanceof Error ? error.message : "実行コマンドを解釈できません";
+  }
+  return validateArguments(commandLine.args);
+}
+
+function previewCommandLine(value: string, outputFormat: string): string {
+  try {
+    const { command, args } = splitExternalPreviewCommandLine(value);
+    const outputPath = "C:\\preview files\\preview." + (outputFormat === "svg" ? "svg" : "html");
+    const previewArgs = parseExternalPreviewArguments(args).map((argument) => argument
+      .replaceAll("{file}", "C:\\preview files\\sample.abc")
+      .replaceAll("{output}", outputPath));
+    return [formatArgument(command), ...previewArgs.map(formatArgument)].join(" ");
+  } catch {
+    return value;
+  }
+}
+
+function formatArgument(value: string): string {
+  return /[\s"']/.test(value) ? `"${value.replaceAll('"', '\\"')}"` : value;
 }
 
 function validateArguments(value: string): string | null {
@@ -72,4 +106,10 @@ function validateArguments(value: string): string | null {
     return error instanceof Error ? error.message : "引数を解釈できません";
   }
   return null;
+}
+
+function normalizeExtensions(value: string): string[] {
+  return [...new Set(value.split(",")
+    .map((extension) => extension.trim().replace(/^\.+/, "").toLowerCase())
+    .filter(Boolean))];
 }

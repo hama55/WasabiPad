@@ -5,7 +5,6 @@ pub const EVENT_EXTERNAL_WINDOW_REQUEST: &str = "external-window-request";
 pub const EVENT_WORKSPACE_SEARCH_BATCH: &str = "workspace-search-batch";
 pub const EVENT_DOCUMENT_LOAD_PROGRESS: &str = "document-load-progress";
 pub const EVENT_VIEWER_UPDATE: &str = "viewer-update";
-pub const EVENT_MUSIC_ADDON_CHANGED: &str = "music-addon-changed";
 
 pub(crate) fn is_archive_extension(extension: &str) -> bool {
     matches!(extension.to_ascii_lowercase().as_str(), "zip" | "7z" | "xlsx" | "xls")

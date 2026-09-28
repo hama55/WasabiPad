@@ -24,11 +24,12 @@ function makePorts(initial: Partial<Settings> = {}): SettingsPanelPorts {
     markdownHeadingUnderlines: false,
     sqlitePreviewRows: 100,
     previewCacheDirectory: null,
-    lilypondExecutablePath: null,
     startupPath: null,
     registeredStrings: [],
     registeredCommands: [],
     externalPreviewAdapters: [],
+    externalPreviewAdapterSelections: {},
+    trustedExternalPreviewAdapterIds: [],
     workspaceSearchOptions: null,
     openTabs: { tabs: [], activeId: null },
     ...initial,
@@ -48,13 +49,6 @@ function makePorts(initial: Partial<Settings> = {}): SettingsPanelPorts {
     applyMarkdownSoftBreaks: vi.fn(),
     applyMarkdownLineHeight: vi.fn(),
     applyMarkdownHeadingUnderlines: vi.fn(),
-    getMusicAddonStatus: vi.fn(async (id: string) => ({
-      id, version: null, installed: false, enabled: false,
-    })),
-    getMusicAddonCatalog: vi.fn(async () => []),
-    installMusicAddon: vi.fn(async () => {}),
-    setMusicAddonEnabled: vi.fn(async () => {}),
-    removeMusicAddon: vi.fn(async () => {}),
     openSearchSettings: vi.fn(),
     openRegisteredString: vi.fn(),
     openRegisteredCommand: vi.fn(),
@@ -67,13 +61,14 @@ function makePorts(initial: Partial<Settings> = {}): SettingsPanelPorts {
 describe("Feature: settings modal", () => {
   afterEach(() => document.body.replaceChildren());
 
-  // Feature: 外部プレビューアダプタの設定画面
+  // Feature: 外部プレビューの設定画面
   // Scenario: 一覧から追加・削除の操作を各portへ委譲する
-  // Given: 外部プレビューアダプタが1件登録されている
+  // Given: 外部プレビューが1件登録されている
   // When: 設定画面で追加と削除を操作する
   // Then: 追加ダイアログと設定保存portへ通知される
-  it("Scenario: 外部プレビューアダプタ一覧を編集する", () => {
+  it("Scenario: 外部プレビュー一覧を編集する", () => {
     const adapter = {
+      id: "addon-1",
       extensions: ["abc"],
       command: "renderer",
       args: "{file} {output}",
@@ -84,11 +79,18 @@ describe("Feature: settings modal", () => {
     openSettingsModal(ports);
 
     const group = document.querySelector<HTMLElement>('[data-setting-group="external-preview-adapters"]')!;
+    expect(group.querySelector("h3")?.textContent).toBe("外部プレビュー");
     expect(group.querySelector('[data-external-preview-row]')?.textContent).toContain(".abc → renderer");
-    group.querySelector<HTMLButtonElement>('[data-action="add-external-preview-adapter"]')!.click();
+    expect(group.querySelector<HTMLButtonElement>('[data-action="edit-external-preview-adapter"]')?.title)
+      .toBe("外部プレビューを編集");
+    const add = group.querySelector<HTMLButtonElement>('[data-action="add-external-preview-adapter"]')!;
+    expect(add.title).toBe("外部プレビューを追加");
+    add.click();
     expect(ports.openExternalPreviewAdapter).toHaveBeenCalledOnce();
 
-    group.querySelector<HTMLButtonElement>('[data-action="delete-external-preview-adapter"]')!.click();
+    const remove = group.querySelector<HTMLButtonElement>('[data-action="delete-external-preview-adapter"]')!;
+    expect(remove.title).toBe("外部プレビューを削除");
+    remove.click();
     expect(ports.setSetting).toHaveBeenCalledWith("externalPreviewAdapters", []);
     expect(group.querySelector('[data-external-preview-row]')).toBeNull();
   });
@@ -113,186 +115,6 @@ describe("Feature: settings modal", () => {
     onClose[0]();
     toggle();
     expect(open).toHaveBeenCalledTimes(2);
-  });
-
-  // Feature: 公式音楽アドインの設定
-  // Scenario: 公式カタログがオフラインでも固定アドインとローカル状態を表示する
-  // Given: ABCは端末内で無効、LilyPondは未インストールで、公式カタログの取得は失敗する
-  // When: 設定モーダルを開く
-  // Then: 2つの公式アドインとローカル状態、カタログ接続エラーを別々に表示する
-  it("Scenario: 公式カタログが使えなくてもローカルアドイン状態を表示する", async () => {
-    const ports = makePorts();
-    ports.getMusicAddonStatus = vi.fn(async (id: string) => id === "abc"
-      ? { id, version: "1.2.3", installed: true, enabled: false }
-      : { id, version: null, installed: false, enabled: false });
-    ports.getMusicAddonCatalog = vi.fn(async () => { throw new Error("offline"); });
-
-    expect(ports.getMusicAddonCatalog).not.toHaveBeenCalled();
-    openSettingsModal(ports);
-
-    const section = document.querySelector<HTMLElement>("#settings-addons")!;
-    await vi.waitFor(() => expect(section.querySelector('[data-addon-local-status="abc"]')?.textContent)
-      .toContain("無効"));
-    expect(section.querySelector('[data-addon-local-status="abc"]')?.textContent).toContain("1.2.3");
-    expect(section.querySelector('[data-addon-local-status="lilypond"]')?.textContent).toContain("未インストール");
-    expect(section.querySelector('[data-addon-remote-status="lilypond"]')).not.toBeNull();
-    expect(section.querySelector('[data-addon-catalog-status]')?.textContent).toContain("取得できません");
-    expect(section.querySelector('[data-addon-catalog-status]')?.textContent).toContain("ネットワーク接続を確認");
-    expect(section.querySelector('[data-addon-remote-status="lilypond"]')?.textContent).not.toContain("非互換");
-    expect(ports.getMusicAddonStatus).toHaveBeenCalledWith("abc");
-    expect(ports.getMusicAddonStatus).toHaveBeenCalledWith("lilypond");
-    expect(ports.getMusicAddonCatalog).toHaveBeenCalledOnce();
-    const addFromZip = section.querySelector<HTMLButtonElement>('[data-addon-id="lilypond"] [data-action="music-addon-add"]')!;
-    expect(addFromZip.textContent).toBe("ZIPから追加");
-    expect(addFromZip.disabled).toBe(false);
-    addFromZip.click();
-    await vi.waitFor(() => expect(ports.installMusicAddon).toHaveBeenCalledWith("lilypond"));
-    document.querySelector<HTMLButtonElement>(".settings-reset")!.click();
-    await vi.waitFor(() => expect(ports.resetSettings).toHaveBeenCalledOnce());
-    expect(ports.getMusicAddonCatalog).toHaveBeenCalledOnce();
-  });
-
-  // Feature: 公式カタログの互換性表示
-  // Scenario: 非互換カタログでもローカルZIP追加・更新を許可する
-  // Given: ABCは互換、導入済みLilyPondは必要版が99.0.0で非互換
-  // When: 設定モーダルを開き、ZIPから追加・更新とLilyPond有効切替・削除を行う
-  // Then: 非互換理由を表示してもZIP操作は有効で、各操作をportへ送る
-  it("Scenario: 非互換カタログでもZIPから追加と更新できる", async () => {
-    const ports = makePorts();
-    ports.getMusicAddonStatus = vi.fn(async (id: string) => id === "abc"
-      ? { id, version: null, installed: false, enabled: false }
-      : { id, version: "1.0.0", installed: true, enabled: true });
-    ports.getMusicAddonCatalog = vi.fn(async () => [
-      { id: "abc", version: "1.3.0", minimumAppVersion: "1.0.0", compatible: true, archiveUrl: "", sha256: "" },
-      { id: "lilypond", version: "99.0.0", minimumAppVersion: "99.0.0", compatible: false, archiveUrl: "", sha256: "" },
-    ]);
-    openSettingsModal(ports);
-
-    const section = document.querySelector<HTMLElement>("#settings-addons")!;
-    const abc = section.querySelector<HTMLElement>('[data-addon-id="abc"]')!;
-    const lilypond = section.querySelector<HTMLElement>('[data-addon-id="lilypond"]')!;
-    await vi.waitFor(() => expect(section.querySelector('[data-addon-catalog-status]')?.textContent).toContain("取得しました"));
-
-    const abcAdd = abc.querySelector<HTMLButtonElement>('[data-action="music-addon-add"]')!;
-    const lilypondUpdate = lilypond.querySelector<HTMLButtonElement>('[data-action="music-addon-update"]')!;
-    expect(abcAdd.disabled).toBe(false);
-    expect(abcAdd.textContent).toBe("ZIPから追加");
-    expect(abcAdd.getAttribute("aria-label")).toBe("ABC記譜法をZIPから追加");
-    expect(lilypond.querySelector('[data-addon-remote-status]')?.textContent)
-      .toContain("このWasabiPad版では非互換（必要版 99.0.0）");
-    expect(lilypondUpdate.textContent).toBe("ZIPから更新");
-    expect(lilypondUpdate.getAttribute("aria-label")).toBe("LilyPondをZIPから更新");
-    expect(lilypondUpdate.disabled).toBe(false);
-    expect(lilypond.querySelector<HTMLButtonElement>('[data-action="music-addon-toggle"]')?.disabled).toBe(false);
-    expect(lilypond.querySelector<HTMLButtonElement>('[data-action="music-addon-remove"]')?.disabled).toBe(false);
-
-    abcAdd.click();
-    await vi.waitFor(() => expect(ports.installMusicAddon).toHaveBeenCalledWith("abc"));
-    lilypondUpdate.click();
-    await vi.waitFor(() => expect(ports.installMusicAddon).toHaveBeenCalledWith("lilypond"));
-    await vi.waitFor(() => expect(lilypond.getAttribute("aria-busy")).toBe("false"));
-    lilypond.querySelector<HTMLButtonElement>('[data-action="music-addon-toggle"]')!.click();
-    await vi.waitFor(() => expect(ports.setMusicAddonEnabled).toHaveBeenCalledWith("lilypond", false));
-    await vi.waitFor(() => expect(lilypond.getAttribute("aria-busy")).toBe("false"));
-    lilypond.querySelector<HTMLButtonElement>('[data-action="music-addon-remove"]')!.click();
-    await vi.waitFor(() => expect(ports.removeMusicAddon).toHaveBeenCalledWith("lilypond"));
-  });
-
-  // Feature: 公式音楽アドインの設定
-  // Scenario: ZIPからの追加・有効切替・更新・削除を選んだ行へ反映する
-  // Given: ABCは有効で、LilyPondは未インストール
-  // When: LilyPondをZIPから追加し、ABCの有効状態を切り替えて更新・削除する
-  // Then: 各操作を対象IDでportへ委譲し、取得したローカル状態を表示する
-  it("Scenario: 公式音楽アドインをZIPから追加・切替・更新・削除する", async () => {
-    const statuses = new Map([
-      ["abc", { id: "abc", version: "1.0.0", installed: true, enabled: true }],
-      ["lilypond", { id: "lilypond", version: null, installed: false, enabled: false }],
-    ]);
-    const ports = makePorts();
-    ports.getMusicAddonStatus = vi.fn(async (id: string) => ({ ...statuses.get(id)! }));
-    ports.getMusicAddonCatalog = vi.fn(async () => []);
-    ports.installMusicAddon = vi.fn(async (id: string) => {
-      statuses.set(id, { id, version: "2.0.0", installed: true, enabled: true });
-    });
-    ports.setMusicAddonEnabled = vi.fn(async (id: string, enabled: boolean) => {
-      statuses.set(id, { ...statuses.get(id)!, enabled });
-    });
-    ports.removeMusicAddon = vi.fn(async (id: string) => {
-      statuses.set(id, { id, version: null, installed: false, enabled: false });
-    });
-    openSettingsModal(ports);
-
-    const section = document.querySelector<HTMLElement>("#settings-addons")!;
-    const abc = section.querySelector<HTMLElement>('[data-addon-id="abc"]')!;
-    const lilypond = section.querySelector<HTMLElement>('[data-addon-id="lilypond"]')!;
-    await vi.waitFor(() => expect(abc.querySelector('[data-addon-local-status]')?.textContent).toContain("有効"));
-
-    lilypond.querySelector<HTMLButtonElement>('[data-action="music-addon-add"]')!.click();
-    await vi.waitFor(() => expect(lilypond.querySelector('[data-addon-local-status]')?.textContent).toContain("有効"));
-    abc.querySelector<HTMLButtonElement>('[data-action="music-addon-toggle"]')!.click();
-    await vi.waitFor(() => expect(abc.querySelector('[data-addon-local-status]')?.textContent).toContain("無効"));
-    abc.querySelector<HTMLButtonElement>('[data-action="music-addon-toggle"]')!.click();
-    await vi.waitFor(() => expect(abc.querySelector('[data-addon-local-status]')?.textContent).toContain("有効"));
-    abc.querySelector<HTMLButtonElement>('[data-action="music-addon-update"]')!.click();
-    await vi.waitFor(() => expect(abc.querySelector('[data-addon-local-status]')?.textContent).toContain("v2.0.0"));
-    abc.querySelector<HTMLButtonElement>('[data-action="music-addon-remove"]')!.click();
-    await vi.waitFor(() => expect(abc.querySelector('[data-addon-local-status]')?.textContent).toContain("未インストール"));
-
-    expect(ports.installMusicAddon).toHaveBeenCalledWith("lilypond");
-    expect(ports.setMusicAddonEnabled).toHaveBeenNthCalledWith(1, "abc", false);
-    expect(ports.setMusicAddonEnabled).toHaveBeenNthCalledWith(2, "abc", true);
-    expect(ports.removeMusicAddon).toHaveBeenCalledWith("abc");
-  });
-
-  // Feature: ローカルアドインZIPの設定
-  // Scenario: ZIP更新中の重複要求を防ぎ、失敗時は既存状態を保つ
-  // Given: ABCはインストール済みで、更新処理が未完了
-  // When: ZIPから更新を連続して押し、不正なZIPで失敗する
-  // Then: 追加の更新を送らず、既存状態とZIPエラーを表示する
-  it("Scenario: ZIP更新エラーを表示し既存状態を保つ", async () => {
-    let rejectInstall!: (error: Error) => void;
-    const ports = makePorts();
-    ports.getMusicAddonStatus = vi.fn(async (id: string) => ({
-      id, version: "1.2.3", installed: true, enabled: true,
-    }));
-    ports.installMusicAddon = vi.fn(() => new Promise<void>((_resolve, reject) => { rejectInstall = reject; }));
-    openSettingsModal(ports);
-
-    const abc = document.querySelector<HTMLElement>('[data-addon-id="abc"]')!;
-    await vi.waitFor(() => expect(abc.querySelector('[data-addon-local-status]')?.textContent).toContain("有効"));
-    const update = abc.querySelector<HTMLButtonElement>('[data-action="music-addon-update"]')!;
-    update.click();
-    update.click();
-    expect(update.disabled).toBe(true);
-    expect(ports.installMusicAddon).toHaveBeenCalledOnce();
-    rejectInstall(new Error("invalid addon ZIP"));
-
-    await vi.waitFor(() => expect(abc.querySelector('[data-addon-feedback]')?.textContent).toContain("invalid addon ZIP"));
-    expect(abc.querySelector('[data-addon-local-status]')?.textContent).toContain("1.2.3");
-    expect(abc.querySelector('[data-addon-local-status]')?.textContent).toContain("有効");
-  });
-
-  // Feature: LilyPond実行ファイルの設定
-  // Scenario: 実行ファイルのパスを保存し、空欄で解除する
-  // Given: LilyPond実行ファイルのパス入力欄を表示している
-  // When: パスを入力し、続けて空欄へ変更する
-  // Then: 設定を文字列から`null`へ更新する
-  it("Scenario: LilyPond実行ファイルのパスを保存・解除する", () => {
-    const ports = makePorts();
-    openSettingsModal(ports);
-    const input = document.querySelector<HTMLInputElement>('[data-setting="lilypond-executable-path"]')!;
-    const explanation = document.querySelector<HTMLElement>(".settings-lilypond-path")?.parentElement?.textContent ?? "";
-    expect(explanation).toContain("別途インストール");
-    expect(explanation).toContain("信頼できる楽譜");
-
-    input.value = "C:\\LilyPond\\bin\\lilypond.exe";
-    input.dispatchEvent(new Event("change", { bubbles: true }));
-    input.value = "   ";
-    input.dispatchEvent(new Event("change", { bubbles: true }));
-
-    expect(ports.setSetting).toHaveBeenCalledWith("lilypondExecutablePath", "C:\\LilyPond\\bin\\lilypond.exe");
-    expect(ports.setSetting).toHaveBeenLastCalledWith("lilypondExecutablePath", null);
-    expect(input.getAttribute("aria-label")).toBe("LilyPond実行ファイルのパス");
   });
 
   // Given: 設定画面から開いた子ダイアログと、設定画面を再表示する処理がある
@@ -366,7 +188,7 @@ describe("Feature: settings modal", () => {
       "一般",
       "エディタ",
       "プレビュー",
-      "アドイン",
+      "外部プレビュー",
       "検索",
       "登録文字列",
       "登録コマンド（ファイル）",
@@ -377,7 +199,7 @@ describe("Feature: settings modal", () => {
       "一般",
       "エディタ",
       "プレビュー",
-      "アドイン",
+      "外部プレビュー",
       "検索",
       "登録文字列",
       "登録コマンド（ファイル）",

@@ -504,6 +504,37 @@ function openPreviewFormat(
       if (externalAdapter) {
         const inputPath = externalPreviewInputPath(session);
         if (!inputPath) throw new Error("外部プレビューは保存済みの通常ファイルだけに対応しています");
+        if (!getSetting("trustedExternalPreviewAdapterIds").includes(externalAdapter.id)) {
+          const isSelectedAdapterCurrent = () => {
+            const classificationPath = classificationPathOf(session);
+            const selectedAdapter = externalPreviewAdapterForPath(
+              classificationPath,
+              getSetting("externalPreviewAdapters"),
+              getSetting("externalPreviewAdapterSelections"),
+            );
+            return selectedAdapter !== null
+              && selectedAdapter.id === externalAdapter.id
+              && selectedAdapter.command === externalAdapter.command
+              && selectedAdapter.args === externalAdapter.args
+              && previewSelectionForAdapter(
+                selectedAdapter,
+                viewerFormatForAutomaticPreview(classificationPath) !== null,
+              ) === "external";
+          };
+          const approved = await confirmMessage(
+            "外部プレビューの実行確認",
+            "実行を許可すると、実行ファイルまたは引数を編集するまで確認を省略します。信頼できる場合だけ続行してください。\n\n"
+              + "実行ファイル: " + externalAdapter.command + "\n引数: " + externalAdapter.args,
+            "信頼して実行",
+          );
+          if (!approved || !isCurrentRequest() || !isSelectedAdapterCurrent()) return;
+          setSetting("trustedExternalPreviewAdapterIds", [
+            ...getSetting("trustedExternalPreviewAdapterIds"),
+            externalAdapter.id,
+          ]);
+          await flushSettings();
+          if (!isCurrentRequest() || !isSelectedAdapterCurrent()) return;
+        }
         requestId = window.crypto.randomUUID();
         externalPreviewRequestId = requestId;
         generatedOutputPath = await api.externalPreviewGenerate({
@@ -644,6 +675,7 @@ function syncPreviewDocument(session: Readonly<DocumentSession>, force = false, 
   const externalAdapter = externalPreviewAdapterForPath(
     classificationPath,
     getSetting("externalPreviewAdapters"),
+    getSetting("externalPreviewAdapterSelections"),
   );
   const externalSelection = previewSelectionForAdapter(externalAdapter, standardFormat !== null);
   if (previewAvailable
@@ -743,14 +775,21 @@ function openRegisteredCommandSettings(kind: CommandValueKind, current?: Registe
 }
 
 function openExternalPreviewAdapterSettings(current?: ExternalPreviewAdapter) {
-  runSettingsChild("外部プレビューアダプタを保存できませんでした", async () => {
+  runSettingsChild("外部プレビューを保存できませんでした", async () => {
     const value = await promptExternalPreviewAdapter({ promptFields }, current);
     if (!value) return;
-    const adapters = getSetting("externalPreviewAdapters");
-    const others = current ? adapters.filter((adapter) => adapter !== current) : adapters;
-    if (value.extensions.some((extension) => others.some((adapter) => adapter.extensions.includes(extension)))) {
-      throw new Error("同じ拡張子の外部プレビューアダプタは登録できません");
+    if (current) {
+      const selections = { ...getSetting("externalPreviewAdapterSelections") };
+      for (const [extension, id] of Object.entries(selections)) {
+        if (id === current.id && !value.extensions.includes(extension)) delete selections[extension];
+      }
+      setSetting("externalPreviewAdapterSelections", selections);
     }
+    if (current && (current.command !== value.command || current.args !== value.args)) {
+      setSetting("trustedExternalPreviewAdapterIds",
+        getSetting("trustedExternalPreviewAdapterIds").filter((id) => id !== current.id));
+    }
+    const adapters = getSetting("externalPreviewAdapters");
     setSetting("externalPreviewAdapters", current
       ? adapters.map((adapter) => adapter === current ? value : adapter)
       : [...adapters, value]);
@@ -941,18 +980,6 @@ settingsPorts = {
   applyMarkdownSoftBreaks: (enabled) => inlinePreview.setMarkdownSoftBreaks(enabled),
   applyMarkdownLineHeight: (value) => inlinePreview.setMarkdownLineHeight(value),
   applyMarkdownHeadingUnderlines: (enabled) => inlinePreview.setMarkdownHeadingUnderlines(enabled),
-  getMusicAddonStatus: (id) => api.musicAddonStatus(id),
-  getMusicAddonCatalog: () => api.musicAddonCatalog(),
-  installMusicAddon: async (id) => {
-    const selected = await openDialog({
-      directory: false,
-      multiple: false,
-      filters: [{ name: "WasabiPadアドイン", extensions: ["zip"] }],
-    });
-    if (typeof selected === "string") await api.musicAddonInstall(id, selected);
-  },
-  setMusicAddonEnabled: (id, enabled) => api.musicAddonSetEnabled(id, enabled),
-  removeMusicAddon: (id) => api.musicAddonRemove(id),
   pickPreviewCacheDirectory: async (defaultPath?: string) => {
     try {
       const selected = await openDialog({ directory: true, multiple: false, defaultPath });
@@ -1305,6 +1332,7 @@ previewToggle.addEventListener("click", () => {
     const adapter = externalPreviewAdapterForPath(
       classificationPath,
       getSetting("externalPreviewAdapters"),
+      getSetting("externalPreviewAdapterSelections"),
     );
     const selection = previewSelectionForAdapter(adapter, standardFormat !== null);
     if (adapter && selection === "external" && externalPreviewInputPath(session)) {

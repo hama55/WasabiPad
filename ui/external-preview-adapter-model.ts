@@ -1,6 +1,7 @@
 export type ExternalPreviewOutputFormat = "html" | "svg";
 
 export interface ExternalPreviewAdapter {
+  id: string;
   extensions: string[];
   command: string;
   args: string;
@@ -20,6 +21,8 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 export function normalizeExternalPreviewAdapter(value: unknown): ExternalPreviewAdapter | null {
   if (!isObject(value)
+    || typeof value.id !== "string"
+    || !value.id.trim()
     || !Array.isArray(value.extensions)
     || typeof value.command !== "string"
     || typeof value.args !== "string"
@@ -42,6 +45,7 @@ export function normalizeExternalPreviewAdapter(value: unknown): ExternalPreview
   }
   if (!args.includes("{file}") || !args.includes("{output}")) return null;
   return {
+    id: value.id.trim(),
     extensions,
     command,
     args: value.args,
@@ -52,13 +56,12 @@ export function normalizeExternalPreviewAdapter(value: unknown): ExternalPreview
 
 export function parseExternalPreviewAdapters(value: unknown): ExternalPreviewAdapter[] {
   if (!Array.isArray(value)) return [];
-  const used = new Set<string>();
+  const ids = new Set<string>();
   return value.flatMap((item) => {
     const adapter = normalizeExternalPreviewAdapter(item);
-    if (!adapter) return [];
-    const extensions = adapter.extensions.filter((extension) => !used.has(extension));
-    extensions.forEach((extension) => used.add(extension));
-    return extensions.length ? [{ ...adapter, extensions }] : [];
+    if (!adapter || ids.has(adapter.id)) return [];
+    ids.add(adapter.id);
+    return [adapter];
   });
 }
 
@@ -101,6 +104,29 @@ export function parseExternalPreviewArguments(value: string): string[] {
   return args;
 }
 
+export function splitExternalPreviewCommandLine(value: string): { command: string; args: string } {
+  const parsed = parseExternalPreviewArguments(value);
+  const command = parsed[0];
+  if (!command) throw new Error("実行コマンドを入力してください");
+
+  let index = 0;
+  while (/\s/.test(value[index] ?? "")) index += 1;
+  let quote: '"' | "'" | null = null;
+  for (; index < value.length; index += 1) {
+    const character = value[index];
+    if (quote === '"' && character === "\\" && value[index + 1] === '"') {
+      index += 1;
+    } else if (quote !== null && character === quote) {
+      quote = null;
+    } else if (quote === null && (character === '"' || character === "'")) {
+      quote = character;
+    } else if (quote === null && /\s/.test(character)) {
+      break;
+    }
+  }
+  return { command, args: value.slice(index).trim() };
+}
+
 function extensionOfPath(path: string): string {
   const separator = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
   const dot = path.lastIndexOf(".");
@@ -110,9 +136,11 @@ function extensionOfPath(path: string): string {
 export function externalPreviewAdapterForPath(
   path: string,
   adapters: readonly ExternalPreviewAdapter[],
+  selections: Readonly<Record<string, string>> = {},
 ): ExternalPreviewAdapter | null {
   const extension = extensionOfPath(path);
-  return adapters.find((adapter) => adapter.extensions.includes(extension)) ?? null;
+  const selectedId = selections[extension];
+  return adapters.find((adapter) => adapter.id === selectedId && adapter.extensions.includes(extension)) ?? null;
 }
 
 export function previewSelectionForAdapter(

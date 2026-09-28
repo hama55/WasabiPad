@@ -47,7 +47,6 @@ describe("Feature: 共有プロトコル定数", () => {
       workspaceSearchBatch: "workspace-search-batch",
       documentLoadProgress: "document-load-progress",
       viewerUpdate: "viewer-update",
-      musicAddonChanged: "music-addon-changed",
     });
     expect(isArchiveFormat("7Z")).toBe(true);
     expect(isArchiveFormat("txt")).toBe(false);
