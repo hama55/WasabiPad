@@ -6,43 +6,6 @@ import { createExternalPreviewOutputLifecycle, createPreviewReplacementLifecycle
 import { isCurrentPreviewDocument, type PreviewDocument } from "./preview-layout";
 
 describe("Feature: preview replacement lifecycle", () => {
-  // Given: SQLiteの手動選択とその後の別プレビュー操作がある
-  // When: SQLite自身の確認世代が進んだ後に失敗し、さらに古い終了処理が届く
-  // Then: 現在の手動選択は掃除でき、後続操作が始まった後はその出力を保護する
-  it("Scenario: manual selection cleanup survives its probe but not a later operation", () => {
-    const lifecycle = createPreviewReplacementLifecycle();
-    let requestGeneration = 20;
-    let outputPath: string | null = "C:\\Temp\\WasabiPad\\sqlite-selection\\preview.html";
-    const cleanedPaths: string[] = [];
-    const finishFailedSelection = (generation: number) => {
-      try {
-        if (lifecycle.isCurrentManualSelection(generation) && outputPath) {
-          cleanedPaths.push(outputPath);
-          outputPath = null;
-        }
-      } finally {
-        lifecycle.finishManualSelection(generation);
-      }
-    };
-
-    const failedSQLiteSelection = lifecycle.beginManualSelection();
-    requestGeneration++; // manual selection starts
-    requestGeneration++; // SQLite header probe starts under the same selection
-    finishFailedSelection(failedSQLiteSelection);
-
-    expect(requestGeneration).toBe(22);
-    expect(outputPath).toBeNull();
-    expect(cleanedPaths).toEqual(["C:\\Temp\\WasabiPad\\sqlite-selection\\preview.html"]);
-
-    const staleSelection = lifecycle.beginManualSelection();
-    lifecycle.invalidateManualSelection(); // a later preview request owns cleanup from now on
-    outputPath = "C:\\Temp\\WasabiPad\\later-request\\preview.html";
-    finishFailedSelection(staleSelection);
-
-    expect(outputPath).toBe("C:\\Temp\\WasabiPad\\later-request\\preview.html");
-    expect(cleanedPaths).toEqual(["C:\\Temp\\WasabiPad\\sqlite-selection\\preview.html"]);
-  });
-
   // Given: 保存済み .aaa から生成したHTMLで、既存プレビューを置き換えた
   // When: 置換完了後に旧ビューの終了通知が遅れて届き、その後、新ビューを利用者が閉じる
   // Then: 旧通知は新しい生成物を壊さず、現在のビューの終了は通常どおり無効化と掃除を行う

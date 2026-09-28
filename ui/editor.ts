@@ -16,7 +16,6 @@ import { MENU_ICON } from "./menu-icons";
 import { MENU_LABELS } from "./menu-labels";
 import { REGISTERED_COMMAND_LABELS } from "./registered-command-model";
 import { createOpenAsMenu } from "./open-as-menu";
-import { viewerFormatIcon, VIEWER_FORMAT_LABELS } from "./format";
 import { viewerFormatForPath } from "./viewer-formats";
 import { LineCache } from "./line-cache";
 import { EditorMutationController } from "./editor-mutation";
@@ -65,14 +64,13 @@ export interface EditorPorts {
   onCursor: (line: number, col: number) => void;
   onFontChange: (fontFamily: string, fontSize: number, changed: "family" | "size" | "both") => void;
   openExternally: (path: string) => void | Promise<unknown>;
+  togglePreview: () => void;
   openInNewTab?: () => void | Promise<unknown>;
   openInNewWindow?: (path: string) => void | Promise<unknown>;
   openAs?: (openAs: api.OpenAs) => void | Promise<unknown>;
   registeredCommandPorts: RegisteredCommandMenuPorts;
   revealInExplorer?: (path: string, isDir: boolean) => void | Promise<unknown>;
   onError: (message: string, error: unknown) => Promise<void>;
-  onViewerFormatSelectionStarting?: () => void | ((succeeded: boolean) => void);
-  onViewerFormatSelected?: (format: api.ViewerFormat, label: string) => void;
   cancelPendingViewerOpen?: () => Promise<void>;
   openViewer: (
     format: api.ViewerFormat,
@@ -162,8 +160,7 @@ export class VirtualEditor {
   private registeredCommandPorts: RegisteredCommandMenuPorts;
   private revealInExplorer?: (path: string, isDir: boolean) => void | Promise<unknown>;
   private onError: (message: string, error: unknown) => Promise<void>;
-  private onViewerFormatSelectionStarting?: EditorPorts["onViewerFormatSelectionStarting"];
-  private onViewerFormatSelected?: EditorPorts["onViewerFormatSelected"];
+  private togglePreview: EditorPorts["togglePreview"];
   private onPasteImage?: (bytes: number[], mimeType: string) => Promise<string>;
   private rectangularClipboard = new RectangularClipboard();
   private liveViewers: LiveViewers;
@@ -221,8 +218,7 @@ export class VirtualEditor {
     this.registeredCommandPorts = ports.registeredCommandPorts;
     this.revealInExplorer = ports.revealInExplorer;
     this.onError = ports.onError;
-    this.onViewerFormatSelectionStarting = ports.onViewerFormatSelectionStarting;
-    this.onViewerFormatSelected = ports.onViewerFormatSelected;
+    this.togglePreview = ports.togglePreview;
     this.onPasteImage = ports.saveImage;
     this.fontFamily = config.fontFamily;
     this.fontSize = config.fontSize;
@@ -2330,30 +2326,12 @@ export class VirtualEditor {
         addCustomItem(stringMenu);
       }
     }
-    const viewerFormats = Object.entries(VIEWER_FORMAT_LABELS) as [api.ViewerFormat, string][];
-    items.push(
-      ...viewerFormats.map(([format, label], index) => ({
-        label,
-        iconClass: viewerFormatIcon(format),
-        action: () => {
-          this.liveViewers.invalidatePendingOpens();
-          const finishSelection = this.onViewerFormatSelectionStarting?.();
-          this.dispatch("ビューを開けませんでした", async () => {
-            let succeeded = false;
-            try {
-              const openedLabel = await this.openTextViewer(format);
-              if (openedLabel !== null) {
-                succeeded = true;
-                this.onViewerFormatSelected?.(format, openedLabel);
-              }
-            } finally {
-              if (typeof finishSelection === "function") finishSelection(succeeded);
-            }
-          });
-        },
-        sep: index === 0,
-      })),
-    );
+    items.push({
+      label: "プレビュー",
+      iconClass: MENU_ICON.text,
+      action: () => this.dispatch("プレビューを切り替えられませんでした", () => this.togglePreview()),
+      sep: true,
+    });
     if (commandPath) {
       items.push({
         label: MENU_LABELS.external,

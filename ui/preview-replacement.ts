@@ -1,21 +1,8 @@
 export function createPreviewReplacementLifecycle() {
   let replacingGeneration: number | null = null;
   let activeLabel: string | null = null;
-  let manualSelectionGeneration = 0;
 
   return {
-    beginManualSelection() {
-      return ++manualSelectionGeneration;
-    },
-    isCurrentManualSelection(generation: number) {
-      return manualSelectionGeneration === generation;
-    },
-    finishManualSelection(generation: number) {
-      if (manualSelectionGeneration === generation) manualSelectionGeneration++;
-    },
-    invalidateManualSelection() {
-      manualSelectionGeneration++;
-    },
     isActive(label: string) {
       return activeLabel === label;
     },

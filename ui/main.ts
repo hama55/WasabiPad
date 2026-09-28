@@ -430,18 +430,11 @@ function clearExternalPreviewOutput() {
 }
 
 function invalidatePreviewRequest(clearSelection = true) {
-  previewReplacementLifecycle.invalidateManualSelection();
   previewRequestGeneration++;
   clearExternalPreviewOutput();
   if (!clearSelection) return;
   previewDocument = null;
   editingStatusbar.setPreviewFormat(null);
-}
-
-function invalidatePendingPreviewRequest() {
-  previewRequestGeneration++;
-  openingPreviewRequestGeneration = null;
-  cancelPendingExternalPreviewRequest();
 }
 
 function externalPreviewInputPath(session: Readonly<DocumentSession>): string | null {
@@ -451,7 +444,6 @@ function externalPreviewInputPath(session: Readonly<DocumentSession>): string | 
 }
 
 function clearPreview(session: Readonly<DocumentSession>) {
-  previewReplacementLifecycle.invalidateManualSelection();
   previewRequestGeneration++;
   openingPreviewRequestGeneration = null;
   cancelPendingExternalPreviewRequest();
@@ -483,7 +475,6 @@ function openPreviewFormat(
     errorTitle = "ビューを表示できませんでした",
     externalAdapter,
   } = options;
-  previewReplacementLifecycle.invalidateManualSelection();
   openingPreviewRequestGeneration = null;
   cancelPendingExternalPreviewRequest();
   const previousPreviewDocument = previewDocument;
@@ -849,36 +840,8 @@ const editorPorts = {
   openAs: (openAs) => runBackground("指定した形式で開けませんでした", () => tabs.openCurrentAs(openAs)),
   revealInExplorer: (path, isDir) => revealInExplorer(path, isDir),
   onError: (message, error) => showError(message, error),
+  togglePreview: () => previewToggle.click(),
   cancelPendingViewerOpen: () => inlinePreview.cancelPendingExternalOpen(),
-  onViewerFormatSelectionStarting: () => {
-    invalidatePendingPreviewRequest();
-    inlinePreview.setPendingExternalOutputPath(null);
-    const selectionGeneration = previewReplacementLifecycle.beginManualSelection();
-    const requestGeneration = previewRequestGeneration;
-    previewReplacementLifecycle.begin(requestGeneration);
-    return (succeeded) => {
-      try {
-        if (!succeeded
-          && !previewAvailable
-          && previewReplacementLifecycle.isCurrentManualSelection(selectionGeneration)) {
-          invalidatePreviewRequest();
-        }
-      } finally {
-        previewReplacementLifecycle.finishManualSelection(selectionGeneration);
-        previewReplacementLifecycle.finish(requestGeneration);
-      }
-    };
-  },
-  onViewerFormatSelected: (format, label) => {
-    if (!previewReplacementLifecycle.isActive(label)) return;
-    clearDisplayedExternalPreviewOutput();
-    previewDocument = {
-      ownerTabId: tabs?.state.activeId ?? null,
-      path: documentPathOf(doc.current),
-      format,
-    };
-    editingStatusbar.setPreviewFormat(format);
-  },
   openViewer: async (format, text, selection, sqliteHeaderChecked = false, externalOutputPath, isCurrentRequest = () => true) => {
     const session = doc.current;
     const path = documentPathOf(session);
