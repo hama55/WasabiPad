@@ -13,7 +13,7 @@ import {
   type RegisteredCommand,
 } from "./registered-command-model";
 import { registeredStringLabel } from "./registered-strings";
-import { showMessage } from "./prompt";
+import { confirmMessage, showMessage } from "./prompt";
 import {
   isValidSqlitePreviewRows,
   isValidMarkdownLineHeight,
@@ -400,7 +400,8 @@ function registeredStringsField(
     const actions = document.createElement("div");
     actions.className = "settings-list-actions";
     const edit = settingsActionButton("⚙", "この登録文字列を編集", "edit-registered-string", () => openDialog(text));
-    const remove = settingsActionButton("×", "登録文字列を削除", "delete-registered-string", () => {
+    const remove = settingsActionButton("×", "登録文字列を削除", "delete-registered-string", async () => {
+      if (!await confirmMessage("登録文字列の削除", `「${registeredStringLabel(text)}」を削除しますか？`, "削除")) return;
       ports.setSetting("registeredStrings", ports.getSetting("registeredStrings").filter((item) => item !== text));
       row.remove();
     });
@@ -497,7 +498,8 @@ function registeredCommandsField(
         openDialog(kind, command));
       edit.dataset.commandIndex = String(index);
       actions.append(edit);
-      const remove = settingsActionButton("×", "このコマンドの登録を解除", "delete-registered-command", () => {
+      const remove = settingsActionButton("×", "このコマンドの登録を解除", "delete-registered-command", async () => {
+        if (!await confirmMessage("登録コマンドの解除", `「${command.label}」の登録を解除しますか？`, "解除")) return;
         ports.setSetting("registeredCommands", ports.getSetting("registeredCommands").filter((item) => item !== command));
         render();
       });
@@ -545,7 +547,12 @@ function externalPreviewAdaptersField(ports: SettingsPanelPorts): HTMLElement {
       actions.append(
         settingsActionButton("⚙", "外部プレビューを編集", "edit-external-preview-adapter", () =>
           ports.openExternalPreviewAdapter(adapter)),
-        settingsActionButton("×", "外部プレビューを削除", "delete-external-preview-adapter", () => {
+        settingsActionButton("×", "外部プレビューを削除", "delete-external-preview-adapter", async () => {
+          if (!await confirmMessage(
+            "外部プレビューの削除",
+            `.${adapter.extensions.join(", .")} の外部プレビュー設定を削除しますか？`,
+            "削除",
+          )) return;
           ports.setSetting("externalPreviewAdapters", ports.getSetting("externalPreviewAdapters").filter((item) => item !== adapter));
           ports.setSetting("externalPreviewAdapterSelections", Object.fromEntries(
             Object.entries(ports.getSetting("externalPreviewAdapterSelections"))

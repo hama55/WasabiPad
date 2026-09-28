@@ -58,15 +58,22 @@ function makePorts(initial: Partial<Settings> = {}): SettingsPanelPorts {
   };
 }
 
+async function answerConfirmation(approved: boolean): Promise<void> {
+  const message = document.querySelector<HTMLElement>(".pf-message")!;
+  const button = approved ? ".pf-ok" : ".pf-cancel";
+  message.parentElement!.querySelector<HTMLButtonElement>(button)!.click();
+  await Promise.resolve();
+}
+
 describe("Feature: settings modal", () => {
   afterEach(() => document.body.replaceChildren());
 
   // Feature: 外部プレビューの設定画面
   // Scenario: 一覧から追加・削除の操作を各portへ委譲する
   // Given: 外部プレビューが1件登録されている
-  // When: 設定画面で追加と削除を操作する
-  // Then: 追加ダイアログと設定保存portへ通知される
-  it("Scenario: 外部プレビュー一覧を編集する", () => {
+  // When: 追加と削除を操作し、削除確認をキャンセルしてから承認する
+  // Then: キャンセル中は保持し、承認後だけ削除される
+  it("Scenario: 外部プレビュー一覧を編集する", async () => {
     const adapter = {
       id: "addon-1",
       extensions: ["abc"],
@@ -91,6 +98,12 @@ describe("Feature: settings modal", () => {
     const remove = group.querySelector<HTMLButtonElement>('[data-action="delete-external-preview-adapter"]')!;
     expect(remove.title).toBe("外部プレビューを削除");
     remove.click();
+    expect(document.querySelector<HTMLElement>(".pf-message")?.textContent)
+      .toContain(".abc の外部プレビュー設定を削除しますか？");
+    await answerConfirmation(false);
+    expect(ports.getSetting("externalPreviewAdapters")).toHaveLength(1);
+    remove.click();
+    await answerConfirmation(true);
     expect(ports.setSetting).toHaveBeenCalledWith("externalPreviewAdapters", []);
     expect(group.querySelector('[data-external-preview-row]')).toBeNull();
   });
@@ -490,9 +503,9 @@ describe("Feature: settings modal", () => {
   });
 
   // Given: ファイル用1件、文字列用2件、ファイル用1件の登録コマンドがある
-  // When: ファイル用の先頭を削除してから、文字列用の2件目を上へ移動し、1件目を削除する
+  // When: ファイル用の先頭を削除してから、文字列用の2件目を上へ移動し、1件目の削除を承認する
   // Then: 別種別の削除で配列位置が変わっても対象コマンドを正しく操作する
-  it("Scenario: 種類の異なるコマンド削除後も別一覧の操作対象を維持する", () => {
+  it("Scenario: 種類の異なるコマンド削除後も別一覧の操作対象を維持する", async () => {
     const ports = makePorts({
       registeredCommands: [
         { label: "Editor", prefix: "", command: "code {file}" },
@@ -506,8 +519,10 @@ describe("Feature: settings modal", () => {
     const fileCommands = document.querySelector<HTMLElement>('[data-setting-group="registered-commands-file"]')!;
     const stringCommands = document.querySelector<HTMLElement>('[data-setting-group="registered-commands-string"]')!;
     fileCommands.querySelector<HTMLButtonElement>('[data-action="delete-registered-command"][data-command-index="0"]')!.click();
-    stringCommands.querySelector<HTMLButtonElement>('[data-action="move-registered-command-up"][data-command-index="2"]')!.click();
+    await answerConfirmation(true);
+    stringCommands.querySelector<HTMLButtonElement>('[data-action="move-registered-command-up"][data-command-index="1"]')!.click();
     stringCommands.querySelector<HTMLButtonElement>('[data-action="delete-registered-command"][data-command-index="1"]')!.click();
+    await answerConfirmation(true);
 
     expect(ports.getSetting("registeredCommands")).toEqual([
       { label: "Terminal", prefix: "", command: "wt {string}", valueKind: "string" },
@@ -745,9 +760,9 @@ describe("Feature: settings modal", () => {
   });
 
   // Given: 登録文字列と登録コマンドが詳細設定に表示されている
-  // When: 登録一覧から項目を削除する
-  // Then: 対象項目だけを設定ストアから削除する
-  it("Scenario: 登録項目を設定モーダルから削除する", () => {
+  // When: 登録一覧から項目を削除し、1件は確認をキャンセルする
+  // Then: キャンセル中は保持し、承認した項目だけを設定ストアから削除する
+  it("Scenario: 登録項目を設定モーダルから削除する", async () => {
     const ports = makePorts({
       registeredStrings: ["one", "two"],
       registeredCommands: [{ label: "Editor", prefix: "", command: "code {file}" }],
@@ -756,9 +771,17 @@ describe("Feature: settings modal", () => {
 
     const strings = document.querySelector<HTMLElement>('[data-setting-group="registered-strings"]')!;
     const commands = document.querySelector<HTMLElement>('[data-setting-group="registered-commands-file"]')!;
+    const firstString = strings.querySelector<HTMLButtonElement>('[title="登録文字列を削除"]')!;
+    firstString.click();
+    expect(document.querySelector<HTMLElement>(".pf-message")?.textContent).toContain("「one」を削除しますか？");
+    await answerConfirmation(false);
+    expect(ports.getSetting("registeredStrings")).toEqual(["one", "two"]);
+    firstString.click();
+    await answerConfirmation(true);
     strings.querySelector<HTMLButtonElement>('[title="登録文字列を削除"]')!.click();
-    strings.querySelector<HTMLButtonElement>('[title="登録文字列を削除"]')!.click();
+    await answerConfirmation(true);
     commands.querySelector<HTMLButtonElement>('[title="このコマンドの登録を解除"]')!.click();
+    await answerConfirmation(true);
 
     expect(ports.setSetting).toHaveBeenCalledWith("registeredStrings", ["two"]);
     expect(ports.setSetting).toHaveBeenCalledWith("registeredStrings", []);
