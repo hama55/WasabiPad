@@ -77,6 +77,11 @@
 .settings-field input:focus, .settings-field select:focus { border-color: var(--bg-status); }
 .settings-checkbox { flex-direction: row; align-items: center; gap: 8px; }
 .settings-checkbox input { width: auto; padding: 0; border: 0; background: transparent; }
+.settings-external-preview-selection { flex-direction: row; align-items: center; gap: 8px; }
+.settings-external-preview-selection > span {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.settings-external-preview-selection > select { flex: 0 1 260px; width: auto; }
 .settings-section > button, .settings-list-group > button {
   align-self: stretch; background: var(--bg-editor); color: var(--fg);
   border: 1px solid var(--border-strong); border-radius: 4px;

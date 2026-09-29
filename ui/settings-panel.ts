@@ -21,7 +21,10 @@ import {
   MIN_MARKDOWN_LINE_HEIGHT,
   type Settings,
 } from "./settings";
-import type { ExternalPreviewAdapter } from "./external-preview-adapter-model";
+import {
+  externalPreviewAdapterName,
+  type ExternalPreviewAdapter,
+} from "./external-preview-adapter-model";
 import { THEME_LABELS, THEMES, type Theme } from "./theme";
 
 export interface SettingsPanelPorts {
@@ -42,7 +45,7 @@ export interface SettingsPanelPorts {
   openSearchSettings: () => void;
   openRegisteredString: (current?: string) => void;
   openRegisteredCommand: (kind: CommandValueKind, command?: RegisteredCommand) => void;
-  openExternalPreviewAdapter: (adapter?: ExternalPreviewAdapter) => void;
+  openExternalPreviewAdapter: (adapter?: ExternalPreviewAdapter, onSaved?: () => void) => void;
   confirmReset: () => boolean | Promise<boolean>;
   resetSettings: () => void | Promise<void>;
 }
@@ -540,17 +543,19 @@ function externalPreviewAdaptersField(ports: SettingsPanelPorts): HTMLElement {
       const row = document.createElement("div");
       row.className = "settings-list-row";
       row.dataset.externalPreviewRow = "true";
+      const name = externalPreviewAdapterName(adapter);
+      const extensionLabel = `.${adapter.extensions.join(", .")}`;
       const value = document.createElement("span");
-      value.textContent = `.${adapter.extensions.join(", .")} → ${adapter.command} ${adapter.args}`.trim();
+      value.textContent = `${name} — ${extensionLabel} → ${adapter.command} ${adapter.args}`.trim();
       const actions = document.createElement("div");
       actions.className = "settings-list-actions";
       actions.append(
         settingsActionButton("⚙", "外部プレビューを編集", "edit-external-preview-adapter", () =>
-          ports.openExternalPreviewAdapter(adapter)),
+          ports.openExternalPreviewAdapter(adapter, render)),
         settingsActionButton("×", "外部プレビューを削除", "delete-external-preview-adapter", async () => {
           if (!await confirmMessage(
             "外部プレビューの削除",
-            `.${adapter.extensions.join(", .")} の外部プレビュー設定を削除しますか？`,
+            `${extensionLabel} の外部プレビュー設定を削除しますか？\nプレビュー名: ${name}`,
             "削除",
           )) return;
           ports.setSetting("externalPreviewAdapters", ports.getSetting("externalPreviewAdapters").filter((item) => item !== adapter));
@@ -574,7 +579,7 @@ function externalPreviewAdaptersField(ports: SettingsPanelPorts): HTMLElement {
     }
     for (const [extension, candidates] of adaptersByExtension) {
       const row = document.createElement("label");
-      row.className = "settings-field";
+      row.className = "settings-field settings-external-preview-selection";
       row.dataset.externalPreviewSelection = extension;
       const label = document.createElement("span");
       label.textContent = `.${extension} のプレビュー`;
@@ -584,10 +589,12 @@ function externalPreviewAdaptersField(ports: SettingsPanelPorts): HTMLElement {
       standard.value = "";
       standard.textContent = "標準プレビュー";
       select.append(standard);
-      for (const adapter of candidates) {
+      const candidatesByName = [...candidates].sort((left, right) =>
+        externalPreviewAdapterName(left).localeCompare(externalPreviewAdapterName(right), "ja"));
+      for (const adapter of candidatesByName) {
         const option = document.createElement("option");
         option.value = adapter.id;
-        option.textContent = adapter.command;
+        option.textContent = externalPreviewAdapterName(adapter);
         select.append(option);
       }
       select.value = ports.getSetting("externalPreviewAdapterSelections")[extension] ?? "";
@@ -605,7 +612,7 @@ function externalPreviewAdaptersField(ports: SettingsPanelPorts): HTMLElement {
       "外部プレビューを追加...",
       "外部プレビューを追加",
       "add-external-preview-adapter",
-      () => ports.openExternalPreviewAdapter(),
+      () => ports.openExternalPreviewAdapter(undefined, render),
       MENU_ICON.command,
     ));
   };

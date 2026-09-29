@@ -768,8 +768,8 @@ function openRegisteredCommandSettings(kind: CommandValueKind, current?: Registe
   });
 }
 
-function openExternalPreviewAdapterSettings(current?: ExternalPreviewAdapter) {
-  runSettingsChild("外部プレビューを保存できませんでした", async () => {
+function openExternalPreviewAdapterSettings(current?: ExternalPreviewAdapter, onSaved?: () => void) {
+  runBackground("外部プレビューを保存できませんでした", async () => {
     const value = await promptExternalPreviewAdapter({ promptFields }, current);
     if (!value) return;
     if (current) {
@@ -788,6 +788,7 @@ function openExternalPreviewAdapterSettings(current?: ExternalPreviewAdapter) {
       ? adapters.map((adapter) => adapter === current ? value : adapter)
       : [...adapters, value]);
     await flushSettings();
+    onSaved?.();
   });
 }
 

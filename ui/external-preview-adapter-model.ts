@@ -2,6 +2,8 @@ export type ExternalPreviewOutputFormat = "html" | "svg";
 
 export interface ExternalPreviewAdapter {
   id: string;
+  /** User-facing label. Missing on older saved settings. */
+  name?: string;
   extensions: string[];
   command: string;
   args: string;
@@ -37,6 +39,7 @@ export function normalizeExternalPreviewAdapter(value: unknown): ExternalPreview
     .filter((extension) => extension.length > 0))];
   const command = value.command.trim();
   if (!command || extensions.length === 0) return null;
+  const name = typeof value.name === "string" ? value.name.trim() : "";
   let args: string[];
   try {
     args = parseExternalPreviewArguments(value.args);
@@ -46,12 +49,19 @@ export function normalizeExternalPreviewAdapter(value: unknown): ExternalPreview
   if (!args.includes("{file}") || !args.includes("{output}")) return null;
   return {
     id: value.id.trim(),
+    ...(name ? { name } : {}),
     extensions,
     command,
     args: value.args,
     outputFormat: value.outputFormat,
     preferExternal: value.preferExternal,
   };
+}
+
+export function externalPreviewAdapterName(adapter: Pick<ExternalPreviewAdapter, "name" | "command">): string {
+  const name = adapter.name?.trim();
+  if (name) return name;
+  return adapter.command.trim().split(/[\\/]/).filter(Boolean).pop() ?? adapter.command.trim();
 }
 
 export function parseExternalPreviewAdapters(value: unknown): ExternalPreviewAdapter[] {

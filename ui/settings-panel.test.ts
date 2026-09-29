@@ -76,6 +76,7 @@ describe("Feature: settings modal", () => {
   it("Scenario: 外部プレビュー一覧を編集する", async () => {
     const adapter = {
       id: "addon-1",
+      name: "ABC preview",
       extensions: ["abc"],
       command: "renderer",
       args: "{file} {output}",
@@ -87,7 +88,7 @@ describe("Feature: settings modal", () => {
 
     const group = document.querySelector<HTMLElement>('[data-setting-group="external-preview-adapters"]')!;
     expect(group.querySelector("h3")?.textContent).toBe("外部プレビュー");
-    expect(group.querySelector('[data-external-preview-row]')?.textContent).toContain(".abc → renderer");
+    expect(group.querySelector('[data-external-preview-row]')?.textContent).toContain("ABC preview — .abc → renderer");
     expect(group.querySelector<HTMLButtonElement>('[data-action="edit-external-preview-adapter"]')?.title)
       .toBe("外部プレビューを編集");
     const add = group.querySelector<HTMLButtonElement>('[data-action="add-external-preview-adapter"]')!;

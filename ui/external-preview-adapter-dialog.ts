@@ -1,4 +1,5 @@
 import {
+  externalPreviewAdapterName,
   normalizeExternalPreviewAdapter,
   parseExternalPreviewArguments,
   splitExternalPreviewCommandLine,
@@ -17,6 +18,11 @@ export async function promptExternalPreviewAdapter(
   const result = await ports.promptFields(
     initial ? "外部プレビューを編集" : "外部プレビューを追加",
     [
+      {
+        label: "プレビュー名",
+        value: initial ? externalPreviewAdapterName(initial) : "",
+        validate: (value) => value.trim() ? null : "プレビュー名を入力してください",
+      },
       {
         label: "拡張子（カンマ区切り）",
         value: initial?.extensions.map((extension) => `.${extension}`).join(", ") ?? "",
@@ -48,19 +54,22 @@ export async function promptExternalPreviewAdapter(
     {
       preview: {
         label: "実行文字列（確認用）",
-        render: (values) => previewCommandLine(values[1] ?? "", values[2] ?? "html"),
+        render: (values) => previewCommandLine(values[2] ?? "", values[3] ?? "html"),
       },
     },
   );
   if (!result) return null;
-  const commandLine = splitExternalPreviewCommandLine(result[1]);
+  const name = result[0]?.trim();
+  if (!name) return null;
+  const commandLine = splitExternalPreviewCommandLine(result[2]);
   return normalizeExternalPreviewAdapter({
     id: initial?.id ?? crypto.randomUUID(),
-    extensions: normalizeExtensions(result[0]),
+    name,
+    extensions: normalizeExtensions(result[1]),
     command: commandLine.command,
     args: commandLine.args,
-    outputFormat: result[2],
-    preferExternal: result[3] === "external",
+    outputFormat: result[3],
+    preferExternal: result[4] === "external",
   });
 }
 

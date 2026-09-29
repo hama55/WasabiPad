@@ -1,3 +1,5 @@
+import { convertFileSrc } from "@tauri-apps/api/core";
+
 export type ExternalOutputFormat = "html" | "svg";
 
 export interface ExternalOutputSource {
@@ -6,23 +8,20 @@ export interface ExternalOutputSource {
   url: string;
 }
 
-function encodePath(path: string): string {
-  return path
-    .split("/")
-    .map((segment) => encodeURIComponent(segment).replaceAll("%3A", ":"))
-    .join("/");
-}
-
-function fileUrlFromAbsolutePath(path: string): string {
+function assetUrlFromAbsolutePath(path: string): string {
   const normalized = path.replaceAll("\\", "/");
   if (normalized.startsWith("//")) {
     const [host, ...segments] = normalized.slice(2).split("/");
     if (!host || !segments[0]) throw new Error("外部プレビュー生成物の絶対パスではありません");
-    return `file://${host}/${encodePath(segments.join("/"))}`;
+  } else if (!/^[A-Za-z]:\//.test(normalized) && !normalized.startsWith("/")) {
+    throw new Error("外部プレビュー生成物の絶対パスではありません");
   }
-  if (/^[A-Za-z]:\//.test(normalized)) return `file://${encodePath(`/${normalized}`)}`;
-  if (normalized.startsWith("/")) return `file://${encodePath(normalized)}`;
-  throw new Error("外部プレビュー生成物の絶対パスではありません");
+  const separatorIndex = normalized.lastIndexOf("/");
+  let directory = normalized.slice(0, separatorIndex);
+  if (!directory) directory = "/";
+  else if (/^[A-Za-z]:$/.test(directory)) directory += "/";
+  // Keep the filename as its own URL segment so relative assets resolve beside it.
+  return `${convertFileSrc(directory)}/${encodeURIComponent(normalized.slice(separatorIndex + 1))}`;
 }
 
 function outputFormatOf(path: string): ExternalOutputFormat {
@@ -36,7 +35,7 @@ export function resolveExternalOutputSource(absolutePath: string): ExternalOutpu
   if (typeof absolutePath !== "string" || !absolutePath) {
     throw new Error("外部プレビュー生成物の絶対パスが空です");
   }
-  const url = fileUrlFromAbsolutePath(absolutePath);
+  const url = assetUrlFromAbsolutePath(absolutePath);
   const format = outputFormatOf(absolutePath);
   return {
     format,
@@ -60,9 +59,10 @@ export function createTrustedExternalHtmlPreview(
   const frame = document.createElement("iframe");
   frame.className = "viewer-html";
   frame.title = fileNameOf(absolutePath);
+  // Opaque origin prevents external content from reaching WasabiPad's origin.
   frame.setAttribute(
     "sandbox",
-    "allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-downloads",
+    "allow-scripts allow-forms allow-modals allow-popups allow-downloads",
   );
   frame.allow = "autoplay; midi";
   frame.src = source.url;

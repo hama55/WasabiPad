@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mockConvertFileSrc } from "@tauri-apps/api/mocks";
 import {
   commitTrustedExternalHtmlPreview,
   createTrustedExternalHtmlPreview,
@@ -8,28 +9,32 @@ import {
 } from "./viewer-external-output";
 import { INLINE_PREVIEW_MESSAGES } from "./inline-preview-protocol";
 
+beforeEach(() => mockConvertFileSrc("windows"));
+
 describe("Feature: trusted external preview output", () => {
   // Feature: 外部プレビュー生成物のURL変換
-  // Scenario: Windows絶対パスをfile URLへ変換する
+  // Scenario: Windows絶対パスをTauri asset URLへ変換する
   // Given: 空白と`#`を含むHTMLのWindows絶対パスがある
   // When: 外部出力のsource情報を解決する
-  // Then: file URLへ変換し、HTML形式として返す
-  it("Scenario: resolves an HTML output path to a file URL", () => {
+  // Then: Tauri asset URLへ変換し、相対資産用の階層を保ってHTML形式として返す
+  it("Scenario: resolves an HTML output path to a Tauri asset URL", () => {
     expect(resolveExternalOutputSource("C:\\work\\score #1.HTML")).toEqual({
       format: "html",
       mimeType: "text/html",
-      url: "file:///C:/work/score%20%231.HTML",
+      url: "http://asset.localhost/C%3A%2Fwork/score%20%231.HTML",
     });
+    expect(new URL("assets/theme.css", resolveExternalOutputSource("C:\\work\\index.html").url).href)
+      .toBe("http://asset.localhost/C%3A%2Fwork/assets/theme.css");
   });
 
   // Given: UNC上のSVG出力の絶対パスがある
   // When: 外部出力のsource情報を解決する
-  // Then: UNC authorityを保持したfile URLと画像MIMEを返す
+  // Then: UNCパスをTauri asset URLへ渡し、画像MIMEを返す
   it("Scenario: resolves an SVG output path for the existing image display", () => {
     expect(resolveExternalOutputSource("\\\\server\\share\\score.svg")).toEqual({
       format: "svg",
       mimeType: "image/svg+xml",
-      url: "file://server/share/score.svg",
+      url: "http://asset.localhost/%2F%2Fserver%2Fshare/score.svg",
     });
   });
 
@@ -37,16 +42,16 @@ describe("Feature: trusted external preview output", () => {
   // Scenario: HTMLだけをtrusted HTML iframeへ渡す
   // Given: HTML出力の絶対パスがある
   // When: trusted HTMLプレビューを生成する
-  // Then: iframeはfile URLを直接参照し、srcdocを使わない
-  it("Scenario: creates a file-backed trusted HTML iframe", () => {
+  // Then: iframeはTauri asset URLを参照し、同一オリジン許可を付けない
+  it("Scenario: creates an asset-backed iframe without same-origin permission", () => {
     const { wrapper, frame } = createTrustedExternalHtmlPreview("C:\\work\\score.html");
 
     expect(wrapper.className).toBe("viewer-html-wrap");
     expect(frame.className).toBe("viewer-html");
-    expect(frame.src).toBe("file:///C:/work/score.html");
+    expect(frame.src).toBe("http://asset.localhost/C%3A%2Fwork/score.html");
     expect(frame.hasAttribute("srcdoc")).toBe(false);
     expect(frame.getAttribute("sandbox")).toContain("allow-scripts");
-    expect(frame.getAttribute("sandbox")).toContain("allow-same-origin");
+    expect(frame.getAttribute("sandbox")).not.toContain("allow-same-origin");
     expect(frame.getAttribute("sandbox")).not.toContain("allow-top-navigation");
     expect(frame.allow).toBe("autoplay; midi");
   });
