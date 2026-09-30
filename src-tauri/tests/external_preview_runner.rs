@@ -148,7 +148,6 @@ fn hold_external_preview_job_for_cleanup_test() {
         &input_path,
         ExternalPreviewFormat::Html,
         &work_root,
-        Duration::from_secs(10),
         &AtomicBool::new(false),
     )
     .expect("child external preview succeeds");
@@ -268,7 +267,6 @@ fn saved_file_with_spaces_is_one_argument_and_each_run_gets_unique_html() {
         &input_path,
         ExternalPreviewFormat::Html,
         &work_root,
-        Duration::from_secs(5),
         &cancelled,
     )
     .expect("first external preview succeeds");
@@ -285,7 +283,6 @@ fn saved_file_with_spaces_is_one_argument_and_each_run_gets_unique_html() {
         &input_path,
         ExternalPreviewFormat::Html,
         &work_root,
-        Duration::from_secs(5),
         &cancelled,
     )
     .expect("second external preview succeeds");
@@ -323,7 +320,6 @@ fn cleanup_removes_assets_and_releases_record_when_entry_output_is_missing() {
         &input_path,
         ExternalPreviewFormat::Html,
         &work_root,
-        Duration::from_secs(5),
         &cancelled,
     )
     .expect("external preview succeeds");
@@ -430,7 +426,6 @@ fn keeps_completed_output_until_explicit_cleanup_during_replacement() {
         &input_path,
         ExternalPreviewFormat::Html,
         &work_root,
-        Duration::from_secs(5),
         &first_cancelled,
     )
     .expect("first generation succeeds");
@@ -481,7 +476,6 @@ fn rejects_nonzero_external_exit() {
         &input_path,
         ExternalPreviewFormat::Svg,
         &directory.path().join("jobs"),
-        Duration::from_secs(5),
         &AtomicBool::new(false),
     )
     .expect_err("nonzero exit must fail");
@@ -507,37 +501,69 @@ fn rejects_missing_output_after_successful_exit() {
         &input_path,
         ExternalPreviewFormat::Html,
         &directory.path().join("jobs"),
-        Duration::from_secs(5),
         &AtomicBool::new(false),
     )
     .expect_err("missing output must fail");
     assert!(error.contains("missing"));
 }
 
+// Feature: 外部プレビューに生成物制限を設けない
+// Scenario: 256個・64MiBを超える生成物でも成功する
+// Given: 多数のファイルと大きな音声を生成する外部プログラム
+// When: 公開runner seamで実行する
+// Then: 正常な入口HTMLを返し、所有する一時領域を清掃できる
+#[test]
+fn accepts_output_beyond_former_file_and_byte_limits() {
+    let directory = TestDirectory::new();
+    let input_path = directory.path().join("generate.txt");
+    #[cfg(windows)]
+    let (executable, args, source) = (
+        PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+            .join("System32/WindowsPowerShell/v1.0/powershell.exe"),
+        vec!["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "{file}", "{output}"],
+        "$out=$args[0]\n[IO.File]::WriteAllText($out,'<html>preview</html>')\n$dir=[IO.Path]::GetDirectoryName($out)\n$f=[IO.File]::Create([IO.Path]::Combine($dir,'audio.wav'))\n$f.SetLength(65*1024*1024)\n$f.Dispose()\n1..260 | ForEach-Object { [IO.File]::WriteAllText([IO.Path]::Combine($dir,\"page-$_.svg\"),'<svg/>') }\n",
+    );
+    #[cfg(unix)]
+    let (executable, args, source) = (
+        PathBuf::from("sh"), vec!["{file}", "{output}"],
+        "out=$1\nprintf '<html>preview</html>' > \"$out\"\ndir=$(dirname \"$out\")\ndd if=/dev/zero of=\"$dir/audio.wav\" bs=1048576 count=0 seek=65\ni=0; while [ $i -lt 260 ]; do printf '<svg/>' > \"$dir/page-$i.svg\"; i=$((i+1)); done\n",
+    );
+    #[cfg(windows)]
+    let input_path = input_path.with_extension("ps1");
+    fs::write(&input_path, source).unwrap();
+    let root = directory.path().join("jobs");
+    let result = run_external_preview(
+        &executable,
+        &args.into_iter().map(str::to_owned).collect::<Vec<_>>(),
+        &input_path,
+        ExternalPreviewFormat::Html,
+        &root,
+        &AtomicBool::new(false),
+    )
+    .expect("large output succeeds");
+    assert!(result.output_path.is_file());
+    assert!(
+        fs::metadata(result.output_path.parent().unwrap().join("audio.wav"))
+            .unwrap()
+            .len()
+            > 64 * 1024 * 1024
+    );
+    cleanup_job(&result.output_path, &root).unwrap();
+    assert!(!result.output_path.exists());
+}
+
 // Feature: 外部プレビューの失敗境界
-// Scenario: タイムアウトと取消を成功扱いしない
+// Scenario: 時間制限を設けず、明示的な取消は成功扱いしない
 // Given: 終了まで長い外部プログラムがある
-// When: 短いtimeoutまたは実行中のcancel flagで公開runner seamを実行する
+// When: 実行中のcancel flagで公開runner seamを取消する
 // Then: 子プロセスを終了して該当エラーを返す
 #[test]
-fn rejects_timeout_and_cancellation() {
+fn rejects_cancellation() {
     let directory = TestDirectory::new();
     let input_path = directory.path().join("input.txt");
     fs::write(&input_path, "input").unwrap();
     let executable = fake_slow_program(directory.path());
     let arguments = vec!["{file}".to_owned(), "{output}".to_owned()];
-    let timeout_error = run_external_preview(
-        &executable,
-        &arguments,
-        &input_path,
-        ExternalPreviewFormat::Html,
-        &directory.path().join("timeout jobs"),
-        Duration::from_millis(10),
-        &AtomicBool::new(false),
-    )
-    .expect_err("timeout must fail");
-    assert!(timeout_error.contains("timed out"));
-
     let cancelled = Arc::new(AtomicBool::new(false));
     let cancelled_in_thread = cancelled.clone();
     let executable_in_thread = executable.clone();
@@ -550,7 +576,6 @@ fn rejects_timeout_and_cancellation() {
             &input_in_thread,
             ExternalPreviewFormat::Html,
             &work_root,
-            Duration::from_secs(30),
             &cancelled_in_thread,
         )
     });
@@ -561,4 +586,51 @@ fn rejects_timeout_and_cancellation() {
         .expect("cancellation worker should join")
         .expect_err("cancellation must fail");
     assert!(cancel_error.contains("cancelled"));
+}
+
+// Feature: 外部プレビューに時間制限を設けない
+// Scenario: 30秒を超える生成が成功する
+// Given: 31秒後にHTMLを生成する外部プログラム
+// When: 公開runner seamで生成完了を待つ
+// Then: 時間による中断をせず、所有する出力を返す
+#[test]
+fn waits_for_generation_longer_than_thirty_seconds() {
+    let directory = TestDirectory::new();
+    let input_path = directory.path().join("slow.ps1");
+    #[cfg(windows)]
+    let (executable, args, source) = (
+        PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+            .join("System32/WindowsPowerShell/v1.0/powershell.exe"),
+        vec![
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            "{file}",
+            "{output}",
+        ],
+        "Start-Sleep -Seconds 31\n[IO.File]::WriteAllText($args[0],'<html>preview</html>')\n",
+    );
+    #[cfg(unix)]
+    let (executable, args, source) = (
+        PathBuf::from("sh"),
+        vec!["{file}", "{output}"],
+        "sleep 31\nprintf '<html>preview</html>' > \"$1\"\n",
+    );
+    fs::write(&input_path, source).unwrap();
+    let root = directory.path().join("jobs");
+    let started = Instant::now();
+    let result = run_external_preview(
+        &executable,
+        &args.into_iter().map(str::to_owned).collect::<Vec<_>>(),
+        &input_path,
+        ExternalPreviewFormat::Html,
+        &root,
+        &AtomicBool::new(false),
+    )
+    .expect("generation has no timeout");
+    assert!(started.elapsed() >= Duration::from_secs(30));
+    assert!(result.output_path.is_file());
+    cleanup_job(&result.output_path, &root).unwrap();
 }

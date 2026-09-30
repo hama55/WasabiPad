@@ -360,7 +360,6 @@ async fn external_preview_generate(
             &input_path,
             request.output_format,
             &work_root,
-            std::time::Duration::from_secs(30),
             &cancelled,
         )?;
         operations.finish_success(

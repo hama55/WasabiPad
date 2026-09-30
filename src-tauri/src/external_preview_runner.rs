@@ -13,8 +13,6 @@ const CANCEL_TOMBSTONE_TTL: Duration = Duration::from_secs(60);
 const MAX_CANCEL_TOMBSTONES: usize = 256;
 const JOB_PREFIX: &str = "external-preview-job-";
 const JOB_MARKER: &str = ".wasabipad-external-preview-job";
-const MAX_OUTPUT_FILES: usize = 256;
-const MAX_OUTPUT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_CAPTURED_STREAM_BYTES: usize = 64 * 1024;
 const STDOUT_CAPTURE_FILE: &str = ".wasabipad-stdout.log";
 const STDERR_CAPTURE_FILE: &str = ".wasabipad-stderr.log";
@@ -526,7 +524,6 @@ pub fn run_external_preview(
     input_path: &Path,
     output_format: ExternalPreviewFormat,
     work_root: &Path,
-    timeout: Duration,
     cancelled: &AtomicBool,
 ) -> Result<ExternalPreviewResult, String> {
     if cancelled.load(Ordering::Acquire) {
@@ -569,7 +566,6 @@ pub fn run_external_preview(
     let mut child = command
         .spawn()
         .map_err(|error| format!("Could not start external preview: {error}"))?;
-    let started = Instant::now();
     let status = loop {
         if cancelled.load(Ordering::Acquire) {
             let message = stop_child(&mut child, "External preview cancelled".to_owned());
@@ -578,26 +574,9 @@ pub fn run_external_preview(
                 (capture_stream(&stdout_path), capture_stream(&stderr_path)),
             ));
         }
-        if started.elapsed() >= timeout {
-            let message = stop_child(
-                &mut child,
-                format!("External preview timed out after {timeout:?}"),
-            );
-            return Err(external_preview_error_with_output(
-                message,
-                (capture_stream(&stdout_path), capture_stream(&stderr_path)),
-            ));
-        }
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) => {
-                if let Err(error) = check_output_limits(&job.path, &job.canonical_path) {
-                    let message = stop_child(&mut child, error);
-                    return Err(external_preview_error_with_output(
-                        message,
-                        (capture_stream(&stdout_path), capture_stream(&stderr_path)),
-                    ));
-                }
                 thread::sleep(POLL_INTERVAL);
             }
             Err(error) => {
@@ -623,7 +602,7 @@ pub fn run_external_preview(
         ));
     }
     let captured = (capture_stream(&stdout_path), capture_stream(&stderr_path));
-    if let Err(error) = check_output_limits(&job.path, &job.canonical_path) {
+    if let Err(error) = validate_output_tree(&job.path, &job.canonical_path, cancelled) {
         return Err(external_preview_error_with_output(error, captured));
     }
     let output_path = match verify_output(&output_path, &job.canonical_path) {
@@ -797,15 +776,20 @@ fn verify_output(path: &Path, canonical_job: &Path) -> Result<PathBuf, String> {
     Ok(canonical)
 }
 
-fn check_output_limits(job_root: &Path, canonical_job_root: &Path) -> Result<(), String> {
+fn validate_output_tree(
+    job_root: &Path,
+    canonical_job_root: &Path,
+    cancelled: &AtomicBool,
+) -> Result<(), String> {
     let mut directories = vec![job_root.to_path_buf()];
-    let mut file_count = 0usize;
-    let mut total_bytes = 0u64;
 
     while let Some(directory) = directories.pop() {
         for entry in fs::read_dir(&directory)
             .map_err(|error| format!("Could not list external preview output: {error}"))?
         {
+            if cancelled.load(Ordering::Acquire) {
+                return Err("External preview cancelled".to_owned());
+            }
             let entry = entry
                 .map_err(|error| format!("Could not inspect external preview output: {error}"))?;
             let path = entry.path();
@@ -826,28 +810,7 @@ fn check_output_limits(job_root: &Path, canonical_job_root: &Path) -> Result<(),
 
             if metadata.is_dir() {
                 directories.push(path);
-            } else if metadata.is_file() {
-                let is_capture_file = [STDOUT_CAPTURE_FILE, STDERR_CAPTURE_FILE]
-                    .iter()
-                    .any(|name| path.file_name().is_some_and(|file_name| file_name == *name));
-                if !is_capture_file {
-                    file_count += 1;
-                    if file_count > MAX_OUTPUT_FILES {
-                        return Err(format!(
-                            "External preview produced more than {MAX_OUTPUT_FILES} output files"
-                        ));
-                    }
-                }
-                total_bytes = total_bytes
-                    .checked_add(metadata.len())
-                    .ok_or_else(|| "External preview output size overflowed".to_owned())?;
-                if total_bytes > MAX_OUTPUT_BYTES {
-                    return Err(format!(
-                        "External preview outputs exceed the {} MiB byte limit",
-                        MAX_OUTPUT_BYTES / (1024 * 1024)
-                    ));
-                }
-            } else {
+            } else if !metadata.is_file() {
                 return Err("External preview output contains a non-file entry".to_owned());
             }
         }
