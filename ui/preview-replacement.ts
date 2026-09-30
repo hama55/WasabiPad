@@ -14,8 +14,9 @@ export function createPreviewReplacementLifecycle() {
       activeLabel = label;
       if (requestGeneration !== null && replacingGeneration !== requestGeneration) invalidate?.();
     },
-    begin(requestGeneration: number) {
+    begin(requestGeneration: number, cancelPendingViewerOpens?: () => Promise<void>) {
       replacingGeneration = requestGeneration;
+      return cancelPendingViewerOpens?.() ?? Promise.resolve();
     },
     finish(requestGeneration: number) {
       if (replacingGeneration === requestGeneration) replacingGeneration = null;

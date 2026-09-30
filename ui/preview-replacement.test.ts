@@ -55,6 +55,61 @@ describe("Feature: preview replacement lifecycle", () => {
     expect(cleanedPaths).toEqual(["C:\\Temp\\WasabiPad\\replacement\\preview.html"]);
   });
 
+  // Feature: Markdownプレビューの連続切替
+  // Scenario: 旧プレビューの終了通知が新しいMarkdownプレビューの表示前に届く
+  // Given: Markdownプレビューが表示中で、次の文書への切替要求が始まっている
+  // When: 旧ビューの終了通知が、ビューアーのオープン待ちの間に届く
+  // Then: 新しい要求は失効せず、次のMarkdownプレビューが表示中になる
+  it("Scenario: keeps a new Markdown preview when the old viewer closes during open cancellation", async () => {
+    const lifecycle = createPreviewReplacementLifecycle();
+    let requestGeneration = 40;
+    let invalidationCount = 0;
+    let resolveOldClose!: () => void;
+    const oldCloseProcessed = new Promise<void>((resolve) => {
+      resolveOldClose = resolve;
+    });
+    const oldCloseWasCurrent: boolean[] = [];
+    let openedCount = 0;
+    const invalidate = () => {
+      invalidationCount++;
+      requestGeneration++;
+    };
+    const selection = { start: { line: 0, col: 0 }, end: { line: 0, col: 0 } };
+    const viewers = new LiveViewers({
+      openViewer: async () => `markdown-${++openedCount}`,
+      updateViewer: async () => true,
+      closeViewer: async (label) => {
+        oldCloseWasCurrent.push(lifecycle.onUnavailable(label, requestGeneration, invalidate));
+        resolveOldClose();
+      },
+      wholeRange: async () => selection,
+      textInRange: async () => "# Markdown",
+    });
+
+    const oldLabel = await viewers.open("markdown", null, selection);
+    expect(oldLabel).toBe("markdown-1");
+    lifecycle.onAvailable(oldLabel!);
+
+    const nextGeneration = ++requestGeneration;
+    const pendingOpenCancellation = lifecycle.begin(nextGeneration, () => {
+      viewers.clear();
+      return oldCloseProcessed;
+    });
+    await pendingOpenCancellation;
+
+    expect(oldCloseWasCurrent).toEqual([true]);
+    expect(invalidationCount).toBe(0);
+    expect(requestGeneration).toBe(nextGeneration);
+
+    const nextLabel = await viewers.open("markdown", null, selection);
+    expect(nextLabel).toBe("markdown-2");
+    lifecycle.onAvailable(nextLabel!, requestGeneration, invalidate);
+
+    expect(viewers.has("markdown")).toBe(true);
+    expect(lifecycle.isActive(nextLabel!)).toBe(true);
+    expect(invalidationCount).toBe(0);
+  });
+
   // Given: 外部アダプタの生成中で、まだ置換ビューを開いていない
   // When: エディタの形式選択メニューから別のプレビューを選び、現在のビューが閉じる
   // Then: アダプタ要求を無効化し、遅れて返る生成物は表示せず削除する

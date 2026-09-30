@@ -483,7 +483,10 @@ function openPreviewFormat(
   const previousPreviewDocument = previewDocument;
   const document = { ownerTabId: tabs?.state.activeId ?? null, path, format };
   const requestGeneration = ++previewRequestGeneration;
-  const pendingViewerOpenCancellation = editor.cancelPendingTextViewerOpens();
+  const pendingViewerOpenCancellation = previewReplacementLifecycle.begin(
+    requestGeneration,
+    () => editor.cancelPendingTextViewerOpens(),
+  );
   const isCurrentRequest = () => requestGeneration === previewRequestGeneration
     && document.ownerTabId === (tabs?.state.activeId ?? null)
     && document.path === documentPathOf(doc.current);
@@ -578,7 +581,6 @@ function openPreviewFormat(
         effectiveExtension,
       );
       inlinePreview.setPendingExternalOutputPath(generatedOutputPath);
-      previewReplacementLifecycle.begin(requestGeneration);
       openingPreviewRequestGeneration = requestGeneration;
       const openedLabel = await editor.openTextViewer(
         resolvedFormat,
