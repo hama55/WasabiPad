@@ -39,6 +39,8 @@ export interface Settings {
   markdownHeadingUnderlines: boolean;
   sqlitePreviewRows: number;
   previewCacheDirectory: string | null;
+  externalPreviewTemporaryDirectory: string | null;
+  externalPreviewTemporaryDirectories: string[];
   startupPath: string | null;
   registeredStrings: string[];
   registeredCommands: RegisteredCommand[];
@@ -63,6 +65,8 @@ const DEFAULT_USER_SETTINGS: Pick<Settings, UserSettingKey> = {
   markdownHeadingUnderlines: false,
   sqlitePreviewRows: DEFAULT_SQLITE_PREVIEW_ROWS,
   previewCacheDirectory: null,
+  externalPreviewTemporaryDirectory: null,
+  externalPreviewTemporaryDirectories: [],
   startupPath: null,
   registeredStrings: [],
   registeredCommands: [],
@@ -116,6 +120,17 @@ export function parseSettingsResult(text: string): SettingsParseResult {
   const externalPreviewAdapters = legacyExternalPreviewAdapters
     ? []
     : parseExternalPreviewAdapters(rawExternalAdapters);
+  const externalPreviewTemporaryDirectory = typeof value.externalPreviewTemporaryDirectory === "string"
+    && value.externalPreviewTemporaryDirectory.trim().length > 0
+    ? value.externalPreviewTemporaryDirectory
+    : null;
+  const externalPreviewTemporaryDirectories = [...new Set([
+    ...(Array.isArray(value.externalPreviewTemporaryDirectories)
+      ? value.externalPreviewTemporaryDirectories.filter((path): path is string =>
+        typeof path === "string" && path.trim().length > 0)
+      : []),
+    ...(externalPreviewTemporaryDirectory ? [externalPreviewTemporaryDirectory] : []),
+  ])];
   const settings: Settings = {
     indentSize: typeof value.indentSize === "number" && INDENT_SIZES.includes(value.indentSize as typeof INDENT_SIZES[number])
       ? value.indentSize
@@ -145,6 +160,8 @@ export function parseSettingsResult(text: string): SettingsParseResult {
     previewCacheDirectory: typeof value.previewCacheDirectory === "string" && value.previewCacheDirectory.trim().length > 0
       ? value.previewCacheDirectory
       : DEFAULTS.previewCacheDirectory,
+    externalPreviewTemporaryDirectory,
+    externalPreviewTemporaryDirectories,
     startupPath: typeof value.startupPath === "string" ? value.startupPath : null,
     registeredStrings: Array.isArray(value.registeredStrings)
       ? value.registeredStrings.filter((item): item is string => typeof item === "string" && item.length > 0)
@@ -235,6 +252,7 @@ export function setSetting<K extends keyof Settings>(key: K, value: Settings[K])
 // アプリ設定だけを既定値へ戻す。openTabs は作業再開に必要なセッション状態なので触らない。
 export function resetUserSettings(): void {
   for (const key of Object.keys(DEFAULT_USER_SETTINGS) as UserSettingKey[]) {
+    if (key === "externalPreviewTemporaryDirectories") continue;
     resetUserSetting(key);
   }
 }

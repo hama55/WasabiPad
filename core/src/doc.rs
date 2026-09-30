@@ -3910,6 +3910,40 @@ mod tests {
         assert_eq!(positions, vec![(0, 0, 6), (0, 9, 15)]);
     }
 
+    // Feature: エディタ検索の改行一致強調
+    // Scenario: 改行を検索語にしたとき行末と次行の先頭を一致位置として返す
+    // Given: 通常行と空行を含む4行の文書
+    // When: 表示範囲で改行を検索する
+    // Then: 3つの改行位置を各行末から次行先頭への範囲として返す
+    #[test]
+    fn find_all_in_visible_range_returns_newline_matches() {
+        let d = doc("alpha\nbeta\n\nomega");
+
+        let found = d.find_all_in_range("\n", 0, 4, true, false, false, crate::search::MAX_FIND_HIGHLIGHTS).unwrap();
+
+        let positions: Vec<_> = found.into_iter()
+            .map(|result| (result.start.line, result.start.col, result.end.line, result.end.col))
+            .collect();
+        assert_eq!(positions, vec![(0, 5, 1, 0), (1, 4, 2, 0), (2, 0, 3, 0)]);
+    }
+
+    // Feature: エディタ検索のタブ一致強調
+    // Scenario: タブを検索語にしたとき各タブ文字位置を返す
+    // Given: 1行に2つのタブを含む文書
+    // When: 表示範囲でタブを検索する
+    // Then: 2つのタブ範囲を文字位置で返す
+    #[test]
+    fn find_all_in_visible_range_returns_tab_matches() {
+        let d = doc("a\tb\t");
+
+        let found = d.find_all_in_range("\t", 0, 1, true, false, false, crate::search::MAX_FIND_HIGHLIGHTS).unwrap();
+
+        let positions: Vec<_> = found.into_iter()
+            .map(|result| (result.start.line, result.start.col, result.end.col))
+            .collect();
+        assert_eq!(positions, vec![(0, 1, 2), (0, 3, 4)]);
+    }
+
     // Feature: フォルダ検索結果を開いたエディタの一致強調
     // Scenario: フォルダ検索と同じ正規表現・単語単位条件で可視範囲を検索する
     // Given: cat1 と cat1x と CAT2 を含む文書

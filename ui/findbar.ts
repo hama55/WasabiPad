@@ -1,4 +1,6 @@
 // エディタ上部を一行占有する検索/置換バー。実際の検索は backend(mmap 全体走査)へ委譲。
+import { showMessage } from "./prompt";
+
 export class FindBar {
   private root: HTMLElement;
   private findIn: HTMLInputElement;
@@ -42,6 +44,7 @@ export class FindBar {
         <label class="ve-find-case"><input type="checkbox" /> Aa</label>
         <button class="ve-find-prev" title="前へ (Shift+Enter)">▲</button>
         <button class="ve-find-next" title="次へ (Enter)">▼</button>
+        <button class="ve-find-help" type="button" title="検索記法のヘルプ" aria-label="検索記法のヘルプ">?</button>
         <span class="ve-find-status"></span>
         <input class="ve-rep-in" placeholder="置換" spellcheck="false" />
         <div class="ve-rep-actions"><button class="ve-rep-next">置換</button><button class="ve-rep-visible">画面内</button><button class="ve-rep-all">全置換</button></div>
@@ -55,6 +58,9 @@ export class FindBar {
     this.status = this.root.querySelector(".ve-find-status")!;
 
     this.findIn.addEventListener("input", () => this.runFind(true));
+    this.root.querySelector(".ve-find-help")!.addEventListener("click", () => {
+      void showMessage("エディタ検索記法", "検索・置換欄では次の記法を使えます。\n\\n: 改行\n\\t: タブ\n\\\\: バックスラッシュ");
+    });
     this.findIn.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
         e.preventDefault();

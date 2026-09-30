@@ -55,8 +55,27 @@ pub(crate) fn find_all_in_range(
     whole_word: bool,
     max_matches: usize,
 ) -> Result<Vec<(Pos, Pos)>, String> {
-    if pat.is_empty() || pat.contains('\n') {
+    if pat.is_empty() {
         return Ok(Vec::new());
+    }
+    if pat.contains('\n') {
+        // Editor search sends literal control characters after unescaping `\\n`.
+        // Keep regex/whole-word multiline behavior unchanged; the find bar uses fixed text.
+        if use_regex || whole_word {
+            return Ok(Vec::new());
+        }
+        let segments: Vec<_> = pat.split('\n').collect();
+        let last = last_line.min(buf.line_count());
+        let mut matches = Vec::new();
+        for line in first_line.min(last)..last {
+            if let Some(found) = multiline_match_at(buf, &segments, line, match_case) {
+                matches.push(found);
+                if max_matches > 0 && matches.len() >= max_matches {
+                    break;
+                }
+            }
+        }
+        return Ok(matches);
     }
     let matcher = build_matcher(pat, match_case, use_regex, whole_word)?;
     let last = last_line.min(buf.line_count());

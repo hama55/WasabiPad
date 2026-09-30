@@ -218,6 +218,28 @@ describe("Feature: settings", () => {
       .previewCacheDirectory).toBe("D:\\WasabiPad\\preview-cache");
   });
 
+  // Feature: 外部プレビュー一時保存先
+  // Scenario: 現在の保存先と過去に使った保存先を復元する
+  // Given: 外部プレビュー一時保存先と、型の異なる要素を含む履歴が保存されている
+  // When: `parseSettings`を呼ぶ
+  // Then: 現在の場所を保持し、有効な履歴だけを重複なしで復元する
+  it("Scenario: 外部プレビュー一時保存先と履歴を復元する", () => {
+    const settings = parseSettings(JSON.stringify({
+      externalPreviewTemporaryDirectory: "D:\\WasabiPad\\preview-jobs",
+      externalPreviewTemporaryDirectories: [
+        "C:\\old-preview-jobs",
+        "D:\\WasabiPad\\preview-jobs",
+        "C:\\old-preview-jobs",
+        42,
+        "",
+      ],
+    }));
+
+    expect(settings.externalPreviewTemporaryDirectory).toBe("D:\\WasabiPad\\preview-jobs");
+    expect(settings.externalPreviewTemporaryDirectories)
+      .toEqual(["C:\\old-preview-jobs", "D:\\WasabiPad\\preview-jobs"]);
+  });
+
   // Feature: 外部プレビューキャッシュ保存場所の設定
   // Scenario: 不正な保存場所は未設定へ戻す
   // Given: 数値・空文字・配列をプレビューキャッシュ保存場所として保存する
@@ -277,6 +299,23 @@ describe("Feature: settings", () => {
 
     expect(getSetting("previewCacheDirectory")).toBeNull();
     expect(updateSettingMock).toHaveBeenCalledWith("previewCacheDirectory", "null");
+  });
+
+  // Feature: 外部プレビュー一時保存先の後始末
+  // Scenario: アプリ設定を初期化しても、以前の保存先の掃除履歴を残す
+  // Given: 外部プレビューで使用した場所が履歴にある
+  // When: アプリ設定だけを初期化する
+  // Then: 現在の保存先は既定へ戻るが、過去の場所は掃除履歴に残る
+  it("Scenario: 設定初期化後も外部プレビュー保存先の掃除履歴を保持する", async () => {
+    setSetting("externalPreviewTemporaryDirectory", "D:\\WasabiPad\\preview-jobs");
+    setSetting("externalPreviewTemporaryDirectories", ["D:\\WasabiPad\\preview-jobs"]);
+    await flushSettings();
+
+    resetUserSettings();
+    await flushSettings();
+
+    expect(getSetting("externalPreviewTemporaryDirectory")).toBeNull();
+    expect(getSetting("externalPreviewTemporaryDirectories")).toEqual(["D:\\WasabiPad\\preview-jobs"]);
   });
 
   // Given: プレビュー用文字サイズを20へ変更する

@@ -2127,6 +2127,75 @@ describe("Feature: VirtualEditor", () => {
     await vi.waitFor(() => expect(host.querySelectorAll(".ve-find-hit")).toHaveLength(3));
   });
 
+  // Feature: 改行・タブ検索結果の一致強調
+  // Scenario: `\n\t`で行末から次行のタブまでを検索する
+  // Given: 1行目の直後にタブで始まる2行目がある
+  // When: 検索欄へ`\n\t`を入力する
+  // Then: 改行位置とタブの両方へ黄色い一致背景を描画する
+  it("Scenario: 改行とタブをまたぐ検索結果を強調する", async () => {
+    const { editor, doc, host } = mount("one\n\ttwo");
+    doc.client.findAllInRange = vi.fn().mockResolvedValue([{
+      start: { line: 0, col: 3 },
+      end: { line: 1, col: 1 },
+    }]);
+    editor.open(2, false);
+    await settle();
+    editor.openSearch();
+
+    const findIn = host.querySelector<HTMLInputElement>(".ve-find-in")!;
+    findIn.value = "\\n\\t";
+    findIn.dispatchEvent(new Event("input", { bubbles: true }));
+
+    await vi.waitFor(() => expect(host.querySelectorAll(".ve-find-hit")).toHaveLength(2));
+    expect(doc.client.findAllInRange).toHaveBeenCalledWith("\n\t", 0, 2, false, false, false);
+  });
+
+  // Feature: タブ検索結果の一致強調
+  // Scenario: `\t`でタブ文字を検索する
+  // Given: 行内にタブ文字がある
+  // When: 検索欄へ`\t`を入力する
+  // Then: タブ位置へ黄色い一致背景を描画する
+  it("Scenario: タブ文字の検索結果を強調する", async () => {
+    const { editor, doc, host } = mount("a\tb");
+    doc.client.findAllInRange = vi.fn().mockResolvedValue([{
+      start: { line: 0, col: 1 },
+      end: { line: 0, col: 2 },
+    }]);
+    editor.open(1, false);
+    await settle();
+    editor.openSearch();
+
+    const findIn = host.querySelector<HTMLInputElement>(".ve-find-in")!;
+    findIn.value = "\\t";
+    findIn.dispatchEvent(new Event("input", { bubbles: true }));
+
+    await vi.waitFor(() => expect(host.querySelectorAll(".ve-find-hit")).toHaveLength(1));
+    expect(doc.client.findAllInRange).toHaveBeenCalledWith("\t", 0, 1, false, false, false);
+  });
+
+  // Feature: 改行だけの検索結果の一致強調
+  // Scenario: `\n`で行末の改行を検索する
+  // Given: 2行の文書がある
+  // When: 検索欄へ`\n`を入力する
+  // Then: 次行の先頭へ余分な強調を描かず、改行位置だけを強調する
+  it("Scenario: 改行だけの検索結果で次行の先頭を余分に強調しない", async () => {
+    const { editor, doc, host } = mount("one\ntwo");
+    doc.client.findAllInRange = vi.fn().mockResolvedValue([{
+      start: { line: 0, col: 3 },
+      end: { line: 1, col: 0 },
+    }]);
+    editor.open(2, false);
+    await settle();
+    editor.openSearch();
+
+    const findIn = host.querySelector<HTMLInputElement>(".ve-find-in")!;
+    findIn.value = "\\n";
+    findIn.dispatchEvent(new Event("input", { bubbles: true }));
+
+    await vi.waitFor(() => expect(host.querySelectorAll(".ve-find-hit")).toHaveLength(1));
+    expect(doc.client.findAllInRange).toHaveBeenCalledWith("\n", 0, 2, false, false, false);
+  });
+
   // Feature: 検索窓を開いた直後の一致強調
   // Scenario: 選択文字列を初期検索語として検索窓を開く
   // Given: 可視範囲にneedleが3個あり、先頭のneedleを選択している

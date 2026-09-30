@@ -31,6 +31,7 @@ export const IPC_COMMANDS = {
   externalPreviewGenerate: "external_preview_generate",
   externalPreviewCancel: "external_preview_cancel",
   externalPreviewCleanup: "external_preview_cleanup",
+  externalPreviewCleanupStale: "external_preview_cleanup_stale",
   edit: "edit",
   editMany: "edit_many",
   undo: "undo",

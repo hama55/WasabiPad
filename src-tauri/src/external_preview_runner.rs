@@ -1,6 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, DirBuilder, File};
-use std::io;
+use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -15,6 +15,11 @@ const JOB_PREFIX: &str = "external-preview-job-";
 const JOB_MARKER: &str = ".wasabipad-external-preview-job";
 const MAX_OUTPUT_FILES: usize = 256;
 const MAX_OUTPUT_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_CAPTURED_STREAM_BYTES: usize = 64 * 1024;
+const STDOUT_CAPTURE_FILE: &str = ".wasabipad-stdout.log";
+const STDERR_CAPTURE_FILE: &str = ".wasabipad-stderr.log";
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 static NEXT_JOB_ID: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, serde::Deserialize, ts_rs::TS)]
@@ -45,6 +50,7 @@ pub struct ExternalPreviewRequest {
     pub args: Vec<String>,
     pub output_format: ExternalPreviewFormat,
     pub request_id: String,
+    pub work_root: Option<String>,
 }
 
 #[derive(Debug)]
@@ -52,9 +58,86 @@ pub struct ExternalPreviewResult {
     pub output_path: PathBuf,
 }
 
+struct CapturedStream {
+    bytes: Vec<u8>,
+    truncated: bool,
+    error: Option<String>,
+}
+
+fn capture_stream(path: &Path) -> Option<CapturedStream> {
+    let mut stream = match File::open(path) {
+        Ok(stream) => stream,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            return Some(CapturedStream {
+                bytes: Vec::new(),
+                truncated: false,
+                error: Some(error.to_string()),
+            })
+        }
+    };
+    let length = match stream.metadata() {
+        Ok(metadata) => metadata.len(),
+        Err(error) => {
+            return Some(CapturedStream {
+                bytes: Vec::new(),
+                truncated: false,
+                error: Some(error.to_string()),
+            })
+        }
+    };
+    let mut captured = CapturedStream {
+        bytes: Vec::new(),
+        truncated: length > MAX_CAPTURED_STREAM_BYTES as u64,
+        error: None,
+    };
+    if let Err(error) = stream.seek(SeekFrom::Start(
+        length.saturating_sub(MAX_CAPTURED_STREAM_BYTES as u64),
+    )) {
+        captured.error = Some(error.to_string());
+        return Some(captured);
+    }
+    if let Err(error) = stream
+        .take(MAX_CAPTURED_STREAM_BYTES as u64)
+        .read_to_end(&mut captured.bytes)
+    {
+        captured.error = Some(error.to_string());
+    }
+    Some(captured)
+}
+
+fn external_preview_error_with_output(
+    message: String,
+    (stdout, stderr): (Option<CapturedStream>, Option<CapturedStream>),
+) -> String {
+    let mut error = message;
+    append_captured_stream(&mut error, "stdout", stdout);
+    append_captured_stream(&mut error, "stderr", stderr);
+    error
+}
+
+fn append_captured_stream(error: &mut String, name: &str, stream: Option<CapturedStream>) {
+    let Some(stream) = stream else { return };
+    if stream.bytes.is_empty() && !stream.truncated && stream.error.is_none() {
+        return;
+    }
+    error.push_str(&format!("\n\n[{name}]\n"));
+    if stream.truncated {
+        error.push_str("... earlier output omitted ...\n");
+    }
+    error.push_str(&String::from_utf8_lossy(&stream.bytes));
+    if stream.bytes.last().is_some_and(|byte| *byte != b'\n') {
+        error.push('\n');
+    }
+    if let Some(read_error) = stream.error {
+        error.push_str(&format!("[Could not read output: {read_error}]\n"));
+    }
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct ExternalPreviewOperations {
     jobs: Arc<Mutex<JobRegistry>>,
+    cleaned_work_roots: Arc<Mutex<HashSet<PathBuf>>>,
 }
 
 impl ExternalPreviewOperations {
@@ -117,7 +200,7 @@ impl ExternalPreviewOperations {
                 }
                 None
             } else if let Some(completed) = jobs.completed.get(request_id) {
-                Some(completed.output_path.clone())
+                Some((completed.output_path.clone(), completed.work_root.clone()))
             } else {
                 validate_request_id(request_id)?;
                 if jobs.cancelled_before_start.len() >= MAX_CANCEL_TOMBSTONES {
@@ -128,9 +211,51 @@ impl ExternalPreviewOperations {
                 None
             }
         };
-        if let Some(path) = completed_path {
-            cleanup_job(&path, &default_work_root())?;
+        if let Some((path, work_root)) = completed_path {
+            cleanup_job(&path, &work_root)?;
             self.release_output(&path);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn cleanup_output(&self, output_path: &Path) -> Result<(), String> {
+        let work_root = {
+            let jobs = self
+                .jobs
+                .lock()
+                .map_err(|_| "External preview job registry is unavailable.".to_owned())?;
+            jobs.completed
+                .values()
+                .find(|completed| completed.output_path == output_path)
+                .map(|completed| completed.work_root.clone())
+        };
+        let Some(work_root) = work_root else {
+            return Ok(());
+        };
+        cleanup_job(output_path, &work_root)?;
+        self.release_output(output_path);
+        Ok(())
+    }
+
+    pub(crate) fn cleanup_stale_roots(&self, work_roots: &[PathBuf]) -> Result<(), String> {
+        let mut cleaned = self
+            .cleaned_work_roots
+            .lock()
+            .map_err(|_| "External preview cleanup state is unavailable.".to_owned())?;
+        for work_root in work_roots {
+            let root = absolute_path(work_root).map_err(|error| {
+                format!("Could not resolve external preview work root: {error}")
+            })?;
+            let key = if root.exists() {
+                fs::canonicalize(&root).unwrap_or_else(|_| root.clone())
+            } else {
+                root.clone()
+            };
+            if cleaned.contains(&key) {
+                continue;
+            }
+            cleanup_stale_jobs(&root)?;
+            cleaned.insert(key);
         }
         Ok(())
     }
@@ -140,6 +265,7 @@ impl ExternalPreviewOperations {
         request_id: &str,
         cancelled: &Arc<AtomicBool>,
         output_path: &Path,
+        work_root: &Path,
     ) -> Result<(), String> {
         let stale_reason = {
             let mut jobs = self
@@ -176,6 +302,7 @@ impl ExternalPreviewOperations {
                         CompletedJob {
                             input_key: active.input_key,
                             output_path: output_path.to_path_buf(),
+                            work_root: work_root.to_path_buf(),
                         },
                     );
                     None
@@ -183,7 +310,7 @@ impl ExternalPreviewOperations {
             }
         };
         if let Some(reason) = stale_reason {
-            let _ = cleanup_job(output_path, &default_work_root());
+            let _ = cleanup_job(output_path, work_root);
             return Err(reason.to_owned());
         }
         Ok(())
@@ -229,6 +356,7 @@ struct ActiveJob {
 struct CompletedJob {
     input_key: String,
     output_path: PathBuf,
+    work_root: PathBuf,
 }
 
 impl JobRegistry {
@@ -414,14 +542,26 @@ pub fn run_external_preview(
         .iter()
         .map(|arg| replace_template(arg, &input_path, &output_path))
         .collect::<Vec<_>>();
+    let stdout_path = job.path.join(STDOUT_CAPTURE_FILE);
+    let stderr_path = job.path.join(STDERR_CAPTURE_FILE);
+    let stdout = File::create(&stdout_path)
+        .map_err(|error| format!("Could not capture external preview stdout: {error}"))?;
+    let stderr = File::create(&stderr_path)
+        .map_err(|error| format!("Could not capture external preview stderr: {error}"))?;
 
     let mut command = Command::new(executable);
     command
         .args(resolved_args)
         .current_dir(&job.path)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr));
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // Keep console adapters invisible while their output is captured to files.
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
 
     if cancelled.load(Ordering::Acquire) {
         return Err("External preview cancelled".to_owned());
@@ -432,29 +572,42 @@ pub fn run_external_preview(
     let started = Instant::now();
     let status = loop {
         if cancelled.load(Ordering::Acquire) {
-            return Err(stop_child(
-                &mut child,
-                "External preview cancelled".to_owned(),
+            let message = stop_child(&mut child, "External preview cancelled".to_owned());
+            return Err(external_preview_error_with_output(
+                message,
+                (capture_stream(&stdout_path), capture_stream(&stderr_path)),
             ));
         }
         if started.elapsed() >= timeout {
-            return Err(stop_child(
+            let message = stop_child(
                 &mut child,
                 format!("External preview timed out after {timeout:?}"),
+            );
+            return Err(external_preview_error_with_output(
+                message,
+                (capture_stream(&stdout_path), capture_stream(&stderr_path)),
             ));
         }
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) => {
                 if let Err(error) = check_output_limits(&job.path, &job.canonical_path) {
-                    return Err(stop_child(&mut child, error));
+                    let message = stop_child(&mut child, error);
+                    return Err(external_preview_error_with_output(
+                        message,
+                        (capture_stream(&stdout_path), capture_stream(&stderr_path)),
+                    ));
                 }
                 thread::sleep(POLL_INTERVAL);
             }
             Err(error) => {
-                return Err(stop_child(
+                let message = stop_child(
                     &mut child,
                     format!("Could not wait for external preview: {error}"),
+                );
+                return Err(external_preview_error_with_output(
+                    message,
+                    (capture_stream(&stdout_path), capture_stream(&stderr_path)),
                 ));
             }
         }
@@ -464,10 +617,27 @@ pub fn run_external_preview(
         return Err("External preview cancelled".to_owned());
     }
     if !status.success() {
-        return Err(format!("External preview exited with {status}"));
+        return Err(external_preview_error_with_output(
+            format!("External preview exited with {status}"),
+            (capture_stream(&stdout_path), capture_stream(&stderr_path)),
+        ));
     }
-    check_output_limits(&job.path, &job.canonical_path)?;
-    let output_path = verify_output(&output_path, &job.canonical_path)?;
+    let captured = (capture_stream(&stdout_path), capture_stream(&stderr_path));
+    if let Err(error) = check_output_limits(&job.path, &job.canonical_path) {
+        return Err(external_preview_error_with_output(error, captured));
+    }
+    let output_path = match verify_output(&output_path, &job.canonical_path) {
+        Ok(path) => path,
+        Err(error) => return Err(external_preview_error_with_output(error, captured)),
+    };
+    for path in [&stdout_path, &stderr_path] {
+        if let Err(error) = fs::remove_file(path) {
+            return Err(external_preview_error_with_output(
+                format!("Could not remove external preview log file: {error}"),
+                captured,
+            ));
+        }
+    }
     if cancelled.load(Ordering::Acquire) {
         return Err("External preview cancelled".to_owned());
     }
@@ -657,11 +827,16 @@ fn check_output_limits(job_root: &Path, canonical_job_root: &Path) -> Result<(),
             if metadata.is_dir() {
                 directories.push(path);
             } else if metadata.is_file() {
-                file_count += 1;
-                if file_count > MAX_OUTPUT_FILES {
-                    return Err(format!(
-                        "External preview produced more than {MAX_OUTPUT_FILES} output files"
-                    ));
+                let is_capture_file = [STDOUT_CAPTURE_FILE, STDERR_CAPTURE_FILE]
+                    .iter()
+                    .any(|name| path.file_name().is_some_and(|file_name| file_name == *name));
+                if !is_capture_file {
+                    file_count += 1;
+                    if file_count > MAX_OUTPUT_FILES {
+                        return Err(format!(
+                            "External preview produced more than {MAX_OUTPUT_FILES} output files"
+                        ));
+                    }
                 }
                 total_bytes = total_bytes
                     .checked_add(metadata.len())
@@ -717,7 +892,10 @@ fn stop_child(child: &mut Child, reason: String) -> String {
 #[cfg(windows)]
 fn terminate_child(child: &mut Child) {
     let id = child.id().to_string();
-    let _ = Command::new("taskkill")
+    let mut taskkill = Command::new("taskkill");
+    use std::os::windows::process::CommandExt;
+    taskkill.creation_flags(CREATE_NO_WINDOW);
+    let _ = taskkill
         .args(["/PID", &id, "/T", "/F"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())

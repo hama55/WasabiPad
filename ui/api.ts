@@ -342,3 +342,5 @@ export const externalPreviewCancel = (requestId: string) =>
   invoke<void>(IPC_COMMANDS.externalPreviewCancel, { requestId });
 export const externalPreviewCleanup = (outputPath: string) =>
   invoke<void>(IPC_COMMANDS.externalPreviewCleanup, { outputPath });
+export const externalPreviewCleanupStale = (workRoots: string[]) =>
+  invoke<void>(IPC_COMMANDS.externalPreviewCleanupStale, { workRoots });

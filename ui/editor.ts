@@ -1234,33 +1234,55 @@ export class VirtualEditor {
   private appendFindHighlights(frag: DocumentFragment, first: number, last: number) {
     for (const match of this.findHighlights) {
       if (match.start.line < first || match.start.line >= last) continue;
-      const str = this.lineCache.peek(match.start.line) ?? "";
-      const lineEl = this.lineElem(match.start.line);
-      if (!lineEl) continue;
-      if (this.wrap) {
-        const node = lineEl.firstChild;
-        if (!node) continue;
-        const inner = this.inner.getBoundingClientRect();
-        const range = document.createRange();
-        range.setStart(node, charToU16(str, match.start.col));
-        range.setEnd(node, charToU16(str, match.end.col));
-        for (const rect of range.getClientRects()) {
-          const box = el("div", "ve-find-hit");
-          box.style.top = `${rect.top - inner.top}px`;
-          box.style.left = `${rect.left - inner.left}px`;
-          box.style.width = `${Math.max(2, rect.width)}px`;
-          box.style.height = `${rect.height}px`;
-          frag.insertBefore(box, frag.firstChild);
+      for (let line = match.start.line; line <= Math.min(match.end.line, last - 1); line++) {
+        const str = this.lineCache.peek(line) ?? "";
+        const lineEl = this.lineElem(line);
+        if (!lineEl) continue;
+        const startCol = line === match.start.line ? match.start.col : 0;
+        const endCol = line === match.end.line ? match.end.col : charLen(str);
+        if (line > match.start.line && line === match.end.line && endCol === 0) continue;
+        if (this.wrap) {
+          const node = lineEl.firstChild;
+          const inner = this.inner.getBoundingClientRect();
+          if (node) {
+            const range = document.createRange();
+            range.setStart(node, charToU16(str, startCol));
+            range.setEnd(node, charToU16(str, endCol));
+            for (const rect of range.getClientRects()) {
+              const box = el("div", "ve-find-hit");
+              box.style.top = `${rect.top - inner.top}px`;
+              box.style.left = `${rect.left - inner.left}px`;
+              box.style.width = `${Math.max(2, rect.width)}px`;
+              box.style.height = `${rect.height}px`;
+              frag.insertBefore(box, frag.firstChild);
+            }
+          }
+          if (line < match.end.line) {
+            const markerRange = document.createRange();
+            if (node) {
+              const end = charToU16(str, endCol);
+              markerRange.setStart(node, end);
+              markerRange.setEnd(node, end);
+            }
+            const rect = node ? markerRange.getBoundingClientRect() : lineEl.getBoundingClientRect();
+            const box = el("div", "ve-find-hit");
+            box.style.top = `${rect.top - inner.top}px`;
+            box.style.left = `${rect.left - inner.left}px`;
+            box.style.width = "6px";
+            box.style.height = `${rect.height || this.metrics.lineHeight}px`;
+            frag.insertBefore(box, frag.firstChild);
+          }
+          continue;
         }
-        continue;
+        const x0 = this.colToX(lineEl, str, startCol);
+        let x1 = this.colToX(lineEl, str, endCol);
+        if (line < match.end.line) x1 += 6;
+        const box = el("div", "ve-find-hit");
+        box.style.top = `${this.rowTop(line)}px`;
+        box.style.left = `${x0}px`;
+        box.style.width = `${Math.max(2, x1 - x0)}px`;
+        frag.insertBefore(box, frag.firstChild);
       }
-      const x0 = this.colToX(lineEl, str, match.start.col);
-      const x1 = this.colToX(lineEl, str, match.end.col);
-      const box = el("div", "ve-find-hit");
-      box.style.top = `${this.rowTop(match.start.line)}px`;
-      box.style.left = `${x0}px`;
-      box.style.width = `${Math.max(2, x1 - x0)}px`;
-      frag.insertBefore(box, frag.firstChild);
     }
   }
 

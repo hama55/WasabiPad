@@ -111,14 +111,15 @@ describe("Feature: pane toggle placement", () => {
   it("Scenario: 検索欄を占有表示しプレビューを開くボタンを必要時だけ見せる", () => {
     expect(style).toMatch(/\.ve-find\s*\{[^}]*top:\s*0;[^}]*left:\s*0;[^}]*right:\s*0;/s);
     expect(style).toMatch(/\.ve-find-row\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(110px,\s*1fr\)[^;]*minmax\(110px,\s*1fr\)/s);
-    expect(style).toContain('grid-template-areas: "find case prev next status rep actions actions close";');
+    expect(style).toContain('grid-template-areas: "find case prev next help status rep actions actions close";');
+    expect(style).toMatch(/\.ve-find-help\s*\{[^}]*grid-area:\s*help;/s);
     expect(style).toMatch(/\.ve-rep-in\s*\{[^}]*grid-area:\s*rep;/s);
     expect(style).toMatch(/\.ve-rep-actions\s*\{[^}]*grid-area:\s*actions;/s);
     expect(style).toMatch(/\.ve-find-close\s*\{[^}]*grid-area:\s*close;/s);
     expect(style).toMatch(/\.ve-find button\s*\{[^}]*white-space:\s*nowrap;/s);
     expect(style).toMatch(/\.ve-find-wrap \.ve-find\s*\{[^}]*height:\s*72px;/s);
     expect(style).toContain('.ve-find-wrap .ve-find-row {');
-    expect(style).toContain('grid-template-areas: "find case prev next status close" "rep rep rep rep actions actions";');
+    expect(style).toContain('grid-template-areas: "find case prev next help status close" "rep rep rep rep rep actions actions";');
     expect(style).toMatch(/\.ve-find-wrap \.ve-rep-actions\s*\{[^}]*overflow-x:\s*auto;/s);
     expect(style).toMatch(/\.ve-find-wrap \.ve-rep-actions button\s*\{[^}]*flex:\s*none;/s);
     expect(style).toMatch(/\.ve-find-wrap\.ve-search-open \.ve-gutter,[\s\S]*\.ve-find-wrap\.ve-search-open \.ve-scroll\s*\{[^}]*top:\s*72px;/s);
@@ -137,9 +138,18 @@ describe("Feature: pane toggle placement", () => {
   // Then: CSSは固定値を持たず、共有CSS変数を参照する
   it("Scenario: プレビュー操作ボタン幅を共有CSS変数から取得する", () => {
     expect(style).toMatch(/#sidebar-toggle\s*\{[^}]*min-width:\s*var\(--preview-toggle-width\);/s);
-    expect(style).toMatch(/#preview-toggle,\s*#preview-close\s*\{[^}]*min-width:\s*var\(--preview-toggle-width\);/s);
+    expect(style).toMatch(/#preview-toggle,\s*#preview-close,\s*#preview-refresh\s*\{[^}]*min-width:\s*var\(--preview-toggle-width\);/s);
     expect(style).not.toMatch(/#sidebar-toggle\s*\{[^}]*min-width:\s*28px;/s);
     expect(style).not.toMatch(/#preview-toggle\s*\{[^}]*min-width:\s*28px;/s);
+  });
+
+  // Feature: インラインプレビューの操作ボタン
+  // Scenario: 外部プレビュー更新操作を全画面ボタンから離す
+  // Given: 親プレビューに更新ボタンが重ねて表示される
+  // When: 更新ボタンの配置を調べる
+  // Then: 左側へ配置し、iframe内の右上にある全画面ボタンを覆わない
+  it("Scenario: 外部プレビュー更新ボタンで全画面ボタンを覆わない", () => {
+    expect(style).toMatch(/#preview-refresh\s*\{[^}]*position:\s*absolute;[^}]*top:\s*4px;[^}]*left:\s*calc\(8px \+ var\(--preview-toggle-width\)\);[^}]*right:\s*auto;/s);
   });
 
   // Feature: 検索バー表示中のプレビューを開く操作

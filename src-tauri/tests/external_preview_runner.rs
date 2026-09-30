@@ -226,9 +226,9 @@ fn fake_program_with_body(root: &Path, body: &str) -> PathBuf {
 
 fn fake_failure_program(root: &Path) -> PathBuf {
     #[cfg(windows)]
-    let body = "@echo off\r\nexit /b 7\r\n";
+    let body = "@echo off\r\necho adapter stdout\r\necho adapter failure 1>&2\r\nexit /b 7\r\n";
     #[cfg(unix)]
-    let body = "#!/bin/sh\nexit 7\n";
+    let body = "#!/bin/sh\nprintf 'adapter stdout\\n'\nprintf 'adapter failure\\n' >&2\nexit 7\n";
     fake_program_with_body(root, body)
 }
 
@@ -328,7 +328,12 @@ fn cleanup_removes_assets_and_releases_record_when_entry_output_is_missing() {
     )
     .expect("external preview succeeds");
     operations
-        .finish_success("missing-entry-output", &cancelled, &result.output_path)
+        .finish_success(
+            "missing-entry-output",
+            &cancelled,
+            &result.output_path,
+            &work_root,
+        )
         .expect("record completed output");
     let job_directory = result.output_path.parent().unwrap().to_path_buf();
     let attachment = job_directory.join("large-audio-library.dat");
@@ -336,8 +341,9 @@ fn cleanup_removes_assets_and_releases_record_when_entry_output_is_missing() {
     fs::remove_file(&result.output_path).expect("simulate entry HTML removed by viewer");
 
     // When: IPC cleanupが同じ生成パスを掃除し、完了記録を解放する
-    cleanup_job(&result.output_path, &work_root).expect("clean job without entry HTML");
-    operations.release_output(&result.output_path);
+    operations
+        .cleanup_output(&result.output_path)
+        .expect("clean job using its configured work root");
 
     // Then: 付属資産もなくなり、request IDの記録は残らない
     assert!(
@@ -351,18 +357,24 @@ fn cleanup_removes_assets_and_releases_record_when_entry_output_is_missing() {
 }
 
 // Feature: 外部プレビュー起動時の孤児フォルダ掃除
-// Scenario: marker作成前のクラッシュ孤児は回収し、稼働中PIDと不正名は保持する
-// Given: markerのないjob名形式の孤児、現在process所有のjob風folder、不正なjob名がある
-// When: cleanup_stale_jobsを実行する
+// Scenario: 現在と過去の保存先からクラッシュ孤児を回収し、稼働中PIDと不正名は保持する
+// Given: 両方の保存先にmarkerのないjob名形式の孤児があり、稼働中processと不正名もある
+// When: cleanup_stale_rootsへ両方の保存先を渡す
 // Then: 死亡PIDの孤児だけを削除し、稼働中processと不正名の内容は保持する
 #[test]
 fn cleanup_stale_jobs_reclaims_unmarked_orphans_without_touching_live_or_unowned_dirs() {
     let directory = TestDirectory::new();
     let work_root = directory.path().join("isolated work root");
+    let previous_work_root = directory.path().join("previous work root");
     fs::create_dir_all(&work_root).expect("create isolated work root");
+    fs::create_dir_all(&previous_work_root).expect("create previous isolated work root");
     let stale_job = work_root.join("external-preview-job-4294967295-12345-1");
     fs::create_dir(&stale_job).expect("create marker-window orphan");
     fs::write(stale_job.join("attachment.dat"), "orphan").expect("write orphan asset");
+    let previous_stale_job = previous_work_root.join("external-preview-job-4294967295-12345-3");
+    fs::create_dir(&previous_stale_job).expect("create previous-root orphan");
+    fs::write(previous_stale_job.join("attachment.dat"), "old orphan")
+        .expect("write previous-root orphan asset");
     let live_job = work_root.join(format!(
         "external-preview-job-{}-12345-2",
         std::process::id()
@@ -373,11 +385,17 @@ fn cleanup_stale_jobs_reclaims_unmarked_orphans_without_touching_live_or_unowned
     fs::create_dir(&unowned_dir).expect("create similarly prefixed unrelated directory");
     fs::write(unowned_dir.join("keep.dat"), "unowned").expect("write unrelated asset");
 
-    cleanup_stale_jobs(&work_root).expect("clean only a verified stale WasabiPad job");
+    ExternalPreviewOperations::default()
+        .cleanup_stale_roots(&[work_root, previous_work_root])
+        .expect("clean verified stale WasabiPad jobs from current and previous roots");
 
     assert!(
         !stale_job.exists(),
         "the dead-PID marker-window orphan is reclaimed"
+    );
+    assert!(
+        !previous_stale_job.exists(),
+        "the previous saved root is also scanned"
     );
     assert!(
         live_job.join("attachment.dat").is_file(),
@@ -417,7 +435,12 @@ fn keeps_completed_output_until_explicit_cleanup_during_replacement() {
     )
     .expect("first generation succeeds");
     operations
-        .finish_success("displayed-output", &first_cancelled, &first.output_path)
+        .finish_success(
+            "displayed-output",
+            &first_cancelled,
+            &first.output_path,
+            &work_root,
+        )
         .expect("record displayed output");
     assert!(first.output_path.is_file());
 
@@ -435,8 +458,9 @@ fn keeps_completed_output_until_explicit_cleanup_during_replacement() {
         "a failed replacement must not remove the active output"
     );
 
-    cleanup_job(&first.output_path, &work_root).expect("clean retired output after replacement");
-    operations.release_output(&first.output_path);
+    operations
+        .cleanup_output(&first.output_path)
+        .expect("clean retired output after replacement");
     assert!(!first.output_path.exists());
 }
 
@@ -462,6 +486,8 @@ fn rejects_nonzero_external_exit() {
     )
     .expect_err("nonzero exit must fail");
     assert!(error.contains("exited"));
+    assert!(error.contains("adapter stdout"));
+    assert!(error.contains("adapter failure"));
 }
 
 // Feature: 外部プレビューの失敗境界

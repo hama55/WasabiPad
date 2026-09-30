@@ -12,7 +12,11 @@ import {
   type SettingsPanelPorts,
 } from "./settings-panel";
 
-function makePorts(initial: Partial<Settings> = {}): SettingsPanelPorts {
+function makePorts(
+  initial: Partial<Settings> = {},
+  pickExternalPreviewTemporaryDirectory: NonNullable<SettingsPanelPorts["pickExternalPreviewTemporaryDirectory"]>
+    = vi.fn(async () => null),
+): SettingsPanelPorts {
   const values: Settings = {
     indentSize: 8,
     sidebarWidth: 220,
@@ -24,6 +28,8 @@ function makePorts(initial: Partial<Settings> = {}): SettingsPanelPorts {
     markdownHeadingUnderlines: false,
     sqlitePreviewRows: 100,
     previewCacheDirectory: null,
+    externalPreviewTemporaryDirectory: null,
+    externalPreviewTemporaryDirectories: [],
     startupPath: null,
     registeredStrings: [],
     registeredCommands: [],
@@ -49,6 +55,8 @@ function makePorts(initial: Partial<Settings> = {}): SettingsPanelPorts {
     applyMarkdownSoftBreaks: vi.fn(),
     applyMarkdownLineHeight: vi.fn(),
     applyMarkdownHeadingUnderlines: vi.fn(),
+    pickExternalPreviewTemporaryDirectory,
+    flushSettings: vi.fn(async () => {}),
     openSearchSettings: vi.fn(),
     openRegisteredString: vi.fn(),
     openRegisteredCommand: vi.fn(),
@@ -107,6 +115,71 @@ describe("Feature: settings modal", () => {
     await answerConfirmation(true);
     expect(ports.setSetting).toHaveBeenCalledWith("externalPreviewAdapters", []);
     expect(group.querySelector('[data-external-preview-row]')).toBeNull();
+  });
+
+  // Feature: 外部プレビュー一時保存先
+  // Scenario: 設定画面から場所を選び、掃除履歴を保存してから表示を更新する
+  // Given: 既定の外部プレビュー一時保存先が表示されている
+  // When: 利用者が別のフォルダを選ぶ
+  // Then: 履歴と現在の保存先を保存し、設定画面に選択先を表示する
+  it("Scenario: 外部プレビュー一時保存先を変更する", async () => {
+    const picker = vi.fn(async () => "D:\\WasabiPad\\preview-jobs");
+    const ports = makePorts({}, picker);
+    openSettingsModal(ports);
+
+    const field = document.querySelector<HTMLElement>(
+      '[data-setting-group="external-preview-temporary-directory"]',
+    )!;
+    const previewSection = document.querySelector<HTMLElement>('[data-settings-section="プレビュー"]')!;
+    const externalPreviewSection = document.querySelector<HTMLElement>('[data-settings-section="外部プレビュー"]')!;
+    expect(previewSection.contains(field)).toBe(false);
+    expect(externalPreviewSection.contains(field)).toBe(true);
+    expect(field.classList.contains("settings-list-row")).toBe(true);
+    expect([...field.children].map((child) => child.tagName)).toEqual(["SPAN", "SPAN", "BUTTON"]);
+    expect(field.querySelector('[data-setting="external-preview-temporary-directory"]')?.textContent)
+      .toBe("%TEMP%\\WasabiPad\\external-preview");
+    field.querySelector<HTMLButtonElement>("button")!.click();
+
+    await vi.waitFor(() => expect(
+      field.querySelector('[data-setting="external-preview-temporary-directory"]')?.textContent,
+    ).toBe("D:\\WasabiPad\\preview-jobs"));
+    expect(ports.setSetting).toHaveBeenNthCalledWith(
+      1,
+      "externalPreviewTemporaryDirectories",
+      ["D:\\WasabiPad\\preview-jobs"],
+    );
+    expect(ports.setSetting).toHaveBeenNthCalledWith(
+      2,
+      "externalPreviewTemporaryDirectory",
+      "D:\\WasabiPad\\preview-jobs",
+    );
+    expect(ports.flushSettings).toHaveBeenCalledOnce();
+  });
+
+  // Feature: 外部プレビューの過去の一時保存先
+  // Scenario: 保存先を変更しても以前の掃除対象を履歴に残す
+  // Given: 以前の保存先が掃除履歴にあり、現在の保存先として選ばれている
+  // When: 別の保存先を選ぶ
+  // Then: 現在の保存先は変わり、以前と新しい場所の両方が保存される
+  it("Scenario: 保存先の変更後も以前の保存先を掃除履歴に残す", async () => {
+    const oldDirectory = "C:\\WasabiPad\\old-preview-jobs";
+    const newDirectory = "D:\\WasabiPad\\new-preview-jobs";
+    const ports = makePorts({
+      externalPreviewTemporaryDirectory: oldDirectory,
+      externalPreviewTemporaryDirectories: [oldDirectory],
+    }, vi.fn(async () => newDirectory));
+    openSettingsModal(ports);
+
+    const field = document.querySelector<HTMLElement>(
+      '[data-setting-group="external-preview-temporary-directory"]',
+    )!;
+    field.querySelector<HTMLButtonElement>("button")!.click();
+    await vi.waitFor(() => expect(ports.getSetting("externalPreviewTemporaryDirectory")).toBe(newDirectory));
+
+    expect(ports.setSetting).toHaveBeenCalledWith(
+      "externalPreviewTemporaryDirectories",
+      [oldDirectory, newDirectory],
+    );
   });
 
   // Given: 設定モーダルを開く処理と閉じる処理を注入する

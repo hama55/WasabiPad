@@ -110,7 +110,14 @@ body {
   border: 1px solid var(--border); border-radius: 4px;
   font-size: 14px; cursor: default;
 }
+#external-preview-log {
+  flex: none; height: 26px; padding: 0 7px;
+  background: var(--bg-editor); color: var(--fg-dim);
+  border: 1px solid var(--border); border-radius: 4px;
+  font: 12px var(--font-ui); cursor: default;
+}
 #addressbar-save-as { width: 32px; }
+#external-preview-log:hover,
 #addressbar-fav:hover, #addressbar-open:hover, #addressbar-save:hover, #addressbar-save-as:hover, #addressbar-new:hover, #addressbar-find:hover, #addressbar-settings:hover { background: var(--hover); color: var(--fg); }
 
 /* ---- お気に入りバー ---- */
@@ -188,7 +195,8 @@ body {
 }
 #preview-splitter:hover { background: var(--bg-status); }
 #preview-toggle,
-#preview-close {
+#preview-close,
+#preview-refresh {
   z-index: 8; min-width: var(--preview-toggle-width); height: 24px; padding: 0 5px;
   border: 1px solid var(--border); border-radius: 4px;
   background: var(--bg-title); color: var(--fg-dim);
@@ -202,12 +210,17 @@ body {
 #preview-close {
   position: absolute; top: 4px; left: 4px;
 }
+#preview-refresh {
+  position: absolute; top: 4px; left: calc(8px + var(--preview-toggle-width)); right: auto;
+  font-family: var(--font-ui);
+}
 #editorhost.ve-search-open ~ #preview-toggle { top: 44px; }
 #main:has(#editorhost.ve-search-open) > #sidebar[hidden] ~ #sidebar-toggle { top: 44px; }
 #editorhost.ve-find-wrap.ve-search-open ~ #preview-toggle { top: 76px; }
 #main:has(#editorhost.ve-find-wrap.ve-search-open) > #sidebar[hidden] ~ #sidebar-toggle { top: 76px; }
 #preview-toggle:hover,
-#preview-close:hover { background: var(--hover); color: var(--fg); }
+#preview-close:hover,
+#preview-refresh:hover { background: var(--hover); color: var(--fg); }
 #main.preview-toggle-peek #preview-toggle,
 #preview-toggle:focus-visible {
   opacity: 1; pointer-events: auto;
@@ -525,10 +538,11 @@ body.fv-dragging { cursor: grabbing; user-select: none; }
 }
 .ve-find-row {
   display: grid; align-items: center; gap: 4px; min-width: 0; height: 100%;
-  grid-template-columns: minmax(110px, 1fr) auto auto auto minmax(90px, auto) minmax(110px, 1fr) auto auto auto;
-  grid-template-areas: "find case prev next status rep actions actions close";
+  grid-template-columns: minmax(110px, 1fr) auto auto auto auto auto minmax(90px, auto) minmax(110px, 1fr) auto auto auto;
+  grid-template-areas: "find case prev next help status rep actions actions close";
 }
 .ve-find-in { grid-area: find; }
+.ve-find-help { grid-area: help; }
 .ve-find-case { grid-area: case; }
 .ve-find-prev { grid-area: prev; }
 .ve-find-next { grid-area: next; }
@@ -557,8 +571,8 @@ body.fv-dragging { cursor: grabbing; user-select: none; }
 
 .ve-find-wrap .ve-find { height: 72px; }
 .ve-find-wrap .ve-find-row {
-  grid-template-columns: minmax(0, 1fr) auto auto auto minmax(60px, auto) auto;
-  grid-template-areas: "find case prev next status close" "rep rep rep rep actions actions";
+  grid-template-columns: minmax(0, 1fr) auto auto auto auto auto minmax(60px, auto) auto;
+  grid-template-areas: "find case prev next help status close" "rep rep rep rep rep actions actions";
 }
 .ve-find-wrap .ve-rep-actions { overflow-x: auto; }
 .ve-find-wrap .ve-rep-actions button { flex: none; }

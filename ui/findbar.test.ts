@@ -41,6 +41,40 @@ describe("Feature: FindBar", () => {
     expect(row.querySelector(".ve-find-close")).not.toBeNull();
   });
 
+  // Feature: エディタ検索記法ヘルプ
+  // Scenario: ?ボタンを検索の次へ操作の隣に置く
+  // Given: エディタ検索バーが開いている
+  // When: 次へボタンとヘルプボタンの順を調べる
+  // Then: ヘルプボタンは▼ボタンの直後に並ぶ
+  it("Scenario: ?ボタンを▼ボタンの右隣へ置く", () => {
+    const host = document.createElement("div");
+    const bar = new FindBar(host, async () => true, async () => 0, async () => 0, async () => true, () => {}, async () => {});
+    bar.open("");
+
+    expect([...host.querySelectorAll(".ve-find-next, .ve-find-help")].map((button) => button.className))
+      .toEqual(["ve-find-next", "ve-find-help"]);
+  });
+
+  // Feature: エディタ検索記法ヘルプ
+  // Scenario: ?ボタンで検索記法の説明を表示する
+  // Given: エディタ検索バーが開いている
+  // When: ?ヘルプを押す
+  // Then: 改行・タブ・バックスラッシュの記法を説明する
+  it("Scenario: ?ボタンから検索記法ヘルプを開く", () => {
+    const host = document.createElement("div");
+    document.body.replaceChildren(host);
+    const bar = new FindBar(host, async () => true, async () => 0, async () => 0, async () => true, () => {}, async () => {});
+    bar.open("");
+
+    host.querySelector<HTMLButtonElement>(".ve-find-help")!.click();
+
+    const message = document.querySelector<HTMLElement>(".pf-message")!;
+    expect(message.textContent).toContain("\\n");
+    expect(message.textContent).toContain("\\t");
+    expect(message.textContent).toContain("\\\\");
+    document.querySelector<HTMLButtonElement>(".pf-ok")!.click();
+  });
+
   // Feature: エディタ検索バーの占有表示
   // Scenario: 検索バーを開いている間は本文レイアウトが検索バー領域を確保する
   // Given: 閉じたFindBarを持つエディタホスト

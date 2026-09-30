@@ -2,7 +2,7 @@
 // 文書の状態は DocumentController、画面の状態は各部品が持つ。
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { desktopDir } from "@tauri-apps/api/path";
+import { desktopDir, join as joinPath, tempDir } from "@tauri-apps/api/path";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { writeText as writeClipboardText } from "@tauri-apps/plugin-clipboard-manager";
 import * as api from "./api";
@@ -27,7 +27,7 @@ import {
   type DocumentControllerServices,
 } from "./document-controller";
 import { showError } from "./dialogs";
-import { confirmMessage, confirmSaveDiscard, promptFields } from "./prompt";
+import { confirmMessage, confirmSaveDiscard, promptFields, showLog } from "./prompt";
 import { promptSaveFormat, saveFormatFields, saveFormatFromValues } from "./save-format";
 import { isPasswordCancelled, withArchivePassword } from "./archive-password";
 import { archiveRelOf } from "./archive-path";
@@ -109,6 +109,21 @@ import { createExternalPreviewOutputLifecycle, createPreviewReplacementLifecycle
 
 const win = getCurrentWindow();
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
+const externalPreviewLogButton = $("external-preview-log");
+const previewRefreshButton = $("preview-refresh");
+let externalPreviewLastLog: string | null = null;
+
+function setExternalPreviewLog(log: string | null) {
+  externalPreviewLastLog = log;
+  externalPreviewLogButton.hidden = log === null;
+}
+
+externalPreviewLogButton.addEventListener("click", () => {
+  if (externalPreviewLastLog !== null) {
+    void showLog("外部プレビュー実行ログ", externalPreviewLastLog);
+  }
+});
+
 window.addEventListener("error", () => runBackground("画面を再表示できませんでした", () => win.show()), { once: true });
 window.addEventListener("unhandledrejection", (event) => {
   reportUnhandledRejection(event, (error) => reportBackgroundError("予期しない非同期エラーが発生しました", error));
@@ -116,6 +131,11 @@ window.addEventListener("unhandledrejection", (event) => {
 
 // 以降のモジュール初期化は設定値を同期的に読むため、ここで一度だけ待つ
 await initSettings((error) => reportBackgroundError("設定を読み込めませんでした", error));
+try {
+  await api.externalPreviewCleanupStale(getSetting("externalPreviewTemporaryDirectories"));
+} catch (error) {
+  console.warn("外部プレビューの古い一時生成物を削除できませんでした", error);
+}
 let windowRequest: api.WindowRequest;
 try {
   windowRequest = await api.initialWindowRequest();
@@ -322,12 +342,17 @@ function updateSidebarVisibility() {
 }
 
 function updatePreviewVisibility() {
+  updateExternalPreviewRefreshVisibility();
   const width = measuredMainWidth();
   if (width <= 0) {
     layoutRuntime?.coordinator.request();
     return;
   }
   applyPaneVisibility(width);
+}
+
+function updateExternalPreviewRefreshVisibility() {
+  previewRefreshButton.hidden = !previewAvailable || !previewDocument?.externalAdapter;
 }
 
 const inlinePreviewPorts = {
@@ -398,7 +423,7 @@ const inlinePreviewPorts = {
   onError: (error) => reportBackgroundError("プレビュー通知を処理できませんでした", error),
 } satisfies InlinePreviewPorts;
 
-let previewDocument: PreviewDocument | null = null;
+let previewDocument: (PreviewDocument & { externalAdapter?: ExternalPreviewAdapter }) | null = null;
 let previewRequestGeneration = 0;
 const previewReplacementLifecycle = createPreviewReplacementLifecycle();
 const externalPreviewOutputLifecycle = createExternalPreviewOutputLifecycle(cleanupExternalPreviewOutput);
@@ -437,6 +462,7 @@ function invalidatePreviewRequest(clearSelection = true) {
   clearExternalPreviewOutput();
   if (!clearSelection) return;
   previewDocument = null;
+  updateExternalPreviewRefreshVisibility();
   editingStatusbar.setPreviewFormat(null);
 }
 
@@ -453,6 +479,7 @@ function clearPreview(session: Readonly<DocumentSession>) {
   inlinePreview.setPendingExternalOutputPath(null);
   inlinePreview.setSourcePath(null, session.archivePath, session.archiveEntry);
   previewDocument = null;
+  updateExternalPreviewRefreshVisibility();
   previewFullscreen = false;
   previewFullscreenTabId = null;
   editingStatusbar.setPreviewFormat(null);
@@ -481,7 +508,12 @@ function openPreviewFormat(
   openingPreviewRequestGeneration = null;
   cancelPendingExternalPreviewRequest();
   const previousPreviewDocument = previewDocument;
-  const document = { ownerTabId: tabs?.state.activeId ?? null, path, format };
+  const document: PreviewDocument & { externalAdapter?: ExternalPreviewAdapter } = {
+    ownerTabId: tabs?.state.activeId ?? null,
+    path,
+    format,
+  };
+  if (externalAdapter) document.externalAdapter = externalAdapter;
   const requestGeneration = ++previewRequestGeneration;
   const pendingViewerOpenCancellation = previewReplacementLifecycle.begin(
     requestGeneration,
@@ -540,6 +572,7 @@ function openPreviewFormat(
           args: parseExternalPreviewArguments(externalAdapter.args),
           outputFormat: externalAdapter.outputFormat,
           requestId,
+          workRoot: getSetting("externalPreviewTemporaryDirectory"),
         });
         if (externalPreviewRequestId === requestId) externalPreviewRequestId = null;
         if (!isCurrentRequest()) {
@@ -549,6 +582,7 @@ function openPreviewFormat(
           );
           return;
         }
+        setExternalPreviewLog(null);
         resolvedFormat = externalAdapter.outputFormat === "svg" ? "image" : "html";
         effectiveExtension = null;
       }
@@ -628,6 +662,7 @@ function openPreviewFormat(
         clearDisplayedExternalPreviewOutput();
       }
       previewDocument = document;
+      updateExternalPreviewRefreshVisibility();
       editingStatusbar.setPreviewFormat(resolvedFormat);
       if (fragment !== null && resolvedFormat === "markdown") inlinePreview.setMarkdownFragment(fragment);
     } catch (error) {
@@ -648,9 +683,12 @@ function openPreviewFormat(
   }, externalAdapter ? async (error) => {
     if (!isCurrentRequest()) return;
     const detail = error instanceof Error ? error.message : String(error);
+    setExternalPreviewLog(detail);
+    await showLog("外部プレビュー実行ログ", detail);
+    if (!isCurrentRequest()) return;
     const retry = await confirmMessage(
       "外部プレビューを表示できませんでした",
-      `${detail}\n再実行しますか？`,
+      "ログは上部の「実行ログ」から再度確認できます。\n再実行しますか？",
       "再実行",
     );
     if (retry && isCurrentRequest()) openPreviewFormat(session, path, format, fragment, options);
@@ -956,6 +994,24 @@ settingsPorts = {
     } catch (error) {
       await reportBackgroundError("プレビューキャッシュ保存場所を選べませんでした", error);
       return null;
+    }
+  },
+  pickExternalPreviewTemporaryDirectory: async (defaultPath?: string) => {
+    try {
+      const initialPath = defaultPath ?? await joinPath(await tempDir(), "WasabiPad", "external-preview");
+      const selected = await openDialog({ directory: true, multiple: false, defaultPath: initialPath });
+      return typeof selected === "string" ? selected : null;
+    } catch (error) {
+      await reportBackgroundError("外部プレビュー一時ファイル保存先を選べませんでした", error);
+      return null;
+    }
+  },
+  flushSettings: async () => {
+    try {
+      await flushSettings();
+    } catch (error) {
+      await reportBackgroundError("外部プレビュー一時保存先を保存できませんでした", error);
+      throw error;
     }
   },
   clearPreviewCache: async () => {
@@ -1528,6 +1584,36 @@ try {
     await reportBackgroundError("空の文書を開始できませんでした", fallbackError);
   }
 }
+
+async function refreshExternalPreview() {
+  const opened = previewDocument;
+  const adapter = opened?.externalAdapter;
+  if (!opened || !adapter
+    || !isCurrentPreviewDocument(opened, tabs.state.activeId, documentPathOf(doc.current))) return;
+
+  if (doc.current.dirty) {
+    const save = await confirmMessage(
+      "外部プレビューを更新",
+      "未保存の編集を保存してからプレビューを更新しますか？",
+      "保存して更新",
+    );
+    if (!save || previewDocument !== opened) return;
+    if (!await doc.save() || doc.current.dirty) return;
+  }
+
+  if (previewDocument !== opened
+    || !isCurrentPreviewDocument(opened, tabs.state.activeId, documentPathOf(doc.current))) return;
+  openPreviewFormat(doc.current, documentPathOf(doc.current), opened.format, null, {
+    keepPreviewRange: true,
+    errorTitle: "外部プレビューを更新できませんでした",
+    externalAdapter: adapter,
+  });
+}
+
+previewRefreshButton.addEventListener("click", () => {
+  runBackground("外部プレビューを更新できませんでした", refreshExternalPreview);
+});
+
 try {
   const unlisten = await api.onExternalWindowRequest(drainExternalWindowRequests);
   externalWindowListener.set(unlisten);

@@ -335,9 +335,20 @@ async fn external_preview_generate(
     request: external_preview_runner::ExternalPreviewRequest,
     operations: tauri::State<'_, external_preview_runner::ExternalPreviewOperations>,
 ) -> Result<String, String> {
+    if request
+        .work_root
+        .as_deref()
+        .is_some_and(|root| root.trim().is_empty())
+    {
+        return Err("External preview work root cannot be empty.".to_owned());
+    }
     let operations = operations.inner().clone();
     let request_id = request.request_id.clone();
     let input_path = PathBuf::from(&request.input_path);
+    let work_root = request
+        .work_root
+        .map(PathBuf::from)
+        .unwrap_or_else(external_preview_runner::default_work_root);
     let (cancelled, input_path) = operations.register(&request_id, &input_path)?;
     let guard = operations.guard(request_id, cancelled.clone());
     tauri::async_runtime::spawn_blocking(move || {
@@ -348,11 +359,16 @@ async fn external_preview_generate(
             &request.args,
             &input_path,
             request.output_format,
-            &external_preview_runner::default_work_root(),
+            &work_root,
             std::time::Duration::from_secs(30),
             &cancelled,
         )?;
-        operations.finish_success(&request.request_id, &cancelled, &result.output_path)?;
+        operations.finish_success(
+            &request.request_id,
+            &cancelled,
+            &result.output_path,
+            &work_root,
+        )?;
         Ok(result.output_path.to_string_lossy().into_owned())
     })
     .await
@@ -373,9 +389,22 @@ fn external_preview_cleanup(
     operations: tauri::State<'_, external_preview_runner::ExternalPreviewOperations>,
 ) -> Result<(), String> {
     let output_path = PathBuf::from(output_path);
-    external_preview_runner::cleanup_job(&output_path, &external_preview_runner::default_work_root())?;
-    operations.release_output(&output_path);
-    Ok(())
+    operations.cleanup_output(&output_path)
+}
+
+#[tauri::command]
+fn external_preview_cleanup_stale(
+    work_roots: Vec<String>,
+    operations: tauri::State<'_, external_preview_runner::ExternalPreviewOperations>,
+) -> Result<(), String> {
+    let mut roots = vec![external_preview_runner::default_work_root()];
+    roots.extend(
+        work_roots
+            .into_iter()
+            .filter(|root| !root.trim().is_empty())
+            .map(PathBuf::from),
+    );
+    operations.cleanup_stale_roots(&roots)
 }
 
 #[tauri::command]
@@ -799,11 +828,6 @@ fn main() {
                     eprintln!("Could not move old music addins to pending storage: {error}");
                 }
             }
-            if let Err(error) = external_preview_runner::cleanup_stale_jobs(
-                &external_preview_runner::default_work_root(),
-            ) {
-                eprintln!("Could not clean stale external preview jobs: {error}");
-            }
             app.state::<InstanceServer>().start(app.handle());
             if let Some(window) = app.get_webview_window("main") {
                 viewer::install_find_shortcut_guard(
@@ -849,6 +873,7 @@ fn main() {
             external_preview_generate,
             external_preview_cancel,
             external_preview_cleanup,
+            external_preview_cleanup_stale,
             edit,
             edit_many,
             undo,

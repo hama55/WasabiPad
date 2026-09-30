@@ -206,6 +206,34 @@ export function showMessage(title: string, message: string, okLabel = "OK"): Pro
   });
 }
 
+export function showLog(title: string, message: string, closeLabel = "閉じる"): Promise<void> {
+  return new Promise((resolve) => {
+    let closeModal: (() => void) | null = null;
+    const finish = () => {
+      closeModal?.();
+      resolve();
+    };
+    const { box, close } = openModal({ onCancel: finish, onAccept: finish }, "pf-log-box");
+    closeModal = close;
+    const heading = document.createElement("div");
+    heading.className = "pf-title";
+    heading.textContent = title;
+    const content = document.createElement("pre");
+    content.className = "pf-log-content";
+    content.textContent = message;
+    const buttons = document.createElement("div");
+    buttons.className = "pf-btns";
+    const ok = document.createElement("button");
+    ok.className = "pf-ok";
+    ok.textContent = closeLabel;
+    buttons.appendChild(ok);
+    box.append(heading, content, buttons);
+
+    ok.addEventListener("click", finish);
+    ok.focus();
+  });
+}
+
 export function confirmMessage(
   title: string,
   message: string,

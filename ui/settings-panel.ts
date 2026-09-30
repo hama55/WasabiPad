@@ -40,6 +40,8 @@ export interface SettingsPanelPorts {
   applyMarkdownLineHeight: (value: number) => void;
   applyMarkdownHeadingUnderlines: (enabled: boolean) => void;
   pickPreviewCacheDirectory?: (defaultPath?: string) => string | null | Promise<string | null>;
+  pickExternalPreviewTemporaryDirectory?: (defaultPath?: string) => string | null | Promise<string | null>;
+  flushSettings: () => Promise<void>;
   clearPreviewCache?: () => void | Promise<void>;
   getPreviewCacheInfo?: () => PreviewCacheInfo | null | Promise<PreviewCacheInfo | null>;
   openSearchSettings: () => void;
@@ -208,7 +210,7 @@ export function openSettingsModal(
     {
       name: "外部プレビュー",
       id: "settings-addons",
-      build: () => [externalPreviewAdaptersField(ports)],
+      build: () => [externalPreviewAdaptersField(ports), externalPreviewTemporaryDirectoryField(ports)],
     },
     {
       name: "検索",
@@ -844,6 +846,52 @@ function previewCacheField(ports: SettingsPanelPorts): HTMLElement {
 
   actions.append(pick, clear);
   group.append(titleRow, locationRow, actions);
+  return group;
+}
+
+function externalPreviewTemporaryDirectoryField(ports: SettingsPanelPorts): HTMLElement {
+  const group = document.createElement("div");
+  group.className = "settings-list-row settings-external-preview-temp";
+  group.dataset.settingGroup = "external-preview-temporary-directory";
+
+  const title = document.createElement("span");
+  title.className = "settings-external-preview-temp-label";
+  title.textContent = "外部プレビュー一時ファイル保存先";
+
+  const location = document.createElement("span");
+  location.dataset.setting = "external-preview-temporary-directory";
+  let currentDirectory = ports.getSetting("externalPreviewTemporaryDirectory");
+  location.textContent = currentDirectory ?? "%TEMP%\\WasabiPad\\external-preview";
+  location.title = location.textContent;
+
+  const pick = document.createElement("button");
+  pick.type = "button";
+  pick.dataset.action = "pick-external-preview-temporary-directory";
+  pick.textContent = "保存場所を変更";
+  pick.disabled = !ports.pickExternalPreviewTemporaryDirectory;
+  let choosing = false;
+  pick.addEventListener("click", () => {
+    const pickDirectory = ports.pickExternalPreviewTemporaryDirectory;
+    if (!pickDirectory || choosing) return;
+    choosing = true;
+    void (async () => {
+      const directory = await pickDirectory(currentDirectory ?? undefined);
+      if (typeof directory !== "string" || directory.trim().length === 0) return;
+      const history = ports.getSetting("externalPreviewTemporaryDirectories");
+      if (!history.includes(directory)) {
+        ports.setSetting("externalPreviewTemporaryDirectories", [...history, directory]);
+      }
+      ports.setSetting("externalPreviewTemporaryDirectory", directory);
+      currentDirectory = directory;
+      location.textContent = directory;
+      location.title = directory;
+      await ports.flushSettings();
+    })().catch(() => {}).finally(() => {
+      choosing = false;
+    });
+  });
+
+  group.append(title, location, pick);
   return group;
 }
 
