@@ -4,6 +4,14 @@ import { resolve } from "node:path";
 const root = resolve(import.meta.dirname, "..");
 const source = JSON.parse(readFileSync(resolve(root, "shared/protocol.json"), "utf8"));
 
+if (!Array.isArray(source.archiveFormats) || source.archiveFormats.length === 0
+  || source.archiveFormats.some((format) => typeof format !== "string" || format.length === 0)) {
+  throw new Error("archiveFormats設定が不正です");
+}
+if (!source.events || Object.values(source.events).some((event) => typeof event !== "string" || event.length === 0)) {
+  throw new Error("events設定が不正です");
+}
+
 const byteSize = source.byteSize;
 if (!Number.isInteger(byteSize?.base) || byteSize.base < 2
   || !Number.isInteger(byteSize?.fractionDigits) || byteSize.fractionDigits < 0
@@ -41,6 +49,8 @@ function writeIfChanged(path, contents) {
 const imageMimeTypes = Object.fromEntries(
   source.imageFormats.flatMap(({ extensions, mimeTypes }) => extensions.map((extension) => [extension, mimeTypes[0]])),
 );
+const imageFormats = source.imageFormats.map(({ extensions, canonicalExtension }) =>
+  canonicalExtension ?? extensions[0]);
 const imageExtensions = source.imageFormats.flatMap(({ extensions }) => extensions);
 const imageMimeBranches = source.imageFormats
   .flatMap(({ extensions, canonicalExtension, mimeTypes }) => mimeTypes.map((mimeType) =>
@@ -59,6 +69,10 @@ function rustLabelFunction(name, labels) {
     "    }",
     "}",
   ].join("\n");
+}
+
+function screamingSnake(value) {
+  return value.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toUpperCase();
 }
 
 // The algorithm order lives in one template; language entries only provide syntax fragments.
@@ -126,6 +140,12 @@ const ts = [
   "// This file was generated from shared/protocol.json by scripts/sync-protocol.mjs.",
   `export const ARCHIVE_ENTRY_SEPARATOR = ${JSON.stringify(source.archiveEntrySeparator)} as const;`,
   `export const PASSWORD_ERROR_MARKER = ${JSON.stringify(source.passwordErrorMarker)} as const;`,
+  `export const ARCHIVE_FORMATS = ${JSON.stringify(source.archiveFormats)} as const;`,
+  "export function isArchiveFormat(value: string | null | undefined): value is (typeof ARCHIVE_FORMATS)[number] {",
+  "  return typeof value === \"string\" && ARCHIVE_FORMATS.some((format) => format === value.toLowerCase());",
+  "}",
+  `export const EVENT_NAMES = ${JSON.stringify(source.events, null, 2)} as const;`,
+  `export const IMAGE_FORMATS = ${JSON.stringify(imageFormats)} as const;`,
   `export const IMAGE_MIME_TYPES = ${JSON.stringify(imageMimeTypes, null, 2)} as const;`,
   `export const ENCODING_LABELS = ${JSON.stringify(source.encodingLabels, null, 2)} as const;`,
   `export const EOL_LABELS = ${JSON.stringify(source.eolLabels, null, 2)} as const;`,
@@ -142,6 +162,12 @@ const rust = [
   "// This file was generated from shared/protocol.json by scripts/sync-protocol.mjs.",
   `pub(crate) const ARCHIVE_ENTRY_SEPARATOR: &str = ${JSON.stringify(source.archiveEntrySeparator)};`,
   `pub(crate) const PASSWORD_ERROR_MARKER: &str = ${JSON.stringify(source.passwordErrorMarker)};`,
+  ...Object.entries(source.events).map(([name, value]) =>
+    `pub const EVENT_${screamingSnake(name)}: &str = ${JSON.stringify(value)};`),
+  "",
+  "pub(crate) fn is_archive_extension(extension: &str) -> bool {",
+  `    matches!(extension.to_ascii_lowercase().as_str(), ${source.archiveFormats.map((value) => JSON.stringify(value)).join(" | ")})`,
+  "}",
   "",
   "pub(crate) fn is_image_extension(extension: &str) -> bool {",
   `    matches!(extension.to_ascii_lowercase().as_str(), ${imageExtensions.map((value) => JSON.stringify(value)).join(" | ")})`,

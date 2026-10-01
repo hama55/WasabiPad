@@ -1,6 +1,16 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
-import { EVENT_NAMES, openExternalUrl, openInDefaultBrowser, readSqlitePreview, takeViewerPayload, type ViewerFormat, type ViewerPayload, type ViewerSelection } from "./api";
+import {
+  EVENT_NAMES,
+  openExternalUrl,
+  openInDefaultBrowser,
+  readSqlitePreview,
+  takeViewerPayload,
+  type ViewerFormat,
+  type ViewerPayload,
+  type ViewerSelection,
+} from "./api";
+import { isArchiveFormat } from "./generated/Protocol";
 import { formatFontFamily } from "./format";
 import { basename } from "./path";
 import { isViewerFormat, viewerFormatSpec } from "./viewer-formats";
@@ -64,6 +74,11 @@ import {
 } from "./viewer-image";
 import { createPdfPreview, markPdfLoadFailure } from "./viewer-pdf";
 import { createHtmlPreview } from "./viewer-html";
+import {
+  commitTrustedExternalHtmlPreview,
+  createTrustedExternalHtmlPreview,
+  resolveExternalOutputSource,
+} from "./viewer-external-output";
 import { createSqlitePreviewController, type SqlitePreviewController } from "./viewer-sqlite";
 import { createAsyncUnlisten } from "./async-unlisten";
 import { comparePos } from "./editor-math";
@@ -94,6 +109,8 @@ const title = document.getElementById("viewer-title-text")!;
 const formatButtons = document.getElementById("viewer-format") as HTMLSelectElement;
 const actionButtons = document.getElementById("viewer-csv-actions")!;
 const fullscreenButton = document.getElementById("viewer-fullscreen") as HTMLButtonElement;
+const previewCloseButton = document.getElementById("viewer-close") as HTMLButtonElement;
+const previewRefreshButton = document.getElementById("viewer-refresh") as HTMLButtonElement;
 const summary = document.getElementById("viewer-summary")!;
 const themeButton = document.getElementById("viewer-theme")!;
 const fontButton = document.getElementById("viewer-font")!;
@@ -115,9 +132,11 @@ let currentSourcePath: string | null = null;
 let currentEffectiveExtension: string | null = null;
 let currentArchivePath: string | null = null;
 let currentArchiveEntry: string | null = null;
+let currentExternalOutputPath: string | null = null;
 let pendingMarkdownFragment: string | null = null;
 let markdownReadyForFragment = false;
 let renderGeneration = 0;
+let renderAbortController = new AbortController();
 let imageZoom = DEFAULT_IMAGE_ZOOM;
 let disposeImagePan: (() => void) | null = null;
 let disposeSqlitePreview: (() => void) | null = null;
@@ -144,11 +163,11 @@ interface ViewerRenderState {
   effectiveExtension: string | null;
   archivePath: string | null;
   archiveEntry: string | null;
+  externalOutputPath: string | null;
 }
 
 function archiveFormatExtension(extension: string | null, archiveEntry: string | null): boolean {
-  return !!archiveEntry && !!extension
-    && ["zip", "7z", "xlsx", "xls"].includes(extension.toLowerCase());
+  return !!archiveEntry && isArchiveFormat(extension);
 }
 
 function currentViewerRenderState(): ViewerRenderState {
@@ -160,6 +179,7 @@ function currentViewerRenderState(): ViewerRenderState {
     effectiveExtension: currentEffectiveExtension,
     archivePath: currentArchivePath,
     archiveEntry: currentArchiveEntry,
+    externalOutputPath: currentExternalOutputPath,
   };
 }
 
@@ -172,6 +192,7 @@ function viewerRenderStateOf(payload: ViewerPayload): ViewerRenderState {
     effectiveExtension: payload.effective_extension,
     archivePath: payload.archive_path,
     archiveEntry: payload.archive_entry,
+    externalOutputPath: payload.external_output_path ?? null,
   };
 }
 
@@ -183,6 +204,8 @@ function publishViewerRenderState(state: ViewerRenderState, nextImageZoom: numbe
   currentEffectiveExtension = state.effectiveExtension;
   currentArchivePath = state.archivePath;
   currentArchiveEntry = state.archiveEntry;
+  currentExternalOutputPath = state.externalOutputPath;
+  previewRefreshButton.hidden = !isInlineViewer || !state.externalOutputPath;
   imageZoom = nextImageZoom;
   const classificationSource = state.effectiveExtension && !archiveFormatExtension(state.effectiveExtension, state.archiveEntry)
     ? `${state.archiveEntry ?? state.sourcePath ?? "source"}.${state.effectiveExtension}`
@@ -200,6 +223,8 @@ function publishViewerRenderState(state: ViewerRenderState, nextImageZoom: numbe
 }
 
 function beginRender(): number {
+  renderAbortController.abort();
+  renderAbortController = new AbortController();
   const generation = ++renderGeneration;
   content.querySelectorAll<HTMLElement>(":scope > .viewer-pending").forEach((pending) => pending.remove());
   content.classList.add("viewer-loading");
@@ -358,6 +383,7 @@ function setFullscreenButton(fullscreen: boolean) {
 function disposeViewer() {
   if (viewerDisposed) return;
   viewerDisposed = true;
+  renderAbortController.abort();
   renderGeneration += 1;
   disposeImagePan?.();
   disposeImagePan = null;
@@ -498,6 +524,15 @@ function bindViewerControls() {
     runViewerOperation("全画面表示を変更できませんでした", () => {
       if (isInlineViewer) postToParent({ type: INLINE_PREVIEW_MESSAGES.FULLSCREEN_CHANGE_MESSAGE });
     });
+  }, { signal: viewerDomListeners.signal });
+  previewCloseButton.addEventListener("click", () => {
+    if (isInlineViewer) postToParent({
+      type: INLINE_PREVIEW_MESSAGES.CLOSE_MESSAGE,
+      return_focus: previewCloseButton.matches(":focus-visible"),
+    });
+  }, { signal: viewerDomListeners.signal });
+  previewRefreshButton.addEventListener("click", () => {
+    if (isInlineViewer && currentExternalOutputPath) postToParent({ type: INLINE_PREVIEW_MESSAGES.REFRESH_MESSAGE });
   }, { signal: viewerDomListeners.signal });
   const notifySelection = () => runViewerOperation(
     "プレビューの選択位置を通知できませんでした",
@@ -907,6 +942,88 @@ async function renderHtml(
   }
 }
 
+async function renderExternalOutput(
+  state: ViewerRenderState,
+  requireLoadedOutput = false,
+): Promise<boolean> {
+  const outputPath = state.externalOutputPath;
+  if (!outputPath) return false;
+  const generation = beginRender();
+  const renderSignal = renderAbortController.signal;
+  const previousDisposeImagePan = disposeImagePan;
+  let wrapper: HTMLElement | null = null;
+  let dispose: (() => void) | undefined;
+  try {
+    const source = resolveExternalOutputSource(outputPath);
+    if (source.format === "html") {
+      const preview = createTrustedExternalHtmlPreview(outputPath);
+      wrapper = preview.wrapper;
+      if (!await commitTrustedExternalHtmlPreview(
+        content,
+        wrapper,
+        preview.frame,
+        () => generation === renderGeneration,
+        renderSignal,
+      )) return false;
+    } else {
+      const preview = createImagePreview(basename(outputPath));
+      wrapper = preview.wrapper;
+      dispose = bindImagePan(preview.image, content);
+      wrapper.classList.add("viewer-pending");
+      content.appendChild(wrapper);
+      preview.image.src = source.url;
+      const ready = await waitForImageLayout(preview.image);
+      if (!ready && requireLoadedOutput) {
+        dispose?.();
+        wrapper.remove();
+        return false;
+      }
+      if (!ready) markImageLoadFailure(preview.image, basename(outputPath));
+      if (generation !== renderGeneration) {
+        dispose?.();
+        wrapper.remove();
+        return false;
+      }
+      wrapper.classList.remove("viewer-pending");
+      content.replaceChildren(wrapper);
+      disposeImagePan = dispose;
+    }
+    currentRows = [];
+    chartController.clear();
+    previousDisposeImagePan?.();
+    if (source.format === "html") disposeImagePan = null;
+    revokeArchiveAssetUrls();
+    summary.classList.remove("warning");
+    summary.title = "";
+    summary.textContent = basename(outputPath);
+    return true;
+  } catch (error) {
+    if (generation !== renderGeneration) {
+      dispose?.();
+      wrapper?.remove();
+      return false;
+    }
+    if (requireLoadedOutput) {
+      dispose?.();
+      wrapper?.remove();
+      return false;
+    }
+    if (wrapper) {
+      wrapper.classList.remove("viewer-pending");
+      replaceWithViewerError(wrapper, basename(outputPath));
+      content.replaceChildren(wrapper);
+      previousDisposeImagePan?.();
+      disposeImagePan = null;
+      summary.classList.add("warning");
+      summary.textContent = String(error);
+      return true;
+    }
+    throw error;
+  } finally {
+    finishRender(generation);
+  }
+}
+
 async function renderMarkdown(
   text: string,
   state: ViewerRenderState = currentViewerRenderState(),
@@ -1014,8 +1131,13 @@ const VIEWER_RENDERERS: Record<ViewerFormat, ViewerStateRenderer> = {
   sqlite: renderSqlite,
 };
 
-async function renderViewerState(state: ViewerRenderState, nextImageZoom: number): Promise<boolean> {
+async function renderViewerState(
+  state: ViewerRenderState,
+  nextImageZoom: number,
+  requireLoadedOutput = false,
+): Promise<boolean> {
   if (viewerDisposed) return false;
+  if (state.externalOutputPath) return renderExternalOutput(state, requireLoadedOutput);
   return VIEWER_RENDERERS[state.format](state.text, state, nextImageZoom);
 }
 
@@ -1025,14 +1147,15 @@ function renderCurrentViewer(): Promise<boolean> {
   return renderViewerState(state, imageZoom);
 }
 
-async function renderPayload(payload: ViewerPayload) {
+async function renderPayload(payload: ViewerPayload, requireLoadedOutput = false): Promise<boolean> {
   if (!isViewerPayload(payload)) throw new Error("ビューのデータが不正です");
   const previousState = currentViewerRenderState();
   const nextState = viewerRenderStateOf(payload);
   const sourceChanged = nextState.sourcePath !== previousState.sourcePath
     || nextState.effectiveExtension !== previousState.effectiveExtension
     || nextState.archivePath !== previousState.archivePath
-    || nextState.archiveEntry !== previousState.archiveEntry;
+    || nextState.archiveEntry !== previousState.archiveEntry
+    || nextState.externalOutputPath !== previousState.externalOutputPath;
   const formatChanged = nextState.format !== previousState.format;
   const nextImageZoom = sourceChanged ? DEFAULT_IMAGE_ZOOM : imageZoom;
   if (sourceChanged) archiveAssetSession.clearCachedAssets();
@@ -1040,10 +1163,11 @@ async function renderPayload(payload: ViewerPayload) {
     disposeSqlitePreview?.();
     disposeSqlitePreview = null;
   }
-  const committed = await renderViewerState(nextState, nextImageZoom);
-  if (viewerDisposed || !committed) return;
+  const committed = await renderViewerState(nextState, nextImageZoom, requireLoadedOutput);
+  if (viewerDisposed || !committed) return false;
   if (formatChanged || sourceChanged) csvColumnWidths = [];
   publishViewerRenderState(nextState, nextImageZoom);
+  return true;
 }
 
 function openDelimiterDialog() {
@@ -1082,7 +1206,7 @@ function showContextMenu(x: number, y: number) {
       runViewerOperation("グラフ設定を開けませんでした", () => chartController.openDialog());
     }));
   }
-  if (formatSpec.supportsDefaultBrowser && currentSourcePath) {
+  if (formatSpec.supportsDefaultBrowser && currentSourcePath && !currentExternalOutputPath) {
     const path = currentSourcePath;
     contextMenu.appendChild(createViewerBrowserMenuItem(() => {
       contextMenu.hidden = true;
@@ -1156,7 +1280,7 @@ async function start() {
         event.preventDefault();
         runViewerOperation("グラフメニューを表示できませんでした", () => showContextMenu(event.clientX, event.clientY));
       } else if (viewerFormatSpec(currentFormat).supportsDefaultBrowser
-        && currentSourcePath && target.closest(".viewer-html-wrap")) {
+        && currentSourcePath && !currentExternalOutputPath && target.closest(".viewer-html-wrap")) {
         event.preventDefault();
         runViewerOperation("HTMLメニューを表示できませんでした", () => showContextMenu(event.clientX, event.clientY));
       }
@@ -1171,7 +1295,48 @@ async function start() {
         if (event.source !== window.parent || event.origin !== window.location.origin) return;
         if (event.data?.type === INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE) {
           if (!isViewerPayload(event.data.payload)) return;
+          const renderId = event.data.render_id;
+          if (typeof renderId === "string") {
+            runViewerOperation("ビューを更新できませんでした", async () => {
+              try {
+                const rendered = await renderPayload(event.data.payload, true);
+                postToParent({
+                  type: rendered
+                    ? INLINE_PREVIEW_MESSAGES.DISPLAY_COMMITTED_MESSAGE
+                    : INLINE_PREVIEW_MESSAGES.DISPLAY_FAILED_MESSAGE,
+                  render_id: renderId,
+                });
+              } catch (error) {
+                postToParent({
+                  type: INLINE_PREVIEW_MESSAGES.DISPLAY_FAILED_MESSAGE,
+                  render_id: renderId,
+                });
+                throw error;
+              }
+            });
+            return;
+          }
           runViewerOperation("ビューを更新できませんでした", () => renderPayload(event.data.payload));
+          return;
+        }
+        if (event.data?.type === INLINE_PREVIEW_MESSAGES.CLEAR_MESSAGE) {
+          if (typeof event.data.render_id !== "string") return;
+          const generation = beginRender();
+          disposeSqlitePreview?.();
+          disposeSqlitePreview = null;
+          disposeImagePan?.();
+          disposeImagePan = null;
+          chartController.clear();
+          currentRows = [];
+          content.replaceChildren();
+          previewRefreshButton.hidden = true;
+          summary.classList.remove("warning");
+          summary.textContent = "";
+          finishRender(generation);
+          postToParent({
+            type: INLINE_PREVIEW_MESSAGES.CLEARED_MESSAGE,
+            render_id: event.data.render_id,
+          });
           return;
         }
         if (event.data?.type === INLINE_PREVIEW_MESSAGES.MARKDOWN_FRAGMENT_MESSAGE) {
@@ -1233,6 +1398,10 @@ async function start() {
         if (event.data?.type === INLINE_PREVIEW_MESSAGES.FULLSCREEN_STATE_MESSAGE) {
           if (typeof event.data.fullscreen !== "boolean") return;
           setFullscreenButton(event.data.fullscreen);
+          return;
+        }
+        if (event.data?.type === INLINE_PREVIEW_MESSAGES.FOCUS_CLOSE_MESSAGE) {
+          previewCloseButton.focus();
           return;
         }
       }, { signal: viewerDomListeners.signal });

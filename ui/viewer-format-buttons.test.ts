@@ -51,7 +51,7 @@ describe("Feature: viewer format select", () => {
 
   // Given: 表示形式プルダウンの置き場と6形式の選択通知
   // When: プルダウンを生成して6形式を順に選ぶ
-  // Then: レジストリの表示順markdown→csv→image→pdf→html(静的)→sqliteで表示し、各形式を通知する
+  // Then: レジストリの形式ID順で6形式を表示し、選んだ各形式を通知する
   it("Scenario: 表示形式をプルダウンから選択する", () => {
     const host = document.createElement("select");
     const onSelect = vi.fn();
@@ -92,6 +92,27 @@ describe("Feature: viewer format select", () => {
     expect(host.querySelector<HTMLOptionElement>("[data-viewer-format='image']")?.disabled).toBe(true);
     expect(host.querySelector<HTMLOptionElement>("[data-viewer-format='pdf']")?.disabled).toBe(true);
     expect(host.querySelector<HTMLOptionElement>("[data-viewer-format='image']")?.getAttribute("aria-disabled")).toBe("true");
+  });
+
+  // Feature: SQLiteヘッダー不一致時に通常のビューを維持する
+  // Scenario: SQLite候補拡張子をMarkdownとして表示している
+  // Given: .dbファイルのヘッダーがSQLiteと一致せずMarkdownへフォールバックした状態
+  // When: 表示形式候補を同期する
+  // Then: 現在のMarkdownとSQLite再判定だけを選択可能にする
+  it("Scenario: SQLite候補の通常形式フォールバックを選択状態に保つ", () => {
+    const host = document.createElement("select");
+    createViewerFormatButtons(host, vi.fn<(format: ViewerFormat) => void>());
+
+    syncViewerFormatButtons(host, "markdown", "data.db");
+
+    expect(host.value).toBe("markdown");
+    expect(host.querySelector<HTMLOptionElement>("[data-viewer-format='markdown']")?.disabled).toBe(false);
+    expect(host.querySelector<HTMLOptionElement>("[data-viewer-format='sqlite']")?.disabled).toBe(false);
+    expect(host.querySelector<HTMLOptionElement>("[data-viewer-format='image']")?.disabled).toBe(true);
+
+    syncViewerFormatButtons(host, "sqlite", "data.db");
+    expect(host.querySelector<HTMLOptionElement>("[data-viewer-format='markdown']")?.disabled).toBe(true);
+    expect(host.querySelector<HTMLOptionElement>("[data-viewer-format='sqlite']")?.disabled).toBe(false);
   });
 
   // Given: viewer.htmlのタイトルバー

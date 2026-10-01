@@ -1,3 +1,9 @@
+import { ARCHIVE_ENTRY_SEPARATOR, splitArchiveEntryPath } from "./archive-path";
+
+function normalizedPath(path: string): string {
+  return path.replace(/\\/g, "/").replace(/\/+$/, "");
+}
+
 export function basename(path: string): string {
   return path.replace(/\\/g, "/").split("/").pop() || path;
 }
@@ -23,7 +29,32 @@ export function relativePathFromRoot(root: string, absolutePath: string): string
 }
 
 export function comparablePath(path: string): string {
-  return path.replace(/\\/g, "/").replace(/\/+$/, "").toLocaleLowerCase("en-US");
+  return normalizedPath(path).toLocaleLowerCase("en-US");
+}
+
+export function comparableDocumentPath(path: string): string {
+  const normalized = normalizedPath(path);
+  const archive = splitArchiveEntryPath(normalized);
+  if (!archive) return comparablePath(normalized);
+  return `${comparablePath(archive.archiveRelPath)}${ARCHIVE_ENTRY_SEPARATOR}${archive.entryName}`;
+}
+
+export function isSameOrDescendantDocumentPath(path: string, parent: string): boolean {
+  const normalizedPathValue = normalizedPath(path);
+  const normalizedParent = normalizedPath(parent);
+  const pathArchive = splitArchiveEntryPath(normalizedPathValue);
+  const parentArchive = splitArchiveEntryPath(normalizedParent);
+  if (parentArchive) {
+    if (!pathArchive || comparablePath(pathArchive.archiveRelPath) !== comparablePath(parentArchive.archiveRelPath)) {
+      return false;
+    }
+    return pathArchive.entryName === parentArchive.entryName
+      || pathArchive.entryName.startsWith(`${parentArchive.entryName}/`);
+  }
+  const physicalPath = pathArchive?.archiveRelPath ?? normalizedPathValue;
+  const comparable = comparablePath(physicalPath);
+  const comparableParent = comparablePath(normalizedParent);
+  return comparable === comparableParent || comparable.startsWith(`${comparableParent}/`);
 }
 
 export function relativePathWithinRoot(root: string, absolutePath: string): string | null {
@@ -39,18 +70,29 @@ export function rebaseWindowsPath(path: string, oldPrefix: string, newPrefix: st
   return rel ? joinWindowsRoot(newPrefix, rel) : newPrefix;
 }
 
+export function rebaseDocumentPath(path: string, oldPrefix: string, newPrefix: string): string | null {
+  if (!isSameOrDescendantDocumentPath(path, oldPrefix)) return null;
+  const normalized = normalizedPath(path);
+  const normalizedOld = normalizedPath(oldPrefix);
+  const normalizedNew = normalizedPath(newPrefix);
+  return `${normalizedNew}${normalized.slice(normalizedOld.length)}`.replace(/^\//, "");
+}
+
 export function movedRelativePath(
   currentRelPath: string,
   sourceRelPath: string,
   targetRelDir: string,
   targetName = basename(sourceRelPath),
 ): string {
-  const current = currentRelPath.replace(/\\/g, "/");
-  const source = sourceRelPath.replace(/\\/g, "/").replace(/\/$/, "");
-  const target = targetRelDir.replace(/\\/g, "/").replace(/\/$/, "");
-  const suffix = current === source
+  const current = normalizedPath(currentRelPath);
+  const source = normalizedPath(sourceRelPath);
+  const target = normalizedPath(targetRelDir);
+  const comparableCurrent = comparableDocumentPath(current);
+  const comparableSource = comparableDocumentPath(source);
+  const suffix = comparableCurrent === comparableSource
     ? ""
-    : current.startsWith(`${source}/`) || current.startsWith(`${source}::`)
+    : comparableCurrent.startsWith(`${comparableSource}/`)
+        || comparableCurrent.startsWith(`${comparableSource}${ARCHIVE_ENTRY_SEPARATOR}`)
       ? current.slice(source.length)
       : null;
   if (suffix === null) return currentRelPath;

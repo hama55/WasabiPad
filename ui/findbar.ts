@@ -1,4 +1,6 @@
 // エディタ上部を一行占有する検索/置換バー。実際の検索は backend(mmap 全体走査)へ委譲。
+import { showMessage } from "./prompt";
+
 export class FindBar {
   private root: HTMLElement;
   private findIn: HTMLInputElement;
@@ -8,6 +10,7 @@ export class FindBar {
   private onFind: (pat: string, forward: boolean, matchCase: boolean) => Promise<boolean>;
   private onReplaceAll: (pat: string, rep: string, matchCase: boolean) => Promise<number>;
   private onReplaceNext: (pat: string, rep: string, matchCase: boolean) => Promise<boolean>;
+  private onReplaceVisible: (pat: string, rep: string, matchCase: boolean) => Promise<number>;
   private onDone: () => void;
   private onError: (message: string, error: unknown) => void | Promise<void>;
   private onInitialQuery?: (pat: string, matchCase: boolean) => void;
@@ -18,6 +21,7 @@ export class FindBar {
     private host: HTMLElement,
     onFind: (pat: string, forward: boolean, matchCase: boolean) => Promise<boolean>,
     onReplaceAll: (pat: string, rep: string, matchCase: boolean) => Promise<number>,
+    onReplaceVisible: (pat: string, rep: string, matchCase: boolean) => Promise<number>,
     onReplaceNext: (pat: string, rep: string, matchCase: boolean) => Promise<boolean>,
     onDone: () => void,
     onError: (message: string, error: unknown) => void | Promise<void>,
@@ -29,6 +33,7 @@ export class FindBar {
     this.onDone = onDone;
     this.onError = onError;
     this.onInitialQuery = onInitialQuery;
+    this.onReplaceVisible = onReplaceVisible;
 
     this.root = document.createElement("div");
     this.root.className = "ve-find";
@@ -39,9 +44,10 @@ export class FindBar {
         <label class="ve-find-case"><input type="checkbox" /> Aa</label>
         <button class="ve-find-prev" title="前へ (Shift+Enter)">▲</button>
         <button class="ve-find-next" title="次へ (Enter)">▼</button>
+        <button class="ve-find-help" type="button" title="検索記法のヘルプ" aria-label="検索記法のヘルプ">?</button>
         <span class="ve-find-status"></span>
         <input class="ve-rep-in" placeholder="置換" spellcheck="false" />
-        <div class="ve-rep-actions"><button class="ve-rep-next">連続置換</button><button class="ve-rep-all">すべて置換</button></div>
+        <div class="ve-rep-actions"><button class="ve-rep-next">置換</button><button class="ve-rep-visible">画面内</button><button class="ve-rep-all">全置換</button></div>
         <button class="ve-find-close" title="閉じる (Esc)">✕</button>
       </div>`;
     host.appendChild(this.root);
@@ -52,6 +58,9 @@ export class FindBar {
     this.status = this.root.querySelector(".ve-find-status")!;
 
     this.findIn.addEventListener("input", () => this.runFind(true));
+    this.root.querySelector(".ve-find-help")!.addEventListener("click", () => {
+      void showMessage("エディタ検索記法", "検索・置換欄では次の記法を使えます。\n\\n: 改行\n\\t: タブ\n\\\\: バックスラッシュ");
+    });
     this.findIn.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
         e.preventDefault();
@@ -69,6 +78,7 @@ export class FindBar {
     this.root.querySelector(".ve-find-prev")!.addEventListener("click", () => this.runFind(false));
     this.root.querySelector(".ve-find-close")!.addEventListener("click", () => this.close());
     this.root.querySelector(".ve-rep-all")!.addEventListener("click", () => this.run(() => this.replaceAll()));
+    this.root.querySelector(".ve-rep-visible")!.addEventListener("click", () => this.run(() => this.replaceVisible()));
     this.root.querySelector(".ve-rep-next")!.addEventListener("click", () => this.run(() => this.replaceNext()));
   }
 
@@ -124,6 +134,13 @@ export class FindBar {
     const pat = this.findIn.value;
     if (!pat) return;
     const n = await this.onReplaceAll(pat, this.repIn.value, this.caseChk.checked);
+    this.status.textContent = `${n}件置換`;
+  }
+
+  private async replaceVisible() {
+    const pat = this.findIn.value;
+    if (!pat) return;
+    const n = await this.onReplaceVisible(pat, this.repIn.value, this.caseChk.checked);
     this.status.textContent = `${n}件置換`;
   }
 

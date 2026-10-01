@@ -39,6 +39,7 @@ function setWorkspaceVersion() {
 ensureClean();
 if (workspaceVersion() === version) throw new Error(`${tag} はすでにプロジェクト内バージョンです。`);
 if (output("git", ["tag", "--list", tag])) throw new Error(`${tag} はすでに存在します。`);
+run(npm, ["run", "check:generated"]);
 
 setWorkspaceVersion();
 run(npm, ["run", "sync:version"]);

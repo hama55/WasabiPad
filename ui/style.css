@@ -110,7 +110,14 @@ body {
   border: 1px solid var(--border); border-radius: 4px;
   font-size: 14px; cursor: default;
 }
+#external-preview-log {
+  flex: none; height: 26px; padding: 0 7px;
+  background: var(--bg-editor); color: var(--fg-dim);
+  border: 1px solid var(--border); border-radius: 4px;
+  font: 12px var(--font-ui); cursor: default;
+}
 #addressbar-save-as { width: 32px; }
+#external-preview-log:hover,
 #addressbar-fav:hover, #addressbar-open:hover, #addressbar-save:hover, #addressbar-save-as:hover, #addressbar-new:hover, #addressbar-find:hover, #addressbar-settings:hover { background: var(--hover); color: var(--fg); }
 
 /* ---- お気に入りバー ---- */
@@ -170,40 +177,66 @@ body {
 #sidebar[hidden] { display: none; }
 #sidebar-toggle {
   position: absolute; z-index: 8; top: 4px;
-  min-width: 28px; height: 24px; padding: 0 5px;
+  min-width: var(--preview-toggle-width); height: 24px; padding: 0 5px;
   border: 1px solid var(--border); border-radius: 4px;
   background: var(--bg-side); color: var(--fg-dim);
   font: 16px/1 "Segoe MDL2 Assets", var(--font-ui);
 }
 #sidebar-toggle:hover { background: var(--hover); color: var(--fg); }
 #preview {
-  width: 38%; min-width: min(var(--preview-min-width), 100%); min-height: 0; flex: none; overflow: hidden;
+  position: relative;
+  width: 50%; min-width: min(var(--preview-min-width), 100%); min-height: 0; flex: none; overflow: hidden;
   background: var(--bg-editor); border-left: 1px solid var(--border-strong);
 }
-#main.preview-fullscreen #preview { width: auto !important; flex: 1; }
+#main.preview-fullscreen #preview { width: auto !important; height: auto !important; flex: 1; }
+#main.preview-vertical {
+  display: grid;
+  grid-template-columns: var(--visible-sidebar-width) var(--visible-sidebar-splitter) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) var(--pane-splitter-width) var(--preview-height);
+}
+#main.preview-vertical[data-preview-placement="top"] {
+  grid-template-rows: var(--preview-height) var(--pane-splitter-width) minmax(0, 1fr);
+}
+#main.preview-vertical > #sidebar { grid-column: 1; grid-row: 1 / 4; }
+#main.preview-vertical > #splitter { grid-column: 2; grid-row: 1 / 4; }
+#main.preview-vertical > #editorhost { grid-column: 3; grid-row: 1; }
+#main.preview-vertical > #preview { grid-column: 3; grid-row: 3; min-width: 0; border-left: 0; border-top: 1px solid var(--border-strong); }
+#main.preview-vertical[data-preview-placement="top"] > #editorhost { grid-row: 3; }
+#main.preview-vertical[data-preview-placement="top"] > #preview { grid-row: 1; border-top: 0; border-bottom: 1px solid var(--border-strong); }
+#main.preview-vertical > #preview-splitter { grid-column: 3; grid-row: 2; width: auto; height: var(--pane-splitter-width); cursor: ns-resize; }
 #preview iframe { display: block; width: 100%; height: 100%; border: 0; }
 #preview-splitter {
   width: var(--pane-splitter-width); cursor: ew-resize; flex: none; background: transparent;
 }
 #preview-splitter:hover { background: var(--bg-status); }
-#preview-toggle {
-  position: absolute; z-index: 8; left: 0; top: 4px;
-  min-width: var(--preview-toggle-width); height: 24px; padding: 0 5px;
+.preview-open {
+  z-index: 8; min-width: var(--preview-toggle-width); height: 24px; padding: 0 5px;
   border: 1px solid var(--border); border-radius: 4px;
   background: var(--bg-title); color: var(--fg-dim);
   font: 16px/1 "Segoe MDL2 Assets", var(--font-ui);
+}
+.preview-open {
+  position: absolute; left: 0;
   opacity: 0; pointer-events: none;
   transition: opacity 120ms ease;
 }
-#editorhost.ve-search-open ~ #preview-toggle { top: 44px; }
+#preview-toggle { top: calc(var(--preview-editor-top, 0px) + var(--preview-editor-height, 100%) / 2); transform: translateY(-50%); }
+#preview-toggle-top { top: calc(var(--preview-editor-top, 0px) + 4px); }
+#preview-toggle-bottom { bottom: calc(var(--preview-editor-bottom, 0px) + 4px); }
+#editorhost.ve-search-open ~ #preview-toggle-top { top: calc(var(--preview-editor-top, 0px) + 44px); }
 #main:has(#editorhost.ve-search-open) > #sidebar[hidden] ~ #sidebar-toggle { top: 44px; }
-#preview-toggle:hover { background: var(--hover); color: var(--fg); }
-#main.preview-toggle-peek #preview-toggle,
-#preview-toggle:focus-visible {
+#editorhost.ve-find-wrap.ve-search-open ~ #preview-toggle-top { top: calc(var(--preview-editor-top, 0px) + 76px); }
+#main:has(#editorhost.ve-find-wrap.ve-search-open) > #sidebar[hidden] ~ #sidebar-toggle { top: 76px; }
+.preview-open:hover { background: var(--hover); color: var(--fg); }
+#main.preview-toggle-peek .preview-open,
+.preview-open:focus-visible {
   opacity: 1; pointer-events: auto;
 }
 body.preview-resizing,
 body.preview-resizing * { cursor: ew-resize !important; user-select: none !important; }
+body.preview-resizing-vertical,
+body.preview-resizing-vertical * { cursor: ns-resize !important; }
+body.preview-resizing iframe { pointer-events: none; }
 /* ---- ファイルツリー共通操作 ---- */
 .fv-toolbar {
   position: sticky; top: -4px; z-index: 2;
@@ -461,6 +494,8 @@ body.fv-dragging { cursor: grabbing; user-select: none; }
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   width: 100%;
+  padding-left: calc(var(--ve-pad-left) + var(--ve-wrap-indent, 0px));
+  text-indent: calc(-1 * var(--ve-wrap-indent, 0px));
 }
 .ve-sel {
   position: absolute; height: var(--line-h);
@@ -509,20 +544,22 @@ body.fv-dragging { cursor: grabbing; user-select: none; }
 .ve-find {
   position: absolute; top: 0; left: 0; right: 0; z-index: 10;
   background: var(--bg-side); border: 0; border-bottom: 1px solid var(--border-strong); border-radius: 0;
-  box-shadow: none; padding: 6px 8px;
+  box-shadow: none; height: 40px; box-sizing: border-box; padding: 6px 8px;
 }
 .ve-find-row {
-  display: grid; align-items: center; gap: 4px; min-width: 0;
-  grid-template-columns: minmax(110px, 1fr) auto auto auto minmax(90px, auto) minmax(110px, 1fr) auto auto auto;
+  display: grid; align-items: center; gap: 4px; min-width: 0; height: 100%;
+  grid-template-columns: minmax(0, 1fr) auto auto auto auto minmax(60px, auto) minmax(0, 1fr) auto auto auto;
+  grid-template-areas: "find case prev next help status rep actions actions close";
 }
-.ve-find-in { grid-column: 1; }
-.ve-find-case { grid-column: 2; }
-.ve-find-prev { grid-column: 3; }
-.ve-find-next { grid-column: 4; }
-.ve-find-status { grid-column: 5; }
-.ve-rep-in { grid-column: 6; box-sizing: border-box; min-width: 0; }
-.ve-rep-actions { grid-column: 7 / 9; display: flex; gap: 4px; min-width: 0; }
-.ve-find-close { grid-column: 9; }
+.ve-find-in { grid-area: find; min-width: 0; }
+.ve-find-help { grid-area: help; }
+.ve-find-case { grid-area: case; }
+.ve-find-prev { grid-area: prev; }
+.ve-find-next { grid-area: next; }
+.ve-find-status { grid-area: status; }
+.ve-rep-in { grid-area: rep; box-sizing: border-box; min-width: 0; }
+.ve-rep-actions { grid-area: actions; display: flex; gap: 4px; min-width: 0; }
+.ve-find-close { grid-area: close; }
 .ve-find input[type="text"], .ve-find-in, .ve-rep-in {
   background: var(--bg-editor); color: var(--fg);
   border: 1px solid var(--border-strong); border-radius: 3px;
@@ -532,7 +569,7 @@ body.fv-dragging { cursor: grabbing; user-select: none; }
 .ve-find-in:focus, .ve-rep-in:focus { border-color: var(--bg-status); }
 .ve-find button {
   background: var(--bg-editor); border: 1px solid var(--border-strong); border-radius: 3px;
-  color: var(--fg); font-size: 12px; padding: 3px 7px; cursor: default;
+  color: var(--fg); font-size: 12px; padding: 3px 7px; white-space: nowrap; cursor: default;
 }
 .ve-find button:hover { background: var(--hover); }
 .ve-find-case { display: flex; align-items: center; gap: 2px; font-size: 12px; color: var(--fg-dim); }
@@ -541,6 +578,16 @@ body.fv-dragging { cursor: grabbing; user-select: none; }
 /* 検索欄は本文に重ねず、開いている間だけエディタの上端を占有する。 */
 .ve-search-open .ve-gutter,
 .ve-search-open .ve-scroll { top: 40px; }
+
+.ve-find-wrap .ve-find { height: 72px; }
+.ve-find-wrap .ve-find-row {
+  grid-template-columns: minmax(0, 1fr) auto auto auto auto minmax(60px, auto) auto;
+  grid-template-areas: "find case prev next help status close" "rep actions actions actions actions actions .";
+}
+.ve-find-wrap .ve-rep-actions { overflow-x: auto; }
+.ve-find-wrap .ve-rep-actions button { flex: none; }
+.ve-find-wrap.ve-search-open .ve-gutter,
+.ve-find-wrap.ve-search-open .ve-scroll { top: 72px; }
 
 /* ---- ステータスバー ---- */
 #statusbar {

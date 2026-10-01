@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { promptFields } from "./prompt";
+import { promptFields, showLog } from "./prompt";
 
 describe("Feature: promptFields", () => {
   beforeEach(() => document.body.replaceChildren());
@@ -139,5 +139,25 @@ describe("Feature: promptFields", () => {
     command.dispatchEvent(new Event("input", { bubbles: true }));
     document.querySelector<HTMLButtonElement>(".pf-ok")!.click();
     await expect(result).resolves.toEqual(["Filter", "filter {copy_string_clipboard}\n--verbose"]);
+  });
+});
+
+describe("Feature: 外部プレビュー実行ログ画面", () => {
+  beforeEach(() => document.body.replaceChildren());
+
+  // Given: stdoutとstderrを含む外部プレビュー失敗ログ
+  // When: 専用ログ画面を開いて閉じる
+  // Then: ログ全文をスクロール可能なテキストとして表示し、閉じる操作が完了する
+  it("Scenario: 実行ログを専用画面で確認できる", async () => {
+    const result = showLog("外部プレビュー実行ログ", "[stdout]\nadapter output\n[stderr]\nadapter failed");
+
+    const dialog = document.querySelector<HTMLElement>(".pf-log-box")!;
+    expect(dialog).not.toBeNull();
+    const log = dialog.querySelector<HTMLElement>(".pf-log-content")!;
+    expect(log.textContent).toContain("adapter output");
+    expect(log.textContent).toContain("adapter failed");
+
+    dialog.querySelector<HTMLButtonElement>(".pf-ok")!.click();
+    await expect(result).resolves.toBeUndefined();
   });
 });

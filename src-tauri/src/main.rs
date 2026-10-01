@@ -3,7 +3,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod external_preview_runner;
 mod instance;
+mod legacy_addins;
 mod state;
 mod viewer;
 
@@ -20,16 +22,13 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
 use viewer::{FindShortcutGuard, ViewerStore};
 use wasabipad_core::{
-    self, BookmarkNode, Doc, DocInfo, EditManyItem, EditManyResult, EditResult, EncodingId, Eol,
-    ExternalCheck, ExternalMergePreview, FindCursor, FindOutcome, FindResult, FolderEntry, OpenAs, PosC,
-    read_sqlite_preview as read_sqlite_preview_core, PreviewCache, ReplaceChunkResult,
-    SaveOutcome, SearchOptions, SqlitePreview, WorkspaceSearchOutcome,
+    self, read_sqlite_preview as read_sqlite_preview_core, BookmarkNode, Doc, DocInfo,
+    EditManyItem, EditManyResult, EditResult, EncodingId, Eol, ExternalCheck, ExternalMergePreview,
+    FindCursor, FindOutcome, FindResult, FolderEntry, OpenAs, PosC, PreviewCache,
+    ReplaceChunkResult, SaveOutcome, SearchOptions, SqlitePreview, WorkspaceSearchOutcome,
+    EVENT_DOCUMENT_LOAD_PROGRESS, EVENT_EXTERNAL_WINDOW_REQUEST,
+    EVENT_VIEWER_UPDATE, EVENT_WORKSPACE_SEARCH_BATCH,
 };
-
-const EVENT_EXTERNAL_WINDOW_REQUEST: &str = "external-window-request";
-const EVENT_WORKSPACE_SEARCH_BATCH: &str = "workspace-search-batch";
-pub(crate) const EVENT_DOCUMENT_LOAD_PROGRESS: &str = "document-load-progress";
-const EVENT_VIEWER_UPDATE: &str = "viewer-update";
 
 fn viewer_label(id: u64) -> String {
     format!("viewer-{}", id)
@@ -104,6 +103,8 @@ struct ViewerPayload {
     // アーカイブ内メモの画像は、アーカイブエントリを IPC 経由で読む。
     archive_path: Option<String>,
     archive_entry: Option<String>,
+    // 外部プレビューが生成した、WasabiPad所有の一時生成物。
+    external_output_path: Option<String>,
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
@@ -249,7 +250,13 @@ fn copy_entry_as(
     overwrite: bool,
     state: State,
 ) -> Result<DocInfo, String> {
-    document::copy_entry_as(source_rel_path, target_rel_dir, target_name, overwrite, state)
+    document::copy_entry_as(
+        source_rel_path,
+        target_rel_dir,
+        target_name,
+        overwrite,
+        state,
+    )
 }
 
 #[tauri::command]
@@ -260,7 +267,13 @@ fn move_entry_as(
     overwrite: bool,
     state: State,
 ) -> Result<DocInfo, String> {
-    document::move_entry_as(source_rel_path, target_rel_dir, target_name, overwrite, state)
+    document::move_entry_as(
+        source_rel_path,
+        target_rel_dir,
+        target_name,
+        overwrite,
+        state,
+    )
 }
 
 #[tauri::command]
@@ -300,7 +313,10 @@ fn open_in_other_app(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn open_in_default_browser(path: String, effective_extension: Option<String>) -> Result<(), String> {
+fn open_in_default_browser(
+    path: String,
+    effective_extension: Option<String>,
+) -> Result<(), String> {
     system::open_in_default_browser(path, effective_extension)
 }
 
@@ -312,6 +328,82 @@ fn open_external_url(url: String) -> Result<(), String> {
 #[tauri::command]
 fn run_external_command(command: String, path: String) -> Result<(), String> {
     system::run_external_command(command, path)
+}
+
+#[tauri::command]
+async fn external_preview_generate(
+    request: external_preview_runner::ExternalPreviewRequest,
+    operations: tauri::State<'_, external_preview_runner::ExternalPreviewOperations>,
+) -> Result<String, String> {
+    if request
+        .work_root
+        .as_deref()
+        .is_some_and(|root| root.trim().is_empty())
+    {
+        return Err("External preview work root cannot be empty.".to_owned());
+    }
+    let operations = operations.inner().clone();
+    let request_id = request.request_id.clone();
+    let input_path = PathBuf::from(&request.input_path);
+    let work_root = request
+        .work_root
+        .map(PathBuf::from)
+        .unwrap_or_else(external_preview_runner::default_work_root);
+    let (cancelled, input_path) = operations.register(&request_id, &input_path)?;
+    let guard = operations.guard(request_id, cancelled.clone());
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = guard;
+        let executable = PathBuf::from(request.executable);
+        let result = external_preview_runner::run_external_preview(
+            &executable,
+            &request.args,
+            &input_path,
+            request.output_format,
+            &work_root,
+            &cancelled,
+        )?;
+        operations.finish_success(
+            &request.request_id,
+            &cancelled,
+            &result.output_path,
+            &work_root,
+        )?;
+        Ok(result.output_path.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|error| format!("External preview generation failed: {error}"))?
+}
+
+#[tauri::command]
+fn external_preview_cancel(
+    request_id: String,
+    operations: tauri::State<'_, external_preview_runner::ExternalPreviewOperations>,
+) -> Result<(), String> {
+    operations.cancel(&request_id)
+}
+
+#[tauri::command]
+fn external_preview_cleanup(
+    output_path: String,
+    operations: tauri::State<'_, external_preview_runner::ExternalPreviewOperations>,
+) -> Result<(), String> {
+    let output_path = PathBuf::from(output_path);
+    operations.cleanup_output(&output_path)
+}
+
+#[tauri::command]
+fn external_preview_cleanup_stale(
+    work_roots: Vec<String>,
+    operations: tauri::State<'_, external_preview_runner::ExternalPreviewOperations>,
+) -> Result<(), String> {
+    let mut roots = vec![external_preview_runner::default_work_root()];
+    roots.extend(
+        work_roots
+            .into_iter()
+            .filter(|root| !root.trim().is_empty())
+            .map(PathBuf::from),
+    );
+    operations.cleanup_stale_roots(&roots)
 }
 
 #[tauri::command]
@@ -365,6 +457,7 @@ fn find_all_in_range(
     match_case: bool,
     use_regex: bool,
     whole_word: bool,
+    max_matches: usize,
     state: State,
 ) -> Result<Vec<FindResult>, String> {
     document::find_all_in_range(
@@ -374,6 +467,7 @@ fn find_all_in_range(
         match_case,
         use_regex,
         whole_word,
+        max_matches,
         state,
     )
 }
@@ -667,6 +761,15 @@ fn close_viewer(
 }
 
 #[tauri::command]
+async fn probe_sqlite_preview(path: String) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        wasabipad_core::is_sqlite_preview_eligible(std::path::Path::new(&path))
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn read_sqlite_preview(
     path: String,
     selected_name: Option<String>,
@@ -714,10 +817,16 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(Mutex::new(DocState(Doc::empty())))
         .manage(ViewerStore(Mutex::new(HashMap::new())))
+        .manage(external_preview_runner::ExternalPreviewOperations::default())
         .manage(FindShortcutGuard::default())
         .manage(search::SearchCancel(Mutex::new(None)))
         .manage(instance_server)
         .setup(|app| {
+            if let Ok(data_dir) = wasabipad_core::app_data_root() {
+                if let Err(error) = legacy_addins::move_to_pending(&data_dir) {
+                    eprintln!("Could not move old music addins to pending storage: {error}");
+                }
+            }
             app.state::<InstanceServer>().start(app.handle());
             if let Some(window) = app.get_webview_window("main") {
                 viewer::install_find_shortcut_guard(
@@ -760,6 +869,10 @@ fn main() {
             open_in_default_browser,
             open_external_url,
             run_external_command,
+            external_preview_generate,
+            external_preview_cancel,
+            external_preview_cleanup,
+            external_preview_cleanup_stale,
             edit,
             edit_many,
             undo,
@@ -792,6 +905,7 @@ fn main() {
             take_viewer_payload,
             update_viewer,
             close_viewer,
+            probe_sqlite_preview,
             read_sqlite_preview,
         ])
         .build(tauri::generate_context!())

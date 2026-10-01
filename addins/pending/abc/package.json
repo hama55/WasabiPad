@@ -1,0 +1,9 @@
+{
+  "name": "wasabipad-abc-preview-addin",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "abcjs": "6.7.0"
+  }
+}

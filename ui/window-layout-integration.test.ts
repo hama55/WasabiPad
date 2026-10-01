@@ -7,6 +7,15 @@ const viewerSource = readFileSync(new URL("./viewer.ts", import.meta.url), "utf8
 const viewerRustSource = readFileSync(new URL("../src-tauri/src/viewer.rs", import.meta.url), "utf8");
 
 describe("Feature: window layout integration", () => {
+  // Given: 更新操作がプレビューの共通ツールバーにある
+  // When: 外部生成物の表示・標準表示・表示クリアへ遷移する
+  // Then: 外部生成物だけ更新を表示し、操作は既存の保存確認付き更新へ渡す
+  it("Scenario: 外部生成物の表示中だけツールバーから更新できる", () => {
+    expect(viewerSource).toContain("previewRefreshButton.hidden = !isInlineViewer || !state.externalOutputPath;");
+    expect(viewerSource).toMatch(/INLINE_PREVIEW_MESSAGES\.CLEAR_MESSAGE[\s\S]*?previewRefreshButton\.hidden = true;/);
+    expect(mainSource).toContain('onRefresh: () => runBackground("外部プレビューを更新できませんでした", refreshExternalPreview)');
+    expect(mainSource).not.toContain("updateExternalPreviewRefreshVisibility");
+  });
   // Given: メイン画面にnative windowとDOMの寸法変更通知がある
   // When: resize・move・DPI・focus・標準ボタンの変更が届く
   // Then: すべてが同じレイアウト調整境界へ入り、初期表示後にも再要求される
@@ -42,14 +51,47 @@ describe("Feature: window layout integration", () => {
     expect(mainSource).toMatch(/restore:\s*\(state\)\s*=>\s*\{\s*setSidebarWidth\(state\?\.fileTreeWidth\s*\?\?\s*getSetting\("sidebarWidth"\)\);\s*updateSidebarVisibility\(\);[\s\S]*?return sidebar\.restoreViewState\(state\);/s);
   });
 
-  // Feature: プレビュー開閉ボタンの離脱時非表示
-  // Scenario: メイン領域の外へポインターが出たらプレビュー開閉ボタンを非表示にする
+  // Feature: プレビューを開くボタンの離脱時非表示
+  // Scenario: メイン領域の外へポインターが出たらプレビューを開くボタンを非表示にする
   // Given: 近接表示を解除する関数と、ホバー中・フォーカス中のガードがある
   // When: `#main` の pointerleave イベントを登録する
   // Then: メイン領域外への離脱時に非表示予約を行い、既存のガードを維持する
-  it("Scenario: メイン領域から離れた時にプレビュー開閉ボタンを非表示予約する", () => {
+  it("Scenario: メイン領域から離れた時にプレビューを開くボタンを非表示予約する", () => {
     expect(mainSource).toMatch(/mainEl\.addEventListener\("pointerleave",\s*hidePreviewTogglePeekLater\);/);
-    expect(mainSource).toMatch(/if \(!previewToggleHovered && document\.activeElement !== previewToggle\)/);
+    expect(mainSource).toMatch(/if \(!previewToggleHovered && !previewOpenButtons\.includes\(document\.activeElement as HTMLButtonElement\)\)/);
+  });
+
+  // Feature: 独立したプレビューを閉じる操作
+  // Scenario: 専用ボタンで閉じ、キーボード操作なら開くボタンへフォーカスを戻す
+  // Given: プレビューを閉じるボタンと開くボタンが別々にある
+  // When: プレビューを閉じるボタンを押す
+  // Then: 全画面状態を解除し、寸法を保ったまま閉じ、同じ方向の開くボタンへフォーカスする
+  it("Scenario: 専用ボタンでプレビューを閉じキーボードフォーカスを戻す", () => {
+    expect(mainSource).toContain("onClose: closePreview");
+    expect(mainSource).toMatch(/function closePreview\(returnFocusToOpenButton = false\)[\s\S]*?previewCollapsed = true;[\s\S]*?previewFullscreen = false;[\s\S]*?updatePreviewVisibility\(\);[\s\S]*?if \(returnFocusToOpenButton\)\s*\{\s*previewOpenButtons\.find\(\(button\) => button\.dataset\.previewPlacement === previewPlacement\)\?\.focus\(\);/s);
+    expect(mainSource).not.toContain('previewEl.style.removeProperty("width")');
+  });
+
+  // Feature: プレビューを開いた時のキーボード操作
+  // Scenario: 開くボタンから専用の閉じるボタンへフォーカスを移す
+  // Given: プレビューを開くボタンがキーボードフォーカス中
+  // When: プレビューが表示状態へ切り替わる
+  // Then: フォーカスを閉じるボタンへ引き継ぐ
+  it("Scenario: キーボードでプレビューを開いたら閉じるボタンへフォーカスする", () => {
+    expect(mainSource).toMatch(/const returnFocusToCloseButton = previewShown && previewOpenButtons\.some\(\(button\) => button\.matches\(":focus-visible"\)\);/);
+    expect(mainSource).toContain("if (returnFocusToCloseButton) inlinePreview.focusCloseButton();");
+  });
+
+  // Given: プレビュー表示中でエディタ右端へポインターを寄せる
+  // When: 別方向のボタンを押す
+  // Then: 表示中の配置だけ更新し、payloadを再送しない
+  it("Scenario: エディタ右端のボタンで閲覧中プレビューの配置だけ切り替える", () => {
+    expect(mainSource).toMatch(/const boundary = editorHost\.getBoundingClientRect\(\)\.right;/);
+    expect(mainSource).toContain("button.hidden = !isPreviewOpenButtonShown(previewState, previewPlacement, placement);");
+    const shownBranch = mainSource.match(/function openPreview\(placement\?: PreviewPlacement\)\s*\{\s*if \(paneVisibilityAt\(measuredMainWidth\(\)\)\.previewShown\)\s*\{([^}]+)\}/s)?.[1];
+    expect(shownBranch).toContain("selectPreviewPlacement(placement)");
+    expect(shownBranch).toContain("updatePreviewVisibility()");
+    expect(shownBranch).not.toMatch(/resend|openPreviewFormat|closePreview/);
   });
 
   // Given: 独立viewerが最大化・最小化・復元と内容更新を受け取る
@@ -71,7 +113,7 @@ describe("Feature: window layout integration", () => {
     expect(viewerSource).toMatch(/let viewerDisposed = false/);
     expect(viewerSource).toMatch(/function disposeViewer\(\)[\s\S]*?viewerDisposed = true/);
     expect(viewerSource).toMatch(/function beginRender\(\): number[\s\S]*?querySelectorAll<HTMLElement>\("\:scope > \.viewer-pending"\)/s);
-    expect(viewerSource).toMatch(/const committed = await renderViewerState\(nextState, nextImageZoom\);[\s\S]*?if \(viewerDisposed \|\| !committed\) return;[\s\S]*?publishViewerRenderState\(nextState, nextImageZoom\)/s);
+    expect(viewerSource).toMatch(/const committed = await renderViewerState\(nextState, nextImageZoom(?:, requireLoadedOutput)?\);[\s\S]*?if \(viewerDisposed \|\| !committed\) return(?: false)?;[\s\S]*?publishViewerRenderState\(nextState, nextImageZoom\)/s);
     expect(viewerSource).toMatch(/previousDisposeImagePan\?\.\(\)/);
     expect(viewerRustSource).toMatch(/\.inner_size\(960\.0, 700\.0\)\s*\.visible\(false\)/s);
     expect(viewerSource).toMatch(/if \(!isInlineViewer\) await win!\.show\(\);[\s\S]*?await renderPayload\(await takeViewerPayload\(win!\.label\)\);/);

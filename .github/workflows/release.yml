@@ -37,6 +37,9 @@ jobs:
         shell: pwsh
         run: node scripts/check-release-version.mjs $env:GITHUB_REF_NAME
 
+      - name: Verify generated contracts
+        run: npm run check:generated
+
       - name: Verify UI
         run: npm run build
 

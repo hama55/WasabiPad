@@ -3,6 +3,20 @@ import { describe, expect, it, vi } from "vitest";
 import { FindBar } from "./findbar";
 
 describe("Feature: FindBar", () => {
+  // Feature: エディタ置換操作
+  // Scenario: 置換操作を意味の広い順に表示する
+  // Given: 閉じたFindBarを持つエディタホスト
+  // When: 検索バーを開く
+  // Then: 置換、画面内、全置換の順に表示する
+  it("Scenario: 置換ボタンを置換範囲の順に表示する", () => {
+    const host = document.createElement("div");
+    const bar = new FindBar(host, async () => true, async () => 0, async () => 0, async () => true, () => {}, async () => {});
+    bar.open("");
+
+    expect([...host.querySelectorAll<HTMLButtonElement>(".ve-rep-actions button")].map((button) => button.textContent))
+      .toEqual(["置換", "画面内", "全置換"]);
+  });
+
   // Feature: エディタ検索バーの一行置換操作
   // Scenario: 検索バーを開くと置換欄と置換操作を常時表示する
   // Given: 閉じたFindBarを持つエディタホスト
@@ -10,7 +24,7 @@ describe("Feature: FindBar", () => {
   // Then: 検索と置換の操作を一つの行で利用でき、置換欄の開閉ボタンは表示されない
   it("Scenario: 検索バーを開くと置換欄を同じ行へ常時表示する", () => {
     const host = document.createElement("div");
-    const bar = new FindBar(host, async () => true, async () => 0, async () => true, () => {}, async () => {});
+    const bar = new FindBar(host, async () => true, async () => 0, async () => 0, async () => true, () => {}, async () => {});
     bar.open("");
     const rows = host.querySelectorAll(".ve-find-row");
     const row = rows[0];
@@ -27,6 +41,40 @@ describe("Feature: FindBar", () => {
     expect(row.querySelector(".ve-find-close")).not.toBeNull();
   });
 
+  // Feature: エディタ検索記法ヘルプ
+  // Scenario: ?ボタンを検索の次へ操作の隣に置く
+  // Given: エディタ検索バーが開いている
+  // When: 次へボタンとヘルプボタンの順を調べる
+  // Then: ヘルプボタンは▼ボタンの直後に並ぶ
+  it("Scenario: ?ボタンを▼ボタンの右隣へ置く", () => {
+    const host = document.createElement("div");
+    const bar = new FindBar(host, async () => true, async () => 0, async () => 0, async () => true, () => {}, async () => {});
+    bar.open("");
+
+    expect([...host.querySelectorAll(".ve-find-next, .ve-find-help")].map((button) => button.className))
+      .toEqual(["ve-find-next", "ve-find-help"]);
+  });
+
+  // Feature: エディタ検索記法ヘルプ
+  // Scenario: ?ボタンで検索記法の説明を表示する
+  // Given: エディタ検索バーが開いている
+  // When: ?ヘルプを押す
+  // Then: 改行・タブ・バックスラッシュの記法を説明する
+  it("Scenario: ?ボタンから検索記法ヘルプを開く", () => {
+    const host = document.createElement("div");
+    document.body.replaceChildren(host);
+    const bar = new FindBar(host, async () => true, async () => 0, async () => 0, async () => true, () => {}, async () => {});
+    bar.open("");
+
+    host.querySelector<HTMLButtonElement>(".ve-find-help")!.click();
+
+    const message = document.querySelector<HTMLElement>(".pf-message")!;
+    expect(message.textContent).toContain("\\n");
+    expect(message.textContent).toContain("\\t");
+    expect(message.textContent).toContain("\\\\");
+    document.querySelector<HTMLButtonElement>(".pf-ok")!.click();
+  });
+
   // Feature: エディタ検索バーの占有表示
   // Scenario: 検索バーを開いている間は本文レイアウトが検索バー領域を確保する
   // Given: 閉じたFindBarを持つエディタホスト
@@ -34,7 +82,7 @@ describe("Feature: FindBar", () => {
   // Then: ホストの占有表示クラスが開閉に合わせて切り替わる
   it("Scenario: 検索バー表示中だけ本文領域を押し下げる", () => {
     const host = document.createElement("div");
-    const bar = new FindBar(host, async () => true, async () => 0, async () => true, () => {}, async () => {});
+    const bar = new FindBar(host, async () => true, async () => 0, async () => 0, async () => true, () => {}, async () => {});
 
     bar.open("");
     expect(host.classList.contains("ve-search-open")).toBe(true);
@@ -55,7 +103,7 @@ describe("Feature: FindBar", () => {
   it("Scenario: 検索欄へ1文字入力した時点で検索する", async () => {
     const onFind = vi.fn(async () => true);
     const host = document.createElement("div");
-    const bar = new FindBar(host, onFind, async () => 0, async () => true, () => {}, async () => {});
+    const bar = new FindBar(host, onFind, async () => 0, async () => 0, async () => true, () => {}, async () => {});
     bar.open("");
     const input = host.querySelector<HTMLInputElement>(".ve-find-in")!;
 
@@ -66,9 +114,9 @@ describe("Feature: FindBar", () => {
   });
 
   // Feature: 非同期の検索・置換操作
-  // Scenario: 連続置換を連打してもクリック順に直列化する
-  // Given: 1回目の連続置換が未完了で、2回目の結果を待つFindBarがある
-  // When: 連続置換を2回クリックし、1回目を解決する
+  // Scenario: 置換を連打してもクリック順に直列化する
+  // Given: 1回目の置換が未完了で、2回目の結果を待つFindBarがある
+  // When: 置換を2回クリックし、1回目を解決する
   // Then: 2回目は1回目の完了後にだけ実行される
   it("Scenario: 非同期の検索・置換操作をクリック順に直列化する", async () => {
     let releaseFirst!: (found: boolean) => void;
@@ -81,6 +129,7 @@ describe("Feature: FindBar", () => {
     const bar = new FindBar(
       host,
       async () => true,
+      async () => 0,
       async () => 0,
       replaceNext,
       () => {},

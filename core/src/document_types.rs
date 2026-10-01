@@ -55,7 +55,7 @@ impl OpenAs {
     }
 
     pub(crate) fn is_archive(self) -> bool {
-        matches!(self, Self::Zip | Self::SevenZip | Self::Xlsx | Self::Xls)
+        self.extension().is_some_and(crate::protocol::is_archive_extension)
     }
 }
 

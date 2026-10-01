@@ -2,6 +2,8 @@ import type * as api from "./api";
 import type { MenuItem } from "./menu";
 import { MENU_ICON, type MenuIconClass } from "./menu-icons";
 import { MENU_LABELS } from "./menu-labels";
+import { ARCHIVE_FORMATS, IMAGE_FORMATS } from "./generated/Protocol";
+import { VIEWER_FORMATS } from "./viewer-formats";
 
 // 「形式を指定して開く」の一覧はファイルツリーとエディタで同じ内容を表示する。
 export function createOpenAsMenu(
@@ -17,35 +19,30 @@ export function createOpenAsMenu(
     action: () => onOpenAs(openAs),
   });
 
+  const viewerItems = Object.values(VIEWER_FORMATS)
+    .filter((format) => format.openAs !== undefined)
+    .sort((left, right) => left.openAs!.order - right.openAs!.order)
+    .map((format) => openAsItem(format.extensions[0], format.openAs!.id, format.iconClass));
+  const imageItems = IMAGE_FORMATS.map((extension) =>
+    openAsItem(`.${extension}`, extension, MENU_ICON.image));
+  const archiveItems = ARCHIVE_FORMATS.map((format) =>
+    openAsItem(`.${format}`, format, format === "xlsx" || format === "xls" ? MENU_ICON.csv : MENU_ICON.more));
+
   return {
     label: MENU_LABELS.openWithFormat,
     iconClass: MENU_ICON.more,
     sub: [
       openAsItem(".txt", "txt"),
-      openAsItem(".md", "md", MENU_ICON.markdown),
-      openAsItem(".csv", "csv", MENU_ICON.csv),
-      openAsItem(".html", "html", MENU_ICON.html),
-      openAsItem(".pdf", "pdf", MENU_ICON.pdf),
+      ...viewerItems,
       {
         label: "画像",
         iconClass: MENU_ICON.image,
         sub: [
           openAsItem("自動判別", "image-auto", MENU_ICON.image),
-          openAsItem(".svg", "svg", MENU_ICON.image),
-          openAsItem(".png", "png", MENU_ICON.image),
-          openAsItem(".jpg", "jpg", MENU_ICON.image),
-          openAsItem(".gif", "gif", MENU_ICON.image),
-          openAsItem(".webp", "webp", MENU_ICON.image),
-          openAsItem(".bmp", "bmp", MENU_ICON.image),
-          openAsItem(".ico", "ico", MENU_ICON.image),
-          openAsItem(".avif", "avif", MENU_ICON.image),
-          openAsItem(".apng", "apng", MENU_ICON.image),
+          ...imageItems,
         ],
       },
-      openAsItem(".zip", "zip", MENU_ICON.more),
-      openAsItem(".7z", "7z", MENU_ICON.more),
-      openAsItem(".xlsx", "xlsx", MENU_ICON.csv),
-      openAsItem(".xls", "xls", MENU_ICON.csv),
+      ...archiveItems,
     ],
   };
 }

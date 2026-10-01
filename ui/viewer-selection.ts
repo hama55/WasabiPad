@@ -5,8 +5,31 @@ import {
   csvSourcePositionAtOffset,
 } from "./csv-viewer";
 import { DEFAULT_CSV_DELIMITER } from "./viewer-delimiter";
+import {
+  MARKDOWN_SOURCE_OFFSET_END,
+  MARKDOWN_SOURCE_OFFSET_START,
+  markdownSourceOffsetForDisplayOffset,
+  markdownSourcePositionAtOffset,
+} from "./viewer-markdown-source-map";
 
 export type ViewerSelectionWithCaret = ViewerSelection & { caret?: Pos };
+
+function markdownBreakOffsetAtPoint(node: Node, offset: number): number | null {
+  if (node.nodeType !== Node.ELEMENT_NODE) return null;
+  const element = node as Element;
+  const selector = `br[${MARKDOWN_SOURCE_OFFSET_START}][${MARKDOWN_SOURCE_OFFSET_END}]`;
+  if (element.matches(selector)) return Number(element.getAttribute(MARKDOWN_SOURCE_OFFSET_START));
+
+  const next = element.childNodes[offset];
+  if (next?.nodeType === Node.ELEMENT_NODE && (next as Element).matches(selector)) {
+    return Number((next as Element).getAttribute(MARKDOWN_SOURCE_OFFSET_START));
+  }
+  const previous = element.childNodes[offset - 1];
+  if (previous?.nodeType === Node.ELEMENT_NODE && (previous as Element).matches(selector)) {
+    return Number((previous as Element).getAttribute(MARKDOWN_SOURCE_OFFSET_END));
+  }
+  return null;
+}
 
 export function isCollapsedViewerSelection(selection: ViewerSelection | null): boolean {
   return !!selection
@@ -23,33 +46,6 @@ export function textOffsetWithin(element: HTMLElement, node: Node, offset: numbe
   range.selectNodeContents(element);
   range.setEnd(node, offset);
   return range.toString().length;
-}
-
-function markdownPositionAtOffset(block: HTMLElement, offset: number) {
-  const start = Number(block.dataset.sourceStart);
-  const end = Number(block.dataset.sourceEnd);
-  const sourceText = block.dataset.sourceText;
-  const text = block.textContent ?? "";
-  const limit = Math.max(0, Math.min(text.length, offset));
-  if (sourceText !== undefined) {
-    let rawOffset = 0;
-    for (let index = 0; index < limit; index++) {
-      const match = sourceText.indexOf(text[index], rawOffset);
-      if (match < 0) break;
-      rawOffset = match + 1;
-    }
-    if (limit < text.length) {
-      const match = sourceText.indexOf(text[limit], rawOffset);
-      if (match >= 0) rawOffset = match;
-    }
-    return csvSourcePositionAtOffset(sourceText, start, rawOffset);
-  }
-  const prefix = text.slice(0, limit);
-  const lines = prefix.split(/\r\n|\r|\n/);
-  return {
-    line: Math.min(Math.max(start, end - 1), start + lines.length - 1),
-    col: lines.at(-1)!.length,
-  };
 }
 
 export function sourcePositionFromPoint(
@@ -76,9 +72,26 @@ export function sourcePositionFromPoint(
     );
     return csvSourcePositionAtOffset(raw, line, rawOffset);
   }
-  const block = element?.closest<HTMLElement>("[data-source-start][data-source-end]");
-  if (!block) return null;
-  return markdownPositionAtOffset(block, textOffsetWithin(block, node, offset));
+  const lineBreakOffset = markdownBreakOffsetAtPoint(node, offset);
+  if (lineBreakOffset !== null) {
+    const source = element?.closest<HTMLElement>("[data-markdown-source]")?.dataset.markdownSource;
+    if (source !== undefined && Number.isFinite(lineBreakOffset)) {
+      return markdownSourcePositionAtOffset(source, lineBreakOffset);
+    }
+  }
+  const sourceSpan = element?.closest<HTMLElement>(
+    `[${MARKDOWN_SOURCE_OFFSET_START}][${MARKDOWN_SOURCE_OFFSET_END}]`,
+  );
+  if (!sourceSpan) return null;
+  const source = sourceSpan.closest<HTMLElement>("[data-markdown-source]")?.dataset.markdownSource;
+  if (source === undefined) return null;
+  const start = Number(sourceSpan.getAttribute(MARKDOWN_SOURCE_OFFSET_START));
+  const end = Number(sourceSpan.getAttribute(MARKDOWN_SOURCE_OFFSET_END));
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return null;
+  const displayLength = sourceSpan.textContent?.length ?? 0;
+  const displayOffset = textOffsetWithin(sourceSpan, node, offset);
+  const sourceOffset = markdownSourceOffsetForDisplayOffset(start, end, displayLength, displayOffset);
+  return markdownSourcePositionAtOffset(source, sourceOffset);
 }
 
 export function viewerSelectionFromDom(content: HTMLElement): ViewerSelection | null {

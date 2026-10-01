@@ -1,5 +1,10 @@
 import type { ViewerFormat } from "./api";
-import { canRenderViewerFormat, VIEWER_FORMATS, viewerFormatSpec } from "./viewer-formats";
+import {
+  canRenderViewerFormat,
+  isSqliteCandidatePath,
+  VIEWER_FORMATS,
+  viewerFormatSpec,
+} from "./viewer-formats";
 
 export type ViewerFormatCallback = (format: ViewerFormat) => void;
 
@@ -76,7 +81,10 @@ export function syncViewerFormatButtons(host: HTMLElement, current: ViewerFormat
   if (!select) return;
   select.querySelectorAll<HTMLOptionElement>("[data-viewer-format]").forEach((option) => {
     const selected = option.dataset.viewerFormat === current;
-    const available = canRenderViewerFormat(option.dataset.viewerFormat as ViewerFormat, sourcePath);
+    const format = option.dataset.viewerFormat as ViewerFormat;
+    const available = sourcePath && isSqliteCandidatePath(sourcePath)
+      ? (current === "sqlite" ? format === "sqlite" : format === current || format === "sqlite")
+      : canRenderViewerFormat(format, sourcePath);
     option.disabled = !available;
     option.setAttribute("aria-disabled", String(!available));
     option.setAttribute("aria-selected", String(selected));

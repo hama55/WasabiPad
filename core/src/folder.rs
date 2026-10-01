@@ -3,8 +3,9 @@ use serde::Serialize;
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 
-// フォルダ相対パスとアーカイブ内エントリを結ぶUI共有表現。
-pub const ARCHIVE_ENTRY_SEPARATOR: &str = crate::protocol::ARCHIVE_ENTRY_SEPARATOR;
+pub(crate) fn split_archive_entry_path(path: &str) -> Option<(&str, &str)> {
+    path.split_once(crate::protocol::ARCHIVE_ENTRY_SEPARATOR)
+}
 
 // ツリー1回の展開で返す上限。巨大ディレクトリでも列挙時間を一定に抑える。
 const MAX_ENTRIES: usize = 2000;
@@ -18,10 +19,9 @@ pub struct FolderEntry {
 }
 
 pub fn is_lazy_archive_path(path: &Path) -> bool {
-    matches!(
-        path.extension().and_then(|extension| extension.to_str()).map(str::to_ascii_lowercase).as_deref(),
-        Some("zip") | Some("xlsx") | Some("xls") | Some("7z")
-    )
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(crate::protocol::is_archive_extension)
 }
 
 pub fn join_relative(root: &Path, relative: &str) -> PathBuf {

@@ -1,7 +1,8 @@
 use rusqlite::{params, types::ValueRef, Connection, OpenFlags, OptionalExtension};
-use std::path::Path;
+use std::{fs::File, io::Read, path::Path};
 
 const MAX_TEXT_CHARS: usize = 4096;
+const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
 
 #[derive(Clone, serde::Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
@@ -43,7 +44,7 @@ pub fn read_sqlite_preview(
     limit: usize,
     include_metadata: bool,
 ) -> Result<SqlitePreview, String> {
-    if !is_sqlite_path(path) || !path.is_file() {
+    if !is_sqlite_preview_eligible(path) {
         return Err("SQLiteプレビューの対象ファイルではありません".to_string());
     }
     if limit == 0 {
@@ -145,11 +146,24 @@ pub fn read_sqlite_preview(
     })
 }
 
-fn is_sqlite_path(path: &Path) -> bool {
+pub fn is_sqlite_preview_eligible(path: &Path) -> bool {
+    if !is_sqlite_candidate_path(path) || !path.is_file() {
+        return false;
+    }
+    let mut header = [0; SQLITE_HEADER.len()];
+    File::open(path)
+        .and_then(|mut file| file.read_exact(&mut header))
+        .is_ok()
+        && &header == SQLITE_HEADER
+}
+
+fn is_sqlite_candidate_path(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| {
-            extension.eq_ignore_ascii_case("sqlite") || extension.eq_ignore_ascii_case("sqlite3")
+            extension.eq_ignore_ascii_case("db")
+                || extension.eq_ignore_ascii_case("sqlite")
+                || extension.eq_ignore_ascii_case("sqlite3")
         })
 }
 
@@ -219,7 +233,7 @@ fn value_from_ref(value: rusqlite::Result<ValueRef<'_>>) -> Result<SqliteCell, S
 
 #[cfg(test)]
 mod tests {
-    use super::{read_sqlite_preview, SqliteCell};
+    use super::{is_sqlite_preview_eligible, read_sqlite_preview, SqliteCell};
     use rusqlite::Connection;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -233,6 +247,69 @@ mod tests {
                 .unwrap()
                 .as_nanos(),
         ))
+    }
+
+    fn test_path_with_extension(extension: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "wasabipad-sqlite-preview-{}-{}.{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            extension,
+        ))
+    }
+
+    // Feature: SQLite候補拡張子の実ファイルを内容で選別する
+    // Scenario: 候補拡張子とSQLiteヘッダーが一致する
+    // Given: SQLiteの16バイトヘッダーを持つ通常ファイル
+    // When: プレビュー適格性を調べる
+    // Then: .db、.sqlite、.sqlite3を大文字小文字を問わず適格とする
+    #[test]
+    fn accepts_sqlite_header_for_candidate_extensions() {
+        for extension in ["db", "sqlite", "sqlite3", "DB", "SQLITE", "SQLITE3"] {
+            let path = test_path_with_extension(extension);
+            std::fs::write(&path, b"SQLite format 3\0rest").unwrap();
+
+            assert!(is_sqlite_preview_eligible(&path), "{extension}");
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    // Feature: SQLite候補拡張子の実ファイルを内容で選別する
+    // Scenario: ヘッダー不一致、短いファイル、対象外拡張子、非ファイル
+    // Given: 候補拡張子の不正ファイルと、対象外拡張子のSQLiteヘッダーファイル
+    // When: プレビュー適格性を調べる
+    // Then: SQLite対象外として扱う
+    #[test]
+    fn rejects_non_sqlite_or_non_file_candidates() {
+        let mismatch = test_path_with_extension("db");
+        std::fs::write(&mismatch, b"not sqlite format").unwrap();
+        assert!(!is_sqlite_preview_eligible(&mismatch));
+        let _ = std::fs::remove_file(mismatch);
+
+        let short = test_path_with_extension("sqlite");
+        std::fs::write(&short, b"SQLite format 3").unwrap();
+        assert!(!is_sqlite_preview_eligible(&short));
+        let _ = std::fs::remove_file(short);
+
+        let other_extension = test_path_with_extension("bin");
+        std::fs::write(&other_extension, b"SQLite format 3\0rest").unwrap();
+        assert!(!is_sqlite_preview_eligible(&other_extension));
+        let _ = std::fs::remove_file(other_extension);
+
+        let directory = std::env::temp_dir().join(format!(
+            "wasabipad-sqlite-preview-{}-{}.db",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        assert!(!is_sqlite_preview_eligible(&directory));
+        let _ = std::fs::remove_dir(directory);
     }
 
     // Feature: SQLite形式の通常実ファイルをプレビューする
@@ -294,6 +371,27 @@ mod tests {
             matches!(cell, SqliteCell::Text { value, .. } if value == "item_view")
         })));
 
+        let _ = std::fs::remove_file(path);
+    }
+
+    // Feature: SQLite候補拡張子の実ファイルを内容で選別する
+    // Scenario: SQLiteヘッダーを持つ.dbファイルをプレビューする
+    // Given: .db拡張子の読み取り可能なSQLiteファイル
+    // When: SQLiteプレビューを取得する
+    // Then: 既存の読み取り専用SQLite表示を返す
+    #[test]
+    fn reads_sqlite_database_with_db_extension() {
+        let path = test_path_with_extension("db");
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch("CREATE TABLE items (id INTEGER); INSERT INTO items VALUES (7);")
+            .unwrap();
+        drop(connection);
+
+        let preview = read_sqlite_preview(&path, Some("items"), 0, 100, false).unwrap();
+
+        assert_eq!(preview.columns, ["id"]);
+        assert!(matches!(&preview.rows[0][0], SqliteCell::Integer { value } if value == "7"));
         let _ = std::fs::remove_file(path);
     }
 
@@ -362,12 +460,12 @@ mod tests {
     }
 
     // Feature: SQLite形式の通常実ファイルをプレビューする
-    // Scenario: 対象外拡張子をSQLiteとして読まない
-    // Given: `.db`のファイル
+    // Scenario: ヘッダーが一致しないファイルをSQLiteとして読まない
+    // Given: `.db`の通常ファイル
     // When: SQLiteプレビューを取得する
     // Then: SQLite接続を開始せず対象外として失敗する
     #[test]
-    fn rejects_non_sqlite_extension() {
+    fn rejects_candidate_file_without_sqlite_header() {
         let path = std::env::temp_dir().join(format!(
             "wasabipad-sqlite-preview-{}-{}.db",
             std::process::id(),
@@ -376,7 +474,7 @@ mod tests {
                 .unwrap()
                 .as_nanos(),
         ));
-        std::fs::write(&path, []).unwrap();
+        std::fs::write(&path, b"not sqlite").unwrap();
 
         let result = read_sqlite_preview(&path, None, 0, 100, false);
         assert!(result.is_err());

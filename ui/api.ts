@@ -1,6 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { DOCUMENT_LOAD_PROGRESS_EVENT } from "./document-load-progress";
 import type { DocumentLoadProgress } from "./document-load-progress";
 import { IPC_COMMANDS } from "./generated/IpcCommands";
 import type { EditManyItem } from "./generated/EditManyItem";
@@ -28,10 +27,13 @@ import type { ViewerSelection } from "./generated/ViewerSelection";
 import type { SqliteCell } from "./generated/SqliteCell";
 import type { SqliteObject } from "./generated/SqliteObject";
 import type { SqlitePreview } from "./generated/SqlitePreview";
+import type { ExternalPreviewFormat } from "./generated/ExternalPreviewFormat";
+import type { ExternalPreviewRequest } from "./generated/ExternalPreviewRequest";
 import type { WorkspaceSearchBatch } from "./generated/WorkspaceSearchBatch";
 import type { WorkspaceSearchOptions } from "./generated/WorkspaceSearchOptions";
 import type { WorkspaceSearchOutcome } from "./generated/WorkspaceSearchOutcome";
 import type { WorkspaceSearchResult } from "./generated/WorkspaceSearchResult";
+import { EVENT_NAMES } from "./generated/Protocol";
 
 export type {
   EditManyItem,
@@ -59,6 +61,8 @@ export type {
   SqliteCell,
   SqliteObject,
   SqlitePreview,
+  ExternalPreviewFormat,
+  ExternalPreviewRequest,
   WorkspaceSearchBatch,
   WorkspaceSearchOptions,
   WorkspaceSearchOutcome,
@@ -68,12 +72,7 @@ export type {
 export const READ_ENCODINGS = ["utf8", "sjis", "utf16le"] as const;
 export type ReadEncoding = (typeof READ_ENCODINGS)[number];
 
-export const EVENT_NAMES = {
-  externalWindowRequest: "external-window-request",
-  workspaceSearchBatch: "workspace-search-batch",
-  documentLoadProgress: DOCUMENT_LOAD_PROGRESS_EVENT,
-  viewerUpdate: "viewer-update",
-} as const;
+export { EVENT_NAMES } from "./generated/Protocol";
 
 export type { DocumentLoadProgress } from "./document-load-progress";
 
@@ -207,6 +206,8 @@ export const findAllInRange = (
   matchCase: boolean,
   useRegex = false,
   wholeWord = false,
+  // 0 means unlimited; the default keeps the highlight result bounded.
+  maxMatches = 2_000,
 ) => invoke<FindResult[]>(IPC_COMMANDS.findAllInRange, {
   pat,
   firstLine,
@@ -214,6 +215,7 @@ export const findAllInRange = (
   matchCase,
   useRegex,
   wholeWord,
+  maxMatches,
 });
 
 // 前方検索 (次へ) 用。1回で最大 budget 行だけ走査し、続きがあれば cursor を返す。
@@ -318,6 +320,8 @@ export const updateViewer = (label: string, text: string, selection: ViewerSelec
   invoke<boolean>(IPC_COMMANDS.updateViewer, { label, text, selection });
 export const closeViewer = (label: string) =>
   invoke<void>(IPC_COMMANDS.closeViewer, { label });
+export const probeSqlitePreview = (path: string) =>
+  invoke<boolean>(IPC_COMMANDS.probeSqlitePreview, { path });
 export const readSqlitePreview = (
   path: string,
   selectedName: string | null,
@@ -331,3 +335,12 @@ export const readSqlitePreview = (
   limit,
   includeMetadata,
 });
+
+export const externalPreviewGenerate = (request: ExternalPreviewRequest) =>
+  invoke<string>(IPC_COMMANDS.externalPreviewGenerate, { request });
+export const externalPreviewCancel = (requestId: string) =>
+  invoke<void>(IPC_COMMANDS.externalPreviewCancel, { requestId });
+export const externalPreviewCleanup = (outputPath: string) =>
+  invoke<void>(IPC_COMMANDS.externalPreviewCleanup, { outputPath });
+export const externalPreviewCleanupStale = (workRoots: string[]) =>
+  invoke<void>(IPC_COMMANDS.externalPreviewCleanupStale, { workRoots });

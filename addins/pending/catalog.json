@@ -1,0 +1,19 @@
+{
+    "schema":  1,
+    "addons":  [
+                   {
+                       "id":  "abc",
+                       "version":  "1.0.0",
+                       "minimumAppVersion":  "1.7.0",
+                       "archiveUrl":  "https://github.com/hama55/WasabiPad/releases/download/music-addins-v1.0.0/wasabipad-abc-1.0.0.zip",
+                       "sha256":  "5ea2dcd922f68b679bb5fadcfdc4dead1cc01887a5655cd19ad41961b43d2fda"
+                   },
+                   {
+                       "id":  "lilypond",
+                       "version":  "1.0.0",
+                       "minimumAppVersion":  "1.7.0",
+                       "archiveUrl":  "https://github.com/hama55/WasabiPad/releases/download/music-addins-v1.0.0/wasabipad-lilypond-1.0.0.zip",
+                       "sha256":  "01a5cf2a1639eb237c7684cc2334bb6238907e9c8e029806fd52d52574f157fc"
+                   }
+               ]
+}

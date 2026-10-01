@@ -1,5 +1,6 @@
 node_modules
 dist
+artifacts/music-addins/
 /target
 # workspace移行前のローカルbuild cache
 core/target

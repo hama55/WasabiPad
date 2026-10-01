@@ -4,6 +4,47 @@ import { describe, expect, it } from "vitest";
 
 const style = readFileSync(new URL("./style.css", import.meta.url), "utf8");
 const indexHtml = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+const viewerHtml = readFileSync(new URL("../viewer.html", import.meta.url), "utf8");
+const viewerStyle = readFileSync(new URL("./viewer.css", import.meta.url), "utf8");
+const tauriConfig = JSON.parse(
+  readFileSync(new URL("../src-tauri/tauri.conf.json", import.meta.url), "utf8"),
+);
+
+describe("Feature: 検索と置換入力欄の同幅配置", () => {
+  // Given: 検索置換バーが通常配置または2行配置になっている
+  // When: 入力欄のgrid trackを確認する
+  // Then: 通常は同じ1fr、2行時は同じ列を使う
+  it("Scenario: 通常と2行配置のどちらでも入力欄の幅を揃える", () => {
+    expect(style).toMatch(/\.ve-find-row\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) auto auto auto auto minmax\(60px, auto\) minmax\(0, 1fr\) auto auto auto;/s);
+    expect(style).toMatch(/\.ve-find-wrap \.ve-find-row\s*\{[^}]*grid-template-areas:\s*"find case prev next help status close" "rep actions actions actions actions actions \.";/s);
+  });
+});
+
+describe("Feature: trusted external preview CSP", () => {
+  // Given: production/devのTauri CSP設定を読み込む
+  // When: file-backed外部HTML用frame-srcと本体側の実行・通信権限を検査する
+  // Then: file frameだけを許可し、本体UIのscript-src/connect-srcは現行境界を保つ
+  it("Scenario: file-backed external frames do not widen parent script or IPC access", () => {
+    const policies = [
+      {
+        csp: tauriConfig.app.security.csp,
+        script: "'self'",
+        connect: "ipc: http://ipc.localhost",
+      },
+      {
+        csp: tauriConfig.app.security.devCsp,
+        script: "'self'",
+        connect: "ipc: http://ipc.localhost http://localhost:5173 ws://localhost:5173",
+      },
+    ];
+
+    for (const { csp, script, connect } of policies) {
+      expect(csp["frame-src"].split(/\s+/)).toContain("file:");
+      expect(csp["script-src"]).toBe(script);
+      expect(csp["connect-src"]).toBe(connect);
+    }
+  });
+});
 
 describe("Feature: editor caret style", () => {
   // Given: `style.css`のキャレット描画規則と入力用textarea規則を読み込む
@@ -17,16 +58,42 @@ describe("Feature: editor caret style", () => {
   });
 });
 
+describe("Feature: 折り返し字下げ style", () => {
+  // Given: 折り返し行へ表示幅のCSS変数を渡している
+  // When: 先頭表示行と後続表示行の配置規則を検査する
+  // Then: 先頭行は元の位置を保ち、後続行は同じ字下げ位置から始まる
+  it("Scenario: 折り返し行の先頭と後続を同じ字下げ位置へ揃える", () => {
+    expect(style).toMatch(/\.ve-scroll\.wrap \.ve-line\s*\{[^}]*padding-left:\s*calc\(var\(--ve-pad-left\)\s*\+\s*var\(--ve-wrap-indent,\s*0px\)\);/s);
+    expect(style).toMatch(/\.ve-scroll\.wrap \.ve-line\s*\{[^}]*text-indent:\s*calc\(-1\s*\*\s*var\(--ve-wrap-indent,\s*0px\)\);/s);
+  });
+});
+
 describe("Feature: pane toggle placement", () => {
   // Given: pane toggleのCSSを読み込む
   // When: フォルダビューとプレビューの開閉ボタン位置を検査する
-  // Then: 両方とも下端ではなく上端に配置され、プレビュー最小幅はCSS変数を使う
-  it("Scenario: anchors pane controls to the titlebar edges", () => {
+  // Then: プレビューは右中央、上下用は右上・右下へ配置される
+  it("Scenario: 3方向のプレビューを開くボタンを離して配置する", () => {
     expect(style).toMatch(/#sidebar-toggle\s*\{[^}]*top:\s*4px;/s);
-    expect(style).toMatch(/#preview-toggle\s*\{[^}]*top:\s*4px;/s);
+    expect(style).toMatch(/#preview-toggle\s*\{[^}]*top:\s*calc\(var\(--preview-editor-top, 0px\) \+ var\(--preview-editor-height, 100%\) \/ 2\);/s);
+    expect(style).toMatch(/#preview-toggle-top\s*\{[^}]*top:\s*calc\(var\(--preview-editor-top, 0px\) \+ 4px\);/s);
+    expect(style).toMatch(/#preview-toggle-bottom\s*\{[^}]*bottom:\s*calc\(var\(--preview-editor-bottom, 0px\) \+ 4px\);/s);
+    expect(indexHtml.match(/data-preview-placement="(?:right|top|bottom)"/g)).toHaveLength(3);
     expect(style).not.toMatch(/#sidebar-toggle\s*\{[^}]*bottom:/s);
     expect(style).not.toMatch(/#preview-toggle\s*\{[^}]*bottom:/s);
     expect(style).toMatch(/#preview\s*\{[^}]*min-width:\s*min\(var\(--preview-min-width\),\s*100%\);/s);
+  });
+
+  // Feature: 独立したプレビューを閉じるボタン
+  // Scenario: 全配置で更新・全画面・閉じるの順に右端へ並べる
+  // Given: プレビューの共通ツールバーがある
+  // When: HTMLの操作順と上下配置の余白を検査する
+  // Then: 同じ行に隣接して常時表示し、専用の上下余白は不要になる
+  it("Scenario: 更新・全画面・ばつで閉じるを右端へ順に並べる", () => {
+    expect(viewerHtml).toMatch(/<button[^>]*id="viewer-refresh"[^>]*hidden[^>]*>[\s\S]*?<\/button>\s*<button id="viewer-fullscreen"[^>]*><\/button>\s*<button[^>]*id="viewer-close"[^>]*aria-label="プレビューを閉じる"[^>]*>×<\/button>/s);
+    expect(indexHtml).not.toContain('id="preview-close"');
+    expect(viewerStyle).toContain("body.inline-viewer #viewer-close { display: block; }");
+    expect(style).not.toContain("padding-top: 32px");
+    expect(style).not.toContain("padding-bottom: 32px");
   });
 
   // Feature: 狭いwindowの横方向レイアウト
@@ -51,42 +118,64 @@ describe("Feature: pane toggle placement", () => {
     expect(style).toMatch(/#preview-splitter\s*\{[^}]*width:\s*var\(--pane-splitter-width\);/s);
   });
 
-  // Feature: エディタ右上コントロールの近接表示
-  // Scenario: 検索欄とプレビュー開閉ボタンを重ねず表示する
+  // Feature: プレビューを開くボタンの近接表示
+  // Scenario: 検索欄とプレビューを開くボタンを重ねず表示する
   // Given: エディタのCSSとメイン画面HTML
-  // When: 検索欄の右位置とプレビュー開閉ボタンを検査する
-  // Then: 検索欄はエディタ上端を占有し、プレビュー開閉ボタンは境界へ近づいた時だけ見える
-  it("Scenario: 検索欄を占有表示しプレビュー開閉ボタンを必要時だけ見せる", () => {
+  // When: 検索欄の右位置とプレビューを開くボタンを検査する
+  // Then: 検索欄はエディタ上端を占有し、開くボタンは境界へ近づいた時だけ見える
+  it("Scenario: 検索欄を占有表示しプレビューを開くボタンを必要時だけ見せる", () => {
     expect(style).toMatch(/\.ve-find\s*\{[^}]*top:\s*0;[^}]*left:\s*0;[^}]*right:\s*0;/s);
-    expect(style).toMatch(/\.ve-find-row\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(110px,\s*1fr\)[^;]*minmax\(110px,\s*1fr\)/s);
-    expect(style).toMatch(/\.ve-rep-in\s*\{[^}]*grid-column:\s*6;/s);
-    expect(style).toMatch(/\.ve-rep-actions\s*\{[^}]*grid-column:\s*7\s*\/\s*9;/s);
-    expect(style).toMatch(/\.ve-find-close\s*\{[^}]*grid-column:\s*9;/s);
+    expect(style).toMatch(/\.ve-find-row\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)[^;]*minmax\(0,\s*1fr\)/s);
+    expect(style).toContain('grid-template-areas: "find case prev next help status rep actions actions close";');
+    expect(style).toMatch(/\.ve-find-help\s*\{[^}]*grid-area:\s*help;/s);
+    expect(style).toMatch(/\.ve-rep-in\s*\{[^}]*grid-area:\s*rep;/s);
+    expect(style).toMatch(/\.ve-rep-actions\s*\{[^}]*grid-area:\s*actions;/s);
+    expect(style).toMatch(/\.ve-find-close\s*\{[^}]*grid-area:\s*close;/s);
+    expect(style).toMatch(/\.ve-find button\s*\{[^}]*white-space:\s*nowrap;/s);
+    expect(style).toMatch(/\.ve-find-wrap \.ve-find\s*\{[^}]*height:\s*72px;/s);
+    expect(style).toContain('.ve-find-wrap .ve-find-row {');
+    expect(style).toContain('grid-template-areas: "find case prev next help status close" "rep actions actions actions actions actions .";');
+    expect(style).toMatch(/\.ve-find-wrap \.ve-rep-actions\s*\{[^}]*overflow-x:\s*auto;/s);
+    expect(style).toMatch(/\.ve-find-wrap \.ve-rep-actions button\s*\{[^}]*flex:\s*none;/s);
+    expect(style).toMatch(/\.ve-find-wrap\.ve-search-open \.ve-gutter,[\s\S]*\.ve-find-wrap\.ve-search-open \.ve-scroll\s*\{[^}]*top:\s*72px;/s);
     expect(style).not.toContain(".ve-find-toggle");
     expect(style).not.toContain(".ve-find.with-rep");
     expect(style).toMatch(/\.ve-search-open\s+\.ve-gutter,[\s\S]*\.ve-search-open\s+\.ve-scroll\s*\{[^}]*top:\s*40px;/s);
-    expect(style).toMatch(/#main\.preview-toggle-peek\s+#preview-toggle,[\s\S]*#preview-toggle:focus-visible/);
-    expect(style).toMatch(/#preview-toggle\s*\{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/s);
+    expect(style).toMatch(/#main\.preview-toggle-peek\s+\.preview-open,[\s\S]*\.preview-open:focus-visible/);
+    expect(style).toMatch(/\.preview-open\s*\{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/s);
     expect(indexHtml).toMatch(/<button\s+id="preview-toggle"(?![^>]*\shidden(?:\s|=|>))[^>]*>/s);
   });
 
-  // Feature: プレビュー開閉ボタン幅のCSS同期
-  // Scenario: TypeScriptで管理するボタン幅をCSSでも共有する
-  // Given: プレビュー開閉ボタンのCSSと起動時レイアウト設定がある
+  // Feature: プレビュー操作ボタン幅のCSS同期
+  // Scenario: 開く・閉じるボタンの幅をCSSで共有する
+  // Given: プレビュー操作ボタンのCSSと起動時レイアウト設定がある
   // When: ボタンの最小幅指定とCSS変数の設定を検査する
   // Then: CSSは固定値を持たず、共有CSS変数を参照する
-  it("Scenario: プレビュー開閉ボタン幅を共有CSS変数から取得する", () => {
-    expect(style).toMatch(/#preview-toggle\s*\{[^}]*min-width:\s*var\(--preview-toggle-width\);/s);
+  it("Scenario: プレビュー操作ボタン幅を共有CSS変数から取得する", () => {
+    expect(style).toMatch(/#sidebar-toggle\s*\{[^}]*min-width:\s*var\(--preview-toggle-width\);/s);
+    expect(style).toMatch(/\.preview-open\s*\{[^}]*min-width:\s*var\(--preview-toggle-width\);/s);
+    expect(style).not.toMatch(/#sidebar-toggle\s*\{[^}]*min-width:\s*28px;/s);
     expect(style).not.toMatch(/#preview-toggle\s*\{[^}]*min-width:\s*28px;/s);
   });
 
-  // Feature: 検索バー表示中のプレビュー開閉操作
-  // Scenario: 検索バーを表示してもプレビュー開閉ボタンを操作できる位置へ移す
-  // Given: エディタ上端を40px占有する検索バーと、通常時は上端にあるプレビュー開閉ボタン
+  // Feature: インラインプレビューの操作ボタン
+  // Scenario: 外部プレビュー更新操作を共通ツールバーへ移す
+  // Given: プレビューのツールバーに更新ボタンがある
+  // When: 親の重ね表示とボタンの幅指定を調べる
+  // Then: 親の更新ボタンはなく、3ボタンが同じ幅のflex itemになる
+  it("Scenario: 外部プレビュー更新ボタンで全画面ボタンを覆わない", () => {
+    expect(indexHtml).not.toContain('id="preview-refresh"');
+    expect(viewerStyle).toMatch(/#viewer-fullscreen,\s*#viewer-close,\s*#viewer-refresh\s*\{[^}]*width:\s*36px;\s*flex:\s*none;/s);
+  });
+
+  // Feature: 検索バー表示中のプレビューを開く操作
+  // Scenario: 検索バーを表示してもプレビューを開くボタンを操作できる位置へ移す
+  // Given: エディタ上端を40px占有する検索バーと、通常時は上端にある開くボタン
   // When: エディタの検索バーが表示される
-  // Then: プレビュー開閉ボタンは検索バーの下の44px位置へ移り、検索バーと重ならない
-  it("Scenario: 検索バー表示中はプレビュー開閉ボタンを検索バーの下へ移す", () => {
-    expect(style).toMatch(/#editorhost\.ve-search-open\s*~\s*#preview-toggle\s*\{[^}]*top:\s*44px;/s);
+  // Then: プレビューを開くボタンは検索バーの下へ移り、検索バーと重ならない
+  it("Scenario: 検索バー表示中はプレビューを開くボタンを検索バーの下へ移す", () => {
+    expect(style).toMatch(/#editorhost\.ve-search-open\s*~\s*#preview-toggle-top\s*\{[^}]*top:\s*calc\(var\(--preview-editor-top, 0px\) \+ 44px\);/s);
+    expect(style).toMatch(/#editorhost\.ve-find-wrap\.ve-search-open\s*~\s*#preview-toggle-top\s*\{[^}]*top:\s*calc\(var\(--preview-editor-top, 0px\) \+ 76px\);/s);
   });
 
   // Feature: 検索バー表示中のファイルツリー開閉操作
@@ -96,6 +185,7 @@ describe("Feature: pane toggle placement", () => {
   // Then: ボタンは検索バーの下へ移り、検索バーがない通常時の位置は維持する
   it("Scenario: 検索バー表示中はファイルツリー開閉ボタンを検索バーの下へ移す", () => {
     expect(style).toMatch(/#main:has\(#editorhost\.ve-search-open\)\s*>\s*#sidebar\[hidden\]\s*~\s*#sidebar-toggle\s*\{[^}]*top:\s*44px;/s);
+    expect(style).toMatch(/#main:has\(#editorhost\.ve-find-wrap\.ve-search-open\)\s*>\s*#sidebar\[hidden\]\s*~\s*#sidebar-toggle\s*\{[^}]*top:\s*76px;/s);
   });
 
   // Feature: ファイルツリー下端の新規作成操作

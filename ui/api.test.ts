@@ -75,4 +75,5 @@ describe("Feature: preview cache IPC", () => {
       cacheDirectory: "D:\\WasabiPad\\cache",
     });
   });
+
 });

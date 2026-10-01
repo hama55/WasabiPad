@@ -4,7 +4,7 @@ import { readText as readClipboardText, writeText as writeClipboardText } from "
 import { RectangularClipboard } from "./editor-clipboard";
 import { findForward } from "./editor-find-loop";
 import { FindBar } from "./findbar";
-import { clampFontSize } from "./font-controls";
+import { clampFontSize, DEFAULT_INDENT_SIZE } from "./font-controls";
 import { DEFAULT_EDITOR_CONFIG, EditorConfig } from "./editor-config";
 import { showMenu, type MenuItem } from "./menu";
 import {
@@ -16,12 +16,11 @@ import { MENU_ICON } from "./menu-icons";
 import { MENU_LABELS } from "./menu-labels";
 import { REGISTERED_COMMAND_LABELS } from "./registered-command-model";
 import { createOpenAsMenu } from "./open-as-menu";
-import { viewerFormatIcon, VIEWER_FORMAT_LABELS } from "./format";
 import { viewerFormatForPath } from "./viewer-formats";
 import { LineCache } from "./line-cache";
 import { EditorMutationController } from "./editor-mutation";
 import { LiveViewers } from "./live-viewers";
-import { lineNumberGroups } from "./line-number";
+import { lineNumberGroups, lineNumberWidth } from "./line-number";
 import { blockRangeForLine, Selection } from "./selection";
 import { MAX_SAFE_HEIGHT, ViewportMetrics } from "./viewport-metrics";
 import {
@@ -65,13 +64,22 @@ export interface EditorPorts {
   onCursor: (line: number, col: number) => void;
   onFontChange: (fontFamily: string, fontSize: number, changed: "family" | "size" | "both") => void;
   openExternally: (path: string) => void | Promise<unknown>;
+  togglePreview: () => void;
   openInNewTab?: () => void | Promise<unknown>;
   openInNewWindow?: (path: string) => void | Promise<unknown>;
   openAs?: (openAs: api.OpenAs) => void | Promise<unknown>;
   registeredCommandPorts: RegisteredCommandMenuPorts;
   revealInExplorer?: (path: string, isDir: boolean) => void | Promise<unknown>;
   onError: (message: string, error: unknown) => Promise<void>;
-  openViewer: (format: api.ViewerFormat, text: string, selection: api.ViewerSelection | null) => Promise<string | null>;
+  cancelPendingViewerOpen?: () => Promise<void>;
+  openViewer: (
+    format: api.ViewerFormat,
+    text: string,
+    selection: api.ViewerSelection | null,
+    sqliteHeaderChecked?: boolean,
+    externalOutputPath?: string | null,
+    isCurrentRequest?: () => boolean,
+  ) => Promise<string | null>;
   updateViewer: (label: string, text: string, selection: api.ViewerSelection | null) => Promise<boolean>;
   closeViewer: (label: string) => Promise<void>;
   saveImage?: (bytes: number[], mimeType: string) => Promise<string>;
@@ -108,6 +116,8 @@ export class VirtualEditor {
   private readonly paddingLeft: number;
   private readonly gutterWidth: number;
   private wrap = false;
+  private tabSize = DEFAULT_INDENT_SIZE;
+  private wrapIndentContext: CanvasRenderingContext2D | null | undefined;
   private wrapIntraLinePx = 0;
   private wrapHeights = new WrapHeightMap(1, 1);
   private wrapMeasureWidth = -1;
@@ -130,7 +140,7 @@ export class VirtualEditor {
   private composing = false;
   private mutation: EditorMutationController;
   private findGen = 0; // 検索ループの世代。closeやEnter連打で古いループを打ち切るため
-  private lastFindMatch: { start: Pos; end: Pos; pat: string; matchCase: boolean } | null = null; // 連続置換が対象にしてよい直前の一致
+  private lastFindMatch: { start: Pos; end: Pos; pat: string; matchCase: boolean } | null = null; // 置換が対象にしてよい直前の一致
   private activeFind: SearchHighlightQuery | null = null;
   private findHighlights: api.FindResult[] = [];
   private findHighlightRequestKey = "";
@@ -150,6 +160,7 @@ export class VirtualEditor {
   private registeredCommandPorts: RegisteredCommandMenuPorts;
   private revealInExplorer?: (path: string, isDir: boolean) => void | Promise<unknown>;
   private onError: (message: string, error: unknown) => Promise<void>;
+  private togglePreview: EditorPorts["togglePreview"];
   private onPasteImage?: (bytes: number[], mimeType: string) => Promise<string>;
   private rectangularClipboard = new RectangularClipboard();
   private liveViewers: LiveViewers;
@@ -171,7 +182,13 @@ export class VirtualEditor {
     this.lineCache = new LineCache(doc);
     this.openViewer = ports.openViewer;
     this.liveViewers = new LiveViewers({
-      openViewer: ports.openViewer,
+      openViewer: (format, text, selection, externalOutputPath, isCurrentRequest) => {
+        if (externalOutputPath === undefined && !isCurrentRequest) {
+          return ports.openViewer(format, text, selection);
+        }
+        return ports.openViewer(format, text, selection, false, externalOutputPath, isCurrentRequest);
+      },
+      cancelPendingOpen: () => ports.cancelPendingViewerOpen?.() ?? Promise.resolve(),
       updateViewer: ports.updateViewer,
       closeViewer: ports.closeViewer,
       wholeRange: async () => {
@@ -201,6 +218,7 @@ export class VirtualEditor {
     this.registeredCommandPorts = ports.registeredCommandPorts;
     this.revealInExplorer = ports.revealInExplorer;
     this.onError = ports.onError;
+    this.togglePreview = ports.togglePreview;
     this.onPasteImage = ports.saveImage;
     this.fontFamily = config.fontFamily;
     this.fontSize = config.fontSize;
@@ -245,6 +263,7 @@ export class VirtualEditor {
       this.host,
       (pat, forward, mc) => this.doFind(pat, forward, mc),
       (pat, rep, mc) => this.doReplaceAll(pat, rep, mc),
+      (pat, rep, mc) => this.doReplaceVisible(pat, rep, mc),
       (pat, rep, mc) => this.doReplaceNext(pat, rep, mc),
       () => {
         this.findGen++;
@@ -322,6 +341,7 @@ export class VirtualEditor {
     window.visualViewport?.addEventListener("scroll", () => this.syncImeAnchorAfterLayout());
 
     new ResizeObserver(() => {
+      this.syncFindLayout();
       if (!this.hasUsableViewport()) return;
       const topLine = this.wrap || this.metrics.scaleMode ? this.topLineF : this.pxToLine(this.scroll.scrollTop);
       const intraLinePx = this.wrapIntraLinePx;
@@ -337,6 +357,7 @@ export class VirtualEditor {
       this.syncImeAnchorAfterLayout();
       this.schedule();
     }).observe(this.scroll);
+    this.syncFindLayout();
   }
 
   // ---- 文書ロード ----
@@ -565,7 +586,8 @@ export class VirtualEditor {
   }
 
   setTabSize(size: number) {
-    this.scroll.parentElement!.style.setProperty("--ve-tab-size", String(Math.max(1, Math.min(16, size))));
+    this.tabSize = Math.max(1, Math.min(16, size));
+    this.scroll.parentElement!.style.setProperty("--ve-tab-size", String(this.tabSize));
     this.maxWidth = 0;
     this.resetWrapHeights();
     this.updateMetrics();
@@ -742,6 +764,13 @@ export class VirtualEditor {
     return this.scroll.clientWidth > 0 && this.scroll.clientHeight > 0;
   }
 
+  private syncFindLayout() {
+    this.host.classList.toggle(
+      "ve-find-wrap",
+      this.host.clientWidth > 0 && this.host.clientWidth <= VirtualEditor.FIND_WRAP_MAX_WIDTH,
+    );
+  }
+
   private onScroll() {
     if (this.wrap && this.scrollbarDragging) {
       const anchor = this.wrapAnchorFromPx(this.scroll.scrollTop);
@@ -892,6 +921,7 @@ export class VirtualEditor {
     for (let i = topLine; i < last; i++) {
       const line = this.lineElem(i);
       if (!line) continue;
+      this.applyWrapIndent(line, this.lineCache.peek(i) ?? "");
       this.localRowTops.set(i, y);
       line.style.top = `${y}px`;
       const height = Math.max(this.metrics.lineHeight, line.getBoundingClientRect().height);
@@ -904,6 +934,7 @@ export class VirtualEditor {
     for (let i = topLine - 1; i >= first; i--) {
       const line = this.lineElem(i);
       if (!line) continue;
+      this.applyWrapIndent(line, this.lineCache.peek(i) ?? "");
       const height = Math.max(this.metrics.lineHeight, line.getBoundingClientRect().height);
       if (!this.scrollbarDragging) {
         heightsChanged = this.wrapHeights.set(i, height) || heightsChanged;
@@ -917,6 +948,38 @@ export class VirtualEditor {
       this.scroll.scrollTop = this.wrapAnchorToPx(this.topLineF, this.wrapIntraLinePx);
       this.schedule();
     }
+  }
+
+  private applyWrapIndent(line: HTMLElement, text: string) {
+    const leading = /^[ \t]+/.exec(text)?.[0];
+    if (!leading || leading.length === text.length) {
+      line.style.setProperty("--ve-wrap-indent", "0px");
+      return;
+    }
+    if (this.wrapIndentContext === undefined) {
+      this.wrapIndentContext = document.createElement("canvas").getContext("2d");
+    }
+    const context = this.wrapIndentContext;
+    if (!context) {
+      line.style.setProperty("--ve-wrap-indent", "0px");
+      return;
+    }
+    context.font = `${this.fontSize}px ${this.fontFamily}`;
+    const spaceWidth = context.measureText(" ").width;
+    if (!(spaceWidth > 0)) {
+      line.style.setProperty("--ve-wrap-indent", "0px");
+      return;
+    }
+    let width = 0;
+    for (const char of leading) {
+      if (char === "\t") {
+        const tabWidth = spaceWidth * this.tabSize;
+        width += tabWidth - (width % tabWidth);
+      } else {
+        width += spaceWidth;
+      }
+    }
+    line.style.setProperty("--ve-wrap-indent", `${Math.max(0, width)}px`);
   }
 
   private updateWidth() {
@@ -942,10 +1005,9 @@ export class VirtualEditor {
     const context = canvas.getContext("2d");
     if (!context) return;
     context.font = style.font;
-    const groups = lineNumberGroups(this.lineCount);
-    const numberWidth = context.measureText(groups.join("")).width + (groups.length - 1) * 2;
-    const previewExtra = this.liveViewers.previewRange() ? 14 : 0;
-    const w = Math.max(this.gutterWidth, Math.ceil(numberWidth + 24 + previewExtra));
+    const numberWidth = lineNumberWidth(this.lineCount, (digit) => context.measureText(digit).width);
+    // プレビュー印の余白も常に確保し、表示の有無で本文を動かさない。
+    const w = Math.max(this.gutterWidth, Math.ceil(numberWidth + 24 + 14));
     this.scroll.parentElement!.style.setProperty("--gutter-w", `${w}px`);
   }
 
@@ -1171,33 +1233,55 @@ export class VirtualEditor {
   private appendFindHighlights(frag: DocumentFragment, first: number, last: number) {
     for (const match of this.findHighlights) {
       if (match.start.line < first || match.start.line >= last) continue;
-      const str = this.lineCache.peek(match.start.line) ?? "";
-      const lineEl = this.lineElem(match.start.line);
-      if (!lineEl) continue;
-      if (this.wrap) {
-        const node = lineEl.firstChild;
-        if (!node) continue;
-        const inner = this.inner.getBoundingClientRect();
-        const range = document.createRange();
-        range.setStart(node, charToU16(str, match.start.col));
-        range.setEnd(node, charToU16(str, match.end.col));
-        for (const rect of range.getClientRects()) {
-          const box = el("div", "ve-find-hit");
-          box.style.top = `${rect.top - inner.top}px`;
-          box.style.left = `${rect.left - inner.left}px`;
-          box.style.width = `${Math.max(2, rect.width)}px`;
-          box.style.height = `${rect.height}px`;
-          frag.insertBefore(box, frag.firstChild);
+      for (let line = match.start.line; line <= Math.min(match.end.line, last - 1); line++) {
+        const str = this.lineCache.peek(line) ?? "";
+        const lineEl = this.lineElem(line);
+        if (!lineEl) continue;
+        const startCol = line === match.start.line ? match.start.col : 0;
+        const endCol = line === match.end.line ? match.end.col : charLen(str);
+        if (line > match.start.line && line === match.end.line && endCol === 0) continue;
+        if (this.wrap) {
+          const node = lineEl.firstChild;
+          const inner = this.inner.getBoundingClientRect();
+          if (node) {
+            const range = document.createRange();
+            range.setStart(node, charToU16(str, startCol));
+            range.setEnd(node, charToU16(str, endCol));
+            for (const rect of range.getClientRects()) {
+              const box = el("div", "ve-find-hit");
+              box.style.top = `${rect.top - inner.top}px`;
+              box.style.left = `${rect.left - inner.left}px`;
+              box.style.width = `${Math.max(2, rect.width)}px`;
+              box.style.height = `${rect.height}px`;
+              frag.insertBefore(box, frag.firstChild);
+            }
+          }
+          if (line < match.end.line) {
+            const markerRange = document.createRange();
+            if (node) {
+              const end = charToU16(str, endCol);
+              markerRange.setStart(node, end);
+              markerRange.setEnd(node, end);
+            }
+            const rect = node ? markerRange.getBoundingClientRect() : lineEl.getBoundingClientRect();
+            const box = el("div", "ve-find-hit");
+            box.style.top = `${rect.top - inner.top}px`;
+            box.style.left = `${rect.left - inner.left}px`;
+            box.style.width = "6px";
+            box.style.height = `${rect.height || this.metrics.lineHeight}px`;
+            frag.insertBefore(box, frag.firstChild);
+          }
+          continue;
         }
-        continue;
+        const x0 = this.colToX(lineEl, str, startCol);
+        let x1 = this.colToX(lineEl, str, endCol);
+        if (line < match.end.line) x1 += 6;
+        const box = el("div", "ve-find-hit");
+        box.style.top = `${this.rowTop(line)}px`;
+        box.style.left = `${x0}px`;
+        box.style.width = `${Math.max(2, x1 - x0)}px`;
+        frag.insertBefore(box, frag.firstChild);
       }
-      const x0 = this.colToX(lineEl, str, match.start.col);
-      const x1 = this.colToX(lineEl, str, match.end.col);
-      const box = el("div", "ve-find-hit");
-      box.style.top = `${this.rowTop(match.start.line)}px`;
-      box.style.left = `${x0}px`;
-      box.style.width = `${Math.max(2, x1 - x0)}px`;
-      frag.insertBefore(box, frag.firstChild);
     }
   }
 
@@ -1591,11 +1675,24 @@ export class VirtualEditor {
   }
 
 
-  async openTextViewer(format: api.ViewerFormat, keepPreviewRange = false) {
+  async openTextViewer(
+    format: api.ViewerFormat,
+    keepPreviewRange = false,
+    sqliteHeaderChecked = false,
+    keepCurrentUntilOpened = false,
+    externalOutputPath?: string | null,
+    isCurrentRequest?: () => boolean,
+  ) {
+    await this.liveViewers.cancelPendingOpen();
+    if (isCurrentRequest && !isCurrentRequest()) return null;
     if (format === "sqlite") {
-      this.liveViewers.clear();
-      const opened = await this.openViewer(format, "", null);
-      this.render();
+      const opened = isCurrentRequest
+        ? await this.openViewer(format, "", null, sqliteHeaderChecked, undefined, isCurrentRequest)
+        : await this.openViewer(format, "", null, sqliteHeaderChecked);
+      if (opened) {
+        this.liveViewers.clear();
+        this.render();
+      }
       return opened;
     }
     const [selectionStart, selectionEnd] = this.sel.norm();
@@ -1604,10 +1701,17 @@ export class VirtualEditor {
     const range = format === "image" ? null : previewRange ?? (this.sel.hasSel()
       ? { start: { ...selectionStart }, end: { ...selectionEnd } }
       : null);
-    this.liveViewers.clear();
-    const opened = await this.liveViewers.open(format, range, selection, this.sel.caret);
+    if (!keepCurrentUntilOpened) this.liveViewers.clear();
+    const opened = await (keepCurrentUntilOpened
+      ? this.liveViewers.replace(format, range, selection, this.sel.caret, externalOutputPath, isCurrentRequest)
+      : this.liveViewers.open(format, range, selection, this.sel.caret, externalOutputPath, isCurrentRequest));
     this.render();
     return opened;
+  }
+
+  cancelPendingTextViewerOpens(): Promise<void> {
+    this.liveViewers.invalidatePendingOpens();
+    return this.liveViewers.cancelPendingOpen();
   }
 
   private moveSelection(start: Pos, end: Pos, target: Pos, copy: boolean) {
@@ -1616,32 +1720,47 @@ export class VirtualEditor {
 
   private async paste() {
     if (this.readOnly) return;
-    const image = await this.readClipboardImage();
-    if (image && this.onPasteImage) {
-      await this.insertImage(image.bytes, image.mimeType);
-      return;
+    let text = "";
+    let textReadFailed = false;
+    let textReadError: unknown;
+    try {
+      text = normalizeClipboardText(await readClipboardText());
+    } catch (error) {
+      textReadFailed = true;
+      textReadError = error;
     }
-    const text = normalizeClipboardText(await readClipboardText());
+
     const rows = this.rectangularClipboard.rowsFor(text);
-    if (rows) {
-      await this.mutation.pasteBlock(rows);
+    if (text && !rows) {
+      await this.insertText(text);
       return;
     }
-    if (text) await this.insertText(text);
+
+    if (!text) {
+      const image = await this.readClipboardImage();
+      if (image && this.onPasteImage) {
+        await this.insertImage(image.bytes, image.mimeType);
+        return;
+      }
+      if (textReadFailed) throw textReadError;
+    }
+    if (rows) await this.mutation.pasteBlock(rows);
   }
 
   private onPaste(event: ClipboardEvent) {
     if (this.readOnly) return;
-    const item = [...(event.clipboardData?.items ?? [])]
-      .find((candidate) => candidate.type.toLowerCase().startsWith("image/"));
-    const file = item?.getAsFile();
-    if (file) {
-      event.preventDefault();
-      this.dispatch("クリップボードから画像を貼り付けできませんでした", () => this.insertImageBlob(file));
-      return;
-    }
     const text = normalizeClipboardText(event.clipboardData?.getData("text/plain") ?? "");
     const rows = this.rectangularClipboard.rowsFor(text);
+    if (!text) {
+      const item = [...(event.clipboardData?.items ?? [])]
+        .find((candidate) => candidate.type.toLowerCase().startsWith("image/"));
+      const file = item?.getAsFile();
+      if (file) {
+        event.preventDefault();
+        this.dispatch("クリップボードから画像を貼り付けできませんでした", () => this.insertImageBlob(file));
+        return;
+      }
+    }
     if (!rows) return;
     event.preventDefault();
     this.dispatch(
@@ -2228,15 +2347,12 @@ export class VirtualEditor {
         addCustomItem(stringMenu);
       }
     }
-    const viewerFormats = Object.entries(VIEWER_FORMAT_LABELS) as [api.ViewerFormat, string][];
-    items.push(
-      ...viewerFormats.map(([format, label], index) => ({
-        label,
-        iconClass: viewerFormatIcon(format),
-        action: () => this.dispatch("ビューを開けませんでした", () => this.openTextViewer(format)),
-        sep: index === 0,
-      })),
-    );
+    items.push({
+      label: "プレビュー",
+      iconClass: MENU_ICON.text,
+      action: () => this.dispatch("プレビューを切り替えられませんでした", () => this.togglePreview()),
+      sep: true,
+    });
     if (commandPath) {
       items.push({
         label: MENU_LABELS.external,
@@ -2322,6 +2438,7 @@ export class VirtualEditor {
   private static readonly FIND_BUDGET = 20_000;
   private static readonly REPLACE_BUDGET = 2_000;
   private static readonly REPLACE_WARN_THRESHOLD = 5_000;
+  private static readonly FIND_WRAP_MAX_WIDTH = 720;
 
   private async doFind(pat: string, forward: boolean, matchCase: boolean): Promise<boolean> {
     const myGen = ++this.findGen;
@@ -2365,7 +2482,7 @@ export class VirtualEditor {
     return true;
   }
 
-  // 現在の選択が直前の検索結果そのものであれば置換してから次を検索する (連続置換)。
+  // 現在の選択が直前の検索結果そのものであれば置換してから次を検索する。
   // そうでなければ (まだ何も検索していない等) 次の一致を探すだけに留める。
   private async doReplaceNext(pat: string, rep: string, matchCase: boolean): Promise<boolean> {
     if (this.readOnly) return this.doFind(pat, true, matchCase);
@@ -2385,6 +2502,54 @@ export class VirtualEditor {
       this.notifyCursor();
     }
     return this.doFind(pat, true, matchCase);
+  }
+
+  private visibleLogicalLineRange(): { first: number; last: number } {
+    if (this.lineCount <= 0 || this.scroll.clientHeight <= 0) return { first: 0, last: 0 };
+    const viewportTop = this.viewTop;
+    const viewportBottom = viewportTop + this.scroll.clientHeight;
+    const visibleLines = [...this.linesLayer.querySelectorAll<HTMLElement>(":scope > .ve-line")]
+      .map((line) => Number(line.dataset.line))
+      .filter((line) => Number.isInteger(line) && line >= 0 && line < this.lineCount)
+      .filter((line) => {
+        const top = this.rowTop(line);
+        const bottom = top + this.wrappedLineHeight(line);
+        return top < viewportBottom && bottom > viewportTop;
+      });
+    if (visibleLines.length > 0) {
+      return {
+        first: Math.min(...visibleLines),
+        last: Math.max(...visibleLines) + 1,
+      };
+    }
+    return { first: 0, last: 0 };
+  }
+
+  private async doReplaceVisible(pat: string, rep: string, matchCase: boolean): Promise<number> {
+    if (this.readOnly || this.busy) return 0;
+    const p = unescapePattern(pat);
+    if (!p) return 0;
+    const r = unescapePattern(rep);
+    const generation = this.documentGeneration;
+    this.render();
+    const { first, last } = this.visibleLogicalLineRange();
+    if (first >= last) return 0;
+
+    this.busy = true;
+    try {
+      const matches = await this.doc.findAllInRange(p, first, last, matchCase, false, false, 0);
+      if (generation !== this.documentGeneration || matches.length === 0) return 0;
+      const edits = matches.map(({ start, end }) => ({ start, end, text: r }));
+      const primaryIndex = edits.length - 1;
+      const result = await this.doc.editMany(edits, this.sel.caret, primaryIndex);
+      this.applyResult({ caret: result.carets[primaryIndex] ?? this.sel.caret, line_count: result.line_count }, first, edits);
+      this.ensureVisible();
+      this.render();
+      this.notifyCursor();
+      return edits.length;
+    } finally {
+      this.busy = false;
+    }
   }
 
   private async doReplaceAll(pat: string, rep: string, matchCase: boolean): Promise<number> {

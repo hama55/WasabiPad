@@ -12,8 +12,9 @@ use crate::document_source::{
 };
 use crate::document_assets::{
     archive_entry_parent, archive_entry_stem, archive_join, cleanup_image_dir,
-    next_archive_image_name, referenced_image_files, remove_empty_dir,
-    valid_archive_entry_path,
+    markdown_asset_dir, markdown_image_relative_dir, markdown_image_relative_path,
+    next_archive_image_name, referenced_image_files, remove_empty_dir, valid_archive_entry_path,
+    PASTED_IMAGE_STEM,
 };
 use crate::editing::{self, ByteEdit};
 pub use crate::document_types::{
@@ -90,18 +91,6 @@ struct MarkdownAssetMove {
     destination: PathBuf,
     destination_parent: PathBuf,
     created_destination_parent: bool,
-}
-
-fn markdown_asset_dir(path: &Path) -> Option<PathBuf> {
-    let extension = path.extension()?.to_str()?;
-    if !extension.eq_ignore_ascii_case("md") && !extension.eq_ignore_ascii_case("markdown") {
-        return None;
-    }
-    let stem = path.file_stem()?.to_str()?;
-    if stem.is_empty() {
-        return None;
-    }
-    Some(path.parent()?.join("image_markdown").join(stem))
 }
 
 fn equivalent_existing_path(left: &Path, right: &Path) -> bool {
@@ -356,10 +345,11 @@ fn classification_path(path: &Path, open_as: Option<OpenAs>) -> PathBuf {
 }
 
 fn is_7z_classified_path(path: &Path, open_as: Option<OpenAs>) -> bool {
-    classification_path(path, open_as)
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("7z"))
+    crate::sevenz::is_7z_path(&classification_path(path, open_as))
+}
+
+fn is_confidential_archive(is_7z: bool, password: &str) -> bool {
+    is_7z && !password.is_empty()
 }
 
 fn is_pdf_classified_path(path: &Path, open_as: Option<OpenAs>) -> bool {
@@ -564,7 +554,7 @@ impl ArchiveAssetReadPlan {
     pub fn read_with_cache(self, cache: Option<&PreviewCache>) -> io::Result<Vec<u8>> {
         let cache_allowed = cache.is_some()
             && !self.asset_is_pdf
-            && !(self.archive_is_7z && !self.password.is_empty());
+            && !is_confidential_archive(self.archive_is_7z, &self.password);
         let cache_key = cache_allowed.then(|| preview_cache_archive_key(&self.archive, &self.entry));
         let fingerprint = cache_allowed
             .then(|| preview_cache_fingerprint(&self.archive))
@@ -1288,9 +1278,7 @@ impl Doc {
     ) -> io::Result<Option<DocInfo>> {
         self.archive_asset = None;
         if let Some(root) = self.source.folder_root().map(Path::to_path_buf) {
-            if let Some((archive_rel, entry_name)) =
-                rel_path.split_once(crate::folder::ARCHIVE_ENTRY_SEPARATOR)
-            {
+            if let Some((archive_rel, entry_name)) = crate::folder::split_archive_entry_path(rel_path) {
                 let archive_real = join_relative(&root, archive_rel);
                 let source_file = fileio::open_exclusive(&archive_real)?;
                 // アーカイブ形式の指定は書庫へ、その他の形式は内部項目へ適用する。
@@ -1465,8 +1453,10 @@ impl Doc {
         cache: Option<&PreviewCache>,
     ) -> io::Result<(String, Option<(Encoding, Eol)>, bool, Option<OpenAs>)> {
         let cache_allowed = cache.is_some()
-            && !(is_7z_classified_path(archive, archive_open_as)
-                && !self.sevenz_password(archive).is_empty());
+            && !is_confidential_archive(
+                is_7z_classified_path(archive, archive_open_as),
+                self.sevenz_password(archive),
+            );
         let cache_key = cache_allowed.then(|| preview_cache_archive_key(archive, entry));
         let fingerprint = cache_allowed
             .then(|| preview_cache_fingerprint(archive))
@@ -2215,9 +2205,6 @@ impl Doc {
         let memo = self.source.path().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "先にメモを保存してください")
         })?;
-        let parent = memo
-            .parent()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "メモの保存先が不正です"))?;
         let memo_name = memo
             .file_stem()
             .and_then(|value| value.to_str())
@@ -2228,9 +2215,11 @@ impl Doc {
                     "メモの画像フォルダ名を作れません",
                 )
             })?;
-        let image_dir = parent.join("image_markdown").join(memo_name);
+        let image_dir = markdown_asset_dir(memo).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "メモの画像フォルダ名を作れません")
+        })?;
         std::fs::create_dir_all(&image_dir)?;
-        let path = next_available_path(&image_dir, "pasted-image", extension)?;
+        let path = next_available_path(&image_dir, PASTED_IMAGE_STEM, extension)?;
         std::fs::write(&path, bytes)?;
         let name = path
             .file_name()
@@ -2238,7 +2227,7 @@ impl Doc {
             .ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidData, "画像ファイル名を作れません")
             })?;
-        Ok(format!("image_markdown/{memo_name}/{name}"))
+        Ok(markdown_image_relative_path(memo_name, name))
     }
 
     fn save_archive_image(
@@ -2260,9 +2249,10 @@ impl Doc {
             )
         })?;
         let parent = archive_entry_parent(memo_entry);
-        let relative_dir = archive_join(parent, &format!("image_markdown/{memo_name}"));
+        let relative_image_dir = markdown_image_relative_dir(memo_name);
+        let relative_dir = archive_join(parent, &relative_image_dir);
         let image_name = next_archive_image_name(&existing, &relative_dir, extension)?;
-        let relative_src = format!("image_markdown/{memo_name}/{image_name}");
+        let relative_src = markdown_image_relative_path(memo_name, &image_name);
         let entry = archive_join(parent, &relative_src);
         let workspace = self.archive_port.new_workspace(archive)?;
         let staged = workspace
@@ -2315,20 +2305,19 @@ impl Doc {
         let Some(parent) = memo.parent() else {
             return Ok(());
         };
-        let memo_name = memo
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .filter(|value| !value.is_empty());
         let referenced = referenced_image_files(&self.buf);
-        if let Some(memo_name) = memo_name {
-            let image_root = parent.join("image_markdown");
-            let image_dir = image_root.join(memo_name);
+        if let Some(image_dir) = markdown_asset_dir(memo) {
+            let Some(memo_name) = memo.file_stem().and_then(|value| value.to_str()) else {
+                return Ok(());
+            };
             cleanup_image_dir(
                 &image_dir,
-                &format!("image_markdown/{}", memo_name.to_lowercase()),
+                &markdown_image_relative_dir(memo_name),
                 &referenced,
             )?;
-            remove_empty_dir(&image_root)?;
+            if let Some(image_root) = image_dir.parent() {
+                remove_empty_dir(image_root)?;
+            }
         }
         let legacy_dir = parent.join("image");
         cleanup_image_dir(&legacy_dir, "image", &referenced)?;
@@ -2348,21 +2337,19 @@ impl Doc {
             )
         })?;
         let parent = archive_entry_parent(memo_entry);
-        let relative_prefix = archive_join(parent, &format!("image_markdown/{memo_name}"));
+        let relative_image_dir = markdown_image_relative_dir(memo_name);
+        let relative_prefix = archive_join(parent, &relative_image_dir);
         let referenced = referenced_image_files(&self.buf);
         let stale: Vec<String> = entries
             .into_iter()
             .filter(|entry| {
-                let normalized = entry.replace('\\', "/").to_lowercase();
-                let Some(name) = normalized.strip_prefix(&(relative_prefix.to_lowercase() + "/"))
+                let normalized = entry.replace('\\', "/");
+                let Some(name) = normalized.strip_prefix(&(relative_prefix.clone() + "/"))
                 else {
                     return false;
                 };
                 !name.contains('/')
-                    && !referenced.contains(&format!(
-                        "image_markdown/{}/{name}",
-                        memo_name.to_lowercase()
-                    ))
+                    && !referenced.contains(&markdown_image_relative_path(memo_name, name))
             })
             .collect();
         if stale.is_empty() {
@@ -2549,6 +2536,7 @@ impl Doc {
         match_case: bool,
         use_regex: bool,
         whole_word: bool,
+        max_matches: usize,
     ) -> Result<Vec<FindResult>, String> {
         crate::search::find_all_in_range(
             &self.buf,
@@ -2558,6 +2546,7 @@ impl Doc {
             match_case,
             use_regex,
             whole_word,
+            max_matches,
         )
             .map(|matches| matches.into_iter().map(|(start, end)| FindResult {
                 start: self.to_char(start),
@@ -3913,12 +3902,46 @@ mod tests {
     fn find_all_in_visible_range_returns_every_match() {
         let d = doc("needle x needle\nnone\nneedle");
 
-        let found = d.find_all_in_range("needle", 0, 2, true, false, false).unwrap();
+        let found = d.find_all_in_range("needle", 0, 2, true, false, false, crate::search::MAX_FIND_HIGHLIGHTS).unwrap();
 
         let positions: Vec<_> = found.into_iter()
             .map(|result| (result.start.line, result.start.col, result.end.col))
             .collect();
         assert_eq!(positions, vec![(0, 0, 6), (0, 9, 15)]);
+    }
+
+    // Feature: エディタ検索の改行一致強調
+    // Scenario: 改行を検索語にしたとき行末と次行の先頭を一致位置として返す
+    // Given: 通常行と空行を含む4行の文書
+    // When: 表示範囲で改行を検索する
+    // Then: 3つの改行位置を各行末から次行先頭への範囲として返す
+    #[test]
+    fn find_all_in_visible_range_returns_newline_matches() {
+        let d = doc("alpha\nbeta\n\nomega");
+
+        let found = d.find_all_in_range("\n", 0, 4, true, false, false, crate::search::MAX_FIND_HIGHLIGHTS).unwrap();
+
+        let positions: Vec<_> = found.into_iter()
+            .map(|result| (result.start.line, result.start.col, result.end.line, result.end.col))
+            .collect();
+        assert_eq!(positions, vec![(0, 5, 1, 0), (1, 4, 2, 0), (2, 0, 3, 0)]);
+    }
+
+    // Feature: エディタ検索のタブ一致強調
+    // Scenario: タブを検索語にしたとき各タブ文字位置を返す
+    // Given: 1行に2つのタブを含む文書
+    // When: 表示範囲でタブを検索する
+    // Then: 2つのタブ範囲を文字位置で返す
+    #[test]
+    fn find_all_in_visible_range_returns_tab_matches() {
+        let d = doc("a\tb\t");
+
+        let found = d.find_all_in_range("\t", 0, 1, true, false, false, crate::search::MAX_FIND_HIGHLIGHTS).unwrap();
+
+        let positions: Vec<_> = found.into_iter()
+            .map(|result| (result.start.line, result.start.col, result.end.col))
+            .collect();
+        assert_eq!(positions, vec![(0, 1, 2), (0, 3, 4)]);
     }
 
     // Feature: フォルダ検索結果を開いたエディタの一致強調
@@ -3930,7 +3953,7 @@ mod tests {
     fn find_all_in_visible_range_uses_workspace_match_options() {
         let d = doc("cat1 cat1x CAT2");
 
-        let found = d.find_all_in_range(r"cat\d", 0, 1, false, true, true).unwrap();
+        let found = d.find_all_in_range(r"cat\d", 0, 1, false, true, true, crate::search::MAX_FIND_HIGHLIGHTS).unwrap();
 
         let positions: Vec<_> = found.into_iter()
             .map(|result| (result.start.col, result.end.col))
@@ -3947,9 +3970,24 @@ mod tests {
     fn find_all_in_visible_range_caps_match_count() {
         let d = doc(&"a".repeat(crate::search::MAX_FIND_HIGHLIGHTS + 100));
 
-        let found = d.find_all_in_range("a", 0, 1, true, false, false).unwrap();
+        let found = d.find_all_in_range("a", 0, 1, true, false, false, crate::search::MAX_FIND_HIGHLIGHTS).unwrap();
 
         assert_eq!(found.len(), crate::search::MAX_FIND_HIGHLIGHTS);
+    }
+
+    // Feature: 表示範囲内の全置換用検索
+    // Scenario: 表示範囲の一致件数上限を無効化する
+    // Given: 強調表示上限より多いaを含む1行文書
+    // When: 上限0で表示範囲の全一致を検索する
+    // Then: すべての一致位置を返す
+    #[test]
+    fn find_all_in_visible_range_can_return_all_matches() {
+        let count = crate::search::MAX_FIND_HIGHLIGHTS + 100;
+        let d = doc(&"a".repeat(count));
+
+        let found = d.find_all_in_range("a", 0, 1, true, false, false, 0).unwrap();
+
+        assert_eq!(found.len(), count);
     }
 
     #[test]

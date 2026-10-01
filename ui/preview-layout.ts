@@ -5,6 +5,37 @@ export const SIDEBAR_MIN_WIDTH = 120;
 export const SIDEBAR_DEFAULT_WIDTH = 220;
 export const EDITOR_MIN_WIDTH = 120;
 export const PANE_SPLITTER_WIDTH = 4;
+export const EDITOR_MIN_HEIGHT = 120;
+export const PREVIEW_MIN_HEIGHT = 160;
+
+export type PreviewPlacement = "right" | "top" | "bottom";
+export type PreviewOpenPlacement = PreviewPlacement | "last";
+
+export function isPreviewPlacement(value: unknown): value is PreviewPlacement {
+  return value === "right" || value === "top" || value === "bottom";
+}
+
+export function resolvePreviewPlacement(preference: PreviewOpenPlacement, last: PreviewPlacement): PreviewPlacement {
+  return preference === "last" ? last : preference;
+}
+
+export function previewSplitSize(total: number, ratio: number, placement: PreviewPlacement): number {
+  const available = Number.isFinite(total) ? Math.max(0, total - PANE_SPLITTER_WIDTH) : 0;
+  const minimum = placement === "right" ? PREVIEW_MIN_WIDTH : PREVIEW_MIN_HEIGHT;
+  const editorMinimum = placement === "right" ? EDITOR_MIN_WIDTH : EDITOR_MIN_HEIGHT;
+  const maximum = Math.max(0, available - editorMinimum);
+  return Math.min(maximum, Math.max(minimum, available * ratio));
+}
+
+export function previewSizeFromPointer(
+  placement: PreviewPlacement, start: number, end: number, pointer: number,
+): number {
+  const requested = placement === "top" ? pointer - start : end - pointer;
+  const total = end - start;
+  const ratio = Number.isFinite(requested) && total > PANE_SPLITTER_WIDTH
+    ? requested / (total - PANE_SPLITTER_WIDTH) : 0;
+  return previewSplitSize(total, ratio, placement);
+}
 
 export interface PreviewDocument {
   ownerTabId: string | null;
@@ -20,6 +51,8 @@ export interface PreviewLayoutState {
 
 export interface PaneVisibilityInput {
   mainWidth: number;
+  mainHeight?: number;
+  previewPlacement?: PreviewPlacement;
   sidebarAvailable: boolean;
   sidebarCollapsed: boolean;
   sidebarWidth: number;
@@ -37,6 +70,12 @@ export interface PaneVisibility {
 
 export function isPreviewShown(state: PreviewLayoutState): boolean {
   return state.available && !state.collapsed;
+}
+
+export function isPreviewOpenButtonShown(
+  state: PreviewLayoutState, current: PreviewPlacement, target: PreviewPlacement,
+): boolean {
+  return !isPreviewFullscreen(state) && (!isPreviewShown(state) || current !== target);
 }
 
 export function isPreviewFullscreen(state: PreviewLayoutState): boolean {
@@ -78,15 +117,6 @@ export function effectivePreviewFormat(
     : detectedFormat;
 }
 
-export function previewWidthFromPointer(mainRight: number, clientX: number, mainLeft = 0): number {
-  const measuredAvailable = mainRight - mainLeft;
-  const available = Number.isFinite(measuredAvailable) ? Math.max(0, measuredAvailable) : 0;
-  const minWidth = Math.min(PREVIEW_MIN_WIDTH, available);
-  const requested = mainRight - clientX;
-  if (!Number.isFinite(requested)) return minWidth;
-  return Math.min(available, Math.max(minWidth, requested));
-}
-
 export function resolvePaneVisibility(input: PaneVisibilityInput): PaneVisibility {
   const mainWidth = Number.isFinite(input.mainWidth) ? Math.max(0, input.mainWidth) : 0;
   const sidebarWidth = Number.isFinite(input.sidebarWidth)
@@ -108,6 +138,15 @@ export function resolvePaneVisibility(input: PaneVisibilityInput): PaneVisibilit
     const sidebarShown = requestedSidebar
       && mainWidth >= sidebarWidth + PANE_SPLITTER_WIDTH + PREVIEW_MIN_WIDTH;
     return { sidebarShown, previewShown: true, fullscreen: true };
+  }
+
+  if (input.previewPlacement && input.previewPlacement !== "right") {
+    const sidebarShown = requestedSidebar
+      && mainWidth >= sidebarWidth + PANE_SPLITTER_WIDTH + EDITOR_MIN_WIDTH;
+    const mainHeight = input.mainHeight ?? 0;
+    const previewShown = requestedPreview && Number.isFinite(mainHeight)
+      && mainHeight >= EDITOR_MIN_HEIGHT + PANE_SPLITTER_WIDTH + PREVIEW_MIN_HEIGHT;
+    return { sidebarShown, previewShown, fullscreen: false };
   }
 
   let sidebarShown = requestedSidebar;

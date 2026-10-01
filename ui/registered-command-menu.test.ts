@@ -34,13 +34,15 @@ describe("Feature: shared registered-command context menu", () => {
 
   // Given: 設定モーダルから開くファイル用の登録コマンドダイアログ
   // When: 共通ダイアログへ対象種別だけを渡す
-  // Then: 右クリックと同じ入力欄を表示し、設定からも登録値を受け取れる
+  // Then: 右クリックと同じ入力欄と確認用プレビューを表示し、設定からも登録値を受け取れる
   it("Scenario: 対象種別を指定して登録コマンドダイアログを開く", async () => {
     const promptFields = vi.fn(async (...args: Parameters<typeof promptFieldsImpl>) => {
       expect(args[0]).toBe("コマンドを登録");
       expect(args[1][0].value).toBe("ファイル用コマンド");
       expect(args[1][1].label).toContain("{file}=対象ファイル");
-      expect(args[2]).toBeUndefined();
+      expect(args[2]).toEqual(expect.objectContaining({
+        preview: expect.objectContaining({ label: "実行文字列（確認用）" }),
+      }));
       return ["VS Code", "code {file}"];
     });
 

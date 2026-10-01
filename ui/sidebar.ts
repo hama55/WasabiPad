@@ -4,13 +4,17 @@ import {
   type WorkspaceSearchPorts,
   type WorkspaceSearchViewState,
 } from "./workspace-search-panel";
-import { archiveEntryPath, splitArchiveEntryPath } from "./archive-path";
+import { archiveEntryPath, isArchiveEntryPath, splitArchiveEntryPath } from "./archive-path";
 import type { ContextTarget } from "./context-target";
 import { preventMiddleClickDefault } from "./interaction-constants";
 import { iconButton } from "./icon-button";
 import { createMenuIcon, MENU_ICON } from "./menu-icons";
 import { runAsyncBoundary } from "./async-boundary";
-import { isDescendantPath } from "./path";
+import {
+  comparableDocumentPath,
+  isDescendantPath,
+  isSameOrDescendantDocumentPath,
+} from "./path";
 import type { FileTreeDropRequest, FileTreeDropResult } from "./file-tree-drop";
 import { clampSearchOptions } from "./workspace-search-options";
 import { isFindShortcut } from "./commands";
@@ -301,9 +305,9 @@ export class Sidebar {
       if (!archiveRelPath || !entryName) return Promise.resolve(false);
       const key = `archive:${archiveRelPath.toLowerCase()}`;
       const names = existence.get(key) ?? this.onExpandArchive(archiveRelPath)
-        .then((entries) => new Set(entries.map(pathKey)));
+        .then((entries) => new Set(entries.map(normalizeRelPath)));
       existence.set(key, names);
-      return names.then((available) => available.has(pathKey(entryName)));
+      return names.then((available) => available.has(entryName));
     }
 
     const parent = parentRelPath(normalized);
@@ -830,7 +834,7 @@ export class Sidebar {
     if (!sourceRelPaths?.length) return false;
     const target = targetRelDir.replace(/\\/g, "/").replace(/\/$/, "");
     return sourceRelPaths.every((sourceRelPath) => {
-      if (sourceRelPath.includes("::")) return false;
+      if (isArchiveEntryPath(sourceRelPath)) return false;
       const source = sourceRelPath.replace(/\\/g, "/").replace(/\/$/, "");
       return !target || (source !== target && !target.startsWith(`${source}/`));
     });
@@ -1199,10 +1203,8 @@ function parentRelPath(relPath: string): string {
 }
 
 function isAncestorRelPath(ancestor: string, descendant: string): boolean {
-  const normalizedAncestor = normalizeRelPath(ancestor);
-  const normalizedDescendant = normalizeRelPath(descendant);
-  return normalizedDescendant.startsWith(`${normalizedAncestor}/`)
-    || normalizedDescendant.startsWith(`${normalizedAncestor}::`);
+  return comparableDocumentPath(ancestor) !== comparableDocumentPath(descendant)
+    && isSameOrDescendantDocumentPath(descendant, ancestor);
 }
 
 function normalizeRelPath(relPath: string): string {
@@ -1210,7 +1212,7 @@ function normalizeRelPath(relPath: string): string {
 }
 
 function pathKey(relPath: string): string {
-  return normalizeRelPath(relPath).toLowerCase();
+  return comparableDocumentPath(relPath);
 }
 
 function fileCommandForEvent(event: KeyboardEvent): SidebarFileCommand | null {

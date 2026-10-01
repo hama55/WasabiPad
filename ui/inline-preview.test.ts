@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ViewerFormat } from "./api";
 import { InlinePreview, INLINE_PREVIEW_MESSAGES } from "./inline-preview";
+import { createExternalPreviewOutputLifecycle } from "./preview-replacement";
 
 const { setInlinePreviewFocusMock } = vi.hoisted(() => ({
   setInlinePreviewFocusMock: vi.fn(async () => undefined),
@@ -35,6 +36,60 @@ function mount(
 }
 
 describe("Feature: inline preview", () => {
+  // Given: 外部プレビュー更新の通知先がある
+  // When: 正規frameと別frameが更新操作を通知する
+  // Then: 正規frameだけが既存の更新経路へ届く
+  it("Scenario: 外部プレビューの更新操作を親へ通知する", () => {
+    const host = document.createElement("div");
+    host.appendChild(document.createElement("iframe"));
+    document.body.appendChild(host);
+    const onRefresh = vi.fn();
+    new InlinePreview(host, { onRefresh });
+    const data = { type: INLINE_PREVIEW_MESSAGES.REFRESH_MESSAGE };
+    window.dispatchEvent(new MessageEvent("message", { source: window, origin: window.location.origin, data }));
+    expect(onRefresh).not.toHaveBeenCalled();
+    window.dispatchEvent(new MessageEvent("message", {
+      source: host.querySelector("iframe")!.contentWindow, origin: window.location.origin, data,
+    }));
+    expect(onRefresh).toHaveBeenCalledOnce();
+  });
+  // Given: iframeの準備が終わる前にキーボードで開く
+  // When: 閉じるボタンへのfocusを要求し、ready通知を受ける
+  // Then: ready前は送らず、ready後に同一originへ1回だけfocus通知する
+  it("Scenario: iframe準備後に閉じるボタンへフォーカスする", () => {
+    const { host, preview } = mount();
+    const frame = host.querySelector("iframe")!;
+    const post = vi.spyOn(frame.contentWindow!, "postMessage");
+    preview.focusCloseButton();
+    expect(post).not.toHaveBeenCalled();
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow, origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
+    }));
+    const focusCalls = post.mock.calls.filter(([message]) => message.type === INLINE_PREVIEW_MESSAGES.FOCUS_CLOSE_MESSAGE);
+    expect(focusCalls).toEqual([[{ type: INLINE_PREVIEW_MESSAGES.FOCUS_CLOSE_MESSAGE }, window.location.origin]]);
+  });
+  // Given: プレビューiframeと、閉じる通知の受け口がある
+  // When: 正規frameが閉じる操作を通知し、別frameも同じ通知を送る
+  // Then: 正規frameからの通知だけ既存の閉じる経路へ渡す
+  it("Scenario: ツールバーの閉じる操作を親へ通知する", () => {
+    const host = document.createElement("div");
+    host.appendChild(document.createElement("iframe"));
+    document.body.appendChild(host);
+    const onClose = vi.fn();
+    new InlinePreview(host, { onClose });
+    const frame = host.querySelector("iframe")!;
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow, origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.CLOSE_MESSAGE, return_focus: true },
+    }));
+    expect(onClose).toHaveBeenCalledExactlyOnceWith(true);
+    window.dispatchEvent(new MessageEvent("message", {
+      source: window, origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.CLOSE_MESSAGE, return_focus: true },
+    }));
+    expect(onClose).toHaveBeenCalledOnce();
+  });
   // Feature: インラインプレビューのネイティブ検索抑止
   // Scenario: プレビューiframeのフォーカスをネイティブ境界へ通知する
   // Given: インラインプレビューのiframe
@@ -59,14 +114,80 @@ describe("Feature: inline preview", () => {
 
     const first = await preview.open("markdown", "# first", null);
     const second = await preview.open("csv", "a,b", null);
-    await preview.close(first);
+    await preview.close(first!);
 
     expect(host.hidden).toBe(false);
-    expect(onAvailabilityChange).toHaveBeenLastCalledWith(true);
+    expect(onAvailabilityChange).toHaveBeenLastCalledWith(true, second);
 
-    await preview.close(second);
+    await preview.close(second!);
     expect(host.hidden).toBe(true);
-    expect(onAvailabilityChange).toHaveBeenLastCalledWith(false);
+    expect(onAvailabilityChange).toHaveBeenLastCalledWith(false, second);
+  });
+
+  // Feature: 外部プレビューの取消と生成物寿命
+  // Scenario: rollbackを確認できない間は候補出力を参照中として保持する
+  // Given: 旧HTMLが表示され、新しいHTMLへの置換が保留されている
+  // When: 旧表示へのrollbackが失敗し、後のretryでは成功する
+  // Then: 失敗時は候補をcleanupせず、成功確認後にだけ解放する
+  it("Scenario: preserves a pending output when rollback fails and releases it after a confirmed retry", async () => {
+    const host = document.createElement("div");
+    const frame = document.createElement("iframe");
+    host.appendChild(frame);
+    document.body.appendChild(host);
+    const cleanedPaths: string[] = [];
+    const outputLifecycle = createExternalPreviewOutputLifecycle((path) => cleanedPaths.push(path));
+    const oldPath = "C:\\Temp\\WasabiPad\\rollback\\old.html";
+    const pendingPath = "C:\\Temp\\WasabiPad\\rollback\\pending.html";
+    let preview!: InlinePreview;
+    preview = new InlinePreview(host, {
+      onExternalOutputReleased: (path) => outputLifecycle.discardGeneratedOutput(
+        path,
+        preview.mayReferenceExternalOutputPath(path),
+      ),
+    });
+    const postMessage = vi.spyOn(frame.contentWindow!, "postMessage");
+    const lastPayload = () => postMessage.mock.calls
+      .map(([message]) => message as { type?: string; render_id?: string; payload?: { external_output_path: string | null } })
+      .filter((message) => message.type === INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE)
+      .at(-1);
+    const notify = (type: string, renderId: string) => window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: window.location.origin,
+      data: { type, render_id: renderId },
+    }));
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
+    }));
+
+    const oldOpening = preview.open("html", "old", null, oldPath);
+    await vi.waitFor(() => expect(lastPayload()?.render_id).toEqual(expect.any(String)));
+    notify(INLINE_PREVIEW_MESSAGES.DISPLAY_COMMITTED_MESSAGE, lastPayload()!.render_id!);
+    expect(await oldOpening).not.toBeNull();
+    outputLifecycle.replaceDisplayedOutput(oldPath);
+
+    const pendingOpening = preview.open("html", "new", null, pendingPath);
+    await vi.waitFor(() => expect(lastPayload()?.payload?.external_output_path).toBe(pendingPath));
+    const cancellation = preview.cancelPendingExternalOpen();
+    const rollbackRenderId = lastPayload()!.render_id!;
+    notify(INLINE_PREVIEW_MESSAGES.DISPLAY_FAILED_MESSAGE, rollbackRenderId);
+
+    await expect(cancellation).rejects.toThrow("rollback");
+    expect(await pendingOpening).toBeNull();
+    expect(preview.mayReferenceExternalOutputPath(pendingPath)).toBe(true);
+    outputLifecycle.discardGeneratedOutput(pendingPath, preview.mayReferenceExternalOutputPath(pendingPath));
+    expect(outputLifecycle.displayedOutputPath()).toBe(oldPath);
+    expect(cleanedPaths).toEqual([]);
+
+    const retry = preview.cancelPendingExternalOpen();
+    const retryRenderId = lastPayload()!.render_id!;
+    notify(INLINE_PREVIEW_MESSAGES.DISPLAY_COMMITTED_MESSAGE, retryRenderId);
+    await retry;
+
+    expect(preview.mayReferenceExternalOutputPath(oldPath)).toBe(true);
+    expect(preview.mayReferenceExternalOutputPath(pendingPath)).toBe(false);
+    expect(cleanedPaths).toEqual([pendingPath]);
   });
 
   // Given: 現在のプレビューが開いている
@@ -77,7 +198,7 @@ describe("Feature: inline preview", () => {
     const label = await preview.open("markdown", "# memo", null);
 
     expect(await preview.update("old-preview", "old", null)).toBe(false);
-    expect(await preview.update(label, "new", null)).toBe(true);
+    expect(await preview.update(label!, "new", null)).toBe(true);
   });
 
   // Given: 右側プレビューが表示形式の選択を持つ

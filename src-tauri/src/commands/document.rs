@@ -272,10 +272,11 @@ pub(crate) fn find_all_in_range(
     match_case: bool,
     use_regex: bool,
     whole_word: bool,
+    max_matches: usize,
     state: State,
 ) -> Result<Vec<FindResult>, String> {
     with_doc(&state, |doc| {
-        doc.find_all_in_range(&pat, first_line, last_line, match_case, use_regex, whole_word)
+        doc.find_all_in_range(&pat, first_line, last_line, match_case, use_regex, whole_word, max_matches)
     })?
 }
 

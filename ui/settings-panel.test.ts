@@ -12,21 +12,34 @@ import {
   type SettingsPanelPorts,
 } from "./settings-panel";
 
-function makePorts(initial: Partial<Settings> = {}): SettingsPanelPorts {
+function makePorts(
+  initial: Partial<Settings> = {},
+  pickExternalPreviewTemporaryDirectory: NonNullable<SettingsPanelPorts["pickExternalPreviewTemporaryDirectory"]>
+    = vi.fn(async () => null),
+): SettingsPanelPorts {
   const values: Settings = {
     indentSize: 8,
     sidebarWidth: 220,
     fontFamily: 'Consolas, "MS Gothic", monospace',
     fontSize: 14,
     previewFontSize: 14,
+    previewOpenPlacement: "right",
+    previewLastPlacement: "right",
+    previewRightRatio: 0.5,
+    previewVerticalRatio: 0.5,
     markdownSoftBreaks: true,
     markdownLineHeight: 1.65,
     markdownHeadingUnderlines: false,
     sqlitePreviewRows: 100,
     previewCacheDirectory: null,
+    externalPreviewTemporaryDirectory: null,
+    externalPreviewTemporaryDirectories: [],
     startupPath: null,
     registeredStrings: [],
     registeredCommands: [],
+    externalPreviewAdapters: [],
+    externalPreviewAdapterSelections: {},
+    trustedExternalPreviewAdapterIds: [],
     workspaceSearchOptions: null,
     openTabs: { tabs: [], activeId: null },
     ...initial,
@@ -46,16 +59,149 @@ function makePorts(initial: Partial<Settings> = {}): SettingsPanelPorts {
     applyMarkdownSoftBreaks: vi.fn(),
     applyMarkdownLineHeight: vi.fn(),
     applyMarkdownHeadingUnderlines: vi.fn(),
+    pickExternalPreviewTemporaryDirectory,
+    flushSettings: vi.fn(async () => {}),
     openSearchSettings: vi.fn(),
     openRegisteredString: vi.fn(),
     openRegisteredCommand: vi.fn(),
+    openExternalPreviewAdapter: vi.fn(),
     confirmReset: vi.fn(async () => true),
     resetSettings: vi.fn(),
   };
 }
 
+async function answerConfirmation(approved: boolean): Promise<void> {
+  const message = document.querySelector<HTMLElement>(".pf-message")!;
+  const button = approved ? ".pf-ok" : ".pf-cancel";
+  message.parentElement!.querySelector<HTMLButtonElement>(button)!.click();
+  await Promise.resolve();
+}
+
 describe("Feature: settings modal", () => {
   afterEach(() => document.body.replaceChildren());
+
+  // Given: 初期設定は右固定
+  // When: プレビュー設定から配置オプションを変更する
+  // Then: 4つの選択肢があり、選択を通常の設定保存へ渡す
+  it("Scenario: 方向未指定のプレビュー配置を設定から選ぶ", () => {
+    const ports = makePorts();
+    openSettingsModal(ports);
+    const select = document.querySelector<HTMLSelectElement>('[data-setting="preview-open-placement"]')!;
+    expect(select.value).toBe("right");
+    expect(Array.from(select.options, (option) => option.textContent))
+      .toEqual(["右固定", "上固定", "下固定", "最後に選んだ方向"]);
+    for (const value of ["top", "bottom", "last", "right"]) {
+      select.value = value;
+      select.dispatchEvent(new Event("change"));
+      expect(ports.setSetting).toHaveBeenLastCalledWith("previewOpenPlacement", value);
+    }
+  });
+
+  // Feature: 外部プレビューの設定画面
+  // Scenario: 一覧から追加・削除の操作を各portへ委譲する
+  // Given: 外部プレビューが1件登録されている
+  // When: 追加と削除を操作し、削除確認をキャンセルしてから承認する
+  // Then: キャンセル中は保持し、承認後だけ削除される
+  it("Scenario: 外部プレビュー一覧を編集する", async () => {
+    const adapter = {
+      id: "addon-1",
+      name: "ABC preview",
+      extensions: ["abc"],
+      command: "renderer",
+      args: "{file} {output}",
+      outputFormat: "html" as const,
+      preferExternal: false,
+    };
+    const ports = makePorts({ externalPreviewAdapters: [adapter] });
+    openSettingsModal(ports);
+
+    const group = document.querySelector<HTMLElement>('[data-setting-group="external-preview-adapters"]')!;
+    expect(group.querySelector("h3")?.textContent).toBe("外部プレビュー");
+    expect(group.querySelector('[data-external-preview-row]')?.textContent).toContain("ABC preview — .abc → renderer");
+    expect(group.querySelector<HTMLButtonElement>('[data-action="edit-external-preview-adapter"]')?.title)
+      .toBe("外部プレビューを編集");
+    const add = group.querySelector<HTMLButtonElement>('[data-action="add-external-preview-adapter"]')!;
+    expect(add.title).toBe("外部プレビューを追加");
+    add.click();
+    expect(ports.openExternalPreviewAdapter).toHaveBeenCalledOnce();
+
+    const remove = group.querySelector<HTMLButtonElement>('[data-action="delete-external-preview-adapter"]')!;
+    expect(remove.title).toBe("外部プレビューを削除");
+    remove.click();
+    expect(document.querySelector<HTMLElement>(".pf-message")?.textContent)
+      .toContain(".abc の外部プレビュー設定を削除しますか？");
+    await answerConfirmation(false);
+    expect(ports.getSetting("externalPreviewAdapters")).toHaveLength(1);
+    remove.click();
+    await answerConfirmation(true);
+    expect(ports.setSetting).toHaveBeenCalledWith("externalPreviewAdapters", []);
+    expect(group.querySelector('[data-external-preview-row]')).toBeNull();
+  });
+
+  // Feature: 外部プレビュー一時保存先
+  // Scenario: 設定画面から場所を選び、掃除履歴を保存してから表示を更新する
+  // Given: 既定の外部プレビュー一時保存先が表示されている
+  // When: 利用者が別のフォルダを選ぶ
+  // Then: 履歴と現在の保存先を保存し、設定画面に選択先を表示する
+  it("Scenario: 外部プレビュー一時保存先を変更する", async () => {
+    const picker = vi.fn(async () => "D:\\WasabiPad\\preview-jobs");
+    const ports = makePorts({}, picker);
+    openSettingsModal(ports);
+
+    const field = document.querySelector<HTMLElement>(
+      '[data-setting-group="external-preview-temporary-directory"]',
+    )!;
+    const previewSection = document.querySelector<HTMLElement>('[data-settings-section="プレビュー"]')!;
+    const externalPreviewSection = document.querySelector<HTMLElement>('[data-settings-section="外部プレビュー"]')!;
+    expect(previewSection.contains(field)).toBe(false);
+    expect(externalPreviewSection.contains(field)).toBe(true);
+    expect(field.classList.contains("settings-list-row")).toBe(true);
+    expect([...field.children].map((child) => child.tagName)).toEqual(["SPAN", "SPAN", "BUTTON"]);
+    expect(field.querySelector('[data-setting="external-preview-temporary-directory"]')?.textContent)
+      .toBe("%TEMP%\\WasabiPad\\external-preview");
+    field.querySelector<HTMLButtonElement>("button")!.click();
+
+    await vi.waitFor(() => expect(
+      field.querySelector('[data-setting="external-preview-temporary-directory"]')?.textContent,
+    ).toBe("D:\\WasabiPad\\preview-jobs"));
+    expect(ports.setSetting).toHaveBeenNthCalledWith(
+      1,
+      "externalPreviewTemporaryDirectories",
+      ["D:\\WasabiPad\\preview-jobs"],
+    );
+    expect(ports.setSetting).toHaveBeenNthCalledWith(
+      2,
+      "externalPreviewTemporaryDirectory",
+      "D:\\WasabiPad\\preview-jobs",
+    );
+    expect(ports.flushSettings).toHaveBeenCalledOnce();
+  });
+
+  // Feature: 外部プレビューの過去の一時保存先
+  // Scenario: 保存先を変更しても以前の掃除対象を履歴に残す
+  // Given: 以前の保存先が掃除履歴にあり、現在の保存先として選ばれている
+  // When: 別の保存先を選ぶ
+  // Then: 現在の保存先は変わり、以前と新しい場所の両方が保存される
+  it("Scenario: 保存先の変更後も以前の保存先を掃除履歴に残す", async () => {
+    const oldDirectory = "C:\\WasabiPad\\old-preview-jobs";
+    const newDirectory = "D:\\WasabiPad\\new-preview-jobs";
+    const ports = makePorts({
+      externalPreviewTemporaryDirectory: oldDirectory,
+      externalPreviewTemporaryDirectories: [oldDirectory],
+    }, vi.fn(async () => newDirectory));
+    openSettingsModal(ports);
+
+    const field = document.querySelector<HTMLElement>(
+      '[data-setting-group="external-preview-temporary-directory"]',
+    )!;
+    field.querySelector<HTMLButtonElement>("button")!.click();
+    await vi.waitFor(() => expect(ports.getSetting("externalPreviewTemporaryDirectory")).toBe(newDirectory));
+
+    expect(ports.setSetting).toHaveBeenCalledWith(
+      "externalPreviewTemporaryDirectories",
+      [oldDirectory, newDirectory],
+    );
+  });
 
   // Given: 設定モーダルを開く処理と閉じる処理を注入する
   // When: ギア相当の開閉処理を開く・閉じる・再表示の順に呼ぶ
@@ -150,6 +296,7 @@ describe("Feature: settings modal", () => {
       "一般",
       "エディタ",
       "プレビュー",
+      "外部プレビュー",
       "検索",
       "登録文字列",
       "登録コマンド（ファイル）",
@@ -160,6 +307,7 @@ describe("Feature: settings modal", () => {
       "一般",
       "エディタ",
       "プレビュー",
+      "外部プレビュー",
       "検索",
       "登録文字列",
       "登録コマンド（ファイル）",
@@ -310,11 +458,12 @@ describe("Feature: settings modal", () => {
 
     const content = document.querySelector<HTMLElement>(".settings-content")!;
     const sections = [...content.querySelectorAll<HTMLElement>("[data-settings-section]")];
+    const searchIndex = sections.findIndex((section) => section.dataset.settingsSection === "検索");
     vi.spyOn(content, "getBoundingClientRect").mockReturnValue({ top: 100, bottom: 500 } as DOMRect);
     sections.forEach((section, index) => {
       vi.spyOn(section, "getBoundingClientRect").mockReturnValue({
-        top: index < 3 ? -500 + index * 100 : index === 3 ? 105 : 700 + index * 100,
-        bottom: index < 3 ? -400 + index * 100 : index === 3 ? 300 : 900 + index * 100,
+        top: index < searchIndex ? -500 + index * 100 : index === searchIndex ? 105 : 700 + index * 100,
+        bottom: index < searchIndex ? -400 + index * 100 : index === searchIndex ? 300 : 900 + index * 100,
       } as DOMRect);
     });
 
@@ -449,9 +598,9 @@ describe("Feature: settings modal", () => {
   });
 
   // Given: ファイル用1件、文字列用2件、ファイル用1件の登録コマンドがある
-  // When: ファイル用の先頭を削除してから、文字列用の2件目を上へ移動し、1件目を削除する
+  // When: ファイル用の先頭を削除してから、文字列用の2件目を上へ移動し、1件目の削除を承認する
   // Then: 別種別の削除で配列位置が変わっても対象コマンドを正しく操作する
-  it("Scenario: 種類の異なるコマンド削除後も別一覧の操作対象を維持する", () => {
+  it("Scenario: 種類の異なるコマンド削除後も別一覧の操作対象を維持する", async () => {
     const ports = makePorts({
       registeredCommands: [
         { label: "Editor", prefix: "", command: "code {file}" },
@@ -465,8 +614,10 @@ describe("Feature: settings modal", () => {
     const fileCommands = document.querySelector<HTMLElement>('[data-setting-group="registered-commands-file"]')!;
     const stringCommands = document.querySelector<HTMLElement>('[data-setting-group="registered-commands-string"]')!;
     fileCommands.querySelector<HTMLButtonElement>('[data-action="delete-registered-command"][data-command-index="0"]')!.click();
-    stringCommands.querySelector<HTMLButtonElement>('[data-action="move-registered-command-up"][data-command-index="2"]')!.click();
+    await answerConfirmation(true);
+    stringCommands.querySelector<HTMLButtonElement>('[data-action="move-registered-command-up"][data-command-index="1"]')!.click();
     stringCommands.querySelector<HTMLButtonElement>('[data-action="delete-registered-command"][data-command-index="1"]')!.click();
+    await answerConfirmation(true);
 
     expect(ports.getSetting("registeredCommands")).toEqual([
       { label: "Terminal", prefix: "", command: "wt {string}", valueKind: "string" },
@@ -704,9 +855,9 @@ describe("Feature: settings modal", () => {
   });
 
   // Given: 登録文字列と登録コマンドが詳細設定に表示されている
-  // When: 登録一覧から項目を削除する
-  // Then: 対象項目だけを設定ストアから削除する
-  it("Scenario: 登録項目を設定モーダルから削除する", () => {
+  // When: 登録一覧から項目を削除し、1件は確認をキャンセルする
+  // Then: キャンセル中は保持し、承認した項目だけを設定ストアから削除する
+  it("Scenario: 登録項目を設定モーダルから削除する", async () => {
     const ports = makePorts({
       registeredStrings: ["one", "two"],
       registeredCommands: [{ label: "Editor", prefix: "", command: "code {file}" }],
@@ -715,9 +866,17 @@ describe("Feature: settings modal", () => {
 
     const strings = document.querySelector<HTMLElement>('[data-setting-group="registered-strings"]')!;
     const commands = document.querySelector<HTMLElement>('[data-setting-group="registered-commands-file"]')!;
+    const firstString = strings.querySelector<HTMLButtonElement>('[title="登録文字列を削除"]')!;
+    firstString.click();
+    expect(document.querySelector<HTMLElement>(".pf-message")?.textContent).toContain("「one」を削除しますか？");
+    await answerConfirmation(false);
+    expect(ports.getSetting("registeredStrings")).toEqual(["one", "two"]);
+    firstString.click();
+    await answerConfirmation(true);
     strings.querySelector<HTMLButtonElement>('[title="登録文字列を削除"]')!.click();
-    strings.querySelector<HTMLButtonElement>('[title="登録文字列を削除"]')!.click();
+    await answerConfirmation(true);
     commands.querySelector<HTMLButtonElement>('[title="このコマンドの登録を解除"]')!.click();
+    await answerConfirmation(true);
 
     expect(ports.setSetting).toHaveBeenCalledWith("registeredStrings", ["two"]);
     expect(ports.setSetting).toHaveBeenCalledWith("registeredStrings", []);

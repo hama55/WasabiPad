@@ -64,7 +64,7 @@ writeIfChanged("viewer.html", viewer);
 let settings = read("core/src/settings.rs");
 settings = replaceOnce(
   settings,
-  /(PathBuf::from\(local\)\.join\(")[^"]+("\)\.join\(file\))/,
+  /(PathBuf::from\(local\)\.join\(")[^"]+("\))/,
   `$1${config.name}$2`,
   "settings directory",
 );

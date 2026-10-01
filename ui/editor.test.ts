@@ -31,7 +31,7 @@ installDomStubs();
 function mount(
   initial: string,
   saveImage?: EditorPorts["saveImage"],
-  overrides: Partial<Pick<EditorPorts, "revealInExplorer" | "openInNewTab" | "openInNewWindow" | "openAs" | "registeredCommandPorts" | "openViewer">> = {},
+  overrides: Partial<Pick<EditorPorts, "revealInExplorer" | "openInNewTab" | "openInNewWindow" | "openAs" | "registeredCommandPorts" | "openViewer" | "closeViewer" | "togglePreview">> = {},
 ) {
   const host = document.createElement("div");
   document.body.replaceChildren(host);
@@ -56,9 +56,10 @@ function mount(
       runExternalCommand: async () => {},
     },
     onError: async (message, error) => { events.errors.push({ message, error }); },
+    togglePreview: overrides.togglePreview ?? (() => {}),
     openViewer: overrides.openViewer ?? (async () => null),
     updateViewer: async () => true,
-    closeViewer: async () => {},
+    closeViewer: overrides.closeViewer ?? (async () => {}),
     saveImage,
   };
   const editor = new VirtualEditor(host, ports, undefined, doc.client);
@@ -197,6 +198,7 @@ describe("Feature: VirtualEditor", () => {
     try {
       const { editor, host } = mount("line");
       const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
+      Object.defineProperty(host, "clientWidth", { configurable: true, value: 300 });
       Object.defineProperties(scroll, {
         clientHeight: { configurable: true, value: 0 },
         clientWidth: { configurable: true, value: 0 },
@@ -213,6 +215,7 @@ describe("Feature: VirtualEditor", () => {
       notifyResize?.([], {} as ResizeObserver);
       await vi.waitFor(() => {
         expect(host.querySelector<HTMLElement>(".ve-line")?.textContent).toBe("line");
+        expect(host.classList.contains("ve-find-wrap")).toBe(true);
       });
     } finally {
       (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = originalResizeObserver;
@@ -588,6 +591,156 @@ describe("Feature: VirtualEditor", () => {
 
     expect(editor.captureViewState().caret).toEqual({ line: 1, col: 3 });
     layout.restore();
+  });
+
+  // Feature: 折り返し字下げ
+  // Scenario: 行頭の空白幅を折り返し後の表示行へ引き継ぐ
+  // Given: タブ、スペース、混在、字下げなしの長文を折り返し表示している
+  // When: 可視行を描画する
+  // Then: 行頭空白の表示幅が折り返し字下げとして設定され、字下げなしは0になる
+  it.each([
+    ["\tlong", "64px"],
+    ["  long", "16px"],
+    ["\t  long", "80px"],
+    ["long", "0px"],
+    ["", "0px"],
+    ["   ", "0px"],
+    [" ".repeat(25) + "long", "200px"],
+  ])("Scenario: %s の折り返し字下げを表示幅で揃える", async (text, expectedIndent) => {
+    const { editor, host } = mount(text);
+    editor.open(1, false);
+    await settle();
+    editor.setWrap(true);
+    await settle();
+
+    expect(host.querySelector<HTMLElement>(".ve-line")?.style.getPropertyValue("--ve-wrap-indent"))
+      .toBe(expectedIndent);
+  });
+
+  // Feature: 折り返し字下げの再計算
+  // Scenario: 文自体が変わったときに表示幅を更新する
+  // Given: 1つのスペースで始まる文を折り返し表示している
+  // When: 行頭へタブを入力する
+  // Then: 折り返し字下げは変更後のタブとスペースの表示幅になる
+  it("Scenario: 文の変更後に折り返し字下げを再計算する", async () => {
+    const { editor, host, type } = mount(" long");
+    editor.open(1, false);
+    await settle();
+    editor.setWrap(true);
+    await settle();
+    expect(host.querySelector<HTMLElement>(".ve-line")?.style.getPropertyValue("--ve-wrap-indent"))
+      .toBe("8px");
+
+    type("\t");
+    await settle();
+
+    expect(host.querySelector<HTMLElement>(".ve-line")?.style.getPropertyValue("--ve-wrap-indent"))
+      .toBe("72px");
+  });
+
+  // Feature: 折り返し字下げのタブ幅追従
+  // Scenario: タブ表示幅を変更すると表示幅を更新する
+  // Given: タブで始まる文を折り返し表示している
+  // When: タブ表示幅を4へ変更する
+  // Then: 折り返し字下げは4文字分の表示幅になる
+  it("Scenario: タブ表示幅の変更後に折り返し字下げを再計算する", async () => {
+    const { editor, host } = mount("\tlong");
+    editor.open(1, false);
+    await settle();
+    editor.setWrap(true);
+    await settle();
+
+    editor.setTabSize(4);
+    await settle();
+
+    expect(host.querySelector<HTMLElement>(".ve-line")?.style.getPropertyValue("--ve-wrap-indent"))
+      .toBe("32px");
+  });
+
+  // Feature: 折り返し字下げのフォント追従
+  // Scenario: フォント変更後に表示幅を更新する
+  // Given: 1つのスペースで始まる文を折り返し表示している
+  // When: フォント設定を変更し、スペース幅が変わる
+  // Then: 折り返し字下げは変更後の表示幅になる
+  it("Scenario: フォント変更後に折り返し字下げを再計算する", async () => {
+    let spaceWidth = 8;
+    const getContext = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation((type) => {
+      if (type !== "2d") return null;
+      return {
+        font: "",
+        measureText: () => ({ width: spaceWidth }),
+      } as unknown as CanvasRenderingContext2D;
+    });
+    try {
+      const { editor, host } = mount(" long");
+      editor.open(1, false);
+      await settle();
+      editor.setWrap(true);
+      await settle();
+      expect(host.querySelector<HTMLElement>(".ve-line")?.style.getPropertyValue("--ve-wrap-indent"))
+        .toBe("8px");
+
+      spaceWidth = 12;
+      editor.setFont("Meiryo, sans-serif", 20);
+
+      expect(host.querySelector<HTMLElement>(".ve-line")?.style.getPropertyValue("--ve-wrap-indent"))
+        .toBe("12px");
+    } finally {
+      getContext.mockRestore();
+    }
+  });
+
+  // Feature: 折り返し字下げの表示領域追従
+  // Scenario: 本文領域の幅変更後に表示幅を更新する
+  // Given: 1つのスペースで始まる文を折り返し表示している
+  // When: 本文領域の幅を変更してウィンドウのresizeを通知する
+  // Then: 折り返し字下げを再計算する
+  it("Scenario: 本文領域の幅変更後に折り返し字下げを再計算する", async () => {
+    let spaceWidth = 8;
+    const getContext = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation((type) => {
+      if (type !== "2d") return null;
+      return {
+        font: "",
+        measureText: () => ({ width: spaceWidth }),
+      } as unknown as CanvasRenderingContext2D;
+    });
+    try {
+      const { editor, host } = mount(" long");
+      const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
+      editor.open(1, false);
+      await settle();
+      editor.setWrap(true);
+      await settle();
+      expect(host.querySelector<HTMLElement>(".ve-line")?.style.getPropertyValue("--ve-wrap-indent"))
+        .toBe("8px");
+
+      Object.defineProperty(scroll, "clientWidth", { configurable: true, value: 180 });
+      spaceWidth = 10;
+      window.dispatchEvent(new Event("resize"));
+      await settle();
+
+      expect(host.querySelector<HTMLElement>(".ve-line")?.style.getPropertyValue("--ve-wrap-indent"))
+        .toBe("10px");
+    } finally {
+      getContext.mockRestore();
+    }
+  });
+
+  // Feature: 折り返し字下げの表示限定
+  // Scenario: 折り返しをオフにしても本文を変更しない
+  // Given: タブ字下げの文を折り返し表示している
+  // When: 折り返しをオフにする
+  // Then: 本文は元のままで、折り返し状態だけが解除される
+  it("Scenario: 折り返しをオフにしても本文を変更しない", async () => {
+    const { editor, host, doc } = mount("\tlong");
+    editor.open(1, false);
+    await settle();
+    editor.setWrap(true);
+    await settle();
+    editor.setWrap(false);
+
+    expect(doc.text()).toBe("\tlong");
+    expect(host.querySelector(".ve-scroll")?.classList.contains("wrap")).toBe(false);
   });
 
   // Feature: 折り返し表示中の本文選択境界
@@ -1158,6 +1311,94 @@ describe("Feature: VirtualEditor", () => {
     expect(events.errors[0].message).toBe("クリップボードへコピーできませんでした");
   });
 
+  // Given: クリップボードにPNG画像と「123456」のtext/plainが同時にある
+  // When: エディタのpasteイベントへそのクリップボードを渡す
+  // Then: pasteイベントを止めず、数値を文書へ挿入し、画像保存へ回さない
+  it("Scenario: 混在するクリップボードでは文字の貼り付けを優先する", async () => {
+    const saveImage = vi.fn(async () => "image_markdown/memo/pasted-image.png");
+    const { editor, doc, input } = mount("", saveImage);
+    editor.open(1, false);
+    await settle();
+    const image = new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" });
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", {
+      value: {
+        items: [{ type: "image/png", getAsFile: () => image }],
+        getData: (type: string) => type === "text/plain" ? "123456" : "",
+      },
+    });
+
+    input.dispatchEvent(event);
+    if (!event.defaultPrevented) {
+      input.value = "123456";
+      input.dispatchEvent(new InputEvent("input", {
+        bubbles: true,
+        inputType: "insertFromPaste",
+        data: "123456",
+      }));
+    }
+    await settle();
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(doc.text()).toBe("123456");
+    expect(saveImage).not.toHaveBeenCalled();
+  });
+
+  // Given: readTextの結果が「123456」、空文字、または読み込みエラーで、clipboard.readにPNG画像がある場合とない場合がある
+  // When: エディタの右クリックメニューから「貼り付け」を選ぶ
+  // Then: 文字があれば文字を挿入し、なければ画像へフォールバックする
+  // Examples: 文字あり→文字を挿入、空文字/読み込みエラーと画像あり→画像を挿入
+  it.each([
+    { scenario: "文字があれば画像より優先する", text: "123456", hasImage: true, readError: undefined },
+    { scenario: "文字のみを貼り付ける", text: "123456", hasImage: false, readError: undefined },
+    { scenario: "文字が空なら画像へフォールバックする", text: "", hasImage: true, readError: undefined },
+    { scenario: "文字の読み込みに失敗したら画像へフォールバックする", text: "", hasImage: true, readError: new Error("text unavailable") },
+  ])("Scenario: 貼り付けメニューは$scenario", async ({ text, hasImage, readError }) => {
+    const saveImage = vi.fn(async () => "image_markdown/memo/pasted-image.png");
+    const { editor, doc, events, host } = mount("", saveImage);
+    editor.open(1, false);
+    await settle();
+    const image = new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" });
+    const clipboardRead = vi.fn(async () => hasImage ? [{
+      types: ["image/png"],
+      getType: async () => image,
+    }] : []);
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { read: clipboardRead },
+    });
+    const dropdown = document.createElement("div");
+    dropdown.id = "dropdown";
+    document.body.appendChild(dropdown);
+
+    try {
+      if (readError) readClipboardText.mockRejectedValueOnce(readError);
+      else readClipboardText.mockResolvedValueOnce(text);
+      host.querySelector<HTMLElement>(".ve-scroll")!.dispatchEvent(
+        new MouseEvent("contextmenu", { bubbles: true, clientX: 0, clientY: 0 }),
+      );
+      [...dropdown.querySelectorAll<HTMLElement>(".dd-label")]
+        .find((item) => item.textContent === "貼り付け")!.closest<HTMLElement>(".dd-item")!.click();
+      await settle();
+
+      if (text) {
+        expect(doc.text()).toBe(text);
+        expect(clipboardRead).not.toHaveBeenCalled();
+        expect(saveImage).not.toHaveBeenCalled();
+      } else {
+        expect(clipboardRead).toHaveBeenCalledOnce();
+        expect(saveImage).toHaveBeenCalledWith([1, 2, 3], "image/png");
+        expect(doc.text()).toContain("<img src=\"image_markdown/memo/pasted-image.png\"");
+      }
+      expect(events.errors).toHaveLength(0);
+    } finally {
+      if (originalClipboard) Object.defineProperty(navigator, "clipboard", originalClipboard);
+      else Reflect.deleteProperty(navigator, "clipboard");
+      dropdown.remove();
+    }
+  });
+
   // Given: 文書が「memo」、画像BlobがPNG形式でバイト列 [1,2,3]、saveImage が相対パスを返す
   // When: その画像を clipboardData.items から paste する
   // Then: paste が preventDefault され、saveImage([1,2,3], "image/png") が呼ばれ、文書に `<img src="image_markdown/memo/pasted-image.png" alt="貼り付け画像" width="900">` が含まれる
@@ -1169,7 +1410,10 @@ describe("Feature: VirtualEditor", () => {
     const image = new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" });
     const event = new Event("paste", { bubbles: true, cancelable: true });
     Object.defineProperty(event, "clipboardData", {
-      value: { items: [{ type: "image/png", getAsFile: () => image }] },
+      value: {
+        items: [{ type: "image/png", getAsFile: () => image }],
+        getData: () => "",
+      },
     });
 
     input.dispatchEvent(event);
@@ -1215,12 +1459,7 @@ describe("Feature: VirtualEditor", () => {
       "削除",
       "すべて選択",
       "コマンドを登録...",
-      "CSVビュー",
-      "Markdownビュー",
-      "Imageビュー",
-      "PDFビュー",
-      "html(静的)",
-      "SQLiteビュー",
+      "プレビュー",
       "Windowsアプリで開く",
     ]);
     expect(dropdown.querySelector<HTMLElement>(".dd-label")?.textContent).toBe("エクスプローラで開く");
@@ -1236,11 +1475,7 @@ describe("Feature: VirtualEditor", () => {
       ["貼り付け", MENU_ICON.paste],
       ["削除", MENU_ICON.delete],
       ["すべて選択", MENU_ICON.selectAll],
-      ["CSVビュー", MENU_ICON.csv],
-      ["Markdownビュー", MENU_ICON.markdown],
-      ["Imageビュー", MENU_ICON.image],
-      ["PDFビュー", MENU_ICON.pdf],
-      ["html(静的)", MENU_ICON.html],
+      ["プレビュー", MENU_ICON.text],
       ["Windowsアプリで開く", MENU_ICON.external],
     ] as const;
     for (const [label, icon] of editorIcons) {
@@ -1273,6 +1508,30 @@ describe("Feature: VirtualEditor", () => {
       .find((element) => element.textContent === ".md")!.click();
     await settle();
     expect(openAs).toHaveBeenCalledWith("md");
+  });
+
+  // Feature: エディタ右クリックからプレビューを切り替える
+  // Scenario: 単一の「プレビュー」項目は既存の切替操作を使う
+  // Given: プレビュー切替portを持つエディタ
+  // When: 右クリックメニューの「プレビュー」を選ぶ
+  // Then: 既存の切替操作を1回呼ぶ
+  it("Scenario: 右クリックのプレビュー項目が既存の切替操作を呼ぶ", async () => {
+    const togglePreview = vi.fn();
+    const { host } = mount("memo", undefined, { togglePreview });
+    const dropdown = document.createElement("div");
+    dropdown.id = "dropdown";
+    document.body.appendChild(dropdown);
+
+    host.querySelector<HTMLElement>(".ve-scroll")!.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, clientX: 0, clientY: 0 }),
+    );
+    const preview = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
+      .find((item) => item.textContent === "プレビュー");
+    expect(preview).toBeDefined();
+    preview?.click();
+    await settle();
+
+    expect(togglePreview).toHaveBeenCalledOnce();
   });
 
   // Given: 外部ファイルパスと新規ウィンドウ操作がある
@@ -1416,12 +1675,7 @@ describe("Feature: VirtualEditor", () => {
       "コピー",
       "すべて選択",
       "コマンドを登録...",
-      "CSVビュー",
-      "Markdownビュー",
-      "Imageビュー",
-      "PDFビュー",
-      "html(静的)",
-      "SQLiteビュー",
+      "プレビュー",
       "Windowsアプリで開く",
     ]);
     expect(dropdown.querySelectorAll(".dd-sep")).toHaveLength(5);
@@ -1429,11 +1683,7 @@ describe("Feature: VirtualEditor", () => {
       ["エクスプローラで開く", MENU_ICON.explorer],
       ["コピー", MENU_ICON.copy],
       ["すべて選択", MENU_ICON.selectAll],
-      ["CSVビュー", MENU_ICON.csv],
-      ["Markdownビュー", MENU_ICON.markdown],
-      ["Imageビュー", MENU_ICON.image],
-      ["PDFビュー", MENU_ICON.pdf],
-      ["html(静的)", MENU_ICON.html],
+      ["プレビュー", MENU_ICON.text],
       ["Windowsアプリで開く", MENU_ICON.external],
     ] as const) {
       const item = [...dropdown.querySelectorAll<HTMLElement>(".dd-item")]
@@ -1613,12 +1863,7 @@ describe("Feature: VirtualEditor", () => {
       "すべて選択",
       "選択範囲を登録文字列に追加",
       "コマンドを登録...",
-      "CSVビュー",
-      "Markdownビュー",
-      "Imageビュー",
-      "PDFビュー",
-      "html(静的)",
-      "SQLiteビュー",
+      "プレビュー",
       "Windowsアプリで開く",
     ]);
     for (const [label, icon] of [
@@ -1882,6 +2127,75 @@ describe("Feature: VirtualEditor", () => {
     await vi.waitFor(() => expect(host.querySelectorAll(".ve-find-hit")).toHaveLength(3));
   });
 
+  // Feature: 改行・タブ検索結果の一致強調
+  // Scenario: `\n\t`で行末から次行のタブまでを検索する
+  // Given: 1行目の直後にタブで始まる2行目がある
+  // When: 検索欄へ`\n\t`を入力する
+  // Then: 改行位置とタブの両方へ黄色い一致背景を描画する
+  it("Scenario: 改行とタブをまたぐ検索結果を強調する", async () => {
+    const { editor, doc, host } = mount("one\n\ttwo");
+    doc.client.findAllInRange = vi.fn().mockResolvedValue([{
+      start: { line: 0, col: 3 },
+      end: { line: 1, col: 1 },
+    }]);
+    editor.open(2, false);
+    await settle();
+    editor.openSearch();
+
+    const findIn = host.querySelector<HTMLInputElement>(".ve-find-in")!;
+    findIn.value = "\\n\\t";
+    findIn.dispatchEvent(new Event("input", { bubbles: true }));
+
+    await vi.waitFor(() => expect(host.querySelectorAll(".ve-find-hit")).toHaveLength(2));
+    expect(doc.client.findAllInRange).toHaveBeenCalledWith("\n\t", 0, 2, false, false, false);
+  });
+
+  // Feature: タブ検索結果の一致強調
+  // Scenario: `\t`でタブ文字を検索する
+  // Given: 行内にタブ文字がある
+  // When: 検索欄へ`\t`を入力する
+  // Then: タブ位置へ黄色い一致背景を描画する
+  it("Scenario: タブ文字の検索結果を強調する", async () => {
+    const { editor, doc, host } = mount("a\tb");
+    doc.client.findAllInRange = vi.fn().mockResolvedValue([{
+      start: { line: 0, col: 1 },
+      end: { line: 0, col: 2 },
+    }]);
+    editor.open(1, false);
+    await settle();
+    editor.openSearch();
+
+    const findIn = host.querySelector<HTMLInputElement>(".ve-find-in")!;
+    findIn.value = "\\t";
+    findIn.dispatchEvent(new Event("input", { bubbles: true }));
+
+    await vi.waitFor(() => expect(host.querySelectorAll(".ve-find-hit")).toHaveLength(1));
+    expect(doc.client.findAllInRange).toHaveBeenCalledWith("\t", 0, 1, false, false, false);
+  });
+
+  // Feature: 改行だけの検索結果の一致強調
+  // Scenario: `\n`で行末の改行を検索する
+  // Given: 2行の文書がある
+  // When: 検索欄へ`\n`を入力する
+  // Then: 次行の先頭へ余分な強調を描かず、改行位置だけを強調する
+  it("Scenario: 改行だけの検索結果で次行の先頭を余分に強調しない", async () => {
+    const { editor, doc, host } = mount("one\ntwo");
+    doc.client.findAllInRange = vi.fn().mockResolvedValue([{
+      start: { line: 0, col: 3 },
+      end: { line: 1, col: 0 },
+    }]);
+    editor.open(2, false);
+    await settle();
+    editor.openSearch();
+
+    const findIn = host.querySelector<HTMLInputElement>(".ve-find-in")!;
+    findIn.value = "\\n";
+    findIn.dispatchEvent(new Event("input", { bubbles: true }));
+
+    await vi.waitFor(() => expect(host.querySelectorAll(".ve-find-hit")).toHaveLength(1));
+    expect(doc.client.findAllInRange).toHaveBeenCalledWith("\n", 0, 2, false, false, false);
+  });
+
   // Feature: 検索窓を開いた直後の一致強調
   // Scenario: 選択文字列を初期検索語として検索窓を開く
   // Given: 可視範囲にneedleが3個あり、先頭のneedleを選択している
@@ -1921,6 +2235,54 @@ describe("Feature: VirtualEditor", () => {
     await vi.waitFor(() => expect(findAllInRange).toHaveBeenCalledWith("note\\d", 0, 3, false, true, false));
     await vi.waitFor(() => expect(host.querySelectorAll(".ve-find-hit")).toHaveLength(3));
     expect(host.querySelector<HTMLElement>(".ve-find")?.hidden).toBe(true);
+  });
+
+  // Feature: エディタの表示範囲置換
+  // Scenario: 表示中の論理行だけを全置換する
+  // Given: 画面外にもneedleがあり、1行目と2行目を表示している
+  // When: 「画面内」を押す
+  // Then: 表示中の2行だけが置換され、画面外の一致は残る
+  it("Scenario: 画面内の一致だけを全置換する", async () => {
+    const { editor, doc, host } = mount("outside\nneedle\nneedle\noutside\nneedle");
+    const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
+    Object.defineProperty(scroll, "clientHeight", { configurable: true, value: 40 });
+    editor.open(5, false);
+    await settle();
+    await editor.restoreViewState({
+      anchor: { line: 1, col: 0 },
+      caret: { line: 1, col: 0 },
+      topLine: 1,
+      wrapIntraLinePx: 0,
+      scrollLeft: 0,
+    });
+
+    editor.openSearch();
+    host.querySelector<HTMLInputElement>(".ve-find-in")!.value = "needle";
+    host.querySelector<HTMLInputElement>(".ve-rep-in")!.value = "hit";
+    host.querySelector<HTMLButtonElement>(".ve-rep-visible")!.click();
+    await settle();
+
+    expect(doc.text()).toBe("outside\nhit\nhit\noutside\nneedle");
+  });
+
+  // Feature: エディタの表示範囲置換
+  // Scenario: 閲覧専用文書では画面内全置換を実行しない
+  // Given: needleを含む閲覧専用文書を表示している
+  // When: 「画面内」を押す
+  // Then: 本文と編集系のbackend呼び出しは変わらない
+  it("Scenario: 閲覧専用文書では画面内全置換を実行しない", async () => {
+    const { editor, doc, host } = mount("needle");
+    editor.open(1, true);
+    await settle();
+
+    editor.openSearch();
+    host.querySelector<HTMLInputElement>(".ve-find-in")!.value = "needle";
+    host.querySelector<HTMLInputElement>(".ve-rep-in")!.value = "hit";
+    host.querySelector<HTMLButtonElement>(".ve-rep-visible")!.click();
+    await settle();
+
+    expect(doc.text()).toBe("needle");
+    expect(doc.calls.filter((call) => call.startsWith("edit"))).toEqual([]);
   });
 
   // Scenario: 可視範囲の強調検索が一度だけ失敗する
@@ -1979,7 +2341,7 @@ describe("Feature: VirtualEditor", () => {
   // Given: 文書が「needle」、最初の検索は一致し、failed=true 後の検索は Error("find failed") で失敗する
   // When: 1回目の検索後に2回目の検索を失敗させ、「changed」を入力して置換次へをクリックする
   // Then: edit( で始まる呼び出しが0件で、直前の一致を使った置換を実行しない
-  it("Scenario: 本文検索に失敗した後、連続置換が直前の一致を再利用しない", async () => {
+  it("Scenario: 本文検索に失敗した後、置換が直前の一致を再利用しない", async () => {
     const { editor, doc, host } = mount("needle");
     let failed = false;
     doc.client.findStep = async () => {
@@ -2575,6 +2937,27 @@ describe("Feature: VirtualEditor", () => {
 
     expect(openViewer.mock.calls[1][0]).toBe("markdown");
     expect(openViewer.mock.calls[1][1]).toBe("two\nthree");
+  });
+
+  // Feature: SQLite適格性確認で不一致になった場合は表示中ビューを維持する
+  // Scenario: SQLiteビューを開けなかった場合に既存の追随ビューを閉じない
+  // Given: Markdownビューが開いておりSQLiteを開く要求は拒否される
+  // When: SQLiteビューを開く
+  // Then: 既存ビューのクローズ要求を出さず、そのまま残す
+  it("Scenario: keeps the current live viewer when SQLite opening is rejected", async () => {
+    const openViewer = vi.fn<EditorPorts["openViewer"]>()
+      .mockResolvedValueOnce("markdown-viewer")
+      .mockResolvedValueOnce(null);
+    const closeViewer = vi.fn(async () => {});
+    const { editor } = mount("notes", undefined, { openViewer, closeViewer });
+    editor.open(1, false);
+    await settle();
+
+    await editor.openTextViewer("markdown");
+    await editor.openTextViewer("sqlite");
+    await settle();
+
+    expect(closeViewer).not.toHaveBeenCalled();
   });
 
   // Given: プレビューが開いている

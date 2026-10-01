@@ -28,6 +28,10 @@ export const IPC_COMMANDS = {
   openInDefaultBrowser: "open_in_default_browser",
   openExternalUrl: "open_external_url",
   runExternalCommand: "run_external_command",
+  externalPreviewGenerate: "external_preview_generate",
+  externalPreviewCancel: "external_preview_cancel",
+  externalPreviewCleanup: "external_preview_cleanup",
+  externalPreviewCleanupStale: "external_preview_cleanup_stale",
   edit: "edit",
   editMany: "edit_many",
   undo: "undo",
@@ -64,5 +68,6 @@ export const IPC_COMMANDS = {
   takeViewerPayload: "take_viewer_payload",
   updateViewer: "update_viewer",
   closeViewer: "close_viewer",
+  probeSqlitePreview: "probe_sqlite_preview",
   readSqlitePreview: "read_sqlite_preview",
 } as const;

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   basename,
+  comparableDocumentPath,
   dirname,
+  isSameOrDescendantDocumentPath,
   joinWindowsRoot,
   movedRelativePath,
   rebaseWindowsPath,
@@ -52,5 +54,29 @@ describe("Feature: path rules", () => {
     expect(movedRelativePath("docs/memo.txt", "docs/memo.txt", "archive", "renamed.txt"))
       .toBe("archive/renamed.txt");
     expect(movedRelativePath("other.txt", "docs/memo.txt", "archive")).toBe("other.txt");
+  });
+
+  // Feature: 物理パスとアーカイブ内部パスの同一性
+  // Scenario: 外側のWindowsパスだけ大小文字を無視する
+  // Given: 外側のcaseが異なり、内部名はcaseだけが異なる複合パス
+  // When: 比較キーと包含関係を求める
+  // Then: 外側は同一視し、内部名は別項目として保持する
+  it("Scenario: preserves archive entry case while folding the Windows path", () => {
+    expect(comparableDocumentPath("Docs\\Data.zip::Readme.txt"))
+      .toBe("docs/data.zip::Readme.txt");
+    expect(comparableDocumentPath("Docs/Data.zip::Readme.txt"))
+      .not.toBe(comparableDocumentPath("docs/data.zip::README.txt"));
+    expect(isSameOrDescendantDocumentPath("DOCS/Data.zip::Readme.txt", "docs/data.zip")).toBe(true);
+    expect(isSameOrDescendantDocumentPath("docs/data.zip::README.txt", "docs/data.zip::Readme.txt")).toBe(false);
+  });
+
+  // Feature: case差を含む移動後の選択追従
+  // Scenario: Windows側のcaseとslashが異なるアーカイブを移動する
+  // Given: 選択中の内部名は`Readme.txt`で、移動元のcaseが異なる
+  // When: 移動後の相対パスを計算する
+  // Then: 外側だけを置換し、内部名のcaseを保持する
+  it("Scenario: rebases a case-different archive path without changing its entry", () => {
+    expect(movedRelativePath("Docs\\Data.zip::Readme.txt", "docs/data.zip", "archive"))
+      .toBe("archive/data.zip::Readme.txt");
   });
 });

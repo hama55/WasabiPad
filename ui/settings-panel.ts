@@ -13,7 +13,7 @@ import {
   type RegisteredCommand,
 } from "./registered-command-model";
 import { registeredStringLabel } from "./registered-strings";
-import { showMessage } from "./prompt";
+import { confirmMessage, showMessage } from "./prompt";
 import {
   isValidSqlitePreviewRows,
   isValidMarkdownLineHeight,
@@ -21,7 +21,12 @@ import {
   MIN_MARKDOWN_LINE_HEIGHT,
   type Settings,
 } from "./settings";
+import {
+  externalPreviewAdapterName,
+  type ExternalPreviewAdapter,
+} from "./external-preview-adapter-model";
 import { THEME_LABELS, THEMES, type Theme } from "./theme";
+import { isPreviewPlacement } from "./preview-layout";
 
 export interface SettingsPanelPorts {
   getTheme: () => Theme;
@@ -36,11 +41,14 @@ export interface SettingsPanelPorts {
   applyMarkdownLineHeight: (value: number) => void;
   applyMarkdownHeadingUnderlines: (enabled: boolean) => void;
   pickPreviewCacheDirectory?: (defaultPath?: string) => string | null | Promise<string | null>;
+  pickExternalPreviewTemporaryDirectory?: (defaultPath?: string) => string | null | Promise<string | null>;
+  flushSettings: () => Promise<void>;
   clearPreviewCache?: () => void | Promise<void>;
   getPreviewCacheInfo?: () => PreviewCacheInfo | null | Promise<PreviewCacheInfo | null>;
   openSearchSettings: () => void;
   openRegisteredString: (current?: string) => void;
   openRegisteredCommand: (kind: CommandValueKind, command?: RegisteredCommand) => void;
+  openExternalPreviewAdapter: (adapter?: ExternalPreviewAdapter, onSaved?: () => void) => void;
   confirmReset: () => boolean | Promise<boolean>;
   resetSettings: () => void | Promise<void>;
 }
@@ -196,9 +204,15 @@ export function openSettingsModal(
           "markdownLineHeight",
           "markdownHeadingUnderlines",
         ]),
+        previewOpenPlacementField(ports),
         sqlitePreviewRowsField(ports),
         previewCacheField(ports),
       ],
+    },
+    {
+      name: "外部プレビュー",
+      id: "settings-addons",
+      build: () => [externalPreviewAdaptersField(ports), externalPreviewTemporaryDirectoryField(ports)],
     },
     {
       name: "検索",
@@ -393,7 +407,8 @@ function registeredStringsField(
     const actions = document.createElement("div");
     actions.className = "settings-list-actions";
     const edit = settingsActionButton("⚙", "この登録文字列を編集", "edit-registered-string", () => openDialog(text));
-    const remove = settingsActionButton("×", "登録文字列を削除", "delete-registered-string", () => {
+    const remove = settingsActionButton("×", "登録文字列を削除", "delete-registered-string", async () => {
+      if (!await confirmMessage("登録文字列の削除", `「${registeredStringLabel(text)}」を削除しますか？`, "削除")) return;
       ports.setSetting("registeredStrings", ports.getSetting("registeredStrings").filter((item) => item !== text));
       row.remove();
     });
@@ -490,7 +505,8 @@ function registeredCommandsField(
         openDialog(kind, command));
       edit.dataset.commandIndex = String(index);
       actions.append(edit);
-      const remove = settingsActionButton("×", "このコマンドの登録を解除", "delete-registered-command", () => {
+      const remove = settingsActionButton("×", "このコマンドの登録を解除", "delete-registered-command", async () => {
+        if (!await confirmMessage("登録コマンドの解除", `「${command.label}」の登録を解除しますか？`, "解除")) return;
         ports.setSetting("registeredCommands", ports.getSetting("registeredCommands").filter((item) => item !== command));
         render();
       });
@@ -505,6 +521,102 @@ function registeredCommandsField(
       `登録コマンド（${kindLabel}）を追加`,
       `add-registered-command-${kind}`,
       () => openDialog(kind),
+      MENU_ICON.command,
+    ));
+  };
+  render();
+  return group;
+}
+
+function externalPreviewAdaptersField(ports: SettingsPanelPorts): HTMLElement {
+  const group = document.createElement("div");
+  group.className = "settings-list-group settings-external-preview-adapters";
+  group.dataset.settingGroup = "external-preview-adapters";
+  const title = document.createElement("h3");
+  title.textContent = "外部プレビュー";
+  const summary = document.createElement("p");
+  summary.className = "settings-summary";
+  summary.textContent = "初回の実行確認後、選択した外部プログラムでHTMLまたはSVGのプレビューを表示します。";
+  group.append(title, summary);
+
+  const render = () => {
+    group.querySelectorAll<HTMLElement>("[data-external-preview-row], [data-external-preview-selection]")
+      .forEach((row) => row.remove());
+    const adapters = ports.getSetting("externalPreviewAdapters");
+    adapters.forEach((adapter) => {
+      const row = document.createElement("div");
+      row.className = "settings-list-row";
+      row.dataset.externalPreviewRow = "true";
+      const name = externalPreviewAdapterName(adapter);
+      const extensionLabel = `.${adapter.extensions.join(", .")}`;
+      const value = document.createElement("span");
+      value.textContent = `${name} — ${extensionLabel} → ${adapter.command} ${adapter.args}`.trim();
+      const actions = document.createElement("div");
+      actions.className = "settings-list-actions";
+      actions.append(
+        settingsActionButton("⚙", "外部プレビューを編集", "edit-external-preview-adapter", () =>
+          ports.openExternalPreviewAdapter(adapter, render)),
+        settingsActionButton("×", "外部プレビューを削除", "delete-external-preview-adapter", async () => {
+          if (!await confirmMessage(
+            "外部プレビューの削除",
+            `${extensionLabel} の外部プレビュー設定を削除しますか？\nプレビュー名: ${name}`,
+            "削除",
+          )) return;
+          ports.setSetting("externalPreviewAdapters", ports.getSetting("externalPreviewAdapters").filter((item) => item !== adapter));
+          ports.setSetting("externalPreviewAdapterSelections", Object.fromEntries(
+            Object.entries(ports.getSetting("externalPreviewAdapterSelections"))
+              .filter(([, id]) => id !== adapter.id),
+          ));
+          ports.setSetting("trustedExternalPreviewAdapterIds",
+            ports.getSetting("trustedExternalPreviewAdapterIds").filter((id) => id !== adapter.id));
+          render();
+        }),
+      );
+      row.append(value, actions);
+      group.append(row);
+    });
+    const adaptersByExtension = new Map<string, ExternalPreviewAdapter[]>();
+    for (const adapter of adapters) {
+      for (const extension of adapter.extensions) {
+        adaptersByExtension.set(extension, [...(adaptersByExtension.get(extension) ?? []), adapter]);
+      }
+    }
+    for (const [extension, candidates] of adaptersByExtension) {
+      const row = document.createElement("label");
+      row.className = "settings-field settings-external-preview-selection";
+      row.dataset.externalPreviewSelection = extension;
+      const label = document.createElement("span");
+      label.textContent = `.${extension} のプレビュー`;
+      const select = document.createElement("select");
+      select.setAttribute("aria-label", `.${extension} のプレビュー`);
+      const standard = document.createElement("option");
+      standard.value = "";
+      standard.textContent = "標準プレビュー";
+      select.append(standard);
+      const candidatesByName = [...candidates].sort((left, right) =>
+        externalPreviewAdapterName(left).localeCompare(externalPreviewAdapterName(right), "ja"));
+      for (const adapter of candidatesByName) {
+        const option = document.createElement("option");
+        option.value = adapter.id;
+        option.textContent = externalPreviewAdapterName(adapter);
+        select.append(option);
+      }
+      select.value = ports.getSetting("externalPreviewAdapterSelections")[extension] ?? "";
+      select.addEventListener("change", () => {
+        const selections = { ...ports.getSetting("externalPreviewAdapterSelections") };
+        if (select.value) selections[extension] = select.value;
+        else delete selections[extension];
+        ports.setSetting("externalPreviewAdapterSelections", selections);
+      });
+      row.append(label, select);
+      group.append(row);
+    }
+    if (!adapters.length) group.append(emptySettingsNotice("登録なし"));
+    group.append(settingsActionButton(
+      "外部プレビューを追加...",
+      "外部プレビューを追加",
+      "add-external-preview-adapter",
+      () => ports.openExternalPreviewAdapter(undefined, render),
       MENU_ICON.command,
     ));
   };
@@ -569,6 +681,19 @@ function previewFontSizeField(ports: SettingsPanelPorts): HTMLElement {
   return numberField("プレビュー文字サイズ", "preview-font-size", ports.getSetting("previewFontSize"), (value) => {
     ports.setSetting("previewFontSize", value);
     ports.applyPreviewFontSize(value);
+  });
+}
+
+function previewOpenPlacementField(ports: SettingsPanelPorts): HTMLElement {
+  return selectField("プレビューを開く位置", "preview-open-placement", [
+    { value: "right", label: "右固定" },
+    { value: "top", label: "上固定" },
+    { value: "bottom", label: "下固定" },
+    { value: "last", label: "最後に選んだ方向" },
+  ], ports.getSetting("previewOpenPlacement"), (value) => {
+    if (isPreviewPlacement(value) || value === "last") {
+      ports.setSetting("previewOpenPlacement", value);
+    }
   });
 }
 
@@ -736,6 +861,52 @@ function previewCacheField(ports: SettingsPanelPorts): HTMLElement {
 
   actions.append(pick, clear);
   group.append(titleRow, locationRow, actions);
+  return group;
+}
+
+function externalPreviewTemporaryDirectoryField(ports: SettingsPanelPorts): HTMLElement {
+  const group = document.createElement("div");
+  group.className = "settings-list-row settings-external-preview-temp";
+  group.dataset.settingGroup = "external-preview-temporary-directory";
+
+  const title = document.createElement("span");
+  title.className = "settings-external-preview-temp-label";
+  title.textContent = "外部プレビュー一時ファイル保存先";
+
+  const location = document.createElement("span");
+  location.dataset.setting = "external-preview-temporary-directory";
+  let currentDirectory = ports.getSetting("externalPreviewTemporaryDirectory");
+  location.textContent = currentDirectory ?? "%TEMP%\\WasabiPad\\external-preview";
+  location.title = location.textContent;
+
+  const pick = document.createElement("button");
+  pick.type = "button";
+  pick.dataset.action = "pick-external-preview-temporary-directory";
+  pick.textContent = "保存場所を変更";
+  pick.disabled = !ports.pickExternalPreviewTemporaryDirectory;
+  let choosing = false;
+  pick.addEventListener("click", () => {
+    const pickDirectory = ports.pickExternalPreviewTemporaryDirectory;
+    if (!pickDirectory || choosing) return;
+    choosing = true;
+    void (async () => {
+      const directory = await pickDirectory(currentDirectory ?? undefined);
+      if (typeof directory !== "string" || directory.trim().length === 0) return;
+      const history = ports.getSetting("externalPreviewTemporaryDirectories");
+      if (!history.includes(directory)) {
+        ports.setSetting("externalPreviewTemporaryDirectories", [...history, directory]);
+      }
+      ports.setSetting("externalPreviewTemporaryDirectory", directory);
+      currentDirectory = directory;
+      location.textContent = directory;
+      location.title = directory;
+      await ports.flushSettings();
+    })().catch(() => {}).finally(() => {
+      choosing = false;
+    });
+  });
+
+  group.append(title, location, pick);
   return group;
 }
 

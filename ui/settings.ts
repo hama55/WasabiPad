@@ -8,9 +8,11 @@ import { normalizeStoredTabs, type StoredTabs } from "./stored-tabs";
 import { DEFAULT_EDITOR_CONFIG } from "./editor-config";
 import { DEFAULT_INDENT_SIZE, INDENT_SIZES, isValidFontSize } from "./font-controls";
 import { isRegisteredCommand, normalizeRegisteredCommand, type RegisteredCommand } from "./registered-command-model";
-import { SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MIN_WIDTH } from "./preview-layout";
+import { SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MIN_WIDTH, isPreviewPlacement, type PreviewPlacement, type PreviewOpenPlacement } from "./preview-layout";
+import { parseExternalPreviewAdapters, type ExternalPreviewAdapter } from "./external-preview-adapter-model";
 
 export type { RegisteredCommand } from "./registered-command-model";
+export type { ExternalPreviewAdapter } from "./external-preview-adapter-model";
 
 export const DEFAULT_MARKDOWN_LINE_HEIGHT = 1.65;
 export const MIN_MARKDOWN_LINE_HEIGHT = 1.4;
@@ -32,34 +34,58 @@ export interface Settings {
   fontFamily: string;
   fontSize: number;
   previewFontSize: number;
+  previewOpenPlacement: PreviewOpenPlacement;
+  previewLastPlacement: PreviewPlacement;
+  previewRightRatio: number;
+  previewVerticalRatio: number;
   markdownSoftBreaks: boolean;
   markdownLineHeight: number;
   markdownHeadingUnderlines: boolean;
   sqlitePreviewRows: number;
   previewCacheDirectory: string | null;
+  externalPreviewTemporaryDirectory: string | null;
+  externalPreviewTemporaryDirectories: string[];
   startupPath: string | null;
   registeredStrings: string[];
   registeredCommands: RegisteredCommand[];
+  externalPreviewAdapters: ExternalPreviewAdapter[];
+  externalPreviewAdapterSelections: Record<string, string>;
+  trustedExternalPreviewAdapterIds: string[];
   // null は「未設定」。既定値は ui/workspace-search-options.ts だけが持つ
   workspaceSearchOptions: WorkspaceSearchOptions | null;
   openTabs: StoredTabs;
 }
 
-const DEFAULTS: Settings = {
+type UserSettingKey = Exclude<keyof Settings, "openTabs">;
+
+const DEFAULT_USER_SETTINGS: Pick<Settings, UserSettingKey> = {
   indentSize: DEFAULT_INDENT_SIZE,
   sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
   fontFamily: DEFAULT_EDITOR_CONFIG.fontFamily,
   fontSize: DEFAULT_EDITOR_CONFIG.fontSize,
   previewFontSize: DEFAULT_EDITOR_CONFIG.fontSize,
+  previewOpenPlacement: "right",
+  previewLastPlacement: "right",
+  previewRightRatio: 0.5,
+  previewVerticalRatio: 0.5,
   markdownSoftBreaks: true,
   markdownLineHeight: DEFAULT_MARKDOWN_LINE_HEIGHT,
   markdownHeadingUnderlines: false,
   sqlitePreviewRows: DEFAULT_SQLITE_PREVIEW_ROWS,
   previewCacheDirectory: null,
+  externalPreviewTemporaryDirectory: null,
+  externalPreviewTemporaryDirectories: [],
   startupPath: null,
   registeredStrings: [],
   registeredCommands: [],
+  externalPreviewAdapters: [],
+  externalPreviewAdapterSelections: {},
+  trustedExternalPreviewAdapterIds: [],
   workspaceSearchOptions: null,
+};
+
+const DEFAULTS: Settings = {
+  ...DEFAULT_USER_SETTINGS,
   openTabs: { tabs: [], activeId: null },
 };
 
@@ -68,6 +94,10 @@ export const SIDEBAR_MAX_WIDTH = 640;
 export function clampSidebarWidth(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULTS.sidebarWidth;
   return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, Math.round(value)));
+}
+
+function parsePreviewRatio(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 && value < 1 ? value : 0.5;
 }
 
 let cache: Settings = { ...DEFAULTS };
@@ -82,6 +112,7 @@ export function parseSettings(text: string): Settings {
 export interface SettingsParseResult {
   settings: Settings;
   corrupted: boolean;
+  legacyExternalPreviewAdapters?: boolean;
 }
 
 export function parseSettingsResult(text: string): SettingsParseResult {
@@ -94,11 +125,35 @@ export function parseSettingsResult(text: string): SettingsParseResult {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return { settings: { ...DEFAULTS }, corrupted: true };
   }
+  const rawExternalAdapters = value.externalPreviewAdapters;
+  const legacyExternalPreviewAdapters = Array.isArray(rawExternalAdapters)
+    && rawExternalAdapters.some((item) => typeof item === "object" && item !== null
+      && !Array.isArray(item) && !("id" in item));
+  const externalPreviewAdapters = legacyExternalPreviewAdapters
+    ? []
+    : parseExternalPreviewAdapters(rawExternalAdapters);
+  const externalPreviewTemporaryDirectory = typeof value.externalPreviewTemporaryDirectory === "string"
+    && value.externalPreviewTemporaryDirectory.trim().length > 0
+    ? value.externalPreviewTemporaryDirectory
+    : null;
+  const externalPreviewTemporaryDirectories = [...new Set([
+    ...(Array.isArray(value.externalPreviewTemporaryDirectories)
+      ? value.externalPreviewTemporaryDirectories.filter((path): path is string =>
+        typeof path === "string" && path.trim().length > 0)
+      : []),
+    ...(externalPreviewTemporaryDirectory ? [externalPreviewTemporaryDirectory] : []),
+  ])];
   const settings: Settings = {
     indentSize: typeof value.indentSize === "number" && INDENT_SIZES.includes(value.indentSize as typeof INDENT_SIZES[number])
       ? value.indentSize
       : DEFAULTS.indentSize,
     sidebarWidth: clampSidebarWidth(value.sidebarWidth),
+    previewOpenPlacement: value.previewOpenPlacement === "last" || isPreviewPlacement(value.previewOpenPlacement)
+      ? value.previewOpenPlacement : DEFAULTS.previewOpenPlacement,
+    previewLastPlacement: isPreviewPlacement(value.previewLastPlacement)
+      ? value.previewLastPlacement : DEFAULTS.previewLastPlacement,
+    previewRightRatio: parsePreviewRatio(value.previewRightRatio),
+    previewVerticalRatio: parsePreviewRatio(value.previewVerticalRatio),
     fontFamily: typeof value.fontFamily === "string" && value.fontFamily.length > 0
       ? value.fontFamily
       : DEFAULTS.fontFamily,
@@ -123,6 +178,8 @@ export function parseSettingsResult(text: string): SettingsParseResult {
     previewCacheDirectory: typeof value.previewCacheDirectory === "string" && value.previewCacheDirectory.trim().length > 0
       ? value.previewCacheDirectory
       : DEFAULTS.previewCacheDirectory,
+    externalPreviewTemporaryDirectory,
+    externalPreviewTemporaryDirectories,
     startupPath: typeof value.startupPath === "string" ? value.startupPath : null,
     registeredStrings: Array.isArray(value.registeredStrings)
       ? value.registeredStrings.filter((item): item is string => typeof item === "string" && item.length > 0)
@@ -132,13 +189,36 @@ export function parseSettingsResult(text: string): SettingsParseResult {
         .filter(isRegisteredCommand)
         .map(normalizeRegisteredCommand)
       : [],
+    externalPreviewAdapters,
+    externalPreviewAdapterSelections: parseExternalPreviewAdapterSelections(
+      value.externalPreviewAdapterSelections,
+      externalPreviewAdapters,
+    ),
+    trustedExternalPreviewAdapterIds: Array.isArray(value.trustedExternalPreviewAdapterIds)
+      ? [...new Set(value.trustedExternalPreviewAdapterIds.filter((id): id is string =>
+        typeof id === "string" && externalPreviewAdapters.some((adapter) => adapter.id === id),
+      ))]
+      : [],
     workspaceSearchOptions:
       typeof value.workspaceSearchOptions === "object" && value.workspaceSearchOptions !== null
         ? value.workspaceSearchOptions
         : null,
     openTabs: normalizeStoredTabs(value.openTabs) ?? DEFAULTS.openTabs,
   };
-  return { settings, corrupted: false };
+  return { settings, corrupted: false, ...(legacyExternalPreviewAdapters ? { legacyExternalPreviewAdapters: true } : {}) };
+}
+
+function parseExternalPreviewAdapterSelections(
+  value: unknown,
+  adapters: readonly ExternalPreviewAdapter[],
+): Record<string, string> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).flatMap(([extension, id]) => {
+    const normalizedExtension = extension.trim().replace(/^\.+/, "").toLowerCase();
+    return typeof id === "string" && adapters.some((adapter) =>
+      adapter.id === id && adapter.extensions.includes(normalizedExtension),
+    ) ? [[normalizedExtension, id] as const] : [];
+  }));
 }
 
 export async function initSettings(
@@ -149,6 +229,10 @@ export async function initSettings(
   try {
     const parsed = parseSettingsResult(await loadSettingsJson());
     cache = parsed.settings;
+    if (parsed.legacyExternalPreviewAdapters) {
+      setSetting("externalPreviewAdapters", []);
+      await flushSettings();
+    }
     if (parsed.corrupted) {
       warning = new Error("設定JSONが壊れているため、既定値を使用しました");
       shouldWarn = true;
@@ -185,20 +269,14 @@ export function setSetting<K extends keyof Settings>(key: K, value: Settings[K])
 
 // アプリ設定だけを既定値へ戻す。openTabs は作業再開に必要なセッション状態なので触らない。
 export function resetUserSettings(): void {
-  setSetting("indentSize", DEFAULTS.indentSize);
-  setSetting("sidebarWidth", DEFAULTS.sidebarWidth);
-  setSetting("fontFamily", DEFAULTS.fontFamily);
-  setSetting("fontSize", DEFAULTS.fontSize);
-  setSetting("previewFontSize", DEFAULTS.previewFontSize);
-  setSetting("markdownSoftBreaks", DEFAULTS.markdownSoftBreaks);
-  setSetting("markdownLineHeight", DEFAULTS.markdownLineHeight);
-  setSetting("markdownHeadingUnderlines", DEFAULTS.markdownHeadingUnderlines);
-  setSetting("sqlitePreviewRows", DEFAULTS.sqlitePreviewRows);
-  setSetting("previewCacheDirectory", DEFAULTS.previewCacheDirectory);
-  setSetting("startupPath", DEFAULTS.startupPath);
-  setSetting("registeredStrings", []);
-  setSetting("registeredCommands", []);
-  setSetting("workspaceSearchOptions", DEFAULTS.workspaceSearchOptions);
+  for (const key of Object.keys(DEFAULT_USER_SETTINGS) as UserSettingKey[]) {
+    if (key === "externalPreviewTemporaryDirectories") continue;
+    resetUserSetting(key);
+  }
+}
+
+function resetUserSetting<K extends UserSettingKey>(key: K): void {
+  setSetting(key, DEFAULT_USER_SETTINGS[key] as Settings[K]);
 }
 
 export async function flushSettings(): Promise<void> {

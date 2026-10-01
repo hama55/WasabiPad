@@ -29,7 +29,7 @@ const copies = {
   "tauri.conf productName": tauri.productName,
   "tauri.conf window title": tauri.app.windows[0].title,
   "ui/app-config source": uiAppConfig.includes('from "../app-config.json"') ? appName : undefined,
-  "core/src/settings.rs config directory": read("core/src/settings.rs").match(/\.join\("([^"]+)"\)\.join\(file\)/)?.[1],
+  "core/src/settings.rs config directory": read("core/src/settings.rs").match(/PathBuf::from\(local\)\.join\("([^"]+)"\)/)?.[1],
   "index.html <title>": read("index.html").match(/<title>([^<]+)<\/title>/)?.[1],
 };
 const drifted = Object.entries(copies).filter(([, value]) => value !== appName);

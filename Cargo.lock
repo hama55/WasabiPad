@@ -4179,8 +4179,9 @@ dependencies = [
 
 [[package]]
 name = "wasabipad"
-version = "1.6.0"
+version = "1.8.1"
 dependencies = [
+ "libc",
  "serde",
  "serde_json",
  "tauri",
@@ -4188,6 +4189,7 @@ dependencies = [
  "tauri-plugin-clipboard-manager",
  "tauri-plugin-dialog",
  "ts-rs",
+ "url",
  "wasabipad-core",
  "webview2-com",
  "windows-sys 0.59.0",
@@ -4195,7 +4197,7 @@ dependencies = [
 
 [[package]]
 name = "wasabipad-core"
-version = "1.6.0"
+version = "1.8.1"
 dependencies = [
  "encoding_rs",
  "grep-matcher",

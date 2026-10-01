@@ -1,9 +1,9 @@
-import { previewWidthFromPointer } from "./preview-layout";
+import { previewSizeFromPointer, type PreviewPlacement } from "./preview-layout";
 
 export interface PreviewResizePorts {
-  mainLeft?: () => number;
-  mainRight: () => number;
-  setWidth: (width: number) => void;
+  placement: () => PreviewPlacement;
+  bounds: () => Pick<DOMRect, "left" | "right" | "top" | "bottom">;
+  setSize: (size: number) => void;
   onStart?: () => void;
   onStop?: () => void;
 }
@@ -34,7 +34,13 @@ export function bindPreviewResize(splitter: HTMLElement, ports: PreviewResizePor
       stop();
       return;
     }
-    ports.setWidth(previewWidthFromPointer(ports.mainRight(), event.clientX, ports.mainLeft?.() ?? 0));
+    const placement = ports.placement();
+    const bounds = ports.bounds();
+    const horizontal = placement === "right";
+    ports.setSize(previewSizeFromPointer(
+      placement, horizontal ? bounds.left : bounds.top, horizontal ? bounds.right : bounds.bottom,
+      horizontal ? event.clientX : event.clientY,
+    ));
   }
 
   function start(event: PointerEvent) {

@@ -1363,6 +1363,40 @@ describe("Feature: Sidebar", () => {
     expect(host.textContent).not.toContain("deleted.txt");
   });
 
+  // Feature: アーカイブ内検索結果の大小文字
+  // Scenario: 大小文字だけが異なる別項目を検索結果へ復元しない
+  // Given: アーカイブには`README.txt`だけがあり、保存結果は`Readme.txt`を指している
+  // When: 検索表示状態を復元する
+  // Then: 保存結果は存在しない別項目として除外される
+  it("Scenario: アーカイブ内の大小文字が異なる検索結果を除外する", async () => {
+    const { host, ports, sidebar } = mount();
+    ports.onExpandArchive.mockResolvedValue(["README.txt"]);
+    sidebar.setWorkspaceSearch("C:\\workspace");
+    sidebar.setEntries([{ name: "data.zip", is_dir: false, is_archive: true }]);
+    const saved = sidebar.captureViewState();
+    saved.search = {
+      ...saved.search!,
+      pattern: "needle",
+      outcome: {
+        results: [{
+          rel_path: "data.zip::Readme.txt", line: 1, col: 0, preview: "needle", highlights: [[0, 6]],
+          is_filename: false, score: 0,
+        }],
+        scanned_files: 1,
+        skipped_files: 0,
+        hit_file_limit: false,
+        hit_result_limit: false,
+        pattern_error: null,
+        file_name_match_mode: "strict",
+      },
+      partial: [],
+    };
+
+    await sidebar.restoreViewState(saved);
+
+    expect(host.querySelectorAll(".ws-group")).toHaveLength(0);
+  });
+
   // Feature: タブ別ファイルツリー検索状態
   // Scenario: 検索結果の存在確認に失敗したときは結果を削除扱いにしない
   // Given: 保存済み検索結果が表示され、次の存在確認IPCが失敗する
