@@ -121,8 +121,12 @@ async function main() {
     if (!data.tunes.length) data.message = abcText.trim() ? "ABC形式を読み取れません。" : "譜面データがありません。";
   } else {
     const directory = await mkdtemp(join(outputDirectory, "lilypond-"));
+    const settings = join(directory, "preview-settings.ly");
+    // Loaded before the source so explicit paper/header settings remain authoritative.
+    await writeFile(settings, "\\paper { ragged-bottom = ##t ragged-last-bottom = ##t top-margin = 2\\mm bottom-margin = 2\\mm }\n\\header { tagline = ##f }\n", "utf8");
     const result = spawnSync(values.lilypond || "lilypond", [
-      "--svg", "-dno-point-and-click", "-I", `${dirname(values.input).replaceAll("\\", "/")}/`, "-o", join(directory, "score"), values.input,
+      "--svg", "-dno-point-and-click", "-dno-use-paper-size-for-page", `-dinclude-settings=${settings.replaceAll("\\", "/")}`,
+      "-I", `${dirname(values.input).replaceAll("\\", "/")}/`, "-o", join(directory, "score"), values.input,
     ], { stdio: "inherit", windowsHide: true, shell: false });
     if (result.error) throw new Error(`LilyPond を起動できません: ${result.error.message}`);
     if (result.status !== 0) throw new Error(`LilyPond の変換に失敗しました (${result.status ?? result.signal})。`);
@@ -170,7 +174,7 @@ async function main() {
   const abcScript = abcText === undefined ? "" : await readFile(join(dirname(fileURLToPath(import.meta.url)), "abc.js"), "utf8");
   const html = `<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; media-src 'self' file: http://asset.localhost https://asset.localhost">
-<title>音楽プレビュー</title><style>body{font-family:system-ui,sans-serif;margin:16px;background:#fff;color:#222}#controls{position:sticky;top:0;background:#fff;padding:8px 0}select,button{font:inherit;margin-right:8px}#score svg,#score img{max-width:100%;height:auto}#score img{display:block;margin:16px auto}#score>div{margin-bottom:24px}#status{min-height:1.5em}</style>
+<title>音楽プレビュー</title><style>body{font-family:system-ui,sans-serif;margin:8px;background:#fff;color:#222}#controls{position:sticky;top:0;z-index:1;background:#fff;padding:4px 0}select,button{font:inherit;margin-right:8px}#score svg{width:100%;height:100%}#score img{max-width:100%;height:auto;display:block;margin:8px auto}#score>div{margin-bottom:8px}#status{min-height:1.5em;margin:4px 0}</style>
 <div id="controls"><label>曲 <select id="tune"></select></label><button id="play" type="button">再生</button><button id="stop" type="button">停止</button><audio id="audio" preload="none"></audio><p id="status" role="status"></p></div>
 <main id="score">${score}</main><script>${abcScript.replace(/<\/script/gi, "<\\/script")}</script><script>
 ${abcText === undefined ? "" : `MusicAbc.render(document.getElementById("score"),${jsonForScript(abcText)});`}

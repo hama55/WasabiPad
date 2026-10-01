@@ -43,6 +43,14 @@ describe("Feature: 音楽外部プレビューのCLI", () => {
     const dom = new JSDOM(html, { runScripts: "dangerously", beforeParse(window) { window.HTMLMediaElement.prototype.pause = () => {}; } });
     // Then: 全曲が描画され、音源不足を案内し、外部資産を参照しない
     expect(dom.window.document.querySelectorAll("#score svg")).toHaveLength(2);
+    // Then: 幅を縮めても全体を縮尺表示できる座標系と縦横比を持つ
+    for (const svg of dom.window.document.querySelectorAll("#score svg")) {
+      const bounds = svg.getAttribute("viewBox")?.split(" ").map(Number);
+      expect(bounds?.slice(0, 2)).toEqual([0, 0]);
+      expect(bounds?.[2]).toBeGreaterThan(0);
+      expect(bounds?.[3]).toBeGreaterThan(0);
+      expect(svg.getAttribute("preserveAspectRatio")).toBe("xMinYMin meet");
+    }
     expect(dom.window.document.querySelector("#tune").textContent).toContain("第二曲");
     expect(dom.window.document.querySelector("#status").textContent).toContain("再生不可");
     expect(dom.window.document.querySelectorAll("script[src], link[href], audio[src]")).toHaveLength(0);
@@ -165,5 +173,36 @@ describe("Feature: 音楽外部プレビューのCLI", () => {
     const failure = run(args);
     expect(failure.status).toBe(1);
     expect(failure.stderr).toContain("LilyPond の変換に失敗");
+  }, 30000);
+
+  it.skipIf(!process.env.WASABIPAD_TEST_LILYPOND)("Scenario: LilyPondの途中ページを引き伸ばさず、原稿の段間指定を優先する", async () => {
+    // Given: タイトルと明示的改ページを持つ短い楽譜
+    const path = await workspace();
+    const input = join(path, "spacing.ly");
+    const output = join(path, "index.html");
+    const source = '\\version "2.26.0"\n\\header { title = "Compact" tagline = ##f }\n\\score { { c\'4 d\' e\' f\' \\pageBreak g\' a\' b\' c\'\' } \\layout {} }';
+    const heights = async (text) => {
+      await writeFile(input, text);
+      // When: 公開CLIでSVGページを生成する
+      const result = run(["--input", input, "--output", output, "--lilypond", process.env.WASABIPAD_TEST_LILYPOND]);
+      expect(result.status, result.stderr).toBe(0);
+      const dom = new JSDOM(await readFile(output, "utf8"));
+      const pages = [...dom.window.document.querySelectorAll("#score img")].map((image) => {
+        const svg = new JSDOM(Buffer.from(image.src.split(",")[1], "base64").toString(), { contentType: "image/svg+xml" });
+        const height = Number(svg.window.document.documentElement.getAttribute("viewBox").split(/\s+/)[3]);
+        svg.window.close();
+        return height;
+      });
+      dom.window.close();
+      expect(await readFile(input, "utf8")).toBe(text);
+      return pages;
+    };
+    // Then: 二ページを保持し、短い途中ページも用紙高まで伸ばさない
+    const compact = await heights(source);
+    expect(compact).toHaveLength(2);
+    expect(compact[0]).toBeLessThan(80);
+    // Given/When/Then: 明示的な段間の指定は表示用既定値より優先する
+    const spaced = await heights('\\paper { markup-system-spacing.basic-distance = #80 }\n' + source);
+    expect(spaced[0]).toBeGreaterThan(compact[0] + 30);
   }, 30000);
 });

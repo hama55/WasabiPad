@@ -18,7 +18,10 @@ export function render(container: HTMLElement, text: string): void {
     if (!count) throw new Error("No tunes");
     for (let index = 0; index < count; index += 1) {
       const page = container.ownerDocument.createElement("div");
-      const tune = ABCJS.renderAbc(page, text, { startingTune: index })[0];
+      const tune = ABCJS.renderAbc(page, text, {
+        startingTune: index, responsive: "resize",
+        paddingtop: 4, paddingbottom: 4, paddingleft: 4, paddingright: 4,
+      })[0];
       if (!tune || !hasPlayableNotes(tune)) {
         throw new Error("No notes");
       }
