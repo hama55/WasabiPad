@@ -58,9 +58,8 @@ describe("Feature: window layout integration", () => {
   // When: プレビューを閉じるボタンを押す
   // Then: 全画面状態を解除し、寸法を保ったまま閉じ、同じ方向の開くボタンへフォーカスする
   it("Scenario: 専用ボタンでプレビューを閉じキーボードフォーカスを戻す", () => {
-    expect(mainSource).toMatch(/button\.hidden = previewShown;/);
-    expect(mainSource).toMatch(/previewClose\.addEventListener\("click",\s*closePreview\)/);
-    expect(mainSource).toMatch(/function closePreview\(\)[\s\S]*?const returnFocusToOpenButton = previewClose\.matches\(":focus-visible"\);[\s\S]*?previewCollapsed = true;[\s\S]*?previewFullscreen = false;[\s\S]*?updatePreviewVisibility\(\);[\s\S]*?if \(returnFocusToOpenButton\)\s*\{\s*previewOpenButtons\.find\(\(button\) => button\.dataset\.previewPlacement === previewPlacement\)\?\.focus\(\);/s);
+    expect(mainSource).toContain("onClose: closePreview");
+    expect(mainSource).toMatch(/function closePreview\(returnFocusToOpenButton = false\)[\s\S]*?previewCollapsed = true;[\s\S]*?previewFullscreen = false;[\s\S]*?updatePreviewVisibility\(\);[\s\S]*?if \(returnFocusToOpenButton\)\s*\{\s*previewOpenButtons\.find\(\(button\) => button\.dataset\.previewPlacement === previewPlacement\)\?\.focus\(\);/s);
     expect(mainSource).not.toContain('previewEl.style.removeProperty("width")');
   });
 
@@ -71,7 +70,19 @@ describe("Feature: window layout integration", () => {
   // Then: フォーカスを閉じるボタンへ引き継ぐ
   it("Scenario: キーボードでプレビューを開いたら閉じるボタンへフォーカスする", () => {
     expect(mainSource).toMatch(/const returnFocusToCloseButton = previewShown && previewOpenButtons\.some\(\(button\) => button\.matches\(":focus-visible"\)\);/);
-    expect(mainSource).toMatch(/button\.hidden = previewShown;[\s\S]*?if \(returnFocusToCloseButton\) previewClose\.focus\(\);/s);
+    expect(mainSource).toContain("if (returnFocusToCloseButton) inlinePreview.focusCloseButton();");
+  });
+
+  // Given: プレビュー表示中でエディタ右端へポインターを寄せる
+  // When: 別方向のボタンを押す
+  // Then: 表示中の配置だけ更新し、payloadを再送しない
+  it("Scenario: エディタ右端のボタンで閲覧中プレビューの配置だけ切り替える", () => {
+    expect(mainSource).toMatch(/const boundary = editorHost\.getBoundingClientRect\(\)\.right;/);
+    expect(mainSource).toContain("button.hidden = !isPreviewOpenButtonShown(previewState, previewPlacement, placement);");
+    const shownBranch = mainSource.match(/function openPreview\(placement\?: PreviewPlacement\)\s*\{\s*if \(paneVisibilityAt\(measuredMainWidth\(\)\)\.previewShown\)\s*\{([^}]+)\}/s)?.[1];
+    expect(shownBranch).toContain("selectPreviewPlacement(placement)");
+    expect(shownBranch).toContain("updatePreviewVisibility()");
+    expect(shownBranch).not.toMatch(/resend|openPreviewFormat|closePreview/);
   });
 
   // Given: 独立viewerが最大化・最小化・復元と内容更新を受け取る

@@ -72,6 +72,12 @@ export function isPreviewShown(state: PreviewLayoutState): boolean {
   return state.available && !state.collapsed;
 }
 
+export function isPreviewOpenButtonShown(
+  state: PreviewLayoutState, current: PreviewPlacement, target: PreviewPlacement,
+): boolean {
+  return !isPreviewFullscreen(state) && (!isPreviewShown(state) || current !== target);
+}
+
 export function isPreviewFullscreen(state: PreviewLayoutState): boolean {
   return isPreviewShown(state) && state.fullscreen;
 }

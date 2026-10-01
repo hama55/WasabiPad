@@ -44,6 +44,7 @@ export interface InlinePreviewPorts {
   onDelimiterChange?: (delimiter: string) => void;
   onFontFamilyChange?: (family: string) => void;
   onFullscreenChange?: () => void | Promise<void>;
+  onClose?: (returnFocus: boolean) => void | Promise<void>;
   onSelectionChange?: (selection: ViewerSelection) => void | Promise<void>;
   onMarkdownLink?: (href: string, newTab: boolean) => void | Promise<void>;
   onExternalOutputReleased?: (path: string) => void | Promise<void>;
@@ -57,6 +58,7 @@ export class InlinePreview {
   private nextLabel = 0;
   private nextRenderId = 0;
   private ready = false;
+  private pendingCloseFocus = false;
   private pendingExternalOpen: PendingExternalOpen | null = null;
   private pendingClearAcks = new Map<string, () => void>();
   private sourcePath: string | null = null;
@@ -91,6 +93,7 @@ export class InlinePreview {
         this.ready = true;
         if (this.pendingExternalOpen) this.sendPendingExternalOpen();
         else this.send();
+        if (this.pendingCloseFocus) this.focusCloseButton();
         return;
       }
       if (event.data?.type === DISPLAY_COMMITTED_MESSAGE || event.data?.type === DISPLAY_FAILED_MESSAGE) {
@@ -133,6 +136,12 @@ export class InlinePreview {
         this.notifyPort(() => this.ports.onFullscreenChange?.());
         return;
       }
+      if (event.data?.type === INLINE_PREVIEW_MESSAGES.CLOSE_MESSAGE) {
+        if (typeof event.data.return_focus === "boolean") {
+          this.notifyPort(() => this.ports.onClose?.(event.data.return_focus));
+        }
+        return;
+      }
       if (event.data?.type === INLINE_PREVIEW_MESSAGES.SELECTION_CHANGE_MESSAGE) {
         if (!isViewerSelection(event.data.selection)) return;
         this.notifyPort(() => this.ports.onSelectionChange?.(event.data.selection));
@@ -156,6 +165,11 @@ export class InlinePreview {
     this.archivePath = archivePath;
     this.archiveEntry = archiveEntry;
     this.effectiveExtension = effectiveExtension;
+  }
+
+  focusCloseButton() {
+    this.pendingCloseFocus = !this.ready;
+    if (this.ready) this.frame.contentWindow?.postMessage({ type: INLINE_PREVIEW_MESSAGES.FOCUS_CLOSE_MESSAGE }, window.location.origin);
   }
 
   setExternalOutputPath(path: string | null) {

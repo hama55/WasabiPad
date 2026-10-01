@@ -109,6 +109,7 @@ const title = document.getElementById("viewer-title-text")!;
 const formatButtons = document.getElementById("viewer-format") as HTMLSelectElement;
 const actionButtons = document.getElementById("viewer-csv-actions")!;
 const fullscreenButton = document.getElementById("viewer-fullscreen") as HTMLButtonElement;
+const previewCloseButton = document.getElementById("viewer-close") as HTMLButtonElement;
 const summary = document.getElementById("viewer-summary")!;
 const themeButton = document.getElementById("viewer-theme")!;
 const fontButton = document.getElementById("viewer-font")!;
@@ -520,6 +521,12 @@ function bindViewerControls() {
   fullscreenButton.addEventListener("click", () => {
     runViewerOperation("全画面表示を変更できませんでした", () => {
       if (isInlineViewer) postToParent({ type: INLINE_PREVIEW_MESSAGES.FULLSCREEN_CHANGE_MESSAGE });
+    });
+  }, { signal: viewerDomListeners.signal });
+  previewCloseButton.addEventListener("click", () => {
+    if (isInlineViewer) postToParent({
+      type: INLINE_PREVIEW_MESSAGES.CLOSE_MESSAGE,
+      return_focus: previewCloseButton.matches(":focus-visible"),
     });
   }, { signal: viewerDomListeners.signal });
   const notifySelection = () => runViewerOperation(
@@ -1385,6 +1392,10 @@ async function start() {
         if (event.data?.type === INLINE_PREVIEW_MESSAGES.FULLSCREEN_STATE_MESSAGE) {
           if (typeof event.data.fullscreen !== "boolean") return;
           setFullscreenButton(event.data.fullscreen);
+          return;
+        }
+        if (event.data?.type === INLINE_PREVIEW_MESSAGES.FOCUS_CLOSE_MESSAGE) {
+          previewCloseButton.focus();
           return;
         }
       }, { signal: viewerDomListeners.signal });

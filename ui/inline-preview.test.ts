@@ -36,6 +36,43 @@ function mount(
 }
 
 describe("Feature: inline preview", () => {
+  // Given: iframeの準備が終わる前にキーボードで開く
+  // When: 閉じるボタンへのfocusを要求し、ready通知を受ける
+  // Then: ready前は送らず、ready後に同一originへ1回だけfocus通知する
+  it("Scenario: iframe準備後に閉じるボタンへフォーカスする", () => {
+    const { host, preview } = mount();
+    const frame = host.querySelector("iframe")!;
+    const post = vi.spyOn(frame.contentWindow!, "postMessage");
+    preview.focusCloseButton();
+    expect(post).not.toHaveBeenCalled();
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow, origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
+    }));
+    const focusCalls = post.mock.calls.filter(([message]) => message.type === INLINE_PREVIEW_MESSAGES.FOCUS_CLOSE_MESSAGE);
+    expect(focusCalls).toEqual([[{ type: INLINE_PREVIEW_MESSAGES.FOCUS_CLOSE_MESSAGE }, window.location.origin]]);
+  });
+  // Given: プレビューiframeと、閉じる通知の受け口がある
+  // When: 正規frameが閉じる操作を通知し、別frameも同じ通知を送る
+  // Then: 正規frameからの通知だけ既存の閉じる経路へ渡す
+  it("Scenario: ツールバーの閉じる操作を親へ通知する", () => {
+    const host = document.createElement("div");
+    host.appendChild(document.createElement("iframe"));
+    document.body.appendChild(host);
+    const onClose = vi.fn();
+    new InlinePreview(host, { onClose });
+    const frame = host.querySelector("iframe")!;
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow, origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.CLOSE_MESSAGE, return_focus: true },
+    }));
+    expect(onClose).toHaveBeenCalledExactlyOnceWith(true);
+    window.dispatchEvent(new MessageEvent("message", {
+      source: window, origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.CLOSE_MESSAGE, return_focus: true },
+    }));
+    expect(onClose).toHaveBeenCalledOnce();
+  });
   // Feature: インラインプレビューのネイティブ検索抑止
   // Scenario: プレビューiframeのフォーカスをネイティブ境界へ通知する
   // Given: インラインプレビューのiframe

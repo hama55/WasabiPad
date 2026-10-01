@@ -80,6 +80,7 @@ import {
   isCurrentPreviewDocument,
   isPreviewFullscreen,
   isPreviewShown,
+  isPreviewOpenButtonShown,
   isPreviewSplitterShown,
   PREVIEW_MIN_WIDTH,
   SIDEBAR_DEFAULT_WIDTH,
@@ -156,7 +157,6 @@ const previewSplitter = $("preview-splitter");
 const previewEl = $("preview");
 const previewToggle = $<HTMLButtonElement>("preview-toggle");
 const previewOpenButtons = Array.from(mainEl.querySelectorAll<HTMLButtonElement>("[data-preview-placement]"));
-const previewClose = $<HTMLButtonElement>("preview-close");
 const loading = $("loading");
 const loadingMessage = $("loading-message");
 document.documentElement.style.setProperty("--sidebar-default-width", `${SIDEBAR_DEFAULT_WIDTH}px`);
@@ -342,18 +342,21 @@ function applyPaneVisibility(mainWidth: number) {
   mainEl.style.setProperty("--preview-height", previewEl.style.height);
   previewSplitter.setAttribute("aria-orientation", previewPlacement === "right" ? "vertical" : "horizontal");
   previewSplitter.setAttribute("aria-label", previewPlacement === "right" ? "プレビュー幅" : "プレビュー高さ");
-  previewClose.textContent = fullscreen || previewPlacement === "right" ? "\uE76C"
-    : previewPlacement === "top" ? "\uE70E" : "\uE70D";
   inlinePreview.setFullscreen(fullscreen);
   const mainRect = mainEl.getBoundingClientRect();
+  const editorRect = editorHost.getBoundingClientRect();
+  mainEl.style.setProperty("--preview-editor-top", `${editorRect.top - mainRect.top}px`);
+  mainEl.style.setProperty("--preview-editor-height", `${editorRect.height}px`);
+  mainEl.style.setProperty("--preview-editor-bottom", `${mainRect.bottom - editorRect.bottom}px`);
   for (const button of previewOpenButtons) {
-    button.hidden = previewShown;
+    const placement = button.dataset.previewPlacement as PreviewPlacement;
+    button.hidden = !isPreviewOpenButtonShown(previewState, previewPlacement, placement);
     button.style.left = `${previewToggleLeft(
-      false, mainRect.left, mainRect.right, mainEl.clientWidth || mainWidth,
+      false, mainRect.left, editorRect.right, editorRect.right - mainRect.left,
       button.offsetWidth || PREVIEW_TOGGLE_DEFAULT_WIDTH,
     )}px`;
   }
-  if (returnFocusToCloseButton) previewClose.focus();
+  if (returnFocusToCloseButton) inlinePreview.focusCloseButton();
 }
 
 function updateSidebarVisibility() {
@@ -380,6 +383,7 @@ function updateExternalPreviewRefreshVisibility() {
 }
 
 const inlinePreviewPorts = {
+  onClose: closePreview,
   onAvailabilityChange: (available, label) => {
     if (available) {
       previewReplacementLifecycle.onAvailable(
@@ -1380,10 +1384,9 @@ $("sidebar-toggle").addEventListener("click", () => {
   if (currentlyShown || sidebarCollapsed) sidebarCollapsed = !sidebarCollapsed;
   updateSidebarVisibility();
 });
-function closePreview() {
+function closePreview(returnFocusToOpenButton = false) {
   const layoutWidth = measuredMainWidth();
   if (!Number.isFinite(layoutWidth) || layoutWidth <= 0 || !paneVisibilityAt(layoutWidth).previewShown) return;
-  const returnFocusToOpenButton = previewClose.matches(":focus-visible");
   previewCollapsed = true;
   previewFullscreen = false;
   previewFullscreenTabId = null;
@@ -1392,7 +1395,6 @@ function closePreview() {
     previewOpenButtons.find((button) => button.dataset.previewPlacement === previewPlacement)?.focus();
   }
 }
-previewClose.addEventListener("click", closePreview);
 
 function selectPreviewPlacement(placement?: PreviewPlacement) {
   previewPlacement = placement ?? resolvePreviewPlacement(getSetting("previewOpenPlacement"), getSetting("previewLastPlacement"));
@@ -1400,7 +1402,12 @@ function selectPreviewPlacement(placement?: PreviewPlacement) {
 }
 
 function openPreview(placement?: PreviewPlacement) {
-  if (paneVisibilityAt(measuredMainWidth()).previewShown) return;
+  if (paneVisibilityAt(measuredMainWidth()).previewShown) {
+    if (!placement || placement === previewPlacement) return;
+    selectPreviewPlacement(placement);
+    updatePreviewVisibility();
+    return;
+  }
   if (!previewAvailable) {
     const session = doc.current;
     const path = documentPathOf(session);
@@ -1455,9 +1462,7 @@ function hidePreviewTogglePeekLater() {
   }, 450);
 }
 function pointerNearPreviewBoundary(clientX: number): boolean {
-  const boundary = previewEl.hidden
-    ? mainEl.getBoundingClientRect().right
-    : previewEl.getBoundingClientRect().left;
+  const boundary = editorHost.getBoundingClientRect().right;
   return isPreviewTogglePeekPoint(
     clientX,
     boundary,

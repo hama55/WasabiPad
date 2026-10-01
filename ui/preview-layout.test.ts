@@ -11,9 +11,25 @@ import {
   resolvePreviewPlacement,
   previewSplitSize,
   previewSizeFromPointer,
+  isPreviewOpenButtonShown,
 } from "./preview-layout";
 
 describe("Feature: preview layout", () => {
+  // Given: プレビューが閉じている・表示中・全画面の各状態
+  // When: 3方向のボタン表示を判定する
+  // Then: 閉じていれば3つ、表示中は他2つ、全画面は0個
+  it("Scenario: 表示中は別方向へ切り替える2ボタンを用意する", () => {
+    const placements = ["right", "top", "bottom"] as const;
+    for (const current of placements) {
+      const state = { available: true, collapsed: false, fullscreen: false };
+      expect(placements.filter((target) => isPreviewOpenButtonShown(state, current, target)))
+        .toEqual(placements.filter((target) => target !== current));
+      expect(placements.filter((target) => isPreviewOpenButtonShown({ ...state, collapsed: true }, current, target)))
+        .toHaveLength(3);
+      expect(placements.filter((target) => isPreviewOpenButtonShown({ ...state, fullscreen: true }, current, target)))
+        .toHaveLength(0);
+    }
+  });
   // Given: 上下配置でサイドバーはなく、横幅は300px
   // When: 高さを縮めてから戻し、最後に手動で閉じる
   // Then: 横幅によらず高さで退避・復元し、手動で閉じたものは復元しない
