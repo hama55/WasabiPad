@@ -110,6 +110,7 @@ const formatButtons = document.getElementById("viewer-format") as HTMLSelectElem
 const actionButtons = document.getElementById("viewer-csv-actions")!;
 const fullscreenButton = document.getElementById("viewer-fullscreen") as HTMLButtonElement;
 const previewCloseButton = document.getElementById("viewer-close") as HTMLButtonElement;
+const previewRefreshButton = document.getElementById("viewer-refresh") as HTMLButtonElement;
 const summary = document.getElementById("viewer-summary")!;
 const themeButton = document.getElementById("viewer-theme")!;
 const fontButton = document.getElementById("viewer-font")!;
@@ -204,6 +205,7 @@ function publishViewerRenderState(state: ViewerRenderState, nextImageZoom: numbe
   currentArchivePath = state.archivePath;
   currentArchiveEntry = state.archiveEntry;
   currentExternalOutputPath = state.externalOutputPath;
+  previewRefreshButton.hidden = !isInlineViewer || !state.externalOutputPath;
   imageZoom = nextImageZoom;
   const classificationSource = state.effectiveExtension && !archiveFormatExtension(state.effectiveExtension, state.archiveEntry)
     ? `${state.archiveEntry ?? state.sourcePath ?? "source"}.${state.effectiveExtension}`
@@ -528,6 +530,9 @@ function bindViewerControls() {
       type: INLINE_PREVIEW_MESSAGES.CLOSE_MESSAGE,
       return_focus: previewCloseButton.matches(":focus-visible"),
     });
+  }, { signal: viewerDomListeners.signal });
+  previewRefreshButton.addEventListener("click", () => {
+    if (isInlineViewer && currentExternalOutputPath) postToParent({ type: INLINE_PREVIEW_MESSAGES.REFRESH_MESSAGE });
   }, { signal: viewerDomListeners.signal });
   const notifySelection = () => runViewerOperation(
     "プレビューの選択位置を通知できませんでした",
@@ -1324,6 +1329,7 @@ async function start() {
           chartController.clear();
           currentRows = [];
           content.replaceChildren();
+          previewRefreshButton.hidden = true;
           summary.classList.remove("warning");
           summary.textContent = "";
           finishRender(generation);

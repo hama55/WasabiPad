@@ -7,6 +7,15 @@ const viewerSource = readFileSync(new URL("./viewer.ts", import.meta.url), "utf8
 const viewerRustSource = readFileSync(new URL("../src-tauri/src/viewer.rs", import.meta.url), "utf8");
 
 describe("Feature: window layout integration", () => {
+  // Given: 更新操作がプレビューの共通ツールバーにある
+  // When: 外部生成物の表示・標準表示・表示クリアへ遷移する
+  // Then: 外部生成物だけ更新を表示し、操作は既存の保存確認付き更新へ渡す
+  it("Scenario: 外部生成物の表示中だけツールバーから更新できる", () => {
+    expect(viewerSource).toContain("previewRefreshButton.hidden = !isInlineViewer || !state.externalOutputPath;");
+    expect(viewerSource).toMatch(/INLINE_PREVIEW_MESSAGES\.CLEAR_MESSAGE[\s\S]*?previewRefreshButton\.hidden = true;/);
+    expect(mainSource).toContain('onRefresh: () => runBackground("外部プレビューを更新できませんでした", refreshExternalPreview)');
+    expect(mainSource).not.toContain("updateExternalPreviewRefreshVisibility");
+  });
   // Given: メイン画面にnative windowとDOMの寸法変更通知がある
   // When: resize・move・DPI・focus・標準ボタンの変更が届く
   // Then: すべてが同じレイアウト調整境界へ入り、初期表示後にも再要求される

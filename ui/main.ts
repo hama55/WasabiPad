@@ -114,7 +114,6 @@ import { createExternalPreviewOutputLifecycle, createPreviewReplacementLifecycle
 const win = getCurrentWindow();
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const externalPreviewLogButton = $("external-preview-log");
-const previewRefreshButton = $("preview-refresh");
 let externalPreviewLastLog: string | null = null;
 
 function setExternalPreviewLog(log: string | null) {
@@ -369,7 +368,6 @@ function updateSidebarVisibility() {
 }
 
 function updatePreviewVisibility() {
-  updateExternalPreviewRefreshVisibility();
   const width = measuredMainWidth();
   if (width <= 0) {
     layoutRuntime?.coordinator.request();
@@ -378,12 +376,9 @@ function updatePreviewVisibility() {
   applyPaneVisibility(width);
 }
 
-function updateExternalPreviewRefreshVisibility() {
-  previewRefreshButton.hidden = !previewAvailable || !previewDocument?.externalAdapter;
-}
-
 const inlinePreviewPorts = {
   onClose: closePreview,
+  onRefresh: () => runBackground("外部プレビューを更新できませんでした", refreshExternalPreview),
   onAvailabilityChange: (available, label) => {
     if (available) {
       previewReplacementLifecycle.onAvailable(
@@ -490,7 +485,6 @@ function invalidatePreviewRequest(clearSelection = true) {
   clearExternalPreviewOutput();
   if (!clearSelection) return;
   previewDocument = null;
-  updateExternalPreviewRefreshVisibility();
   editingStatusbar.setPreviewFormat(null);
 }
 
@@ -507,7 +501,6 @@ function clearPreview(session: Readonly<DocumentSession>) {
   inlinePreview.setPendingExternalOutputPath(null);
   inlinePreview.setSourcePath(null, session.archivePath, session.archiveEntry);
   previewDocument = null;
-  updateExternalPreviewRefreshVisibility();
   previewFullscreen = false;
   previewFullscreenTabId = null;
   editingStatusbar.setPreviewFormat(null);
@@ -694,7 +687,6 @@ function openPreviewFormat(
         clearDisplayedExternalPreviewOutput();
       }
       previewDocument = document;
-      updateExternalPreviewRefreshVisibility();
       editingStatusbar.setPreviewFormat(resolvedFormat);
       if (fragment !== null && resolvedFormat === "markdown") inlinePreview.setMarkdownFragment(fragment);
     } catch (error) {
@@ -1675,10 +1667,6 @@ async function refreshExternalPreview() {
     externalAdapter: adapter,
   });
 }
-
-previewRefreshButton.addEventListener("click", () => {
-  runBackground("外部プレビューを更新できませんでした", refreshExternalPreview);
-});
 
 try {
   const unlisten = await api.onExternalWindowRequest(drainExternalWindowRequests);

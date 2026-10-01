@@ -84,12 +84,12 @@ describe("Feature: pane toggle placement", () => {
   });
 
   // Feature: 独立したプレビューを閉じるボタン
-  // Scenario: 全配置で閉じる操作を全画面操作の左隣へ置く
+  // Scenario: 全配置で更新・全画面・閉じるの順に右端へ並べる
   // Given: プレビューの共通ツールバーがある
   // When: HTMLの操作順と上下配置の余白を検査する
   // Then: 同じ行に隣接して常時表示し、専用の上下余白は不要になる
-  it("Scenario: プレビューを閉じるボタンを全画面ボタンの左隣へ置く", () => {
-    expect(viewerHtml).toMatch(/<button[^>]*id="viewer-close"[^>]*aria-label="プレビューを閉じる"[^>]*>[\s\S]*?<\/button>\s*<button id="viewer-fullscreen"/s);
+  it("Scenario: 更新・全画面・ばつで閉じるを右端へ順に並べる", () => {
+    expect(viewerHtml).toMatch(/<button[^>]*id="viewer-refresh"[^>]*hidden[^>]*>[\s\S]*?<\/button>\s*<button id="viewer-fullscreen"[^>]*><\/button>\s*<button[^>]*id="viewer-close"[^>]*aria-label="プレビューを閉じる"[^>]*>×<\/button>/s);
     expect(indexHtml).not.toContain('id="preview-close"');
     expect(viewerStyle).toContain("body.inline-viewer #viewer-close { display: block; }");
     expect(style).not.toContain("padding-top: 32px");
@@ -153,18 +153,19 @@ describe("Feature: pane toggle placement", () => {
   // Then: CSSは固定値を持たず、共有CSS変数を参照する
   it("Scenario: プレビュー操作ボタン幅を共有CSS変数から取得する", () => {
     expect(style).toMatch(/#sidebar-toggle\s*\{[^}]*min-width:\s*var\(--preview-toggle-width\);/s);
-    expect(style).toMatch(/\.preview-open,\s*#preview-refresh\s*\{[^}]*min-width:\s*var\(--preview-toggle-width\);/s);
+    expect(style).toMatch(/\.preview-open\s*\{[^}]*min-width:\s*var\(--preview-toggle-width\);/s);
     expect(style).not.toMatch(/#sidebar-toggle\s*\{[^}]*min-width:\s*28px;/s);
     expect(style).not.toMatch(/#preview-toggle\s*\{[^}]*min-width:\s*28px;/s);
   });
 
   // Feature: インラインプレビューの操作ボタン
-  // Scenario: 外部プレビュー更新操作を全画面ボタンから離す
-  // Given: 親プレビューに更新ボタンが重ねて表示される
-  // When: 更新ボタンの配置を調べる
-  // Then: 左側へ配置し、iframe内の右上にある全画面ボタンを覆わない
+  // Scenario: 外部プレビュー更新操作を共通ツールバーへ移す
+  // Given: プレビューのツールバーに更新ボタンがある
+  // When: 親の重ね表示とボタンの幅指定を調べる
+  // Then: 親の更新ボタンはなく、3ボタンが同じ幅のflex itemになる
   it("Scenario: 外部プレビュー更新ボタンで全画面ボタンを覆わない", () => {
-    expect(style).toMatch(/#preview-refresh\s*\{[^}]*position:\s*absolute;[^}]*top:\s*4px;[^}]*left:\s*calc\(8px \+ var\(--preview-toggle-width\)\);[^}]*right:\s*auto;/s);
+    expect(indexHtml).not.toContain('id="preview-refresh"');
+    expect(viewerStyle).toMatch(/#viewer-fullscreen,\s*#viewer-close,\s*#viewer-refresh\s*\{[^}]*width:\s*36px;\s*flex:\s*none;/s);
   });
 
   // Feature: 検索バー表示中のプレビューを開く操作

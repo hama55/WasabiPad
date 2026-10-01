@@ -209,8 +209,7 @@ body {
   width: var(--pane-splitter-width); cursor: ew-resize; flex: none; background: transparent;
 }
 #preview-splitter:hover { background: var(--bg-status); }
-.preview-open,
-#preview-refresh {
+.preview-open {
   z-index: 8; min-width: var(--preview-toggle-width); height: 24px; padding: 0 5px;
   border: 1px solid var(--border); border-radius: 4px;
   background: var(--bg-title); color: var(--fg-dim);
@@ -224,16 +223,11 @@ body {
 #preview-toggle { top: calc(var(--preview-editor-top, 0px) + var(--preview-editor-height, 100%) / 2); transform: translateY(-50%); }
 #preview-toggle-top { top: calc(var(--preview-editor-top, 0px) + 4px); }
 #preview-toggle-bottom { bottom: calc(var(--preview-editor-bottom, 0px) + 4px); }
-#preview-refresh {
-  position: absolute; top: 4px; left: calc(8px + var(--preview-toggle-width)); right: auto;
-  font-family: var(--font-ui);
-}
 #editorhost.ve-search-open ~ #preview-toggle-top { top: calc(var(--preview-editor-top, 0px) + 44px); }
 #main:has(#editorhost.ve-search-open) > #sidebar[hidden] ~ #sidebar-toggle { top: 44px; }
 #editorhost.ve-find-wrap.ve-search-open ~ #preview-toggle-top { top: calc(var(--preview-editor-top, 0px) + 76px); }
 #main:has(#editorhost.ve-find-wrap.ve-search-open) > #sidebar[hidden] ~ #sidebar-toggle { top: 76px; }
-.preview-open:hover,
-#preview-refresh:hover { background: var(--hover); color: var(--fg); }
+.preview-open:hover { background: var(--hover); color: var(--fg); }
 #main.preview-toggle-peek .preview-open,
 .preview-open:focus-visible {
   opacity: 1; pointer-events: auto;

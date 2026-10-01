@@ -36,6 +36,23 @@ function mount(
 }
 
 describe("Feature: inline preview", () => {
+  // Given: 外部プレビュー更新の通知先がある
+  // When: 正規frameと別frameが更新操作を通知する
+  // Then: 正規frameだけが既存の更新経路へ届く
+  it("Scenario: 外部プレビューの更新操作を親へ通知する", () => {
+    const host = document.createElement("div");
+    host.appendChild(document.createElement("iframe"));
+    document.body.appendChild(host);
+    const onRefresh = vi.fn();
+    new InlinePreview(host, { onRefresh });
+    const data = { type: INLINE_PREVIEW_MESSAGES.REFRESH_MESSAGE };
+    window.dispatchEvent(new MessageEvent("message", { source: window, origin: window.location.origin, data }));
+    expect(onRefresh).not.toHaveBeenCalled();
+    window.dispatchEvent(new MessageEvent("message", {
+      source: host.querySelector("iframe")!.contentWindow, origin: window.location.origin, data,
+    }));
+    expect(onRefresh).toHaveBeenCalledOnce();
+  });
   // Given: iframeの準備が終わる前にキーボードで開く
   // When: 閉じるボタンへのfocusを要求し、ready通知を受ける
   // Then: ready前は送らず、ready後に同一originへ1回だけfocus通知する

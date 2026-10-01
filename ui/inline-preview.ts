@@ -45,6 +45,7 @@ export interface InlinePreviewPorts {
   onFontFamilyChange?: (family: string) => void;
   onFullscreenChange?: () => void | Promise<void>;
   onClose?: (returnFocus: boolean) => void | Promise<void>;
+  onRefresh?: () => void | Promise<void>;
   onSelectionChange?: (selection: ViewerSelection) => void | Promise<void>;
   onMarkdownLink?: (href: string, newTab: boolean) => void | Promise<void>;
   onExternalOutputReleased?: (path: string) => void | Promise<void>;
@@ -140,6 +141,10 @@ export class InlinePreview {
         if (typeof event.data.return_focus === "boolean") {
           this.notifyPort(() => this.ports.onClose?.(event.data.return_focus));
         }
+        return;
+      }
+      if (event.data?.type === INLINE_PREVIEW_MESSAGES.REFRESH_MESSAGE) {
+        this.notifyPort(() => this.ports.onRefresh?.());
         return;
       }
       if (event.data?.type === INLINE_PREVIEW_MESSAGES.SELECTION_CHANGE_MESSAGE) {

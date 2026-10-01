@@ -77,13 +77,14 @@ body {
 #wincontrols button:hover { background: var(--hover); }
 #win-close:hover { background: #e81123; color: #fff; }
 #viewer-fullscreen,
-#viewer-close {
+#viewer-close,
+#viewer-refresh {
   display: none; width: 36px; flex: none;
   border: 0; background: none; color: var(--fg);
   font: 16px var(--font-ui); cursor: default;
 }
-#viewer-fullscreen:hover { background: var(--hover); }
-#viewer-close { font-family: "Segoe MDL2 Assets", var(--font-ui); }
+#viewer-fullscreen:hover,
+#viewer-refresh:hover,
 #viewer-close:hover { background: var(--hover); }
 body.inline-viewer #viewer-title-spacer { width: 8px; }
 body.inline-viewer #wincontrols { display: none; }
@@ -91,6 +92,7 @@ body.inline-viewer #viewer-title-text { display: none; }
 body.inline-viewer #viewer-format { display: block; }
 body.inline-viewer #viewer-fullscreen { display: block; }
 body.inline-viewer #viewer-close { display: block; }
+body.inline-viewer #viewer-refresh:not([hidden]) { display: block; }
 
 main {
   position: relative;

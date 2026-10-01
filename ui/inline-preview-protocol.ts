@@ -18,6 +18,7 @@ export const INLINE_PREVIEW_MESSAGES = {
   FULLSCREEN_CHANGE_MESSAGE: "wasabipad-viewer-fullscreen-change",
   FULLSCREEN_STATE_MESSAGE: "wasabipad-viewer-fullscreen-state",
   CLOSE_MESSAGE: "wasabipad-viewer-close",
+  REFRESH_MESSAGE: "wasabipad-viewer-refresh",
   FOCUS_CLOSE_MESSAGE: "wasabipad-viewer-focus-close",
   SELECTION_CHANGE_MESSAGE: "wasabipad-viewer-selection-change",
   MARKDOWN_LINK_MESSAGE: "wasabipad-viewer-markdown-link",
