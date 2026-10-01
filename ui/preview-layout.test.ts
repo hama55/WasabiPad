@@ -4,34 +4,71 @@ import {
   isPreviewFullscreen,
   isPreviewShown,
   isPreviewSplitterShown,
-  previewWidthFromPointer,
   PREVIEW_MIN_WIDTH,
   resolvePaneVisibility,
   shouldResendPreviewOnRestore,
   shouldKeepPreviewFullscreen,
+  resolvePreviewPlacement,
+  previewSplitSize,
+  previewSizeFromPointer,
 } from "./preview-layout";
 
 describe("Feature: preview layout", () => {
+  // Given: 上下配置でサイドバーはなく、横幅は300px
+  // When: 高さを縮めてから戻し、最後に手動で閉じる
+  // Then: 横幅によらず高さで退避・復元し、手動で閉じたものは復元しない
+  it.each(["top", "bottom"] as const)("Scenario: %s配置を高さ不足時だけ退避する", (previewPlacement) => {
+    const input = {
+      mainWidth: 300, mainHeight: 500, previewPlacement,
+      sidebarAvailable: false, sidebarCollapsed: false, sidebarWidth: 220,
+      previewAvailable: true, previewCollapsed: false, fullscreen: false,
+    };
+    expect(resolvePaneVisibility(input).previewShown).toBe(true);
+    expect(resolvePaneVisibility({ ...input, mainHeight: 280 }).previewShown).toBe(false);
+    expect(resolvePaneVisibility({ ...input, mainHeight: 500 }).previewShown).toBe(true);
+    expect(resolvePaneVisibility({ ...input, previewCollapsed: true }).previewShown).toBe(false);
+    expect(resolvePaneVisibility({ ...input, mainHeight: 100, fullscreen: true }).fullscreen).toBe(true);
+  });
+  // Given: 分割領域が1000px、初期比率は半分
+  // When: 配置とドラッグ位置から分割寸法を求める
+  // Then: 初回は498px、上と下で逆の端を基準にし、本文最低寸法も守る
+  it("Scenario: 3方向の分割を半分から調整する", () => {
+    expect(previewSplitSize(1000, 0.5, "right")).toBe(498);
+    expect(previewSplitSize(1000, 0.5, "top")).toBe(498);
+    expect(previewSizeFromPointer("top", 100, 1100, 400)).toBe(300);
+    expect(previewSizeFromPointer("bottom", 100, 1100, 400)).toBe(700);
+    expect(previewSizeFromPointer("right", 100, 1100, -100)).toBe(876);
+    expect(previewSizeFromPointer("top", 100, 1100, 105)).toBe(160);
+  });
+  // Given: 方向未指定の設定と最後に選んだ配置
+  // When: 開く配置を解決する
+  // Then: 固定指定を優先し、lastだけ最後の配置を使う
+  it("Scenario: 設定に従ってプレビュー配置を選ぶ", () => {
+    expect(resolvePreviewPlacement("right", "top")).toBe("right");
+    expect(resolvePreviewPlacement("top", "bottom")).toBe("top");
+    expect(resolvePreviewPlacement("bottom", "right")).toBe("bottom");
+    expect(resolvePreviewPlacement("last", "top")).toBe("top");
+  });
   // Given: メイン領域の右端が1200px、ポインターが900px
   // When: プレビュー境界をドラッグした幅を求める
   // Then: プレビュー幅は300pxになる
   it("Scenario: ドラッグ位置からプレビュー幅を決める", () => {
-    expect(previewWidthFromPointer(1200, 900)).toBe(300);
+    expect(previewSizeFromPointer("right", 0, 1200, 900)).toBe(300);
   });
 
   // Given: メイン領域の右端が1200px、ポインターが1000px
   // When: プレビュー境界をドラッグした幅を求める
   // Then: 最小幅を下回らず260pxになる
   it("Scenario: プレビュー幅に最小値を設ける", () => {
-    expect(previewWidthFromPointer(1200, 1000)).toBe(PREVIEW_MIN_WIDTH);
+    expect(previewSizeFromPointer("right", 0, 1200, 1000)).toBe(PREVIEW_MIN_WIDTH);
   });
 
   // Given: メイン領域の左端が100px、右端が1200px、ポインターが画面外の0px
   // When: プレビュー境界をドラッグした幅を求める
-  // Then: メイン領域全体を超えず1100pxになる
+  // Then: 本文120pxと境界4pxを残す
   it("Scenario: プレビュー幅にメイン領域の最大値を設ける", () => {
-    expect(previewWidthFromPointer(1200, 0, 100)).toBe(1100);
-    expect(previewWidthFromPointer(1200, 0, 220)).toBe(980);
+    expect(previewSizeFromPointer("right", 100, 1200, 0)).toBe(976);
+    expect(previewSizeFromPointer("right", 220, 1200, 0)).toBe(856);
   });
 
   // Given: サイドバーとプレビューを表示したまま、エディタに必要な幅を確保できない
@@ -96,8 +133,8 @@ describe("Feature: preview layout", () => {
   // When: splitterの位置からプレビュー幅を求める
   // Then: 画面外へはみ出さず、利用可能な幅へ収める
   it("Scenario: 標準最小幅より狭いwindowでもプレビュー幅を画面内へ収める", () => {
-    expect(previewWidthFromPointer(200, 0)).toBe(200);
-    expect(previewWidthFromPointer(200, 180)).toBe(200);
+    expect(previewSizeFromPointer("right", 0, 200, 0)).toBe(76);
+    expect(previewSizeFromPointer("right", 0, 200, 180)).toBe(76);
   });
 
   // Given: プレビューの可用/開閉/全画面状態を指定

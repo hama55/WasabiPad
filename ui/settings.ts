@@ -8,7 +8,7 @@ import { normalizeStoredTabs, type StoredTabs } from "./stored-tabs";
 import { DEFAULT_EDITOR_CONFIG } from "./editor-config";
 import { DEFAULT_INDENT_SIZE, INDENT_SIZES, isValidFontSize } from "./font-controls";
 import { isRegisteredCommand, normalizeRegisteredCommand, type RegisteredCommand } from "./registered-command-model";
-import { SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MIN_WIDTH } from "./preview-layout";
+import { SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MIN_WIDTH, isPreviewPlacement, type PreviewPlacement, type PreviewOpenPlacement } from "./preview-layout";
 import { parseExternalPreviewAdapters, type ExternalPreviewAdapter } from "./external-preview-adapter-model";
 
 export type { RegisteredCommand } from "./registered-command-model";
@@ -34,6 +34,10 @@ export interface Settings {
   fontFamily: string;
   fontSize: number;
   previewFontSize: number;
+  previewOpenPlacement: PreviewOpenPlacement;
+  previewLastPlacement: PreviewPlacement;
+  previewRightRatio: number;
+  previewVerticalRatio: number;
   markdownSoftBreaks: boolean;
   markdownLineHeight: number;
   markdownHeadingUnderlines: boolean;
@@ -60,6 +64,10 @@ const DEFAULT_USER_SETTINGS: Pick<Settings, UserSettingKey> = {
   fontFamily: DEFAULT_EDITOR_CONFIG.fontFamily,
   fontSize: DEFAULT_EDITOR_CONFIG.fontSize,
   previewFontSize: DEFAULT_EDITOR_CONFIG.fontSize,
+  previewOpenPlacement: "right",
+  previewLastPlacement: "right",
+  previewRightRatio: 0.5,
+  previewVerticalRatio: 0.5,
   markdownSoftBreaks: true,
   markdownLineHeight: DEFAULT_MARKDOWN_LINE_HEIGHT,
   markdownHeadingUnderlines: false,
@@ -86,6 +94,10 @@ export const SIDEBAR_MAX_WIDTH = 640;
 export function clampSidebarWidth(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULTS.sidebarWidth;
   return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, Math.round(value)));
+}
+
+function parsePreviewRatio(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 && value < 1 ? value : 0.5;
 }
 
 let cache: Settings = { ...DEFAULTS };
@@ -136,6 +148,12 @@ export function parseSettingsResult(text: string): SettingsParseResult {
       ? value.indentSize
       : DEFAULTS.indentSize,
     sidebarWidth: clampSidebarWidth(value.sidebarWidth),
+    previewOpenPlacement: value.previewOpenPlacement === "last" || isPreviewPlacement(value.previewOpenPlacement)
+      ? value.previewOpenPlacement : DEFAULTS.previewOpenPlacement,
+    previewLastPlacement: isPreviewPlacement(value.previewLastPlacement)
+      ? value.previewLastPlacement : DEFAULTS.previewLastPlacement,
+    previewRightRatio: parsePreviewRatio(value.previewRightRatio),
+    previewVerticalRatio: parsePreviewRatio(value.previewVerticalRatio),
     fontFamily: typeof value.fontFamily === "string" && value.fontFamily.length > 0
       ? value.fontFamily
       : DEFAULTS.fontFamily,

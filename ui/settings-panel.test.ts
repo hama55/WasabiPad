@@ -23,6 +23,10 @@ function makePorts(
     fontFamily: 'Consolas, "MS Gothic", monospace',
     fontSize: 14,
     previewFontSize: 14,
+    previewOpenPlacement: "right",
+    previewLastPlacement: "right",
+    previewRightRatio: 0.5,
+    previewVerticalRatio: 0.5,
     markdownSoftBreaks: true,
     markdownLineHeight: 1.65,
     markdownHeadingUnderlines: false,
@@ -75,6 +79,23 @@ async function answerConfirmation(approved: boolean): Promise<void> {
 
 describe("Feature: settings modal", () => {
   afterEach(() => document.body.replaceChildren());
+
+  // Given: 初期設定は右固定
+  // When: プレビュー設定から配置オプションを変更する
+  // Then: 4つの選択肢があり、選択を通常の設定保存へ渡す
+  it("Scenario: 方向未指定のプレビュー配置を設定から選ぶ", () => {
+    const ports = makePorts();
+    openSettingsModal(ports);
+    const select = document.querySelector<HTMLSelectElement>('[data-setting="preview-open-placement"]')!;
+    expect(select.value).toBe("right");
+    expect(Array.from(select.options, (option) => option.textContent))
+      .toEqual(["右固定", "上固定", "下固定", "最後に選んだ方向"]);
+    for (const value of ["top", "bottom", "last", "right"]) {
+      select.value = value;
+      select.dispatchEvent(new Event("change"));
+      expect(ports.setSetting).toHaveBeenLastCalledWith("previewOpenPlacement", value);
+    }
+  });
 
   // Feature: 外部プレビューの設定画面
   // Scenario: 一覧から追加・削除の操作を各portへ委譲する

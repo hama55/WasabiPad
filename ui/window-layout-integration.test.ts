@@ -49,18 +49,19 @@ describe("Feature: window layout integration", () => {
   // Then: メイン領域外への離脱時に非表示予約を行い、既存のガードを維持する
   it("Scenario: メイン領域から離れた時にプレビューを開くボタンを非表示予約する", () => {
     expect(mainSource).toMatch(/mainEl\.addEventListener\("pointerleave",\s*hidePreviewTogglePeekLater\);/);
-    expect(mainSource).toMatch(/if \(!previewToggleHovered && document\.activeElement !== previewToggle\)/);
+    expect(mainSource).toMatch(/if \(!previewToggleHovered && !previewOpenButtons\.includes\(document\.activeElement as HTMLButtonElement\)\)/);
   });
 
   // Feature: 独立したプレビューを閉じる操作
   // Scenario: 専用ボタンで閉じ、キーボード操作なら開くボタンへフォーカスを戻す
   // Given: プレビューを閉じるボタンと開くボタンが別々にある
   // When: プレビューを閉じるボタンを押す
-  // Then: 全画面状態を解除してプレビューを閉じ、キーボード操作では開くボタンへフォーカスする
+  // Then: 全画面状態を解除し、寸法を保ったまま閉じ、同じ方向の開くボタンへフォーカスする
   it("Scenario: 専用ボタンでプレビューを閉じキーボードフォーカスを戻す", () => {
-    expect(mainSource).toMatch(/previewToggle\.hidden = previewShown;/);
+    expect(mainSource).toMatch(/button\.hidden = previewShown;/);
     expect(mainSource).toMatch(/previewClose\.addEventListener\("click",\s*closePreview\)/);
-    expect(mainSource).toMatch(/function closePreview\(\)[\s\S]*?const returnFocusToOpenButton = previewClose\.matches\(":focus-visible"\);[\s\S]*?previewCollapsed = true;[\s\S]*?previewFullscreen = false;[\s\S]*?previewEl\.style\.removeProperty\("width"\);[\s\S]*?updatePreviewVisibility\(\);[\s\S]*?if \(returnFocusToOpenButton\) previewToggle\.focus\(\);/s);
+    expect(mainSource).toMatch(/function closePreview\(\)[\s\S]*?const returnFocusToOpenButton = previewClose\.matches\(":focus-visible"\);[\s\S]*?previewCollapsed = true;[\s\S]*?previewFullscreen = false;[\s\S]*?updatePreviewVisibility\(\);[\s\S]*?if \(returnFocusToOpenButton\)\s*\{\s*previewOpenButtons\.find\(\(button\) => button\.dataset\.previewPlacement === previewPlacement\)\?\.focus\(\);/s);
+    expect(mainSource).not.toContain('previewEl.style.removeProperty("width")');
   });
 
   // Feature: プレビューを開いた時のキーボード操作
@@ -69,8 +70,8 @@ describe("Feature: window layout integration", () => {
   // When: プレビューが表示状態へ切り替わる
   // Then: フォーカスを閉じるボタンへ引き継ぐ
   it("Scenario: キーボードでプレビューを開いたら閉じるボタンへフォーカスする", () => {
-    expect(mainSource).toMatch(/const returnFocusToCloseButton = previewShown && previewToggle\.matches\(":focus-visible"\);/);
-    expect(mainSource).toMatch(/previewToggle\.hidden = previewShown;[\s\S]*?if \(returnFocusToCloseButton\) previewClose\.focus\(\);/s);
+    expect(mainSource).toMatch(/const returnFocusToCloseButton = previewShown && previewOpenButtons\.some\(\(button\) => button\.matches\(":focus-visible"\)\);/);
+    expect(mainSource).toMatch(/button\.hidden = previewShown;[\s\S]*?if \(returnFocusToCloseButton\) previewClose\.focus\(\);/s);
   });
 
   // Given: 独立viewerが最大化・最小化・復元と内容更新を受け取る

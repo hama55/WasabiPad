@@ -20,7 +20,7 @@ import { viewerFormatForPath } from "./viewer-formats";
 import { LineCache } from "./line-cache";
 import { EditorMutationController } from "./editor-mutation";
 import { LiveViewers } from "./live-viewers";
-import { lineNumberGroups } from "./line-number";
+import { lineNumberGroups, lineNumberWidth } from "./line-number";
 import { blockRangeForLine, Selection } from "./selection";
 import { MAX_SAFE_HEIGHT, ViewportMetrics } from "./viewport-metrics";
 import {
@@ -1005,10 +1005,9 @@ export class VirtualEditor {
     const context = canvas.getContext("2d");
     if (!context) return;
     context.font = style.font;
-    const groups = lineNumberGroups(this.lineCount);
-    const numberWidth = context.measureText(groups.join("")).width + (groups.length - 1) * 2;
-    const previewExtra = this.liveViewers.previewRange() ? 14 : 0;
-    const w = Math.max(this.gutterWidth, Math.ceil(numberWidth + 24 + previewExtra));
+    const numberWidth = lineNumberWidth(this.lineCount, (digit) => context.measureText(digit).width);
+    // プレビュー印の余白も常に確保し、表示の有無で本文を動かさない。
+    const w = Math.max(this.gutterWidth, Math.ceil(numberWidth + 24 + 14));
     this.scroll.parentElement!.style.setProperty("--gutter-w", `${w}px`);
   }
 

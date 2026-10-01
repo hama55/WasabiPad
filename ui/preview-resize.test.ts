@@ -8,7 +8,30 @@ function pointerEvent(type: string, buttons: number, clientX = 0, pointerId = 1,
   return event as unknown as PointerEvent;
 }
 
+const rightResize = {
+  placement: () => "right" as const,
+  bounds: () => ({ left: 0, right: 1200, top: 0, bottom: 800 }),
+};
+
 describe("Feature: preview resize interaction", () => {
+  // Given: 上下配置のプレビュー境界がある
+  // When: ポインターを縦にドラッグする
+  // Then: 上配置は上端から、下配置は下端から高さを求める
+  it.each(["top", "bottom"] as const)("Scenario: %s配置で縦ドラッグする", (placement) => {
+    const splitter = document.createElement("div");
+    const setSize = vi.fn();
+    const dispose = bindPreviewResize(splitter, {
+      placement: () => placement,
+      bounds: () => ({ left: 0, right: 1000, top: 100, bottom: 1100 }),
+      setSize,
+    });
+    splitter.dispatchEvent(pointerEvent("pointerdown", 1));
+    const move = pointerEvent("pointermove", 1);
+    Object.defineProperty(move, "clientY", { value: 400 });
+    window.dispatchEvent(move);
+    expect(setSize).toHaveBeenCalledWith(placement === "top" ? 300 : 700);
+    dispose();
+  });
   // Given: プレビュー境界の幅変更が開始されている
   // When: pointerup後にpointermoveが届く
   // Then: 幅変更を継続せず、ドラッグ状態を解除する
@@ -16,7 +39,7 @@ describe("Feature: preview resize interaction", () => {
     const splitter = document.createElement("div");
     const setWidth = vi.fn();
     const onStop = vi.fn();
-    bindPreviewResize(splitter, { mainRight: () => 1200, setWidth, onStop });
+    bindPreviewResize(splitter, { ...rightResize, setSize: setWidth, onStop });
 
     splitter.dispatchEvent(pointerEvent("pointerdown", 1));
     window.dispatchEvent(pointerEvent("pointermove", 1, 900));
@@ -35,7 +58,7 @@ describe("Feature: preview resize interaction", () => {
     const splitter = document.createElement("div");
     const setWidth = vi.fn();
     const onStop = vi.fn();
-    bindPreviewResize(splitter, { mainRight: () => 1200, setWidth, onStop });
+    bindPreviewResize(splitter, { ...rightResize, setSize: setWidth, onStop });
 
     splitter.dispatchEvent(pointerEvent("pointerdown", 1));
     window.dispatchEvent(new Event("blur"));
@@ -53,7 +76,7 @@ describe("Feature: preview resize interaction", () => {
     const setWidth = vi.fn();
     const onStart = vi.fn();
     const onStop = vi.fn();
-    bindPreviewResize(splitter, { mainRight: () => 1200, setWidth, onStart, onStop });
+    bindPreviewResize(splitter, { ...rightResize, setSize: setWidth, onStart, onStop });
 
     splitter.dispatchEvent(pointerEvent("pointerdown", 1, 0, 2, 2));
     expect(onStart).not.toHaveBeenCalled();
@@ -72,7 +95,7 @@ describe("Feature: preview resize interaction", () => {
   it("Scenario: ignores unrelated pointer release", () => {
     const splitter = document.createElement("div");
     const onStop = vi.fn();
-    bindPreviewResize(splitter, { mainRight: () => 1200, setWidth: vi.fn(), onStop });
+    bindPreviewResize(splitter, { ...rightResize, setSize: vi.fn(), onStop });
 
     splitter.dispatchEvent(pointerEvent("pointerdown", 1, 0, 1));
     window.dispatchEvent(pointerEvent("pointerup", 0, 0, 2));
@@ -87,7 +110,7 @@ describe("Feature: preview resize interaction", () => {
     const splitter = document.createElement("div");
     const setWidth = vi.fn();
     const onStop = vi.fn();
-    bindPreviewResize(splitter, { mainRight: () => 1200, setWidth, onStop });
+    bindPreviewResize(splitter, { ...rightResize, setSize: setWidth, onStop });
 
     splitter.dispatchEvent(pointerEvent("pointerdown", 1));
     window.dispatchEvent(pointerEvent("pointercancel", 0));
@@ -104,7 +127,7 @@ describe("Feature: preview resize interaction", () => {
     const splitter = document.createElement("div");
     const setWidth = vi.fn();
     const onStart = vi.fn();
-    const dispose = bindPreviewResize(splitter, { mainRight: () => 1200, setWidth, onStart });
+    const dispose = bindPreviewResize(splitter, { ...rightResize, setSize: setWidth, onStart });
 
     dispose();
     splitter.dispatchEvent(pointerEvent("pointerdown", 1));

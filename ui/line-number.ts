@@ -7,3 +7,9 @@ export function lineNumberGroups(line: number): string[] {
   }
   return groups;
 }
+
+export function lineNumberWidth(lineCount: number, measure: (digit: string) => number): number {
+  const digits = String(lineCount).length;
+  const digitWidth = Math.max(...Array.from("0123456789", measure));
+  return digits * digitWidth + Math.floor((digits - 1) / 3) * 2;
+}

@@ -89,6 +89,9 @@ import {
   shouldResendPreviewOnRestore,
   shouldKeepPreviewFullscreen,
   type PreviewDocument,
+  type PreviewPlacement,
+  resolvePreviewPlacement,
+  previewSplitSize,
 } from "./preview-layout";
 import { bindPreviewResize } from "./preview-resize";
 import {
@@ -152,6 +155,7 @@ const splitter = $("splitter");
 const previewSplitter = $("preview-splitter");
 const previewEl = $("preview");
 const previewToggle = $<HTMLButtonElement>("preview-toggle");
+const previewOpenButtons = Array.from(mainEl.querySelectorAll<HTMLButtonElement>("[data-preview-placement]"));
 const previewClose = $<HTMLButtonElement>("preview-close");
 const loading = $("loading");
 const loadingMessage = $("loading-message");
@@ -167,6 +171,9 @@ let previewAvailable = false;
 let previewCollapsed = false;
 let previewFullscreen = false;
 let previewFullscreenTabId: string | null = null;
+let previewPlacement = resolvePreviewPlacement(getSetting("previewOpenPlacement"), getSetting("previewLastPlacement"));
+let previewRightRatio = getSetting("previewRightRatio");
+let previewVerticalRatio = getSetting("previewVerticalRatio");
 let currentLine = 1;
 let tabs: TabManager;
 let sidebar: WorkspaceHost["sidebar"];
@@ -270,15 +277,22 @@ function readSidebarWidth(): number {
 function paneVisibilityAt(mainWidth: number) {
   const sidebarWidth = Number.parseFloat(sidebarEl.style.width)
     || Math.max(SIDEBAR_MIN_WIDTH, sidebarEl.getBoundingClientRect().width || SIDEBAR_DEFAULT_WIDTH);
-  const configuredPreviewWidth = Number.parseFloat(previewEl.style.width);
+  const mainHeight = mainEl.getBoundingClientRect().height;
+  const initial = resolvePaneVisibility({
+    mainWidth, mainHeight, previewPlacement, sidebarAvailable, sidebarCollapsed, sidebarWidth,
+    previewAvailable, previewCollapsed, fullscreen: previewFullscreen,
+  });
+  const splitWidth = mainWidth - (initial.sidebarShown ? sidebarWidth + PANE_SPLITTER_WIDTH : 0);
   return resolvePaneVisibility({
     mainWidth,
+    mainHeight,
+    previewPlacement,
     sidebarAvailable,
     sidebarCollapsed,
     sidebarWidth,
     previewAvailable,
     previewCollapsed,
-    previewWidth: Number.isFinite(configuredPreviewWidth) ? configuredPreviewWidth : undefined,
+    previewWidth: previewSplitSize(splitWidth, previewRightRatio, "right"),
     fullscreen: previewFullscreen,
   });
 }
@@ -311,24 +325,34 @@ function applyPaneVisibility(mainWidth: number) {
   };
   const previewShown = isPreviewShown(previewState);
   const fullscreen = isPreviewFullscreen(previewState);
-  const returnFocusToCloseButton = previewShown && previewToggle.matches(":focus-visible");
+  const returnFocusToCloseButton = previewShown && previewOpenButtons.some((button) => button.matches(":focus-visible"));
   previewEl.hidden = !previewShown;
   previewSplitter.hidden = !isPreviewSplitterShown(previewState);
   mainEl.classList.toggle("preview-fullscreen", fullscreen);
+  mainEl.classList.toggle("preview-vertical", previewShown && !fullscreen && previewPlacement !== "right");
+  mainEl.dataset.previewPlacement = previewPlacement;
+  mainEl.style.setProperty("--visible-sidebar-width", `${sidebarShown ? readSidebarWidth() : 0}px`);
+  mainEl.style.setProperty("--visible-sidebar-splitter", `${sidebarShown ? PANE_SPLITTER_WIDTH : 0}px`);
+  const splitWidth = mainWidth - (sidebarShown ? readSidebarWidth() + PANE_SPLITTER_WIDTH : 0);
+  const splitHeight = mainEl.getBoundingClientRect().height;
+  previewEl.style.width = previewPlacement === "right"
+    ? `${previewSplitSize(splitWidth, previewRightRatio, "right")}px` : "auto";
+  previewEl.style.height = previewPlacement === "right" ? "auto"
+    : `${previewSplitSize(splitHeight, previewVerticalRatio, previewPlacement)}px`;
+  mainEl.style.setProperty("--preview-height", previewEl.style.height);
+  previewSplitter.setAttribute("aria-orientation", previewPlacement === "right" ? "vertical" : "horizontal");
+  previewSplitter.setAttribute("aria-label", previewPlacement === "right" ? "プレビュー幅" : "プレビュー高さ");
+  previewClose.textContent = fullscreen || previewPlacement === "right" ? "\uE76C"
+    : previewPlacement === "top" ? "\uE70E" : "\uE70D";
   inlinePreview.setFullscreen(fullscreen);
-  const previewView = paneToggleView("preview", false);
-  previewToggle.hidden = previewShown;
-  previewToggle.textContent = previewView.icon;
-  previewToggle.title = previewView.title;
-  previewToggle.setAttribute("aria-label", previewView.title);
   const mainRect = mainEl.getBoundingClientRect();
-  previewToggle.style.left = `${previewToggleLeft(
-    previewShown,
-    mainRect.left,
-    previewEl.getBoundingClientRect().left,
-    mainEl.clientWidth || mainWidth,
-    previewToggle.offsetWidth,
-  )}px`;
+  for (const button of previewOpenButtons) {
+    button.hidden = previewShown;
+    button.style.left = `${previewToggleLeft(
+      false, mainRect.left, mainRect.right, mainEl.clientWidth || mainWidth,
+      button.offsetWidth || PREVIEW_TOGGLE_DEFAULT_WIDTH,
+    )}px`;
+  }
   if (returnFocusToCloseButton) previewClose.focus();
 }
 
@@ -497,6 +521,7 @@ function openPreviewFormat(
     keepPreviewRange?: boolean;
     errorTitle?: string;
     externalAdapter?: ExternalPreviewAdapter;
+    placement?: PreviewPlacement;
   } = {},
 ) {
   const {
@@ -505,6 +530,9 @@ function openPreviewFormat(
     errorTitle = "ビューを表示できませんでした",
     externalAdapter,
   } = options;
+  if (options.placement || !previewAvailable || previewCollapsed) {
+    selectPreviewPlacement(options.placement);
+  }
   openingPreviewRequestGeneration = null;
   cancelPendingExternalPreviewRequest();
   const previousPreviewDocument = previewDocument;
@@ -884,9 +912,10 @@ const editorPorts = {
   openAs: (openAs) => runBackground("指定した形式で開けませんでした", () => tabs.openCurrentAs(openAs)),
   revealInExplorer: (path, isDir) => revealInExplorer(path, isDir),
   onError: (message, error) => showError(message, error),
-  togglePreview: () => previewToggle.click(),
+  togglePreview: () => openPreview(),
   cancelPendingViewerOpen: () => inlinePreview.cancelPendingExternalOpen(),
   openViewer: async (format, text, selection, sqliteHeaderChecked = false, externalOutputPath, isCurrentRequest = () => true) => {
+    if (openingPreviewRequestGeneration === null && (!previewAvailable || previewCollapsed)) selectPreviewPlacement();
     const session = doc.current;
     const path = documentPathOf(session);
     const ownerTabId = tabs?.state.activeId ?? null;
@@ -968,6 +997,9 @@ function applySettingsToUi() {
   inlinePreview.setMarkdownLineHeight(getSetting("markdownLineHeight"));
   inlinePreview.setMarkdownHeadingUnderlines(getSetting("markdownHeadingUnderlines"));
   sidebar?.setSearchOptions(loadSearchOptions());
+  previewRightRatio = getSetting("previewRightRatio");
+  previewVerticalRatio = getSetting("previewVerticalRatio");
+  updatePreviewVisibility();
 }
 
 applySettingsToUi();
@@ -1355,13 +1387,20 @@ function closePreview() {
   previewCollapsed = true;
   previewFullscreen = false;
   previewFullscreenTabId = null;
-  previewEl.style.removeProperty("width");
   updatePreviewVisibility();
-  if (returnFocusToOpenButton) previewToggle.focus();
+  if (returnFocusToOpenButton) {
+    previewOpenButtons.find((button) => button.dataset.previewPlacement === previewPlacement)?.focus();
+  }
 }
 previewClose.addEventListener("click", closePreview);
 
-previewToggle.addEventListener("click", () => {
+function selectPreviewPlacement(placement?: PreviewPlacement) {
+  previewPlacement = placement ?? resolvePreviewPlacement(getSetting("previewOpenPlacement"), getSetting("previewLastPlacement"));
+  if (getSetting("previewLastPlacement") !== previewPlacement) setSetting("previewLastPlacement", previewPlacement);
+}
+
+function openPreview(placement?: PreviewPlacement) {
+  if (paneVisibilityAt(measuredMainWidth()).previewShown) return;
   if (!previewAvailable) {
     const session = doc.current;
     const path = documentPathOf(session);
@@ -1379,18 +1418,23 @@ previewToggle.addEventListener("click", () => {
         path,
         adapter.outputFormat === "svg" ? "image" : "html",
         null,
-        { sqliteMismatch: "clear", externalAdapter: adapter },
+        { sqliteMismatch: "clear", externalAdapter: adapter, placement },
       );
       return;
     }
     const format = viewerFormatForPreviewToggle(classificationPath);
-    if (format) openPreviewFormat(session, path, format);
+    if (format) openPreviewFormat(session, path, format, null, { placement });
     return;
   }
+  selectPreviewPlacement(placement);
   previewCollapsed = false;
   updatePreviewVisibility();
   if (shouldResendPreviewOnRestore(previewDocument?.format ?? null)) inlinePreview.resend();
-});
+}
+
+for (const button of previewOpenButtons) {
+  button.addEventListener("click", () => openPreview(button.dataset.previewPlacement as PreviewPlacement));
+}
 
 // プレビュー切替は本文上へ常駐させず、エディタと縦スクロールバーの境界へ
 // ポインターを近づけたときだけ見せる。キーボード操作中はfocus-visibleで表示する。
@@ -1405,7 +1449,7 @@ function hidePreviewTogglePeekLater() {
   window.clearTimeout(previewTogglePeekTimer);
   previewTogglePeekTimer = window.setTimeout(() => {
     previewTogglePeekTimer = undefined;
-    if (!previewToggleHovered && document.activeElement !== previewToggle) {
+    if (!previewToggleHovered && !previewOpenButtons.includes(document.activeElement as HTMLButtonElement)) {
       mainEl.classList.remove("preview-toggle-peek");
     }
   }, 450);
@@ -1426,16 +1470,18 @@ mainEl.addEventListener("pointermove", (event) => {
 });
 
 mainEl.addEventListener("pointerleave", hidePreviewTogglePeekLater);
-previewToggle.addEventListener("pointerenter", () => {
-  previewToggleHovered = true;
-  showPreviewTogglePeek();
-});
-previewToggle.addEventListener("pointerleave", () => {
-  previewToggleHovered = false;
-  hidePreviewTogglePeekLater();
-});
-previewToggle.addEventListener("focus", showPreviewTogglePeek);
-previewToggle.addEventListener("blur", hidePreviewTogglePeekLater);
+for (const button of previewOpenButtons) {
+  button.addEventListener("pointerenter", () => {
+    previewToggleHovered = true;
+    showPreviewTogglePeek();
+  });
+  button.addEventListener("pointerleave", () => {
+    previewToggleHovered = false;
+    hidePreviewTogglePeekLater();
+  });
+  button.addEventListener("focus", showPreviewTogglePeek);
+  button.addEventListener("blur", hidePreviewTogglePeekLater);
+}
 document.addEventListener("contextmenu", (e) => e.preventDefault());
 
 // サイドバー幅のドラッグ変更
@@ -1455,16 +1501,31 @@ splitter.addEventListener("mousedown", (e) => {
   window.addEventListener("mouseup", up);
 });
 
-// プレビュー幅のドラッグ変更
+// プレビューの分割軸に沿ってドラッグし、右幅と上下共通の高さを別々に保存する。
 bindPreviewResize(previewSplitter, {
-  mainLeft: () => editorHost.getBoundingClientRect().left,
-  mainRight: () => mainEl.getBoundingClientRect().right,
-  setWidth: (width) => {
-    previewEl.style.width = `${width}px`;
+  placement: () => previewPlacement,
+  bounds: () => {
+    const main = mainEl.getBoundingClientRect();
+    return { left: editorHost.getBoundingClientRect().left, right: main.right, top: main.top, bottom: main.bottom };
+  },
+  setSize: (size) => {
+    const main = mainEl.getBoundingClientRect();
+    const total = previewPlacement === "right" ? main.right - editorHost.getBoundingClientRect().left : main.height;
+    const ratio = size / (total - PANE_SPLITTER_WIDTH);
+    if (!Number.isFinite(ratio) || ratio <= 0 || ratio >= 1) return;
+    if (previewPlacement === "right") previewRightRatio = ratio;
+    else previewVerticalRatio = ratio;
     updatePreviewVisibility();
   },
-  onStart: () => document.body.classList.add("preview-resizing"),
-  onStop: () => document.body.classList.remove("preview-resizing"),
+  onStart: () => {
+    document.body.classList.add("preview-resizing");
+    document.body.classList.toggle("preview-resizing-vertical", previewPlacement !== "right");
+  },
+  onStop: () => {
+    document.body.classList.remove("preview-resizing", "preview-resizing-vertical");
+    setSetting("previewRightRatio", previewRightRatio);
+    setSetting("previewVerticalRatio", previewVerticalRatio);
+  },
 });
 
 // グローバルショートカット（検索はフォーカス領域へ振り分ける）

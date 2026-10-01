@@ -20,6 +20,36 @@ import {
 } from "./settings";
 
 describe("Feature: settings", () => {
+  // Given: 初回設定、または保存済みの配置・分割比率がある
+  // When: 読み込み・更新・再読み込みを行う
+  // Then: 初回は右固定と半分、不正値は既定へ戻り、保存済み値は復元する
+  it("Scenario: プレビュー配置と寸法を再起動後も記憶する", async () => {
+    expect(getSetting("previewOpenPlacement")).toBe("right");
+    expect(getSetting("previewRightRatio")).toBe(0.5);
+    expect(getSetting("previewVerticalRatio")).toBe(0.5);
+    setSetting("previewOpenPlacement", "last");
+    setSetting("previewLastPlacement", "bottom");
+    setSetting("previewRightRatio", 0.4);
+    setSetting("previewVerticalRatio", 0.6);
+    await flushSettings();
+    expect(updateSettingMock).toHaveBeenCalledWith("previewVerticalRatio", "0.6");
+    const restored = parseSettings(JSON.stringify({
+      previewOpenPlacement: "last", previewLastPlacement: "bottom",
+      previewRightRatio: 0.4, previewVerticalRatio: 0.6,
+    }));
+    expect(restored.previewLastPlacement).toBe("bottom");
+    expect(restored.previewOpenPlacement).toBe("last");
+    expect(restored.previewRightRatio).toBe(0.4);
+    expect(restored.previewVerticalRatio).toBe(0.6);
+    const invalid = parseSettings(JSON.stringify({
+      previewOpenPlacement: "left", previewLastPlacement: 3,
+      previewRightRatio: -1, previewVerticalRatio: 2,
+    }));
+    expect(invalid.previewOpenPlacement).toBe("right");
+    expect(invalid.previewLastPlacement).toBe("right");
+    expect(invalid.previewRightRatio).toBe(0.5);
+    expect(invalid.previewVerticalRatio).toBe(0.5);
+  });
   beforeEach(async () => {
     loadSettingsMock.mockReset();
     loadSettingsMock.mockResolvedValue("{}");

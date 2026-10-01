@@ -26,6 +26,7 @@ import {
   type ExternalPreviewAdapter,
 } from "./external-preview-adapter-model";
 import { THEME_LABELS, THEMES, type Theme } from "./theme";
+import { isPreviewPlacement } from "./preview-layout";
 
 export interface SettingsPanelPorts {
   getTheme: () => Theme;
@@ -203,6 +204,7 @@ export function openSettingsModal(
           "markdownLineHeight",
           "markdownHeadingUnderlines",
         ]),
+        previewOpenPlacementField(ports),
         sqlitePreviewRowsField(ports),
         previewCacheField(ports),
       ],
@@ -679,6 +681,19 @@ function previewFontSizeField(ports: SettingsPanelPorts): HTMLElement {
   return numberField("プレビュー文字サイズ", "preview-font-size", ports.getSetting("previewFontSize"), (value) => {
     ports.setSetting("previewFontSize", value);
     ports.applyPreviewFontSize(value);
+  });
+}
+
+function previewOpenPlacementField(ports: SettingsPanelPorts): HTMLElement {
+  return selectField("プレビューを開く位置", "preview-open-placement", [
+    { value: "right", label: "右固定" },
+    { value: "top", label: "上固定" },
+    { value: "bottom", label: "下固定" },
+    { value: "last", label: "最後に選んだ方向" },
+  ], ports.getSetting("previewOpenPlacement"), (value) => {
+    if (isPreviewPlacement(value) || value === "last") {
+      ports.setSetting("previewOpenPlacement", value);
+    }
   });
 }
 
