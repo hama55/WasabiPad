@@ -97,8 +97,120 @@ describe("Feature: 音楽外部プレビューのCLI", () => {
     expect(pause).toHaveBeenCalled();
     expect(document.getElementById("audio").currentTime).toBe(0);
     expect(document.getElementById("status").textContent).toBe("停止");
+    // Scenario: 再生時刻に合わせて赤線を動かし、停止・終了・曲変更で消す
+    // Given: 選択曲と、制御可能な再生時刻
+    Object.defineProperty(document.getElementById("audio"), "currentTime", { value: 0, writable: true });
+    // When: 再生を開始する
+    document.getElementById("play").click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const cursor = document.getElementById("playback-cursor");
+    // Then: 選択曲上に赤線を表示する
+    expect(cursor).not.toBeNull();
+    expect(cursor.hidden, document.getElementById("status").textContent).toBe(false);
+    const firstPosition = cursor.style.left;
+    document.getElementById("audio").currentTime = 0.25;
+    document.getElementById("audio").dispatchEvent(new dom.window.Event("timeupdate"));
+    expect(cursor.style.left).not.toBe(firstPosition);
+    document.getElementById("stop").click();
+    expect(cursor.hidden).toBe(true);
+    document.getElementById("play").click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    document.getElementById("audio").dispatchEvent(new dom.window.Event("ended"));
+    expect(cursor.hidden).toBe(true);
+    document.getElementById("play").click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    select.value = "0";
+    select.dispatchEvent(new dom.window.Event("change"));
+    expect(cursor.hidden).toBe(true);
+    // Scenario: 再生失敗と音声エラーでは赤線を残さない
+    // Given/When: 再生が拒否される、または再生中に音声エラーが届く
+    play.mockRejectedValueOnce(new Error("blocked"));
+    document.getElementById("play").click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(cursor.hidden).toBe(true);
+    document.getElementById("play").click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    document.getElementById("audio").dispatchEvent(new dom.window.Event("error"));
+    // Then: 位置表示を停止し、以後の時刻更新でも再表示しない
+    document.getElementById("audio").dispatchEvent(new dom.window.Event("timeupdate"));
+    expect(cursor.hidden).toBe(true);
     dom.window.close();
   });
+
+  it("Scenario: ABCの繰り返しでは同じ段の演奏位置へ戻る", async () => {
+    // Given: 同じ段の途中に繰り返し終止を持つABC
+    const path = await workspace();
+    const input = join(path, "repeat.abc");
+    const output = join(path, "index.html");
+    const font = join(path, "sample.sf2");
+    await writeFile(input, "X:1\nM:2/4\nL:1/4\nQ:1/4=120\nK:C\n|: C D :| E F |]");
+    await writeFile(font, new Uint8Array(BasicSoundBank.getSampleSoundBankFile()));
+    const result = run(["--input", input, "--output", output, "--soundfont", font]);
+    expect(result.status, result.stderr).toBe(0);
+    const dom = new JSDOM(await readFile(output, "utf8"), { runScripts: "dangerously", beforeParse(window) {
+      window.HTMLMediaElement.prototype.pause = () => {};
+      window.HTMLMediaElement.prototype.play = async () => {};
+    } });
+    const document = dom.window.document;
+    document.getElementById("play").click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const cursor = document.getElementById("playback-cursor");
+    const audio = document.getElementById("audio");
+    // When: 繰り返し直前と戻った直後の再生時刻を反映する
+    audio.currentTime = 0.9;
+    audio.dispatchEvent(new dom.window.Event("timeupdate"));
+    const before = parseFloat(cursor.style.left);
+    audio.currentTime = 1.01;
+    audio.dispatchEvent(new dom.window.Event("timeupdate"));
+    // Then: 同じ五線譜上の前方へ戻り、将来の小節を横切らない
+    expect(cursor.hidden).toBe(false);
+    expect(parseFloat(cursor.style.left)).toBeLessThan(before);
+    dom.window.close();
+  });
+
+  it.skipIf(!process.env.WASABIPAD_TEST_LILYPOND)("Scenario: LilyPondの複数五線譜と展開された反復を表示し、装飾音の位置不明時も再生できる", async () => {
+    // Given: 上下の五線譜と展開反復・テンポ変更を持つ譜面
+    const path = await workspace();
+    const input = join(path, "cursor.ly");
+    const output = join(path, "index.html");
+    const font = join(path, "sample.sf2");
+    await writeFile(font, new Uint8Array(BasicSoundBank.getSampleSoundBankFile()));
+    const sources = [
+      '\\version "2.26.0"\n\\score { \\new PianoStaff << \\new Staff { \\repeat unfold 2 { c\'4 d\' } \\tempo 4 = 60 e\'4 f\' } \\new Staff { c2 d e } >> \\layout {} \\midi { \\tempo 4 = 120 } }',
+      '\\version "2.26.0"\n\\score { { \\grace { c\'16 } d\'4 e\' f\' g\' } \\layout {} \\midi { \\tempo 4 = 120 } }',
+    ];
+    for (const [index, source] of sources.entries()) {
+      await writeFile(input, source);
+      const result = run(["--input", input, "--output", output, "--soundfont", font, "--lilypond", process.env.WASABIPAD_TEST_LILYPOND]);
+      expect(result.status, result.stderr).toBe(0);
+      const dom = new JSDOM(await readFile(output, "utf8"), { runScripts: "dangerously", beforeParse(window) {
+        window.TextDecoder = TextDecoder;
+        window.HTMLMediaElement.prototype.pause = () => {};
+        window.HTMLMediaElement.prototype.play = async () => {};
+      } });
+      const document = dom.window.document;
+      // When: 公開HTMLから再生する
+      expect(document.getElementById("play").disabled).toBe(false);
+      document.getElementById("play").click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const cursor = document.getElementById("playback-cursor");
+      if (!index) {
+        // Then: 反復で複数の描画位置があっても正しい位置を決め、上下の譜表を貫く
+        expect(cursor.hidden, document.getElementById("status").textContent).toBe(false);
+        expect(parseFloat(cursor.style.height)).toBeGreaterThan(50);
+        document.getElementById("audio").currentTime = 1.1;
+        document.getElementById("audio").dispatchEvent(new dom.window.Event("timeupdate"));
+        expect(cursor.hidden).toBe(false);
+      } else {
+        // Then: 位置対応不明でも再生を維持し、赤線を出さず理由を説明する
+        expect(cursor.hidden).toBe(true);
+        expect(document.getElementById("status").textContent).toContain("再生中");
+        expect(document.getElementById("status").textContent).toContain("装飾音");
+      }
+      expect(await readFile(input, "utf8")).toBe(source);
+      dom.window.close();
+    }
+  }, 30000);
 
   it.each([["", "譜面データがありません。"], ["12345", "ABC形式を読み取れません。"]])(
     "Scenario: 空・不正ABCの状態を区別して再生を無効にする (%j)", async (source, message) => {
@@ -142,7 +254,7 @@ describe("Feature: 音楽外部プレビューのCLI", () => {
     const output = join(path, "index.html");
     const font = join(path, "sample.sf2");
     await writeFile(join(path, "notes.ily"), "notes = { c'4 d' e' f' \\pageBreak g' a' b' c'' }");
-    const source = '\\version "2.26.0"\n\\include "notes.ily"\n\\book { \\score { \\notes \\layout {} \\midi {} } }\n\\book { \\score { \\notes \\layout {} \\midi {} } }';
+    const source = '\\version "2.26.0"\n\\include "notes.ily"\n\\book { \\score { \\notes \\layout {} \\midi { \\tempo 4 = 120 } } }\n\\book { \\score { \\notes \\layout {} \\midi { \\tempo 4 = 90 } } }';
     await writeFile(input, source);
     await writeFile(font, new Uint8Array(BasicSoundBank.getSampleSoundBankFile()));
     // When: 実CLIから変換・音声生成する
@@ -150,6 +262,8 @@ describe("Feature: 音楽外部プレビューのCLI", () => {
     const result = run(args);
     expect(result.status, result.stderr).toBe(0);
     let dom = new JSDOM(await readFile(output, "utf8"), { runScripts: "dangerously", beforeParse(window) {
+      window.TextDecoder = TextDecoder;
+      window.HTMLMediaElement.prototype.play = async () => {};
       window.HTMLMediaElement.prototype.pause = () => {};
     } });
     // Then: 全四ページ・二曲が保持され、入力を自動変更しない
@@ -157,9 +271,35 @@ describe("Feature: 音楽外部プレビューのCLI", () => {
     expect([...dom.window.document.getElementById("tune").options].map((option) => option.textContent)).toEqual(["score", "score-1"]);
     expect(dom.window.document.getElementById("play").disabled).toBe(false);
     expect(await readFile(input, "utf8")).toBe(source);
+    // Scenario: 同じ原稿を再利用した二曲も、曲・テンポ・改ページ先を取り違えない
+    // When: 第一曲を再生し、第二ページへ進む
+    const document = dom.window.document;
+    const audio = document.getElementById("audio");
+    document.getElementById("play").click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const cursor = document.getElementById("playback-cursor");
+    expect(cursor.hidden, document.getElementById("status").textContent).toBe(false);
+    expect(cursor.parentElement.querySelector("img").alt).toBe("ページ score-1.svg");
+    expect(parseFloat(cursor.style.left)).toBeGreaterThan(0);
+    expect(parseFloat(cursor.style.top)).toBeGreaterThanOrEqual(0);
+    expect(parseFloat(cursor.style.top) + parseFloat(cursor.style.height)).toBeLessThanOrEqual(100);
+    audio.currentTime = 2.1;
+    audio.dispatchEvent(new dom.window.Event("timeupdate"));
+    expect(cursor.parentElement.querySelector("img").alt).toBe("ページ score-2.svg");
+    // Then: 第二曲は独立したページへ移り、90 BPMでは2.1秒時点は第一ページに留まる
+    document.getElementById("tune").value = "1";
+    document.getElementById("tune").dispatchEvent(new dom.window.Event("change"));
+    document.getElementById("play").click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    audio.currentTime = 2.1;
+    audio.dispatchEvent(new dom.window.Event("timeupdate"));
+    expect(cursor.parentElement.querySelector("img").alt).toBe("ページ score-1-1.svg");
+    audio.currentTime = 2.8;
+    audio.dispatchEvent(new dom.window.Event("timeupdate"));
+    expect(cursor.parentElement.querySelector("img").alt).toBe("ページ score-1-2.svg");
     dom.window.close();
     // Given/When: MIDI指定なしの別譜面を同じ公開CLIで変換する
-    const noMidi = source.replaceAll("\\midi {}", "");
+    const noMidi = source.replace(/\\midi\s*\{[^}]*\}/g, "");
     await writeFile(input, noMidi);
     const next = run(args);
     expect(next.status, next.stderr).toBe(0);

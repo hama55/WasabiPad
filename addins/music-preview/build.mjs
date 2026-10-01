@@ -21,6 +21,7 @@ for (const [entry, format, name, fileName] of [
   });
 }
 await mkdir(new URL("./dist/licenses/", import.meta.url), { recursive: true });
+await copyFile(new URL("./src/cursor.ily", import.meta.url), new URL("./dist/cursor.ily", import.meta.url));
 for (const [source, name] of [
   ["abcjs/LICENSE.md", "abcjs-LICENSE.md"],
   ["spessasynth_core/LICENSE", "spessasynth_core-LICENSE"],
