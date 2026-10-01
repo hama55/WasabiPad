@@ -20,6 +20,7 @@ export function render(container: HTMLElement, text: string): void {
       const page = container.ownerDocument.createElement("div");
       const tune = ABCJS.renderAbc(page, text, {
         startingTune: index, responsive: "resize",
+        afterParsing: (parsed) => { parsed.formatting.titleleft ??= true; },
         paddingtop: 4, paddingbottom: 4, paddingleft: 4, paddingright: 4,
       })[0];
       if (!tune || !hasPlayableNotes(tune)) {

@@ -123,7 +123,7 @@ async function main() {
     const directory = await mkdtemp(join(outputDirectory, "lilypond-"));
     const settings = join(directory, "preview-settings.ly");
     // Loaded before the source so explicit paper/header settings remain authoritative.
-    await writeFile(settings, "\\paper { ragged-bottom = ##t ragged-last-bottom = ##t top-margin = 2\\mm bottom-margin = 2\\mm }\n\\header { tagline = ##f }\n", "utf8");
+    await writeFile(settings, "\\paper { ragged-bottom = ##t ragged-last-bottom = ##t top-margin = 2\\mm bottom-margin = 2\\mm indent = 0\\mm print-page-number = ##f }\n\\header { tagline = ##f }\n\\layout { \\context { \\Staff \\override InstrumentName.self-alignment-X = #RIGHT \\override InstrumentName.padding = #1.5 } \\context { \\StaffGroup \\override InstrumentName.self-alignment-X = #RIGHT \\override InstrumentName.padding = #1.5 } }\n", "utf8");
     const result = spawnSync(values.lilypond || "lilypond", [
       "--svg", "-dno-point-and-click", "-dno-use-paper-size-for-page", `-dinclude-settings=${settings.replaceAll("\\", "/")}`,
       "-I", `${dirname(values.input).replaceAll("\\", "/")}/`, "-o", join(directory, "score"), values.input,

@@ -50,6 +50,10 @@ describe("Feature: 音楽外部プレビューのCLI", () => {
       expect(bounds?.[2]).toBeGreaterThan(0);
       expect(bounds?.[3]).toBeGreaterThan(0);
       expect(svg.getAttribute("preserveAspectRatio")).toBe("xMinYMin meet");
+      // Then: 短い譜表でも曲名が右へ離れず、左端に揃う
+      const title = [...svg.querySelectorAll("text")].find((text) => /第[一二]曲/.test(text.textContent));
+      expect(title?.getAttribute("text-anchor")).toBe("start");
+      expect(Number(title?.getAttribute("x"))).toBeLessThan(10);
     }
     expect(dom.window.document.querySelector("#tune").textContent).toContain("第二曲");
     expect(dom.window.document.querySelector("#status").textContent).toContain("再生不可");
@@ -204,5 +208,57 @@ describe("Feature: 音楽外部プレビューのCLI", () => {
     // Given/When/Then: 明示的な段間の指定は表示用既定値より優先する
     const spaced = await heights('\\paper { markup-system-spacing.basic-distance = #80 }\n' + source);
     expect(spaced[0]).toBeGreaterThan(compact[0] + 30);
+  }, 30000);
+
+  it.skipIf(!process.env.WASABIPAD_TEST_LILYPOND)("Scenario: LilyPondの段の左端を揃え、ページ番号だけ省く", async () => {
+    // Given: 小節番号と明示改ページを持つ短い譜面
+    const path = await workspace();
+    const input = join(path, "aligned.ly");
+    const output = join(path, "index.html");
+    const source = '\\version "2.26.0"\n\\score { { c\'4 d\' e\' f\' \\pageBreak g\' a\' b\' c\'\' } \\layout {} }';
+    const pages = async (prefix = "", score = source) => {
+      await writeFile(input, prefix + score);
+      // When: 公開CLIで二ページを生成する
+      const result = run(["--input", input, "--output", output, "--lilypond", process.env.WASABIPAD_TEST_LILYPOND]);
+      expect(result.status, result.stderr).toBe(0);
+      const dom = new JSDOM(await readFile(output, "utf8"));
+      const resultPages = [...dom.window.document.querySelectorAll("#score img")].map((image) => {
+        const svg = new JSDOM(Buffer.from(image.src.split(",")[1], "base64").toString(), { contentType: "image/svg+xml" });
+        const document = svg.window.document;
+        const line = [...document.querySelectorAll("line")].find((line) =>
+          line.getAttribute("y1") === line.getAttribute("y2") && Number(line.getAttribute("x2")) - Number(line.getAttribute("x1")) > 40);
+        let start = Number(line?.getAttribute("x1"));
+        for (let node = line?.parentElement; node; node = node.parentElement) {
+          const translate = node.getAttribute("transform")?.match(/translate\(\s*([-\d.]+)/);
+          if (translate) start += Number(translate[1]);
+        }
+        const numbers = [...document.querySelectorAll("tspan")].filter((text) => text.textContent === "2").length;
+        const name = [...document.querySelectorAll("tspan")].find((text) => text.textContent === "Bass Clarinet");
+        const nameX = Number(name?.parentElement?.parentElement?.getAttribute("transform")?.match(/translate\(\s*([-\d.]+)/)?.[1]);
+        const left = Number(document.documentElement.getAttribute("viewBox").split(/\s+/)[0]);
+        svg.window.close();
+        return { start, numbers, nameX, left };
+      });
+      dom.window.close();
+      expect(await readFile(input, "utf8")).toBe(prefix + score);
+      return resultPages;
+    };
+    // Then: 左端が一致し、第二ページの小節番号2だけ残る
+    const aligned = await pages();
+    expect(aligned).toHaveLength(2);
+    expect(aligned[0].start).toBeCloseTo(aligned[1].start, 2);
+    expect(aligned[1].numbers).toBe(1);
+    // Given/When/Then: 原稿が字下げとページ番号を指定した場合は優先する
+    const explicit = await pages('\\paper { indent = 15\\mm print-page-number = ##t }\n');
+    expect(explicit[0].start).toBeGreaterThan(explicit[1].start + 5);
+    expect(explicit[1].numbers).toBe(2);
+    // Scenario: 楽器名のための余白を確保し、原稿の配置指定を優先する
+    // Given/When: 楽器名付きの譜面を既定配置と原稿指定で変換する
+    const named = source.replace("\\score { {", '\\score { \\new Staff \\with { instrumentName = "Bass Clarinet" } {');
+    const defaults = await pages("", named);
+    const original = await pages('\\layout { \\context { \\Staff \\override InstrumentName.padding = #0.3 } }\n', named);
+    // Then: 名前を切らずに余白を増やし、明示配置を上書きしない
+    expect(defaults[0].nameX).toBeGreaterThanOrEqual(defaults[0].left);
+    expect(defaults[0].nameX).toBeLessThan(original[0].nameX - 1);
   }, 30000);
 });
