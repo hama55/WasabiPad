@@ -57,9 +57,9 @@ WAV は22,050 Hz・ステレオ・16-bit PCMで、一時出力先に置く。音
 
 ```powershell
 $env:WASABIPAD_TEST_LILYPOND = 'C:\Tools\lilypond-2.26.0\bin\lilypond.exe'
-npx vitest run addins/music-preview/src/preview.test.mjs
+npm run test:music-preview
 ```
 
-LilyPond 未指定時は実変換テストだけをスキップする。通常のテストはサンプル音源で無音ではない WAV の生成と HTML の操作を検証するが、実機の表示・発音の確認とは区別する。
+本体の `npm test` とビルドはアドインのテストを含まない。専用の検証前に、配置手順と同じアドイン用依存導入を行う。LilyPond 未指定時は実変換テストだけをスキップする。専用テストはサンプル音源で無音ではない WAV の生成と HTML の操作を検証するが、実機の表示・発音の確認とは区別する。
 
 `addins/pending` の旧マニフェスト・公式カタログは使わない。音楽専用の管理機能や自動ダウンロードは追加しない。
