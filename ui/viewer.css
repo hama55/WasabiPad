@@ -302,6 +302,9 @@ article tbody tr:nth-child(even) { background: var(--row-alt); }
 }
 .viewer-image-wrap.viewer-image-zoomed .viewer-image { max-width: none; max-height: none; cursor: grab; touch-action: none; }
 .viewer-image.viewer-image-panning { cursor: grabbing; user-select: none; }
+.viewer-video-wrap { width: 100%; height: 100%; display: grid; place-items: center; background: #000; }
+.viewer-video { width: 100%; height: 100%; min-width: 0; min-height: 0; object-fit: contain; }
+.viewer-video[hidden], .viewer-video-wrap .viewer-error[hidden] { display: none; }
 .viewer-pdf-wrap {
   width: 100%;
   height: 100%;

@@ -9,11 +9,13 @@ const viewerRustSource = readFileSync(new URL("../src-tauri/src/viewer.rs", impo
 describe("Feature: window layout integration", () => {
   // Given: 更新操作がプレビューの共通ツールバーにある
   // When: 外部生成物の表示・標準表示・表示クリアへ遷移する
-  // Then: 外部生成物だけ更新を表示し、操作は既存の保存確認付き更新へ渡す
-  it("Scenario: 外部生成物の表示中だけツールバーから更新できる", () => {
-    expect(viewerSource).toContain("previewRefreshButton.hidden = !isInlineViewer || !state.externalOutputPath;");
+  // Then: 外部生成物と動画で更新を表示し、外部生成物は保存確認付き更新へ渡す
+  it("Scenario: 外部生成物と動画をツールバーから更新できる", () => {
+    expect(viewerSource).toContain('previewRefreshButton.hidden = !isInlineViewer || (!state.externalOutputPath && state.format !== "video");');
     expect(viewerSource).toMatch(/INLINE_PREVIEW_MESSAGES\.CLEAR_MESSAGE[\s\S]*?previewRefreshButton\.hidden = true;/);
-    expect(mainSource).toContain('onRefresh: () => runBackground("外部プレビューを更新できませんでした", refreshExternalPreview)');
+    expect(mainSource).toContain('onRefresh: () => runBackground("プレビューを更新できませんでした"');
+    expect(mainSource).toContain('if (previewDocument?.format === "video") inlinePreview.resend();');
+    expect(mainSource).toContain('else return refreshExternalPreview();');
     expect(mainSource).not.toContain("updateExternalPreviewRefreshVisibility");
   });
   // Given: メイン画面にnative windowとDOMの寸法変更通知がある

@@ -194,6 +194,7 @@ const dragDropListener = createAsyncUnlisten();
 let layoutRuntime: WindowLayoutRuntime | null = null;
 
 function setLoading(active: boolean, message = "読み込み中…") {
+  if (active && previewDocument?.format === "video") inlinePreview.setVisibility(false, true);
   loading.hidden = !active;
   loadingMessage.textContent = message;
   editorHost.setAttribute("aria-busy", String(active));
@@ -326,6 +327,7 @@ function applyPaneVisibility(mainWidth: number) {
   const fullscreen = isPreviewFullscreen(previewState);
   const returnFocusToCloseButton = previewShown && previewOpenButtons.some((button) => button.matches(":focus-visible"));
   previewEl.hidden = !previewShown;
+  inlinePreview.setVisibility(previewShown, previewCollapsed);
   previewSplitter.hidden = !isPreviewSplitterShown(previewState);
   mainEl.classList.toggle("preview-fullscreen", fullscreen);
   mainEl.classList.toggle("preview-vertical", previewShown && !fullscreen && previewPlacement !== "right");
@@ -378,7 +380,10 @@ function updatePreviewVisibility() {
 
 const inlinePreviewPorts = {
   onClose: closePreview,
-  onRefresh: () => runBackground("外部プレビューを更新できませんでした", refreshExternalPreview),
+  onRefresh: () => runBackground("プレビューを更新できませんでした", () => {
+    if (previewDocument?.format === "video") inlinePreview.resend();
+    else return refreshExternalPreview();
+  }),
   onAvailabilityChange: (available, label) => {
     if (available) {
       previewReplacementLifecycle.onAvailable(
@@ -728,8 +733,15 @@ function sqlitePreviewSourcePath(session: Readonly<DocumentSession>): string | n
 function syncPreviewDocument(session: Readonly<DocumentSession>, force = false, fragment: string | null = null) {
   const path = documentPathOf(session);
   const activeTabId = tabs?.state.activeId ?? null;
+  if (previewDocument?.format === "video" && !isCurrentPreviewDocument(previewDocument, activeTabId, path)) {
+    inlinePreview.setVisibility(false, true);
+  }
   const classificationPath = classificationPathOf(session);
   const standardFormat = viewerFormatForAutomaticPreview(classificationPath);
+  if (standardFormat === "video" && (session.archivePath !== null || session.archiveEntry !== null)) {
+    clearPreview(session);
+    return;
+  }
   const externalAdapter = externalPreviewAdapterForPath(
     classificationPath,
     getSetting("externalPreviewAdapters"),
@@ -769,7 +781,7 @@ function syncPreviewDocument(session: Readonly<DocumentSession>, force = false, 
     clearPreview(session);
     return;
   }
-  if (!force && isCurrentPreviewDocument(previewDocument, activeTabId, path) && !isAssetPreview) return;
+  if (!force && isCurrentPreviewDocument(previewDocument, activeTabId, path) && (!isAssetPreview || format === "video")) return;
   if (!format) {
     clearPreview(session);
     return;
@@ -915,6 +927,10 @@ const editorPorts = {
     const session = doc.current;
     const path = documentPathOf(session);
     const ownerTabId = tabs?.state.activeId ?? null;
+    if (format === "video") {
+      if (session.archivePath !== null || session.archiveEntry !== null) return null;
+      inlinePreview.setSourcePath(sourcePathForViewer(format, session.savePath, session.displayPath));
+    }
     let sqliteRequestGeneration = previewRequestGeneration;
     const isCurrentSqliteRequest = () => sqliteRequestGeneration === previewRequestGeneration
       && ownerTabId === (tabs?.state.activeId ?? null)

@@ -15,6 +15,18 @@ import {
 import { MENU_ICON } from "./menu-icons";
 
 describe("Feature: viewer formats", () => {
+  // Given: 大文字小文字が混在する通常MOV・MP4とテキスト
+  // When: 自動形式と描画可否、資産パスを判定する
+  // Then: 動画だけを動画形式で直接参照し、テキストとして解釈しない
+  it("Scenario: MOV・MP4を動画として自動判定する", () => {
+    expect(viewerFormatForAutomaticPreview("clip.MOV")).toBe("video");
+    expect(viewerFormatForPreviewToggle("clip.Mp4")).toBe("video");
+    expect(sourcePathForViewer("video", null, "C:\\work\\clip.MOV")).toBe("C:\\work\\clip.MOV");
+    expect(canRenderViewerFormat("video", "clip.mov")).toBe(true);
+    expect(canRenderViewerFormat("video", "notes.md")).toBe(false);
+    expect(canRenderViewerFormat("markdown", "clip.mp4")).toBe(false);
+    expect(canRenderViewerFormat("video", "clip.mov", true)).toBe(false);
+  });
   // Given: `report.CSV`、`notes.Markdown`、`photo.PNG`、`manual.PDF`、`manual.HTML`、`data.SQLITE3`、`notes.txt`を指定
   // When: `viewerFormatForPath`を呼ぶ
   // Then: それぞれ`csv`、`markdown`、`image`、`pdf`、`html`、`null`
@@ -176,6 +188,7 @@ describe("Feature: viewer formats", () => {
     const handlers = createViewerFormatHandlers({
       csv: csvRenderer, markdown: markdownRenderer, image: imageRenderer, pdf: pdfRenderer, html: htmlRenderer,
       sqlite: sqliteRenderer,
+      video: vi.fn(),
     });
 
     expect(handlers.csv.render).toBe(csvRenderer);

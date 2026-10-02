@@ -45,13 +45,13 @@ export function createViewerFormatButtons(host: HTMLElement, onSelect: ViewerFor
   syncViewerFormatButtons(host, "markdown");
 }
 
-export function syncViewerFormatButtons(host: HTMLElement, current: ViewerFormat, sourcePath: string | null = null) {
+export function syncViewerFormatButtons(host: HTMLElement, current: ViewerFormat, sourcePath: string | null = null, archiveSource = false) {
   host.querySelector<HTMLButtonElement>(".viewer-format-trigger")?.replaceChildren(document.createTextNode(`${viewerFormatSpec(current).title} ▾`));
   host.querySelectorAll<HTMLButtonElement>("[data-viewer-format]").forEach((button) => {
     const format = button.dataset.viewerFormat as ViewerFormat;
     const available = sourcePath && isSqliteCandidatePath(sourcePath)
       ? (current === "sqlite" ? format === "sqlite" : format === current || format === "sqlite")
-      : canRenderViewerFormat(format, sourcePath);
+      : canRenderViewerFormat(format, sourcePath, archiveSource);
     button.disabled = !available;
     button.setAttribute("aria-disabled", String(!available));
     button.setAttribute("aria-pressed", String(format === current));

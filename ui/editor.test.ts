@@ -3025,6 +3025,18 @@ describe("Feature: VirtualEditor", () => {
     expect(closeViewer).not.toHaveBeenCalled();
   });
 
+  // Given: 通常動画のプレビューを要求するエディタ
+  // When: Video形式を開く
+  // Then: 動画本文や選択範囲を取得せず、直接再生の入口へ渡す
+  it("Scenario: 動画プレビューへ本文を渡さない", async () => {
+    const openViewer = vi.fn<EditorPorts["openViewer"]>(async () => "video-viewer");
+    const { editor } = mount("video bytes", undefined, { openViewer });
+    editor.open(1, true);
+    await settle();
+    await editor.openTextViewer("video");
+    expect(openViewer).toHaveBeenCalledWith("video", "", null, false);
+  });
+
   // Given: プレビューが開いている
   // When: プレビューから文書位置を受け取る
   // Then: エディタのキャレットをその位置へ移し、中央表示処理を通す

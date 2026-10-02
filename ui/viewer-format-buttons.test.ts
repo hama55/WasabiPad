@@ -19,7 +19,7 @@ function mount() {
 describe("Feature: プレビュー形式パネル", () => {
   afterEach(() => document.body.replaceChildren());
   // Given: Markdown形式のプレビュー
-  // When: 6候補を確認しHTMLへホバーしてからクリックする
+  // When: 候補を確認しHTMLへホバーしてからクリックする
   // Then: 現在形式を強調し、クリックでだけ切り替えて閉じる
   it("Scenario: クリックした形式だけを確定する", () => {
     const { host, onSelect, trigger, panel } = mount();
@@ -28,8 +28,8 @@ describe("Feature: プレビュー形式パネル", () => {
     expect(trigger.getAttribute("popovertarget")).toBe(panel.id);
     expect(panel.getAttribute("popover")).toBe("auto");
     const choices = [...panel.querySelectorAll<HTMLButtonElement>("[data-viewer-format]")];
-    expect(choices.map(button => button.textContent)).toEqual(["Markdown", "CSV", "Image", "PDF", "html(静的)", "SQLite"]);
-    expect(choices.map(button => button.dataset.viewerFormat)).toEqual(["markdown", "csv", "image", "pdf", "html", "sqlite"]);
+    expect(choices.map(button => button.textContent)).toEqual(["Markdown", "CSV", "Image", "PDF", "html(静的)", "SQLite", "Video"]);
+    expect(choices.map(button => button.dataset.viewerFormat)).toEqual(["markdown", "csv", "image", "pdf", "html", "sqlite", "video"]);
     expect(trigger.textContent).toContain("Markdown");
     expect(choices[0].getAttribute("aria-pressed")).toBe("true");
     expect(choices[1].getAttribute("aria-pressed")).toBe("false");
@@ -46,7 +46,7 @@ describe("Feature: プレビュー形式パネル", () => {
   it("Scenario: 非対応形式を選択できない", () => {
     const { host, onSelect } = mount();
     syncViewerFormatButtons(host, "markdown", "notes.md");
-    for (const format of ["image", "pdf"]) {
+    for (const format of ["image", "pdf", "video"]) {
       const button = host.querySelector<HTMLButtonElement>(`[data-viewer-format='${format}']`)!;
       expect(button.disabled).toBe(true);
       expect(button.getAttribute("aria-disabled")).toBe("true");

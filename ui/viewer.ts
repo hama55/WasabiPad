@@ -72,6 +72,7 @@ import {
   zoomImageByWheel,
 } from "./viewer-image";
 import { createPdfPreview, markPdfLoadFailure } from "./viewer-pdf";
+import { createVideoPreview } from "./viewer-video";
 import { createHtmlPreview } from "./viewer-html";
 import {
   commitTrustedExternalHtmlPreview,
@@ -136,6 +137,8 @@ let renderAbortController = new AbortController();
 let imageZoom = DEFAULT_IMAGE_ZOOM;
 let disposeImagePan: (() => void) | null = null;
 let disposeSqlitePreview: (() => void) | null = null;
+let videoPreview: ReturnType<typeof createVideoPreview> | null = null;
+let previewVisible = true;
 const archiveAssetTracker = new ViewerAssetTracker(revokeImageUrl);
 const archiveAssetSession = createArchiveAssetSession();
 let csvColumnWidths: number[] = [];
@@ -201,12 +204,15 @@ function publishViewerRenderState(state: ViewerRenderState, nextImageZoom: numbe
   currentArchivePath = state.archivePath;
   currentArchiveEntry = state.archiveEntry;
   currentExternalOutputPath = state.externalOutputPath;
-  previewRefreshButton.hidden = !isInlineViewer || !state.externalOutputPath;
+  previewRefreshButton.hidden = !isInlineViewer || (!state.externalOutputPath && state.format !== "video");
+  const refreshLabel = state.externalOutputPath ? "外部プレビューを更新" : "動画プレビューを更新";
+  previewRefreshButton.title = refreshLabel;
+  previewRefreshButton.setAttribute("aria-label", refreshLabel);
   imageZoom = nextImageZoom;
   const classificationSource = state.effectiveExtension && !archiveFormatExtension(state.effectiveExtension, state.archiveEntry)
     ? `${state.archiveEntry ?? state.sourcePath ?? "source"}.${state.effectiveExtension}`
     : state.archiveEntry ?? state.sourcePath;
-  syncViewerFormatButtons(formatButtons, state.format, classificationSource);
+  syncViewerFormatButtons(formatButtons, state.format, classificationSource, state.archivePath !== null || state.archiveEntry !== null);
   syncViewerActionButtons(actionButtons, state.format);
   const formatSpec = viewerFormatSpec(state.format);
   title.textContent = formatSpec.title;
@@ -383,6 +389,8 @@ function disposeViewer() {
   disposeImagePan = null;
   disposeSqlitePreview?.();
   disposeSqlitePreview = null;
+  videoPreview?.dispose();
+  videoPreview = null;
   content.classList.remove("viewer-loading");
   viewerMain.classList.remove("viewer-loading");
   content.removeAttribute("aria-busy");
@@ -526,7 +534,9 @@ function bindViewerControls() {
     });
   }, { signal: viewerDomListeners.signal });
   previewRefreshButton.addEventListener("click", () => {
-    if (isInlineViewer && currentExternalOutputPath) postToParent({ type: INLINE_PREVIEW_MESSAGES.REFRESH_MESSAGE });
+    if (isInlineViewer && (currentExternalOutputPath || currentFormat === "video")) {
+      postToParent({ type: INLINE_PREVIEW_MESSAGES.REFRESH_MESSAGE });
+    }
   }, { signal: viewerDomListeners.signal });
   const notifySelection = () => runViewerOperation(
     "プレビューの選択位置を通知できませんでした",
@@ -1110,6 +1120,31 @@ async function renderSqlite(
   }
 }
 
+function renderVideo(_text: string, state: ViewerRenderState): boolean {
+  const generation = beginRender();
+  disposeImagePan?.();
+  disposeImagePan = null;
+  currentRows = [];
+  chartController.clear();
+  revokeArchiveAssetUrls();
+  try {
+    if (!state.sourcePath || state.archivePath !== null || state.archiveEntry !== null) {
+      replaceWithViewerError(content, "動画プレビューには通常ファイルのパスが必要です");
+      return true;
+    }
+    const name = basename(state.sourcePath);
+    videoPreview = createVideoPreview(name, imageUrlFromPathWithCacheBust(state.sourcePath, generation));
+    if (!previewVisible) videoPreview.stop();
+    content.replaceChildren(videoPreview.wrapper);
+    summary.classList.remove("warning");
+    summary.title = "";
+    summary.textContent = name;
+    return true;
+  } finally {
+    finishRender(generation);
+  }
+}
+
 type ViewerStateRenderer = (
   text: string,
   state: ViewerRenderState,
@@ -1123,6 +1158,7 @@ const VIEWER_RENDERERS: Record<ViewerFormat, ViewerStateRenderer> = {
   pdf: renderPdf,
   html: renderHtml,
   sqlite: renderSqlite,
+  video: renderVideo,
 };
 
 async function renderViewerState(
@@ -1131,6 +1167,8 @@ async function renderViewerState(
   requireLoadedOutput = false,
 ): Promise<boolean> {
   if (viewerDisposed) return false;
+  videoPreview?.dispose();
+  videoPreview = null;
   if (state.externalOutputPath) return renderExternalOutput(state, requireLoadedOutput);
   return VIEWER_RENDERERS[state.format](state.text, state, nextImageZoom);
 }
@@ -1276,6 +1314,12 @@ async function start() {
     if (isInlineViewer) {
       window.addEventListener("message", (event) => {
         if (event.source !== window.parent || event.origin !== window.location.origin) return;
+        if (event.data?.type === INLINE_PREVIEW_MESSAGES.VISIBILITY_MESSAGE) {
+          if (typeof event.data.visible !== "boolean" || typeof event.data.reset !== "boolean") return;
+          previewVisible = event.data.visible;
+          if (!previewVisible) videoPreview?.stop(event.data.reset);
+          return;
+        }
         if (event.data?.type === INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE) {
           if (!isViewerPayload(event.data.payload)) return;
           const renderId = event.data.render_id;
@@ -1307,6 +1351,8 @@ async function start() {
           const generation = beginRender();
           disposeSqlitePreview?.();
           disposeSqlitePreview = null;
+          videoPreview?.dispose();
+          videoPreview = null;
           disposeImagePan?.();
           disposeImagePan = null;
           chartController.clear();

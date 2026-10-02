@@ -87,7 +87,7 @@ export function isPreviewSplitterShown(state: PreviewLayoutState): boolean {
 }
 
 export function shouldResendPreviewOnRestore(format: ViewerFormat | null): boolean {
-  return format !== "sqlite";
+  return format !== "sqlite" && format !== "video";
 }
 
 export function shouldKeepPreviewFullscreen(

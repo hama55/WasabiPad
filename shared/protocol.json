@@ -2,6 +2,7 @@
   "archiveEntrySeparator": "::",
   "passwordErrorMarker": "7z-password",
   "archiveFormats": ["zip", "7z", "xlsx", "xls"],
+  "videoExtensions": ["mov", "mp4"],
   "events": {
     "externalWindowRequest": "external-window-request",
     "workspaceSearchBatch": "workspace-search-batch",

@@ -12,6 +12,7 @@ export const MENU_ICON = {
   csv: "menu-icon-csv",
   markdown: "menu-icon-markdown",
   image: "menu-icon-image",
+  video: "menu-icon-video",
   pdf: "menu-icon-pdf",
   html: "menu-icon-html",
   sqlite: "menu-icon-sqlite",

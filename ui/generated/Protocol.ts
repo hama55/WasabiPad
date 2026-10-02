@@ -2,6 +2,7 @@
 export const ARCHIVE_ENTRY_SEPARATOR = "::" as const;
 export const PASSWORD_ERROR_MARKER = "7z-password" as const;
 export const ARCHIVE_FORMATS = ["zip","7z","xlsx","xls"] as const;
+export const VIDEO_EXTENSIONS = ["mov","mp4"] as const;
 export function isArchiveFormat(value: string | null | undefined): value is (typeof ARCHIVE_FORMATS)[number] {
   return typeof value === "string" && ARCHIVE_FORMATS.some((format) => format === value.toLowerCase());
 }

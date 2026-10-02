@@ -74,6 +74,7 @@ export class InlinePreview {
   private markdownLineHeight: number | null = null;
   private markdownHeadingUnderlines: boolean | null = null;
   private fullscreen = false;
+  private visible = true;
   private pendingMarkdownFragment: string | null = null;
   private previewFocused = false;
 
@@ -229,6 +230,21 @@ export class InlinePreview {
     this.sendFullscreenState();
   }
 
+  setVisibility(visible: boolean, reset = false) {
+    if (this.visible === visible && !reset) return;
+    this.visible = visible;
+    this.sendVisibility(reset);
+  }
+
+  private sendVisibility(reset = false) {
+    if (!this.ready || this.payload?.format !== "video") return;
+    this.frame.contentWindow?.postMessage({
+      type: INLINE_PREVIEW_MESSAGES.VISIBILITY_MESSAGE,
+      visible: this.visible,
+      reset,
+    }, window.location.origin);
+  }
+
   setMarkdownFragment(fragment: string) {
     this.pendingMarkdownFragment = fragment;
     this.send();
@@ -289,6 +305,7 @@ export class InlinePreview {
     }
     if (label !== this.label) return;
     this.setPreviewFocused(false);
+    this.setVisibility(false, true);
     this.payload = null;
     this.label = "";
     this.pendingMarkdownFragment = null;
@@ -396,6 +413,7 @@ export class InlinePreview {
     }
     this.sendFontFamily();
     this.sendFontSize();
+    this.sendVisibility();
   }
 
   private sendPendingExternalOpen() {

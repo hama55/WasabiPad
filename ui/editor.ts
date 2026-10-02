@@ -1718,7 +1718,7 @@ export class VirtualEditor {
   ) {
     await this.liveViewers.cancelPendingOpen();
     if (isCurrentRequest && !isCurrentRequest()) return null;
-    if (format === "sqlite") {
+    if (format === "sqlite" || format === "video") {
       const opened = isCurrentRequest
         ? await this.openViewer(format, "", null, sqliteHeaderChecked, undefined, isCurrentRequest)
         : await this.openViewer(format, "", null, sqliteHeaderChecked);

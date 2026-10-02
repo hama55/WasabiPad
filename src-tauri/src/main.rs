@@ -87,6 +87,8 @@ enum ViewerFormat {
     Html,
     #[serde(rename = "sqlite")]
     Sqlite,
+    #[serde(rename = "video")]
+    Video,
 }
 
 #[derive(Clone, serde::Serialize, ts_rs::TS)]

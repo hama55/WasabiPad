@@ -1,5 +1,6 @@
 import type { OpenAs, ViewerFormat } from "./api";
 import { IMAGE_MIME_TYPES } from "./image-formats";
+import { VIDEO_EXTENSIONS } from "./generated/Protocol";
 import { MENU_ICON, type MenuIconClass } from "./menu-icons";
 
 export interface ViewerFormatSpec {
@@ -89,6 +90,17 @@ export const VIEWER_FORMATS: Record<ViewerFormat, ViewerFormatSpec> = {
     supportsChart: false,
     supportsDefaultBrowser: false,
   },
+  video: {
+    id: "video",
+    label: "Videoビュー",
+    title: "Video",
+    previewOrder: 6,
+    iconClass: MENU_ICON.video,
+    extensions: VIDEO_EXTENSIONS.map((extension) => `.${extension}`),
+    supportsDelimiter: false,
+    supportsChart: false,
+    supportsDefaultBrowser: false,
+  },
 };
 
 export function viewerFormatSpec(format: ViewerFormat): ViewerFormatSpec {
@@ -139,8 +151,8 @@ export function viewerFormatForPreviewToggle(path: string): ViewerFormat | null 
   return viewerFormatForAutomaticPreview(path) ?? "markdown";
 }
 
-export function isAssetViewerFormat(format: ViewerFormat | null): format is "image" | "pdf" {
-  return format === "image" || format === "pdf";
+export function isAssetViewerFormat(format: ViewerFormat | null): format is "image" | "pdf" | "video" {
+  return format === "image" || format === "pdf" || format === "video";
 }
 
 export function sourcePathForViewer(
@@ -151,11 +163,12 @@ export function sourcePathForViewer(
   return savePath ?? (isAssetViewerFormat(format) || format === "sqlite" ? displayPath : null);
 }
 
-export function canRenderViewerFormat(format: ViewerFormat, sourcePath: string | null): boolean {
+export function canRenderViewerFormat(format: ViewerFormat, sourcePath: string | null, archiveSource = false): boolean {
+  if (format === "video" && archiveSource) return false;
   if (sourcePath && isSqliteCandidatePath(sourcePath)) return format === "sqlite";
   const sourceFormat = sourcePath ? viewerFormatForPath(sourcePath) : null;
   if (sourceFormat === "sqlite") return format === "sqlite";
   if (format === "sqlite") return false;
   if (isAssetViewerFormat(format)) return sourceFormat === format;
-  return sourceFormat !== "image" && sourceFormat !== "pdf";
+  return !isAssetViewerFormat(sourceFormat);
 }

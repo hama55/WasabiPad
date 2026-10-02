@@ -36,6 +36,56 @@ function mount(
 }
 
 describe("Feature: inline preview", () => {
+  // Given: 準備済みの動画プレビュー
+  // When: 一時退避と閉じる操作を通知する
+  // Then: 配置変更では停止通知せず、退避は位置保持、閉じるは位置リセットを通知する
+  it("Scenario: 動画の非表示理由をviewerへ伝える", async () => {
+    const { host, preview } = mount();
+    const frame = host.querySelector("iframe")!;
+    const post = vi.spyOn(frame.contentWindow!, "postMessage");
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow, origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
+    }));
+    await preview.open("video", "", null);
+    post.mockClear();
+    preview.setVisibility(true);
+    expect(post).not.toHaveBeenCalled();
+    preview.setVisibility(false);
+    expect(post).toHaveBeenLastCalledWith({
+      type: INLINE_PREVIEW_MESSAGES.VISIBILITY_MESSAGE, visible: false, reset: false,
+    }, window.location.origin);
+    preview.setVisibility(false, true);
+    expect(post).toHaveBeenLastCalledWith({
+      type: INLINE_PREVIEW_MESSAGES.VISIBILITY_MESSAGE, visible: false, reset: true,
+    }, window.location.origin);
+  });
+  // Given: 動画を表示中で、切替先の外部プレビュー表示完了を待つ
+  // When: 文書切替開始時に動画を停止する
+  // Then: 新表示の完了通知より前に旧動画を停止して先頭へ戻す通知が届く
+  it("Scenario: 次の外部プレビューの表示待ちでも旧動画を停止する", async () => {
+    const { host, preview } = mount();
+    const frame = host.querySelector("iframe")!;
+    const post = vi.spyOn(frame.contentWindow!, "postMessage");
+    const receive = (data: unknown) => window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow, origin: window.location.origin, data,
+    }));
+    receive({ type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE });
+    await preview.open("video", "", null);
+    post.mockClear();
+    preview.setVisibility(false, true);
+    let finished = false;
+    const pending = preview.open("html", "", null, "C:\\temp\\output.html").then(() => { finished = true; });
+    await Promise.resolve();
+    expect(finished).toBe(false);
+    expect(post.mock.calls[0][0]).toEqual({
+      type: INLINE_PREVIEW_MESSAGES.VISIBILITY_MESSAGE, visible: false, reset: true,
+    });
+    const render = post.mock.calls.find(([message]) => message.type === INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE)![0];
+    receive({ type: INLINE_PREVIEW_MESSAGES.DISPLAY_COMMITTED_MESSAGE, render_id: render.render_id });
+    await pending;
+    expect(finished).toBe(true);
+  });
   // Given: 外部プレビュー更新の通知先がある
   // When: 正規frameと別frameが更新操作を通知する
   // Then: 正規frameだけが既存の更新経路へ届く
