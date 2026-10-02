@@ -4,6 +4,37 @@ import { addSearchInputActions } from "./search-input-actions";
 import { optionTitle, type SearchHighlightQuery } from "./workspace-search-options";
 import { unescapePattern } from "./editor-math";
 
+const SEARCH_HELP = String.raw`検索条件
+Aa：大文字小文字を区別する。オフなら ABC と abc も一致する。
+ab：単語単位で検索する。例：cat は scatter の一部には一致しない。
+.*：正規表現で検索する。例：foo.* は foo から同じ行の残りに一致する。
+3つの条件は組み合わせ可能。入力や条件を変えると検索が更新される。不正な正規表現は検索バーに理由を表示する。
+
+移動・一覧
+▼／検索欄のEnter：次の一致へ移動。
+▲／検索欄のShift+Enter：前の一致へ移動。
+全て：未保存の編集も含む、現在の文書全体の一致一覧を開く。
+検索・置換欄のEsc／✕：検索バーを閉じる。
+
+置換
+置換：検索で見つけた一致を選択中なら置換して次へ進む。それ以外は次の一致を探す。
+画面内：縦方向に一部でも見えている行全体を置換する。横に隠れた文字や折り返し元の行全体も対象。画面外の行は含まない。
+全置換：現在の文書全体を置換する。
+置換欄が空なら一致文字列を削除する。検索欄が空なら置換しない。
+
+入力記法・制約
+通常検索（.*オフ）と置換欄では次の記法を使える。
+\n：改行。例：foo\nbar は foo と次の行の bar。
+\t：タブ。例：名前\t値 はタブ区切り。
+\\：バックスラッシュ。例：C:\\work は C:\work。
+改行をまたぐ検索は .* と ab が両方オフの場合だけ使える。
+正規表現の検索欄は正規表現として解釈し、検索対象は行内だけ。
+置換欄は正規表現オンでも上の記法を解釈する。$1 などのキャプチャ参照は展開せず、その文字を挿入する。
+
+入力欄の操作
+各入力欄の×：その欄を消去して同じ入力欄にフォーカスを戻す。検索欄を消すと強調表示と一致一覧も解除する。
+右クリック：切り取り・コピー・貼り付け・全選択。貼り付けは入力欄の選択範囲を置き換える。`;
+
 export class FindBar {
   private root: HTMLElement;
   private findIn: HTMLInputElement;
@@ -56,7 +87,7 @@ export class FindBar {
         <button class="ve-find-prev" title="前へ (Shift+Enter)">▲</button>
         <button class="ve-find-next" title="次へ (Enter)">▼</button>
         <button class="ve-find-all" type="button" title="全て検索">全て</button>
-        <button class="ve-find-help" type="button" title="検索記法のヘルプ" aria-label="検索記法のヘルプ">?</button>
+        <button class="ve-find-help" type="button" title="検索・置換のヘルプ" aria-label="検索・置換のヘルプ">?</button>
         <span class="ve-find-status"></span>
         <input class="ve-rep-in" placeholder="置換" aria-label="置換" spellcheck="false" />
         <div class="ve-rep-actions"><button class="ve-rep-next">置換</button><button class="ve-rep-visible">画面内</button><button class="ve-rep-all">全置換</button></div>
@@ -82,7 +113,7 @@ export class FindBar {
 
     this.findIn.addEventListener("input", () => this.runFind(true));
     this.root.querySelector(".ve-find-help")!.addEventListener("click", () => {
-      void showMessage("エディタ検索記法", "通常検索・置換欄では次の記法を使えます。\n\\n: 改行\n\\t: タブ\n\\\\: バックスラッシュ\n正規表現検索は行内が対象です。置換欄の$1などは文字として挿入します。");
+      void showMessage("エディタ検索・置換ヘルプ", SEARCH_HELP, "閉じる", "pf-help-box");
     });
     this.findIn.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {

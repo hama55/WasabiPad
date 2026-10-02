@@ -1,9 +1,21 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openViewerDelimiterDialog } from "./viewer-delimiter-dialog";
+import viewerHtml from "../viewer.html?raw";
 
 describe("Feature: CSV区切り文字ダイアログ", () => {
   afterEach(() => document.body.replaceChildren());
+
+  // Given: CSVプレビューのタイトルバー
+  // When: 区切り文字を変更する入口を確認する
+  // Then: ダイアログ操作領域だけを残し、直接入力とプリセット選択を重複表示しない
+  it("Scenario: タイトルバーの重複した区切り文字入力を削除する", () => {
+    const template = document.createElement("template");
+    template.innerHTML = viewerHtml;
+    expect(template.content.querySelector("#viewer-csv-actions")).not.toBeNull();
+    expect(template.content.querySelector("#viewer-delimiter-select")).toBeNull();
+    expect(template.content.querySelector("#viewer-delimiter-input")).toBeNull();
+  });
 
   // Given: 現在の区切り文字がカンマ
   // When: プリセットでTSVを選択して適用する

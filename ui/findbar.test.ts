@@ -71,11 +71,11 @@ describe("Feature: FindBar", () => {
       .toEqual(["ve-find-next", "ve-find-help"]);
   });
 
-  // Feature: エディタ検索記法ヘルプ
-  // Scenario: ?ボタンで検索記法の説明を表示する
+  // Feature: エディタ検索・置換ヘルプ
+  // Scenario: ?ボタンでオプションと操作・入力記法・制約を説明する
   // Given: エディタ検索バーが開いている
   // When: ?ヘルプを押す
-  // Then: 改行・タブ・バックスラッシュの記法を説明する
+  // Then: 各条件・操作・入力例と検索／置換の制約を説明する
   it("Scenario: ?ボタンから検索記法ヘルプを開く", () => {
     const host = document.createElement("div");
     document.body.replaceChildren(host);
@@ -88,6 +88,10 @@ describe("Feature: FindBar", () => {
     expect(message.textContent).toContain("\\n");
     expect(message.textContent).toContain("\\t");
     expect(message.textContent).toContain("\\\\");
+    expect(message.textContent).toContain("同じ入力欄にフォーカス");
+    for (const explanation of ["Aa", "ab", ".*", "大文字小文字", "単語単位", "正規表現", "Shift+Enter", "全て", "画面内", "全置換", "縦方向", "横に隠れた", "未保存", "両方オフ", "$1", "削除", "右クリック", "×"]) {
+      expect(message.textContent).toContain(explanation);
+    }
     document.querySelector<HTMLButtonElement>(".pf-ok")!.click();
   });
 

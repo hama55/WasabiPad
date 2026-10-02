@@ -10,7 +10,7 @@ import {
   MIN_FONT_SIZE,
   clampFontSize,
 } from "./font-controls";
-import { confirmMessage, promptFields } from "./prompt";
+import { promptFields } from "./prompt";
 import { runAsyncBoundary } from "./async-boundary";
 import { viewerFormatSpec } from "./viewer-formats";
 import { reportErrorSafely } from "./report-error";
@@ -147,7 +147,7 @@ export class EditingStatusBar {
       this.run("インデント幅を変更できませんでした", () => this.ports.onIndent(Number(this.indentSelect.value)));
     });
     this.pick("st-pos").addEventListener("click", () => this.run("指定行へ移動できませんでした", () => this.promptGoTo()));
-    this.pick("st-lines").addEventListener("click", () => this.run("最後の行へ移動できませんでした", () => this.promptGoToLast()));
+    this.pick("st-lines").addEventListener("click", () => this.run("指定行へ移動できませんでした", () => this.promptGoTo()));
     this.sourceEncodingSelect.addEventListener("change", () => this.run("文字コードを変更できませんでした", () => this.requestReadEncoding()));
   }
 
@@ -275,16 +275,20 @@ export class EditingStatusBar {
   }
 
   private async promptGoTo() {
-    const result = await promptFields("指定行へ移動", [
-      { label: `行番号 (1〜${this.lineCount.toLocaleString("ja-JP")})`, value: String(this.currentLine) },
-    ]);
+    const result = await promptFields("行へ移動", [{
+      label: `行番号 (1〜${this.lineCount.toLocaleString("ja-JP")})`,
+      value: String(this.currentLine),
+      validate: (value) => /^\d+$/.test(value.trim()) && Number.isInteger(Number(value)) && Number(value) >= 1 && Number(value) <= this.lineCount
+        ? null : `1〜${this.lineCount.toLocaleString("ja-JP")}の整数を入力してください`,
+    }], {
+      okLabel: "移動",
+      shortcuts: [
+        { label: "先頭行", values: ["1"] },
+        { label: "最終行", values: [String(this.lineCount)] },
+      ],
+    });
     const line = Number(result?.[0]);
     if (Number.isInteger(line) && line >= 1 && line <= this.lineCount) this.ports.onGoTo(line - 1);
   }
 
-  private async promptGoToLast() {
-    if (await confirmMessage("最後の行へ移動", "最後の行に移動する", "移動")) {
-      this.ports.onGoTo(this.lineCount - 1);
-    }
-  }
 }

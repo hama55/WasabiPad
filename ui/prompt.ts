@@ -2,6 +2,8 @@
 import { openModal } from "./modal";
 
 export interface PromptFieldsOptions {
+  shortcuts?: { label: string; values: string[] }[];
+  okLabel?: string;
   preview?: {
     label: string;
     render: (values: string[]) => string;
@@ -33,7 +35,11 @@ export function promptFields(
     let pendingChanges = 0;
     const { box, close } = openModal({
       onCancel: () => finish(null),
-      onAccept: () => submit(),
+      onAccept: () => {
+        const focused = document.activeElement;
+        if (focused instanceof HTMLButtonElement && box.contains(focused)) focused.click();
+        else submit();
+      },
     });
     if (fields.some((field) => field.multiline)) box.classList.add("pf-command-box");
 
@@ -105,7 +111,7 @@ export function promptFields(
     const cancelBtn = document.createElement("button");
     cancelBtn.textContent = "キャンセル";
     const okBtn = document.createElement("button");
-    okBtn.textContent = "OK";
+    okBtn.textContent = options.okLabel ?? "OK";
     okBtn.className = "pf-ok";
     btns.appendChild(cancelBtn);
     btns.appendChild(okBtn);
@@ -146,6 +152,16 @@ export function promptFields(
     const submit = () => {
       if (validate() && pendingChanges === 0) finish(inputs.map((i) => i.value));
     };
+
+    for (const shortcut of options.shortcuts ?? []) {
+      const button = document.createElement("button");
+      button.textContent = shortcut.label;
+      button.addEventListener("click", () => {
+        inputs.forEach((input, index) => { input.value = shortcut.values[index] ?? input.value; });
+        submit();
+      });
+      btns.insertBefore(button, cancelBtn);
+    }
 
     cancelBtn.addEventListener("click", () => finish(null));
     okBtn.addEventListener("click", submit);
@@ -188,10 +204,10 @@ export function promptFields(
   });
 }
 
-export function showMessage(title: string, message: string, okLabel = "OK"): Promise<void> {
+export function showMessage(title: string, message: string, okLabel = "OK", boxClass = ""): Promise<void> {
   return new Promise((resolve) => {
     // 伝えるだけの画面なので、Escape も Enter も背景クリックも「読んだ」で同じ
-    const { box, close } = openModal({ onCancel: () => finish(), onAccept: () => finish() });
+    const { box, close } = openModal({ onCancel: () => finish(), onAccept: () => finish() }, boxClass);
     box.innerHTML = `<div class="pf-title"></div><div class="pf-message"></div><div class="pf-btns"><button class="pf-ok"></button></div>`;
     box.querySelector<HTMLElement>(".pf-title")!.textContent = title;
     box.querySelector<HTMLElement>(".pf-message")!.textContent = message;
