@@ -68,6 +68,20 @@ export class EditorSearchResults {
     };
     header.addEventListener("keydown", event => { if (event.target === header) arrows(event, false); });
     resize.addEventListener("keydown", event => arrows(event, true));
+    for (const edge of ["top", "bottom"] as const) {
+      const handle = document.createElement("div");
+      handle.className = `editor-search-results-resize-${edge}`;
+      handle.tabIndex = 0;
+      handle.setAttribute("role", "separator");
+      handle.setAttribute("aria-label", edge === "top" ? "検索結果パネルの上辺" : "検索結果パネルの下辺");
+      handle.addEventListener("pointerdown", event => this.drag(event, edge));
+      handle.addEventListener("keydown", event => {
+        if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+        event.preventDefault();
+        this.resizeHeight(this.box(), event.key === "ArrowUp" ? -10 : 10, edge);
+      });
+      this.root.append(handle);
+    }
     this.root.addEventListener("keydown", event => {
       if (event.key === "Escape") { event.preventDefault(); this.close(); }
     });
@@ -202,7 +216,18 @@ export class EditorSearchResults {
     this.place(box.left, box.top, box.width, box.height);
   };
 
-  private drag(event: PointerEvent, resizing: boolean) {
+  private resizeHeight(box: ReturnType<EditorSearchResults["box"]>, delta: number, edge: "top" | "bottom") {
+    const minHeight = Math.min(140, Math.max(1, window.innerHeight - 16));
+    if (edge === "top") {
+      delta = Math.max(8 - box.top, Math.min(delta, box.height - minHeight));
+      this.place(box.left, box.top + delta, box.width, box.height - delta);
+    } else {
+      const height = Math.max(minHeight, Math.min(box.height + delta, window.innerHeight - box.top - 8));
+      this.place(box.left, box.top, box.width, height);
+    }
+  }
+
+  private drag(event: PointerEvent, resizing: boolean | "top" | "bottom") {
     if (event.button !== 0) return;
     event.preventDefault();
     this.stopDrag?.();
@@ -210,6 +235,10 @@ export class EditorSearchResults {
     const move = (next: PointerEvent) => {
       const dx = next.clientX - event.clientX;
       const dy = next.clientY - event.clientY;
+      if (resizing === "top" || resizing === "bottom") {
+        this.resizeHeight(box, dy, resizing);
+        return;
+      }
       this.place(box.left + (resizing ? 0 : dx), box.top + (resizing ? 0 : dy), box.width + (resizing ? dx : 0), box.height + (resizing ? dy : 0));
     };
     const stop = () => {

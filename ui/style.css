@@ -610,10 +610,10 @@ body.fv-dragging { cursor: grabbing; user-select: none; }
 .search-input-field { position: relative; display: block; min-width: 0; }
 .ve-find .search-input-clear, .ws-search .search-input-clear {
   position: absolute; right: 5px; top: 50%; transform: translateY(-50%);
-  width: 14px; height: 14px; padding: 0; display: flex; align-items: center; justify-content: center;
-  border: 1px solid currentColor; border-radius: 50%; background: none; color: var(--fg-dim);
+  width: 18px; height: 18px; padding: 0; display: flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 0; background: none; color: var(--fg-dim);
 }
-.search-input-clear .menu-icon { width: 10px; height: 10px; font-size: 9px; line-height: 10px; }
+.search-input-clear .menu-icon { width: 14px; height: 14px; font-size: 14px; line-height: 14px; }
 .ve-find .search-input-clear[hidden], .ws-search .search-input-clear[hidden] { display: none; }
 
 .editor-search-results {
@@ -642,6 +642,11 @@ body.fv-dragging { cursor: grabbing; user-select: none; }
 .editor-search-result mark { background: var(--find-hit); color: inherit; }
 .editor-search-results-resize { position: absolute; right: 0; bottom: 0; width: 14px; height: 14px; cursor: nwse-resize; touch-action: none; }
 .editor-search-results-resize::after { content: ""; position: absolute; right: 3px; bottom: 3px; width: 6px; height: 6px; border-right: 2px solid var(--fg-dim); border-bottom: 2px solid var(--fg-dim); }
+.editor-search-results-resize-top, .editor-search-results-resize-bottom {
+  position: absolute; left: 0; right: 14px; height: 6px; cursor: ns-resize; touch-action: none;
+}
+.editor-search-results-resize-top { top: 0; }
+.editor-search-results-resize-bottom { bottom: 0; }
 .editor-search-results :focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 
 /* ---- ステータスバー ---- */

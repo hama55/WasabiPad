@@ -11,6 +11,12 @@ const tauriConfig = JSON.parse(
 );
 
 describe("Feature: 検索と置換入力欄の同幅配置", () => {
+  it("Scenario: 検索と置換の消去ボタンは丸囲みのないばつを表示する", () => {
+    // Given: 両方の検索バーで共有する消去ボタンのスタイル
+    // When: 枠線と形状の指定を確認する
+    // Then: 丸囲みを描かず、既存のばつアイコンを表示する
+    expect(style).toMatch(/\.ve-find \.search-input-clear, \.ws-search \.search-input-clear\s*\{[^}]*border:\s*0;\s*border-radius:\s*0;/s);
+  });
   // Given: 検索置換バーが通常配置または2行配置になっている
   // When: 入力欄のgrid trackを確認する
   // Then: 通常は同じ1fr、2行時は同じ列を使う

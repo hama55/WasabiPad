@@ -8,6 +8,29 @@ const hit = (line: number): FindResult => ({ start: { line, col: 0 }, end: { lin
 beforeEach(() => document.body.replaceChildren());
 
 describe("Feature: エディタ検索結果パネル", () => {
+  it("Scenario: 上下の辺をドラッグして反対側を固定したまま高さを変える", () => {
+    // Given: 開いた結果パネル
+    const panel = new EditorSearchResults({ search: async () => [], line: async () => "", select: vi.fn() });
+    panel.open(query);
+    const root = document.querySelector<HTMLElement>(".editor-search-results")!;
+    const top = Number.parseFloat(root.style.top);
+    const pointer = (type: string, y: number) => new MouseEvent(type, { button: 0, clientY: y, bubbles: true });
+    // When: 上辺を40px上へドラッグする
+    root.querySelector(".editor-search-results-resize-top")!.dispatchEvent(pointer("pointerdown", top));
+    window.dispatchEvent(pointer("pointermove", top - 40));
+    window.dispatchEvent(pointer("pointerup", top - 40));
+    // Then: 下辺を維持して高さだけ増える
+    expect(Number.parseFloat(root.style.top)).toBe(top - 40);
+    expect(root.style.height).toBe("380px");
+    // When: 下辺を10px下へドラッグする
+    root.querySelector(".editor-search-results-resize-bottom")!.dispatchEvent(pointer("pointerdown", top + 340));
+    window.dispatchEvent(pointer("pointermove", top + 350));
+    window.dispatchEvent(pointer("pointerup", top + 350));
+    // Then: 上辺を維持して高さだけ増える
+    expect(Number.parseFloat(root.style.top)).toBe(top - 40);
+    expect(root.style.height).toBe("390px");
+    panel.close();
+  });
   it("Scenario: 一覧の連続キー移動でフォーカスを維持する", async () => {
     // Given: 2件の一致がある結果一覧
     const panel = new EditorSearchResults({ search: async () => [hit(0), hit(1)], line: async () => "foo", select: vi.fn() });
