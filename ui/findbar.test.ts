@@ -3,6 +3,22 @@ import { describe, expect, it, vi } from "vitest";
 import { FindBar } from "./findbar";
 
 describe("Feature: FindBar", () => {
+  // Given: 開いている検索バー
+  // When: 正規表現・単語単位を選び「全て」を押す
+  // Then: ▼の右隣から同じ条件で文書全体の一覧を開く
+  it("Scenario: 全て検索へ選択した一致条件を渡す", async () => {
+    const host = document.createElement("div");
+    const onAll = vi.fn(async () => {});
+    const bar = new FindBar(host, async () => true, async () => 0, async () => 0, async () => true,
+      () => {}, async () => {}, undefined, onAll);
+    bar.open("foo\\d+");
+    host.querySelector<HTMLInputElement>(".ve-find-regex input")!.click();
+    host.querySelector<HTMLInputElement>(".ve-find-word input")!.click();
+    const all = host.querySelector<HTMLButtonElement>(".ve-find-all")!;
+    expect(host.querySelector(".ve-find-next")!.nextElementSibling).toBe(all);
+    all.click();
+    await vi.waitFor(() => expect(onAll).toHaveBeenCalledWith({ pat: "foo\\d+", matchCase: false, useRegex: true, wholeWord: true }));
+  });
   // Feature: エディタ置換操作
   // Scenario: 置換操作を意味の広い順に表示する
   // Given: 閉じたFindBarを持つエディタホスト
@@ -110,7 +126,7 @@ describe("Feature: FindBar", () => {
     input.value = "n";
     input.dispatchEvent(new Event("input", { bubbles: true }));
 
-    await vi.waitFor(() => expect(onFind).toHaveBeenCalledWith("n", true, false));
+    await vi.waitFor(() => expect(onFind).toHaveBeenCalledWith("n", true, false, false, false));
   });
 
   // Feature: 非同期の検索・置換操作

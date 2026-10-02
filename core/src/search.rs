@@ -36,8 +36,13 @@ fn find_from(matcher: &RegexMatcher, line: &str, from: usize) -> Option<(usize, 
     if from > line.len() {
         return None;
     }
-    let found = matcher.find_at(line.as_bytes(), from).ok().flatten()?;
-    Some((found.start(), found.end()))
+    let mut result = None;
+    let _ = matcher.find_iter(line.as_bytes(), |found| {
+        if found.start() < from { return true; }
+        result = Some((found.start(), found.end()));
+        false
+    });
+    result
 }
 
 fn line_match(buf: &TextBuffer, matcher: &RegexMatcher, line: usize, col_from: usize) -> Option<(Pos, Pos)> {
@@ -141,28 +146,25 @@ pub(crate) fn find_backward(
     pat: &str,
     start: Pos,
     match_case: bool,
+    use_regex: bool,
+    whole_word: bool,
     wrap_around: bool,
 ) -> Option<(Pos, Pos)> {
     if pat.contains('\n') {
+        if use_regex || whole_word { return None; }
         let segs: Vec<&str> = pat.split('\n').collect();
         return multiline_backward(buf, &segs, start, match_case, wrap_around);
     }
     let n = buf.line_count();
-    let matcher = build_matcher(pat, match_case, false, false).ok()?;
+    let matcher = build_matcher(pat, match_case, use_regex, whole_word).ok()?;
     let scan = |line: usize, limit: usize| -> Option<(usize, usize)> {
         let text = buf.line(line);
         let mut last = None;
-        let mut from = 0;
-        while let Some((s, e)) = find_from(&matcher, &text, from) {
-            if e > limit {
-                break;
-            }
-            last = Some((s, e));
-            from = s + 1;
-            while from < text.len() && !text.is_char_boundary(from) {
-                from += 1;
-            }
-        }
+        let _ = matcher.find_iter(text.as_bytes(), |found| {
+            if found.end() > limit { return false; }
+            last = Some((found.start(), found.end()));
+            true
+        });
         last
     };
     for line in (0..=start.line).rev() {
@@ -220,6 +222,8 @@ pub(crate) fn find_chunk(
     pat: &str,
     start: Pos,
     match_case: bool,
+    use_regex: bool,
+    whole_word: bool,
     cur: FindCursor,
     budget: usize,
     wrap_around: bool,
@@ -229,13 +233,13 @@ pub(crate) fn find_chunk(
         return ChunkStep::NotFound;
     }
     let multiline = pat.contains('\n');
+    if multiline && (use_regex || whole_word) { return ChunkStep::NotFound; }
     let segs: Vec<&str> = if multiline { pat.split('\n').collect() } else { Vec::new() };
-    // 複数行パターンは検索欄から入力できない (input に改行は打てない) ため、
-    // matcher を通さず従来のバイト比較のまま残す
+    // 通常検索のエスケープされた改行は、行をまたぐ固定文字列として扱う。
     let matcher = if multiline {
         None
     } else {
-        match build_matcher(pat, match_case, false, false) {
+        match build_matcher(pat, match_case, use_regex, whole_word) {
             Ok(matcher) => Some(matcher),
             Err(_) => return ChunkStep::NotFound,
         }
@@ -244,7 +248,7 @@ pub(crate) fn find_chunk(
     let hi = if !cur.wrapped { n } else { (start.line + 1).min(n) };
     if cur.line >= hi {
         return if !cur.wrapped && wrap_around {
-            find_chunk(buf, pat, start, match_case, FindCursor { wrapped: true, line: 0 }, budget, wrap_around)
+            find_chunk(buf, pat, start, match_case, use_regex, whole_word, FindCursor { wrapped: true, line: 0 }, budget, wrap_around)
         } else {
             ChunkStep::NotFound
         };
@@ -271,7 +275,7 @@ pub(crate) fn find_chunk(
         return ChunkStep::More(FindCursor { wrapped: cur.wrapped, line: end_line });
     }
     if !cur.wrapped && wrap_around {
-        find_chunk(buf, pat, start, match_case, FindCursor { wrapped: true, line: 0 }, budget, wrap_around)
+        find_chunk(buf, pat, start, match_case, use_regex, whole_word, FindCursor { wrapped: true, line: 0 }, budget, wrap_around)
     } else {
         ChunkStep::NotFound
     }

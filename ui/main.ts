@@ -1125,6 +1125,7 @@ const workspaceHost = new WorkspaceHost(
       onCancelError: (error) => showError("検索を中止できませんでした", error),
       onError: (error) => showError("フォルダを検索できませんでした", error),
       onOptionsChange: saveSearchOptions,
+      onClear: () => editor.setFindHighlightQuery("", false),
       onOpen: async (result, newTab, query) => {
         if (newTab) {
           if (!(await openInNewTab(result.rel_path, searchResultGoto(result)))) return false;

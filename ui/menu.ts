@@ -152,6 +152,7 @@ export function showMenu(x: number, y: number, items: MenuItem[]) {
 
 export function hideMenu() {
   const el = dd();
+  if (!el) return;
   el.hidden = true;
   // 非表示後も古い項目のイベントハンドラを保持しないため、DOMごと破棄する。
   el.replaceChildren();
@@ -159,6 +160,6 @@ export function hideMenu() {
 }
 
 window.addEventListener("mousedown", (e) => {
-  if (!dd().contains(e.target as Node)) hideMenu();
+  if (!dd()?.contains(e.target as Node)) hideMenu();
 });
 window.addEventListener("blur", hideMenu);

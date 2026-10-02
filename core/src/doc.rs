@@ -2520,12 +2520,19 @@ impl Doc {
         forward: bool,
         match_case: bool,
     ) -> Option<FindResult> {
+        self.find_with_options(pat, from, forward, match_case, false, false).ok().flatten()
+    }
+
+    pub fn find_with_options(
+        &self, pat: &str, from: PosC, forward: bool,
+        match_case: bool, use_regex: bool, whole_word: bool,
+    ) -> Result<Option<FindResult>, String> {
+        if use_regex || whole_word { crate::search::build_matcher(pat, match_case, use_regex, whole_word)?; }
         let start = self.to_byte(from);
-        let (s, e) = search_replace::find(&self.buf, pat, start, forward, match_case)?;
-        Some(FindResult {
+        Ok(search_replace::find(&self.buf, pat, start, forward, match_case, use_regex, whole_word).map(|(s, e)| FindResult {
             start: self.to_char(s),
             end: self.to_char(e),
-        })
+        }))
     }
 
     pub fn find_all_in_range(
@@ -2567,15 +2574,24 @@ impl Doc {
         cursor: Option<FindCursor>,
         budget: usize,
     ) -> FindOutcome {
+        self.find_step_with_options(pat, from, match_case, false, false, cursor, budget)
+            .unwrap_or(FindOutcome::NotFound)
+    }
+
+    pub fn find_step_with_options(
+        &self, pat: &str, from: PosC, match_case: bool,
+        use_regex: bool, whole_word: bool, cursor: Option<FindCursor>, budget: usize,
+    ) -> Result<FindOutcome, String> {
+        if use_regex || whole_word { crate::search::build_matcher(pat, match_case, use_regex, whole_word)?; }
         let start = self.to_byte(from);
-        match search_replace::find_step(&self.buf, pat, start, match_case, cursor, budget) {
+        Ok(match search_replace::find_step(&self.buf, pat, start, match_case, use_regex, whole_word, cursor, budget) {
             FindStep::Found(s, e) => FindOutcome::Found {
                 start: self.to_char(s),
                 end: self.to_char(e),
             },
             FindStep::More(cursor) => FindOutcome::More { cursor },
             FindStep::NotFound => FindOutcome::NotFound,
-        }
+        })
     }
 
     // チャンク分割全置換: 1回の呼び出しで最大 budget 件だけ置換する (内部の一致探索
@@ -2588,13 +2604,22 @@ impl Doc {
         match_case: bool,
         budget: usize,
     ) -> ReplaceChunkResult {
+        self.replace_all_chunk_with_options(pat, rep, match_case, false, false, budget)
+            .expect("fixed text search is valid")
+    }
+
+    pub fn replace_all_chunk_with_options(
+        &mut self, pat: &str, rep: &str, match_case: bool,
+        use_regex: bool, whole_word: bool, budget: usize,
+    ) -> Result<ReplaceChunkResult, String> {
+        if use_regex || whole_word { crate::search::build_matcher(pat, match_case, use_regex, whole_word)?; }
         if self.is_view_only() || pat.is_empty() {
-            return ReplaceChunkResult {
+            return Ok(ReplaceChunkResult {
                 done: true,
                 count: 0,
                 caret: PosC { line: 0, col: 0 },
                 line_count: self.buf.line_count(),
-            };
+            });
         }
         let result = search_replace::replace_all_chunk(
             &mut self.buf,
@@ -2603,17 +2628,19 @@ impl Doc {
             pat,
             rep,
             match_case,
+            use_regex,
+            whole_word,
             budget,
         );
         if result.count > 0 {
             self.pending_merge = None;
         }
-        ReplaceChunkResult {
+        Ok(ReplaceChunkResult {
             done: result.done,
             count: result.count,
             caret: self.to_char(result.caret),
             line_count: self.buf.line_count(),
-        }
+        })
     }
 
     // 進行中の全置換を打ち切り、ここまでの変更を1つの UndoEntry としてコミットする

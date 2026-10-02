@@ -28,6 +28,71 @@ import { loadRegisteredStrings } from "./registered-strings";
 
 installDomStubs();
 
+describe("Feature: エディタ全て検索", () => {
+  it("Scenario: ゼロ幅一致の単発置換後は次の行へ進む", async () => {
+    // Given: 2行の本文と行末に一致する正規表現
+    const { editor, doc, host } = mount("ab\ncd");
+    doc.client.findStep = async (_pat, from) => ({ kind: "Found", start: { line: from.line, col: 2 }, end: { line: from.line, col: 2 } });
+    editor.open(2, false);
+    await settle();
+    editor.openSearch();
+    host.querySelector<HTMLInputElement>(".ve-find-regex input")!.checked = true;
+    const input = host.querySelector<HTMLInputElement>(".ve-find-in")!;
+    input.value = "$";
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await settle();
+    // When: 空文字で単発置換する
+    host.querySelector<HTMLButtonElement>(".ve-rep-next")!.click();
+    await settle();
+    // Then: 同じ行末を繰り返さず次行の一致へ進む
+    expect(editor.captureViewState().caret).toEqual({ line: 1, col: 2 });
+  });
+  // Given: 未保存の本文に同じ行の2箇所と別の行の一致がある
+  // When: 全て検索の結果を選び、本文を編集する
+  // Then: 選んだ一致範囲へ移動し、一覧が編集後の本文に追従する
+  it("Scenario: 一致ごとの一覧から移動し未保存の編集へ追従する", async () => {
+    const { editor, host, type } = mount("猫 foo foo\nfoo");
+    editor.open(2, false);
+    editor.openSearch();
+    const search = host.querySelector<HTMLInputElement>(".ve-find-in")!;
+    search.value = "foo";
+    search.dispatchEvent(new Event("input"));
+    host.querySelector<HTMLButtonElement>(".ve-find-all")!.click();
+    await vi.waitFor(() => expect(document.querySelectorAll(".editor-search-result")).toHaveLength(3));
+    const rows = document.querySelectorAll<HTMLButtonElement>(".editor-search-result");
+    expect(rows[1].textContent).toContain("1:7");
+    rows[1].click();
+    expect(editor.captureViewState()).toMatchObject({ anchor: { line: 0, col: 6 }, caret: { line: 0, col: 9 } });
+    type("bar");
+    await vi.waitFor(() => expect(document.querySelectorAll(".editor-search-result")).toHaveLength(2));
+    document.querySelector<HTMLButtonElement>(".editor-search-results-close")!.click();
+    expect(host.querySelector<HTMLElement>(".ve-find")!.hidden).toBe(false);
+  });
+
+  // Given: 結果パネルが開いている文書
+  // When: 別の文書へ切り替えて検索欄を消去する
+  // Then: 同じパネルが切替先へ追従し、空欄時は一覧と強調を解除する
+  it("Scenario: 文書切替と検索消去へ単一パネルが追従する", async () => {
+    const { editor, doc, host } = mount("foo foo");
+    editor.open(1, false);
+    editor.openSearch();
+    const search = host.querySelector<HTMLInputElement>(".ve-find-in")!;
+    search.value = "foo";
+    search.dispatchEvent(new Event("input"));
+    host.querySelector<HTMLButtonElement>(".ve-find-all")!.click();
+    await vi.waitFor(() => expect(document.querySelectorAll(".editor-search-result")).toHaveLength(2));
+    await doc.client.edit({ line: 0, col: 0 }, { line: 0, col: 7 }, { line: 0, col: 0 }, "別文書 foo", false);
+    editor.open(1, false);
+    await vi.waitFor(() => expect(document.querySelectorAll(".editor-search-result")).toHaveLength(1));
+    expect(document.querySelector(".editor-search-result")!.textContent).toContain("別文書");
+    host.querySelector<HTMLButtonElement>(".ve-find-all")!.click();
+    expect(document.querySelectorAll(".editor-search-results")).toHaveLength(1);
+    host.querySelector<HTMLButtonElement>(".ve-find-field .search-input-clear")!.click();
+    await vi.waitFor(() => expect(document.querySelectorAll(".editor-search-result")).toHaveLength(0));
+    expect(editor.captureFindHighlightQuery()).toBeNull();
+  });
+});
+
 function mount(
   initial: string,
   saveImage?: EditorPorts["saveImage"],

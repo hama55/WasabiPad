@@ -53,6 +53,7 @@ describe("Feature: WorkspaceSearchPanel", () => {
     onError: WorkspaceSearchPorts["onError"] = async () => {},
     onCancelError: WorkspaceSearchPorts["onCancelError"] = undefined,
     onReplace: WorkspaceSearchPorts["onReplace"] = () => {},
+    onClear: () => void = () => {},
   ) {
     const host = document.createElement("div");
     document.body.appendChild(host);
@@ -64,6 +65,7 @@ describe("Feature: WorkspaceSearchPanel", () => {
       onError,
       onOpen,
       onReplace,
+      onClear,
       onContextMenu: () => {},
       onOptionsChange: () => {},
       onViewChange: () => {
@@ -76,13 +78,27 @@ describe("Feature: WorkspaceSearchPanel", () => {
   }
 
   async function search(host: HTMLElement, pattern: string) {
-    const input = host.querySelector<HTMLInputElement>(".ws-search-row > input")!;
+    const input = host.querySelector<HTMLInputElement>(".ws-search-row input")!;
     input.value = pattern;
     input.dispatchEvent(new Event("input"));
     await vi.advanceTimersByTimeAsync(150);
   }
 
   const text = (host: HTMLElement, selector: string) => host.querySelector(selector)?.textContent ?? "";
+
+  // Given: ファイルツリー検索の一致を表示している
+  // When: 入力欄内の消去ボタンを押す
+  // Then: 結果を解除し、本文側の強調解除も通知する
+  it("Scenario: 検索欄の消去で結果と本文強調を解除する", async () => {
+    vi.useFakeTimers();
+    const onClear = vi.fn();
+    const host = mount(async () => outcome([hit("a.txt", 0, "foo")]), undefined, undefined, undefined, undefined, undefined, onClear);
+    await search(host, "foo");
+    host.querySelector<HTMLButtonElement>(".ws-search-row .search-input-clear")!.click();
+    expect(host.querySelector<HTMLInputElement>(".ws-search-row input")!.value).toBe("");
+    expect(host.querySelectorAll(".ws-match")).toHaveLength(0);
+    expect(onClear).toHaveBeenCalledOnce();
+  });
 
   // Given: 既定設定で C:\workspace を検索ルートにし、onSearch が空の outcome を返す
   // When: 検索語 missing を入力して検索する
@@ -231,7 +247,7 @@ describe("Feature: WorkspaceSearchPanel", () => {
     const onReplace = vi.fn(async () => true);
     const host = mount(async () => outcome([result]), () => {}, () => {}, async () => {}, undefined, onReplace);
     await search(host, "needle");
-    const replacement = host.querySelector<HTMLInputElement>(".ws-replace-row > input")!;
+    const replacement = host.querySelector<HTMLInputElement>(".ws-replace-row input")!;
     replacement.value = "wasabi";
     host.querySelector<HTMLButtonElement>(".ws-replace-toggle")!.click();
 
@@ -664,7 +680,7 @@ describe("Feature: WorkspaceSearchPanel", () => {
 
     mounted.setFolderRoot("C:\\workspace");
     expect(host.querySelectorAll(".ws-group")).toHaveLength(0);
-    expect(host.querySelector<HTMLInputElement>(".ws-search-row > input")?.value).toBe("");
+    expect(host.querySelector<HTMLInputElement>(".ws-search-row input")?.value).toBe("");
 
     mounted.setFolderRoot(null);
     mounted.setFolderRoot("C:\\workspace");
@@ -694,7 +710,7 @@ describe("Feature: WorkspaceSearchPanel", () => {
     mounted.resetViewState();
     mounted.restoreViewState(saved);
 
-    expect(host.querySelector<HTMLInputElement>(".ws-search-row > input")?.value).toBe("needle");
+    expect(host.querySelector<HTMLInputElement>(".ws-search-row input")?.value).toBe("needle");
     expect(host.querySelectorAll(".ws-group")).toHaveLength(1);
     expect(host.querySelectorAll(".ws-match")).toHaveLength(0);
     expect(host.querySelector(".ws-summary")?.textContent).toContain("1 個のファイルに 1 件の結果");
@@ -748,7 +764,7 @@ describe("Feature: WorkspaceSearchPanel", () => {
     host.querySelector<HTMLButtonElement>(".ws-clear")!.click();
 
     expect(host.querySelectorAll(".ws-group")).toHaveLength(0);
-    expect(host.querySelector<HTMLInputElement>(".ws-search-row > input")?.value).toBe("");
+    expect(host.querySelector<HTMLInputElement>(".ws-search-row input")?.value).toBe("");
   });
 
   // Given: 検索Promiseが未解決のまま needle を検索中

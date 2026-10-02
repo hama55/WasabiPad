@@ -9,10 +9,12 @@ export async function findForward(
   budget: number,
   isCurrent: () => boolean,
   onProgress: (cursor: api.FindCursor) => void,
+  useRegex = false,
+  wholeWord = false,
 ): Promise<api.FindOutcome | null> {
   let cursor: api.FindCursor | undefined;
   for (;;) {
-    const outcome = await client.findStep(pattern, from, matchCase, cursor, budget);
+    const outcome = await client.findStep(pattern, from, matchCase, cursor, budget, useRegex, wholeWord);
     if (!isCurrent()) return null;
     if (outcome.kind !== "More") return outcome;
     cursor = outcome.cursor;

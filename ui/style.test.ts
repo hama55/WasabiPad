@@ -15,8 +15,8 @@ describe("Feature: 検索と置換入力欄の同幅配置", () => {
   // When: 入力欄のgrid trackを確認する
   // Then: 通常は同じ1fr、2行時は同じ列を使う
   it("Scenario: 通常と2行配置のどちらでも入力欄の幅を揃える", () => {
-    expect(style).toMatch(/\.ve-find-row\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) auto auto auto auto minmax\(60px, auto\) minmax\(0, 1fr\) auto auto auto;/s);
-    expect(style).toMatch(/\.ve-find-wrap \.ve-find-row\s*\{[^}]*grid-template-areas:\s*"find case prev next help status close" "rep actions actions actions actions actions \.";/s);
+    expect(style).toMatch(/\.ve-find-row\s*\{[^}]*grid-template-columns:\s*minmax\(90px, 1fr\) auto auto auto auto auto minmax\(0, auto\) minmax\(90px, 1fr\) auto auto;/s);
+    expect(style).toMatch(/\.ve-find-wrap \.ve-find-row\s*\{[^}]*grid-template-areas:\s*"find options prev next all help status close" "rep actions actions actions actions actions actions \.";/s);
   });
 });
 
@@ -125,16 +125,16 @@ describe("Feature: pane toggle placement", () => {
   // Then: 検索欄はエディタ上端を占有し、開くボタンは境界へ近づいた時だけ見える
   it("Scenario: 検索欄を占有表示しプレビューを開くボタンを必要時だけ見せる", () => {
     expect(style).toMatch(/\.ve-find\s*\{[^}]*top:\s*0;[^}]*left:\s*0;[^}]*right:\s*0;/s);
-    expect(style).toMatch(/\.ve-find-row\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)[^;]*minmax\(0,\s*1fr\)/s);
-    expect(style).toContain('grid-template-areas: "find case prev next help status rep actions actions close";');
+    expect(style).toMatch(/\.ve-find-row\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(90px,\s*1fr\)[^;]*minmax\(90px,\s*1fr\)/s);
+    expect(style).toContain('grid-template-areas: "find options prev next all help status rep actions close";');
     expect(style).toMatch(/\.ve-find-help\s*\{[^}]*grid-area:\s*help;/s);
-    expect(style).toMatch(/\.ve-rep-in\s*\{[^}]*grid-area:\s*rep;/s);
+    expect(style).toMatch(/\.ve-rep-field\s*\{[^}]*grid-area:\s*rep;/s);
     expect(style).toMatch(/\.ve-rep-actions\s*\{[^}]*grid-area:\s*actions;/s);
     expect(style).toMatch(/\.ve-find-close\s*\{[^}]*grid-area:\s*close;/s);
     expect(style).toMatch(/\.ve-find button\s*\{[^}]*white-space:\s*nowrap;/s);
     expect(style).toMatch(/\.ve-find-wrap \.ve-find\s*\{[^}]*height:\s*72px;/s);
     expect(style).toContain('.ve-find-wrap .ve-find-row {');
-    expect(style).toContain('grid-template-areas: "find case prev next help status close" "rep actions actions actions actions actions .";');
+    expect(style).toContain('grid-template-areas: "find options prev next all help status close" "rep actions actions actions actions actions actions .";');
     expect(style).toMatch(/\.ve-find-wrap \.ve-rep-actions\s*\{[^}]*overflow-x:\s*auto;/s);
     expect(style).toMatch(/\.ve-find-wrap \.ve-rep-actions button\s*\{[^}]*flex:\s*none;/s);
     expect(style).toMatch(/\.ve-find-wrap\.ve-search-open \.ve-gutter,[\s\S]*\.ve-find-wrap\.ve-search-open \.ve-scroll\s*\{[^}]*top:\s*72px;/s);

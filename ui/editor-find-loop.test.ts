@@ -30,7 +30,7 @@ describe("Feature: エディタ前方向検索ループ", () => {
     );
 
     expect(result).toEqual(found);
-    expect(findStep).toHaveBeenLastCalledWith("needle", from, false, { line: 2, col: 0 }, 20);
+    expect(findStep).toHaveBeenLastCalledWith("needle", from, false, { line: 2, col: 0 }, 20, false, false);
     expect(progress).toHaveBeenCalledWith({ line: 2, col: 0 });
   });
 

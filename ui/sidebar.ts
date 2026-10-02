@@ -143,6 +143,7 @@ export class Sidebar {
       onError: ports.onError,
       onOpen: ports.onOpen,
       onReplace: ports.onReplace,
+      onClear: ports.onClear,
       onOptionsChange: (options) => {
         this.defaultSearchOptions = clampSearchOptions(options);
         ports.onOptionsChange(options);

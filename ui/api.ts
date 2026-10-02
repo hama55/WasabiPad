@@ -196,8 +196,8 @@ export const undo = () => invoke<EditResult | null>(IPC_COMMANDS.undo);
 export const redo = () => invoke<EditResult | null>(IPC_COMMANDS.redo);
 
 // 後方検索 (前へ / Shift+Enter) 用。単発フルスキャン
-export const find = (pat: string, from: Pos, forward: boolean, matchCase: boolean) =>
-  invoke<FindResult | null>(IPC_COMMANDS.find, { pat, from, forward, matchCase });
+export const find = (pat: string, from: Pos, forward: boolean, matchCase: boolean, useRegex = false, wholeWord = false) =>
+  invoke<FindResult | null>(IPC_COMMANDS.find, { pat, from, forward, matchCase, useRegex, wholeWord });
 
 export const findAllInRange = (
   pat: string,
@@ -225,13 +225,15 @@ export const findStep = (
   from: Pos,
   matchCase: boolean,
   cursor: FindCursor | undefined,
-  budget: number
-) => invoke<FindOutcome>(IPC_COMMANDS.findStep, { pat, from, matchCase, cursor: cursor ?? null, budget });
+  budget: number,
+  useRegex = false,
+  wholeWord = false,
+) => invoke<FindOutcome>(IPC_COMMANDS.findStep, { pat, from, matchCase, cursor: cursor ?? null, budget, useRegex, wholeWord });
 
 // 1回で最大 budget 件だけ置換する。done=false の間は呼び出し側でループする
 // (再開状態は backend の Doc が保持するため、追加の引数は不要)。
-export const replaceAllChunk = (pat: string, rep: string, matchCase: boolean, budget: number) =>
-  invoke<ReplaceChunkResult>(IPC_COMMANDS.replaceAllChunk, { pat, rep, matchCase, budget });
+export const replaceAllChunk = (pat: string, rep: string, matchCase: boolean, budget: number, useRegex = false, wholeWord = false) =>
+  invoke<ReplaceChunkResult>(IPC_COMMANDS.replaceAllChunk, { pat, rep, matchCase, budget, useRegex, wholeWord });
 
 // 進行中の全置換を打ち切り、ここまでの変更を1つの undo エントリとして確定する
 export const replaceAllCancel = () => invoke<EditResult>(IPC_COMMANDS.replaceAllCancel);

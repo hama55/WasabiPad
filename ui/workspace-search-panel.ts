@@ -4,6 +4,7 @@ import { isMiddleClick } from "./interaction-constants";
 import { CHEVRON_DOWN, CHEVRON_RIGHT, iconButton } from "./icon-button";
 import { groupResults, highlightedPreview, searchResultGoto, sortResults, type ResultGroup } from "./search-results";
 import { openSearchSettings } from "./search-settings-dialog";
+import { addSearchInputActions } from "./search-input-actions";
 import {
   clampSearchOptions,
   optionTitle,
@@ -39,6 +40,7 @@ export interface WorkspaceSearchPorts {
   onContextMenu: (x: number, y: number, target: ContextTarget) => void;
   // 検索条件が変わった。保存先を知るのは呼び出し側 (ここは永続化を知らない)
   onOptionsChange: (options: WorkspaceSearchOptions) => void;
+  onClear?: () => void;
   // 出すべき中身が変わった → 器の描き替えを頼む
   onViewChange: () => void;
 }
@@ -85,6 +87,7 @@ const SCOPE_TOGGLES: [string, ToggleKey][] = [
 export class WorkspaceSearchPanel {
   readonly bar: HTMLElement; // 検索窓 (ヘッダ + 入力欄 + 件数)
   private searchInput: HTMLInputElement;
+  private syncSearchInput: () => void;
   private replaceInput: HTMLInputElement;
   private replaceRow: HTMLElement;
   private replaceToggle: HTMLButtonElement;
@@ -123,6 +126,10 @@ export class WorkspaceSearchPanel {
     this.summary.hidden = true;
     this.searchStop = header.querySelector(".ws-stop")!;
     this.bar.append(header, row, this.replaceRow, this.summary);
+    this.searchInput.setAttribute("aria-label", "ファイルツリー検索");
+    this.replaceInput.setAttribute("aria-label", "ファイルツリー置換");
+    this.syncSearchInput = addSearchInputActions(this.searchInput, error => this.reportUiError(error));
+    addSearchInputActions(this.replaceInput, error => this.reportUiError(error));
     this.searchInput.addEventListener("input", () => this.queueSearch());
   }
 
@@ -153,6 +160,7 @@ export class WorkspaceSearchPanel {
     this.bar.hidden = folderRoot === null;
     if (folderRoot) {
       this.searchInput.value = this.state.pattern;
+      this.syncSearchInput();
       if (this.searchOptionsChangedWhileHidden) {
         this.searchOptionsChangedWhileHidden = false;
         if (this.searchInput.value) this.queueSearch(0);
@@ -179,6 +187,7 @@ export class WorkspaceSearchPanel {
     this.hiddenPattern = "";
     this.searchOptionsChangedWhileHidden = false;
     this.searchInput.value = "";
+    this.syncSearchInput();
     this.searchStop.hidden = true;
     this.summary.hidden = true;
     this.bar.hidden = true;
@@ -221,6 +230,7 @@ export class WorkspaceSearchPanel {
     this.options = clampSearchOptions(snapshot.options);
     this.syncTargetToggles();
     this.searchInput.value = snapshot.pattern;
+    this.syncSearchInput();
     this.searchStop.hidden = true;
     this.summary.hidden = outcome === null;
     if (this.state.selected && !this.shownResults().some((result) => searchResultKey(result) === this.state.selected)) {
@@ -384,6 +394,7 @@ export class WorkspaceSearchPanel {
     if (this.running) this.cancelRunningSearch();
     if (!pat) {
       this.setOutcome(null);
+      this.ports.onClear?.();
       return;
     }
     this.setOutcome("searching");
@@ -406,9 +417,11 @@ export class WorkspaceSearchPanel {
     this.openRequest++;
     this.setOutcome(null);
     this.searchInput.value = "";
+    this.syncSearchInput();
     this.state.pattern = "";
     this.state.selected = null;
     if (focus) this.searchInput.focus();
+    this.ports.onClear?.();
   }
 
   private cancelRunningSearch() {

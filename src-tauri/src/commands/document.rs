@@ -260,9 +260,11 @@ pub(crate) fn find(
     from: PosC,
     forward: bool,
     match_case: bool,
+    use_regex: bool,
+    whole_word: bool,
     state: State,
 ) -> Result<Option<FindResult>, String> {
-    with_doc(&state, |doc| doc.find(&pat, from, forward, match_case))
+    with_doc(&state, |doc| doc.find_with_options(&pat, from, forward, match_case, use_regex, whole_word))?
 }
 
 pub(crate) fn find_all_in_range(
@@ -286,11 +288,13 @@ pub(crate) fn find_step(
     match_case: bool,
     cursor: Option<FindCursor>,
     budget: usize,
+    use_regex: bool,
+    whole_word: bool,
     state: State,
 ) -> Result<FindOutcome, String> {
     with_doc(&state, |doc| {
-        doc.find_step(&pat, from, match_case, cursor, budget)
-    })
+        doc.find_step_with_options(&pat, from, match_case, use_regex, whole_word, cursor, budget)
+    })?
 }
 
 pub(crate) fn replace_all_chunk(
@@ -298,11 +302,13 @@ pub(crate) fn replace_all_chunk(
     rep: String,
     match_case: bool,
     budget: usize,
+    use_regex: bool,
+    whole_word: bool,
     state: State,
 ) -> Result<ReplaceChunkResult, String> {
     with_doc(&state, |doc| {
-        doc.replace_all_chunk(&pat, &rep, match_case, budget)
-    })
+        doc.replace_all_chunk_with_options(&pat, &rep, match_case, use_regex, whole_word, budget)
+    })?
 }
 
 pub(crate) fn replace_all_cancel(state: State) -> Result<EditResult, String> {

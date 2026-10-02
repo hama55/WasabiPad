@@ -5,7 +5,6 @@
 mod commands;
 mod external_preview_runner;
 mod instance;
-mod legacy_addins;
 mod state;
 mod viewer;
 
@@ -444,9 +443,11 @@ fn find(
     from: PosC,
     forward: bool,
     match_case: bool,
+    use_regex: bool,
+    whole_word: bool,
     state: State,
 ) -> Result<Option<FindResult>, String> {
-    document::find(pat, from, forward, match_case, state)
+    document::find(pat, from, forward, match_case, use_regex, whole_word, state)
 }
 
 #[tauri::command]
@@ -479,9 +480,11 @@ fn find_step(
     match_case: bool,
     cursor: Option<FindCursor>,
     budget: usize,
+    use_regex: bool,
+    whole_word: bool,
     state: State,
 ) -> Result<FindOutcome, String> {
-    document::find_step(pat, from, match_case, cursor, budget, state)
+    document::find_step(pat, from, match_case, cursor, budget, use_regex, whole_word, state)
 }
 
 #[tauri::command]
@@ -490,9 +493,11 @@ fn replace_all_chunk(
     rep: String,
     match_case: bool,
     budget: usize,
+    use_regex: bool,
+    whole_word: bool,
     state: State,
 ) -> Result<ReplaceChunkResult, String> {
-    document::replace_all_chunk(pat, rep, match_case, budget, state)
+    document::replace_all_chunk(pat, rep, match_case, budget, use_regex, whole_word, state)
 }
 
 #[tauri::command]
@@ -822,11 +827,6 @@ fn main() {
         .manage(search::SearchCancel(Mutex::new(None)))
         .manage(instance_server)
         .setup(|app| {
-            if let Ok(data_dir) = wasabipad_core::app_data_root() {
-                if let Err(error) = legacy_addins::move_to_pending(&data_dir) {
-                    eprintln!("Could not move old music addins to pending storage: {error}");
-                }
-            }
             app.state::<InstanceServer>().start(app.handle());
             if let Some(window) = app.get_webview_window("main") {
                 viewer::install_find_shortcut_guard(

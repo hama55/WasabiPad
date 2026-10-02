@@ -281,19 +281,21 @@ body.preview-resizing iframe { pointer-events: none; }
 /* 一致のしかたのトグルは VSCode と同じく入力欄の内側へ重ねる */
 .ws-search-row { position: relative; display: flex; align-items: center; }
 .ws-replace-toggle { flex: none; width: var(--ws-input-indent); }
-.ws-search-row > input {
+.ws-search-row > .search-input-field { min-width: 0; flex: 1; }
+.ws-search-row input {
   min-width: 0; flex: 1; background: var(--bg-editor); color: var(--fg);
-  border: 1px solid var(--border-strong); padding: 3px 74px 3px 5px; font: 12px var(--font-ui);
+  border: 1px solid var(--border-strong); padding: 3px 98px 3px 5px; font: 12px var(--font-ui); width: 100%; box-sizing: border-box;
 }
-.ws-search-row .ws-toggles { position: absolute; right: 3px; }
+.ws-search-row .ws-toggles { position: absolute; right: 23px; }
 .ws-toggles { display: flex; gap: 1px; flex: none; }
 .ws-replace-row {
   display: flex; align-items: center; gap: 5px; margin-top: 3px;
   padding-left: var(--ws-input-indent);
 }
-.ws-replace-row > input {
+.ws-replace-row > .search-input-field { min-width: 0; flex: 1; }
+.ws-replace-row input {
   min-width: 0; flex: 1; background: var(--bg-editor); color: var(--fg);
-  border: 1px solid var(--border-strong); padding: 3px 5px; font: 12px var(--font-ui);
+  border: 1px solid var(--border-strong); padding: 3px 24px 3px 5px; font: 12px var(--font-ui); width: 100%; box-sizing: border-box;
 }
 .ws-replace-hint { flex: none; color: var(--fg-dim); font-size: 11px; }
 .ws-search button {
@@ -548,22 +550,27 @@ body.fv-dragging { cursor: grabbing; user-select: none; }
 }
 .ve-find-row {
   display: grid; align-items: center; gap: 4px; min-width: 0; height: 100%;
-  grid-template-columns: minmax(0, 1fr) auto auto auto auto minmax(60px, auto) minmax(0, 1fr) auto auto auto;
-  grid-template-areas: "find case prev next help status rep actions actions close";
+  grid-template-columns: minmax(90px, 1fr) auto auto auto auto auto minmax(0, auto) minmax(90px, 1fr) auto auto;
+  grid-template-areas: "find options prev next all help status rep actions close";
 }
-.ve-find-in { grid-area: find; min-width: 0; }
+.ve-find-field { grid-area: find; min-width: 0; }
+.ve-find-in { min-width: 0; }
 .ve-find-help { grid-area: help; }
-.ve-find-case { grid-area: case; }
+.ve-find-options { grid-area: options; display: flex; align-items: center; gap: 4px; }
+.ve-find-options label { display: flex; align-items: center; gap: 1px; font-size: 12px; color: var(--fg-dim); }
+.ve-find-options input { margin: 0; }
 .ve-find-prev { grid-area: prev; }
 .ve-find-next { grid-area: next; }
+.ve-find-all { grid-area: all; }
 .ve-find-status { grid-area: status; }
-.ve-rep-in { grid-area: rep; box-sizing: border-box; min-width: 0; }
+.ve-rep-field { grid-area: rep; min-width: 0; }
+.ve-rep-in { box-sizing: border-box; min-width: 0; }
 .ve-rep-actions { grid-area: actions; display: flex; gap: 4px; min-width: 0; }
 .ve-find-close { grid-area: close; }
 .ve-find input[type="text"], .ve-find-in, .ve-rep-in {
   background: var(--bg-editor); color: var(--fg);
   border: 1px solid var(--border-strong); border-radius: 3px;
-  padding: 3px 6px; font-size: 13px; font-family: var(--font-ui);
+  padding: 3px 24px 3px 6px; font-size: 13px; font-family: var(--font-ui);
   width: 100%; box-sizing: border-box; outline: none;
 }
 .ve-find-in:focus, .ve-rep-in:focus { border-color: var(--bg-status); }
@@ -573,7 +580,7 @@ body.fv-dragging { cursor: grabbing; user-select: none; }
 }
 .ve-find button:hover { background: var(--hover); }
 .ve-find-case { display: flex; align-items: center; gap: 2px; font-size: 12px; color: var(--fg-dim); }
-.ve-find-status { font-size: 12px; color: var(--fg-dim); min-width: 90px; }
+.ve-find-status { font-size: 12px; color: var(--fg-dim); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 検索欄は本文に重ねず、開いている間だけエディタの上端を占有する。 */
 .ve-search-open .ve-gutter,
@@ -581,13 +588,61 @@ body.fv-dragging { cursor: grabbing; user-select: none; }
 
 .ve-find-wrap .ve-find { height: 72px; }
 .ve-find-wrap .ve-find-row {
-  grid-template-columns: minmax(0, 1fr) auto auto auto auto minmax(60px, auto) auto;
-  grid-template-areas: "find case prev next help status close" "rep actions actions actions actions actions .";
+  grid-template-columns: minmax(90px, 1fr) auto auto auto auto auto minmax(0, auto) auto;
+  grid-template-areas: "find options prev next all help status close" "rep actions actions actions actions actions actions .";
 }
 .ve-find-wrap .ve-rep-actions { overflow-x: auto; }
 .ve-find-wrap .ve-rep-actions button { flex: none; }
 .ve-find-wrap.ve-search-open .ve-gutter,
 .ve-find-wrap.ve-search-open .ve-scroll { top: 72px; }
+
+.ve { container-type: inline-size; }
+@container (max-width: 540px) {
+  .ve-find-wrap .ve-find { height: 104px; }
+  .ve-find-wrap .ve-find-row {
+    grid-template-columns: auto auto auto auto minmax(0, 1fr) auto;
+    grid-template-areas: "find find find options options close" "prev next all help status status" "rep rep actions actions actions actions";
+  }
+  .ve-find-wrap.ve-search-open .ve-gutter,
+  .ve-find-wrap.ve-search-open .ve-scroll { top: 104px; }
+}
+
+.search-input-field { position: relative; display: block; min-width: 0; }
+.ve-find .search-input-clear, .ws-search .search-input-clear {
+  position: absolute; right: 5px; top: 50%; transform: translateY(-50%);
+  width: 14px; height: 14px; padding: 0; display: flex; align-items: center; justify-content: center;
+  border: 1px solid currentColor; border-radius: 50%; background: none; color: var(--fg-dim);
+}
+.search-input-clear .menu-icon { width: 10px; height: 10px; font-size: 9px; line-height: 10px; }
+.ve-find .search-input-clear[hidden], .ws-search .search-input-clear[hidden] { display: none; }
+
+.editor-search-results {
+  position: fixed; z-index: 900; display: flex; flex-direction: column; box-sizing: border-box;
+  background: var(--bg-editor); color: var(--fg); border: 1px solid var(--border-strong); border-radius: 4px;
+  box-shadow: 0 4px 16px #0004; overflow: hidden; font: 12px var(--font-ui);
+}
+.editor-search-results[hidden] { display: none; }
+.editor-search-results-header {
+  display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 8px;
+  background: var(--bg-side); border-bottom: 1px solid var(--border-strong); flex: none; cursor: move; touch-action: none;
+}
+.editor-search-results-status { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--fg-dim); }
+.editor-search-results-close { width: 24px; height: 24px; padding: 0; display: grid; place-items: center; flex: none; border: 0; background: none; color: var(--fg); }
+.editor-search-results-close:hover { background: var(--hover); }
+.editor-search-results-list { position: relative; flex: 1; min-height: 0; overflow: auto; }
+.editor-search-results-spacer { pointer-events: none; }
+.editor-search-results-rows { position: absolute; top: 0; left: 0; right: 0; }
+.editor-search-result {
+  position: absolute; left: 0; width: 100%; height: 26px; display: flex; align-items: center; gap: 8px;
+  padding: 0 8px; border: 0; background: none; color: inherit; font: inherit; text-align: left;
+}
+.editor-search-result:hover, .editor-search-result[aria-selected="true"] { background: var(--hover); }
+.editor-search-result-position { flex: none; min-width: 64px; color: var(--fg-dim); font-variant-numeric: tabular-nums; }
+.editor-search-result-preview { min-width: 0; overflow: hidden; white-space: pre; text-overflow: ellipsis; }
+.editor-search-result mark { background: var(--find-hit); color: inherit; }
+.editor-search-results-resize { position: absolute; right: 0; bottom: 0; width: 14px; height: 14px; cursor: nwse-resize; touch-action: none; }
+.editor-search-results-resize::after { content: ""; position: absolute; right: 3px; bottom: 3px; width: 6px; height: 6px; border-right: 2px solid var(--fg-dim); border-bottom: 2px solid var(--fg-dim); }
+.editor-search-results :focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 
 /* ---- ステータスバー ---- */
 #statusbar {

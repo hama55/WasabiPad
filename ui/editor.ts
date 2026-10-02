@@ -4,6 +4,7 @@ import { readText as readClipboardText, writeText as writeClipboardText } from "
 import { RectangularClipboard } from "./editor-clipboard";
 import { findForward } from "./editor-find-loop";
 import { FindBar } from "./findbar";
+import { EditorSearchResults } from "./editor-search-results";
 import { clampFontSize, DEFAULT_INDENT_SIZE } from "./font-controls";
 import { DEFAULT_EDITOR_CONFIG, EditorConfig } from "./editor-config";
 import { showMenu, type MenuItem } from "./menu";
@@ -99,6 +100,7 @@ export class VirtualEditor {
   private secondaryCaretEls: HTMLElement[] = [];
   private input: HTMLTextAreaElement;
   private findBar: FindBar;
+  private findResults: EditorSearchResults;
 
   private lineCount = 1;
   private documentGeneration = 0;
@@ -140,7 +142,7 @@ export class VirtualEditor {
   private composing = false;
   private mutation: EditorMutationController;
   private findGen = 0; // 検索ループの世代。closeやEnter連打で古いループを打ち切るため
-  private lastFindMatch: { start: Pos; end: Pos; pat: string; matchCase: boolean } | null = null; // 置換が対象にしてよい直前の一致
+  private lastFindMatch: api.FindResult & SearchHighlightQuery | null = null; // 置換が対象にしてよい直前の一致
   private activeFind: SearchHighlightQuery | null = null;
   private findHighlights: api.FindResult[] = [];
   private findHighlightRequestKey = "";
@@ -259,12 +261,24 @@ export class VirtualEditor {
     // native IME用textareaは仮想本文のclip領域外に置く。WebView2へ空のcaret矩形を渡さないため。
     this.host.appendChild(this.input);
 
+    this.findResults = new EditorSearchResults({
+      search: query => this.doc.findAllInRange(query.pat, 0, this.lineCount, query.matchCase, query.useRegex, query.wholeWord, 0),
+      line: line => this.lineCache.line(line),
+      select: (match, query) => {
+        if (this.busy) return;
+        this.findGen++;
+        this.setFindHighlightQuery(query.pat, query.matchCase, query.useRegex, query.wholeWord);
+        this.selectAndCenter(match.start, match.end);
+        this.lastFindMatch = { ...match, ...query };
+        this.focus();
+      },
+    });
     this.findBar = new FindBar(
       this.host,
-      (pat, forward, mc) => this.doFind(pat, forward, mc),
-      (pat, rep, mc) => this.doReplaceAll(pat, rep, mc),
-      (pat, rep, mc) => this.doReplaceVisible(pat, rep, mc),
-      (pat, rep, mc) => this.doReplaceNext(pat, rep, mc),
+      (pat, forward, mc, regex, word) => this.doFind(pat, forward, mc, regex, word),
+      (pat, rep, mc, regex, word) => this.doReplaceAll(pat, rep, mc, regex, word),
+      (pat, rep, mc, regex, word) => this.doReplaceVisible(pat, rep, mc, regex, word),
+      (pat, rep, mc, regex, word) => this.doReplaceNext(pat, rep, mc, regex, word),
       () => {
         this.findGen++;
         this.lastFindMatch = null;
@@ -272,7 +286,14 @@ export class VirtualEditor {
         this.focus();
       },
       (message, error) => this.reportActionError(message, error),
-      (pat, matchCase) => this.setFindHighlightQuery(unescapePattern(pat), matchCase),
+      (pat, matchCase, useRegex, wholeWord) => {
+        this.setFindHighlightQuery(useRegex ? pat : unescapePattern(pat), matchCase, useRegex, wholeWord);
+        this.findResults.refresh(this.findBar.query);
+      },
+      async query => {
+        this.setFindHighlightQuery(query.pat, query.matchCase, query.useRegex, query.wholeWord);
+        this.findResults.open(query, this.host.querySelector(".ve-find")!.getBoundingClientRect().bottom + 8);
+      },
     );
 
     this.scroll.addEventListener("scroll", () => {
@@ -399,6 +420,11 @@ export class VirtualEditor {
     this.setTopLine(0);
     this.render();
     this.notifyCursor();
+    if (this.findResults.showing) {
+      const query = this.findBar.query;
+      this.setFindHighlightQuery(query.pat, query.matchCase, query.useRegex, query.wholeWord);
+      this.findResults.refresh(query);
+    }
   }
 
   setReadOnly(on: boolean) {
@@ -1338,6 +1364,10 @@ export class VirtualEditor {
       .catch((error) => {
         if (generation !== this.findHighlightGeneration || key !== this.findHighlightRequestKey) return;
         this.findHighlights = [];
+        if (String(error).includes("検索パターンが不正")) {
+          this.findBar.setProgress(String(error));
+          return;
+        }
         this.findHighlightRequestKey = "";
         void this.reportActionError("検索結果を強調表示できませんでした", error);
       });
@@ -1605,7 +1635,10 @@ export class VirtualEditor {
       && edits.length === 1
       && this.lineCache.applySingleLineEdit(edits[0].start, edits[0].end, edits[0].text);
     if (!cached) this.lineCache.invalidateFrom(fromLine);
+    this.findGen++;
+    this.lastFindMatch = null;
     this.invalidateFindHighlights();
+    this.findResults.refresh(this.findBar.query);
     this.liveViewers.applyEdits(edits);
     this.sel.caret = r.caret;
     this.sel.anchor = r.caret;
@@ -2438,27 +2471,38 @@ export class VirtualEditor {
   private static readonly FIND_BUDGET = 20_000;
   private static readonly REPLACE_BUDGET = 2_000;
   private static readonly REPLACE_WARN_THRESHOLD = 5_000;
-  private static readonly FIND_WRAP_MAX_WIDTH = 720;
+  private static readonly FIND_WRAP_MAX_WIDTH = 920;
 
-  private async doFind(pat: string, forward: boolean, matchCase: boolean): Promise<boolean> {
+  private async doFind(pat: string, forward: boolean, matchCase: boolean, useRegex = false, wholeWord = false): Promise<boolean> {
+    if (this.busy) return false;
     const myGen = ++this.findGen;
     const previousMatch = this.lastFindMatch;
-    const p = unescapePattern(pat);
-    this.setFindHighlightQuery(p, matchCase);
+    const p = useRegex ? pat : unescapePattern(pat);
+    this.setFindHighlightQuery(p, matchCase, useRegex, wholeWord);
+    this.findResults.refresh({ pat: p, matchCase, useRegex, wholeWord });
     this.lastFindMatch = null;
     if (!p) return false;
     const selectionIsPrevious = previousMatch
       && cmp(this.sel.anchor, previousMatch.start) === 0
       && cmp(this.sel.caret, previousMatch.end) === 0;
     const refiningCurrent = forward && selectionIsPrevious
-      && (previousMatch.pat !== p || previousMatch.matchCase !== matchCase);
-    const from = forward ? (refiningCurrent ? previousMatch.start : this.sel.norm()[1]) : this.sel.norm()[0];
+      && (previousMatch.pat !== p || previousMatch.matchCase !== matchCase || previousMatch.useRegex !== useRegex || previousMatch.wholeWord !== wholeWord);
+    let from = forward ? (refiningCurrent ? previousMatch.start : this.sel.norm()[1]) : this.sel.norm()[0];
+    if (!refiningCurrent && selectionIsPrevious && cmp(previousMatch.start, previousMatch.end) === 0) {
+      const length = await this.lineCache.lineLength(from.line);
+      if (myGen !== this.findGen) return false;
+      if (forward) from = from.col < length ? { ...from, col: from.col + 1 }
+        : from.line + 1 < this.lineCount ? { line: from.line + 1, col: 0 } : { line: 0, col: 0 };
+      else from = from.col > 0 ? { ...from, col: from.col - 1 }
+        : { line: (from.line + this.lineCount - 1) % this.lineCount, col: await this.lineCache.lineLength((from.line + this.lineCount - 1) % this.lineCount) };
+      if (myGen !== this.findGen) return false;
+    }
     if (!forward) {
-      const r = await this.doc.find(p, from, false, matchCase);
+      const r = await this.doc.find(p, from, false, matchCase, useRegex, wholeWord);
       if (myGen !== this.findGen) return false;
       if (!r) { this.lastFindMatch = null; return false; }
       this.selectAndCenter(r.start, r.end);
-      this.lastFindMatch = { start: r.start, end: r.end, pat: p, matchCase };
+      this.lastFindMatch = { start: r.start, end: r.end, pat: p, matchCase, useRegex, wholeWord };
       return true;
     }
     const outcome = await findForward(
@@ -2471,6 +2515,8 @@ export class VirtualEditor {
       (cursor) => this.findBar.setProgress(
         `検索中… ${findProgressPercent(cursor, from.line, this.lineCount)}%`,
       ),
+      useRegex,
+      wholeWord,
     );
     if (!outcome || outcome.kind !== "Found") {
       this.lastFindMatch = null;
@@ -2478,30 +2524,34 @@ export class VirtualEditor {
     }
     this.findBar.setProgress("");
     this.selectAndCenter(outcome.start, outcome.end);
-    this.lastFindMatch = { start: outcome.start, end: outcome.end, pat: p, matchCase };
+    this.lastFindMatch = { start: outcome.start, end: outcome.end, pat: p, matchCase, useRegex, wholeWord };
     return true;
   }
 
   // 現在の選択が直前の検索結果そのものであれば置換してから次を検索する。
   // そうでなければ (まだ何も検索していない等) 次の一致を探すだけに留める。
-  private async doReplaceNext(pat: string, rep: string, matchCase: boolean): Promise<boolean> {
-    if (this.readOnly) return this.doFind(pat, true, matchCase);
-    const p = unescapePattern(pat);
+  private async doReplaceNext(pat: string, rep: string, matchCase: boolean, useRegex = false, wholeWord = false): Promise<boolean> {
+    if (this.busy) return false;
+    if (this.readOnly) return this.doFind(pat, true, matchCase, useRegex, wholeWord);
+    const p = useRegex ? pat : unescapePattern(pat);
     if (!p) return false;
     const m = this.lastFindMatch;
     if (
-      m && m.pat === p && m.matchCase === matchCase &&
+      m && m.pat === p && m.matchCase === matchCase && m.useRegex === useRegex && m.wholeWord === wholeWord &&
       cmp(this.sel.anchor, m.start) === 0 && cmp(this.sel.caret, m.end) === 0
     ) {
       const r = unescapePattern(rep);
       const res = await this.doc.edit(m.start, m.end, this.sel.caret, r, false);
       this.lastFindMatch = null;
       this.applyResult(res, m.start.line, [{ start: m.start, end: m.end, text: r }]);
+      if (cmp(m.start, m.end) === 0) {
+        this.lastFindMatch = { ...m, start: { ...this.sel.caret }, end: { ...this.sel.caret } };
+      }
       this.ensureVisible();
       this.render();
       this.notifyCursor();
     }
-    return this.doFind(pat, true, matchCase);
+    return this.doFind(pat, true, matchCase, useRegex, wholeWord);
   }
 
   private visibleLogicalLineRange(): { first: number; last: number } {
@@ -2525,9 +2575,9 @@ export class VirtualEditor {
     return { first: 0, last: 0 };
   }
 
-  private async doReplaceVisible(pat: string, rep: string, matchCase: boolean): Promise<number> {
+  private async doReplaceVisible(pat: string, rep: string, matchCase: boolean, useRegex = false, wholeWord = false): Promise<number> {
     if (this.readOnly || this.busy) return 0;
-    const p = unescapePattern(pat);
+    const p = useRegex ? pat : unescapePattern(pat);
     if (!p) return 0;
     const r = unescapePattern(rep);
     const generation = this.documentGeneration;
@@ -2537,7 +2587,7 @@ export class VirtualEditor {
 
     this.busy = true;
     try {
-      const matches = await this.doc.findAllInRange(p, first, last, matchCase, false, false, 0);
+      const matches = await this.doc.findAllInRange(p, first, last, matchCase, useRegex, wholeWord, 0);
       if (generation !== this.documentGeneration || matches.length === 0) return 0;
       const edits = matches.map(({ start, end }) => ({ start, end, text: r }));
       const primaryIndex = edits.length - 1;
@@ -2552,16 +2602,16 @@ export class VirtualEditor {
     }
   }
 
-  private async doReplaceAll(pat: string, rep: string, matchCase: boolean): Promise<number> {
-    if (this.readOnly) return 0;
-    const p = unescapePattern(pat);
+  private async doReplaceAll(pat: string, rep: string, matchCase: boolean, useRegex = false, wholeWord = false): Promise<number> {
+    if (this.readOnly || this.busy) return 0;
+    const p = useRegex ? pat : unescapePattern(pat);
     if (!p) return 0;
     const r = unescapePattern(rep);
     this.busy = true;
     try {
       let warned = false;
       for (;;) {
-        const res = await this.doc.replaceAllChunk(p, r, matchCase, VirtualEditor.REPLACE_BUDGET);
+        const res = await this.doc.replaceAllChunk(p, r, matchCase, VirtualEditor.REPLACE_BUDGET, useRegex, wholeWord);
         if (!warned && !res.done && res.count >= VirtualEditor.REPLACE_WARN_THRESHOLD) {
           warned = true;
           const cont = window.confirm(`既に${res.count}件置換しています。続行しますか?`);

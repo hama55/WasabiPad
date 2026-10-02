@@ -253,7 +253,7 @@ describe("Feature: Sidebar", () => {
     const { host, sidebar } = mount();
     sidebar.setWorkspaceSearch("C:\\workspace");
     sidebar.setEntries([{ name: "memo.txt", is_dir: false, is_archive: false }]);
-    const input = host.querySelector<HTMLInputElement>(".ws-search-row > input")!;
+    const input = host.querySelector<HTMLInputElement>(".ws-search-row input")!;
 
     input.value = "needle";
     input.dispatchEvent(new Event("input"));
@@ -1534,7 +1534,7 @@ describe("Feature: Sidebar", () => {
     const { host, sidebar } = mount();
     sidebar.setEntries([{ name: "a.txt", is_dir: false, is_archive: false }]);
     sidebar.setWorkspaceSearch("C:\\workspace");
-    const input = host.querySelector<HTMLInputElement>(".ws-search-row > input")!;
+    const input = host.querySelector<HTMLInputElement>(".ws-search-row input")!;
     input.value = "needle";
     input.dispatchEvent(new Event("input"));
     await vi.advanceTimersByTimeAsync(150);
