@@ -11,7 +11,7 @@ describe("Feature: window layout integration", () => {
   // When: 外部生成物の表示・標準表示・表示クリアへ遷移する
   // Then: 外部生成物と動画で更新を表示し、外部生成物は保存確認付き更新へ渡す
   it("Scenario: 外部生成物と動画をツールバーから更新できる", () => {
-    expect(viewerSource).toContain('previewRefreshButton.hidden = !isInlineViewer || (!state.externalOutputPath && state.format !== "video");');
+    expect(viewerSource).toContain('previewRefreshButton.hidden = !isInlineViewer || (!externalStatus && !currentExternalOutputPath && currentFormat !== "video");');
     expect(viewerSource).toMatch(/INLINE_PREVIEW_MESSAGES\.CLEAR_MESSAGE[\s\S]*?previewRefreshButton\.hidden = true;/);
     expect(mainSource).toContain('onRefresh: () => runBackground("プレビューを更新できませんでした"');
     expect(mainSource).toContain('if (previewDocument?.format === "video") inlinePreview.resend();');
