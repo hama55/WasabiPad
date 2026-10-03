@@ -139,6 +139,7 @@ function jsonForScript(value) {
 
 function lilyTracks(data) {
   const positions = new Map();
+  const scores = new Set();
   let invalidGeometry = false;
   function point(node, x = 0, y = 0) {
     for (let parent = node; parent; parent = parent.parentElement) {
@@ -163,6 +164,7 @@ function lilyTracks(data) {
       const intrinsic = svg.getAttribute("width");
       if (intrinsic?.endsWith("mm")) target.style.maxWidth = `${parseFloat(intrinsic) * 96 / 25.4}px`;
       for (const note of svg.querySelectorAll("[data-wp-score][data-wp-note]")) {
+        scores.add(note.getAttribute("data-wp-score"));
         const key = `${note.getAttribute("data-wp-score")}:${note.getAttribute("data-wp-note")}`;
         const geometry = note.querySelector("[transform]") ?? note;
         const origin = point(geometry);
@@ -185,6 +187,7 @@ function lilyTracks(data) {
     if (invalidGeometry) return unavailable("譜面の座標を読み取れません。");
     const events = [];
     for (const event of cursor.events) {
+      if (!scores.has(event.key.split(":")[0])) return unavailable("MIDI用 score に対応する記譜用 score を特定できません。");
       const candidates = positions.get(event.key) || [];
       const matched = candidates.length === 1 ? candidates : candidates.filter((position) => Math.abs(position.moment - event.moment) < 0.000001);
       if (matched.length !== 1) return unavailable("譜面上の位置を一意に対応付けできません。");

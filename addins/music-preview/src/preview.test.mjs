@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, toNamespacedPath } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,6 +30,88 @@ function run(args) {
 }
 
 describe("Feature: 音楽外部プレビューのCLI", () => {
+  it.skipIf(!process.env.WASABIPAD_TEST_LILYPOND)("Scenario: カーソル注入で複数声部の五線・段・記号の配置とMIDIを変更しない", async () => {
+    // Given: 加線・和音・タイ・三連符・複数声部と改ページを持つ上下の五線譜
+    const path = await workspace();
+    const input = join(path, "geometry.ly");
+    const output = join(path, "index.html");
+    const source = String.raw`\version "2.26.0"
+\layout { \context { \Voice
+  \override NoteHead.after-line-breaking = #(lambda (grob) (ly:grob-set-property! grob 'details '((ready . #t))))
+  \override NoteHead.output-attributes = #(lambda (grob) (list (cons 'data-custom (if (assq-ref (ly:grob-property grob 'details) 'ready) "ready" "early"))))
+  \override Rest.output-attributes = #'((data-custom . "rest"))
+} }
+upper = { << { <c''' e''' g'''>4~ <c''' e''' g'''>4 \tuplet 3/2 { c''8 d'' e'' } r4 } \\ { c'2 g'2 } >> }
+lower = { \clef bass <c, e, g,>2 <g, b, d>2 }
+\score { \new PianoStaff << \new Staff { \upper \break \upper \pageBreak \upper \break \upper } \new Staff { \lower \lower \lower \lower } >> \layout {} \midi {} }`;
+    await writeFile(input, source);
+    // When: 公開CLIと同じ紙面設定のカーソルなし対照を生成する
+    const result = run(["--input", input, "--output", output, "--lilypond", process.env.WASABIPAD_TEST_LILYPOND]);
+    expect(result.status, result.stderr).toBe(0);
+    const directory = join(path, (await readdir(path)).find((name) => name.startsWith("lilypond-")));
+    const settings = (await readFile(join(directory, "preview-settings.ly"), "utf8")).split("#(define wp-cursor-file")[0];
+    const control = join(path, "control.ly");
+    await writeFile(control, settings);
+    const baseline = spawnSync(process.env.WASABIPAD_TEST_LILYPOND, ["--svg", "-dno-point-and-click", "-dno-use-paper-size-for-page", `-dinclude-settings=${control.replaceAll("\\", "/")}`, "-o", join(path, "control"), input], { encoding: "utf8" });
+    expect(baseline.status, baseline.stderr).toBe(0);
+    const geometry = (text) => {
+      const dom = new JSDOM(text, { contentType: "image/svg+xml" });
+      const document = dom.window.document;
+      for (const node of document.querySelectorAll("[data-wp-note]")) {
+        for (const attribute of [...node.attributes]) if (attribute.name.startsWith("data-wp-")) node.removeAttribute(attribute.name);
+        if (node.tagName === "g" && !node.attributes.length) node.replaceWith(...node.childNodes);
+      }
+      const value = document.documentElement.outerHTML.replace(/>\s+</g, "><");
+      dom.window.close();
+      return value;
+    };
+    // Then: 全ページの描画形状・座標が対照と一致し、カーソル属性と演奏内容を保持する
+    for (const page of [1, 2]) {
+      const annotated = await readFile(join(directory, `score-${page}.svg`), "utf8");
+      expect(annotated).toContain("data-wp-note");
+      // Then: 原稿側のafter-line-breakingと属性list/callbackも通常の順序で保持する
+      expect(annotated).toContain('data-custom="ready"');
+      expect(annotated).toContain('data-custom="rest"');
+      expect(annotated).not.toContain('data-custom="early"');
+      expect(geometry(annotated)).toBe(geometry(await readFile(join(path, `control-${page}.svg`), "utf8")));
+    }
+    expect(await readFile(join(directory, "score.mid"))).toEqual(await readFile(join(path, "control.mid")));
+    expect(await readFile(input, "utf8")).toBe(source);
+  }, 30000);
+
+  it.skipIf(!process.env.WASABIPAD_TEST_LILYPOND)("Scenario: 記譜用とMIDI用scoreが別の場合は対応を推測せず音声を再生する", async () => {
+    // Given: 同じ原稿を再利用する記譜専用scoreとMIDI専用score
+    const path = await workspace();
+    const input = join(path, "separate.ly");
+    const output = join(path, "index.html");
+    const font = join(path, "sample.sf2");
+    const source = String.raw`\version "2.26.0"
+notes = { c'4 d' e' f' \pageBreak g' a' b' c'' }
+\score { \notes \layout {} }
+\score { \unfoldRepeats \notes \midi {} }`;
+    await writeFile(input, source);
+    await writeFile(font, new Uint8Array(BasicSoundBank.getSampleSoundBankFile()));
+    const result = run(["--input", input, "--output", output, "--soundfont", font, "--lilypond", process.env.WASABIPAD_TEST_LILYPOND]);
+    expect(result.status, result.stderr).toBe(0);
+    const dom = new JSDOM(await readFile(output, "utf8"), { runScripts: "dangerously", beforeParse(window) {
+      window.TextDecoder = TextDecoder;
+      window.HTMLMediaElement.prototype.pause = () => {};
+      window.HTMLMediaElement.prototype.play = async () => {};
+    } });
+    const document = dom.window.document;
+    // When: 生成HTMLで再生を開始する
+    expect(document.querySelectorAll("#score img")).toHaveLength(2);
+    expect(document.getElementById("play").disabled).toBe(false);
+    document.getElementById("play").click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Then: 音声再生を維持し、別scoreの位置を特定できない理由を表示する
+    expect(document.getElementById("status").textContent).toContain("再生中");
+    expect(document.getElementById("status").textContent).toContain("MIDI用 score に対応する記譜用 score を特定できません。");
+    expect(document.getElementById("playback-cursor").hidden).toBe(true);
+    expect(await readFile(input, "utf8")).toBe(source);
+    dom.window.close();
+  }, 30000);
+
   it("Scenario: 音源不足でも空白・日本語パスのABC全曲をオフライン表示する", async () => {
     // Given: 二曲のABCと、存在しないローカル音源
     const path = await workspace();

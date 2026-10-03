@@ -63,7 +63,7 @@
    (let* ((event (ly:grob-property grob 'cause))
           (score (and (ly:stream-event? event) (ly:event-property event 'wp-score-id #f)))
           (note (and (ly:stream-event? event) (ly:event-property event 'wp-note-id #f))))
-     (when (and (number? score) (number? note))
+     (if (and (number? score) (number? note))
        (let* ((system (ly:grob-system grob))
               (id (hashq-ref wp-systems system #f))
               (bounds (ly:grob-extent system system Y))
@@ -74,26 +74,25 @@
            (set! wp-system-counter (+ wp-system-counter 1))
            (set! id wp-system-counter)
            (hashq-set! wp-systems system id))
-         (ly:grob-set-property! grob 'output-attributes
-          (append (ly:grob-property grob 'output-attributes '())
-           `((data-wp-score . ,(number->string score))
-             (data-wp-note . ,(number->string note))
-             (data-wp-system . ,(number->string id))
-             (data-wp-right . ,(number->string (- right x)))
-             (data-wp-top . ,(number->string (- y (cdr bounds))))
-             (data-wp-height . ,(number->string (- (cdr bounds) (car bounds)))))))))))
+         `((data-wp-score . ,(number->string score))
+           (data-wp-note . ,(number->string note))
+           (data-wp-system . ,(number->string id))
+           (data-wp-right . ,(number->string (- right x)))
+           (data-wp-top . ,(number->string (- y (cdr bounds))))
+           (data-wp-height . ,(number->string (- (cdr bounds) (car bounds))))))
+       '())))
 
 #(define (wp-layout-engraver context)
    (define (watch grob)
-     (let ((moment (ly:context-current-moment context)))
+     (let ((moment (ly:context-current-moment context))
+           (original (ly:grob-property-data grob 'output-attributes)))
+       ;; Read System geometry only when printing, after layout has settled.
+       ;; Evaluating its extent during after-line-breaking changes staff placement.
        (ly:grob-set-property! grob 'output-attributes
-        (append (ly:grob-property grob 'output-attributes '())
-         `((data-wp-moment . ,(number->string (exact->inexact (ly:moment-main moment))))))))
-     (let ((original (ly:grob-property grob 'after-line-breaking #f)))
-       (ly:grob-set-property! grob 'after-line-breaking
         (lambda (grob)
-          (when (procedure? original) (original grob))
-          (wp-annotate grob)))))
+          (append (if (procedure? original) (original grob) original)
+           `((data-wp-moment . ,(number->string (exact->inexact (ly:moment-main moment)))))
+           (wp-annotate grob))))))
    (make-engraver
     (acknowledgers
      ((note-head-interface engraver grob source) (watch grob))
