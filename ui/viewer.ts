@@ -51,7 +51,7 @@ import {
   DEFAULT_CSV_DELIMITER,
 } from "./viewer-delimiter";
 import { openViewerDelimiterDialog } from "./viewer-delimiter-dialog";
-import { INLINE_PREVIEW_MESSAGES } from "./inline-preview-protocol";
+import { INLINE_PREVIEW_MESSAGES, type ExternalPreviewStatus } from "./inline-preview-protocol";
 import { isViewerPayload } from "./viewer-payload";
 import {
   createArchiveAssetSession,
@@ -111,6 +111,18 @@ const actionButtons = document.getElementById("viewer-csv-actions")!;
 const fullscreenButton = document.getElementById("viewer-fullscreen") as HTMLButtonElement;
 const previewCloseButton = document.getElementById("viewer-close") as HTMLButtonElement;
 const previewRefreshButton = document.getElementById("viewer-refresh") as HTMLButtonElement;
+const externalStatusBanner = document.getElementById("viewer-external-status")!;
+let externalStatus: ExternalPreviewStatus | null = null;
+
+function syncExternalStatus() {
+  externalStatusBanner.hidden = externalStatus === null;
+  externalStatusBanner.textContent = externalStatus?.message ?? "";
+  previewRefreshButton.disabled = externalStatus?.busy ?? false;
+  previewRefreshButton.hidden = !isInlineViewer || (!externalStatus && !currentExternalOutputPath && currentFormat !== "video");
+  const refreshLabel = externalStatus || currentExternalOutputPath ? "外部プレビューを更新" : "動画プレビューを更新";
+  previewRefreshButton.title = refreshLabel;
+  previewRefreshButton.setAttribute("aria-label", refreshLabel);
+}
 const summary = document.getElementById("viewer-summary")!;
 const themeButton = document.getElementById("viewer-theme")!;
 const fontButton = document.getElementById("viewer-font")!;
@@ -204,10 +216,7 @@ function publishViewerRenderState(state: ViewerRenderState, nextImageZoom: numbe
   currentArchivePath = state.archivePath;
   currentArchiveEntry = state.archiveEntry;
   currentExternalOutputPath = state.externalOutputPath;
-  previewRefreshButton.hidden = !isInlineViewer || (!state.externalOutputPath && state.format !== "video");
-  const refreshLabel = state.externalOutputPath ? "外部プレビューを更新" : "動画プレビューを更新";
-  previewRefreshButton.title = refreshLabel;
-  previewRefreshButton.setAttribute("aria-label", refreshLabel);
+  syncExternalStatus();
   imageZoom = nextImageZoom;
   const classificationSource = state.effectiveExtension && !archiveFormatExtension(state.effectiveExtension, state.archiveEntry)
     ? `${state.archiveEntry ?? state.sourcePath ?? "source"}.${state.effectiveExtension}`
@@ -534,7 +543,7 @@ function bindViewerControls() {
     });
   }, { signal: viewerDomListeners.signal });
   previewRefreshButton.addEventListener("click", () => {
-    if (isInlineViewer && (currentExternalOutputPath || currentFormat === "video")) {
+    if (isInlineViewer && !externalStatus?.busy && (externalStatus || currentExternalOutputPath || currentFormat === "video")) {
       postToParent({ type: INLINE_PREVIEW_MESSAGES.REFRESH_MESSAGE });
     }
   }, { signal: viewerDomListeners.signal });
@@ -1314,6 +1323,13 @@ async function start() {
     if (isInlineViewer) {
       window.addEventListener("message", (event) => {
         if (event.source !== window.parent || event.origin !== window.location.origin) return;
+        if (event.data?.type === INLINE_PREVIEW_MESSAGES.EXTERNAL_STATUS_MESSAGE) {
+          const status = event.data.status;
+          if (status !== null && (typeof status?.message !== "string" || typeof status?.busy !== "boolean")) return;
+          externalStatus = status;
+          syncExternalStatus();
+          return;
+        }
         if (event.data?.type === INLINE_PREVIEW_MESSAGES.VISIBILITY_MESSAGE) {
           if (typeof event.data.visible !== "boolean" || typeof event.data.reset !== "boolean") return;
           previewVisible = event.data.visible;

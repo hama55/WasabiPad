@@ -44,6 +44,21 @@ describe("Feature: 動画プレビューの通知経路", () => {
     vi.restoreAllMocks();
   });
 
+  // Given: 動画を表示したまま外部変換の実行確認を待つ
+  // When: 外部変換を拒否して旧プレビューへ戻る
+  // Then: 同じ動画を保持し、更新操作の表示も動画用へ戻る
+  it("Scenario: 外部変換の待機を解除して旧表示へ戻れる", async () => {
+    await open();
+    const video = document.querySelector("video");
+    send({ type: messages.EXTERNAL_STATUS_MESSAGE, status: { message: "実行確認待ち…", busy: true } });
+    const refresh = document.querySelector<HTMLButtonElement>("#viewer-refresh")!;
+    expect(refresh.disabled).toBe(true);
+    send({ type: messages.EXTERNAL_STATUS_MESSAGE, status: null });
+    expect(document.querySelector("video")).toBe(video);
+    expect(refresh.disabled).toBe(false);
+    expect(refresh.getAttribute("aria-label")).toBe("動画プレビューを更新");
+  });
+
   // Given: 通常MOVが表示されている
   // When: 全画面通知・一時退避・再表示・閉じるを順に行う
   // Then: 同じ動画を保持し、退避では位置を維持、閉じるでは先頭へ戻る

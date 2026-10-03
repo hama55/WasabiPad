@@ -3,6 +3,9 @@ export function createPreviewReplacementLifecycle() {
   let activeLabel: string | null = null;
 
   return {
+    isReplacing() {
+      return replacingGeneration !== null;
+    },
     isActive(label: string) {
       return activeLabel === label;
     },

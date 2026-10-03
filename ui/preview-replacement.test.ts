@@ -6,6 +6,19 @@ import { createExternalPreviewOutputLifecycle, createPreviewReplacementLifecycle
 import { isCurrentPreviewDocument, type PreviewDocument } from "./preview-layout";
 
 describe("Feature: preview replacement lifecycle", () => {
+  // Given: 外部プレビューの置換が始まっている
+  // When: 新世代へ切り替えた後、旧世代の後片付けが届く
+  // Then: 新世代の生成中状態を解除せず、現世代完了時だけ更新を再許可する
+  it("Scenario: 古い完了が新しい変換中状態を解除しない", () => {
+    const lifecycle = createPreviewReplacementLifecycle();
+    lifecycle.begin(1);
+    expect(lifecycle.isReplacing()).toBe(true);
+    lifecycle.begin(2);
+    lifecycle.finish(1);
+    expect(lifecycle.isReplacing()).toBe(true);
+    lifecycle.finish(2);
+    expect(lifecycle.isReplacing()).toBe(false);
+  });
   // Given: 保存済み .aaa から生成したHTMLで、既存プレビューを置き換えた
   // When: 置換完了後に旧ビューの終了通知が遅れて届き、その後、新ビューを利用者が閉じる
   // Then: 旧通知は新しい生成物を壊さず、現在のビューの終了は通常どおり無効化と掃除を行う

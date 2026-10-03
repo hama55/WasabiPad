@@ -4,6 +4,7 @@ import { runAsyncBoundary } from "./async-boundary";
 import { isViewerFormat } from "./viewer-formats";
 import { isViewerSelection } from "./viewer-payload";
 import { INLINE_PREVIEW_MESSAGES } from "./inline-preview-protocol";
+import type { ExternalPreviewStatus } from "./inline-preview-protocol";
 import { DEFAULT_CSV_DELIMITER } from "./viewer-delimiter";
 
 const {
@@ -59,9 +60,11 @@ export class InlinePreview {
   private nextLabel = 0;
   private nextRenderId = 0;
   private ready = false;
+  private externalStatus: ExternalPreviewStatus | null = null;
   private pendingCloseFocus = false;
   private pendingExternalOpen: PendingExternalOpen | null = null;
   private pendingClearAcks = new Map<string, () => void>();
+  private clearing: Promise<void> | null = null;
   private sourcePath: string | null = null;
   private effectiveExtension: string | null = null;
   private archivePath: string | null = null;
@@ -95,6 +98,7 @@ export class InlinePreview {
         this.ready = true;
         if (this.pendingExternalOpen) this.sendPendingExternalOpen();
         else this.send();
+        this.sendExternalStatus();
         if (this.pendingCloseFocus) this.focusCloseButton();
         return;
       }
@@ -171,6 +175,24 @@ export class InlinePreview {
     this.archivePath = archivePath;
     this.archiveEntry = archiveEntry;
     this.effectiveExtension = effectiveExtension;
+  }
+
+  setExternalStatus(status: ExternalPreviewStatus | null) {
+    this.externalStatus = status;
+    if (status && !this.label) {
+      this.label = `inline-preview-${++this.nextLabel}`;
+      this.host.hidden = false;
+      this.notifyPort(() => this.ports.onAvailabilityChange?.(true, this.label));
+    }
+    this.sendExternalStatus();
+  }
+
+  private sendExternalStatus() {
+    if (!this.ready) return;
+    this.frame.contentWindow?.postMessage({
+      type: INLINE_PREVIEW_MESSAGES.EXTERNAL_STATUS_MESSAGE,
+      status: this.externalStatus,
+    }, window.location.origin);
   }
 
   focusCloseButton() {
@@ -307,23 +329,29 @@ export class InlinePreview {
     this.setPreviewFocused(false);
     this.setVisibility(false, true);
     this.payload = null;
+    this.setExternalStatus(null);
     this.label = "";
     this.pendingMarkdownFragment = null;
     this.host.hidden = true;
     this.notifyPort(() => this.ports.onAvailabilityChange?.(false, label));
   }
 
-  clear() {
+  clear(): Promise<void> {
+    if (this.clearing) return this.clearing;
     const label = this.label;
-    if (!label && !this.pendingExternalOpen) return;
-    runAsyncBoundary(async () => {
+    if (!label && !this.pendingExternalOpen) return Promise.resolve();
+    const clearing = (async () => {
       let viewerAlreadyCleared = false;
       if (this.pendingExternalOpen) {
         await this.cancelPendingExternalOpen(false);
         viewerAlreadyCleared = true;
       }
       if (label && label === this.label) await this.close(label, viewerAlreadyCleared);
-    }, (error) => this.reportPortError(error));
+    })().catch((error) => this.reportPortError(error)).finally(() => {
+      if (this.clearing === clearing) this.clearing = null;
+    });
+    this.clearing = clearing;
+    return clearing;
   }
 
   cancelPendingExternalOpen(restoreCurrent = true): Promise<void> {

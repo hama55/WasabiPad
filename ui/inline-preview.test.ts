@@ -36,6 +36,80 @@ function mount(
 }
 
 describe("Feature: inline preview", () => {
+  // Given: 外部HTMLが表示され、消去確認は遅れて届く
+  // When: 同じ消去要求を二回行い、その完了を待ってから待機画面を開く
+  // Then: 同じ消去待ちを再利用し、古いcloseが新しい待機画面を消さない
+  it("Scenario: 外部出力の消去完了を待ってから再開できる", async () => {
+    const { host, preview, onAvailabilityChange } = mount();
+    const frame = host.querySelector("iframe")!;
+    const post = vi.spyOn(frame.contentWindow!, "postMessage");
+    const receive = (data: unknown) => window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow, origin: window.location.origin, data,
+    }));
+    receive({ type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE });
+    const opened = preview.open("html", "", null, "C:\\temp\\old.html");
+    const render = post.mock.calls.find(([message]) => message.type === INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE)![0];
+    receive({ type: INLINE_PREVIEW_MESSAGES.DISPLAY_COMMITTED_MESSAGE, render_id: render.render_id });
+    await opened;
+    let finished = false;
+    const cleared = preview.clear();
+    expect(cleared).toBeInstanceOf(Promise);
+    expect(preview.clear()).toBe(cleared);
+    const reopening = cleared.then(() => {
+      finished = true;
+      preview.setExternalStatus({ message: "変換中…", busy: true });
+    });
+    await Promise.resolve();
+    expect(finished).toBe(false);
+    const clear = post.mock.calls.find(([message]) => message.type === INLINE_PREVIEW_MESSAGES.CLEAR_MESSAGE)![0];
+    receive({ type: INLINE_PREVIEW_MESSAGES.CLEARED_MESSAGE, render_id: clear.render_id });
+    await reopening;
+    expect(host.hidden).toBe(false);
+    expect(onAvailabilityChange).toHaveBeenLastCalledWith(true, expect.any(String));
+    expect(post).toHaveBeenLastCalledWith({
+      type: INLINE_PREVIEW_MESSAGES.EXTERNAL_STATUS_MESSAGE,
+      status: { message: "変換中…", busy: true },
+    }, window.location.origin);
+  });
+  // Given: 外部変換を開始したが、出力もビューアの準備通知もまだない
+  // When: 本体が変換中の状態を通知し、その後ビューアが準備完了する
+  // Then: 出力を偽装せずパネルを開き、状態を準備完了後にも伝える
+  it("Scenario: 外部変換の完了前に待機画面を開く", () => {
+    const { host, preview, onAvailabilityChange } = mount();
+    const frame = host.querySelector("iframe")!;
+    const post = vi.spyOn(frame.contentWindow!, "postMessage");
+    preview.setExternalStatus({ message: "変換中…", busy: true });
+    expect(onAvailabilityChange).toHaveBeenCalledWith(true, expect.any(String));
+    expect(host.hidden).toBe(false);
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow, origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
+    }));
+    expect(post).toHaveBeenCalledWith({
+      type: INLINE_PREVIEW_MESSAGES.EXTERNAL_STATUS_MESSAGE,
+      status: { message: "変換中…", busy: true },
+    }, window.location.origin);
+    expect(post.mock.calls.some(([message]) => message.type === INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE)).toBe(false);
+  });
+  // Given: 生成中のパネルが開いている
+  // When: 状態を更新し、生成を取り消して画面を消す
+  // Then: 開く通知を重複させず、待機状態とパネルを消す
+  it("Scenario: 状態更新でパネルを重複して開かず閉じる時に待機表示を消す", async () => {
+    const { host, preview, onAvailabilityChange } = mount();
+    const frame = host.querySelector("iframe")!;
+    const post = vi.spyOn(frame.contentWindow!, "postMessage");
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow, origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
+    }));
+    preview.setExternalStatus({ message: "実行確認待ち…", busy: true });
+    preview.setExternalStatus({ message: "変換中…", busy: true });
+    expect(onAvailabilityChange.mock.calls.filter(([available]) => available)).toHaveLength(1);
+    preview.clear();
+    await Promise.resolve();
+    expect(host.hidden).toBe(true);
+    expect(post).toHaveBeenCalledWith({ type: INLINE_PREVIEW_MESSAGES.EXTERNAL_STATUS_MESSAGE, status: null }, window.location.origin);
+  });
   // Given: 準備済みの動画プレビュー
   // When: 一時退避と閉じる操作を通知する
   // Then: 配置変更では停止通知せず、退避は位置保持、閉じるは位置リセットを通知する
