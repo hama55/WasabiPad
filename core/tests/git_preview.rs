@@ -4,7 +4,168 @@ use std::{
     process::Command,
     sync::atomic::{AtomicUsize, Ordering},
 };
-use wasabipad_core::{read_git_diff, read_git_files, read_git_history};
+use wasabipad_core::{
+    read_git_branches, read_git_diff, read_git_files, read_git_history, read_git_worktree_diff,
+    read_git_worktree_files, resolve_git_worktree_file,
+};
+
+// Feature: Gitの変更ファイルを通常タブで開く
+// Scenario: コミット版ではなく現在の作業ファイルを解決する
+// Given: コミット後に変更・削除されたファイルがある
+// When: コミット内のファイルから開く対象を要求する
+// Then: 現在の実ファイルを返し、不存在や範囲外は理由を返す
+#[test]
+fn opens_current_worktree_file() {
+    let repo = Repo::new();
+    let commit = repo.commit("old\n", "first");
+    fs::write(repo.0.join("note.txt"), "current\n").unwrap();
+    let path = resolve_git_worktree_file(&repo.path(), &commit, "note.txt").unwrap();
+    assert_eq!(fs::read_to_string(path).unwrap(), "current\n");
+    assert!(resolve_git_worktree_file(&repo.path(), &commit, "../secret").is_err());
+    fs::remove_file(repo.0.join("note.txt")).unwrap();
+    assert!(resolve_git_worktree_file(&repo.path(), &commit, "note.txt")
+        .unwrap_err()
+        .contains("現在の作業ファイルがありません"));
+}
+
+// Feature: 未コミット一覧の状態
+// Scenario: 初コミット前、ステージ済み変更、マージ競合を扱う
+// Given: 保存済みの新規ファイル、追加後削除、競合マーカーがある
+// When: 一覧と差分を読む
+// Then: 存在する差分だけとステージ状態・競合を表示する
+#[test]
+fn unborn_and_conflicting_worktree() {
+    let repo = Repo::new();
+    fs::write(repo.0.join("note.txt"), "base\n").unwrap();
+    fs::write(repo.0.join("gone.txt"), "gone\n").unwrap();
+    repo.git(&["add", "."]);
+    fs::remove_file(repo.0.join("gone.txt")).unwrap();
+    let files = read_git_worktree_files(&repo.path()).unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].index_status.as_deref(), Some("A"));
+    assert!(read_git_worktree_diff(&repo.path(), "note.txt")
+        .unwrap()
+        .text
+        .contains("+base"));
+    repo.git(&["add", "."]);
+    repo.git(&["commit", "-m", "base"]);
+    repo.git(&["checkout", "-b", "other"]);
+    repo.commit("other\n", "other");
+    repo.git(&["checkout", "main"]);
+    repo.commit("main\n", "main");
+    let _ = Command::new("git")
+        .arg("-C")
+        .arg(&repo.0)
+        .args(["merge", "other"])
+        .output()
+        .unwrap();
+    let files = read_git_worktree_files(&repo.path()).unwrap();
+    assert_eq!(files[0].status, "U");
+    let diff = read_git_worktree_diff(&repo.path(), "note.txt").unwrap();
+    assert!(diff.text.contains("<<<<<<<"));
+}
+
+// Feature: 未コミットの保存済み変更
+// Scenario: ステージの有無によらずHEADとの合計差分だけ表示する
+// Given: 相殺された編集、未追跡と無視対象、未ステージの変更がある
+// When: 未コミット一覧と差分を読む
+// Then: 相殺と無視対象を除外して保存済み内容を表示する
+#[test]
+fn worktree_uses_net_changes() {
+    let repo = Repo::new();
+    repo.commit("one\n", "first");
+    fs::write(repo.0.join("note.txt"), "staged\n").unwrap();
+    repo.git(&["add", "note.txt"]);
+    fs::write(repo.0.join("note.txt"), "one\n").unwrap();
+    fs::write(repo.0.join(".gitignore"), "ignored.txt\n").unwrap();
+    fs::write(repo.0.join("ignored.txt"), "hidden").unwrap();
+    fs::write(repo.0.join("new.txt"), "new\n").unwrap();
+    let files = read_git_worktree_files(&repo.path()).unwrap();
+    assert!(!files
+        .iter()
+        .any(|f| f.path == "note.txt" || f.path == "ignored.txt"));
+    assert!(files.iter().any(|f| f.path == "new.txt"));
+    let diff = read_git_worktree_diff(&repo.path(), "new.txt").unwrap();
+    assert!(diff.text.contains("+new\n"));
+    fs::write(repo.0.join("note.txt"), "saved\n").unwrap();
+    let diff = read_git_worktree_diff(&repo.path(), "note.txt").unwrap();
+    assert!(diff.text.contains("-one\n") && diff.text.contains("+saved\n"));
+    assert!(read_git_worktree_diff(&repo.path(), "../secret").is_err());
+}
+
+// Feature: 未コミットの合計差分
+// Scenario: インデックスから外した現在ファイルもHEADと比較する
+// Given: HEADにあるファイルをgit rm --cachedして保存内容を残した
+// When: 未コミット一覧を読み、本文を変更して差分を読む
+// Then: 同内容は表示せず、変更後はHEADからの差分を表示する
+#[test]
+fn removed_from_index_uses_saved_content() {
+    let repo = Repo::new();
+    repo.commit("one\n", "first");
+    repo.git(&["rm", "--cached", "note.txt"]);
+    assert!(read_git_worktree_files(&repo.path()).unwrap().is_empty());
+    fs::write(repo.0.join("note.txt"), "two\n").unwrap();
+    let diff = read_git_worktree_diff(&repo.path(), "note.txt").unwrap();
+    assert!(diff.text.contains("-one\n") && diff.text.contains("+two\n"));
+}
+
+// Feature: 特殊な未コミット差分
+// Scenario: 本文が差分ヘッダと同じ接頭辞でも変更しない
+// Given: インデックスから外れたファイルの本文が-- / ++で始まる
+// When: HEADと現在の保存内容を比較する
+// Then: 本文の差分行をパスに置き換えない
+#[test]
+fn worktree_diff_preserves_header_like_content() {
+    let repo = Repo::new();
+    repo.commit("-- old\n", "first");
+    repo.git(&["rm", "--cached", "note.txt"]);
+    fs::write(repo.0.join("note.txt"), "++ new\n").unwrap();
+    let diff = read_git_worktree_diff(&repo.path(), "note.txt").unwrap();
+    assert!(diff.text.contains("--- old\n") && diff.text.contains("+++ new\n"));
+}
+
+// Feature: 閲覧ブランチ選択
+// Scenario: 大容量ファイルをインデックスから外しても一覧を表示できる
+// Given: 16MiBを超えるHEADのファイルと同じ保存済み内容がある
+// When: 相殺された一覧を読み、その後本文を変更する
+// Then: 同内容は除外し変更後は上限付き差分として扱う
+#[test]
+fn large_removed_index_file_does_not_break_listing() {
+    let repo = Repo::new();
+    repo.commit(&"x".repeat(17 * 1024 * 1024), "large");
+    repo.git(&["rm", "--cached", "note.txt"]);
+    assert!(read_git_worktree_files(&repo.path()).unwrap().is_empty());
+    fs::write(repo.0.join("note.txt"), "small\n").unwrap();
+    assert_eq!(read_git_worktree_files(&repo.path()).unwrap().len(), 1);
+    assert!(
+        read_git_worktree_diff(&repo.path(), "note.txt")
+            .unwrap()
+            .truncated
+    );
+}
+
+// Feature: 閲覧ブランチ選択
+// Scenario: 取得済みブランチから履歴を読み、作業HEADを変更しない
+// Given: ローカルとリモート参照がある
+// When: ブランチ一覧と選択したOIDの履歴を読む
+// Then: 種別とOIDを取得し、元のHEADを保つ
+#[test]
+fn branches_are_read_only() {
+    let repo = Repo::new();
+    let first = repo.commit("one\n", "first");
+    repo.git(&["branch", "other"]);
+    repo.git(&["update-ref", "refs/remotes/origin/other", &first]);
+    let second = repo.commit("two\n", "second");
+    let branches = read_git_branches(&repo.path()).unwrap();
+    let other = branches.iter().find(|b| b.name == "other").unwrap();
+    assert!(!other.remote);
+    assert!(branches
+        .iter()
+        .any(|b| b.name == "origin/other" && b.remote));
+    let shown = read_git_history(&repo.path(), Some(&other.oid), 0).unwrap();
+    assert_eq!(shown.commits.len(), 1);
+    assert_eq!(repo.git(&["rev-parse", "HEAD"]), second);
+}
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 struct Repo(PathBuf);

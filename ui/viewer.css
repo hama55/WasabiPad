@@ -38,6 +38,7 @@ body {
   color: var(--fg); font-size: 12px;
 }
 #viewer-title-text { overflow: hidden; text-overflow: ellipsis; }
+#viewer-preview-kind { flex: none; color: var(--fg); font: 12px var(--font-ui); margin-right: 8px; white-space: nowrap; }
 #viewer-format {
   display: none; min-width: 0; margin-left: 8px;
 }
@@ -130,9 +131,14 @@ main {
 
 .git-preview { display: grid; width: 100%; height: 100%; min-height: 0; font-size: var(--viewer-font-size); }
 .git-history, .git-diff { min-height: 0; min-width: 0; overflow: auto; padding: 8px; }
-.git-history > strong { display: block; position: sticky; top: -8px; padding: 6px 0; background: var(--bg-editor); z-index: 1; }
-.git-commits details { padding: 4px 0; }
-.git-commits summary { cursor: pointer; overflow-wrap: anywhere; }
+.git-history > button[aria-label="閲覧ブランチを選択"] { display: block; position: sticky; top: -8px; max-width: 100%; padding: 6px 4px; background: var(--bg-editor); color: var(--fg); border: 0; font: inherit; text-align: left; overflow-wrap: anywhere; z-index: 1; }
+.git-history details { padding: 4px 0; }
+.git-history summary { cursor: pointer; overflow-wrap: anywhere; }
+.git-branch-panel { min-width: 240px; max-width: min(440px, 90vw); max-height: 65vh; padding: 10px; background: var(--bg-editor); color: var(--fg); border: 1px solid var(--border-strong); border-radius: 4px; }
+.git-branch-panel input { box-sizing: border-box; width: 100%; padding: 5px; background: var(--bg-side); color: var(--fg); border: 1px solid var(--border-strong); }
+.git-branch-panel strong { display: block; padding: 8px 4px 3px; color: var(--fg-dim); }
+.git-branch-panel button { display: block; width: 100%; padding: 5px; background: transparent; color: var(--fg); border: 0; text-align: left; overflow-wrap: anywhere; }
+.git-branch-panel button:hover { background: var(--hover); }
 .git-metadata { margin: 4px 0 4px 18px; color: var(--fg-dim); font-size: .85em; }
 .git-files { margin-left: 18px; }
 .git-files button { display: block; width: 100%; padding: 4px 6px; text-align: left; border: 0; background: transparent; color: var(--fg); font: inherit; overflow-wrap: anywhere; }

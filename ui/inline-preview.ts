@@ -5,7 +5,6 @@ import { isViewerFormat } from "./viewer-formats";
 import { isViewerSelection } from "./viewer-payload";
 import { INLINE_PREVIEW_MESSAGES } from "./inline-preview-protocol";
 import type { ExternalPreviewStatus } from "./inline-preview-protocol";
-import { isGitPreviewState, type GitPreviewState } from "./viewer-git";
 import { DEFAULT_CSV_DELIMITER } from "./viewer-delimiter";
 
 const {
@@ -48,7 +47,7 @@ export interface InlinePreviewPorts {
   onFullscreenChange?: () => void | Promise<void>;
   onClose?: (returnFocus: boolean) => void | Promise<void>;
   onRefresh?: () => void | Promise<void>;
-  onGitState?: (token: string, path: string, state: GitPreviewState) => void;
+  onGitOpenFile?: (path: string, commit: string, file: string) => void | Promise<void>;
   onSelectionChange?: (selection: ViewerSelection) => void | Promise<void>;
   onMarkdownLink?: (href: string, newTab: boolean) => void | Promise<void>;
   onExternalOutputReleased?: (path: string) => void | Promise<void>;
@@ -96,13 +95,15 @@ export class InlinePreview {
     this.frame.addEventListener("blur", () => this.setPreviewFocused(false));
     window.addEventListener("message", (event) => {
       if (event.source !== this.frame.contentWindow || event.origin !== window.location.origin) return;
-      if (event.data?.type === INLINE_PREVIEW_MESSAGES.GIT_STATE_MESSAGE) {
-        if (this.payload?.format !== "git" || typeof event.data.token !== "string"
-          || event.data.path !== this.payload.source_path || !isGitPreviewState(event.data.state)) return;
-        const input = JSON.parse(this.payload.text);
-        if (input.token !== event.data.token) return;
-        this.payload = { ...this.payload, text: JSON.stringify({ ...input, state: event.data.state }) };
-        this.ports.onGitState?.(input.token, event.data.path, event.data.state);
+      if (event.data?.type === INLINE_PREVIEW_MESSAGES.GIT_OPEN_FILE_MESSAGE) {
+        const data = event.data;
+        if (this.payload?.format !== "git" || data.path !== this.payload.source_path || typeof data.file !== "string"
+          || !data.file || /[\\:\0]/.test(data.file) || data.file.startsWith("/") || data.file.split("/").some((part: string) => part === ".." || part === "." || part === ".git")
+          || typeof data.commit !== "string" || !(data.commit === "worktree" || /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(data.commit))) return;
+        let token: unknown;
+        try { token = JSON.parse(this.payload.text).token; } catch { return; }
+        if (typeof token !== "string" || data.token !== token) return;
+        this.notifyPort(() => this.ports.onGitOpenFile?.(data.path, data.commit, data.file));
         return;
       }
       if (event.data?.type === READY_MESSAGE) {

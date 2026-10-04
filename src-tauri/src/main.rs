@@ -806,6 +806,30 @@ async fn read_git_history(path: String, head: Option<String>, offset: usize) -> 
 }
 
 #[tauri::command]
+async fn read_git_branches(path: String) -> Result<Vec<wasabipad_core::GitBranch>, String> {
+    tauri::async_runtime::spawn_blocking(move || wasabipad_core::read_git_branches(&path))
+        .await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn resolve_git_worktree_file(path: String, commit: String, file: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || wasabipad_core::resolve_git_worktree_file(&path, &commit, &file))
+        .await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn read_git_worktree_files(path: String) -> Result<Vec<wasabipad_core::GitChangedFile>, String> {
+    tauri::async_runtime::spawn_blocking(move || wasabipad_core::read_git_worktree_files(&path))
+        .await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn read_git_worktree_diff(path: String, file: String) -> Result<wasabipad_core::GitFileDiff, String> {
+    tauri::async_runtime::spawn_blocking(move || wasabipad_core::read_git_worktree_diff(&path, &file))
+        .await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 async fn read_git_files(path: String, commit: String) -> Result<Vec<wasabipad_core::GitChangedFile>, String> {
     tauri::async_runtime::spawn_blocking(move || wasabipad_core::read_git_files(&path, &commit))
         .await.map_err(|error| error.to_string())?
@@ -930,6 +954,10 @@ fn main() {
             probe_sqlite_preview,
             read_sqlite_preview,
             read_git_history,
+            read_git_branches,
+            resolve_git_worktree_file,
+            read_git_worktree_files,
+            read_git_worktree_diff,
             read_git_files,
             read_git_diff,
         ])

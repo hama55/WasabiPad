@@ -105,10 +105,10 @@ function dragOnto(from: HTMLElement, to: HTMLElement, ratio: number) {
 }
 
 describe("Feature: TabManager", () => {
-  // Given: Gitを閲覧中のフォルダタブと別タブ
+  // Given: ファイルツリーを展開したフォルダタブと別タブ
   // When: タブを往復してから再起動相当のinitを行う
-  // Then: タブ内でGit状態を保持し、永続セッションには含めず再起動時は復元しない
-  it("Scenario: Git閲覧状態はタブ内だけで保持する", async () => {
+  // Then: 閲覧元リポジトリだけ保持し、Git内部状態や再起動状態を保存しない
+  it("Scenario: タブworkspaceにはGitの閲覧元だけを保持する", async () => {
     const { doc, host } = fixture();
     vi.mocked(doc.openPath).mockImplementation(async (path: string) => {
       doc.current.folderRoot = path;
@@ -123,15 +123,15 @@ describe("Feature: TabManager", () => {
     await manager.init(tabs, null, null);
     const saved: TabWorkspaceState = {
       kind: "folder", expandedRelPaths: [".git"], search: null,
-      gitPreview: { path: "C:/repo/.git", documentPath: "C:/repo/note.md", collapsed: false, state: { head: "a".repeat(40), branch: "main", count: 200, expanded: ["b".repeat(40)], commit: "b".repeat(40), file: "note.txt", historyScroll: 230, diffScroll: 150 } },
+      gitPreviewPath: "C:/repo/.git",
     };
     state = saved;
     await manager.activate("other");
     await manager.activate("git");
     expect(state).toEqual(saved);
-    expect(JSON.stringify(manager.state)).not.toContain("gitPreview");
+    expect(JSON.stringify(manager.state)).not.toContain("gitPreviewPath");
     await manager.init(manager.state, null, null);
-    expect(state?.gitPreview).toBeUndefined();
+    expect(state).toBeNull();
   });
   beforeEach(async () => {
     document.body.replaceChildren(document.createElement("div"));

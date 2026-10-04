@@ -37,28 +37,26 @@ function mount(
 
 describe("Feature: inline preview", () => {
   // Given: Git表示の所有tokenと同じパスの古いtokenがある
-  // When: 古い状態通知・正規通知・再送を順に受ける
-  // Then: 古い通知を無視し正規の閲覧状態だけ再送する
-  it("Scenario: Git閲覧状態は表示世代を照合して保持する", async () => {
+  // When: 古い世代と正規世代から新規タブ要求を受ける
+  // Then: 正規世代のファイル要求だけを親画面へ渡す
+  it("Scenario: Git新規タブ要求は表示世代を照合する", async () => {
     const host = document.createElement("div");
     host.append(document.createElement("iframe"));
     document.body.append(host);
-    const onGitState = vi.fn();
-    const preview = new InlinePreview(host, { onGitState });
+    const onGitOpenFile = vi.fn();
+    const preview = new InlinePreview(host, { onGitOpenFile });
     preview.setSourcePath("C:/repo/.git");
     await preview.open("git", JSON.stringify({ token: "new", state: null }), null);
     const frame = host.querySelector("iframe")!;
-    const post = vi.spyOn(frame.contentWindow!, "postMessage");
     const receive = (data: unknown) => window.dispatchEvent(new MessageEvent("message", { source: frame.contentWindow, origin: window.location.origin, data }));
     receive({ type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE });
-    const state = { head: "a".repeat(40), branch: "main", count: 100, expanded: [], commit: "a".repeat(40), file: "note.txt", historyScroll: 80, diffScroll: 90 };
-    receive({ type: INLINE_PREVIEW_MESSAGES.GIT_STATE_MESSAGE, token: "old", path: "C:/repo/.git", state });
-    expect(onGitState).not.toHaveBeenCalled();
-    receive({ type: INLINE_PREVIEW_MESSAGES.GIT_STATE_MESSAGE, token: "new", path: "C:/repo/.git", state });
-    expect(onGitState).toHaveBeenCalledWith("new", "C:/repo/.git", state);
-    preview.resend();
-    const message = post.mock.calls.filter(([data]) => data.type === INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE).at(-1)![0];
-    expect(JSON.parse(message.payload.text).state).toEqual(state);
+    const request = { type: INLINE_PREVIEW_MESSAGES.GIT_OPEN_FILE_MESSAGE, path: "C:/repo/.git", commit: "a".repeat(40), file: "note.txt" };
+    receive({ ...request, token: "old" });
+    expect(onGitOpenFile).not.toHaveBeenCalled();
+    receive({ ...request, token: "new" });
+    expect(onGitOpenFile).toHaveBeenCalledWith("C:/repo/.git", request.commit, "note.txt");
+    receive({ ...request, token: "new", file: "../secret" });
+    expect(onGitOpenFile).toHaveBeenCalledTimes(1);
   });
   // Given: 外部HTMLが表示され、消去確認は遅れて届く
   // When: 同じ消去要求を二回行い、その完了を待ってから待機画面を開く

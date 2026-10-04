@@ -8,6 +8,9 @@ import {
   readGitHistory,
   readGitFiles,
   readGitDiff,
+  readGitBranches,
+  readGitWorktreeFiles,
+  readGitWorktreeDiff,
   takeViewerPayload,
   type ViewerFormat,
   type ViewerPayload,
@@ -47,6 +50,7 @@ import {
 import { scrollViewerCaret, scrollViewerCell } from "./viewer-scroll";
 import {
   createViewerBrowserMenuItem,
+  createViewerNewTabMenuItem,
   createViewerChartMenuItem,
   createViewerDelimiterMenuItem,
 } from "./viewer-context-menu";
@@ -83,7 +87,7 @@ import {
   resolveExternalOutputSource,
 } from "./viewer-external-output";
 import { createSqlitePreviewController, type SqlitePreviewController } from "./viewer-sqlite";
-import { createGitPreviewController, isGitPreviewState } from "./viewer-git";
+import { createGitPreviewController } from "./viewer-git";
 import { createAsyncUnlisten } from "./async-unlisten";
 import { comparePos } from "./editor-math";
 import {
@@ -119,6 +123,8 @@ const externalStatusBanner = document.getElementById("viewer-external-status")!;
 let externalStatus: ExternalPreviewStatus | null = null;
 
 function syncExternalStatus() {
+  const kind = document.getElementById("viewer-preview-kind");
+  if (kind) kind.textContent = externalStatus || currentExternalOutputPath ? "外部プレビュー" : "標準プレビュー";
   externalStatusBanner.hidden = externalStatus === null;
   externalStatusBanner.textContent = externalStatus?.message ?? "";
   previewRefreshButton.disabled = externalStatus?.busy ?? false;
@@ -1176,10 +1182,10 @@ async function renderGit(text: string, state: ViewerRenderState): Promise<boolea
     if (typeof input.token !== "string") throw new Error("Git履歴の表示データが不正です");
     controller = createGitPreviewController(content, summary, state.sourcePath, {
       history: readGitHistory, files: readGitFiles, diff: readGitDiff,
+      branches: readGitBranches, worktreeFiles: readGitWorktreeFiles, worktreeDiff: readGitWorktreeDiff,
       getRatio: () => getSetting("gitPreviewRatio"),
       saveRatio: ratio => setSetting("gitPreviewRatio", ratio),
-      onState: viewState => postToParent({ type: INLINE_PREVIEW_MESSAGES.GIT_STATE_MESSAGE, token: input.token, path: state.sourcePath, state: viewState }),
-    }, isGitPreviewState(input.state) ? input.state : null);
+    });
     gitPreview = controller;
     summary.classList.remove("warning");
     summary.textContent = "Git履歴";
@@ -1272,8 +1278,17 @@ function applyDelimiter(value: string) {
   runViewerOperation("ビューを再描画できませんでした", renderCurrentViewer);
 }
 
-function showContextMenu(x: number, y: number) {
+function showContextMenu(x: number, y: number, gitFile?: HTMLButtonElement) {
   contextMenu.replaceChildren();
+  if (gitFile && currentFormat === "git" && currentSourcePath && !gitFile.closest("[inert]")) {
+    const { file, commit } = gitFile.dataset;
+    const path = currentSourcePath;
+    const token = JSON.parse(currentText).token;
+    contextMenu.append(createViewerNewTabMenuItem(() => {
+      contextMenu.hidden = true;
+      if (gitFile.isConnected && !gitFile.closest("[inert]")) postToParent({ type: INLINE_PREVIEW_MESSAGES.GIT_OPEN_FILE_MESSAGE, token, path, commit, file });
+    }));
+  }
   const formatSpec = viewerFormatSpec(currentFormat);
   if (formatSpec.supportsDelimiter) {
     contextMenu.appendChild(createViewerDelimiterMenuItem(() => {
@@ -1347,7 +1362,11 @@ async function start() {
     content.addEventListener("contextmenu", (event) => {
       if (content.classList.contains("viewer-loading")) return;
       const target = event.target as Element;
-      if (viewerFormatSpec(currentFormat).supportsChart && target.closest(".viewer-grid")) {
+      const gitFile = target.closest<HTMLButtonElement>("button[data-file][data-commit]");
+      if (currentFormat === "git" && gitFile) {
+        event.preventDefault();
+        showContextMenu(event.clientX, event.clientY, gitFile);
+      } else if (viewerFormatSpec(currentFormat).supportsChart && target.closest(".viewer-grid")) {
         event.preventDefault();
         runViewerOperation("グラフメニューを表示できませんでした", () => showContextMenu(event.clientX, event.clientY));
       } else if (viewerFormatSpec(currentFormat).supportsDefaultBrowser

@@ -8,20 +8,83 @@ const commitB = "b".repeat(40);
 function history(ids = [commitA], branch: string | null = "main"): GitHistory {
   return { head: ids[0] ?? null, branch, commits: ids.map(oid => ({ oid, author: "Author", date: "2026-10-04T12:00:00+09:00", message: oid === commitA ? "first" : "second" })), hasMore: false };
 }
-function mount(overrides: Partial<Parameters<typeof createGitPreviewController>[3]> = {}, restored?: Parameters<typeof createGitPreviewController>[4]) {
+function mount(overrides: Partial<Parameters<typeof createGitPreviewController>[3]> = {}) {
   const host = document.createElement("div");
   const ports = {
+    branches: vi.fn(async () => []), worktreeFiles: vi.fn(async () => []), worktreeDiff: vi.fn(async () => ({ text: "+saved\n", binary: false, truncated: false })),
     history: vi.fn(async () => history()),
     files: vi.fn(async () => [{ path: "one.txt", oldPath: null, status: "M" }, { path: "two.txt", oldPath: null, status: "A" }]),
     diff: vi.fn(async (_path: string, _commit: string, file: string) => ({ text: `+${file}\n`, binary: false, truncated: false })),
-    getRatio: () => 0.4, saveRatio: vi.fn(), onState: vi.fn(), ...overrides,
+    getRatio: () => 0.4, saveRatio: vi.fn(), ...overrides,
   };
-  const controller = createGitPreviewController(host, document.createElement("span"), "C:/repo/.git", ports, restored);
+  const controller = createGitPreviewController(host, document.createElement("span"), "C:/repo/.git", ports);
   return { host, ports, controller };
 }
 const fileButton = (host: HTMLElement, file: string) => host.querySelector<HTMLButtonElement>(`button[data-file="${file}"]`)!;
 
 describe("Feature: Git履歴プレビュー画面", () => {
+  // Given: detached HEADから別ブランチの履歴を閲覧した
+  // When: ブランチ一覧の現在の作業HEADを選ぶ
+  // Then: detached HEADの履歴へ戻れる
+  it("Scenario: detached HEADを一覧から再選択できる", async () => {
+    const { host, controller } = mount({ history: async (_path, head) => history([head ?? commitA], null), branches: async () => [{ name: "other", oid: commitB, remote: false }] });
+    await controller.load();
+    const trigger = host.querySelector<HTMLButtonElement>('[aria-label="閲覧ブランチを選択"]')!;
+    trigger.click();
+    await vi.waitFor(() => expect(host.querySelector('[data-branch="other"]')).not.toBeNull());
+    host.querySelector<HTMLButtonElement>('[data-branch="other"]')!.click();
+    await vi.waitFor(() => expect(trigger.textContent).toContain("other"));
+    trigger.click();
+    await vi.waitFor(() => expect(host.querySelector('[data-branch="current-head"]')).not.toBeNull());
+    host.querySelector<HTMLButtonElement>('[data-branch="current-head"]')!.click();
+    await vi.waitFor(() => expect(trigger.textContent).toContain("detached HEAD"));
+    expect(host.querySelector(`details[data-commit="${commitA}"]`)).not.toBeNull();
+    controller.dispose();
+  });
+  // Given: ブランチ一覧を開いた後に更新を開始した
+  // When: 更新待ち中に古い候補を押す
+  // Then: 閲覧対象を変更せず更新完了まで待つ
+  it("Scenario: 更新中のブランチ候補を操作不可にする", async () => {
+    const { host, ports, controller } = mount({ branches: async () => [{ name: "other", oid: commitB, remote: false }] });
+    await controller.load();
+    host.querySelector<HTMLButtonElement>('[aria-label="閲覧ブランチを選択"]')!.click();
+    await vi.waitFor(() => expect(host.querySelector('[data-branch="other"]')).not.toBeNull());
+    let resolve!: (value: GitHistory) => void;
+    vi.mocked(ports.history).mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    const pending = controller.refresh();
+    host.querySelector<HTMLButtonElement>('[data-branch="other"]')!.click();
+    expect(host.querySelector(".git-branch-panel")!.hasAttribute("inert")).toBe(true);
+    resolve(history());
+    await pending;
+    expect(host.querySelector('[aria-label="閲覧ブランチを選択"]')!.textContent).toContain("main");
+    controller.dispose();
+  });
+  // Given: 現在mainで別ブランチの履歴が取得できる
+  // When: ブランチ一覧からotherを選ぶ
+  // Then: otherの履歴へ切り替わり未コミット対象はmainのままになる
+  it("Scenario: 閲覧ブランチだけを切り替える", async () => {
+    const { host, controller } = mount({ branches: async () => [{ name: "other", oid: commitB, remote: false }], history: async (_path, head) => history(head === commitB ? [commitB] : [commitA]) });
+    await controller.load();
+    host.querySelector<HTMLButtonElement>('[aria-label="閲覧ブランチを選択"]')!.click();
+    await vi.waitFor(() => expect(host.querySelector('[data-branch="other"]')).not.toBeNull());
+    host.querySelector<HTMLButtonElement>('[data-branch="other"]')!.click();
+    await vi.waitFor(() => expect(host.querySelector('[aria-label="閲覧ブランチを選択"]')!.textContent).toContain("other"));
+    expect(host.querySelector('summary')!.textContent).toContain("main");
+    expect(host.querySelector('details[data-commit] summary')!.textContent).toContain("未コミット");
+    expect(host.querySelector(`details[data-commit="${commitB}"]`)).not.toBeNull();
+    controller.dispose();
+  });
+  // Given: 現在の作業ファイルに未コミット変更がある
+  // When: Gitプレビューを開く
+  // Then: 未コミット欄がブランチ名の上に開き保存済み差分を表示する
+  it("Scenario: 未コミット変更を先頭に表示する", async () => {
+    const { host, controller } = mount({ worktreeFiles: async () => [{ path: "saved.txt", status: "M", oldPath: null }] });
+    await controller.load();
+    expect(host.querySelector('details[data-commit="worktree"]')?.hasAttribute("open")).toBe(true);
+    expect(host.querySelector(".git-diff")!.textContent).toContain("+saved");
+    expect(host.querySelector(".git-history")!.firstElementChild?.textContent).toContain("未コミット");
+    controller.dispose();
+  });
   // Given: 履歴更新が完了していない
   // When: 旧一覧のファイルを選ぼうとする
   // Then: 更新中は一覧を操作不可にし、完了後に再開する
@@ -46,22 +109,30 @@ describe("Feature: Git履歴プレビュー画面", () => {
     const ids = Array.from({ length: 100 }, (_, index) => (index + 1).toString(16).padStart(40, "0"));
     const selected = ids[99];
     const read = vi.fn(async (_path: string, _head: string | null, offset: number) => ({ ...history(offset ? [selected] : [commitA, ...ids.slice(0, 99)]), head: commitA, hasMore: offset === 0 }));
-    const { host, controller } = mount({ history: read }, { head: ids[0], branch: "main", count: 100, expanded: [selected], commit: selected, file: "two.txt", historyScroll: 0, diffScroll: 0 });
+    const { host, ports, controller } = mount({ history: async () => history(ids) });
+    await controller.load();
+    const details = host.querySelector<HTMLDetailsElement>(`details[data-commit="${selected}"]`)!;
+    details.open = true;
+    details.dispatchEvent(new Event("toggle"));
+    await vi.waitFor(() => expect(details.querySelector("button")).not.toBeNull());
+    details.querySelector<HTMLButtonElement>('button[data-file="two.txt"]')!.click();
+    await vi.waitFor(() => expect(details.querySelector('[aria-pressed="true"]')).not.toBeNull());
+    ports.history = read;
     await controller.refresh();
     expect(read).toHaveBeenLastCalledWith("C:/repo/.git", commitA, 100);
     expect(host.querySelector<HTMLButtonElement>('button[aria-pressed="true"]')!.dataset.commit).toBe(selected);
     controller.dispose();
   });
   // Given: 100件を超える履歴
-  // When: 追加読込後に101件目を選び、タブを復帰する
-  // Then: 固定HEADで続きを読み、101件目の展開と選択を復元する
-  it("Scenario: 追加読込と101件目のタブ復帰を扱う", async () => {
+  // When: 追加読込後に101件目を選び、画面を作り直す
+  // Then: 固定HEADで続きを読み、新しい画面は先頭から表示する
+  it("Scenario: 追加読込後も再表示では初期状態へ戻る", async () => {
     const ids = Array.from({ length: 101 }, (_, index) => (index + 1).toString(16).padStart(40, "0"));
     const read = vi.fn(async (_path: string, _head: string | null, offset: number) => ({ ...history(ids.slice(offset, offset + 100)), head: ids[0], hasMore: offset === 0 }));
     const first = mount({ history: read });
     await first.controller.load();
     first.host.querySelector<HTMLButtonElement>('[data-action="git-more"]')!.click();
-    await vi.waitFor(() => expect(first.host.querySelectorAll("details[data-commit]")).toHaveLength(101));
+    await vi.waitFor(() => expect(first.host.querySelectorAll(".git-commits details[data-commit]")).toHaveLength(101));
     expect(read).toHaveBeenLastCalledWith("C:/repo/.git", ids[0], 100);
     const details = first.host.querySelector<HTMLDetailsElement>(`details[data-commit="${ids[100]}"]`)!;
     details.open = true;
@@ -70,13 +141,12 @@ describe("Feature: Git履歴プレビュー画面", () => {
     details.querySelector<HTMLButtonElement>('button[data-file="two.txt"]')!.click();
     await vi.waitFor(() => expect(first.host.querySelector(".git-diff")?.textContent).toContain("+two.txt"));
     first.controller.dispose();
-    const state = vi.mocked(first.ports.onState).mock.calls.at(-1)![0];
-    const restored = mount({ history: read }, state);
+    const restored = mount({ history: read });
     await restored.controller.load();
     const selected = restored.host.querySelector<HTMLButtonElement>('button[aria-pressed="true"]')!;
-    expect(selected.dataset.commit).toBe(ids[100]);
-    expect(selected.dataset.file).toBe("two.txt");
-    expect(restored.host.querySelectorAll("details[data-commit]")).toHaveLength(101);
+    expect(selected.dataset.commit).toBe(ids[0]);
+    expect(selected.dataset.file).toBe("one.txt");
+    expect(restored.host.querySelectorAll(".git-commits details[data-commit]")).toHaveLength(100);
     restored.controller.dispose();
   });
   // Given: ファイル差分を読取中のプレビュー
@@ -96,7 +166,7 @@ describe("Feature: Git履歴プレビュー画面", () => {
     pending = false;
     controller.setVisible(true);
     await vi.waitFor(() => expect(host.querySelector(".git-diff")!.textContent).toContain("+current"));
-    expect(fileButton(host, "two.txt").getAttribute("aria-pressed")).toBe("true");
+    expect(fileButton(host, "one.txt").getAttribute("aria-pressed")).toBe("true");
     controller.dispose();
   });
   // Given: 複数コミットと選択済み差分
@@ -118,10 +188,10 @@ describe("Feature: Git履歴プレビュー画面", () => {
   });
 
   // Given: 二番目の変更ファイルを選択しスクロールした画面
-  // When: 更新し、さらに保存された状態でタブを復帰する
-  // Then: 同一ブランチでは選択・展開・スクロールを保持する
-  it("Scenario: 更新とタブ復帰で閲覧状態を保持する", async () => {
-    const { host, ports, controller } = mount();
+  // When: 更新し、画面を作り直す
+  // Then: 更新では選択を維持し、新しい画面では閲覧状態を復元しない
+  it("Scenario: 更新では保持し再表示では閲覧状態を復元しない", async () => {
+    const { host, controller } = mount();
     await controller.load();
     fileButton(host, "two.txt").click();
     await vi.waitFor(() => expect(host.querySelector(".git-diff")!.textContent).toContain("+two.txt"));
@@ -136,11 +206,10 @@ describe("Feature: Git履歴プレビュー画面", () => {
     expect(upper.scrollTop).toBe(75);
     expect(lower.scrollTop).toBe(120);
     controller.dispose();
-    const saved = vi.mocked(ports.onState).mock.calls.at(-1)![0];
-    const restored = mount({}, saved);
+    const restored = mount();
     await restored.controller.load();
-    expect(fileButton(restored.host, "two.txt").getAttribute("aria-pressed")).toBe("true");
-    expect(restored.host.querySelector<HTMLElement>(".git-diff")!.scrollTop).toBe(120);
+    expect(fileButton(restored.host, "one.txt").getAttribute("aria-pressed")).toBe("true");
+    expect(restored.host.querySelector<HTMLElement>(".git-diff")!.scrollTop).toBe(0);
     restored.controller.dispose();
   });
 
@@ -218,14 +287,15 @@ describe("Feature: Git履歴プレビュー画面", () => {
   it("Scenario: 初回は最新コミットの最初の変更ファイルを上下分割で表示する", async () => {
     const host = document.createElement("div");
     const controller = createGitPreviewController(host, document.createElement("span"), "C:/repo/.git", {
+      branches: async () => [], worktreeFiles: async () => [], worktreeDiff: async () => ({ text: "", binary: false, truncated: false }),
       history: async () => ({ head: "a".repeat(40), branch: "main", commits: [{ oid: "a".repeat(40), author: "Author", date: "2026-10-04T12:00:00+09:00", message: "first" }], hasMore: false }),
       files: async () => [{ path: "note.txt", oldPath: null, status: "A" }],
       diff: async () => ({ text: "@@ -0,0 +1 @@\n+hello\n", binary: false, truncated: false }),
-      getRatio: () => 0.4, saveRatio: vi.fn(), onState: vi.fn(),
+      getRatio: () => 0.4, saveRatio: vi.fn(),
     });
     await controller.load();
     expect(host.querySelector(".git-history")?.textContent).toContain("main");
-    expect(host.querySelector<HTMLDetailsElement>("details[data-commit]")?.open).toBe(true);
+    expect(host.querySelector<HTMLDetailsElement>(".git-commits details[data-commit]")?.open).toBe(true);
     expect(host.querySelector(".git-diff")?.textContent).toContain("+hello");
     expect(host.querySelector(".git-diff .git-added")?.textContent).toBe("+hello\n");
     expect(host.querySelector("[role=separator]")).not.toBeNull();

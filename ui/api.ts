@@ -28,6 +28,7 @@ import type { SqliteCell } from "./generated/SqliteCell";
 import type { SqliteObject } from "./generated/SqliteObject";
 import type { SqlitePreview } from "./generated/SqlitePreview";
 import type { GitHistory } from "./generated/GitHistory";
+import type { GitBranch } from "./generated/GitBranch";
 import type { GitChangedFile } from "./generated/GitChangedFile";
 import type { GitFileDiff } from "./generated/GitFileDiff";
 import type { ExternalPreviewFormat } from "./generated/ExternalPreviewFormat";
@@ -65,6 +66,7 @@ export type {
   SqliteObject,
   SqlitePreview,
   GitHistory,
+  GitBranch,
   GitChangedFile,
   GitFileDiff,
   ExternalPreviewFormat,
@@ -333,6 +335,10 @@ export const probeSqlitePreview = (path: string) =>
 
 export const readGitHistory = (path: string, head: string | null, offset: number) =>
   invoke<GitHistory>(IPC_COMMANDS.readGitHistory, { path, head, offset });
+export const readGitBranches = (path: string) => invoke<GitBranch[]>(IPC_COMMANDS.readGitBranches, { path });
+export const resolveGitWorktreeFile = (path: string, commit: string, file: string) => invoke<string>(IPC_COMMANDS.resolveGitWorktreeFile, { path, commit, file });
+export const readGitWorktreeFiles = (path: string) => invoke<GitChangedFile[]>(IPC_COMMANDS.readGitWorktreeFiles, { path });
+export const readGitWorktreeDiff = (path: string, file: string) => invoke<GitFileDiff>(IPC_COMMANDS.readGitWorktreeDiff, { path, file });
 export const readGitFiles = (path: string, commit: string) =>
   invoke<GitChangedFile[]>(IPC_COMMANDS.readGitFiles, { path, commit });
 export const readGitDiff = (path: string, commit: string, file: string) =>

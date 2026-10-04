@@ -14,7 +14,6 @@ import { splitArchiveEntryPath } from "./archive-path";
 import { TabBarView, type TabDropSpot } from "./tab-view";
 import type { RegisteredCommandMenuPorts } from "./registered-command-menu";
 import type { SidebarViewState } from "./sidebar";
-import type { GitPreviewTarget } from "./viewer-git";
 import {
   NavigationHistory,
   type NavigationEntry,
@@ -43,7 +42,7 @@ export interface TabWorkspaceStatePort {
   restore: (state: TabWorkspaceState | null) => void | Promise<void>;
 }
 
-export type TabWorkspaceState = SidebarViewState & { gitPreview?: GitPreviewTarget | null };
+export type TabWorkspaceState = SidebarViewState & { gitPreviewPath?: string | null };
 
 export interface TabFindHighlightPort {
   capture: () => SearchHighlightQuery | null;

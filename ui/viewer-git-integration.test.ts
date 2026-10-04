@@ -25,6 +25,8 @@ describe("Feature: Git標準プレビューの通知経路", () => {
   beforeAll(async () => {
     invoke.mockImplementation(async (command: string) => {
       switch (command) {
+        case "read_git_branches":
+        case "read_git_worktree_files": return [];
         case "read_git_history": return { head: oid, branch: "main", commits: [{ oid, author: "Author", date: "2026-10-04T12:00:00+09:00", message: "first" }], hasMore: false };
         case "read_git_files": return [{ path: "note.txt", oldPath: null, status: "A" }];
         case "read_git_diff": return { text: "+hello\n", binary: false, truncated: false };
@@ -37,14 +39,39 @@ describe("Feature: Git標準プレビューの通知経路", () => {
   });
   afterAll(() => { window.dispatchEvent(new Event("beforeunload")); vi.restoreAllMocks(); });
 
+  // Given: コミット内の変更ファイルが表示されている
+  // When: 右クリックして新規タブで開くを選ぶ
+  // Then: 現在のファイルを開く要求が親へ届く
+  it("Scenario: 変更ファイルの右クリックから新規タブ要求を送る", async () => {
+    await open();
+    const post = vi.spyOn(window.parent, "postMessage");
+    document.querySelector('button[data-file="note.txt"]')!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 25, clientY: 25 }));
+    const menu = document.querySelector<HTMLButtonElement>("#viewer-context-menu button")!;
+    expect(menu.textContent).toContain("新規タブで開く");
+    menu.click();
+    expect(post).toHaveBeenCalledWith({ type: messages.GIT_OPEN_FILE_MESSAGE, token: "git-owner", path: "C:/repo/.git", commit: oid, file: "note.txt" }, window.location.origin);
+  });
+
+  // Given: 共通プレビューの標準表示と外部生成の処理状態
+  // When: 標準を開き、外部の生成中・失敗・解除の通知を受ける
+  // Then: タイトル左端の種別ラベルを方式に合わせて表示する
+  it("Scenario: 標準と外部の種別をタイトルに表示する", async () => {
+    await open();
+    expect(document.querySelector("#viewer-preview-kind")?.textContent).toBe("標準プレビュー");
+    send({ type: messages.EXTERNAL_STATUS_MESSAGE, status: { busy: true, message: "生成中" } });
+    expect(document.querySelector("#viewer-preview-kind")?.textContent).toBe("外部プレビュー");
+    send({ type: messages.EXTERNAL_STATUS_MESSAGE, status: { busy: false, message: "失敗" } });
+    expect(document.querySelector("#viewer-preview-kind")?.textContent).toBe("外部プレビュー");
+    send({ type: messages.EXTERNAL_STATUS_MESSAGE, status: null });
+    expect(document.querySelector("#viewer-preview-kind")?.textContent).toBe("標準プレビュー");
+  });
+
   // Given: 実際のviewerにGit用payloadが届く
   // When: 表示と全画面切替を行う
-  // Then: Gitの選択状態を通知し、全画面でも同じDOMと選択を維持する
-  it("Scenario: Git状態を通知して全画面切替で表示を保持する", async () => {
-    const post = vi.spyOn(window.parent, "postMessage");
+  // Then: 全画面でも同じDOMと選択を維持する
+  it("Scenario: 全画面切替で現在の表示を維持する", async () => {
     await open();
     const root = document.querySelector(".git-preview");
-    expect(post).toHaveBeenCalledWith(expect.objectContaining({ type: messages.GIT_STATE_MESSAGE, token: "git-owner", path: "C:/repo/.git", state: expect.objectContaining({ commit: oid, file: "note.txt" }) }), window.location.origin);
     send({ type: messages.FULLSCREEN_STATE_MESSAGE, fullscreen: true });
     expect(document.querySelector(".git-preview")).toBe(root);
     expect(document.querySelector("button[data-file]")!.getAttribute("aria-pressed")).toBe("true");

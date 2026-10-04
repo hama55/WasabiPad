@@ -386,9 +386,15 @@ const inlinePreviewPorts = {
     else if (previewDocument?.format === "video") inlinePreview.resend();
     else return refreshExternalPreview();
   }),
-  onGitState: (token, path, state) => {
-    if (gitPreviewTarget?.token === token && gitPreviewTarget.path === path) gitPreviewTarget.state = state;
-  },
+  onGitOpenFile: (path, commit, file) => runBackground("現在の作業ファイルを開けませんでした", async () => {
+    const target = gitPreviewTarget;
+    const owner = tabs.state.activeId;
+    if (!target || target.path !== path) return;
+    const generation = gitSelectionGeneration;
+    const currentPath = await api.resolveGitWorktreeFile(path, commit, file);
+    if (gitPreviewTarget !== target || tabs.state.activeId !== owner || generation !== gitSelectionGeneration) return;
+    await tabs.openInNewTab(currentPath);
+  }),
   onAvailabilityChange: (available, label) => {
     if (available) {
       previewReplacementLifecycle.onAvailable(
@@ -785,7 +791,7 @@ async function openGitPreview(relPath: string) {
     openPreview();
     return;
   }
-  gitPreviewTarget = { path, documentPath, state: null, collapsed: false, token: window.crypto.randomUUID() };
+  gitPreviewTarget = { path, documentPath, collapsed: false, token: window.crypto.randomUUID() };
   openPreviewFormat(session, path, "git");
 }
 
@@ -1009,7 +1015,7 @@ const editorPorts = {
     const ownerTabId = tabs?.state.activeId ?? null;
     if (format === "git") {
       if (!gitPreviewTarget || !isCurrentRequest()) return null;
-      text = JSON.stringify({ token: gitPreviewTarget.token, state: gitPreviewTarget.state });
+      text = JSON.stringify({ token: gitPreviewTarget.token });
       selection = null;
     }
     if (format === "video") {
@@ -1724,16 +1730,16 @@ tabs = new TabManager($("tabs"), doc, {
     if (!secondaryInstance) setSetting("openTabs", state);
   },
   workspace: {
-    capture: () => ({ ...sidebar.captureViewState(), fileTreeWidth: readSidebarWidth(), gitPreview: gitPreviewTarget ? { ...gitPreviewTarget } : null }),
+    capture: () => ({ ...sidebar.captureViewState(), fileTreeWidth: readSidebarWidth(), gitPreviewPath: gitPreviewTarget?.path ?? null }),
     reset: () => { ++gitSelectionGeneration; gitPreviewTarget = null; sidebar.resetViewState(); },
     restore: async (state) => {
       const owner = tabs.state.activeId;
       setSidebarWidth(state?.fileTreeWidth ?? getSetting("sidebarWidth"));
       updateSidebarVisibility();
       await sidebar.restoreViewState(state);
-      if (tabs.state.activeId !== owner) return;
-      if (state?.gitPreview) {
-        gitPreviewTarget = { ...state.gitPreview, token: window.crypto.randomUUID(), documentPath: documentPathOf(doc.current) };
+      if (owner !== tabs.state.activeId) return;
+      if (state?.gitPreviewPath) {
+        gitPreviewTarget = { path: state.gitPreviewPath, documentPath: documentPathOf(doc.current), collapsed: false, token: window.crypto.randomUUID() };
         openPreviewFormat(doc.current, gitPreviewTarget.path, "git");
       }
     },

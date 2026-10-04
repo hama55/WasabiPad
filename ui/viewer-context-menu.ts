@@ -1,5 +1,12 @@
 import { createMenuIcon, MENU_ICON } from "./menu-icons";
 
+export function createViewerNewTabMenuItem(onClick: () => void): HTMLButtonElement {
+  const item = document.createElement("button");
+  item.append(createMenuIcon(MENU_ICON.newTab), document.createTextNode("新規タブで開く"));
+  item.addEventListener("click", onClick);
+  return item;
+}
+
 export function createViewerChartMenuItem(onClick: () => void): HTMLButtonElement {
   const item = document.createElement("button");
   item.dataset.viewerAction = "chart";
