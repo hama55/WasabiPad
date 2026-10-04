@@ -5090,6 +5090,74 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    // Feature: 拡張子に依存しない貼り付け画像の保存
+    // Scenario: 任意の拡張子・拡張子なしの文書へ画像を保存する
+    // Given: 日本語名のtxt、任意形式、拡張子なし、既存Markdownの編集可能な文書
+    // When: 画像を保存する
+    // Then: 文書名ごとの画像フォルダへ保存し、相対参照を返す
+    #[test]
+    fn pasted_image_is_saved_regardless_of_document_extension() {
+        let (root, d) = image_fixture("any_extension");
+        drop(d);
+        for (name, stem) in [
+            ("04_WasabiPad_チャット保存.txt", "04_WasabiPad_チャット保存"),
+            ("note.TXT", "note"),
+            ("script.custom", "script"),
+            ("no_extension", "no_extension"),
+            ("markdown.markdown", "markdown"),
+            ("memo.md", "memo"),
+        ] {
+            let path = root.join(name);
+            std::fs::write(&path, "").unwrap();
+            let mut d = Doc::open(&path).unwrap();
+            let src = d.save_pasted_image(&[1, 2, 3], "image/png").unwrap();
+            assert_eq!(src, format!("image_markdown/{stem}/pasted-image.png"));
+            assert_eq!(std::fs::read(root.join(src)).unwrap(), [1, 2, 3]);
+        }
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    // Feature: 拡張子に依存しない文書画像の管理
+    // Scenario: 任意形式の文書画像を整理し、改名・移動に追従させる
+    // Given: txt、任意拡張子、拡張子なしの文書に参照中と未参照の画像がある
+    // When: 不要画像を整理し、文書を別形式の名前に変更して別フォルダへ移動する
+    // Then: 参照中の画像だけを保持し、文書画像フォルダが改名・移動に追従する
+    #[test]
+    fn document_images_follow_cleanup_rename_and_move_regardless_of_extension() {
+        let (root, d) = image_fixture("any_extension_lifecycle");
+        drop(d);
+        for name in ["memo.txt", "memo.custom", "memo"] {
+            let path = root.join(name);
+            std::fs::write(&path, "").unwrap();
+            {
+                let mut d = Doc::open(&path).unwrap();
+                let src = d.save_pasted_image(&[1, 2, 3], "image/png").unwrap();
+                let unused = d.save_pasted_image(&[4], "image/png").unwrap();
+                let tag = format!("<img src=\"{src}\">\n");
+                d.edit(pos(0, 0), pos(0, 0), pos(0, 0), &tag, false).unwrap();
+                d.cleanup_unused_images().unwrap();
+                assert_eq!(std::fs::read(root.join(&src)).unwrap(), [1, 2, 3]);
+                assert!(!root.join(unused).exists());
+                d.save(&path, Encoding::Utf8 { bom: false }, Eol::Lf).unwrap();
+            }
+            std::fs::create_dir_all(root.join("dest")).unwrap();
+            {
+                let mut d = Doc::open(&root).unwrap();
+                d.rename_entry(name, "renamed.other").unwrap();
+                assert!(!root.join("image_markdown/memo").exists());
+                assert!(root.join("image_markdown/renamed/pasted-image.png").is_file());
+                d.move_entry("renamed.other", "dest").unwrap();
+                assert!(!root.join("image_markdown/renamed").exists());
+                assert_eq!(
+                    std::fs::read(root.join("dest/image_markdown/renamed/pasted-image.png")).unwrap(),
+                    [1, 2, 3]
+                );
+            }
+            std::fs::remove_dir_all(root.join("dest")).unwrap();
+        }
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     #[test]
     fn referenced_pasted_image_is_kept_during_cleanup() {
         let (root, mut d) = image_fixture("keep");

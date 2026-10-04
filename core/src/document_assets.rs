@@ -36,10 +36,6 @@ pub(crate) fn valid_archive_entry_path(entry: &str) -> bool {
 }
 
 pub(crate) fn markdown_asset_dir(path: &Path) -> Option<PathBuf> {
-    let extension = path.extension()?.to_str()?;
-    if !extension.eq_ignore_ascii_case("md") && !extension.eq_ignore_ascii_case("markdown") {
-        return None;
-    }
     let stem = path.file_stem()?.to_str()?;
     if stem.is_empty() {
         return None;
