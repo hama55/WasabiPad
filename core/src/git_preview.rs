@@ -260,12 +260,46 @@ fn bounded_diff(bytes: &[u8], mut truncated: bool) -> GitFileDiff {
 }
 
 fn worktree_run(path: &str, args: &[&str], limit: usize) -> Result<(Vec<u8>, bool), String> {
+    run_command(worktree_command(path)?.args(args), limit, false)
+}
+
+fn worktree_command(path: &str) -> Result<Command, String> {
     let dir = git_dir(path)?;
     let root = Path::new(path).parent().ok_or("作業フォルダがありません")?;
     let root = root.to_str().ok_or("作業フォルダ名を読み込めません")?;
-    let mut options = vec!["--work-tree", root];
-    options.extend_from_slice(args);
-    run(&dir, &options, limit)
+    // Preserve Git's built-in line-ending rules without enabling global external filters.
+    let mut settings = command(&dir);
+    settings
+        .env_remove("GIT_CONFIG_NOSYSTEM")
+        .env_remove("GIT_CONFIG_GLOBAL")
+        .args([
+            "config",
+            "--null",
+            "--type=bool-or-str",
+            "--get-regexp",
+            "^core\\.(autocrlf|eol)$",
+        ]);
+    let (settings, truncated) = run_command(&mut settings, 65536, true)?;
+    if truncated {
+        return Err("Gitの改行設定が大きすぎます".into());
+    }
+    let mut cmd = command(&dir);
+    for setting in settings
+        .split(|byte| *byte == 0)
+        .filter(|item| !item.is_empty())
+    {
+        let setting = std::str::from_utf8(setting).map_err(|_| "Gitの改行設定が不正です")?;
+        let (key, value) = setting.split_once('\n').ok_or("Gitの改行設定が不正です")?;
+        if !matches!(
+            (key, value),
+            ("core.autocrlf", "true" | "false" | "input") | ("core.eol", "lf" | "crlf" | "native")
+        ) {
+            return Err("Gitの改行設定が不正です".into());
+        }
+        cmd.args(["-c", &format!("{key}={value}")]);
+    }
+    cmd.current_dir(root).args(["--work-tree", root]);
+    Ok(cmd)
 }
 
 pub fn read_git_worktree_files(path: &str) -> Result<Vec<GitChangedFile>, String> {
@@ -321,11 +355,10 @@ pub fn read_git_worktree_files(path: &str) -> Result<Vec<GitChangedFile>, String
                     if !target.starts_with(root.canonicalize().map_err(|e| e.to_string())?) {
                         return Err("作業フォルダ外のファイルは表示できません".into());
                     }
-                    let dir = git_dir(path)?;
                     let target_arg = git_path(&target)?;
-                    let (current, _) = run(
-                        &dir,
-                        &["hash-object", "--no-filters", "--", &target_arg],
+                    let (current, _) = worktree_run(
+                        path,
+                        &["hash-object", "--path", &file.path, "--", &target_arg],
                         MAX_OUTPUT,
                     )?;
                     if previous == String::from_utf8_lossy(&current).trim() {
@@ -535,10 +568,8 @@ fn saved_file_diff(
         .map_err(|e| e.to_string())?;
     std::io::Write::write_all(&mut output, previous).map_err(|e| e.to_string())?;
     drop(output);
-    let dir = git_dir(path)?;
-    let (bytes, truncated) = run_with_diff_exit(
-        &dir,
-        &[
+    let (bytes, truncated) = run_command(
+        worktree_command(path)?.args([
             "diff",
             "--no-index",
             "--no-ext-diff",
@@ -548,7 +579,7 @@ fn saved_file_diff(
             "--",
             temp.0.to_str().ok_or("一時ファイル名を読み込めません")?,
             target.to_str().ok_or("ファイル名を読み込めません")?,
-        ],
+        ]),
         1024 * 1024,
         true,
     )?;
@@ -680,16 +711,15 @@ fn command(dir: &Path) -> Command {
 }
 
 fn run(dir: &Path, args: &[&str], limit: usize) -> Result<(Vec<u8>, bool), String> {
-    run_with_diff_exit(dir, args, limit, false)
+    run_command(command(dir).args(args), limit, false)
 }
 
-fn run_with_diff_exit(
-    dir: &Path,
-    args: &[&str],
+fn run_command(
+    cmd: &mut Command,
     limit: usize,
     diff_exit: bool,
 ) -> Result<(Vec<u8>, bool), String> {
-    let mut child = command(dir).args(args).spawn().map_err(|error| {
+    let mut child = cmd.spawn().map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             "Git が見つかりません。Gitをインストールし、WasabiPadを再起動してください".into()
         } else {

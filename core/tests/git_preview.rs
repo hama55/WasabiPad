@@ -168,6 +168,84 @@ fn branches_are_read_only() {
 }
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
+
+// Feature: リポジトリ固有の改行規則
+// Scenario: .gitattributesで正規化した同内容を変更として表示しない
+// Given: autocrlf=false、text eol=lfのファイルをステージから外してCRLFで保存
+// When: アプリの作業フォルダとは別のリポジトリを読む
+// Then: リポジトリの属性を使い同内容のファイルを一覧から除外する
+#[test]
+fn removed_index_file_respects_repository_attributes() {
+    let repo = Repo::new();
+    repo.git(&["config", "core.autocrlf", "false"]);
+    fs::write(repo.0.join(".gitattributes"), "*.txt text eol=lf\n").unwrap();
+    repo.commit("base\n", "base");
+    repo.git(&["rm", "--cached", "note.txt"]);
+    fs::write(repo.0.join("note.txt"), "base\r\n").unwrap();
+    assert!(read_git_worktree_files(&repo.path()).unwrap().is_empty());
+}
+
+// Feature: 改行設定の読取境界
+// Scenario: 改行を含む不正な値を別のGit設定として解釈しない
+// Given: core.eolに別設定に見える継続行が含まれる
+// When: 未コミット一覧を読む
+// Then: 不正な改行設定として失敗し、継続行を適用しない
+#[test]
+fn invalid_line_ending_setting_is_not_another_config() {
+    let repo = Repo::new();
+    repo.commit("base\n", "base");
+    repo.git(&[
+        "config",
+        "core.eol",
+        "lf\nfilter.attack.clean this-executable-must-not-run",
+    ]);
+    assert!(read_git_worktree_files(&repo.path())
+        .err()
+        .expect("不正設定を拒否する")
+        .contains("改行設定"));
+}
+
+// Feature: 通常Gitと一致する未コミット判定
+// Scenario: 改行の自動変換を使う環境でRevertしたファイルは一覧から消える
+// Given: システム設定がautocrlf=trueで、HEADはLF、保存済みファイルはCRLF
+// When: 保存済み内容をHEADと同じ内容へ戻して未コミット一覧を読む
+// Then: 改行形式だけを変更として表示しない
+#[test]
+#[cfg(windows)]
+fn reverted_file_uses_normal_git_line_endings() {
+    let setting = Command::new("git")
+        .args(["config", "--get", "core.autocrlf"])
+        .output()
+        .unwrap();
+    if String::from_utf8_lossy(&setting.stdout).trim() != "true" {
+        return;
+    }
+    let repo = Repo::new();
+    repo.commit("original\n", "base");
+    fs::write(repo.0.join("note.txt"), "changed\r\n").unwrap();
+    assert_eq!(read_git_worktree_files(&repo.path()).unwrap().len(), 1);
+    fs::write(repo.0.join("note.txt"), "original\r\n").unwrap();
+    assert!(read_git_worktree_files(&repo.path()).unwrap().is_empty());
+}
+
+// Feature: ステージから除外したファイルの未コミット判定
+// Scenario: 改行形式だけが異なる保存済みファイルは変更なし
+// Given: autocrlf=trueのリポジトリでHEADと同じCRLF内容をインデックスから除外した
+// When: HEADと保存済み内容の一覧を読む
+// Then: ステージ操作や改行形式だけを本文の差分として表示しない
+#[test]
+fn removed_index_file_respects_line_endings() {
+    let repo = Repo::new();
+    repo.git(&["config", "core.autocrlf", "true"]);
+    repo.commit("original\nstable\n", "base");
+    repo.git(&["rm", "--cached", "note.txt"]);
+    fs::write(repo.0.join("note.txt"), "original\r\nstable\r\n").unwrap();
+    assert!(read_git_worktree_files(&repo.path()).unwrap().is_empty());
+    fs::write(repo.0.join("note.txt"), "changed\r\nstable\r\n").unwrap();
+    let diff = read_git_worktree_diff(&repo.path(), "note.txt").unwrap();
+    assert!(diff.text.lines().any(|line| line == " stable"));
+}
+
 struct Repo(PathBuf);
 impl Repo {
     fn new() -> Self {
