@@ -4189,7 +4189,6 @@ dependencies = [
  "tauri-plugin-clipboard-manager",
  "tauri-plugin-dialog",
  "ts-rs",
- "url",
  "wasabipad-core",
  "webview2-com",
  "windows-sys 0.59.0",
