@@ -27,6 +27,9 @@ import type { ViewerSelection } from "./generated/ViewerSelection";
 import type { SqliteCell } from "./generated/SqliteCell";
 import type { SqliteObject } from "./generated/SqliteObject";
 import type { SqlitePreview } from "./generated/SqlitePreview";
+import type { GitHistory } from "./generated/GitHistory";
+import type { GitChangedFile } from "./generated/GitChangedFile";
+import type { GitFileDiff } from "./generated/GitFileDiff";
 import type { ExternalPreviewFormat } from "./generated/ExternalPreviewFormat";
 import type { ExternalPreviewRequest } from "./generated/ExternalPreviewRequest";
 import type { WorkspaceSearchBatch } from "./generated/WorkspaceSearchBatch";
@@ -61,6 +64,9 @@ export type {
   SqliteCell,
   SqliteObject,
   SqlitePreview,
+  GitHistory,
+  GitChangedFile,
+  GitFileDiff,
   ExternalPreviewFormat,
   ExternalPreviewRequest,
   WorkspaceSearchBatch,
@@ -324,6 +330,13 @@ export const closeViewer = (label: string) =>
   invoke<void>(IPC_COMMANDS.closeViewer, { label });
 export const probeSqlitePreview = (path: string) =>
   invoke<boolean>(IPC_COMMANDS.probeSqlitePreview, { path });
+
+export const readGitHistory = (path: string, head: string | null, offset: number) =>
+  invoke<GitHistory>(IPC_COMMANDS.readGitHistory, { path, head, offset });
+export const readGitFiles = (path: string, commit: string) =>
+  invoke<GitChangedFile[]>(IPC_COMMANDS.readGitFiles, { path, commit });
+export const readGitDiff = (path: string, commit: string, file: string) =>
+  invoke<GitFileDiff>(IPC_COMMANDS.readGitDiff, { path, commit, file });
 export const readSqlitePreview = (
   path: string,
   selectedName: string | null,

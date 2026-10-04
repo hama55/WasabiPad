@@ -5,6 +5,9 @@ import {
   openExternalUrl,
   openInDefaultBrowser,
   readSqlitePreview,
+  readGitHistory,
+  readGitFiles,
+  readGitDiff,
   takeViewerPayload,
   type ViewerFormat,
   type ViewerPayload,
@@ -80,6 +83,7 @@ import {
   resolveExternalOutputSource,
 } from "./viewer-external-output";
 import { createSqlitePreviewController, type SqlitePreviewController } from "./viewer-sqlite";
+import { createGitPreviewController, isGitPreviewState } from "./viewer-git";
 import { createAsyncUnlisten } from "./async-unlisten";
 import { comparePos } from "./editor-math";
 import {
@@ -118,8 +122,8 @@ function syncExternalStatus() {
   externalStatusBanner.hidden = externalStatus === null;
   externalStatusBanner.textContent = externalStatus?.message ?? "";
   previewRefreshButton.disabled = externalStatus?.busy ?? false;
-  previewRefreshButton.hidden = !isInlineViewer || (!externalStatus && !currentExternalOutputPath && currentFormat !== "video");
-  const refreshLabel = externalStatus || currentExternalOutputPath ? "外部プレビューを更新" : "動画プレビューを更新";
+  previewRefreshButton.hidden = !isInlineViewer || (!externalStatus && !currentExternalOutputPath && currentFormat !== "video" && currentFormat !== "git");
+  const refreshLabel = externalStatus || currentExternalOutputPath ? "外部プレビューを更新" : currentFormat === "git" ? "Git履歴を更新" : "動画プレビューを更新";
   previewRefreshButton.title = refreshLabel;
   previewRefreshButton.setAttribute("aria-label", refreshLabel);
 }
@@ -149,6 +153,7 @@ let renderAbortController = new AbortController();
 let imageZoom = DEFAULT_IMAGE_ZOOM;
 let disposeImagePan: (() => void) | null = null;
 let disposeSqlitePreview: (() => void) | null = null;
+let gitPreview: ReturnType<typeof createGitPreviewController> | null = null;
 let videoPreview: ReturnType<typeof createVideoPreview> | null = null;
 let previewVisible = true;
 const archiveAssetTracker = new ViewerAssetTracker(revokeImageUrl);
@@ -390,6 +395,8 @@ function setFullscreenButton(fullscreen: boolean) {
 }
 
 function disposeViewer() {
+  gitPreview?.dispose();
+  gitPreview = null;
   if (viewerDisposed) return;
   viewerDisposed = true;
   renderAbortController.abort();
@@ -543,7 +550,7 @@ function bindViewerControls() {
     });
   }, { signal: viewerDomListeners.signal });
   previewRefreshButton.addEventListener("click", () => {
-    if (isInlineViewer && !externalStatus?.busy && (externalStatus || currentExternalOutputPath || currentFormat === "video")) {
+    if (isInlineViewer && !externalStatus?.busy && (externalStatus || currentExternalOutputPath || currentFormat === "video" || currentFormat === "git")) {
       postToParent({ type: INLINE_PREVIEW_MESSAGES.REFRESH_MESSAGE });
     }
   }, { signal: viewerDomListeners.signal });
@@ -1154,6 +1161,38 @@ function renderVideo(_text: string, state: ViewerRenderState): boolean {
   }
 }
 
+async function renderGit(text: string, state: ViewerRenderState): Promise<boolean> {
+  const generation = beginRender();
+  gitPreview?.dispose();
+  disposeImagePan?.();
+  disposeImagePan = null;
+  chartController.clear();
+  currentRows = [];
+  revokeArchiveAssetUrls();
+  let controller: ReturnType<typeof createGitPreviewController> | null = null;
+  try {
+    if (!state.sourcePath || state.archivePath !== null || state.archiveEntry !== null) throw new Error("Git履歴には実 .git 項目が必要です");
+    const input = JSON.parse(text);
+    if (typeof input.token !== "string") throw new Error("Git履歴の表示データが不正です");
+    controller = createGitPreviewController(content, summary, state.sourcePath, {
+      history: readGitHistory, files: readGitFiles, diff: readGitDiff,
+      getRatio: () => getSetting("gitPreviewRatio"),
+      saveRatio: ratio => setSetting("gitPreviewRatio", ratio),
+      onState: viewState => postToParent({ type: INLINE_PREVIEW_MESSAGES.GIT_STATE_MESSAGE, token: input.token, path: state.sourcePath, state: viewState }),
+    }, isGitPreviewState(input.state) ? input.state : null);
+    gitPreview = controller;
+    summary.classList.remove("warning");
+    summary.textContent = "Git履歴";
+    return await controller.load();
+  } catch (error) {
+    if (generation === renderGeneration) replaceWithViewerError(content, String(error));
+    return generation === renderGeneration;
+  } finally {
+    if (generation !== renderGeneration) controller?.dispose();
+    finishRender(generation);
+  }
+}
+
 type ViewerStateRenderer = (
   text: string,
   state: ViewerRenderState,
@@ -1168,6 +1207,7 @@ const VIEWER_RENDERERS: Record<ViewerFormat, ViewerStateRenderer> = {
   html: renderHtml,
   sqlite: renderSqlite,
   video: renderVideo,
+  git: renderGit,
 };
 
 async function renderViewerState(
@@ -1198,6 +1238,7 @@ async function renderPayload(payload: ViewerPayload, requireLoadedOutput = false
     || nextState.archiveEntry !== previousState.archiveEntry
     || nextState.externalOutputPath !== previousState.externalOutputPath;
   const formatChanged = nextState.format !== previousState.format;
+  if (nextState.format !== "git") { gitPreview?.dispose(); gitPreview = null; }
   const nextImageZoom = sourceChanged ? DEFAULT_IMAGE_ZOOM : imageZoom;
   if (sourceChanged) archiveAssetSession.clearCachedAssets();
   if (nextState.format !== "sqlite") {
@@ -1333,7 +1374,12 @@ async function start() {
         if (event.data?.type === INLINE_PREVIEW_MESSAGES.VISIBILITY_MESSAGE) {
           if (typeof event.data.visible !== "boolean" || typeof event.data.reset !== "boolean") return;
           previewVisible = event.data.visible;
+          gitPreview?.setVisible(previewVisible);
           if (!previewVisible) videoPreview?.stop(event.data.reset);
+          return;
+        }
+        if (event.data?.type === INLINE_PREVIEW_MESSAGES.REFRESH_MESSAGE) {
+          if (currentFormat === "git") runViewerOperation("Git履歴を更新できませんでした", () => gitPreview?.refresh());
           return;
         }
         if (event.data?.type === INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE) {
@@ -1365,6 +1411,8 @@ async function start() {
         if (event.data?.type === INLINE_PREVIEW_MESSAGES.CLEAR_MESSAGE) {
           if (typeof event.data.render_id !== "string") return;
           const generation = beginRender();
+          gitPreview?.dispose();
+          gitPreview = null;
           disposeSqlitePreview?.();
           disposeSqlitePreview = null;
           videoPreview?.dispose();

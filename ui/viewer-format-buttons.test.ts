@@ -27,7 +27,7 @@ describe("Feature: プレビュー形式パネル", () => {
     expect(panel).not.toBeNull();
     expect(trigger.getAttribute("popovertarget")).toBe(panel.id);
     expect(panel.getAttribute("popover")).toBe("auto");
-    const choices = [...panel.querySelectorAll<HTMLButtonElement>("[data-viewer-format]")];
+    const choices = [...panel.querySelectorAll<HTMLButtonElement>("[data-viewer-format]:not([hidden])")];
     expect(choices.map(button => button.textContent)).toEqual(["Markdown", "CSV", "Image", "PDF", "html(静的)", "SQLite", "Video"]);
     expect(choices.map(button => button.dataset.viewerFormat)).toEqual(["markdown", "csv", "image", "pdf", "html", "sqlite", "video"]);
     expect(trigger.textContent).toContain("Markdown");

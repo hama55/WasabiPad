@@ -15,6 +15,7 @@ mod fileio;
 mod filename;
 mod folder;
 mod fuzzy;
+mod git_preview;
 mod hugebuf;
 mod merge;
 mod preview_cache;
@@ -38,6 +39,7 @@ pub use doc::{
 };
 pub use fileio::{Encoding, EncodingId, Eol};
 pub use filename::{next_available_path, validate_windows_file_name};
+pub use git_preview::{read_git_history, read_git_files, read_git_diff, GitCommit, GitHistory, GitChangedFile, GitFileDiff};
 pub use preview_cache::PreviewCache;
 pub use protocol::{
     EVENT_DOCUMENT_LOAD_PROGRESS, EVENT_EXTERNAL_WINDOW_REQUEST, EVENT_VIEWER_UPDATE,

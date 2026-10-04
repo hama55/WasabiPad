@@ -53,6 +53,7 @@ export function syncViewerFormatButtons(host: HTMLElement, current: ViewerFormat
       ? (current === "sqlite" ? format === "sqlite" : format === current || format === "sqlite")
       : canRenderViewerFormat(format, sourcePath, archiveSource);
     button.disabled = !available;
+    button.hidden = format === "git" && !available;
     button.setAttribute("aria-disabled", String(!available));
     button.setAttribute("aria-pressed", String(format === current));
   });

@@ -87,7 +87,7 @@ export function isPreviewSplitterShown(state: PreviewLayoutState): boolean {
 }
 
 export function shouldResendPreviewOnRestore(format: ViewerFormat | null): boolean {
-  return format !== "sqlite" && format !== "video";
+  return format !== "sqlite" && format !== "video" && format !== "git";
 }
 
 export function shouldKeepPreviewFullscreen(
@@ -173,3 +173,5 @@ export function resolvePaneVisibility(input: PaneVisibilityInput): PaneVisibilit
     fullscreen: false,
   };
 }
+export const GIT_PREVIEW_MIN_RATIO = 0.15;
+export const GIT_PREVIEW_MAX_RATIO = 0.85;

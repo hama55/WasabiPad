@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "./api";
-import { TabManager, type StoredTabs, type TabDocumentPort } from "./tabs";
+import { TabManager, type StoredTabs, type TabDocumentPort, type TabWorkspaceState } from "./tabs";
 import type { SidebarViewState } from "./sidebar";
 import { initialSession } from "./session";
 import { initSettings } from "./settings";
@@ -105,6 +105,34 @@ function dragOnto(from: HTMLElement, to: HTMLElement, ratio: number) {
 }
 
 describe("Feature: TabManager", () => {
+  // Given: Gitを閲覧中のフォルダタブと別タブ
+  // When: タブを往復してから再起動相当のinitを行う
+  // Then: タブ内でGit状態を保持し、永続セッションには含めず再起動時は復元しない
+  it("Scenario: Git閲覧状態はタブ内だけで保持する", async () => {
+    const { doc, host } = fixture();
+    vi.mocked(doc.openPath).mockImplementation(async (path: string) => {
+      doc.current.folderRoot = path;
+      doc.current.displayPath = path;
+      doc.current.savePath = null;
+      return true;
+    });
+    let state: TabWorkspaceState | null = null;
+    const workspace = { capture: () => state, reset: () => { state = null; }, restore: (value: TabWorkspaceState | null) => { state = value; } };
+    const manager = new TabManager(host, doc, { onChange: () => {}, workspace }, registeredCommandPorts);
+    const tabs: StoredTabs = { tabs: [{ id: "git", path: "C:/repo", kind: "folder", label: "repo" }, { id: "other", path: "C:/other", kind: "folder", label: "other" }], activeId: "git" };
+    await manager.init(tabs, null, null);
+    const saved: TabWorkspaceState = {
+      kind: "folder", expandedRelPaths: [".git"], search: null,
+      gitPreview: { path: "C:/repo/.git", documentPath: "C:/repo/note.md", collapsed: false, state: { head: "a".repeat(40), branch: "main", count: 200, expanded: ["b".repeat(40)], commit: "b".repeat(40), file: "note.txt", historyScroll: 230, diffScroll: 150 } },
+    };
+    state = saved;
+    await manager.activate("other");
+    await manager.activate("git");
+    expect(state).toEqual(saved);
+    expect(JSON.stringify(manager.state)).not.toContain("gitPreview");
+    await manager.init(manager.state, null, null);
+    expect(state?.gitPreview).toBeUndefined();
+  });
   beforeEach(async () => {
     document.body.replaceChildren(document.createElement("div"));
     await initSettings();

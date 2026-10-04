@@ -96,7 +96,7 @@ describe("Feature: エディタ全て検索", () => {
 function mount(
   initial: string,
   saveImage?: EditorPorts["saveImage"],
-  overrides: Partial<Pick<EditorPorts, "revealInExplorer" | "openInNewTab" | "openInNewWindow" | "openAs" | "registeredCommandPorts" | "openViewer" | "closeViewer" | "togglePreview">> = {},
+  overrides: Partial<Pick<EditorPorts, "revealInExplorer" | "openInNewTab" | "openInNewWindow" | "openAs" | "registeredCommandPorts" | "openViewer" | "updateViewer" | "closeViewer" | "togglePreview">> = {},
 ) {
   const host = document.createElement("div");
   document.body.replaceChildren(host);
@@ -123,7 +123,7 @@ function mount(
     onError: async (message, error) => { events.errors.push({ message, error }); },
     togglePreview: overrides.togglePreview ?? (() => {}),
     openViewer: overrides.openViewer ?? (async () => null),
-    updateViewer: async () => true,
+    updateViewer: overrides.updateViewer ?? (async () => true),
     closeViewer: overrides.closeViewer ?? (async () => {}),
     saveImage,
   };
@@ -3035,6 +3035,26 @@ describe("Feature: VirtualEditor", () => {
     await settle();
     await editor.openTextViewer("video");
     expect(openViewer).toHaveBeenCalledWith("video", "", null, false);
+  });
+
+  // Given: 未保存の本文とMarkdownの追随プレビューがある
+  // When: Gitプレビューを開き本文を編集する
+  // Then: 本文をGitへ渡さず、未保存内容を保持し旧プレビューの更新を止める
+  it("Scenario: Git表示中も本文を保持し旧プレビューへ追随しない", async () => {
+    const openViewer = vi.fn<EditorPorts["openViewer"]>()
+      .mockResolvedValueOnce("markdown-viewer").mockResolvedValueOnce("git-viewer");
+    const updateViewer = vi.fn(async () => true);
+    const { editor, doc, type } = mount("unsaved note", undefined, { openViewer, updateViewer });
+    editor.open(1, false);
+    await settle();
+    await editor.openTextViewer("markdown");
+    await editor.openTextViewer("git");
+    expect(openViewer).toHaveBeenLastCalledWith("git", "", null, false);
+    expect(doc.text()).toBe("unsaved note");
+    updateViewer.mockClear();
+    type("change");
+    await settle();
+    expect(updateViewer).not.toHaveBeenCalled();
   });
 
   // Given: プレビューが開いている

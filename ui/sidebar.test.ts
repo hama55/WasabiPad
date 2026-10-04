@@ -11,6 +11,7 @@ interface MountOptions {
   onRenameEntry?: SidebarPorts["onRenameEntry"];
   onDropEntries?: SidebarPorts["onDropEntries"];
   onUndoLastDrop?: SidebarPorts["onUndoLastDrop"];
+  onGitPreview?: (relPath: string) => void;
 }
 
 function mount({
@@ -22,11 +23,13 @@ function mount({
   onRenameEntry,
   onDropEntries = vi.fn(async () => ({ undoable: true })),
   onUndoLastDrop = vi.fn(async () => true),
+  onGitPreview,
 }: MountOptions = {}) {
   const host = document.createElement("div");
   document.body.replaceChildren(host);
   const ports = {
     onSelect: vi.fn(),
+    onGitPreview,
     onContextMenu: vi.fn(),
     onFileCommand,
     onRenameEntry,
@@ -49,6 +52,18 @@ function mount({
 }
 
 describe("Feature: Sidebar", () => {
+  // Given: .git の実フォルダまたは実ファイルがツリーにある
+  // When: 行をクリックする
+  // Then: 文書を開かずGitプレビューを依頼し、フォルダの展開動作は維持する
+  it.each([true, false])("Scenario: .git選択は本文のオープンを経由しない (dir=%s)", async (isDir) => {
+    const onGitPreview = vi.fn();
+    const { host, ports, sidebar } = mount({ onGitPreview });
+    sidebar.setEntries([{ name: ".git", is_dir: isDir, is_archive: false }]);
+    host.querySelector<HTMLElement>('[data-rel-path=".git"]')!.click();
+    await vi.waitFor(() => expect(onGitPreview).toHaveBeenCalledWith(".git"));
+    expect(ports.onSelect).not.toHaveBeenCalled();
+    if (isDir) expect(ports.onExpandFolder).toHaveBeenCalledWith(".git");
+  });
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();

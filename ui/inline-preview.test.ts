@@ -36,6 +36,30 @@ function mount(
 }
 
 describe("Feature: inline preview", () => {
+  // Given: Git表示の所有tokenと同じパスの古いtokenがある
+  // When: 古い状態通知・正規通知・再送を順に受ける
+  // Then: 古い通知を無視し正規の閲覧状態だけ再送する
+  it("Scenario: Git閲覧状態は表示世代を照合して保持する", async () => {
+    const host = document.createElement("div");
+    host.append(document.createElement("iframe"));
+    document.body.append(host);
+    const onGitState = vi.fn();
+    const preview = new InlinePreview(host, { onGitState });
+    preview.setSourcePath("C:/repo/.git");
+    await preview.open("git", JSON.stringify({ token: "new", state: null }), null);
+    const frame = host.querySelector("iframe")!;
+    const post = vi.spyOn(frame.contentWindow!, "postMessage");
+    const receive = (data: unknown) => window.dispatchEvent(new MessageEvent("message", { source: frame.contentWindow, origin: window.location.origin, data }));
+    receive({ type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE });
+    const state = { head: "a".repeat(40), branch: "main", count: 100, expanded: [], commit: "a".repeat(40), file: "note.txt", historyScroll: 80, diffScroll: 90 };
+    receive({ type: INLINE_PREVIEW_MESSAGES.GIT_STATE_MESSAGE, token: "old", path: "C:/repo/.git", state });
+    expect(onGitState).not.toHaveBeenCalled();
+    receive({ type: INLINE_PREVIEW_MESSAGES.GIT_STATE_MESSAGE, token: "new", path: "C:/repo/.git", state });
+    expect(onGitState).toHaveBeenCalledWith("new", "C:/repo/.git", state);
+    preview.resend();
+    const message = post.mock.calls.filter(([data]) => data.type === INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE).at(-1)![0];
+    expect(JSON.parse(message.payload.text).state).toEqual(state);
+  });
   // Given: 外部HTMLが表示され、消去確認は遅れて届く
   // When: 同じ消去要求を二回行い、その完了を待ってから待機画面を開く
   // Then: 同じ消去待ちを再利用し、古いcloseが新しい待機画面を消さない
@@ -113,7 +137,7 @@ describe("Feature: inline preview", () => {
   // Given: 準備済みの動画プレビュー
   // When: 一時退避と閉じる操作を通知する
   // Then: 配置変更では停止通知せず、退避は位置保持、閉じるは位置リセットを通知する
-  it("Scenario: 動画の非表示理由をviewerへ伝える", async () => {
+  it.each(["video", "git"] as const)("Scenario: %sの非表示理由をviewerへ伝える", async (format) => {
     const { host, preview } = mount();
     const frame = host.querySelector("iframe")!;
     const post = vi.spyOn(frame.contentWindow!, "postMessage");
@@ -121,7 +145,7 @@ describe("Feature: inline preview", () => {
       source: frame.contentWindow, origin: window.location.origin,
       data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
     }));
-    await preview.open("video", "", null);
+    await preview.open(format, "", null);
     post.mockClear();
     preview.setVisibility(true);
     expect(post).not.toHaveBeenCalled();

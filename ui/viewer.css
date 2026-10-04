@@ -127,6 +127,31 @@ main {
   overflow: auto;
   user-select: text;
 }
+
+.git-preview { display: grid; width: 100%; height: 100%; min-height: 0; font-size: var(--viewer-font-size); }
+.git-history, .git-diff { min-height: 0; min-width: 0; overflow: auto; padding: 8px; }
+.git-history > strong { display: block; position: sticky; top: -8px; padding: 6px 0; background: var(--bg-editor); z-index: 1; }
+.git-commits details { padding: 4px 0; }
+.git-commits summary { cursor: pointer; overflow-wrap: anywhere; }
+.git-metadata { margin: 4px 0 4px 18px; color: var(--fg-dim); font-size: .85em; }
+.git-files { margin-left: 18px; }
+.git-files button { display: block; width: 100%; padding: 4px 6px; text-align: left; border: 0; background: transparent; color: var(--fg); font: inherit; overflow-wrap: anywhere; }
+.git-files button:hover { background: var(--hover); }
+.git-files button.selected { background: var(--accent); color: #fff; }
+.git-preview button[data-action="git-more"] { margin: 8px 0; padding: 5px 10px; background: var(--bg-side); color: var(--fg); border: 1px solid var(--border); }
+.git-separator { background: var(--border); cursor: ns-resize; touch-action: none; }
+.git-separator:hover { background: var(--accent); }
+.git-separator:focus-visible, .git-commits summary:focus-visible, .git-files button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.git-diff h3 { position: sticky; top: -8px; padding: 6px 0; background: var(--bg-editor); font-size: 1em; overflow-wrap: anywhere; }
+.git-diff pre { font: inherit; font-family: var(--font-mono); tab-size: 4; white-space: pre; }
+.git-diff pre span { min-height: 1em; }
+.git-added { color: #87d7a0; background: #163721; }
+.git-deleted { color: #f2a4a4; background: #442222; }
+.git-hunk { color: #8dc9f0; }
+:root[data-theme="light"] .git-added { color: #145e29; background: #ddf5e3; }
+:root[data-theme="light"] .git-deleted { color: #8b2020; background: #ffe1e1; }
+:root[data-theme="light"] .git-hunk { color: #225e8c; }
+.git-truncated { padding: 8px 0; color: var(--fg-dim); }
 #viewer-content:empty::before {
   content: "読み込み中…";
   display: grid;

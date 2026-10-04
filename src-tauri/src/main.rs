@@ -89,6 +89,8 @@ enum ViewerFormat {
     Sqlite,
     #[serde(rename = "video")]
     Video,
+    #[serde(rename = "git")]
+    Git,
 }
 
 #[derive(Clone, serde::Serialize, ts_rs::TS)]
@@ -797,6 +799,24 @@ async fn read_sqlite_preview(
     .map_err(|error| error.to_string())?
 }
 
+#[tauri::command]
+async fn read_git_history(path: String, head: Option<String>, offset: usize) -> Result<wasabipad_core::GitHistory, String> {
+    tauri::async_runtime::spawn_blocking(move || wasabipad_core::read_git_history(&path, head.as_deref(), offset))
+        .await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn read_git_files(path: String, commit: String) -> Result<Vec<wasabipad_core::GitChangedFile>, String> {
+    tauri::async_runtime::spawn_blocking(move || wasabipad_core::read_git_files(&path, &commit))
+        .await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn read_git_diff(path: String, commit: String, file: String) -> Result<wasabipad_core::GitFileDiff, String> {
+    tauri::async_runtime::spawn_blocking(move || wasabipad_core::read_git_diff(&path, &commit, &file))
+        .await.map_err(|error| error.to_string())?
+}
+
 fn main() {
     let initial_request = match parse_window_request(std::env::args().skip(1)) {
         Ok(request) => request,
@@ -909,6 +929,9 @@ fn main() {
             close_viewer,
             probe_sqlite_preview,
             read_sqlite_preview,
+            read_git_history,
+            read_git_files,
+            read_git_diff,
         ])
         .build(tauri::generate_context!())
     {

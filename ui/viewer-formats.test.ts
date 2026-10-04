@@ -15,6 +15,16 @@ import {
 import { MENU_ICON } from "./menu-icons";
 
 describe("Feature: viewer formats", () => {
+  // Given: Git対象と通常ファイルとアーカイブ内項目
+  // When: プレビュー形式の利用可否を判定する
+  // Then: 実 .git 項目だけにGit形式を提供する
+  it("Scenario: Git形式は.git対象に限定する", () => {
+    expect(canRenderViewerFormat("git", "C:/repo/.git")).toBe(true);
+    expect(canRenderViewerFormat("git", "C:/repo/.git", true)).toBe(false);
+    expect(canRenderViewerFormat("git", "C:/repo/note.txt")).toBe(false);
+    expect(canRenderViewerFormat("markdown", "C:/repo/.git")).toBe(false);
+    expect(canRenderViewerFormat("git", null)).toBe(false);
+  });
   // Given: 大文字小文字が混在する通常MOV・MP4とテキスト
   // When: 自動形式と描画可否、資産パスを判定する
   // Then: 動画だけを動画形式で直接参照し、テキストとして解釈しない
@@ -189,6 +199,7 @@ describe("Feature: viewer formats", () => {
       csv: csvRenderer, markdown: markdownRenderer, image: imageRenderer, pdf: pdfRenderer, html: htmlRenderer,
       sqlite: sqliteRenderer,
       video: vi.fn(),
+      git: vi.fn(),
     });
 
     expect(handlers.csv.render).toBe(csvRenderer);

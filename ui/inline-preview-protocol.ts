@@ -21,6 +21,7 @@ export const INLINE_PREVIEW_MESSAGES = {
   VISIBILITY_MESSAGE: "wasabipad-viewer-visibility",
   CLOSE_MESSAGE: "wasabipad-viewer-close",
   REFRESH_MESSAGE: "wasabipad-viewer-refresh",
+  GIT_STATE_MESSAGE: "wasabipad-viewer-git-state",
   FOCUS_CLOSE_MESSAGE: "wasabipad-viewer-focus-close",
   SELECTION_CHANGE_MESSAGE: "wasabipad-viewer-selection-change",
   MARKDOWN_LINK_MESSAGE: "wasabipad-viewer-markdown-link",

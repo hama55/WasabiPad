@@ -101,6 +101,11 @@ export const VIEWER_FORMATS: Record<ViewerFormat, ViewerFormatSpec> = {
     supportsChart: false,
     supportsDefaultBrowser: false,
   },
+  git: {
+    id: "git", label: "Git履歴", title: "Git履歴", previewOrder: 7,
+    iconClass: MENU_ICON.expandFolder, extensions: [],
+    supportsDelimiter: false, supportsChart: false, supportsDefaultBrowser: false,
+  },
 };
 
 export function viewerFormatSpec(format: ViewerFormat): ViewerFormatSpec {
@@ -109,6 +114,10 @@ export function viewerFormatSpec(format: ViewerFormat): ViewerFormatSpec {
 
 export function isViewerFormat(value: unknown): value is ViewerFormat {
   return typeof value === "string" && Object.prototype.hasOwnProperty.call(VIEWER_FORMATS, value);
+}
+
+export function isGitPreviewPath(path: string): boolean {
+  return !path.includes("::") && path.replace(/\\/g, "/").replace(/\/$/, "").split("/").at(-1) === ".git";
 }
 
 export function createViewerFormatHandlers(
@@ -164,6 +173,8 @@ export function sourcePathForViewer(
 }
 
 export function canRenderViewerFormat(format: ViewerFormat, sourcePath: string | null, archiveSource = false): boolean {
+  const gitTarget = sourcePath !== null && isGitPreviewPath(sourcePath) && !archiveSource;
+  if (format === "git" || gitTarget) return format === "git" && gitTarget;
   if (format === "video" && archiveSource) return false;
   if (sourcePath && isSqliteCandidatePath(sourcePath)) return format === "sqlite";
   const sourceFormat = sourcePath ? viewerFormatForPath(sourcePath) : null;
