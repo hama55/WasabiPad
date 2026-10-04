@@ -38,7 +38,7 @@ body {
   color: var(--fg); font-size: 12px;
 }
 #viewer-title-text { overflow: hidden; text-overflow: ellipsis; }
-#viewer-preview-kind { flex: none; color: var(--fg); font: 12px var(--font-ui); margin-right: 8px; white-space: nowrap; }
+#viewer-preview-kind { flex: none; align-self: center; color: var(--fg); font: 12px var(--font-ui); margin-right: 8px; white-space: nowrap; }
 #viewer-format {
   display: none; min-width: 0; margin-left: 8px;
 }
