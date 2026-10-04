@@ -4,6 +4,7 @@ import { runAsyncBoundary } from "./async-boundary";
 import { isViewerFormat } from "./viewer-formats";
 import { isViewerSelection } from "./viewer-payload";
 import { INLINE_PREVIEW_MESSAGES } from "./inline-preview-protocol";
+import type { ExternalPreviewStatus } from "./inline-preview-protocol";
 import { DEFAULT_CSV_DELIMITER } from "./viewer-delimiter";
 
 const {
@@ -46,6 +47,7 @@ export interface InlinePreviewPorts {
   onFullscreenChange?: () => void | Promise<void>;
   onClose?: (returnFocus: boolean) => void | Promise<void>;
   onRefresh?: () => void | Promise<void>;
+  onGitOpenFile?: (path: string, commit: string, file: string) => void | Promise<void>;
   onSelectionChange?: (selection: ViewerSelection) => void | Promise<void>;
   onMarkdownLink?: (href: string, newTab: boolean) => void | Promise<void>;
   onExternalOutputReleased?: (path: string) => void | Promise<void>;
@@ -59,9 +61,11 @@ export class InlinePreview {
   private nextLabel = 0;
   private nextRenderId = 0;
   private ready = false;
+  private externalStatus: ExternalPreviewStatus | null = null;
   private pendingCloseFocus = false;
   private pendingExternalOpen: PendingExternalOpen | null = null;
   private pendingClearAcks = new Map<string, () => void>();
+  private clearing: Promise<void> | null = null;
   private sourcePath: string | null = null;
   private effectiveExtension: string | null = null;
   private archivePath: string | null = null;
@@ -74,6 +78,7 @@ export class InlinePreview {
   private markdownLineHeight: number | null = null;
   private markdownHeadingUnderlines: boolean | null = null;
   private fullscreen = false;
+  private visible = true;
   private pendingMarkdownFragment: string | null = null;
   private previewFocused = false;
 
@@ -90,10 +95,22 @@ export class InlinePreview {
     this.frame.addEventListener("blur", () => this.setPreviewFocused(false));
     window.addEventListener("message", (event) => {
       if (event.source !== this.frame.contentWindow || event.origin !== window.location.origin) return;
+      if (event.data?.type === INLINE_PREVIEW_MESSAGES.GIT_OPEN_FILE_MESSAGE) {
+        const data = event.data;
+        if (this.payload?.format !== "git" || data.path !== this.payload.source_path || typeof data.file !== "string"
+          || !data.file || /[\\:\0]/.test(data.file) || data.file.startsWith("/") || data.file.split("/").some((part: string) => part === ".." || part === "." || part === ".git")
+          || typeof data.commit !== "string" || !(data.commit === "worktree" || /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(data.commit))) return;
+        let token: unknown;
+        try { token = JSON.parse(this.payload.text).token; } catch { return; }
+        if (typeof token !== "string" || data.token !== token) return;
+        this.notifyPort(() => this.ports.onGitOpenFile?.(data.path, data.commit, data.file));
+        return;
+      }
       if (event.data?.type === READY_MESSAGE) {
         this.ready = true;
         if (this.pendingExternalOpen) this.sendPendingExternalOpen();
         else this.send();
+        this.sendExternalStatus();
         if (this.pendingCloseFocus) this.focusCloseButton();
         return;
       }
@@ -172,6 +189,24 @@ export class InlinePreview {
     this.effectiveExtension = effectiveExtension;
   }
 
+  setExternalStatus(status: ExternalPreviewStatus | null) {
+    this.externalStatus = status;
+    if (status && !this.label) {
+      this.label = `inline-preview-${++this.nextLabel}`;
+      this.host.hidden = false;
+      this.notifyPort(() => this.ports.onAvailabilityChange?.(true, this.label));
+    }
+    this.sendExternalStatus();
+  }
+
+  private sendExternalStatus() {
+    if (!this.ready) return;
+    this.frame.contentWindow?.postMessage({
+      type: INLINE_PREVIEW_MESSAGES.EXTERNAL_STATUS_MESSAGE,
+      status: this.externalStatus,
+    }, window.location.origin);
+  }
+
   focusCloseButton() {
     this.pendingCloseFocus = !this.ready;
     if (this.ready) this.frame.contentWindow?.postMessage({ type: INLINE_PREVIEW_MESSAGES.FOCUS_CLOSE_MESSAGE }, window.location.origin);
@@ -229,6 +264,21 @@ export class InlinePreview {
     this.sendFullscreenState();
   }
 
+  setVisibility(visible: boolean, reset = false) {
+    if (this.visible === visible && !reset) return;
+    this.visible = visible;
+    this.sendVisibility(reset);
+  }
+
+  private sendVisibility(reset = false) {
+    if (!this.ready || (this.payload?.format !== "video" && this.payload?.format !== "git")) return;
+    this.frame.contentWindow?.postMessage({
+      type: INLINE_PREVIEW_MESSAGES.VISIBILITY_MESSAGE,
+      visible: this.visible,
+      reset,
+    }, window.location.origin);
+  }
+
   setMarkdownFragment(fragment: string) {
     this.pendingMarkdownFragment = fragment;
     this.send();
@@ -264,6 +314,10 @@ export class InlinePreview {
     return label;
   }
 
+  refreshGit() {
+    this.frame.contentWindow?.postMessage({ type: INLINE_PREVIEW_MESSAGES.REFRESH_MESSAGE }, window.location.origin);
+  }
+
   async update(label: string, text: string, selection: ViewerSelection | null): Promise<boolean> {
     if (!this.payload || label !== this.label) return false;
     const currentPayload = this.payload;
@@ -289,24 +343,31 @@ export class InlinePreview {
     }
     if (label !== this.label) return;
     this.setPreviewFocused(false);
+    this.setVisibility(false, true);
     this.payload = null;
+    this.setExternalStatus(null);
     this.label = "";
     this.pendingMarkdownFragment = null;
     this.host.hidden = true;
     this.notifyPort(() => this.ports.onAvailabilityChange?.(false, label));
   }
 
-  clear() {
+  clear(): Promise<void> {
+    if (this.clearing) return this.clearing;
     const label = this.label;
-    if (!label && !this.pendingExternalOpen) return;
-    runAsyncBoundary(async () => {
+    if (!label && !this.pendingExternalOpen) return Promise.resolve();
+    const clearing = (async () => {
       let viewerAlreadyCleared = false;
       if (this.pendingExternalOpen) {
         await this.cancelPendingExternalOpen(false);
         viewerAlreadyCleared = true;
       }
       if (label && label === this.label) await this.close(label, viewerAlreadyCleared);
-    }, (error) => this.reportPortError(error));
+    })().catch((error) => this.reportPortError(error)).finally(() => {
+      if (this.clearing === clearing) this.clearing = null;
+    });
+    this.clearing = clearing;
+    return clearing;
   }
 
   cancelPendingExternalOpen(restoreCurrent = true): Promise<void> {
@@ -396,6 +457,7 @@ export class InlinePreview {
     }
     this.sendFontFamily();
     this.sendFontSize();
+    this.sendVisibility();
   }
 
   private sendPendingExternalOpen() {

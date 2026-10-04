@@ -44,6 +44,12 @@
 }
 .pf-title { font-size: 13px; color: var(--fg); margin-bottom: 10px; }
 .pf-message { color: var(--fg); white-space: pre-wrap; line-height: 1.6; }
+.pf-help-box {
+  width: min(640px, calc(100vw - 24px)); max-height: calc(100vh - 24px);
+  box-sizing: border-box; display: flex; flex-direction: column;
+}
+.pf-help-box .pf-message { min-height: 0; overflow: auto; overflow-wrap: anywhere; user-select: text; }
+.pf-help-box .pf-title, .pf-help-box .pf-btns { flex: none; }
 .pf-row { display: flex; flex-direction: column; gap: 3px; margin-bottom: 8px; }
 .pf-row label { font-size: 12px; color: var(--fg-dim); }
 .pf-row input, .pf-row select {

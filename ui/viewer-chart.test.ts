@@ -6,7 +6,13 @@ const { chartMock } = vi.hoisted(() => ({
     return { destroy: vi.fn(), data: { datasets: [] }, isDatasetVisible: vi.fn() };
   }),
 }));
-vi.mock("chart.js/auto", () => ({ default: chartMock }));
+vi.mock("chart.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("chart.js")>();
+  return {
+    ...actual,
+    Chart: Object.assign(chartMock, { register: actual.Chart.register.bind(actual.Chart) }),
+  };
+});
 
 import { ViewerChartController } from "./viewer-chart";
 

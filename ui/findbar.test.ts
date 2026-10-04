@@ -3,6 +3,22 @@ import { describe, expect, it, vi } from "vitest";
 import { FindBar } from "./findbar";
 
 describe("Feature: FindBar", () => {
+  // Given: 開いている検索バー
+  // When: 正規表現・単語単位を選び「全て」を押す
+  // Then: ▼の右隣から同じ条件で文書全体の一覧を開く
+  it("Scenario: 全て検索へ選択した一致条件を渡す", async () => {
+    const host = document.createElement("div");
+    const onAll = vi.fn(async () => {});
+    const bar = new FindBar(host, async () => true, async () => 0, async () => 0, async () => true,
+      () => {}, async () => {}, undefined, onAll);
+    bar.open("foo\\d+");
+    host.querySelector<HTMLInputElement>(".ve-find-regex input")!.click();
+    host.querySelector<HTMLInputElement>(".ve-find-word input")!.click();
+    const all = host.querySelector<HTMLButtonElement>(".ve-find-all")!;
+    expect(host.querySelector(".ve-find-next")!.nextElementSibling).toBe(all);
+    all.click();
+    await vi.waitFor(() => expect(onAll).toHaveBeenCalledWith({ pat: "foo\\d+", matchCase: false, useRegex: true, wholeWord: true }));
+  });
   // Feature: エディタ置換操作
   // Scenario: 置換操作を意味の広い順に表示する
   // Given: 閉じたFindBarを持つエディタホスト
@@ -55,11 +71,11 @@ describe("Feature: FindBar", () => {
       .toEqual(["ve-find-next", "ve-find-help"]);
   });
 
-  // Feature: エディタ検索記法ヘルプ
-  // Scenario: ?ボタンで検索記法の説明を表示する
+  // Feature: エディタ検索・置換ヘルプ
+  // Scenario: ?ボタンでオプションと操作・入力記法・制約を説明する
   // Given: エディタ検索バーが開いている
   // When: ?ヘルプを押す
-  // Then: 改行・タブ・バックスラッシュの記法を説明する
+  // Then: 各条件・操作・入力例と検索／置換の制約を説明する
   it("Scenario: ?ボタンから検索記法ヘルプを開く", () => {
     const host = document.createElement("div");
     document.body.replaceChildren(host);
@@ -72,6 +88,10 @@ describe("Feature: FindBar", () => {
     expect(message.textContent).toContain("\\n");
     expect(message.textContent).toContain("\\t");
     expect(message.textContent).toContain("\\\\");
+    expect(message.textContent).toContain("同じ入力欄にフォーカス");
+    for (const explanation of ["Aa", "ab", ".*", "大文字小文字", "単語単位", "正規表現", "Shift+Enter", "全て", "画面内", "全置換", "縦方向", "横に隠れた", "未保存", "両方オフ", "$1", "削除", "右クリック", "×"]) {
+      expect(message.textContent).toContain(explanation);
+    }
     document.querySelector<HTMLButtonElement>(".pf-ok")!.click();
   });
 
@@ -110,7 +130,7 @@ describe("Feature: FindBar", () => {
     input.value = "n";
     input.dispatchEvent(new Event("input", { bubbles: true }));
 
-    await vi.waitFor(() => expect(onFind).toHaveBeenCalledWith("n", true, false));
+    await vi.waitFor(() => expect(onFind).toHaveBeenCalledWith("n", true, false, false, false));
   });
 
   // Feature: 非同期の検索・置換操作

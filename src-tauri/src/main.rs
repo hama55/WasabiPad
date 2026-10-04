@@ -5,7 +5,6 @@
 mod commands;
 mod external_preview_runner;
 mod instance;
-mod legacy_addins;
 mod state;
 mod viewer;
 
@@ -88,6 +87,10 @@ enum ViewerFormat {
     Html,
     #[serde(rename = "sqlite")]
     Sqlite,
+    #[serde(rename = "video")]
+    Video,
+    #[serde(rename = "git")]
+    Git,
 }
 
 #[derive(Clone, serde::Serialize, ts_rs::TS)]
@@ -444,9 +447,11 @@ fn find(
     from: PosC,
     forward: bool,
     match_case: bool,
+    use_regex: bool,
+    whole_word: bool,
     state: State,
 ) -> Result<Option<FindResult>, String> {
-    document::find(pat, from, forward, match_case, state)
+    document::find(pat, from, forward, match_case, use_regex, whole_word, state)
 }
 
 #[tauri::command]
@@ -479,9 +484,11 @@ fn find_step(
     match_case: bool,
     cursor: Option<FindCursor>,
     budget: usize,
+    use_regex: bool,
+    whole_word: bool,
     state: State,
 ) -> Result<FindOutcome, String> {
-    document::find_step(pat, from, match_case, cursor, budget, state)
+    document::find_step(pat, from, match_case, cursor, budget, use_regex, whole_word, state)
 }
 
 #[tauri::command]
@@ -490,9 +497,11 @@ fn replace_all_chunk(
     rep: String,
     match_case: bool,
     budget: usize,
+    use_regex: bool,
+    whole_word: bool,
     state: State,
 ) -> Result<ReplaceChunkResult, String> {
-    document::replace_all_chunk(pat, rep, match_case, budget, state)
+    document::replace_all_chunk(pat, rep, match_case, budget, use_regex, whole_word, state)
 }
 
 #[tauri::command]
@@ -790,6 +799,48 @@ async fn read_sqlite_preview(
     .map_err(|error| error.to_string())?
 }
 
+#[tauri::command]
+async fn read_git_history(path: String, head: Option<String>, offset: usize) -> Result<wasabipad_core::GitHistory, String> {
+    tauri::async_runtime::spawn_blocking(move || wasabipad_core::read_git_history(&path, head.as_deref(), offset))
+        .await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn read_git_branches(path: String) -> Result<Vec<wasabipad_core::GitBranch>, String> {
+    tauri::async_runtime::spawn_blocking(move || wasabipad_core::read_git_branches(&path))
+        .await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn resolve_git_worktree_file(path: String, commit: String, file: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || wasabipad_core::resolve_git_worktree_file(&path, &commit, &file))
+        .await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn read_git_worktree_files(path: String) -> Result<Vec<wasabipad_core::GitChangedFile>, String> {
+    tauri::async_runtime::spawn_blocking(move || wasabipad_core::read_git_worktree_files(&path))
+        .await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn read_git_worktree_diff(path: String, file: String) -> Result<wasabipad_core::GitFileDiff, String> {
+    tauri::async_runtime::spawn_blocking(move || wasabipad_core::read_git_worktree_diff(&path, &file))
+        .await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn read_git_files(path: String, commit: String) -> Result<Vec<wasabipad_core::GitChangedFile>, String> {
+    tauri::async_runtime::spawn_blocking(move || wasabipad_core::read_git_files(&path, &commit))
+        .await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn read_git_diff(path: String, commit: String, file: String) -> Result<wasabipad_core::GitFileDiff, String> {
+    tauri::async_runtime::spawn_blocking(move || wasabipad_core::read_git_diff(&path, &commit, &file))
+        .await.map_err(|error| error.to_string())?
+}
+
 fn main() {
     let initial_request = match parse_window_request(std::env::args().skip(1)) {
         Ok(request) => request,
@@ -822,11 +873,6 @@ fn main() {
         .manage(search::SearchCancel(Mutex::new(None)))
         .manage(instance_server)
         .setup(|app| {
-            if let Ok(data_dir) = wasabipad_core::app_data_root() {
-                if let Err(error) = legacy_addins::move_to_pending(&data_dir) {
-                    eprintln!("Could not move old music addins to pending storage: {error}");
-                }
-            }
             app.state::<InstanceServer>().start(app.handle());
             if let Some(window) = app.get_webview_window("main") {
                 viewer::install_find_shortcut_guard(
@@ -907,6 +953,13 @@ fn main() {
             close_viewer,
             probe_sqlite_preview,
             read_sqlite_preview,
+            read_git_history,
+            read_git_branches,
+            resolve_git_worktree_file,
+            read_git_worktree_files,
+            read_git_worktree_diff,
+            read_git_files,
+            read_git_diff,
         ])
         .build(tauri::generate_context!())
     {

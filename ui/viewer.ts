@@ -5,6 +5,12 @@ import {
   openExternalUrl,
   openInDefaultBrowser,
   readSqlitePreview,
+  readGitHistory,
+  readGitFiles,
+  readGitDiff,
+  readGitBranches,
+  readGitWorktreeFiles,
+  readGitWorktreeDiff,
   takeViewerPayload,
   type ViewerFormat,
   type ViewerPayload,
@@ -44,6 +50,7 @@ import {
 import { scrollViewerCaret, scrollViewerCell } from "./viewer-scroll";
 import {
   createViewerBrowserMenuItem,
+  createViewerNewTabMenuItem,
   createViewerChartMenuItem,
   createViewerDelimiterMenuItem,
 } from "./viewer-context-menu";
@@ -51,8 +58,7 @@ import {
   DEFAULT_CSV_DELIMITER,
 } from "./viewer-delimiter";
 import { openViewerDelimiterDialog } from "./viewer-delimiter-dialog";
-import { createViewerDelimiterControl, syncViewerDelimiterControl } from "./viewer-delimiter-control";
-import { INLINE_PREVIEW_MESSAGES } from "./inline-preview-protocol";
+import { INLINE_PREVIEW_MESSAGES, type ExternalPreviewStatus } from "./inline-preview-protocol";
 import { isViewerPayload } from "./viewer-payload";
 import {
   createArchiveAssetSession,
@@ -73,6 +79,7 @@ import {
   zoomImageByWheel,
 } from "./viewer-image";
 import { createPdfPreview, markPdfLoadFailure } from "./viewer-pdf";
+import { createVideoPreview } from "./viewer-video";
 import { createHtmlPreview } from "./viewer-html";
 import {
   commitTrustedExternalHtmlPreview,
@@ -80,6 +87,7 @@ import {
   resolveExternalOutputSource,
 } from "./viewer-external-output";
 import { createSqlitePreviewController, type SqlitePreviewController } from "./viewer-sqlite";
+import { createGitPreviewController } from "./viewer-git";
 import { createAsyncUnlisten } from "./async-unlisten";
 import { comparePos } from "./editor-math";
 import {
@@ -106,11 +114,25 @@ const win = isInlineViewer ? null : getCurrentWindow();
 const content = document.getElementById("viewer-content")!;
 const viewerMain = content.parentElement as HTMLElement;
 const title = document.getElementById("viewer-title-text")!;
-const formatButtons = document.getElementById("viewer-format") as HTMLSelectElement;
+const formatButtons = document.getElementById("viewer-format")!;
 const actionButtons = document.getElementById("viewer-csv-actions")!;
 const fullscreenButton = document.getElementById("viewer-fullscreen") as HTMLButtonElement;
 const previewCloseButton = document.getElementById("viewer-close") as HTMLButtonElement;
 const previewRefreshButton = document.getElementById("viewer-refresh") as HTMLButtonElement;
+const externalStatusBanner = document.getElementById("viewer-external-status")!;
+let externalStatus: ExternalPreviewStatus | null = null;
+
+function syncExternalStatus() {
+  const kind = document.getElementById("viewer-preview-kind");
+  if (kind) kind.textContent = externalStatus || currentExternalOutputPath ? "外部プレビュー" : "標準プレビュー";
+  externalStatusBanner.hidden = externalStatus === null;
+  externalStatusBanner.textContent = externalStatus?.message ?? "";
+  previewRefreshButton.disabled = externalStatus?.busy ?? false;
+  previewRefreshButton.hidden = !isInlineViewer || (!externalStatus && !currentExternalOutputPath && currentFormat !== "video" && currentFormat !== "git");
+  const refreshLabel = externalStatus || currentExternalOutputPath ? "外部プレビューを更新" : currentFormat === "git" ? "Git履歴を更新" : "動画プレビューを更新";
+  previewRefreshButton.title = refreshLabel;
+  previewRefreshButton.setAttribute("aria-label", refreshLabel);
+}
 const summary = document.getElementById("viewer-summary")!;
 const themeButton = document.getElementById("viewer-theme")!;
 const fontButton = document.getElementById("viewer-font")!;
@@ -119,10 +141,7 @@ const contextMenu = document.getElementById("viewer-context-menu")!;
 const chartPanel = document.getElementById("chart-panel")!;
 const chartTitle = document.getElementById("chart-title")!;
 const chartCanvas = document.getElementById("chart-canvas") as HTMLCanvasElement;
-const delimiterControl = document.getElementById("viewer-delimiter")!;
-const delimiterSelect = document.getElementById("viewer-delimiter-select") as HTMLSelectElement;
-const delimiterInput = document.getElementById("viewer-delimiter-input") as HTMLInputElement;
-delimiterInput.value ||= DEFAULT_CSV_DELIMITER;
+let delimiter = DEFAULT_CSV_DELIMITER;
 
 let currentFormat: ViewerFormat = "csv";
 let currentRows: string[][] = [];
@@ -140,6 +159,9 @@ let renderAbortController = new AbortController();
 let imageZoom = DEFAULT_IMAGE_ZOOM;
 let disposeImagePan: (() => void) | null = null;
 let disposeSqlitePreview: (() => void) | null = null;
+let gitPreview: ReturnType<typeof createGitPreviewController> | null = null;
+let videoPreview: ReturnType<typeof createVideoPreview> | null = null;
+let previewVisible = true;
 const archiveAssetTracker = new ViewerAssetTracker(revokeImageUrl);
 const archiveAssetSession = createArchiveAssetSession();
 let csvColumnWidths: number[] = [];
@@ -205,19 +227,17 @@ function publishViewerRenderState(state: ViewerRenderState, nextImageZoom: numbe
   currentArchivePath = state.archivePath;
   currentArchiveEntry = state.archiveEntry;
   currentExternalOutputPath = state.externalOutputPath;
-  previewRefreshButton.hidden = !isInlineViewer || !state.externalOutputPath;
+  syncExternalStatus();
   imageZoom = nextImageZoom;
   const classificationSource = state.effectiveExtension && !archiveFormatExtension(state.effectiveExtension, state.archiveEntry)
     ? `${state.archiveEntry ?? state.sourcePath ?? "source"}.${state.effectiveExtension}`
     : state.archiveEntry ?? state.sourcePath;
-  syncViewerFormatButtons(formatButtons, state.format, classificationSource);
+  syncViewerFormatButtons(formatButtons, state.format, classificationSource, state.archivePath !== null || state.archiveEntry !== null);
   syncViewerActionButtons(actionButtons, state.format);
   const formatSpec = viewerFormatSpec(state.format);
   title.textContent = formatSpec.title;
   document.title = title.textContent;
   if (!isInlineViewer) runViewerOperation("タイトルを更新できませんでした", () => win!.setTitle(title.textContent));
-  delimiterControl.hidden = !formatSpec.supportsDelimiter;
-  syncViewerDelimiterControl(delimiterSelect, delimiterInput, delimiterInput.value);
   markdownReadyForFragment = state.format === "markdown" ? markdownReadyForFragment : false;
   if (state.format !== "markdown") pendingMarkdownFragment = null;
 }
@@ -254,7 +274,7 @@ function scrollCsvRows(rows: HTMLElement[], selection: ViewerSelection | null) {
     const rowEnd = csvSourcePositionAtOffset(sourceText, sourceLine, sourceText.length);
     if (comparePos(current.end, rowStart) < 0 || comparePos(current.end, rowEnd) > 0) return null;
     const sourceOffset = csvSourceOffsetAtPosition(sourceText, sourceLine, current.end);
-    const column = csvColumnAt(sourceText, sourceOffset, row.dataset.delimiter ?? delimiterInput.value);
+    const column = csvColumnAt(sourceText, sourceOffset, row.dataset.delimiter ?? delimiter);
     return row.querySelector<HTMLElement>(`[data-source-column="${column}"]`);
   });
 }
@@ -381,6 +401,8 @@ function setFullscreenButton(fullscreen: boolean) {
 }
 
 function disposeViewer() {
+  gitPreview?.dispose();
+  gitPreview = null;
   if (viewerDisposed) return;
   viewerDisposed = true;
   renderAbortController.abort();
@@ -389,6 +411,8 @@ function disposeViewer() {
   disposeImagePan = null;
   disposeSqlitePreview?.();
   disposeSqlitePreview = null;
+  videoPreview?.dispose();
+  videoPreview = null;
   content.classList.remove("viewer-loading");
   viewerMain.classList.remove("viewer-loading");
   content.removeAttribute("aria-busy");
@@ -532,7 +556,9 @@ function bindViewerControls() {
     });
   }, { signal: viewerDomListeners.signal });
   previewRefreshButton.addEventListener("click", () => {
-    if (isInlineViewer && currentExternalOutputPath) postToParent({ type: INLINE_PREVIEW_MESSAGES.REFRESH_MESSAGE });
+    if (isInlineViewer && !externalStatus?.busy && (externalStatus || currentExternalOutputPath || currentFormat === "video" || currentFormat === "git")) {
+      postToParent({ type: INLINE_PREVIEW_MESSAGES.REFRESH_MESSAGE });
+    }
   }, { signal: viewerDomListeners.signal });
   const notifySelection = () => runViewerOperation(
     "プレビューの選択位置を通知できませんでした",
@@ -554,7 +580,7 @@ function renderTable(text: string, state: ViewerRenderState = currentViewerRende
   try {
     const rendered = renderCsvTable({
       text,
-      delimiter: delimiterInput.value,
+      delimiter,
       selection: state.selection,
       columnWidths: state.format === currentFormat && sameSource ? csvColumnWidths : [],
       onColumnResize: (event, table, columns, columnIndex) => runViewerOperation(
@@ -1116,6 +1142,63 @@ async function renderSqlite(
   }
 }
 
+function renderVideo(_text: string, state: ViewerRenderState): boolean {
+  const generation = beginRender();
+  disposeImagePan?.();
+  disposeImagePan = null;
+  currentRows = [];
+  chartController.clear();
+  revokeArchiveAssetUrls();
+  try {
+    if (!state.sourcePath || state.archivePath !== null || state.archiveEntry !== null) {
+      replaceWithViewerError(content, "動画プレビューには通常ファイルのパスが必要です");
+      return true;
+    }
+    const name = basename(state.sourcePath);
+    videoPreview = createVideoPreview(name, imageUrlFromPathWithCacheBust(state.sourcePath, generation));
+    if (!previewVisible) videoPreview.stop();
+    content.replaceChildren(videoPreview.wrapper);
+    summary.classList.remove("warning");
+    summary.title = "";
+    summary.textContent = name;
+    return true;
+  } finally {
+    finishRender(generation);
+  }
+}
+
+async function renderGit(text: string, state: ViewerRenderState): Promise<boolean> {
+  const generation = beginRender();
+  gitPreview?.dispose();
+  disposeImagePan?.();
+  disposeImagePan = null;
+  chartController.clear();
+  currentRows = [];
+  revokeArchiveAssetUrls();
+  let controller: ReturnType<typeof createGitPreviewController> | null = null;
+  try {
+    if (!state.sourcePath || state.archivePath !== null || state.archiveEntry !== null) throw new Error("Git履歴には実 .git 項目が必要です");
+    const input = JSON.parse(text);
+    if (typeof input.token !== "string") throw new Error("Git履歴の表示データが不正です");
+    controller = createGitPreviewController(content, summary, state.sourcePath, {
+      history: readGitHistory, files: readGitFiles, diff: readGitDiff,
+      branches: readGitBranches, worktreeFiles: readGitWorktreeFiles, worktreeDiff: readGitWorktreeDiff,
+      getRatio: () => getSetting("gitPreviewRatio"),
+      saveRatio: ratio => setSetting("gitPreviewRatio", ratio),
+    });
+    gitPreview = controller;
+    summary.classList.remove("warning");
+    summary.textContent = "Git履歴";
+    return await controller.load();
+  } catch (error) {
+    if (generation === renderGeneration) replaceWithViewerError(content, String(error));
+    return generation === renderGeneration;
+  } finally {
+    if (generation !== renderGeneration) controller?.dispose();
+    finishRender(generation);
+  }
+}
+
 type ViewerStateRenderer = (
   text: string,
   state: ViewerRenderState,
@@ -1129,6 +1212,8 @@ const VIEWER_RENDERERS: Record<ViewerFormat, ViewerStateRenderer> = {
   pdf: renderPdf,
   html: renderHtml,
   sqlite: renderSqlite,
+  video: renderVideo,
+  git: renderGit,
 };
 
 async function renderViewerState(
@@ -1137,6 +1222,8 @@ async function renderViewerState(
   requireLoadedOutput = false,
 ): Promise<boolean> {
   if (viewerDisposed) return false;
+  videoPreview?.dispose();
+  videoPreview = null;
   if (state.externalOutputPath) return renderExternalOutput(state, requireLoadedOutput);
   return VIEWER_RENDERERS[state.format](state.text, state, nextImageZoom);
 }
@@ -1157,6 +1244,7 @@ async function renderPayload(payload: ViewerPayload, requireLoadedOutput = false
     || nextState.archiveEntry !== previousState.archiveEntry
     || nextState.externalOutputPath !== previousState.externalOutputPath;
   const formatChanged = nextState.format !== previousState.format;
+  if (nextState.format !== "git") { gitPreview?.dispose(); gitPreview = null; }
   const nextImageZoom = sourceChanged ? DEFAULT_IMAGE_ZOOM : imageZoom;
   if (sourceChanged) archiveAssetSession.clearCachedAssets();
   if (nextState.format !== "sqlite") {
@@ -1172,7 +1260,7 @@ async function renderPayload(payload: ViewerPayload, requireLoadedOutput = false
 
 function openDelimiterDialog() {
   openViewerDelimiterDialog({
-    value: delimiterInput.value,
+    value: delimiter,
     onApply: (value) => {
       applyDelimiter(value);
     },
@@ -1180,8 +1268,7 @@ function openDelimiterDialog() {
 }
 
 function applyDelimiter(value: string) {
-  delimiterInput.value = value;
-  syncViewerDelimiterControl(delimiterSelect, delimiterInput, value);
+  delimiter = value;
   if (isInlineViewer) {
     postToParent({
       type: INLINE_PREVIEW_MESSAGES.DELIMITER_CHANGE_MESSAGE,
@@ -1191,8 +1278,17 @@ function applyDelimiter(value: string) {
   runViewerOperation("ビューを再描画できませんでした", renderCurrentViewer);
 }
 
-function showContextMenu(x: number, y: number) {
+function showContextMenu(x: number, y: number, gitFile?: HTMLButtonElement) {
   contextMenu.replaceChildren();
+  if (gitFile && currentFormat === "git" && currentSourcePath && !gitFile.closest("[inert]")) {
+    const { file, commit } = gitFile.dataset;
+    const path = currentSourcePath;
+    const token = JSON.parse(currentText).token;
+    contextMenu.append(createViewerNewTabMenuItem(() => {
+      contextMenu.hidden = true;
+      if (gitFile.isConnected && !gitFile.closest("[inert]")) postToParent({ type: INLINE_PREVIEW_MESSAGES.GIT_OPEN_FILE_MESSAGE, token, path, commit, file });
+    }));
+  }
   const formatSpec = viewerFormatSpec(currentFormat);
   if (formatSpec.supportsDelimiter) {
     contextMenu.appendChild(createViewerDelimiterMenuItem(() => {
@@ -1250,17 +1346,7 @@ async function start() {
         });
       });
     };
-    createViewerFormatButtons(formatButtons, {
-      onPreview: notifyFormatChange,
-      onSelect: notifyFormatChange,
-    });
-    createViewerDelimiterControl(
-      delimiterSelect,
-      delimiterInput,
-      delimiterInput.value,
-      (value) => runViewerOperation("区切り文字を変更できませんでした", () => applyDelimiter(value)),
-      viewerDomListeners.signal,
-    );
+    createViewerFormatButtons(formatButtons, notifyFormatChange, viewerDomListeners.signal);
     bindViewerControls();
     applyFont(fontFamily, fontSize, false);
     applyMarkdownLineHeight(markdownLineHeight);
@@ -1276,7 +1362,11 @@ async function start() {
     content.addEventListener("contextmenu", (event) => {
       if (content.classList.contains("viewer-loading")) return;
       const target = event.target as Element;
-      if (viewerFormatSpec(currentFormat).supportsChart && target.closest(".viewer-grid")) {
+      const gitFile = target.closest<HTMLButtonElement>("button[data-file][data-commit]");
+      if (currentFormat === "git" && gitFile) {
+        event.preventDefault();
+        showContextMenu(event.clientX, event.clientY, gitFile);
+      } else if (viewerFormatSpec(currentFormat).supportsChart && target.closest(".viewer-grid")) {
         event.preventDefault();
         runViewerOperation("グラフメニューを表示できませんでした", () => showContextMenu(event.clientX, event.clientY));
       } else if (viewerFormatSpec(currentFormat).supportsDefaultBrowser
@@ -1293,6 +1383,24 @@ async function start() {
     if (isInlineViewer) {
       window.addEventListener("message", (event) => {
         if (event.source !== window.parent || event.origin !== window.location.origin) return;
+        if (event.data?.type === INLINE_PREVIEW_MESSAGES.EXTERNAL_STATUS_MESSAGE) {
+          const status = event.data.status;
+          if (status !== null && (typeof status?.message !== "string" || typeof status?.busy !== "boolean")) return;
+          externalStatus = status;
+          syncExternalStatus();
+          return;
+        }
+        if (event.data?.type === INLINE_PREVIEW_MESSAGES.VISIBILITY_MESSAGE) {
+          if (typeof event.data.visible !== "boolean" || typeof event.data.reset !== "boolean") return;
+          previewVisible = event.data.visible;
+          gitPreview?.setVisible(previewVisible);
+          if (!previewVisible) videoPreview?.stop(event.data.reset);
+          return;
+        }
+        if (event.data?.type === INLINE_PREVIEW_MESSAGES.REFRESH_MESSAGE) {
+          if (currentFormat === "git") runViewerOperation("Git履歴を更新できませんでした", () => gitPreview?.refresh());
+          return;
+        }
         if (event.data?.type === INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE) {
           if (!isViewerPayload(event.data.payload)) return;
           const renderId = event.data.render_id;
@@ -1322,8 +1430,12 @@ async function start() {
         if (event.data?.type === INLINE_PREVIEW_MESSAGES.CLEAR_MESSAGE) {
           if (typeof event.data.render_id !== "string") return;
           const generation = beginRender();
+          gitPreview?.dispose();
+          gitPreview = null;
           disposeSqlitePreview?.();
           disposeSqlitePreview = null;
+          videoPreview?.dispose();
+          videoPreview = null;
           disposeImagePan?.();
           disposeImagePan = null;
           chartController.clear();
@@ -1379,9 +1491,8 @@ async function start() {
         }
         if (event.data?.type === INLINE_PREVIEW_MESSAGES.DELIMITER_MESSAGE) {
           if (typeof event.data.delimiter !== "string") return;
-          delimiterInput.value = event.data.delimiter;
-          syncViewerDelimiterControl(delimiterSelect, delimiterInput, delimiterInput.value);
-          if (!delimiterInput.value || !viewerFormatSpec(currentFormat).supportsDelimiter) return;
+          delimiter = event.data.delimiter;
+          if (!delimiter || !viewerFormatSpec(currentFormat).supportsDelimiter) return;
           runViewerOperation("ビューを再描画できませんでした", renderCurrentViewer);
           return;
         }

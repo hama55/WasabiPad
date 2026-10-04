@@ -233,6 +233,9 @@ fn open_buffer_impl_with_progress(
     // 全共有で開いて小ファイルかどうかを判定。小ファイルはこのハンドルのまま読み切る
     let probe = File::open(path)?;
     let len = probe.metadata()?.len();
+    if let Some(opened) = open_video_metadata(path, &probe)? {
+        return Ok(opened);
+    }
     if !is_archive_handle(&probe) && (len == 0 || len < threshold) {
         return read_released(probe, len, |b| Ok(decode(b)));
     }
@@ -377,6 +380,23 @@ pub fn open_buffer_as_with_progress(
     open_buffer_as_impl_with_progress(path, requested, MMAP_THRESHOLD, progress)
 }
 
+fn open_video_metadata(path: &Path, file: &File) -> io::Result<Option<Opened>> {
+    if !path.extension().and_then(|ext| ext.to_str()).is_some_and(crate::protocol::is_video_extension) {
+        return Ok(None);
+    }
+    let stamp = stamp_of(file)?;
+    Ok(Some(Opened {
+        buf: TextBuffer::new(),
+        enc: Encoding::Utf8 { bom: false },
+        eol: Eol::Lf,
+        entries: None,
+        byte_len: file.metadata()?.len(),
+        is_binary: true,
+        source_file: None,
+        stamp: Some(stamp),
+    }))
+}
+
 fn open_buffer_as_impl_with_progress(
     path: &Path,
     requested: Encoding,
@@ -385,6 +405,9 @@ fn open_buffer_as_impl_with_progress(
 ) -> io::Result<Opened> {
     const MAX_UTF16_BYTES: u64 = 256 * 1024 * 1024;
     let probe = File::open(path)?;
+    if let Some(opened) = open_video_metadata(path, &probe)? {
+        return Ok(opened);
+    }
     if is_archive_handle(&probe) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,

@@ -38,6 +38,7 @@
 .menu-icon-csv::before { content: "▤"; }
 .menu-icon-markdown::before { content: "▧"; }
 .menu-icon-image::before { content: "▨"; }
+.menu-icon-video::before { content: "▶"; }
 .menu-icon-pdf::before { content: "▥"; }
 .menu-icon-html::before { content: "</>"; font-family: Consolas, monospace; font-size: 10px; }
 .menu-icon-sqlite::before { content: "▦"; }

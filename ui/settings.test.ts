@@ -20,6 +20,21 @@ import {
 } from "./settings";
 
 describe("Feature: settings", () => {
+  // Given: Gitプレビューの分割比率が保存されている
+  // When: 保存・再読込し、境界値と不正値を読み込む
+  // Then: 15〜85%を復元し、不正値と未設定は40%へ戻る
+  it("Scenario: Gitプレビューの分割比率を保存し検証する", async () => {
+    setSetting("gitPreviewRatio", 0.6);
+    await flushSettings();
+    expect(updateSettingMock).toHaveBeenCalledWith("gitPreviewRatio", "0.6");
+    for (const ratio of [0.15, 0.6, 0.85]) {
+      expect(parseSettings(JSON.stringify({ gitPreviewRatio: ratio })).gitPreviewRatio).toBe(ratio);
+    }
+    for (const ratio of [0.14, 0.86, "0.4", null, Infinity, NaN]) {
+      expect(parseSettings(JSON.stringify({ gitPreviewRatio: ratio })).gitPreviewRatio).toBe(0.4);
+    }
+    expect(parseSettings("{}").gitPreviewRatio).toBe(0.4);
+  });
   // Given: 初回設定、または保存済みの配置・分割比率がある
   // When: 読み込み・更新・再読み込みを行う
   // Then: 初回は右固定と半分、不正値は既定へ戻り、保存済み値は復元する

@@ -38,28 +38,43 @@ body {
   color: var(--fg); font-size: 12px;
 }
 #viewer-title-text { overflow: hidden; text-overflow: ellipsis; }
+#viewer-preview-kind { flex: none; align-self: center; color: var(--fg); font: 12px var(--font-ui); margin-right: 8px; white-space: nowrap; }
 #viewer-format {
-  display: none; min-width: 0; max-width: 150px; margin-left: 8px;
+  display: none; min-width: 0; margin-left: 8px;
+}
+.viewer-format-trigger {
+  max-width: min(150px, 100%); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   padding: 2px 5px; border: 1px solid var(--border-strong); border-radius: 3px;
   background: var(--bg-title); color: var(--fg); font: 12px var(--font-ui);
   cursor: default;
 }
-#viewer-format:hover { background: var(--hover); }
-#viewer-format option { background: var(--bg-title); color: var(--fg); }
-#viewer-delimiter {
-  display: flex; align-items: center; gap: 4px; flex: none; padding: 0 8px;
-  color: var(--fg); font-size: 12px; user-select: none; white-space: nowrap;
+.viewer-format-trigger:hover { background: var(--hover); }
+.viewer-format-panel {
+  position: fixed; inset: 36px 0 auto; margin: 0 auto;
+  width: min(360px, calc(100vw - 16px));
+  max-height: calc(100vh - 44px); overflow: auto;
+  padding: 8px; border: 1px solid var(--border-strong); border-radius: 5px;
+  background: var(--bg-side); color: var(--fg); box-shadow: 0 4px 16px #0006;
 }
-#viewer-delimiter[hidden] { display: none; }
-#viewer-delimiter-select {
-  max-width: 116px; padding: 2px 4px; border: 1px solid var(--border-strong); border-radius: 3px;
-  background: var(--bg-title); color: var(--fg); font: 12px var(--font-ui); cursor: default;
+.viewer-format-panel:popover-open {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px;
 }
-#viewer-delimiter-select:hover { background: var(--hover); }
-#viewer-delimiter-select option { background: var(--bg-title); color: var(--fg); }
-#viewer-delimiter-input {
-  width: 42px; padding: 2px 2px; border: 0; border-bottom: 1px solid var(--border-strong);
-  background: transparent; color: inherit; font: inherit; text-align: center;
+.viewer-format-panel button {
+  min-width: 0; padding: 9px 4px; border: 1px solid var(--border); border-radius: 3px;
+  background: var(--bg-editor); color: var(--fg); font: 12px var(--font-ui);
+  overflow-wrap: anywhere; cursor: default;
+}
+.viewer-format-panel button:hover:not(:disabled) { background: var(--hover); }
+.viewer-format-panel button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent); color: #fff; }
+.viewer-format-panel button:disabled { opacity: .45; }
+.viewer-format-trigger:focus-visible, .viewer-format-panel button:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+@media (max-width: 280px) {
+  .viewer-format-panel:popover-open { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 180px) {
+  .viewer-format-panel:popover-open { grid-template-columns: minmax(0, 1fr); }
 }
 #viewer-csv-actions { display: flex; align-items: stretch; flex: none; }
 #viewer-csv-actions[hidden] { display: none; }
@@ -69,6 +84,10 @@ body {
 }
 #viewer-csv-actions button:hover { background: var(--hover); }
 #viewer-csv-actions .menu-icon { margin-right: 5px; }
+@media (max-width: 400px) {
+  body.inline-viewer #viewer-csv-actions button { padding: 0 7px; font-size: 0; }
+  body.inline-viewer #viewer-csv-actions .menu-icon { margin-right: 0; font-size: 12px; }
+}
 #wincontrols { display: flex; }
 #wincontrols button {
   width: 46px; border: 0; background: none; color: var(--fg);
@@ -109,6 +128,36 @@ main {
   overflow: auto;
   user-select: text;
 }
+
+.git-preview { display: grid; width: 100%; height: 100%; min-height: 0; font-size: var(--viewer-font-size); }
+.git-history, .git-diff { min-height: 0; min-width: 0; overflow: auto; padding: 8px; }
+.git-history > button[aria-label="閲覧ブランチを選択"] { display: block; position: sticky; top: -8px; max-width: 100%; padding: 6px 4px; background: var(--bg-editor); color: var(--fg); border: 0; font: inherit; text-align: left; overflow-wrap: anywhere; z-index: 1; }
+.git-history details { padding: 4px 0; }
+.git-history summary { cursor: pointer; overflow-wrap: anywhere; }
+.git-branch-panel { min-width: 240px; max-width: min(440px, 90vw); max-height: 65vh; padding: 10px; background: var(--bg-editor); color: var(--fg); border: 1px solid var(--border-strong); border-radius: 4px; }
+.git-branch-panel input { box-sizing: border-box; width: 100%; padding: 5px; background: var(--bg-side); color: var(--fg); border: 1px solid var(--border-strong); }
+.git-branch-panel strong { display: block; padding: 8px 4px 3px; color: var(--fg-dim); }
+.git-branch-panel button { display: block; width: 100%; padding: 5px; background: transparent; color: var(--fg); border: 0; text-align: left; overflow-wrap: anywhere; }
+.git-branch-panel button:hover { background: var(--hover); }
+.git-metadata { margin: 4px 0 4px 18px; color: var(--fg-dim); font-size: .85em; }
+.git-files { margin-left: 18px; }
+.git-files button { display: block; width: 100%; padding: 4px 6px; text-align: left; border: 0; background: transparent; color: var(--fg); font: inherit; overflow-wrap: anywhere; }
+.git-files button:hover { background: var(--hover); }
+.git-files button.selected { background: var(--accent); color: #fff; }
+.git-preview button[data-action="git-more"] { margin: 8px 0; padding: 5px 10px; background: var(--bg-side); color: var(--fg); border: 1px solid var(--border); }
+.git-separator { background: var(--border); cursor: ns-resize; touch-action: none; }
+.git-separator:hover { background: var(--accent); }
+.git-separator:focus-visible, .git-commits summary:focus-visible, .git-files button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.git-diff h3 { position: sticky; top: -8px; padding: 6px 0; background: var(--bg-editor); font-size: 1em; overflow-wrap: anywhere; }
+.git-diff pre { font: inherit; font-family: var(--font-mono); tab-size: 4; white-space: pre; }
+.git-diff pre span { min-height: 1em; }
+.git-added { color: #87d7a0; background: #163721; }
+.git-deleted { color: #f2a4a4; background: #442222; }
+.git-hunk { color: #8dc9f0; }
+:root[data-theme="light"] .git-added { color: #145e29; background: #ddf5e3; }
+:root[data-theme="light"] .git-deleted { color: #8b2020; background: #ffe1e1; }
+:root[data-theme="light"] .git-hunk { color: #225e8c; }
+.git-truncated { padding: 8px 0; color: var(--fg-dim); }
 #viewer-content:empty::before {
   content: "読み込み中…";
   display: grid;
@@ -284,6 +333,9 @@ article tbody tr:nth-child(even) { background: var(--row-alt); }
 }
 .viewer-image-wrap.viewer-image-zoomed .viewer-image { max-width: none; max-height: none; cursor: grab; touch-action: none; }
 .viewer-image.viewer-image-panning { cursor: grabbing; user-select: none; }
+.viewer-video-wrap { width: 100%; height: 100%; display: grid; place-items: center; background: #000; }
+.viewer-video { width: 100%; height: 100%; min-width: 0; min-height: 0; object-fit: contain; }
+.viewer-video[hidden], .viewer-video-wrap .viewer-error[hidden] { display: none; }
 .viewer-pdf-wrap {
   width: 100%;
   height: 100%;
@@ -389,6 +441,12 @@ body.inline-viewer #statusbar { display: none; }
 #chart-toolbar strong { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 #chart-canvas-wrap { position: relative; flex: 1; min-height: 0; padding: 14px; }
 .viewer-error { padding: 24px; color: #f48771; white-space: pre-wrap; }
+#viewer-external-status {
+  position: absolute; top: 0; left: 0; right: 0; z-index: 2; padding: 12px;
+  max-height: 45%; overflow: auto;
+  background: var(--bg-side); color: var(--fg); white-space: pre-wrap;
+  border-bottom: 1px solid var(--border-strong);
+}
 
 ::-webkit-scrollbar { width: 12px; height: 12px; }
 ::-webkit-scrollbar-thumb { background: #79797966; }

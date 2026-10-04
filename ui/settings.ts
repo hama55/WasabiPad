@@ -8,7 +8,7 @@ import { normalizeStoredTabs, type StoredTabs } from "./stored-tabs";
 import { DEFAULT_EDITOR_CONFIG } from "./editor-config";
 import { DEFAULT_INDENT_SIZE, INDENT_SIZES, isValidFontSize } from "./font-controls";
 import { isRegisteredCommand, normalizeRegisteredCommand, type RegisteredCommand } from "./registered-command-model";
-import { SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MIN_WIDTH, isPreviewPlacement, type PreviewPlacement, type PreviewOpenPlacement } from "./preview-layout";
+import { GIT_PREVIEW_MIN_RATIO, GIT_PREVIEW_MAX_RATIO, SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MIN_WIDTH, isPreviewPlacement, type PreviewPlacement, type PreviewOpenPlacement } from "./preview-layout";
 import { parseExternalPreviewAdapters, type ExternalPreviewAdapter } from "./external-preview-adapter-model";
 
 export type { RegisteredCommand } from "./registered-command-model";
@@ -42,6 +42,7 @@ export interface Settings {
   markdownLineHeight: number;
   markdownHeadingUnderlines: boolean;
   sqlitePreviewRows: number;
+  gitPreviewRatio: number;
   previewCacheDirectory: string | null;
   externalPreviewTemporaryDirectory: string | null;
   externalPreviewTemporaryDirectories: string[];
@@ -72,6 +73,7 @@ const DEFAULT_USER_SETTINGS: Pick<Settings, UserSettingKey> = {
   markdownLineHeight: DEFAULT_MARKDOWN_LINE_HEIGHT,
   markdownHeadingUnderlines: false,
   sqlitePreviewRows: DEFAULT_SQLITE_PREVIEW_ROWS,
+  gitPreviewRatio: 0.4,
   previewCacheDirectory: null,
   externalPreviewTemporaryDirectory: null,
   externalPreviewTemporaryDirectories: [],
@@ -154,6 +156,8 @@ export function parseSettingsResult(text: string): SettingsParseResult {
       ? value.previewLastPlacement : DEFAULTS.previewLastPlacement,
     previewRightRatio: parsePreviewRatio(value.previewRightRatio),
     previewVerticalRatio: parsePreviewRatio(value.previewVerticalRatio),
+    gitPreviewRatio: typeof value.gitPreviewRatio === "number" && Number.isFinite(value.gitPreviewRatio)
+      && value.gitPreviewRatio >= GIT_PREVIEW_MIN_RATIO && value.gitPreviewRatio <= GIT_PREVIEW_MAX_RATIO ? value.gitPreviewRatio : DEFAULTS.gitPreviewRatio,
     fontFamily: typeof value.fontFamily === "string" && value.fontFamily.length > 0
       ? value.fontFamily
       : DEFAULTS.fontFamily,

@@ -18,6 +18,7 @@ import {
 import type { FileTreeDropRequest, FileTreeDropResult } from "./file-tree-drop";
 import { clampSearchOptions } from "./workspace-search-options";
 import { isFindShortcut } from "./commands";
+import { isGitPreviewPath } from "./viewer-formats";
 export type { ContextTarget } from "./context-target";
 export type SidebarFileCommand = "copy" | "cut" | "paste" | "rename" | "delete" | "undo" | "redo";
 
@@ -76,6 +77,7 @@ const ROW_GLYPHS: Record<RowKind, [string, string]> = {
 // WorkspaceSearchPanel のもので、ここはそのまま素通しする。
 export interface SidebarPorts extends Omit<WorkspaceSearchPorts, "onViewChange" | "onContextMenu"> {
   onSelect: (relPath: string, newTab: boolean) => void | Promise<boolean | void>;
+  onGitPreview?: (relPath: string) => void | Promise<void>;
   onContextMenu: (x: number, y: number, target: ContextTarget | null, selected?: ContextTarget[]) => void;
   onFileCommand?: (command: SidebarFileCommand, selected: ContextTarget[]) => void | Promise<void>;
   onRenameEntry?: (relPath: string, newName: string) => void | Promise<void>;
@@ -103,6 +105,7 @@ export class Sidebar {
   private keyboardFocusLock = false;
   private keyboardFocusRequests = new Set<number>();
   private onSelect: (relPath: string, newTab: boolean) => void | Promise<boolean | void>;
+  private onGitPreview?: SidebarPorts["onGitPreview"];
   private onContextMenu: (x: number, y: number, target: ContextTarget | null, selected?: ContextTarget[]) => void;
   private onFileCommand?: (command: SidebarFileCommand, selected: ContextTarget[]) => void | Promise<void>;
   private onRenameEntry?: (relPath: string, newName: string) => void | Promise<void>;
@@ -127,6 +130,7 @@ export class Sidebar {
     this.host = host;
     this.defaultSearchOptions = clampSearchOptions(searchOptions);
     this.onSelect = ports.onSelect;
+    this.onGitPreview = ports.onGitPreview;
     this.onContextMenu = ports.onContextMenu;
     this.onFileCommand = ports.onFileCommand;
     this.onRenameEntry = ports.onRenameEntry;
@@ -143,6 +147,7 @@ export class Sidebar {
       onError: ports.onError,
       onOpen: ports.onOpen,
       onReplace: ports.onReplace,
+      onClear: ports.onClear,
       onOptionsChange: (options) => {
         this.defaultSearchOptions = clampSearchOptions(options);
         ports.onOptionsChange(options);
@@ -625,6 +630,8 @@ export class Sidebar {
 
   private requestSelection(relPath: string, newTab: boolean) {
     try {
+      const row = this.rows.find(row => row.relPath === relPath);
+      if (row && isGitRow(row) && this.onGitPreview) return Promise.resolve(this.onGitPreview(relPath));
       return Promise.resolve(this.onSelect(relPath, newTab));
     } catch (error) {
       return Promise.reject(error);
@@ -1096,6 +1103,7 @@ export class Sidebar {
           this.selected = new Set([r.relPath]);
           this.selectionAnchor = r.relPath;
           void this.expandFolderRow(r).catch((error) => this.reportTreeError(error));
+          if (isGitRow(r)) void this.requestSelection(r.relPath, false).catch((error) => this.reportTreeError(error));
         } else if (r.kind === "archive") {
           void this.expandArchiveRow(r).catch((error) => this.reportTreeError(error));
         } else if (r.kind === "archiveDir") {
@@ -1188,12 +1196,16 @@ function nextKeyboardFileIndex(
     cursor += direction;
     if (cursor < 0 || cursor >= visible.length) return null;
     const row = rows[visible[cursor]];
-    if (row.kind === "file" || row.kind === "archiveEntry") return visible[cursor];
+    if (row.kind === "file" || row.kind === "archiveEntry" || isGitRow(row)) return visible[cursor];
   }
 }
 
 function isMovable(row: Row): boolean {
   return !!row.relPath && (row.kind === "dir" || row.kind === "file" || row.kind === "archive");
+}
+
+function isGitRow(row: Row): boolean {
+  return (row.kind === "file" || row.kind === "dir") && isGitPreviewPath(row.relPath);
 }
 
 function parentRelPath(relPath: string): string {

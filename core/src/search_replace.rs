@@ -15,6 +15,9 @@ pub(crate) struct ReplaceProgress {
     pos: Pos,
     find_cursor: Option<FindCursor>,
     count: usize,
+    matches: Option<Vec<(Pos, Pos)>>,
+    collected_lines: usize,
+    collected: bool,
 }
 
 pub(crate) fn find(
@@ -23,17 +26,19 @@ pub(crate) fn find(
     from: Pos,
     forward: bool,
     match_case: bool,
+    use_regex: bool,
+    whole_word: bool,
 ) -> Option<(Pos, Pos)> {
     if pat.is_empty() {
         return None;
     }
     if forward {
-        return match find_step(buf, pat, from, match_case, None, usize::MAX) {
+        return match find_step(buf, pat, from, match_case, use_regex, whole_word, None, usize::MAX) {
             FindStep::Found(start, end) => Some((start, end)),
             _ => None,
         };
     }
-    find_backward(buf, pat, from, match_case, true)
+    find_backward(buf, pat, from, match_case, use_regex, whole_word, true)
 }
 
 pub(crate) fn find_step(
@@ -41,6 +46,8 @@ pub(crate) fn find_step(
     pat: &str,
     from: Pos,
     match_case: bool,
+    use_regex: bool,
+    whole_word: bool,
     cursor: Option<FindCursor>,
     budget: usize,
 ) -> FindStep {
@@ -51,7 +58,7 @@ pub(crate) fn find_step(
         wrapped: false,
         line: from.line,
     });
-    match find_chunk(buf, pat, from, match_case, cur, budget, true) {
+    match find_chunk(buf, pat, from, match_case, use_regex, whole_word, cur, budget, true) {
         ChunkStep::Found(start, end) => FindStep::Found(start, end),
         ChunkStep::More(cursor) => FindStep::More(cursor),
         ChunkStep::NotFound => FindStep::NotFound,
@@ -71,10 +78,29 @@ pub(crate) fn replace_all_chunk(
     pat: &str,
     rep: &str,
     match_case: bool,
+    use_regex: bool,
+    whole_word: bool,
     budget: usize,
 ) -> ReplaceResult {
     const SCAN_BUDGET: usize = 20_000;
     let mut state = progress.take().unwrap_or_default();
+    if (use_regex || whole_word) && !state.collected {
+        // Fix the matches before editing; reverse order preserves positions and zero-width matches.
+        let last = (state.collected_lines + SCAN_BUDGET).min(buf.line_count());
+        if state.collected_lines < last {
+            let matches = crate::search::find_all_in_range(
+                buf, pat, state.collected_lines, last, match_case, use_regex, whole_word, 0,
+            ).expect("search pattern validated by Doc");
+            state.matches.get_or_insert_with(Vec::new).extend(matches);
+            state.collected_lines = last;
+        }
+        if last < buf.line_count() {
+            let result = ReplaceResult { done: false, count: state.count, caret: state.pos };
+            *progress = Some(state);
+            return result;
+        }
+        state.collected = true;
+    }
     let mut replaced = 0;
     loop {
         if replaced >= budget.max(1) {
@@ -90,7 +116,12 @@ pub(crate) fn replace_all_chunk(
             wrapped: false,
             line: state.pos.line,
         });
-        match find_chunk(buf, pat, state.pos, match_case, cursor, SCAN_BUDGET, false) {
+        let step = if let Some(matches) = &mut state.matches {
+            matches.pop().map(|(start, end)| ChunkStep::Found(start, end)).unwrap_or(ChunkStep::NotFound)
+        } else {
+            find_chunk(buf, pat, state.pos, match_case, false, false, cursor, SCAN_BUDGET, false)
+        };
+        match step {
             ChunkStep::Found(start, end) => {
                 state.find_cursor = None;
                 let removed = buf.delete(start, end);
@@ -173,7 +204,7 @@ mod tests {
         let mut buf = TextBuffer::from_text("foo foo");
         let mut undo = UndoStack::new();
         // When: 前方検索してから、1件ずつ置換する
-        assert_eq!(find(&buf, "foo", p(0, 0), true, true), Some((p(0, 0), p(0, 3))));
+        assert_eq!(find(&buf, "foo", p(0, 0), true, true, false, false), Some((p(0, 0), p(0, 3))));
         let mut progress = None;
         let first = replace_all_chunk(
             &mut buf,
@@ -182,6 +213,8 @@ mod tests {
             "foo",
             "bar",
             true,
+            false,
+            false,
             1,
         );
         let second = replace_all_chunk(
@@ -191,6 +224,8 @@ mod tests {
             "foo",
             "bar",
             true,
+            false,
+            false,
             1,
         );
         let third = replace_all_chunk(
@@ -200,6 +235,8 @@ mod tests {
             "foo",
             "bar",
             true,
+            false,
+            false,
             1,
         );
         // Then: 置換は全件完了し、Undo は一つのエントリで元に戻る

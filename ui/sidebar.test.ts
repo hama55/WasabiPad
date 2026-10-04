@@ -11,6 +11,7 @@ interface MountOptions {
   onRenameEntry?: SidebarPorts["onRenameEntry"];
   onDropEntries?: SidebarPorts["onDropEntries"];
   onUndoLastDrop?: SidebarPorts["onUndoLastDrop"];
+  onGitPreview?: (relPath: string) => void;
 }
 
 function mount({
@@ -22,11 +23,13 @@ function mount({
   onRenameEntry,
   onDropEntries = vi.fn(async () => ({ undoable: true })),
   onUndoLastDrop = vi.fn(async () => true),
+  onGitPreview,
 }: MountOptions = {}) {
   const host = document.createElement("div");
   document.body.replaceChildren(host);
   const ports = {
     onSelect: vi.fn(),
+    onGitPreview,
     onContextMenu: vi.fn(),
     onFileCommand,
     onRenameEntry,
@@ -49,6 +52,18 @@ function mount({
 }
 
 describe("Feature: Sidebar", () => {
+  // Given: .git の実フォルダまたは実ファイルがツリーにある
+  // When: 行をクリックする
+  // Then: 文書を開かずGitプレビューを依頼し、フォルダの展開動作は維持する
+  it.each([true, false])("Scenario: .git選択は本文のオープンを経由しない (dir=%s)", async (isDir) => {
+    const onGitPreview = vi.fn();
+    const { host, ports, sidebar } = mount({ onGitPreview });
+    sidebar.setEntries([{ name: ".git", is_dir: isDir, is_archive: false }]);
+    host.querySelector<HTMLElement>('[data-rel-path=".git"]')!.click();
+    await vi.waitFor(() => expect(onGitPreview).toHaveBeenCalledWith(".git"));
+    expect(ports.onSelect).not.toHaveBeenCalled();
+    if (isDir) expect(ports.onExpandFolder).toHaveBeenCalledWith(".git");
+  });
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
@@ -253,7 +268,7 @@ describe("Feature: Sidebar", () => {
     const { host, sidebar } = mount();
     sidebar.setWorkspaceSearch("C:\\workspace");
     sidebar.setEntries([{ name: "memo.txt", is_dir: false, is_archive: false }]);
-    const input = host.querySelector<HTMLInputElement>(".ws-search-row > input")!;
+    const input = host.querySelector<HTMLInputElement>(".ws-search-row input")!;
 
     input.value = "needle";
     input.dispatchEvent(new Event("input"));
@@ -1534,7 +1549,7 @@ describe("Feature: Sidebar", () => {
     const { host, sidebar } = mount();
     sidebar.setEntries([{ name: "a.txt", is_dir: false, is_archive: false }]);
     sidebar.setWorkspaceSearch("C:\\workspace");
-    const input = host.querySelector<HTMLInputElement>(".ws-search-row > input")!;
+    const input = host.querySelector<HTMLInputElement>(".ws-search-row input")!;
     input.value = "needle";
     input.dispatchEvent(new Event("input"));
     await vi.advanceTimersByTimeAsync(150);

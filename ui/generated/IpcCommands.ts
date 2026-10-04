@@ -70,4 +70,11 @@ export const IPC_COMMANDS = {
   closeViewer: "close_viewer",
   probeSqlitePreview: "probe_sqlite_preview",
   readSqlitePreview: "read_sqlite_preview",
+  readGitHistory: "read_git_history",
+  readGitBranches: "read_git_branches",
+  resolveGitWorktreeFile: "resolve_git_worktree_file",
+  readGitWorktreeFiles: "read_git_worktree_files",
+  readGitWorktreeDiff: "read_git_worktree_diff",
+  readGitFiles: "read_git_files",
+  readGitDiff: "read_git_diff",
 } as const;

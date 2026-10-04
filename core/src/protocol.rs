@@ -14,6 +14,10 @@ pub(crate) fn is_image_extension(extension: &str) -> bool {
     matches!(extension.to_ascii_lowercase().as_str(), "svg" | "png" | "jpeg" | "jpg" | "gif" | "webp" | "bmp" | "ico" | "avif" | "apng")
 }
 
+pub(crate) fn is_video_extension(extension: &str) -> bool {
+    matches!(extension.to_ascii_lowercase().as_str(), "mov" | "mp4")
+}
+
 pub(crate) fn image_extension_for_mime(mime_type: &str) -> Option<&'static str> {
     match mime_type.split(';').next().unwrap_or_default().trim().to_ascii_lowercase().as_str() {
     "image/svg+xml" => Some("svg"),

@@ -31,6 +31,7 @@ function makePorts(
     markdownLineHeight: 1.65,
     markdownHeadingUnderlines: false,
     sqlitePreviewRows: 100,
+    gitPreviewRatio: 0.4,
     previewCacheDirectory: null,
     externalPreviewTemporaryDirectory: null,
     externalPreviewTemporaryDirectories: [],

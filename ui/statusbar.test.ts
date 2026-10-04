@@ -39,6 +39,77 @@ function mount(overrides: Partial<StatusBarPorts> = {}) {
 }
 
 describe("Feature: statusbar preview controls", () => {
+  // Feature: 行へ移動
+  // Scenario: 先頭への移動とキャンセル
+  // Given: 1行または10行の文書
+  // When: 先頭行をキーボードで確定し、再度開いてキャンセルする
+  // Then: 先頭行頭へ一度だけ移動し、キャンセルでは移動しない
+  it.each([1, 10])("Scenario: %i行の文書で先頭行とキャンセルを操作する", async (count) => {
+    const { host, statusbar, ports } = mount();
+    statusbar.setLineCount(count);
+    host.querySelector<HTMLButtonElement>("#st-lines")!.click();
+    const first = [...document.querySelectorAll<HTMLButtonElement>(".pf-btns button")]
+      .find(button => button.textContent === "先頭行")!;
+    expect([...document.querySelectorAll(".pf-btns button")].some(button => button.textContent === "最終行")).toBe(true);
+    first.focus();
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    await vi.waitFor(() => expect(ports.onGoTo).toHaveBeenCalledWith(0));
+    for (const cancel of ["Escape", "キャンセル"]) {
+      host.querySelector<HTMLButtonElement>("#st-pos")!.click();
+      if (cancel === "Escape") window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+      else [...document.querySelectorAll<HTMLButtonElement>(".pf-btns button")]
+        .find(button => button.textContent === cancel)!.click();
+      expect(document.querySelector(".pf-overlay")).toBeNull();
+    }
+    expect(ports.onGoTo).toHaveBeenCalledTimes(1);
+  });
+
+  // Feature: 行へ移動
+  // Scenario: 不正入力から修正して移動する
+  // Given: 全10行の文書と行移動ダイアログ
+  // When: 空・非整数・範囲外をEnterで確定し、その後7へ修正する
+  // Then: 不正入力ではエラーを残し、有効入力だけを移動先として通知する
+  it("Scenario: 不正な行番号を拒否して修正を受け付ける", async () => {
+    const { host, statusbar, ports } = mount();
+    statusbar.setLineCount(10);
+    host.querySelector<HTMLButtonElement>("#st-pos")!.click();
+    const input = document.querySelector<HTMLInputElement>(".pf-row input")!;
+    for (const value of ["", "abc", "1.5", "0", "11", "1e1", "0xA"]) {
+      input.value = value;
+      input.dispatchEvent(new Event("input"));
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+      expect(document.querySelector(".pf-overlay")).not.toBeNull();
+      expect(document.querySelector(".pf-error")?.textContent).toContain("整数");
+      expect(ports.onGoTo).not.toHaveBeenCalled();
+    }
+    input.value = "7";
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    await vi.waitFor(() => expect(ports.onGoTo).toHaveBeenCalledWith(6));
+  });
+
+  // Feature: 行へ移動
+  // Scenario: 両入口から最終行へ移動する
+  // Given: 現在4行目、全10行の文書
+  // When: 現在行または総行数を押し、最終行を選ぶ
+  // Then: 同じ入力ダイアログから最終行頭への移動を通知し閉じる
+  it.each(["st-pos", "st-lines"])("Scenario: %sから共通ダイアログで最終行へ移動する", async (id) => {
+    const { host, statusbar, ports } = mount();
+    statusbar.setCursor(4, 2);
+    statusbar.setLineCount(10);
+    host.querySelector<HTMLButtonElement>(`#${id}`)!.click();
+    const input = document.querySelector<HTMLInputElement>(".pf-row input")!;
+    expect(input?.value).toBe("4");
+    expect(document.activeElement).toBe(input);
+    expect(input.selectionStart).toBe(0);
+    expect(input.selectionEnd).toBe(1);
+    const last = [...document.querySelectorAll<HTMLButtonElement>(".pf-btns button")]
+      .find(button => button.textContent === "最終行");
+    expect(last).toBeDefined();
+    last!.click();
+    await vi.waitFor(() => expect(ports.onGoTo).toHaveBeenCalledWith(9));
+    expect(document.querySelector(".pf-overlay")).toBeNull();
+  });
+
   // Feature: ステータスバーのフォント選択
   // Scenario: フォントと文字サイズのプルダウンを開く
   // Given: ステータスバーが初期化されている

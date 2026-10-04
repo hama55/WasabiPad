@@ -1,4 +1,17 @@
-import Chart, { type ChartDataset } from "chart.js/auto";
+import {
+  Chart,
+  LineController,
+  BarController,
+  CategoryScale,
+  LinearScale,
+  LineElement,
+  PointElement,
+  BarElement,
+  Tooltip,
+  Legend,
+  Filler,
+  type ChartDataset,
+} from "chart.js";
 import {
   chartColumnLabel,
   chartPointRadius,
@@ -10,6 +23,11 @@ import {
   parseChartNumber,
   type ChartTypeId,
 } from "./chart-data";
+
+Chart.register(
+  LineController, BarController, CategoryScale, LinearScale,
+  LineElement, PointElement, BarElement, Tooltip, Legend, Filler,
+);
 
 type ChartInstance = Chart<"line" | "bar", (number | null)[], string>;
 type ViewerChartDataset = ChartDataset<"line" | "bar", (number | null)[]> & { columnIndex: number };

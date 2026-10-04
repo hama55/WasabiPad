@@ -37,10 +37,12 @@ export interface TabDocumentPort {
 }
 
 export interface TabWorkspaceStatePort {
-  capture: () => SidebarViewState | null;
+  capture: () => TabWorkspaceState | null;
   reset: () => void;
-  restore: (state: SidebarViewState | null) => void | Promise<void>;
+  restore: (state: TabWorkspaceState | null) => void | Promise<void>;
 }
+
+export type TabWorkspaceState = SidebarViewState & { gitPreviewPath?: string | null };
 
 export interface TabFindHighlightPort {
   capture: () => SearchHighlightQuery | null;
@@ -84,7 +86,7 @@ type NavigationRun<T> = {
 export class TabManager {
   private tabs: StoredTab[] = [];
   private activeId = "";
-  private workspaceStates = new Map<string, { path: string | null; state: SidebarViewState }>();
+  private workspaceStates = new Map<string, { path: string | null; state: TabWorkspaceState }>();
   private findHighlightStates = new Map<string, { path: string | null; query: SearchHighlightQuery | null }>();
   private transitionTarget: string | null = null;
   private loadingActive = false;

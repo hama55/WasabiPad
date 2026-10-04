@@ -1,9 +1,0 @@
-{
-  "name": "wasabipad-lilypond-preview-addin",
-  "version": "1.0.0",
-  "private": true,
-  "type": "module",
-  "dependencies": {
-    "spessasynth_lib": "4.3.14"
-  }
-}

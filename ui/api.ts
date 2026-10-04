@@ -27,6 +27,10 @@ import type { ViewerSelection } from "./generated/ViewerSelection";
 import type { SqliteCell } from "./generated/SqliteCell";
 import type { SqliteObject } from "./generated/SqliteObject";
 import type { SqlitePreview } from "./generated/SqlitePreview";
+import type { GitHistory } from "./generated/GitHistory";
+import type { GitBranch } from "./generated/GitBranch";
+import type { GitChangedFile } from "./generated/GitChangedFile";
+import type { GitFileDiff } from "./generated/GitFileDiff";
 import type { ExternalPreviewFormat } from "./generated/ExternalPreviewFormat";
 import type { ExternalPreviewRequest } from "./generated/ExternalPreviewRequest";
 import type { WorkspaceSearchBatch } from "./generated/WorkspaceSearchBatch";
@@ -61,6 +65,10 @@ export type {
   SqliteCell,
   SqliteObject,
   SqlitePreview,
+  GitHistory,
+  GitBranch,
+  GitChangedFile,
+  GitFileDiff,
   ExternalPreviewFormat,
   ExternalPreviewRequest,
   WorkspaceSearchBatch,
@@ -196,8 +204,8 @@ export const undo = () => invoke<EditResult | null>(IPC_COMMANDS.undo);
 export const redo = () => invoke<EditResult | null>(IPC_COMMANDS.redo);
 
 // 後方検索 (前へ / Shift+Enter) 用。単発フルスキャン
-export const find = (pat: string, from: Pos, forward: boolean, matchCase: boolean) =>
-  invoke<FindResult | null>(IPC_COMMANDS.find, { pat, from, forward, matchCase });
+export const find = (pat: string, from: Pos, forward: boolean, matchCase: boolean, useRegex = false, wholeWord = false) =>
+  invoke<FindResult | null>(IPC_COMMANDS.find, { pat, from, forward, matchCase, useRegex, wholeWord });
 
 export const findAllInRange = (
   pat: string,
@@ -225,13 +233,15 @@ export const findStep = (
   from: Pos,
   matchCase: boolean,
   cursor: FindCursor | undefined,
-  budget: number
-) => invoke<FindOutcome>(IPC_COMMANDS.findStep, { pat, from, matchCase, cursor: cursor ?? null, budget });
+  budget: number,
+  useRegex = false,
+  wholeWord = false,
+) => invoke<FindOutcome>(IPC_COMMANDS.findStep, { pat, from, matchCase, cursor: cursor ?? null, budget, useRegex, wholeWord });
 
 // 1回で最大 budget 件だけ置換する。done=false の間は呼び出し側でループする
 // (再開状態は backend の Doc が保持するため、追加の引数は不要)。
-export const replaceAllChunk = (pat: string, rep: string, matchCase: boolean, budget: number) =>
-  invoke<ReplaceChunkResult>(IPC_COMMANDS.replaceAllChunk, { pat, rep, matchCase, budget });
+export const replaceAllChunk = (pat: string, rep: string, matchCase: boolean, budget: number, useRegex = false, wholeWord = false) =>
+  invoke<ReplaceChunkResult>(IPC_COMMANDS.replaceAllChunk, { pat, rep, matchCase, budget, useRegex, wholeWord });
 
 // 進行中の全置換を打ち切り、ここまでの変更を1つの undo エントリとして確定する
 export const replaceAllCancel = () => invoke<EditResult>(IPC_COMMANDS.replaceAllCancel);
@@ -322,6 +332,17 @@ export const closeViewer = (label: string) =>
   invoke<void>(IPC_COMMANDS.closeViewer, { label });
 export const probeSqlitePreview = (path: string) =>
   invoke<boolean>(IPC_COMMANDS.probeSqlitePreview, { path });
+
+export const readGitHistory = (path: string, head: string | null, offset: number) =>
+  invoke<GitHistory>(IPC_COMMANDS.readGitHistory, { path, head, offset });
+export const readGitBranches = (path: string) => invoke<GitBranch[]>(IPC_COMMANDS.readGitBranches, { path });
+export const resolveGitWorktreeFile = (path: string, commit: string, file: string) => invoke<string>(IPC_COMMANDS.resolveGitWorktreeFile, { path, commit, file });
+export const readGitWorktreeFiles = (path: string) => invoke<GitChangedFile[]>(IPC_COMMANDS.readGitWorktreeFiles, { path });
+export const readGitWorktreeDiff = (path: string, file: string) => invoke<GitFileDiff>(IPC_COMMANDS.readGitWorktreeDiff, { path, file });
+export const readGitFiles = (path: string, commit: string) =>
+  invoke<GitChangedFile[]>(IPC_COMMANDS.readGitFiles, { path, commit });
+export const readGitDiff = (path: string, commit: string, file: string) =>
+  invoke<GitFileDiff>(IPC_COMMANDS.readGitDiff, { path, commit, file });
 export const readSqlitePreview = (
   path: string,
   selectedName: string | null,

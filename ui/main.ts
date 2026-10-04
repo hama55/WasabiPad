@@ -6,6 +6,7 @@ import { desktopDir, join as joinPath, tempDir } from "@tauri-apps/api/path";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { writeText as writeClipboardText } from "@tauri-apps/plugin-clipboard-manager";
 import * as api from "./api";
+import type { GitPreviewTarget } from "./viewer-git";
 import { applyDocumentLoadProgress } from "./document-load-progress";
 import type { EditorPorts } from "./editor";
 import { EditingSurfaceHost } from "./editing-surface-host";
@@ -194,6 +195,7 @@ const dragDropListener = createAsyncUnlisten();
 let layoutRuntime: WindowLayoutRuntime | null = null;
 
 function setLoading(active: boolean, message = "読み込み中…") {
+  if (active && (previewDocument?.format === "video" || previewDocument?.format === "git")) inlinePreview.setVisibility(false, true);
   loading.hidden = !active;
   loadingMessage.textContent = message;
   editorHost.setAttribute("aria-busy", String(active));
@@ -326,6 +328,7 @@ function applyPaneVisibility(mainWidth: number) {
   const fullscreen = isPreviewFullscreen(previewState);
   const returnFocusToCloseButton = previewShown && previewOpenButtons.some((button) => button.matches(":focus-visible"));
   previewEl.hidden = !previewShown;
+  inlinePreview.setVisibility(previewShown, previewCollapsed);
   previewSplitter.hidden = !isPreviewSplitterShown(previewState);
   mainEl.classList.toggle("preview-fullscreen", fullscreen);
   mainEl.classList.toggle("preview-vertical", previewShown && !fullscreen && previewPlacement !== "right");
@@ -378,7 +381,20 @@ function updatePreviewVisibility() {
 
 const inlinePreviewPorts = {
   onClose: closePreview,
-  onRefresh: () => runBackground("外部プレビューを更新できませんでした", refreshExternalPreview),
+  onRefresh: () => runBackground("プレビューを更新できませんでした", () => {
+    if (previewDocument?.format === "git") inlinePreview.refreshGit();
+    else if (previewDocument?.format === "video") inlinePreview.resend();
+    else return refreshExternalPreview();
+  }),
+  onGitOpenFile: (path, commit, file) => runBackground("現在の作業ファイルを開けませんでした", async () => {
+    const target = gitPreviewTarget;
+    const owner = tabs.state.activeId;
+    if (!target || target.path !== path) return;
+    const generation = gitSelectionGeneration;
+    const currentPath = await api.resolveGitWorktreeFile(path, commit, file);
+    if (gitPreviewTarget !== target || tabs.state.activeId !== owner || generation !== gitSelectionGeneration) return;
+    await tabs.openInNewTab(currentPath);
+  }),
   onAvailabilityChange: (available, label) => {
     if (available) {
       previewReplacementLifecycle.onAvailable(
@@ -447,11 +463,15 @@ const inlinePreviewPorts = {
 } satisfies InlinePreviewPorts;
 
 let previewDocument: (PreviewDocument & { externalAdapter?: ExternalPreviewAdapter }) | null = null;
+let gitPreviewTarget: (GitPreviewTarget & { token: string }) | null = null;
+let gitSelectionGeneration = 0;
 let previewRequestGeneration = 0;
 const previewReplacementLifecycle = createPreviewReplacementLifecycle();
 const externalPreviewOutputLifecycle = createExternalPreviewOutputLifecycle(cleanupExternalPreviewOutput);
 let externalPreviewRequestId: string | null = null;
 let openingPreviewRequestGeneration: number | null = null;
+let externalPreviewRefreshPending = false;
+let pendingPreviewClear: Promise<void> = Promise.resolve();
 
 function cleanupExternalPreviewOutput(path: string | null) {
   if (!path) return;
@@ -477,6 +497,7 @@ function clearDisplayedExternalPreviewOutput() {
 function clearExternalPreviewOutput() {
   cancelPendingExternalPreviewRequest();
   openingPreviewRequestGeneration = null;
+  inlinePreview?.setExternalStatus(null);
   clearDisplayedExternalPreviewOutput();
 }
 
@@ -495,16 +516,22 @@ function externalPreviewInputPath(session: Readonly<DocumentSession>): string | 
 }
 
 function clearPreview(session: Readonly<DocumentSession>) {
+  const retiredOutputPath = externalPreviewOutputLifecycle.displayedOutputPath();
+  previewReplacementLifecycle.finish(previewRequestGeneration);
   previewRequestGeneration++;
   openingPreviewRequestGeneration = null;
   cancelPendingExternalPreviewRequest();
+  inlinePreview.setExternalStatus(null);
   inlinePreview.setPendingExternalOutputPath(null);
   inlinePreview.setSourcePath(null, session.archivePath, session.archiveEntry);
   previewDocument = null;
   previewFullscreen = false;
   previewFullscreenTabId = null;
   editingStatusbar.setPreviewFormat(null);
-  inlinePreview.clear();
+  pendingPreviewClear = inlinePreview.clear().then(() => {
+    if (retiredOutputPath && externalPreviewOutputLifecycle.displayedOutputPath() === retiredOutputPath
+      && !inlinePreview.mayReferenceExternalOutputPath(retiredOutputPath)) clearDisplayedExternalPreviewOutput();
+  });
   if (!previewAvailable) clearDisplayedExternalPreviewOutput();
 }
 
@@ -527,6 +554,9 @@ function openPreviewFormat(
     errorTitle = "ビューを表示できませんでした",
     externalAdapter,
   } = options;
+  if (externalAdapter && previewReplacementLifecycle.isReplacing()
+    && previewDocument?.externalAdapter?.id === externalAdapter.id
+    && isCurrentPreviewDocument(previewDocument, tabs?.state.activeId ?? null, path)) return;
   if (options.placement || !previewAvailable || previewCollapsed) {
     selectPreviewPlacement(options.placement);
   }
@@ -542,11 +572,24 @@ function openPreviewFormat(
   const requestGeneration = ++previewRequestGeneration;
   const pendingViewerOpenCancellation = previewReplacementLifecycle.begin(
     requestGeneration,
-    () => editor.cancelPendingTextViewerOpens(),
+    async () => {
+      await pendingPreviewClear;
+      await editor.cancelPendingTextViewerOpens();
+    },
   );
   const isCurrentRequest = () => requestGeneration === previewRequestGeneration
     && document.ownerTabId === (tabs?.state.activeId ?? null)
-    && document.path === documentPathOf(doc.current);
+    && document.path === (format === "git" ? gitPreviewTarget?.path : documentPathOf(doc.current));
+  if (externalAdapter || format === "git") {
+    previewDocument = document;
+    openingPreviewRequestGeneration = requestGeneration;
+  } else inlinePreview.setExternalStatus(null);
+  const restoreAfterDecline = () => {
+    if (!isCurrentRequest()) return;
+    previewDocument = previousPreviewDocument;
+    inlinePreview.setExternalStatus(null);
+    if (!previousPreviewDocument) clearPreview(session);
+  };
   runBackground(errorTitle, async () => {
     let requestId: string | null = null;
     let generatedOutputPath: string | null = null;
@@ -556,6 +599,14 @@ function openPreviewFormat(
       let resolvedFormat = format;
       let effectiveExtension = session.effectiveExtension;
       if (externalAdapter) {
+        inlinePreview.setExternalStatus({
+          message: getSetting("trustedExternalPreviewAdapterIds").includes(externalAdapter.id)
+            ? externalPreviewOutputLifecycle.displayedOutputPath() ? "更新中…" : "変換中…"
+            : "実行確認待ち…",
+          busy: true,
+        });
+        previewCollapsed = false;
+        updatePreviewVisibility();
         const inputPath = externalPreviewInputPath(session);
         if (!inputPath) throw new Error("外部プレビューは保存済みの通常ファイルだけに対応しています");
         if (!getSetting("trustedExternalPreviewAdapterIds").includes(externalAdapter.id)) {
@@ -581,14 +632,24 @@ function openPreviewFormat(
               + "実行ファイル: " + externalAdapter.command + "\n引数: " + externalAdapter.args,
             "信頼して実行",
           );
-          if (!approved || !isCurrentRequest() || !isSelectedAdapterCurrent()) return;
+          if (!approved || !isCurrentRequest() || !isSelectedAdapterCurrent()) {
+            restoreAfterDecline();
+            return;
+          }
           setSetting("trustedExternalPreviewAdapterIds", [
             ...getSetting("trustedExternalPreviewAdapterIds"),
             externalAdapter.id,
           ]);
           await flushSettings();
-          if (!isCurrentRequest() || !isSelectedAdapterCurrent()) return;
+          if (!isCurrentRequest() || !isSelectedAdapterCurrent()) {
+            restoreAfterDecline();
+            return;
+          }
         }
+        inlinePreview.setExternalStatus({
+          message: externalPreviewOutputLifecycle.displayedOutputPath() ? "更新中…" : "変換中…",
+          busy: true,
+        });
         requestId = window.crypto.randomUUID();
         externalPreviewRequestId = requestId;
         generatedOutputPath = await api.externalPreviewGenerate({
@@ -608,6 +669,7 @@ function openPreviewFormat(
           return;
         }
         setExternalPreviewLog(null);
+        inlinePreview.setExternalStatus({ message: "読み込み中…", busy: true });
         resolvedFormat = externalAdapter.outputFormat === "svg" ? "image" : "html";
         effectiveExtension = null;
       }
@@ -634,10 +696,10 @@ function openPreviewFormat(
       }
       if (!isCurrentRequest()) return;
       inlinePreview.setSourcePath(
-        sourcePathForViewer(resolvedFormat, session.savePath, session.displayPath),
-        session.archivePath,
-        session.archiveEntry,
-        effectiveExtension,
+        resolvedFormat === "git" ? path : sourcePathForViewer(resolvedFormat, session.savePath, session.displayPath),
+        resolvedFormat === "git" ? null : session.archivePath,
+        resolvedFormat === "git" ? null : session.archiveEntry,
+        resolvedFormat === "git" ? null : effectiveExtension,
       );
       inlinePreview.setPendingExternalOutputPath(generatedOutputPath);
       openingPreviewRequestGeneration = requestGeneration;
@@ -659,17 +721,7 @@ function openPreviewFormat(
         return;
       }
       if (openedLabel === null || !previewReplacementLifecycle.isActive(openedLabel)) {
-        if (requestId) {
-          previewReplacementLifecycle.handleOpenResult(openedLabel, () => {
-            if (!previewAvailable && isCurrentRequest()) invalidatePreviewRequest();
-          });
-        }
-        if (generatedOutputPath) {
-          externalPreviewOutputLifecycle.discardGeneratedOutput(
-            generatedOutputPath,
-            inlinePreview.mayReferenceExternalOutputPath(generatedOutputPath),
-          );
-        }
+        if (externalAdapter) throw new Error("外部プレビューの表示を完了できませんでした");
         return;
       }
 
@@ -687,6 +739,11 @@ function openPreviewFormat(
         clearDisplayedExternalPreviewOutput();
       }
       previewDocument = document;
+      if (resolvedFormat === "git" && gitPreviewTarget?.collapsed) {
+        previewCollapsed = true;
+        updatePreviewVisibility();
+      }
+      inlinePreview.setExternalStatus(null);
       editingStatusbar.setPreviewFormat(resolvedFormat);
       if (fragment !== null && resolvedFormat === "markdown") inlinePreview.setMarkdownFragment(fragment);
     } catch (error) {
@@ -699,7 +756,7 @@ function openPreviewFormat(
       }
       throw error;
     } finally {
-      inlinePreview.setPendingExternalOutputPath(externalPreviewOutputLifecycle.displayedOutputPath());
+      if (isCurrentRequest()) inlinePreview.setPendingExternalOutputPath(externalPreviewOutputLifecycle.displayedOutputPath());
       previewReplacementLifecycle.finish(requestGeneration);
       if (openingPreviewRequestGeneration === requestGeneration) openingPreviewRequestGeneration = null;
       if (requestId && externalPreviewRequestId === requestId) externalPreviewRequestId = null;
@@ -708,14 +765,10 @@ function openPreviewFormat(
     if (!isCurrentRequest()) return;
     const detail = error instanceof Error ? error.message : String(error);
     setExternalPreviewLog(detail);
-    await showLog("外部プレビュー実行ログ", detail);
-    if (!isCurrentRequest()) return;
-    const retry = await confirmMessage(
-      "外部プレビューを表示できませんでした",
-      "ログは上部の「実行ログ」から再度確認できます。\n再実行しますか？",
-      "再実行",
-    );
-    if (retry && isCurrentRequest()) openPreviewFormat(session, path, format, fragment, options);
+    inlinePreview.setExternalStatus({
+      message: "変換失敗: " + detail + "\n「更新」から再試行できます。ログは上部の「実行ログ」から確認できます。",
+      busy: false,
+    });
   } : undefined);
 }
 
@@ -725,11 +778,56 @@ function sqlitePreviewSourcePath(session: Readonly<DocumentSession>): string | n
   return sourcePathForViewer("sqlite", session.savePath, session.displayPath);
 }
 
+async function openGitPreview(relPath: string) {
+  const generation = ++gitSelectionGeneration;
+  const session = doc.current;
+  if (!session.folderRoot) return;
+  const owner = tabs.state.activeId;
+  const documentPath = documentPathOf(session);
+  const path = await joinPath(session.folderRoot, relPath);
+  if (generation !== gitSelectionGeneration || tabs.state.activeId !== owner || documentPathOf(doc.current) !== documentPath) return;
+  if (gitPreviewTarget?.path === path) {
+    gitPreviewTarget.collapsed = false;
+    openPreview();
+    return;
+  }
+  gitPreviewTarget = { path, documentPath, collapsed: false, token: window.crypto.randomUUID() };
+  openPreviewFormat(session, path, "git");
+}
+
+async function navigateTreeEntry(relPath: string, openAs?: api.OpenAs) {
+  ++gitSelectionGeneration;
+  const target = gitPreviewTarget;
+  const owner = tabs.state.activeId;
+  const opened = await tabs.navigateEntry(relPath, openAs);
+  if (opened && target && owner === tabs.state.activeId && gitPreviewTarget === target) {
+    gitPreviewTarget = null;
+    syncPreviewDocument(doc.current, true);
+  }
+  return opened;
+}
+
 function syncPreviewDocument(session: Readonly<DocumentSession>, force = false, fragment: string | null = null) {
   const path = documentPathOf(session);
   const activeTabId = tabs?.state.activeId ?? null;
+  if (gitPreviewTarget) {
+    if (gitPreviewTarget.documentPath === path) {
+      if (!isCurrentPreviewDocument(previewDocument, activeTabId, gitPreviewTarget.path)) {
+        openPreviewFormat(session, gitPreviewTarget.path, "git");
+      }
+      return;
+    }
+    gitPreviewTarget = null;
+  }
+  if (previewDocument?.format === "video" && !isCurrentPreviewDocument(previewDocument, activeTabId, path)) {
+    inlinePreview.setVisibility(false, true);
+  }
   const classificationPath = classificationPathOf(session);
   const standardFormat = viewerFormatForAutomaticPreview(classificationPath);
+  if (standardFormat === "video" && (session.archivePath !== null || session.archiveEntry !== null)) {
+    clearPreview(session);
+    return;
+  }
   const externalAdapter = externalPreviewAdapterForPath(
     classificationPath,
     getSetting("externalPreviewAdapters"),
@@ -769,7 +867,7 @@ function syncPreviewDocument(session: Readonly<DocumentSession>, force = false, 
     clearPreview(session);
     return;
   }
-  if (!force && isCurrentPreviewDocument(previewDocument, activeTabId, path) && !isAssetPreview) return;
+  if (!force && isCurrentPreviewDocument(previewDocument, activeTabId, path) && (!isAssetPreview || format === "video")) return;
   if (!format) {
     clearPreview(session);
     return;
@@ -915,6 +1013,15 @@ const editorPorts = {
     const session = doc.current;
     const path = documentPathOf(session);
     const ownerTabId = tabs?.state.activeId ?? null;
+    if (format === "git") {
+      if (!gitPreviewTarget || !isCurrentRequest()) return null;
+      text = JSON.stringify({ token: gitPreviewTarget.token });
+      selection = null;
+    }
+    if (format === "video") {
+      if (session.archivePath !== null || session.archiveEntry !== null) return null;
+      inlinePreview.setSourcePath(sourcePathForViewer(format, session.savePath, session.displayPath));
+    }
     let sqliteRequestGeneration = previewRequestGeneration;
     const isCurrentSqliteRequest = () => sqliteRequestGeneration === previewRequestGeneration
       && ownerTabId === (tabs?.state.activeId ?? null)
@@ -1104,8 +1211,9 @@ const workspaceHost = new WorkspaceHost(
     sidebar: {
       onSelect: async (relPath, newTab) => {
         if (newTab) return openInNewTab(relPath);
-        return tabs.navigateEntry(relPath);
+        return navigateTreeEntry(relPath);
       },
+      onGitPreview: openGitPreview,
       onContextMenu: (x, y, target, selected) => folderActions.showContextMenu(x, y, target, selected),
       onFileCommand: (command, selected) => folderActions.executeCommand(command, selected),
       onRenameEntry: (relPath, newName) => folderActions.renameEntry(relPath, newName),
@@ -1125,10 +1233,11 @@ const workspaceHost = new WorkspaceHost(
       onCancelError: (error) => showError("検索を中止できませんでした", error),
       onError: (error) => showError("フォルダを検索できませんでした", error),
       onOptionsChange: saveSearchOptions,
+      onClear: () => editor.setFindHighlightQuery("", false),
       onOpen: async (result, newTab, query) => {
         if (newTab) {
           if (!(await openInNewTab(result.rel_path, searchResultGoto(result)))) return false;
-        } else if (!(await tabs.navigateEntry(result.rel_path))) {
+        } else if (!(await navigateTreeEntry(result.rel_path))) {
           return false;
         }
         // 当たった長さは backend が返す範囲から取る。正規表現や大小の畳み込みでは
@@ -1145,7 +1254,7 @@ const workspaceHost = new WorkspaceHost(
       },
       onReplace: async (result, replacement) => {
         if (result.is_filename) return false;
-        if (!(await tabs.navigateEntry(result.rel_path))) return false;
+        if (!(await navigateTreeEntry(result.rel_path))) return false;
         const [, length] = result.highlights[0] ?? [0, 0];
         if (!length) return false;
         return editor.replaceRange(result.line, result.col, result.col + length, replacement);
@@ -1313,7 +1422,7 @@ const folderActions = new FolderActions(doc, {
   onOpenInNewTab: (relPath, goto) => runBackground("新規タブで開けませんでした", () => openInNewTab(relPath, goto)),
   onOpenInNewWindow: (path, goto) => launchNewWindow({ path, goto: goto ?? null }),
   onOpenAs: (relPath, openAs) => {
-    runBackground("指定した形式で開けませんでした", () => tabs.navigateEntry(relPath, openAs));
+    runBackground("指定した形式で開けませんでした", () => navigateTreeEntry(relPath, openAs));
   },
   onAddFavorite: (path) => runBackground("お気に入りに追加できませんでした", () => favbar.addExternal(path)),
   onSetStartupPath: (path) => setSetting("startupPath", path),
@@ -1379,7 +1488,18 @@ $("sidebar-toggle").addEventListener("click", () => {
 function closePreview(returnFocusToOpenButton = false) {
   const layoutWidth = measuredMainWidth();
   if (!Number.isFinite(layoutWidth) || layoutWidth <= 0 || !paneVisibilityAt(layoutWidth).previewShown) return;
+  ++gitSelectionGeneration;
+  if (previewDocument?.externalAdapter && (previewReplacementLifecycle.isReplacing() || externalPreviewRefreshPending)) {
+    clearPreview(doc.current);
+    runBackground("プレビューの表示待ちを取り消せませんでした", () => editor.cancelPendingTextViewerOpens());
+  }
+  if (gitPreviewTarget && previewReplacementLifecycle.isReplacing()) clearPreview(doc.current);
   previewCollapsed = true;
+  if (gitPreviewTarget) {
+    gitPreviewTarget.collapsed = true;
+    invalidatePreviewRequest(false);
+    runBackground("プレビューの表示待ちを取り消せませんでした", () => editor.cancelPendingTextViewerOpens());
+  }
   previewFullscreen = false;
   previewFullscreenTabId = null;
   updatePreviewVisibility();
@@ -1398,6 +1518,11 @@ function openPreview(placement?: PreviewPlacement) {
     if (!placement || placement === previewPlacement) return;
     selectPreviewPlacement(placement);
     updatePreviewVisibility();
+    return;
+  }
+  if (gitPreviewTarget && (!previewAvailable || previewDocument?.format !== "git")) {
+    gitPreviewTarget.collapsed = false;
+    openPreviewFormat(doc.current, gitPreviewTarget.path, "git", null, { placement });
     return;
   }
   if (!previewAvailable) {
@@ -1427,6 +1552,7 @@ function openPreview(placement?: PreviewPlacement) {
   }
   selectPreviewPlacement(placement);
   previewCollapsed = false;
+  if (gitPreviewTarget) gitPreviewTarget.collapsed = false;
   updatePreviewVisibility();
   if (shouldResendPreviewOnRestore(previewDocument?.format ?? null)) inlinePreview.resend();
 }
@@ -1604,12 +1730,18 @@ tabs = new TabManager($("tabs"), doc, {
     if (!secondaryInstance) setSetting("openTabs", state);
   },
   workspace: {
-    capture: () => ({ ...sidebar.captureViewState(), fileTreeWidth: readSidebarWidth() }),
-    reset: () => sidebar.resetViewState(),
-    restore: (state) => {
+    capture: () => ({ ...sidebar.captureViewState(), fileTreeWidth: readSidebarWidth(), gitPreviewPath: gitPreviewTarget?.path ?? null }),
+    reset: () => { ++gitSelectionGeneration; gitPreviewTarget = null; sidebar.resetViewState(); },
+    restore: async (state) => {
+      const owner = tabs.state.activeId;
       setSidebarWidth(state?.fileTreeWidth ?? getSetting("sidebarWidth"));
       updateSidebarVisibility();
-      return sidebar.restoreViewState(state);
+      await sidebar.restoreViewState(state);
+      if (owner !== tabs.state.activeId) return;
+      if (state?.gitPreviewPath) {
+        gitPreviewTarget = { path: state.gitPreviewPath, documentPath: documentPathOf(doc.current), collapsed: false, token: window.crypto.randomUUID() };
+        openPreviewFormat(doc.current, gitPreviewTarget.path, "git");
+      }
     },
   },
   findHighlight: {
@@ -1644,28 +1776,35 @@ try {
 }
 
 async function refreshExternalPreview() {
+  if (previewReplacementLifecycle.isReplacing() || externalPreviewRefreshPending) return;
   const opened = previewDocument;
   const adapter = opened?.externalAdapter;
   if (!opened || !adapter
     || !isCurrentPreviewDocument(opened, tabs.state.activeId, documentPathOf(doc.current))) return;
 
-  if (doc.current.dirty) {
-    const save = await confirmMessage(
-      "外部プレビューを更新",
-      "未保存の編集を保存してからプレビューを更新しますか？",
-      "保存して更新",
-    );
-    if (!save || previewDocument !== opened) return;
-    if (!await doc.save() || doc.current.dirty) return;
-  }
+  const refreshGeneration = previewRequestGeneration;
+  externalPreviewRefreshPending = true;
+  try {
+    if (doc.current.dirty) {
+      const save = await confirmMessage(
+        "外部プレビューを更新",
+        "未保存の編集を保存してからプレビューを更新しますか？",
+        "保存して更新",
+      );
+      if (!save || previewDocument !== opened || refreshGeneration !== previewRequestGeneration) return;
+      if (!await doc.save() || doc.current.dirty) return;
+    }
 
-  if (previewDocument !== opened
-    || !isCurrentPreviewDocument(opened, tabs.state.activeId, documentPathOf(doc.current))) return;
-  openPreviewFormat(doc.current, documentPathOf(doc.current), opened.format, null, {
-    keepPreviewRange: true,
-    errorTitle: "外部プレビューを更新できませんでした",
-    externalAdapter: adapter,
-  });
+    if (refreshGeneration !== previewRequestGeneration || previewDocument !== opened
+      || !isCurrentPreviewDocument(opened, tabs.state.activeId, documentPathOf(doc.current))) return;
+    openPreviewFormat(doc.current, documentPathOf(doc.current), opened.format, null, {
+      keepPreviewRange: true,
+      errorTitle: "外部プレビューを更新できませんでした",
+      externalAdapter: adapter,
+    });
+  } finally {
+    externalPreviewRefreshPending = false;
+  }
 }
 
 try {

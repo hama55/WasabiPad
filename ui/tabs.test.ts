@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "./api";
-import { TabManager, type StoredTabs, type TabDocumentPort } from "./tabs";
+import { TabManager, type StoredTabs, type TabDocumentPort, type TabWorkspaceState } from "./tabs";
 import type { SidebarViewState } from "./sidebar";
 import { initialSession } from "./session";
 import { initSettings } from "./settings";
@@ -105,6 +105,34 @@ function dragOnto(from: HTMLElement, to: HTMLElement, ratio: number) {
 }
 
 describe("Feature: TabManager", () => {
+  // Given: ファイルツリーを展開したフォルダタブと別タブ
+  // When: タブを往復してから再起動相当のinitを行う
+  // Then: 閲覧元リポジトリだけ保持し、Git内部状態や再起動状態を保存しない
+  it("Scenario: タブworkspaceにはGitの閲覧元だけを保持する", async () => {
+    const { doc, host } = fixture();
+    vi.mocked(doc.openPath).mockImplementation(async (path: string) => {
+      doc.current.folderRoot = path;
+      doc.current.displayPath = path;
+      doc.current.savePath = null;
+      return true;
+    });
+    let state: TabWorkspaceState | null = null;
+    const workspace = { capture: () => state, reset: () => { state = null; }, restore: (value: TabWorkspaceState | null) => { state = value; } };
+    const manager = new TabManager(host, doc, { onChange: () => {}, workspace }, registeredCommandPorts);
+    const tabs: StoredTabs = { tabs: [{ id: "git", path: "C:/repo", kind: "folder", label: "repo" }, { id: "other", path: "C:/other", kind: "folder", label: "other" }], activeId: "git" };
+    await manager.init(tabs, null, null);
+    const saved: TabWorkspaceState = {
+      kind: "folder", expandedRelPaths: [".git"], search: null,
+      gitPreviewPath: "C:/repo/.git",
+    };
+    state = saved;
+    await manager.activate("other");
+    await manager.activate("git");
+    expect(state).toEqual(saved);
+    expect(JSON.stringify(manager.state)).not.toContain("gitPreviewPath");
+    await manager.init(manager.state, null, null);
+    expect(state).toBeNull();
+  });
   beforeEach(async () => {
     document.body.replaceChildren(document.createElement("div"));
     await initSettings();

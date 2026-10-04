@@ -171,13 +171,14 @@ describe("Feature: preview layout", () => {
     expect(isPreviewFullscreen({ available: true, collapsed: true, fullscreen: true })).toBe(false);
   });
 
-  // Feature: SQLiteプレビューの表示状態
-  // Scenario: SQLiteプレビューを折りたたんでから再表示する
-  // Given: SQLiteまたは通常形式のプレビューが開いている
+  // Feature: SQLite・動画プレビューの表示状態
+  // Scenario: SQLite・動画プレビューを折りたたんでから再表示する
+  // Given: SQLite・動画または通常形式のプレビューが開いている
   // When: プレビューの再表示時にpayload再送可否を求める
-  // Then: SQLiteだけ既存iframeの状態を保持するため再送しない
-  it("Scenario: SQLiteプレビューの再表示ではpayloadを再送しない", () => {
+  // Then: SQLite・動画は既存iframeの状態を保持するため再送しない
+  it("Scenario: SQLite・動画プレビューの再表示ではpayloadを再送しない", () => {
     expect(shouldResendPreviewOnRestore("sqlite")).toBe(false);
+    expect(shouldResendPreviewOnRestore("video")).toBe(false);
     expect(shouldResendPreviewOnRestore("markdown")).toBe(true);
     expect(shouldResendPreviewOnRestore(null)).toBe(true);
   });
