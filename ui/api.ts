@@ -159,6 +159,14 @@ export const restoreDeletedEntry = (relPath: string) =>
 
 export const savePastedImage = (bytes: number[], mimeType: string) =>
   invoke<string>(IPC_COMMANDS.savePastedImage, { bytes, mimeType });
+export const saveDiagramImage = (bytes: number[], mimeType: string, shared: boolean, sourcePath: string, archiveEntry: string | null) =>
+  invoke<string>(IPC_COMMANDS.saveDiagramImage, { bytes, mimeType, shared, sourcePath, archiveEntry });
+export const finishDiagramAssets = (sourcePath: string, archiveEntry: string | null) =>
+  invoke<void>(IPC_COMMANDS.finishDiagramAssets, { sourcePath, archiveEntry });
+export const readDiagramAsset = (path: string, sourcePath: string) =>
+  invoke<ArrayBuffer>(IPC_COMMANDS.readDiagramAsset, { path, sourcePath });
+export const applyDiagramEdit = (start: Pos, end: Pos, caretBefore: Pos, text: string, expected: string, expectedLine: string, sourcePath: string, archiveEntry: string | null) =>
+  invoke<EditResult>(IPC_COMMANDS.applyDiagramEdit, { start, end, caretBefore, text, expected, expectedLine, sourcePath, archiveEntry });
 export const cleanupUnusedImages = (path: string) =>
   invoke<void>(IPC_COMMANDS.cleanupUnusedImages, { path });
 export const readArchiveAsset = (

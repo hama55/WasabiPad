@@ -47,6 +47,13 @@ import type { EditorViewState } from "./editor-view-state";
 import { selectedLineRange } from "./editor-edit-plan";
 import { transformTrackedRange } from "./viewer-range";
 import type { SearchHighlightQuery } from "./workspace-search-options";
+import { readDiagramSvg, writeDiagramSvg, validateStandaloneSvg, type Diagram } from "./diagram";
+import { imageDataUrl } from "./diagram-assets";
+import { openDiagramEditor, imageDimensions, type DiagramBackground } from "./diagram-dialog";
+import { diagramTargetAt, diagramInsertion, diagramImageTag, replaceDiagramTarget, offsetToDiagramPos } from "./diagram-target";
+import type { DiagramAssetSession } from "./diagram-editor-session";
+import { imageMimeType } from "./image-formats";
+import { basename } from "./path";
 
 const OVERSCAN = 8;
 
@@ -85,6 +92,7 @@ export interface EditorPorts {
   updateViewer: (label: string, text: string, selection: api.ViewerSelection | null) => Promise<boolean>;
   closeViewer: (label: string) => Promise<void>;
   saveImage?: (bytes: number[], mimeType: string) => Promise<string>;
+  prepareDiagram?: () => Promise<DiagramAssetSession | null>;
 }
 
 // 全ファイル共通の仮想スクロールエディタ。文書は backend(mmap/overlay)が所有し、
@@ -166,6 +174,9 @@ export class VirtualEditor {
   private onError: (message: string, error: unknown) => Promise<void>;
   private togglePreview: EditorPorts["togglePreview"];
   private onPasteImage?: (bytes: number[], mimeType: string) => Promise<string>;
+  private prepareDiagram?: EditorPorts["prepareDiagram"];
+  private diagramRevision = 0;
+  private diagramEditing = false;
   private rectangularClipboard = new RectangularClipboard();
   private liveViewers: LiveViewers;
   private openViewer: EditorPorts["openViewer"];
@@ -185,6 +196,7 @@ export class VirtualEditor {
     );
     this.lineCache = new LineCache(doc);
     this.openViewer = ports.openViewer;
+    this.prepareDiagram = ports.prepareDiagram;
     this.liveViewers = new LiveViewers({
       openViewer: (format, text, selection, externalOutputPath, isCurrentRequest) => {
         if (externalOutputPath === undefined && !isCurrentRequest) {
@@ -1620,6 +1632,7 @@ export class VirtualEditor {
 
   // ---- 編集 (backend へ委譲・順序保証) ----
   private applyResult(r: api.EditResult, fromLine: number, edits: api.EditManyItem[] = []) {
+    this.diagramRevision += 1;
     const oldScrollTop = this.scroll.scrollTop;
     const oldTopLine = this.wrap || this.metrics.scaleMode ? this.topLineF : this.pxToLine(oldScrollTop);
     const oldIntraLinePx = this.wrapIntraLinePx;
@@ -1853,6 +1866,90 @@ export class VirtualEditor {
     const src = await this.onPasteImage(bytes, mimeType);
     await this.insertText(`<img src="${src}" alt="貼り付け画像"${widthAttribute}>\n`);
     if (!this.liveViewers.has("markdown")) await this.openTextViewer("markdown");
+  }
+
+  async editDiagramAt(pos: Pos): Promise<void> {
+    if (this.readOnly || this.busy || this.diagramEditing || !this.prepareDiagram) return;
+    this.diagramEditing = true;
+    try {
+      const session = await this.prepareDiagram();
+      if (!session || !session.isCurrent()) return;
+      const generation = this.documentGeneration, revision = this.diagramRevision;
+      const last = this.lineCount - 1;
+      const text = await this.lineCache.textInRange({ line: 0, col: 0 }, { line: last, col: await this.lineCache.lineLength(last) });
+      const check = () => {
+        if (generation !== this.documentGeneration || revision !== this.diagramRevision || !session.isCurrent() || this.readOnly) throw new Error("元の文書が変更されました。図の編集内容は保持しています。");
+      };
+      check();
+      const lines = text.split("\n");
+      const clickedOffset = lines.slice(0, pos.line).reduce((sum, line) => sum + line.length + 1, 0) + charToU16(lines[pos.line] ?? "", pos.col);
+      const target = diagramTargetAt(text, clickedOffset);
+      let initial: Diagram = { width: 800, height: 600, elements: [] };
+      const sources = new Map<string, string>(), initialBackgrounds = new Map<string, DiagramBackground>(), missing: string[] = [];
+      if (target) {
+        const bytes = await session.readImage(target.src);
+        check();
+        const mimeType = imageMimeType(target.src);
+        const svg = mimeType === "image/svg+xml" ? new TextDecoder().decode(bytes) : null;
+        const diagram = svg !== null ? readDiagramSvg(svg) : null;
+        if (diagram) {
+          initial = diagram;
+          for (const element of diagram.elements) {
+            if (element.kind !== "image" || !element.src || sources.has(element.src)) continue;
+            try {
+              const background = await session.readImage(element.src, target.src);
+              const backgroundMime = imageMimeType(element.src);
+              if (backgroundMime === "image/svg+xml") validateStandaloneSvg(new TextDecoder().decode(background));
+              const dataUrl = imageDataUrl(background, backgroundMime);
+              sources.set(element.src, dataUrl);
+              if (!target.src.replace(/\\/g, "/").startsWith(`${session.assetPrefix}/`)) initialBackgrounds.set(element.src, { bytes: background, mimeType: backgroundMime, dataUrl });
+            } catch { sources.set(element.src, ""); missing.push(element.src); }
+          }
+        } else {
+          if (svg !== null) validateStandaloneSvg(svg);
+          const dataUrl = imageDataUrl(bytes, mimeType), size = await imageDimensions(dataUrl);
+          const src = basename(target.src);
+          initial = { width: Math.min(10000, size.width), height: Math.min(10000, size.height), elements: [{ id: 1, kind: "image", src, x: 0, y: 0, width: size.width, height: size.height }] };
+          sources.set(src, dataUrl);
+          if (!target.src.replace(/\\/g, "/").startsWith(`${session.assetPrefix}/`)) initialBackgrounds.set(src, { bytes, mimeType, dataUrl });
+        }
+      }
+      check();
+      await openDiagramEditor({ initial, sources, initialBackgrounds, missing, save: async (diagram, backgrounds) => {
+        check();
+        let committed = false;
+        try {
+          const elements = [];
+          const imported = new Map<string, string>();
+          for (const element of diagram.elements) {
+            const background = element.src ? backgrounds.get(element.src) : null;
+            if (element.kind === "image" && element.src && background) {
+              let src = imported.get(element.src);
+              if (!src) { src = basename(await session.saveImage(background.bytes, background.mimeType, true)); imported.set(element.src, src); check(); }
+              elements.push({ ...element, src });
+            } else elements.push(element);
+          }
+          const svg = writeDiagramSvg({ ...diagram, elements });
+          const src = await session.saveImage(new TextEncoder().encode(svg).buffer, "image/svg+xml", false);
+          check();
+          const width = getSetting("pastedImageWidthEnabled") ? Math.min(getSetting("pastedImageWidth"), diagram.width) : undefined;
+          const edit = target ? { start: target.start, end: target.end, text: replaceDiagramTarget(target, src) }
+            : diagramInsertion(text, clickedOffset, diagramImageTag(src, width) + "\n");
+          const start = offsetToDiagramPos(text, edit.start), end = offsetToDiagramPos(text, edit.end);
+          const result = await session.applyEdit(start, end, this.sel.caret, edit.text, text.slice(edit.start, edit.end), lines[start.line] ?? "");
+          committed = true;
+          if (generation !== this.documentGeneration || !session.isCurrent()) return;
+          this.applyResult(result, start.line, [{ start, end, text: edit.text }]);
+          try {
+            await this.renderAfterEdit();
+            if (!this.liveViewers.has("markdown")) await this.openTextViewer("markdown");
+          } catch (error) { await this.reportActionError("図は反映しましたが、プレビューを更新できませんでした", error); }
+        } finally {
+          try { await session.finish(); }
+          catch (error) { if (!committed) throw error; await this.reportActionError("図は反映しましたが、不要画像を整理できませんでした", error); }
+        }
+      } });
+    } finally { this.diagramEditing = false; this.focus(); }
   }
 
   // ---- キー入力 ----
@@ -2346,6 +2443,7 @@ export class VirtualEditor {
       customStarted = true;
     };
     if (!this.readOnly) {
+      if (this.prepareDiagram && pos) addCustomItem({ label: "図を編集", iconClass: MENU_ICON.image, action: () => this.dispatch("図を編集できませんでした", () => this.editDiagramAt({ ...pos })) });
       const addRegisteredString: MenuItem = {
         label: "選択範囲を登録文字列に追加",
         iconClass: MENU_ICON.registeredString,

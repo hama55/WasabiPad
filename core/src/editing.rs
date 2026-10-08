@@ -2,6 +2,7 @@
 // ファイル・アーカイブ・IPC DTOはここへ持ち込まず、Docは座標変換と公開APIに専念する。
 use crate::buffer::{Pos, TextBuffer};
 use crate::undo::{Edit, UndoEntry, UndoStack};
+use crate::document_assets::image_references_in_lines;
 
 pub(crate) struct ByteEdit {
     pub index: usize,
@@ -24,6 +25,7 @@ pub(crate) fn apply_edit(
     text: &str,
     coalesce: bool,
 ) -> Pos {
+    let mut image_references = image_references_in_lines(buf, start.line.saturating_sub(1), end.line.saturating_add(1));
     let mut edits = Vec::new();
     let mut pos = start;
     if start < end {
@@ -45,12 +47,14 @@ pub(crate) fn apply_edit(
         pos
     };
     if !edits.is_empty() {
+        image_references.extend(image_references_in_lines(buf, start.line.saturating_sub(1), after.line.saturating_add(1)));
         // 連続1文字入力のみ coalesce (選択削除を伴わないとき)
         undo.push(
             UndoEntry {
                 edits,
                 caret_before,
                 caret_after: after,
+                image_references,
             },
             coalesce && start == end,
         );
@@ -79,10 +83,12 @@ pub(crate) fn apply_edit_many(
             .then_with(|| b.start.col.cmp(&a.start.col))
     });
     let mut edits = Vec::new();
+    let mut image_references = std::collections::HashSet::new();
     let mut carets: Vec<Option<Pos>> = vec![None; indexed.len()];
     for item in indexed {
         let start = item.start;
         let end = item.end;
+        image_references.extend(image_references_in_lines(buf, start.line.saturating_sub(1), end.line.saturating_add(1)));
         if start < end {
             let removed = buf.delete(start, end);
             edits.push(Edit::Delete {
@@ -109,6 +115,7 @@ pub(crate) fn apply_edit_many(
             }
         }
         carets[item.index] = Some(after);
+        image_references.extend(image_references_in_lines(buf, start.line.saturating_sub(1), after.line.saturating_add(1)));
     }
     let carets: Vec<Pos> = carets
         .into_iter()
@@ -121,6 +128,7 @@ pub(crate) fn apply_edit_many(
                 edits,
                 caret_before,
                 caret_after,
+                image_references,
             },
             false,
         );

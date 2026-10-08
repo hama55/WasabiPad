@@ -2,6 +2,7 @@
 // 内部 UTF-8、\r は持たない。
 use crate::hugebuf::HugeBuf;
 use std::borrow::Cow;
+use std::collections::BTreeSet;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
 pub struct Pos {
@@ -16,11 +17,12 @@ pub enum Store {
 
 pub struct TextBuffer {
     pub store: Store,
+    image_tag_lines: BTreeSet<usize>,
 }
 
 impl TextBuffer {
     pub fn new() -> Self {
-        TextBuffer { store: Store::Small(vec![String::new()]) }
+        TextBuffer { store: Store::Small(vec![String::new()]), image_tag_lines: BTreeSet::new() }
     }
 
     pub fn from_text(text: &str) -> Self {
@@ -31,11 +33,32 @@ impl TextBuffer {
         if lines.is_empty() {
             lines.push(String::new());
         }
-        TextBuffer { store: Store::Small(lines) }
+        let image_tag_lines = lines.iter().enumerate().filter_map(|(i, line)| Self::has_image_tag(line).then_some(i)).collect();
+        TextBuffer { store: Store::Small(lines), image_tag_lines }
     }
 
     pub fn from_huge(h: HugeBuf) -> Self {
-        TextBuffer { store: Store::Huge(Box::new(h)) }
+        let image_tag_lines = h.image_tag_lines().clone();
+        TextBuffer { store: Store::Huge(Box::new(h)), image_tag_lines }
+    }
+
+    pub(crate) fn has_image_tag(text: &str) -> bool {
+        text.as_bytes().windows(4).any(|part| part.eq_ignore_ascii_case(b"<img"))
+    }
+
+    pub(crate) fn preceding_image_tag_line(&self, line: usize) -> Option<usize> {
+        self.image_tag_lines.range(..=line).next_back().copied()
+    }
+
+    fn update_image_tag_lines(&mut self, first: usize, old_last: usize, new_last: usize) {
+        self.image_tag_lines = self.image_tag_lines.iter().filter_map(|&line| {
+            if line < first { Some(line) }
+            else if line > old_last { Some(line - old_last + new_last) }
+            else { None }
+        }).collect();
+        for line in first..=new_last {
+            if Self::has_image_tag(&self.line(line)) { self.image_tag_lines.insert(line); }
+        }
     }
 
     pub fn is_huge(&self) -> bool {
@@ -74,6 +97,12 @@ impl TextBuffer {
 
     // text は '\n' 区切り可。挿入後の終端位置を返す
     pub fn insert(&mut self, pos: Pos, text: &str) -> Pos {
+        let end = self.insert_inner(pos, text);
+        self.update_image_tag_lines(pos.line, pos.line, end.line);
+        end
+    }
+
+    fn insert_inner(&mut self, pos: Pos, text: &str) -> Pos {
         match &mut self.store {
             Store::Small(lines) => {
                 if !text.contains('\n') {
@@ -99,6 +128,12 @@ impl TextBuffer {
 
     // 削除したテキストを返す ('\n' 区切り)
     pub fn delete(&mut self, start: Pos, end: Pos) -> String {
+        let removed = self.delete_inner(start, end);
+        self.update_image_tag_lines(start.line, end.line, start.line);
+        removed
+    }
+
+    fn delete_inner(&mut self, start: Pos, end: Pos) -> String {
         match &mut self.store {
             Store::Small(lines) => {
                 if start.line == end.line {
@@ -122,7 +157,6 @@ impl TextBuffer {
         }
     }
 
-    #[cfg(test)]
     pub fn range_text(&self, start: Pos, end: Pos) -> String {
         match &self.store {
             Store::Small(lines) => {
@@ -181,5 +215,21 @@ mod tests {
         let t = "aa\nbb\ncc";
         let end = b.insert(p, t);
         assert_eq!(end, TextBuffer::end_of_insert(p, t));
+    }
+
+    // Feature: 図タグ位置の追従
+    // Given: 大文字の img タグがある文書
+    // When: 前に行を挿入し、タグを削除して戻す
+    // Then: 位置索引が実際の本文に一致する
+    #[test]
+    fn image_tag_index_follows_edits() {
+        let mut b = TextBuffer::from_text("head\n<IMG src=\"x\">\nend");
+        assert_eq!(b.preceding_image_tag_line(2), Some(1));
+        b.insert(Pos { line: 0, col: 0 }, "new\n");
+        assert_eq!(b.preceding_image_tag_line(3), Some(2));
+        let removed = b.delete(Pos { line: 2, col: 0 }, Pos { line: 2, col: 4 });
+        assert_eq!(b.preceding_image_tag_line(3), None);
+        b.insert(Pos { line: 2, col: 0 }, &removed);
+        assert_eq!(b.preceding_image_tag_line(3), Some(2));
     }
 }

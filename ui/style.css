@@ -703,6 +703,24 @@ body.fv-dragging { cursor: grabbing; user-select: none; }
 .dd-menu .dd-sep { height: 1px; background: var(--border-strong); margin: 4px 6px; }
 
 /* スクロールバー */
+.pf-box.diagram-editor { width: min(1120px, 94vw); max-width: 94vw; max-height: 94vh; display: flex; flex-direction: column; gap: 10px; }
+.diagram-heading { display: flex; align-items: center; justify-content: space-between; margin: 0; }
+.diagram-heading button { border: 0; background: none; color: inherit; font: inherit; font-size: 22px; cursor: pointer; }
+.diagram-tools, .diagram-properties { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.diagram-tools button { border: 1px solid var(--border-strong); border-radius: 4px; padding: 5px 9px; background: var(--bg-editor); color: var(--fg); cursor: pointer; }
+.diagram-tools button[aria-pressed="true"] { outline: 2px solid #0078d4; outline-offset: -2px; }
+.diagram-tools button:disabled { opacity: .45; cursor: default; }
+.diagram-properties label { display: flex; align-items: center; gap: 4px; font-size: 12px; }
+.diagram-properties input[type="number"] { width: 64px; padding: 3px; background: var(--bg-editor); color: var(--fg); border: 1px solid var(--border-strong); }
+.diagram-properties input[type="color"] { width: 30px; height: 25px; padding: 0; }
+.diagram-viewport { min-height: 180px; height: 52vh; flex: 1 1 auto; overflow: auto; border: 1px solid var(--border-strong); background: #dddddd; }
+.diagram-canvas { display: block; background: #ffffff; touch-action: none; user-select: none; }
+.diagram-canvas [data-handle] { cursor: nwse-resize; }
+.diagram-canvas [data-handle="ne"], .diagram-canvas [data-handle="sw"] { cursor: nesw-resize; }
+.diagram-text-editor { min-height: 56px; resize: vertical; background: var(--bg-editor); color: var(--fg); border: 1px solid var(--border-strong); padding: 6px; }
+.diagram-text-editor[hidden] { display: none; }
+.diagram-message { min-height: 1.4em; font-size: 13px; color: var(--fg-dim); }
+
 ::-webkit-scrollbar { width: 12px; height: 12px; }
 ::-webkit-scrollbar-thumb { background: #79797966; }
 ::-webkit-scrollbar-thumb:hover { background: #79797999; }

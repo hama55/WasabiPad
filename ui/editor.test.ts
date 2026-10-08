@@ -25,6 +25,7 @@ import { promptFields as promptFieldsImpl } from "./prompt";
 import type { RegisteredCommandMenuPorts } from "./registered-command-menu";
 import { MENU_ICON } from "./menu-icons";
 import { loadRegisteredStrings } from "./registered-strings";
+import { readDiagramSvg } from "./diagram";
 
 installDomStubs();
 
@@ -96,7 +97,7 @@ describe("Feature: エディタ全て検索", () => {
 function mount(
   initial: string,
   saveImage?: EditorPorts["saveImage"],
-  overrides: Partial<Pick<EditorPorts, "revealInExplorer" | "openInNewTab" | "openInNewWindow" | "openAs" | "registeredCommandPorts" | "openViewer" | "updateViewer" | "closeViewer" | "togglePreview">> = {},
+  overrides: Partial<Pick<EditorPorts, "revealInExplorer" | "openInNewTab" | "openInNewWindow" | "openAs" | "registeredCommandPorts" | "openViewer" | "updateViewer" | "closeViewer" | "togglePreview" | "prepareDiagram">> = {},
 ) {
   const host = document.createElement("div");
   document.body.replaceChildren(host);
@@ -126,6 +127,7 @@ function mount(
     updateViewer: overrides.updateViewer ?? (async () => true),
     closeViewer: overrides.closeViewer ?? (async () => {}),
     saveImage,
+    prepareDiagram: overrides.prepareDiagram,
   };
   const editor = new VirtualEditor(host, ports, undefined, doc.client);
   const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
@@ -142,6 +144,40 @@ function mount(
     input.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, ...options }));
   return { editor, doc, events, host, input, type, press };
 }
+
+describe("Feature: 図編集から本文への反映", () => {
+  // Given: 選択文章を含む文書
+  // When: 図を編集で赤枠を作り OK を押す
+  // Then: 選択文章は保持し行直後に挿入、本文 Undo で戻せる
+  it("Scenario: 図の挿入は選択文章を保持し本文で戻せる", async () => {
+    setSetting("pastedImageWidthEnabled", false);
+    const saved: string[] = [];
+    const openViewer = vi.fn(async () => "markdown-preview");
+    const { editor, doc, press } = mount("説明\n次の行", undefined, {
+      openViewer,
+      prepareDiagram: async () => ({ assetPrefix: "image_markdown/memo", isCurrent: () => true,
+        readImage: async () => { throw new Error("unused"); },
+        saveImage: async (bytes) => { saved.push(new TextDecoder().decode(bytes)); return "image_markdown/memo/diagram-123.svg"; }, finish: async () => {},
+        applyEdit: (start, end, caret, text) => doc.client.edit(start, end, caret, text, false) }),
+    });
+    editor.open(2, false); await settle();
+    await editor.selectRange(0, 0, 2);
+    const edit = editor.editDiagramAt({ line: 0, col: 1 });
+    await vi.waitFor(() => expect(document.querySelector(".diagram-canvas")).not.toBeNull());
+    const canvas = document.querySelector<SVGSVGElement>(".diagram-canvas")!;
+    canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 800, height: 600 } as DOMRect);
+    [...document.querySelectorAll(".diagram-tools button")].find((b) => b.textContent === "四角形")!.dispatchEvent(new MouseEvent("click"));
+    canvas.dispatchEvent(new MouseEvent("pointerdown", { clientX: 10, clientY: 20, bubbles: true, button: 0 }));
+    window.dispatchEvent(new MouseEvent("pointermove", { clientX: 110, clientY: 80 }));
+    window.dispatchEvent(new MouseEvent("pointerup", { clientX: 110, clientY: 80 }));
+    document.querySelector<HTMLButtonElement>(".diagram-editor .pf-ok")!.click(); await edit;
+    expect(doc.text()).toBe('説明\n<img src="image_markdown/memo/diagram-123.svg" alt="図">\n次の行');
+    expect(readDiagramSvg(saved[0])?.elements[0].kind).toBe("rect");
+    expect(openViewer).toHaveBeenCalled();
+    press("z", { ctrlKey: true }); await settle();
+    expect(doc.text()).toBe("説明\n次の行");
+  });
+});
 
 function installMouseLayout(host: HTMLElement) {
   const dropdown = document.createElement("div");

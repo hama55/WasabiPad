@@ -14,7 +14,7 @@ use crate::document_assets::{
     archive_entry_parent, archive_entry_stem, archive_join, cleanup_image_dir,
     markdown_asset_dir, markdown_image_relative_dir, markdown_image_relative_path,
     next_archive_image_name, referenced_image_files, remove_empty_dir, valid_archive_entry_path,
-    PASTED_IMAGE_STEM,
+    PASTED_IMAGE_STEM, image_sources, expand_diagram_references,
 };
 use crate::editing::{self, ByteEdit};
 pub use crate::document_types::{
@@ -31,7 +31,7 @@ use crate::preview_cache::PreviewCache;
 pub use crate::folder::FolderEntry;
 use crate::search_replace::{self, FindStep};
 use crate::undo::UndoStack;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -615,6 +615,7 @@ struct DeletedEntry {
 pub struct Doc {
     buf: TextBuffer,
     undo: UndoStack,
+    diagram_pending_assets: HashSet<String>,
     enc: Encoding,
     eol: Eol,
     source: DocumentSource,
@@ -813,6 +814,7 @@ impl Doc {
         Doc {
             buf: TextBuffer::new(),
             undo: UndoStack::new(),
+            diagram_pending_assets: HashSet::new(),
             enc: Encoding::Utf8 { bom: false },
             eol: Eol::Crlf,
             source: DocumentSource::untitled(),
@@ -927,6 +929,7 @@ impl Doc {
                 return Ok(Doc {
                     buf: TextBuffer::new(),
                     undo: UndoStack::new(),
+            diagram_pending_assets: HashSet::new(),
                     enc: Encoding::Utf8 { bom: false },
                     eol: Eol::Lf,
                     source: DocumentSource {
@@ -980,6 +983,7 @@ impl Doc {
         Ok(Doc {
             buf: o.buf,
             undo: UndoStack::new(),
+            diagram_pending_assets: HashSet::new(),
             enc: o.enc,
             eol: o.eol,
             source,
@@ -1023,6 +1027,7 @@ impl Doc {
         let replacement = Doc {
             buf: o.buf,
             undo: UndoStack::new(),
+            diagram_pending_assets: HashSet::new(),
             enc: o.enc,
             eol: o.eol,
             source,
@@ -2173,6 +2178,111 @@ impl Doc {
         }
     }
 
+    pub fn check_diagram_source(&self, path: &Path, archive_entry: Option<&str>) -> io::Result<()> {
+        if self.display_path() != Some(path) || self.viewer_source().map(|(_, entry)| entry) != archive_entry.map(str::to_string) {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "編集対象の文書が変わりました"));
+        }
+        Ok(())
+    }
+
+    pub fn read_diagram_asset(&self, requested: &Path) -> io::Result<Vec<u8>> {
+        if !requested.extension().and_then(|e| e.to_str()).is_some_and(crate::protocol::is_image_extension) {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "画像以外は読み込めません"));
+        }
+        let memo = self.source.path().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "文書の保存先がありません"))?;
+        let parent = memo.parent().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "文書の保存先が不正です"))?;
+        let asset_dir = markdown_asset_dir(memo).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "画像フォルダがありません"))?;
+        let mut path = requested.to_path_buf();
+        if !path.exists() && requested.starts_with(parent.join("image_markdown")) {
+            if let Some(name) = requested.file_name() { path = asset_dir.join(name); }
+        }
+        let canonical = std::fs::canonicalize(&path)?;
+        let owns = std::fs::canonicalize(&asset_dir).ok().is_some_and(|dir| canonical.starts_with(dir));
+        let referenced = image_sources(&self.buf).iter().any(|src| {
+            let src = src.replace('/', std::path::MAIN_SEPARATOR_STR);
+            let source = Path::new(&src);
+            let candidate = if source.is_absolute() { source.to_path_buf() } else { parent.join(source) };
+            if std::fs::canonicalize(&candidate).ok().is_some_and(|candidate| candidate == canonical) { return true; }
+            if candidate.file_name().and_then(|name| name.to_str()).is_some_and(crate::document_assets::generated_diagram_name) {
+                if let Ok(svg) = std::fs::read_to_string(&candidate) {
+                    if let Ok(Some(backgrounds)) = crate::document_assets::diagram_backgrounds(&svg) {
+                        return backgrounds.iter().any(|name| candidate.parent().and_then(|parent| std::fs::canonicalize(parent.join(name)).ok()).is_some_and(|background| background == canonical));
+                    }
+                }
+            }
+            false
+        });
+        if !owns && !referenced { return Err(io::Error::new(io::ErrorKind::PermissionDenied, "文書の画像資産以外は読み込めません")); }
+        let file = std::fs::File::open(canonical)?;
+        if file.metadata()?.len() > FILE_ASSET_MAX_BYTES { return Err(io::Error::new(io::ErrorKind::FileTooLarge, "画像サイズが大きすぎます")); }
+        let mut bytes = Vec::new(); file.take(FILE_ASSET_MAX_BYTES + 1).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > FILE_ASSET_MAX_BYTES { return Err(io::Error::new(io::ErrorKind::FileTooLarge, "画像サイズが大きすぎます")); }
+        Ok(bytes)
+    }
+
+    pub fn save_diagram_image(&mut self, bytes: &[u8], mime_type: &str, shared: bool) -> io::Result<String> {
+        if self.is_view_only() { return Err(io::Error::new(io::ErrorKind::PermissionDenied, "閲覧専用の文書は編集できません")); }
+        if bytes.is_empty() || bytes.len() as u64 > FILE_ASSET_MAX_BYTES { return Err(io::Error::new(io::ErrorKind::InvalidInput, "画像サイズが不正です")); }
+        let extension = crate::protocol::image_extension_for_mime(mime_type).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "対応していない画像形式です"))?;
+        let identity = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(io::Error::other)?.as_nanos();
+        let stem = format!("diagram-{identity}");
+        let src = if let Target::Archive { path, editable_entry: Some(entry), .. } = &self.source.target {
+            let archive = path.clone(); let entry = entry.clone();
+            let password = self.sevenz_password(&archive).to_string();
+            let memo_name = archive_entry_stem(&entry).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "文書名が不正です"))?;
+            let directory = archive_join(archive_entry_parent(&entry), &markdown_image_relative_dir(memo_name));
+            if shared {
+                let entries = self.archive_port.list(&archive, &password)?;
+                for candidate in entries {
+                    if !candidate.starts_with(&(directory.clone() + "/")) || archive_entry_parent(&candidate) != directory || !candidate.ends_with(&format!(".{extension}")) { continue; }
+                    if self.archive_port.extract(&archive, &candidate, &password)? == bytes {
+                        let name = candidate.rsplit('/').next().unwrap_or_default();
+                        let src = markdown_image_relative_path(memo_name, name);
+                        self.diagram_pending_assets.insert(src.clone());
+                        return Ok(src);
+                    }
+                }
+            }
+            self.save_archive_image_with_stem(&archive, &entry, bytes, extension, if shared { PASTED_IMAGE_STEM } else { &stem })?
+        } else {
+            let memo = self.source.path().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "先に文書を保存してください"))?;
+            let memo_name = memo.file_stem().and_then(|n| n.to_str()).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "文書名が不正です"))?;
+            let directory = markdown_asset_dir(memo).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "画像フォルダが不正です"))?;
+            std::fs::create_dir_all(&directory)?;
+            if shared {
+                for candidate in std::fs::read_dir(&directory)? {
+                    let candidate = candidate?;
+                    if candidate.file_type()?.is_file() && candidate.path().extension().and_then(|e| e.to_str()) == Some(extension) && candidate.metadata()?.len() == bytes.len() as u64 && std::fs::read(candidate.path())? == bytes {
+                        let src = markdown_image_relative_path(memo_name, &candidate.file_name().to_string_lossy());
+                        self.diagram_pending_assets.insert(src.clone());
+                        return Ok(src);
+                    }
+                }
+            }
+            let path = next_available_path(&directory, if shared { PASTED_IMAGE_STEM } else { &stem }, extension)?;
+            std::fs::write(&path, bytes)?;
+            markdown_image_relative_path(memo_name, &path.file_name().unwrap().to_string_lossy())
+        };
+        self.diagram_pending_assets.insert(src.clone());
+        Ok(src)
+    }
+
+    pub fn finish_diagram_assets(&mut self) -> io::Result<()> {
+        self.diagram_pending_assets.clear();
+        self.cleanup_unused_images()
+    }
+
+    pub fn apply_diagram_edit(&mut self, start: PosC, end: PosC, caret_before: PosC, text: &str, expected: &str, expected_line: &str) -> io::Result<EditResult> {
+        if start.line >= self.buf.line_count() || end.line >= self.buf.line_count() || start.line > end.line {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "図の挿入位置が変更されました"));
+        }
+        let byte_start = self.to_byte(start); let byte_end = self.to_byte(end);
+        if byte_start > byte_end || self.buf.line(start.line).as_ref() != expected_line || self.buf.range_text(byte_start, byte_end) != expected {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "編集対象の本文が変更されました"));
+        }
+        self.edit(start, end, caret_before, text, false).ok_or_else(|| io::Error::new(io::ErrorKind::PermissionDenied, "閲覧専用の文書は編集できません"))
+    }
+
     // メモごとに画像を分けないと、同じフォルダ内のメモ同士で画像の持ち主が分からなくなる。
     pub fn save_pasted_image(&mut self, bytes: &[u8], mime_type: &str) -> io::Result<String> {
         if self.is_view_only() {
@@ -2237,6 +2347,10 @@ impl Doc {
         bytes: &[u8],
         extension: &str,
     ) -> io::Result<String> {
+        self.save_archive_image_with_stem(archive, memo_entry, bytes, extension, PASTED_IMAGE_STEM)
+    }
+
+    fn save_archive_image_with_stem(&mut self, archive: &Path, memo_entry: &str, bytes: &[u8], extension: &str, stem: &str) -> io::Result<String> {
         let password = self.sevenz_password(archive).to_string();
         let existing = self
             .archive_port
@@ -2251,7 +2365,7 @@ impl Doc {
         let parent = archive_entry_parent(memo_entry);
         let relative_image_dir = markdown_image_relative_dir(memo_name);
         let relative_dir = archive_join(parent, &relative_image_dir);
-        let image_name = next_archive_image_name(&existing, &relative_dir, extension)?;
+        let image_name = if stem == PASTED_IMAGE_STEM { next_archive_image_name(&existing, &relative_dir, extension)? } else { format!("{stem}.{extension}") };
         let relative_src = markdown_image_relative_path(memo_name, &image_name);
         let entry = archive_join(parent, &relative_src);
         let workspace = self.archive_port.new_workspace(archive)?;
@@ -2305,7 +2419,17 @@ impl Doc {
         let Some(parent) = memo.parent() else {
             return Ok(());
         };
-        let referenced = referenced_image_files(&self.buf);
+        let mut referenced = referenced_image_files(&self.buf);
+        referenced.extend(self.undo.image_references());
+        if let Some(progress) = &self.replace_progress { referenced.extend(progress.image_references.iter().cloned()); }
+        referenced.extend(self.diagram_pending_assets.iter().cloned());
+        let memo_name = memo.file_stem().and_then(|value| value.to_str()).unwrap_or_default();
+        expand_diagram_references(&mut referenced, &markdown_image_relative_dir(memo_name), |reference| {
+            let path = parent.join(reference.replace('/', std::path::MAIN_SEPARATOR_STR));
+            let file = std::fs::File::open(path)?;
+            if file.metadata()?.len() > FILE_ASSET_MAX_BYTES { return Err(io::Error::new(io::ErrorKind::FileTooLarge, "図が大きすぎます")); }
+            let mut bytes = Vec::new(); file.take(FILE_ASSET_MAX_BYTES + 1).read_to_end(&mut bytes)?; Ok(bytes)
+        })?;
         if let Some(image_dir) = markdown_asset_dir(memo) {
             let Some(memo_name) = memo.file_stem().and_then(|value| value.to_str()) else {
                 return Ok(());
@@ -2339,7 +2463,15 @@ impl Doc {
         let parent = archive_entry_parent(memo_entry);
         let relative_image_dir = markdown_image_relative_dir(memo_name);
         let relative_prefix = archive_join(parent, &relative_image_dir);
-        let referenced = referenced_image_files(&self.buf);
+        let mut referenced = referenced_image_files(&self.buf);
+        referenced.extend(self.undo.image_references());
+        if let Some(progress) = &self.replace_progress { referenced.extend(progress.image_references.iter().cloned()); }
+        referenced.extend(self.diagram_pending_assets.iter().cloned());
+        expand_diagram_references(&mut referenced, &relative_image_dir, |reference| {
+            let entry = archive_join(parent, reference);
+            if !entries.contains(&entry) { return Err(io::Error::new(io::ErrorKind::NotFound, "画像がありません")); }
+            self.archive_port.extract(archive, &entry, &password)
+        })?;
         let stale: Vec<String> = entries
             .into_iter()
             .filter(|entry| {
@@ -3011,6 +3143,7 @@ mod tests {
         let doc = Doc {
             buf: TextBuffer::new(),
             undo: UndoStack::new(),
+            diagram_pending_assets: HashSet::new(),
             enc: Encoding::Utf8 { bom: false },
             eol: Eol::Lf,
             source: DocumentSource {
@@ -3758,6 +3891,7 @@ mod tests {
         Doc {
             buf: TextBuffer::from_text(t),
             undo: UndoStack::new(),
+            diagram_pending_assets: HashSet::new(),
             enc: Encoding::Utf8 { bom: false },
             eol: Eol::Lf,
             source: DocumentSource::untitled(),
@@ -5088,6 +5222,85 @@ mod tests {
         assert!(image.is_file());
         drop(d);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn diagram_backgrounds_are_shared_and_dependencies_survive_cleanup_and_undo() {
+        // Feature: 編集図の共有背景と本文履歴
+        // Scenario: 同じ画像を再利用し、背景依存と Undo の図を保持する
+        // Given: 保存済み文書と同じ背景画像
+        let (root, mut d) = image_fixture("diagram_shared");
+        let background = d.save_diagram_image(&[1, 2, 3], "image/png", true).unwrap();
+        let reused = d.save_diagram_image(&[1, 2, 3], "image/png", true).unwrap();
+        assert_eq!(background, reused);
+        let name = Path::new(&background).file_name().unwrap().to_str().unwrap();
+        let svg = format!(r#"<svg><metadata id="wasabipad-diagram">{{"width":100,"height":80,"elements":[{{"kind":"image","src":"{name}"}}]}}</metadata></svg>"#);
+        let diagram = d.save_diagram_image(svg.as_bytes(), "image/svg+xml", false).unwrap();
+        let tag = format!("<img src=\"{diagram}\">\n");
+        d.edit(pos(0, 0), pos(0, 0), pos(0, 0), &tag, false).unwrap();
+        d.finish_diagram_assets().unwrap();
+        assert_eq!(d.read_diagram_asset(&root.join(&background)).unwrap(), [1, 2, 3]);
+        // When: 図 URL の一文字を消して画像整理し、その編集を戻す
+        let col = tag.find("diagram-").unwrap();
+        d.edit(pos(0, col), pos(0, col + 1), pos(0, col), "", false).unwrap();
+        d.cleanup_unused_images().unwrap();
+        assert!(root.join(&diagram).is_file());
+        assert!(root.join(&background).is_file());
+        d.undo().unwrap();
+        // Then: 図も共有背景も残り、本文が戻る
+        assert_eq!(d.lines(0, 1)[0], tag.trim_end());
+        assert_eq!(d.read_diagram_asset(&root.join(&diagram)).unwrap(), svg.as_bytes());
+        // Scenario: 離れた src 行のあるタグの開始を消しても Undo の資産を保持する
+        // Given: 五行の img タグ
+        let multiline = format!("<img\n src=\n \"{diagram}\"\n alt=\"a > b\"\n\n\n>\n");
+        d.edit(pos(0, 0), pos(1, 0), pos(0, 0), &multiline, false).unwrap();
+        d.save(&root.join("memo.md"), Encoding::Utf8 { bom: false }, Eol::Lf).unwrap();
+        drop(d);
+        let mut d = Doc::open(&root.join("memo.md")).unwrap();
+        // When: 履歴なしで終了タグを消し、資産整理して Undo する
+        d.edit(pos(6, 0), pos(6, 1), pos(6, 0), "", false).unwrap();
+        d.cleanup_unused_images().unwrap();
+        d.undo().unwrap();
+        // Then: 図と背景は存在する
+        assert!(root.join(&diagram).is_file());
+        assert!(root.join(&background).is_file());
+        // Scenario: 明示参照した別フォルダの図だけ、その共有背景を読める
+        // Given: 別フォルダの編集図と、参照されていない画像
+        let external = root.join("other");
+        std::fs::create_dir_all(&external).unwrap();
+        std::fs::write(external.join(name), [4, 5, 6]).unwrap();
+        std::fs::write(external.join("diagram-123.svg"), &svg).unwrap();
+        std::fs::write(external.join("secret.png"), [7]).unwrap();
+        d.edit(pos(0, 0), pos(0, 0), pos(0, 0), "<img src=\"other/diagram-123.svg\">\n", false).unwrap();
+        // When: 背景および参照外の画像を要求する
+        // Then: 図の依存画像に限定して読める
+        assert_eq!(d.read_diagram_asset(&external.join(name)).unwrap(), [4, 5, 6]);
+        assert_eq!(d.read_diagram_asset(&external.join("secret.png")).unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+        // Scenario: URL エンコードされたローカル画像も本文の明示参照として読める
+        std::fs::write(external.join("photo space.png"), [8, 9]).unwrap();
+        d.edit(pos(0, 0), pos(0, 0), pos(0, 0), "![背景](other/photo%20space.png)\n", false).unwrap();
+        assert_eq!(d.read_diagram_asset(&external.join("photo space.png")).unwrap(), [8, 9]);
+        drop(d);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Feature: 図保存の取り消しと文書変更
+    // Given: 保存済み文書と未反映の図資産
+    // When: 編集対象が一致しない状態で反映し、編集を終了する
+    // Then: 本文は変わらず、未使用資産だけを取り除く
+    #[test]
+    fn rejected_diagram_edit_leaves_text_and_cleans_staged_assets() {
+        let (root, mut d) = image_fixture("diagram_cancel");
+        let background = d.save_diagram_image(&[1, 2, 3], "image/png", true).unwrap();
+        assert!(root.join(&background).is_file());
+        let original = d.lines(0, 1)[0].clone();
+        let error = d.apply_diagram_edit(pos(0, 0), pos(0, 0), pos(0, 0), "figure", "", "stale line").err().unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(d.lines(0, 1)[0], original);
+        d.finish_diagram_assets().unwrap();
+        assert!(!root.join(&background).exists());
+        drop(d);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     // Feature: 拡張子に依存しない貼り付け画像の保存

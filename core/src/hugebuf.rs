@@ -68,6 +68,7 @@ pub struct HugeBuf {
     prefix_valid: Cell<bool>,
     cache: RefCell<Vec<(usize, Rc<Vec<String>>)>>, // 未編集 chunk のデコードキャッシュ (LRU 4件)
     total: usize,
+    image_tag_lines: std::collections::BTreeSet<usize>,
 }
 
 fn decode_bytes(enc: Encoding, mut b: &[u8]) -> String {
@@ -140,6 +141,9 @@ impl HugeBuf {
         let mut buf = vec![0u8; SCAN_CHUNK];
         let mut offset: u64 = 0;
         let mut last_percent = 0u8;
+        let mut image_tag_lines = std::collections::BTreeSet::new();
+        let mut image_line = 0usize;
+        let mut image_tail = String::new();
         loop {
             let n = file.read(&mut buf)?;
             if n == 0 {
@@ -153,6 +157,12 @@ impl HugeBuf {
             if let Some(decoder) = decoder.as_mut() {
                 let (_, _, had_errors) = decoder.decode_to_string(&buf[..n], &mut decoded, false);
                 binary |= had_errors;
+                for (index, segment) in decoded.split('\n').enumerate() {
+                    if index > 0 { image_line += 1; }
+                    let crosses_chunk = index == 0 && crate::buffer::TextBuffer::has_image_tag(&format!("{image_tail}{}", segment.chars().take(3).collect::<String>()));
+                    if crosses_chunk || crate::buffer::TextBuffer::has_image_tag(segment) { image_tag_lines.insert(image_line); }
+                }
+                image_tail = decoded.rsplit('\n').next().unwrap_or_default().chars().rev().take(3).collect::<Vec<_>>().into_iter().rev().collect();
                 decoded.clear();
             }
             for p in memchr::memchr_iter(b'\n', &buf[..n]) {
@@ -194,6 +204,7 @@ impl HugeBuf {
                 prefix_valid: Cell::new(false),
                 cache: RefCell::new(Vec::new()),
                 total,
+                image_tag_lines,
             },
             enc,
             eol,
@@ -203,6 +214,8 @@ impl HugeBuf {
     pub fn line_count(&self) -> usize {
         self.total
     }
+
+    pub(crate) fn image_tag_lines(&self) -> &std::collections::BTreeSet<usize> { &self.image_tag_lines }
 
     pub fn nchunks(&self) -> usize {
         self.checkpoints.len()

@@ -12,6 +12,8 @@ import {
   readGitWorktreeFiles,
   readGitWorktreeDiff,
   takeViewerPayload,
+  readDiagramAsset,
+  readArchiveAsset,
   type ViewerFormat,
   type ViewerPayload,
   type ViewerSelection,
@@ -70,6 +72,8 @@ import {
   revokeImageUrl,
 } from "./viewer-image-source";
 import { scheduleMarkdownImageLoads } from "./viewer-markdown-images";
+import { composeDiagramPreview } from "./diagram-assets";
+import { createDiagramAssetReader } from "./diagram-asset-reader";
 import {
   bindImagePan,
   createImagePreview,
@@ -637,6 +641,20 @@ async function loadArchiveImages(
       const src = image.getAttribute(MARKDOWN_IMAGE_SOURCE_ATTRIBUTE)
         ?? image.getAttribute("src")
         ?? "";
+      if ((sourcePath || archivePath && archiveEntry) && /\bdiagram-[\d-]+\.svg$/i.test(src)) {
+        const readImage = createDiagramAssetReader({ sourcePath: sourcePath ?? archivePath!, archivePath, archiveEntry }, { readLocal: readDiagramAsset, readArchive: readArchiveAsset });
+        const bytes = await readImage(src);
+        const preview = await composeDiagramPreview(new TextDecoder().decode(bytes), (relative) => readImage(relative, src));
+        if (!preview) throw new Error("図の編集情報がありません");
+        if (generation !== renderGeneration) return;
+        archiveUrl = imageUrlFromText(preview.svg, "image/svg+xml");
+        if (!retainAssetUrl(archiveUrl, generation)) { archiveUrl = null; return; }
+        image.src = archiveUrl;
+        if (preview.missing.length) image.title = "背景画像が見つからないか、読み込めません";
+        if (!await waitForImageLayout(image)) { if (generation === renderGeneration) markImageLoadFailure(image); return; }
+        keepArchiveUrl = true;
+        return;
+      }
       const entry = resolveArchiveAssetEntry(archiveEntry, src);
       if (archivePath && archiveEntry && entry) {
         archiveUrl = await archiveAssetSession.imageUrlFromArchive(archivePath, entry, imageMimeType(src));

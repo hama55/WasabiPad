@@ -9,6 +9,7 @@ import * as api from "./api";
 import type { GitPreviewTarget } from "./viewer-git";
 import { applyDocumentLoadProgress } from "./document-load-progress";
 import type { EditorPorts } from "./editor";
+import { createDiagramAssetReader, diagramAssetPrefix } from "./diagram-asset-reader";
 import { EditingSurfaceHost } from "./editing-surface-host";
 import type { InlinePreviewPorts } from "./inline-preview";
 import { WorkspaceHost } from "./workspace-host";
@@ -1070,6 +1071,36 @@ const editorPorts = {
       archiveRelOf(doc.current.selectedRelPath),
       () => api.savePastedImage(bytes, mimeType),
     );
+  },
+  prepareDiagram: async () => {
+    const owner = tabs.state.activeId;
+    if (doc.current.readOnly) return null;
+    if (!doc.current.savePath && !doc.current.archivePath && !await doc.saveAs()) return null;
+    if (owner !== tabs.state.activeId || doc.current.readOnly) return null;
+    const session = doc.current;
+    const sourcePath = session.archivePath ?? session.savePath;
+    if (!sourcePath) return null;
+    const archiveEntry = session.archiveEntry;
+    const isCurrent = () => owner === tabs.state.activeId
+      && sourcePath === (doc.current.archivePath ?? doc.current.savePath)
+      && archiveEntry === doc.current.archiveEntry;
+    const ensureCurrent = () => { if (!isCurrent()) throw new Error("編集対象の文書が変わりました"); };
+    return {
+      assetPrefix: diagramAssetPrefix(archiveEntry ?? sourcePath), isCurrent,
+      readImage: createDiagramAssetReader({ sourcePath, archivePath: session.archivePath, archiveEntry }, {
+        readLocal: api.readDiagramAsset,
+        readArchive: (archive, entry) => withArchivePassword(archiveRelOf(session.selectedRelPath), () => api.readArchiveAsset(archive, entry)),
+      }),
+      saveImage: async (bytes, mimeType, shared) => {
+        ensureCurrent();
+        return withArchivePassword(archiveRelOf(session.selectedRelPath), () => api.saveDiagramImage(Array.from(new Uint8Array(bytes)), mimeType, shared, sourcePath, archiveEntry));
+      },
+      finish: async () => { ensureCurrent(); await api.finishDiagramAssets(sourcePath, archiveEntry); },
+      applyEdit: async (start, end, caret, text, expected, expectedLine) => {
+        ensureCurrent();
+        return api.applyDiagramEdit(start, end, caret, text, expected, expectedLine, sourcePath, archiveEntry);
+      },
+    };
   },
 } satisfies EditorPorts;
 
