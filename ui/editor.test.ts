@@ -2302,48 +2302,170 @@ describe("Feature: VirtualEditor", () => {
     expect(host.querySelector<HTMLElement>(".ve-find")?.hidden).toBe(true);
   });
 
-  // Feature: エディタの表示範囲置換
-  // Scenario: 表示中の論理行だけを全置換する
-  // Given: 画面外にもneedleがあり、1行目と2行目を表示している
-  // When: 「画面内」を押す
-  // Then: 表示中の2行だけが置換され、画面外の一致は残る
-  it("Scenario: 画面内の一致だけを全置換する", async () => {
-    const { editor, doc, host } = mount("outside\nneedle\nneedle\noutside\nneedle");
-    const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
-    Object.defineProperty(scroll, "clientHeight", { configurable: true, value: 40 });
-    editor.open(5, false);
+  // Feature: エディタの選択範囲置換
+  // Given: 同じ行の選択範囲内外にneedleがある
+  // When: 置換入力欄へ移動して選択のみを押す
+  // Then: 選択内だけ置換し、文字数が増えた対象範囲を選択し続ける
+  it("Scenario: 部分行の選択内だけを一括置換する", async () => {
+    const { editor, doc, host } = mount("needle needle needle needle");
+    editor.open(1, false);
     await settle();
-    await editor.restoreViewState({
-      anchor: { line: 1, col: 0 },
-      caret: { line: 1, col: 0 },
-      topLine: 1,
-      wrapIntraLinePx: 0,
-      scrollLeft: 0,
-    });
+    await editor.selectRange(0, 7, 20);
 
     editor.openSearch();
     host.querySelector<HTMLInputElement>(".ve-find-in")!.value = "needle";
-    host.querySelector<HTMLInputElement>(".ve-rep-in")!.value = "hit";
-    host.querySelector<HTMLButtonElement>(".ve-rep-visible")!.click();
+    const replacement = host.querySelector<HTMLInputElement>(".ve-rep-in")!;
+    replacement.focus();
+    replacement.value = "longer hit";
+    host.querySelector<HTMLButtonElement>(".ve-rep-selection")!.click();
     await settle();
 
-    expect(doc.text()).toBe("outside\nhit\nhit\noutside\nneedle");
+    expect(doc.text()).toBe("needle longer hit longer hit needle");
+    expect(editor.captureViewState()).toMatchObject({ anchor: { line: 0, col: 7 }, caret: { line: 0, col: 28 } });
   });
 
-  // Feature: エディタの表示範囲置換
-  // Scenario: 閲覧専用文書では画面内全置換を実行しない
+  // When: 本文の一部を選んで検索語を入力し、一致箇所へ移動した後に選択のみを押す
+  // Then: 最初に選んだ範囲内を置換し、検索一致の選択へ対象範囲を縮めない
+  it("Scenario: 検索語入力後も元の選択範囲を置換対象に保つ", async () => {
+    // Given: 置換対象の範囲と、その外に検索一致がある本文
+    const { editor, doc, host } = mount("needle needle needle needle");
+    editor.open(1, false);
+    await settle();
+    await editor.selectRange(0, 7, 20);
+    doc.client.findStep = async () => ({ kind: "Found", start: { line: 0, col: 21 }, end: { line: 0, col: 27 } });
+    editor.openSearch();
+    const search = host.querySelector<HTMLInputElement>(".ve-find-in")!;
+    search.value = "needle";
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    await vi.waitFor(() => expect(editor.captureViewState().caret).toEqual({ line: 0, col: 27 }));
+    const replacement = host.querySelector<HTMLInputElement>(".ve-rep-in")!;
+    replacement.focus();
+    replacement.value = "hit";
+    host.querySelector<HTMLButtonElement>(".ve-rep-selection")!.click();
+    await vi.waitFor(() => expect(doc.text()).toBe("needle hit hit needle"));
+    expect(editor.captureViewState()).toMatchObject({ anchor: { line: 0, col: 7 }, caret: { line: 0, col: 14 } });
+  });
+
+  // Given: 未選択の本文に検索一致がある
+  // When: 検索語入力で一致が選択表示される
+  // Then: 本文で選んだ範囲がなければ選択のみは使えない
+  it("Scenario: 検索一致の選択だけでは選択のみを有効にしない", async () => {
+    const { editor, doc, host } = mount("needle needle");
+    editor.open(1, false);
+    await settle();
+    doc.client.findStep = async () => ({ kind: "Found", start: { line: 0, col: 0 }, end: { line: 0, col: 6 } });
+    editor.openSearch();
+    const search = host.querySelector<HTMLInputElement>(".ve-find-in")!;
+    search.value = "needle";
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    await vi.waitFor(() => expect(editor.captureViewState().caret).toEqual({ line: 0, col: 6 }));
+    expect(host.querySelector<HTMLButtonElement>(".ve-rep-selection")!.disabled).toBe(true);
+  });
+
+  // Given: 選択境界をまたぐ一致と範囲内の一致があり、逆向きに選択している
+  // When: 選択のみで置換後、Undoを1回実行する
+  // Then: 完全に収まる一致だけ置換し、選択方向を保ち、全文を1回で戻せる
+  it("Scenario: 逆方向選択の境界をまたぐ一致は置換せずUndo一回で戻す", async () => {
+    const original = "needle needle needle needle";
+    const { editor, doc, host, press } = mount(original);
+    editor.open(1, false);
+    await settle();
+    await editor.restoreViewState({ anchor: { line: 0, col: 24 }, caret: { line: 0, col: 3 }, topLine: 0, wrapIntraLinePx: 0, scrollLeft: 0 });
+    editor.openSearch();
+    host.querySelector<HTMLInputElement>(".ve-find-in")!.value = "needle";
+    host.querySelector<HTMLInputElement>(".ve-rep-in")!.value = "hit";
+    host.querySelector<HTMLButtonElement>(".ve-rep-selection")!.click();
+    await vi.waitFor(() => expect(doc.text()).toBe("needle hit hit needle"));
+    expect(editor.captureViewState()).toMatchObject({ anchor: { line: 0, col: 18 }, caret: { line: 0, col: 3 } });
+    editor.focus();
+    press("z", { ctrlKey: true });
+    await vi.waitFor(() => expect(doc.text()).toBe(original));
+  });
+
+  // Given: 表示外まで続く複数行の選択範囲がある
+  // When: 改行を含む文字列で選択のみを置換する
+  // Then: 表示外も選択範囲内なら置換し、改行増加後の範囲を選択する
+  it("Scenario: 表示外までの複数行選択で改行を増やしても範囲を保持する", async () => {
+    const { editor, doc, host } = mount("needle\nneedle\nneedle\nneedle");
+    Object.defineProperty(host.querySelector(".ve-scroll")!, "clientHeight", { configurable: true, value: 20 });
+    editor.open(4, false);
+    await settle();
+    await editor.restoreViewState({ anchor: { line: 0, col: 6 }, caret: { line: 2, col: 6 }, topLine: 0, wrapIntraLinePx: 0, scrollLeft: 0 });
+    editor.openSearch();
+    host.querySelector<HTMLInputElement>(".ve-find-in")!.value = "needle";
+    host.querySelector<HTMLInputElement>(".ve-rep-in")!.value = "猫\\n犬";
+    host.querySelector<HTMLButtonElement>(".ve-rep-selection")!.click();
+    await vi.waitFor(() => expect(doc.text()).toBe("needle\n猫\n犬\n猫\n犬\nneedle"));
+    expect(editor.captureViewState()).toMatchObject({ anchor: { line: 0, col: 6 }, caret: { line: 4, col: 1 } });
+  });
+
+  // Given: 検索中に保持した範囲がある
+  // When: バーを開いたまま本文で選び直し、空文字で選択のみを置換する
+  // Then: 新しい選択内だけ削除し、削除後の選択を保つ
+  it("Scenario: 本文で選び直した範囲内だけ削除する", async () => {
+    const { editor, doc, host } = mount("needle needle needle");
+    editor.open(1, false);
+    await settle();
+    await editor.selectRange(0, 0, 6);
+    editor.openSearch();
+    await editor.selectRange(0, 7, 20);
+    host.querySelector<HTMLInputElement>(".ve-rep-in")!.focus();
+    host.querySelector<HTMLButtonElement>(".ve-rep-selection")!.click();
+    await vi.waitFor(() => expect(doc.text()).toBe("needle  "));
+    expect(editor.captureViewState()).toMatchObject({ anchor: { line: 0, col: 7 }, caret: { line: 0, col: 8 } });
+  });
+
+  // Given: 文書検索から選択範囲端にもゼロ幅一致が返る
+  // When: 大文字小文字・正規表現の既存条件で選択のみを押す
+  // Then: 選択外を除外し、端の一致を一度ずつ挿入して更新範囲を保持する
+  it("Scenario: 正規表現のゼロ幅一致を選択範囲内だけ置換する", async () => {
+    const { editor, doc, host } = mount("猫ab犬");
+    editor.open(1, false);
+    await settle();
+    await editor.selectRange(0, 1, 3);
+    const find = vi.fn(async () => [0, 1, 2, 3, 4].map(col => ({ start: { line: 0, col }, end: { line: 0, col } })));
+    doc.client.findAllInRange = find;
+    editor.openSearch();
+    host.querySelector<HTMLInputElement>(".ve-find-in")!.value = "x*";
+    host.querySelector<HTMLInputElement>(".ve-rep-in")!.value = "!";
+    for (const condition of ["case", "regex"]) host.querySelector<HTMLInputElement>(`.ve-find-${condition} input`)!.checked = true;
+    host.querySelector<HTMLButtonElement>(".ve-rep-selection")!.click();
+    await vi.waitFor(() => expect(doc.text()).toBe("猫!a!b!犬"));
+    expect(find).toHaveBeenCalledWith("x*", 0, 1, true, true, false, 0);
+    expect(editor.captureViewState()).toMatchObject({ anchor: { line: 0, col: 1 }, caret: { line: 0, col: 6 } });
+  });
+
+  // Given: 選択がない本文
+  // When: 検索バーを開き、本文を選択してから選択を解除する
+  // Then: 選択のみボタンは選択がある間だけ有効になる
+  it("Scenario: 選択がないと選択のみを無効にする", async () => {
+    const { editor, host, press } = mount("needle");
+    editor.open(1, false);
+    await settle();
+    editor.openSearch();
+    const button = host.querySelector<HTMLButtonElement>(".ve-rep-selection")!;
+    expect(button.disabled).toBe(true);
+    await editor.selectRange(0, 0, 6);
+    expect(button.disabled).toBe(false);
+    press("ArrowRight");
+    await vi.waitFor(() => expect(button.disabled).toBe(true));
+  });
+
+  // Feature: エディタの選択範囲置換
+  // Scenario: 閲覧専用文書では選択内一括置換を実行しない
   // Given: needleを含む閲覧専用文書を表示している
-  // When: 「画面内」を押す
+  // When: 「選択のみ」を押す
   // Then: 本文と編集系のbackend呼び出しは変わらない
-  it("Scenario: 閲覧専用文書では画面内全置換を実行しない", async () => {
+  it("Scenario: 閲覧専用文書では選択内一括置換を実行しない", async () => {
     const { editor, doc, host } = mount("needle");
     editor.open(1, true);
     await settle();
+    await editor.selectRange(0, 0, 6);
 
     editor.openSearch();
     host.querySelector<HTMLInputElement>(".ve-find-in")!.value = "needle";
     host.querySelector<HTMLInputElement>(".ve-rep-in")!.value = "hit";
-    host.querySelector<HTMLButtonElement>(".ve-rep-visible")!.click();
+    host.querySelector<HTMLButtonElement>(".ve-rep-selection")!.click();
     await settle();
 
     expect(doc.text()).toBe("needle");

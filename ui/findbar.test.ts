@@ -23,14 +23,14 @@ describe("Feature: FindBar", () => {
   // Scenario: 置換操作を意味の広い順に表示する
   // Given: 閉じたFindBarを持つエディタホスト
   // When: 検索バーを開く
-  // Then: 置換、画面内、全置換の順に表示する
+  // Then: 置換、選択のみ、全置換の順に表示する
   it("Scenario: 置換ボタンを置換範囲の順に表示する", () => {
     const host = document.createElement("div");
     const bar = new FindBar(host, async () => true, async () => 0, async () => 0, async () => true, () => {}, async () => {});
     bar.open("");
 
     expect([...host.querySelectorAll<HTMLButtonElement>(".ve-rep-actions button")].map((button) => button.textContent))
-      .toEqual(["置換", "画面内", "全置換"]);
+      .toEqual(["置換", "選択のみ", "全置換"]);
   });
 
   // Feature: エディタ検索バーの一行置換操作
@@ -89,7 +89,7 @@ describe("Feature: FindBar", () => {
     expect(message.textContent).toContain("\\t");
     expect(message.textContent).toContain("\\\\");
     expect(message.textContent).toContain("同じ入力欄にフォーカス");
-    for (const explanation of ["Aa", "ab", ".*", "大文字小文字", "単語単位", "正規表現", "Shift+Enter", "全て", "画面内", "全置換", "縦方向", "横に隠れた", "未保存", "両方オフ", "$1", "削除", "右クリック", "×"]) {
+    for (const explanation of ["Aa", "ab", ".*", "大文字小文字", "単語単位", "正規表現", "Shift+Enter", "全て", "選択のみ", "全置換", "完全に収まる", "対象範囲を保持", "未保存", "両方オフ", "$1", "削除", "右クリック", "×"]) {
       expect(message.textContent).toContain(explanation);
     }
     document.querySelector<HTMLButtonElement>(".pf-ok")!.click();

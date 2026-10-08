@@ -45,6 +45,7 @@ import {
 } from "./editor-math";
 import type { EditorViewState } from "./editor-view-state";
 import { selectedLineRange } from "./editor-edit-plan";
+import { transformTrackedRange } from "./viewer-range";
 import type { SearchHighlightQuery } from "./workspace-search-options";
 
 const OVERSCAN = 8;
@@ -89,6 +90,7 @@ export interface EditorPorts {
 // 全ファイル共通の仮想スクロールエディタ。文書は backend(mmap/overlay)が所有し、
 // ここは可視スライスの描画と入力の中継のみを行う (全文を持たない)。
 export class VirtualEditor {
+  private replacementSelection: { start: Pos; end: Pos; backwards: boolean } | null = null;
   private gutter: HTMLElement;
   private scroll: HTMLElement;
   private hScroll: HTMLElement;
@@ -268,7 +270,7 @@ export class VirtualEditor {
         if (this.busy) return;
         this.findGen++;
         this.setFindHighlightQuery(query.pat, query.matchCase, query.useRegex, query.wholeWord);
-        this.selectAndCenter(match.start, match.end);
+        this.selectAndCenter(match.start, match.end, false);
         this.lastFindMatch = { ...match, ...query };
         this.focus();
       },
@@ -277,7 +279,7 @@ export class VirtualEditor {
       this.host,
       (pat, forward, mc, regex, word) => this.doFind(pat, forward, mc, regex, word),
       (pat, rep, mc, regex, word) => this.doReplaceAll(pat, rep, mc, regex, word),
-      (pat, rep, mc, regex, word) => this.doReplaceVisible(pat, rep, mc, regex, word),
+      (pat, rep, mc, regex, word) => this.doReplaceSelection(pat, rep, mc, regex, word),
       (pat, rep, mc, regex, word) => this.doReplaceNext(pat, rep, mc, regex, word),
       () => {
         this.findGen++;
@@ -429,6 +431,7 @@ export class VirtualEditor {
 
   setReadOnly(on: boolean) {
     this.readOnly = on;
+    this.findBar.setSelectionAvailable(!this.readOnly && this.replacementSelection !== null);
   }
 
   setExternalFilePath(
@@ -508,6 +511,7 @@ export class VirtualEditor {
 
   openSearch() {
     const sel = this.selectionText();
+    this.notifyCursor();
     this.findBar.open(sel);
   }
 
@@ -709,9 +713,9 @@ export class VirtualEditor {
     this.scrollWrapBy(selectionCenter - (this.viewTop + viewportHeight / 2));
   }
 
-  private selectAndCenter(start: Pos, end: Pos) {
+  private selectAndCenter(start: Pos, end: Pos, updateReplacementSelection = true) {
     this.sel.anchor = start;
-    this.moveTo(end, true);
+    this.moveTo(end, true, false, false, updateReplacementSelection);
     // moveTo() の描画後に横方向の可視性を確定し、行高を反映した中央配置を
     // 最後に行う。フォルダ検索と本文検索の結果を同じ規則へ通す。
     this.ensureVisible();
@@ -1374,13 +1378,19 @@ export class VirtualEditor {
   }
 
   // ---- カーソル移動 ----
-  private notifyCursor() {
+  private notifyCursor(updateReplacementSelection = true) {
     const [start, end] = this.sel.norm();
+    if (updateReplacementSelection) {
+      this.replacementSelection = this.sel.hasSel() && !this.sel.blockBounds()
+        ? { start: { ...start }, end: { ...end }, backwards: cmp(this.sel.anchor, this.sel.caret) > 0 }
+        : null;
+    }
+    this.findBar.setSelectionAvailable(!this.readOnly && this.replacementSelection !== null);
     this.liveViewers.setSelection({ start, end }, this.sel.caret);
     this.onCursor(this.sel.caret.line + 1, this.sel.caret.col + 1);
   }
 
-  private moveTo(pos: Pos, extend: boolean, keepGoal = false, keepSecondary = false) {
+  private moveTo(pos: Pos, extend: boolean, keepGoal = false, keepSecondary = false, updateReplacementSelection = true) {
     if (!keepSecondary) {
       this.sel.secondary = [];
       this.sel.block = null;
@@ -1391,7 +1401,7 @@ export class VirtualEditor {
     if (!keepGoal) this.sel.goalX = null;
     this.ensureVisible();
     this.render();
-    this.notifyCursor();
+    this.notifyCursor(updateReplacementSelection);
   }
 
   private syncCaretVisibility() {
@@ -2501,7 +2511,7 @@ export class VirtualEditor {
       const r = await this.doc.find(p, from, false, matchCase, useRegex, wholeWord);
       if (myGen !== this.findGen) return false;
       if (!r) { this.lastFindMatch = null; return false; }
-      this.selectAndCenter(r.start, r.end);
+      this.selectAndCenter(r.start, r.end, false);
       this.lastFindMatch = { start: r.start, end: r.end, pat: p, matchCase, useRegex, wholeWord };
       return true;
     }
@@ -2523,7 +2533,7 @@ export class VirtualEditor {
       return false;
     }
     this.findBar.setProgress("");
-    this.selectAndCenter(outcome.start, outcome.end);
+    this.selectAndCenter(outcome.start, outcome.end, false);
     this.lastFindMatch = { start: outcome.start, end: outcome.end, pat: p, matchCase, useRegex, wholeWord };
     return true;
   }
@@ -2554,45 +2564,29 @@ export class VirtualEditor {
     return this.doFind(pat, true, matchCase, useRegex, wholeWord);
   }
 
-  private visibleLogicalLineRange(): { first: number; last: number } {
-    if (this.lineCount <= 0 || this.scroll.clientHeight <= 0) return { first: 0, last: 0 };
-    const viewportTop = this.viewTop;
-    const viewportBottom = viewportTop + this.scroll.clientHeight;
-    const visibleLines = [...this.linesLayer.querySelectorAll<HTMLElement>(":scope > .ve-line")]
-      .map((line) => Number(line.dataset.line))
-      .filter((line) => Number.isInteger(line) && line >= 0 && line < this.lineCount)
-      .filter((line) => {
-        const top = this.rowTop(line);
-        const bottom = top + this.wrappedLineHeight(line);
-        return top < viewportBottom && bottom > viewportTop;
-      });
-    if (visibleLines.length > 0) {
-      return {
-        first: Math.min(...visibleLines),
-        last: Math.max(...visibleLines) + 1,
-      };
-    }
-    return { first: 0, last: 0 };
-  }
-
-  private async doReplaceVisible(pat: string, rep: string, matchCase: boolean, useRegex = false, wholeWord = false): Promise<number> {
-    if (this.readOnly || this.busy) return 0;
+  private async doReplaceSelection(pat: string, rep: string, matchCase: boolean, useRegex = false, wholeWord = false): Promise<number> {
+    if (this.readOnly || this.busy || !this.replacementSelection) return 0;
     const p = useRegex ? pat : unescapePattern(pat);
     if (!p) return 0;
     const r = unescapePattern(rep);
     const generation = this.documentGeneration;
-    this.render();
-    const { first, last } = this.visibleLogicalLineRange();
-    if (first >= last) return 0;
+    const { start, end, backwards } = this.replacementSelection;
 
     this.busy = true;
     try {
-      const matches = await this.doc.findAllInRange(p, first, last, matchCase, useRegex, wholeWord, 0);
-      if (generation !== this.documentGeneration || matches.length === 0) return 0;
-      const edits = matches.map(({ start, end }) => ({ start, end, text: r }));
+      const matches = await this.doc.findAllInRange(p, start.line, end.line + 1, matchCase, useRegex, wholeWord, 0);
+      if (generation !== this.documentGeneration) return 0;
+      const edits = matches
+        .filter(match => cmp(match.start, start) >= 0 && cmp(match.end, end) <= 0)
+        .map(({ start, end }) => ({ start, end, text: r }));
+      if (edits.length === 0) return 0;
       const primaryIndex = edits.length - 1;
       const result = await this.doc.editMany(edits, this.sel.caret, primaryIndex);
-      this.applyResult({ caret: result.carets[primaryIndex] ?? this.sel.caret, line_count: result.line_count }, first, edits);
+      if (generation !== this.documentGeneration) return 0;
+      const updated = transformTrackedRange({ start, end }, edits);
+      this.applyResult({ caret: result.carets[primaryIndex] ?? this.sel.caret, line_count: result.line_count }, start.line, edits);
+      this.sel.anchor = backwards ? updated.end : updated.start;
+      this.sel.caret = backwards ? updated.start : updated.end;
       this.ensureVisible();
       this.render();
       this.notifyCursor();
