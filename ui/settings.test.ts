@@ -20,6 +20,33 @@ import {
 } from "./settings";
 
 describe("Feature: settings", () => {
+  // Given: 貼り付け画像の幅指定と表示幅の上限が保存されている、または未設定・不正値である
+  // When: 設定を保存して再読込する
+  // Then: 有効な値を復元し、未設定・不正値は幅指定あり・900pxへ戻す
+  it("Scenario: 貼り付け画像の表示幅を保存し検証する", async () => {
+    expect(parseSettings("{}").pastedImageWidthEnabled).toBe(true);
+    expect(parseSettings("{}").pastedImageWidth).toBe(900);
+    setSetting("pastedImageWidthEnabled", false);
+    setSetting("pastedImageWidth", 1200);
+    await flushSettings();
+    expect(updateSettingMock).toHaveBeenCalledWith("pastedImageWidthEnabled", "false");
+    expect(updateSettingMock).toHaveBeenCalledWith("pastedImageWidth", "1200");
+    loadSettingsMock.mockResolvedValue(JSON.stringify({ pastedImageWidthEnabled: false, pastedImageWidth: 1200 }));
+    await initSettings();
+    expect(getSetting("pastedImageWidthEnabled")).toBe(false);
+    expect(getSetting("pastedImageWidth")).toBe(1200);
+    for (const width of [1, 900, 10000]) {
+      expect(parseSettings(JSON.stringify({ pastedImageWidth: width })).pastedImageWidth).toBe(width);
+    }
+    for (const width of [0, -1, 1.5, 10001, "900", null]) {
+      expect(parseSettings(JSON.stringify({ pastedImageWidth: width, pastedImageWidthEnabled: "false" })).pastedImageWidth).toBe(900);
+      expect(parseSettings(JSON.stringify({ pastedImageWidthEnabled: "false" })).pastedImageWidthEnabled).toBe(true);
+    }
+    resetUserSettings();
+    expect(getSetting("pastedImageWidthEnabled")).toBe(true);
+    expect(getSetting("pastedImageWidth")).toBe(900);
+    await flushSettings();
+  });
   // Given: Gitプレビューの分割比率が保存されている
   // When: 保存・再読込し、境界値と不正値を読み込む
   // Then: 15〜85%を復元し、不正値と未設定は40%へ戻る

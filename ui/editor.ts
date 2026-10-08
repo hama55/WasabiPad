@@ -30,7 +30,7 @@ import {
   removeRegisteredString,
 } from "./registered-strings";
 import { promptAndSaveRegisteredString } from "./registered-string-dialog";
-import { flushSettings } from "./settings";
+import { flushSettings, getSetting } from "./settings";
 import {
   charClass,
   charLen,
@@ -1836,8 +1836,22 @@ export class VirtualEditor {
 
   private async insertImage(bytes: number[], mimeType: string) {
     if (!this.onPasteImage) return;
+    let widthAttribute = "";
+    if (getSetting("pastedImageWidthEnabled")) {
+      const maximumWidth = getSetting("pastedImageWidth");
+      try {
+        const image = await createImageBitmap(new Blob([new Uint8Array(bytes)], { type: mimeType }));
+        try {
+          if (image.width > 0) widthAttribute = ` width="${Math.min(maximumWidth, image.width)}"`;
+        } finally {
+          image.close();
+        }
+      } catch {
+        // 寸法を取得できない画像は、拡大を避けるため幅を指定せず貼り付ける。
+      }
+    }
     const src = await this.onPasteImage(bytes, mimeType);
-    await this.insertText(`<img src="${src}" alt="貼り付け画像" width="900">\n`);
+    await this.insertText(`<img src="${src}" alt="貼り付け画像"${widthAttribute}>\n`);
     if (!this.liveViewers.has("markdown")) await this.openTextViewer("markdown");
   }
 

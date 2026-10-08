@@ -18,6 +18,11 @@ export const DEFAULT_MARKDOWN_LINE_HEIGHT = 1.65;
 export const MIN_MARKDOWN_LINE_HEIGHT = 1.4;
 export const MAX_MARKDOWN_LINE_HEIGHT = 2;
 export const DEFAULT_SQLITE_PREVIEW_ROWS = 100;
+export const MAX_PASTED_IMAGE_WIDTH = 10000;
+
+export function isValidPastedImageWidth(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= MAX_PASTED_IMAGE_WIDTH;
+}
 
 export function isValidSqlitePreviewRows(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && Number.isInteger(value) && value > 0;
@@ -33,6 +38,8 @@ export interface Settings {
   sidebarWidth: number;
   fontFamily: string;
   fontSize: number;
+  pastedImageWidthEnabled: boolean;
+  pastedImageWidth: number;
   previewFontSize: number;
   previewOpenPlacement: PreviewOpenPlacement;
   previewLastPlacement: PreviewPlacement;
@@ -64,6 +71,8 @@ const DEFAULT_USER_SETTINGS: Pick<Settings, UserSettingKey> = {
   sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
   fontFamily: DEFAULT_EDITOR_CONFIG.fontFamily,
   fontSize: DEFAULT_EDITOR_CONFIG.fontSize,
+  pastedImageWidthEnabled: true,
+  pastedImageWidth: 900,
   previewFontSize: DEFAULT_EDITOR_CONFIG.fontSize,
   previewOpenPlacement: "right",
   previewLastPlacement: "right",
@@ -167,6 +176,10 @@ export function parseSettingsResult(text: string): SettingsParseResult {
     previewFontSize: isValidFontSize(value.previewFontSize)
       ? value.previewFontSize
       : isValidFontSize(value.fontSize) ? value.fontSize : DEFAULTS.previewFontSize,
+    pastedImageWidthEnabled: typeof value.pastedImageWidthEnabled === "boolean"
+      ? value.pastedImageWidthEnabled : DEFAULTS.pastedImageWidthEnabled,
+    pastedImageWidth: isValidPastedImageWidth(value.pastedImageWidth)
+      ? value.pastedImageWidth : DEFAULTS.pastedImageWidth,
     markdownSoftBreaks: typeof value.markdownSoftBreaks === "boolean"
       ? value.markdownSoftBreaks
       : DEFAULTS.markdownSoftBreaks,

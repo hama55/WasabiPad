@@ -15,6 +15,8 @@ import {
 import { registeredStringLabel } from "./registered-strings";
 import { confirmMessage, showMessage } from "./prompt";
 import {
+  isValidPastedImageWidth,
+  MAX_PASTED_IMAGE_WIDTH,
   isValidSqlitePreviewRows,
   isValidMarkdownLineHeight,
   MAX_MARKDOWN_LINE_HEIGHT,
@@ -192,6 +194,7 @@ export function openSettingsModal(
       id: "settings-editor",
       build: () => [
         ...buildCommonSettingFields(ports, EDITOR_SETTING_KEYS),
+        pastedImageWidthField(ports),
       ],
     },
     {
@@ -741,6 +744,27 @@ function sqlitePreviewRowsField(ports: SettingsPanelPorts): HTMLElement {
     (value) => ports.setSetting("sqlitePreviewRows", value),
     { min: 1, max: null, isValid: isValidSqlitePreviewRows },
   );
+}
+
+function pastedImageWidthField(ports: SettingsPanelPorts): HTMLElement {
+  const group = document.createElement("div");
+  const widthRow = numberField(
+    "表示幅の上限（px）", "pasted-image-width", ports.getSetting("pastedImageWidth"),
+    (value) => ports.setSetting("pastedImageWidth", value),
+    { min: 1, max: MAX_PASTED_IMAGE_WIDTH, isValid: isValidPastedImageWidth },
+  );
+  const widthInput = widthRow.querySelector("input")!;
+  widthInput.disabled = !ports.getSetting("pastedImageWidthEnabled");
+  const enabledRow = checkboxField(
+    "貼り付け画像の幅を指定", "pasted-image-width-enabled", ports.getSetting("pastedImageWidthEnabled"),
+    (enabled) => {
+      ports.setSetting("pastedImageWidthEnabled", enabled);
+      widthInput.disabled = !enabled;
+    },
+  );
+  widthRow.title = "元画像が設定値より小さい場合は元画像の幅を使います。保存画像のサイズは変更しません。";
+  group.append(enabledRow, widthRow);
+  return group;
 }
 
 function checkboxField(

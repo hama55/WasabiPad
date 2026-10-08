@@ -22,6 +22,8 @@ function makePorts(
     sidebarWidth: 220,
     fontFamily: 'Consolas, "MS Gothic", monospace',
     fontSize: 14,
+    pastedImageWidthEnabled: true,
+    pastedImageWidth: 900,
     previewFontSize: 14,
     previewOpenPlacement: "right",
     previewLastPlacement: "right",
@@ -80,6 +82,41 @@ async function answerConfirmation(approved: boolean): Promise<void> {
 
 describe("Feature: settings modal", () => {
   afterEach(() => document.body.replaceChildren());
+
+  // Given: 貼り付け画像の表示幅は900pxで幅指定が有効
+  // When: 上限を変更し、不正な値を入力し、幅指定を無効・有効へ切り替える
+  // Then: 有効値だけを保存し、無効中は数値欄を無効化して直前の値を保持する
+  it("Scenario: エディタ設定で貼り付け画像の表示幅を変更する", () => {
+    const ports = makePorts();
+    openSettingsModal(ports);
+    const section = document.querySelector('#settings-editor')!;
+    const enabled = section.querySelector<HTMLInputElement>('[data-setting="pasted-image-width-enabled"]')!;
+    const width = section.querySelector<HTMLInputElement>('[data-setting="pasted-image-width"]')!;
+    expect(enabled.checked).toBe(true);
+    expect(width.value).toBe("900");
+    expect(width.min).toBe("1");
+    expect(width.max).toBe("10000");
+    for (const valid of [1, 10000, 1200]) {
+      width.value = String(valid);
+      width.dispatchEvent(new Event("change"));
+      expect(ports.setSetting).toHaveBeenLastCalledWith("pastedImageWidth", valid);
+    }
+    vi.mocked(ports.setSetting).mockClear();
+    for (const invalid of ["", "0", "-1", "1.5", "10001"]) {
+      width.value = invalid;
+      width.dispatchEvent(new Event("change"));
+      expect(width.value).toBe("1200");
+    }
+    expect(ports.setSetting).not.toHaveBeenCalled();
+    enabled.checked = false;
+    enabled.dispatchEvent(new Event("change"));
+    expect(ports.setSetting).toHaveBeenLastCalledWith("pastedImageWidthEnabled", false);
+    expect(width.disabled).toBe(true);
+    enabled.checked = true;
+    enabled.dispatchEvent(new Event("change"));
+    expect(width.disabled).toBe(false);
+    expect(width.value).toBe("1200");
+  });
 
   // Given: 初期設定は右固定
   // When: プレビュー設定から配置オプションを変更する

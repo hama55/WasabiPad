@@ -20,7 +20,7 @@ vi.mock("./api", async (importOriginal) => ({
 }));
 import { fakeDocument, installDomStubs, settle } from "./test-doubles";
 import { VirtualEditor, type EditorPorts } from "./editor";
-import { initSettings } from "./settings";
+import { initSettings, setSetting } from "./settings";
 import { promptFields as promptFieldsImpl } from "./prompt";
 import type { RegisteredCommandMenuPorts } from "./registered-command-menu";
 import { MENU_ICON } from "./menu-icons";
@@ -222,6 +222,7 @@ describe("Feature: VirtualEditor", () => {
   afterEach(() => {
     // 失敗したテストでもプロトタイプ上のレイアウトモックを次のテストへ残さない。
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   beforeEach(async () => {
@@ -1419,6 +1420,7 @@ describe("Feature: VirtualEditor", () => {
     { scenario: "文字が空なら画像へフォールバックする", text: "", hasImage: true, readError: undefined },
     { scenario: "文字の読み込みに失敗したら画像へフォールバックする", text: "", hasImage: true, readError: new Error("text unavailable") },
   ])("Scenario: 貼り付けメニューは$scenario", async ({ text, hasImage, readError }) => {
+    vi.stubGlobal("createImageBitmap", vi.fn(async () => ({ width: 300, close: vi.fn() })));
     const saveImage = vi.fn(async () => "image_markdown/memo/pasted-image.png");
     const { editor, doc, events, host } = mount("", saveImage);
     editor.open(1, false);
@@ -1455,6 +1457,7 @@ describe("Feature: VirtualEditor", () => {
         expect(clipboardRead).toHaveBeenCalledOnce();
         expect(saveImage).toHaveBeenCalledWith([1, 2, 3], "image/png");
         expect(doc.text()).toContain("<img src=\"image_markdown/memo/pasted-image.png\"");
+        expect(doc.text()).toContain('width="300"');
       }
       expect(events.errors).toHaveLength(0);
     } finally {
@@ -1464,10 +1467,11 @@ describe("Feature: VirtualEditor", () => {
     }
   });
 
-  // Given: 文書が「memo」、画像BlobがPNG形式でバイト列 [1,2,3]、saveImage が相対パスを返す
+  // Given: 文書が「memo」、画像BlobがPNG形式でバイト列 [1,2,3]、元画像の幅が1600px、saveImage が相対パスを返す
   // When: その画像を clipboardData.items から paste する
   // Then: paste が preventDefault され、saveImage([1,2,3], "image/png") が呼ばれ、文書に `<img src="image_markdown/memo/pasted-image.png" alt="貼り付け画像" width="900">` が含まれる
   it("Scenario: 画像の貼り付けで相対リンク付きタグを挿入する", async () => {
+    vi.stubGlobal("createImageBitmap", vi.fn(async () => ({ width: 1600, close: vi.fn() })));
     const saveImage = vi.fn(async () => "image_markdown/memo/pasted-image.png");
     const { editor, doc, input } = mount("memo", saveImage);
     editor.open(1, false);
@@ -1487,6 +1491,83 @@ describe("Feature: VirtualEditor", () => {
     expect(event.defaultPrevented).toBe(true);
     expect(saveImage).toHaveBeenCalledWith([1, 2, 3], "image/png");
     expect(doc.text()).toContain("<img src=\"image_markdown/memo/pasted-image.png\" alt=\"貼り付け画像\" width=\"900\">");
+  });
+
+  // Given: 設定幅900pxより小さい300pxの画像がある
+  // When: Ctrl+Vで画像を貼り付ける
+  // Then: 保存画像は変えず、タグは元画像の幅300pxを使う
+  it("Scenario: 小さい貼り付け画像を拡大しない", async () => {
+    const close = vi.fn();
+    vi.stubGlobal("createImageBitmap", vi.fn(async () => ({ width: 300, close })));
+    const saveImage = vi.fn(async () => "image_markdown/memo/pasted-image.png");
+    const { editor, doc, input } = mount("", saveImage);
+    editor.open(1, false);
+    await settle();
+    const image = new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" });
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", { value: {
+      items: [{ type: "image/png", getAsFile: () => image }], getData: () => "",
+    } });
+    input.dispatchEvent(event);
+    await settle();
+    expect(doc.text()).toBe('<img src="image_markdown/memo/pasted-image.png" alt="貼り付け画像" width="300">\n');
+    expect(saveImage).toHaveBeenCalledWith([1, 2, 3], "image/png");
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  // Given: 1600pxの画像があり、幅指定が有効である
+  // When: 同じエディタで設定を変更して画像を繰り返し貼り付ける
+  // Then: 既存タグは変えず、次の貼り付けから新しい上限を使い、無指定時は寸法を調べない
+  it("Scenario: 表示幅の設定変更を次の画像貼り付けから適用する", async () => {
+    const decode = vi.fn(async () => ({ width: 1600, close: vi.fn() }));
+    vi.stubGlobal("createImageBitmap", decode);
+    const { editor, doc, input } = mount("", vi.fn(async () => "image.png"));
+    editor.open(1, false);
+    await settle();
+    const image = new Blob([new Uint8Array([1])], { type: "image/png" });
+    const paste = async () => {
+      const event = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "clipboardData", { value: {
+        items: [{ type: "image/png", getAsFile: () => image }], getData: () => "",
+      } });
+      input.dispatchEvent(event);
+      await settle();
+    };
+    await paste();
+    setSetting("pastedImageWidth", 1200);
+    await paste();
+    setSetting("pastedImageWidthEnabled", false);
+    await paste();
+    expect(doc.text()).toBe([
+      '<img src="image.png" alt="貼り付け画像" width="900">',
+      '<img src="image.png" alt="貼り付け画像" width="1200">',
+      '<img src="image.png" alt="貼り付け画像">', "",
+    ].join("\n"));
+    expect(decode).toHaveBeenCalledTimes(2);
+  });
+
+  // Given: 画像の寸法取得が失敗する、APIが利用できない、または幅が0である
+  // When: 画像を貼り付ける
+  // Then: 保存と貼り付けは成功し、width属性を省略する
+  it.each(["error", "unavailable", "zero"])("Scenario: 寸法不明の画像も幅指定なしで貼り付ける（%s）", async (scenario) => {
+    vi.stubGlobal("createImageBitmap", scenario === "unavailable" ? undefined : vi.fn(async () => {
+      if (scenario === "error") throw new Error("decode failed");
+      return { width: 0, close: vi.fn() };
+    }));
+    const saveImage = vi.fn(async () => "image.png");
+    const { editor, doc, input, events } = mount("", saveImage);
+    editor.open(1, false);
+    await settle();
+    const image = new Blob([new Uint8Array([1])], { type: "image/png" });
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", { value: {
+      items: [{ type: "image/png", getAsFile: () => image }], getData: () => "",
+    } });
+    input.dispatchEvent(event);
+    await settle();
+    expect(doc.text()).toBe('<img src="image.png" alt="貼り付け画像">\n');
+    expect(saveImage).toHaveBeenCalledWith([1], "image/png");
+    expect(events.errors).toHaveLength(0);
   });
 
   // Given: 外部ファイルパスが「C:\work\memo.txt」、revealInExplorer がspyである
