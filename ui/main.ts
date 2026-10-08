@@ -1044,6 +1044,14 @@ const editorPorts = {
         session.effectiveExtension,
       );
     }
+    if (format === "markdown" && openingPreviewRequestGeneration === null) {
+      inlinePreview.setSourcePath(
+        sourcePathForViewer(format, session.savePath, session.displayPath),
+        session.archivePath,
+        session.archiveEntry,
+        session.effectiveExtension,
+      );
+    }
     const label = await inlinePreview.open(format, text, selection, externalOutputPath, isCurrentRequest);
     if (!isCurrentRequest()) return null;
     editingStatusbar.setPreviewFormat(format);

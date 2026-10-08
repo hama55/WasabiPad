@@ -7,6 +7,14 @@ const viewerSource = readFileSync(new URL("./viewer.ts", import.meta.url), "utf8
 const viewerRustSource = readFileSync(new URL("../src-tauri/src/viewer.rs", import.meta.url), "utf8");
 
 describe("Feature: window layout integration", () => {
+  // Feature: 貼り付け画像の即時プレビュー
+  // Given: 通常のプレビュー切替を通らずMarkdownを開く文書がある
+  // When: エディタが画像貼り付けから直接プレビューを開く
+  // Then: 本文を送る前に現在の文書の画像参照元を設定する
+  it("Scenario: 直接開くMarkdownにも現在の文書の画像参照元を渡す", () => {
+    const openViewer = mainSource.slice(mainSource.indexOf("  openViewer: async"), mainSource.indexOf("  updateViewer:"));
+    expect(openViewer).toMatch(/if \(format === "markdown" && openingPreviewRequestGeneration === null\) \{\s*inlinePreview\.setSourcePath\(\s*sourcePathForViewer\(format, session\.savePath, session\.displayPath\),\s*session\.archivePath,\s*session\.archiveEntry,\s*session\.effectiveExtension,\s*\);\s*\}[\s\S]*?await inlinePreview\.open\(/);
+  });
   // Given: 更新操作がプレビューの共通ツールバーにある
   // When: 外部生成物の表示・標準表示・表示クリアへ遷移する
   // Then: 外部生成物と動画で更新を表示し、外部生成物は保存確認付き更新へ渡す

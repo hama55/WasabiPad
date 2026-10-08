@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ViewerFormat } from "./api";
 import { InlinePreview, INLINE_PREVIEW_MESSAGES } from "./inline-preview";
 import { createExternalPreviewOutputLifecycle } from "./preview-replacement";
+import { resolveAssetPath } from "./viewer-assets";
 
 const { setInlinePreviewFocusMock } = vi.hoisted(() => ({
   setInlinePreviewFocusMock: vi.fn(async () => undefined),
@@ -36,6 +37,41 @@ function mount(
 }
 
 describe("Feature: inline preview", () => {
+  // Feature: 貼り付け画像の即時プレビュー
+  // Given: txt・md・任意拡張子の文書と、文書画像フォルダの相対参照がある
+  // When: 保存せず初回プレビュー、連続貼り付け、別フォルダの文書のプレビューを行う
+  // Then: 各payloadの参照元から現在の文書の画像を解決でき、前の文書の場所を引き継がない
+  it.each(["txt", "md", "custom"])("Scenario: %s文書の貼り付け画像を現在の文書から解決する", async (extension) => {
+    const { host, preview } = mount();
+    const frame = host.querySelector("iframe")!;
+    const post = vi.spyOn(frame.contentWindow!, "postMessage");
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow, origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
+    }));
+    const first = '<img src="image_markdown/memo/pasted-image.png" alt="貼り付け画像" width="900">';
+    const second = '<img src="image_markdown/memo/pasted-image-2.png" alt="貼り付け画像" width="900">';
+    const payload = () => post.mock.calls.filter(([message]) => message.type === INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE).at(-1)![0].payload;
+
+    preview.setSourcePath(`C:\\work\\notes\\memo.${extension}`);
+    const label = await preview.open("markdown", first, null);
+    expect(payload().source_path).toBe(`C:\\work\\notes\\memo.${extension}`);
+    expect(payload().text).toBe(first);
+    expect(resolveAssetPath(payload().source_path, "image_markdown/memo/pasted-image.png"))
+      .toBe("C:\\work\\notes\\image_markdown\\memo\\pasted-image.png");
+
+    preview.update(label!, `${first}\n${second}`, null);
+    expect(payload().text).toBe(`${first}\n${second}`);
+    expect(resolveAssetPath(payload().source_path, "image_markdown/memo/pasted-image-2.png"))
+      .toBe("C:\\work\\notes\\image_markdown\\memo\\pasted-image-2.png");
+
+    preview.setSourcePath(`D:\\other\\memo.${extension}`);
+    await preview.open("markdown", first, null);
+    expect(payload().source_path).toBe(`D:\\other\\memo.${extension}`);
+    expect(resolveAssetPath(payload().source_path, "image_markdown/memo/pasted-image.png"))
+      .toBe("D:\\other\\image_markdown\\memo\\pasted-image.png");
+    host.remove();
+  });
   // Given: Git表示の所有tokenと同じパスの古いtokenがある
   // When: 古い世代と正規世代から新規タブ要求を受ける
   // Then: 正規世代のファイル要求だけを親画面へ渡す
