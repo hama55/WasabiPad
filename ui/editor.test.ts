@@ -166,7 +166,7 @@ describe("Feature: 図編集から本文への反映", () => {
     await vi.waitFor(() => expect(document.querySelector(".diagram-canvas")).not.toBeNull());
     const canvas = document.querySelector<SVGSVGElement>(".diagram-canvas")!;
     canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 800, height: 600 } as DOMRect);
-    [...document.querySelectorAll(".diagram-tools button")].find((b) => b.textContent === "四角形")!.dispatchEvent(new MouseEvent("click"));
+    document.querySelector<HTMLButtonElement>('.diagram-tools button[aria-label="四角形"]')!.click();
     canvas.dispatchEvent(new MouseEvent("pointerdown", { clientX: 10, clientY: 20, bubbles: true, button: 0 }));
     window.dispatchEvent(new MouseEvent("pointermove", { clientX: 110, clientY: 80 }));
     window.dispatchEvent(new MouseEvent("pointerup", { clientX: 110, clientY: 80 }));
@@ -3241,6 +3241,28 @@ describe("Feature: VirtualEditor", () => {
 
     expect(openViewer.mock.calls[1][0]).toBe("markdown");
     expect(openViewer.mock.calls[1][1]).toBe("two\nthree");
+  });
+
+  // Feature: 選択行プレビューの解除
+  // Given: エディタの選択とCSVの選択範囲プレビューがある
+  // When: 明示的に範囲モードを解除して同じ形式を再表示する
+  // Then: 選択は保持し、全文表示になりPマークが消える。再度の明示的な選択行表示もできる
+  it.each(["csv", "markdown", "html"] as const)("Scenario: プレビューを閉じると選択を保持して全文に戻る (%s)", async (format) => {
+    const openViewer = vi.fn<EditorPorts["openViewer"]>(async () => "inline-viewer");
+    const { editor, host } = mount("one\ntwo\nthree", undefined, { openViewer });
+    editor.open(3, false); await settle();
+    await editor.restoreViewState({ anchor: { line: 1, col: 0 }, caret: { line: 2, col: 5 }, topLine: 0, wrapIntraLinePx: 0, scrollLeft: 0 });
+    await editor.openTextViewer(format);
+    const selection = editor.captureViewState();
+    expect(editor.resetPreviewRange()).toBe(true);
+    expect([...host.querySelectorAll<HTMLElement>(".ve-preview-mark")].every((mark) => mark.hidden)).toBe(true);
+    await editor.openTextViewer(format, true);
+    expect(openViewer.mock.calls[1].slice(0, 2)).toEqual([format, "one\ntwo\nthree"]);
+    expect(editor.captureViewState()).toMatchObject({ anchor: selection.anchor, caret: selection.caret });
+    await editor.openTextViewer("markdown", true);
+    expect(openViewer.mock.calls[2][1]).toBe("one\ntwo\nthree");
+    await editor.openTextViewer("csv");
+    expect(openViewer.mock.calls[3][1]).toBe("two\nthree");
   });
 
   // Feature: SQLite適格性確認で不一致になった場合は表示中ビューを維持する

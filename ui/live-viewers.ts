@@ -83,6 +83,20 @@ export class LiveViewers {
     return { start: { ...range.start }, end: { ...range.end } };
   }
 
+  resetPreviewRange(selection: TrackedRange, caret = selection.end): boolean {
+    if (![...this.viewers.values()].some((viewer) => viewer.range)) return false;
+    this.openGeneration++;
+    this.refreshVersion++;
+    window.clearTimeout(this.timer);
+    this.timer = undefined;
+    this.refreshRequested = false;
+    for (const viewer of this.viewers.values()) {
+      viewer.range = null;
+      viewer.selection = relativeSelection(null, selection, caret);
+    }
+    return true;
+  }
+
   positionInDocument(position: Pos): Pos {
     const range = this.previewRange();
     if (!range) return { ...position };

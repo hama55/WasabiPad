@@ -19,6 +19,75 @@ export interface Diagram {
   height: number;
   elements: DiagramElement[];
 }
+export interface DiagramBounds { x: number; y: number; width: number; height: number }
+
+function diagramPathPoints(e: DiagramElement): [number, number][] {
+  if (e.kind === "arrow") {
+    const x = e.x + e.width, y = e.y + e.height;
+    const angle = Math.atan2(e.height, e.width), size = 10 + (e.strokeWidth ?? 2);
+    return [[x - size * Math.cos(angle - .45), y - size * Math.sin(angle - .45)], [x, y],
+      [x - size * Math.cos(angle + .45), y - size * Math.sin(angle + .45)]];
+  }
+  const x = Math.min(e.x, e.x + e.width), y = Math.min(e.y, e.y + e.height), w = Math.abs(e.width), h = Math.abs(e.height);
+  return [[x, y], [x + w, y], [x + w, y + h * .75], [x + w * .4, y + h * .75],
+    [x + w * .2, y + h], [x + w * .2, y + h * .75], [x, y + h * .75]];
+}
+
+// SVG uses butt caps and miter joins (limit 4); include their painted extent, not just the path vertices.
+function strokePoints(points: [number, number][], half: number, closed = false): [number, number][] {
+  const result = [...points];
+  const normals = points.map((p, i) => {
+    const q = points[(i + 1) % points.length], dx = q[0] - p[0], dy = q[1] - p[1], length = Math.hypot(dx, dy);
+    return length ? [-dy / length, dx / length] : [0, 0];
+  });
+  for (let i = 0; i < (closed ? points.length : points.length - 1); i++) {
+    for (const p of [points[i], points[(i + 1) % points.length]]) {
+      for (const sign of [-1, 1]) result.push([p[0] + sign * half * normals[i][0], p[1] + sign * half * normals[i][1]]);
+    }
+  }
+  for (let i = closed ? 0 : 1; i < (closed ? points.length : points.length - 1); i++) {
+    const a = normals[(i + points.length - 1) % points.length], b = normals[i];
+    const denominator = 1 + a[0] * b[0] + a[1] * b[1];
+    if (denominator <= 0) continue;
+    const dx = (a[0] + b[0]) / denominator, dy = (a[1] + b[1]) / denominator;
+    if (Math.hypot(dx, dy) > 4) continue;
+    for (const sign of [-1, 1]) result.push([points[i][0] + sign * half * dx, points[i][1] + sign * half * dy]);
+  }
+  return result;
+}
+
+export function diagramContentBounds(diagram: Diagram, measureText: (element: DiagramElement) => DiagramBounds): DiagramBounds | null {
+  let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+  const include = (x: number, y: number) => { left = Math.min(left, x); top = Math.min(top, y); right = Math.max(right, x); bottom = Math.max(bottom, y); };
+  for (const e of diagram.elements) {
+    const x = Math.min(e.x, e.x + e.width), y = Math.min(e.y, e.y + e.height), w = Math.abs(e.width), h = Math.abs(e.height);
+    const half = (e.stroke ?? "#ff0000") === "none" ? 0 : (e.strokeWidth ?? 2) / 2;
+    if (e.kind === "line" || e.kind === "arrow") {
+      for (const p of strokePoints([[e.x, e.y], [e.x + e.width, e.y + e.height]], half)) include(...p);
+      if (e.kind === "arrow") for (const p of strokePoints(diagramPathPoints(e), half)) include(...p);
+    } else if (e.kind === "callout") {
+      for (const p of strokePoints(diagramPathPoints(e), half, true)) include(...p);
+    } else if (e.kind !== "text") {
+      const stroke = e.kind === "image" ? 0 : half;
+      include(x - stroke, y - stroke); include(x + w + stroke, y + h + stroke);
+    }
+    if ((e.kind === "text" || e.kind === "callout") && e.text) {
+      const bounds = measureText(e);
+      if (![bounds.x, bounds.y, bounds.width, bounds.height].every(Number.isFinite) || bounds.width < 0 || bounds.height < 0) throw new Error("文字の表示範囲を取得できません");
+      include(bounds.x, bounds.y); include(bounds.x + bounds.width, bounds.y + bounds.height);
+    }
+  }
+  return left === Infinity ? null : { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+export function fitDiagramCanvas(diagram: Diagram, bounds: DiagramBounds | null, trim = false): Diagram {
+  if (!bounds) return validateDiagram(diagram);
+  const dx = trim ? -bounds.x : Math.max(0, -bounds.x), dy = trim ? -bounds.y : Math.max(0, -bounds.y);
+  const width = trim ? Math.max(1, bounds.width) : Math.max(diagram.width, bounds.x + bounds.width) + dx;
+  const height = trim ? Math.max(1, bounds.height) : Math.max(diagram.height, bounds.y + bounds.height) + dy;
+  if (width > 10000 || height > 10000) throw new Error("図の内容がキャンバスの上限（10000）を超えています");
+  return validateDiagram({ width, height, elements: diagram.elements.map((e) => ({ ...e, x: e.x + dx, y: e.y + dy })) });
+}
 const kinds: DiagramKind[] = ["rect", "ellipse", "line", "arrow", "callout", "text", "image"];
 export const DIAGRAM_MARKER = "wasabipad-diagram";
 export const escapeXml = (text: string) => text.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" })[char]!);
@@ -101,10 +170,9 @@ export function diagramElementSvg(e: DiagramElement, imageSrc = e.src ?? ""): st
       const endX = e.x + e.width, endY = e.y + e.height;
       const line = `<line x1="${e.x}" y1="${e.y}" x2="${endX}" y2="${endY}" ${style}/>`;
       if (e.kind === "line") return line;
-      const angle = Math.atan2(e.height, e.width), size = 10 + (e.strokeWidth ?? 2);
-      return line + `<path d="M ${endX - size * Math.cos(angle - .45)} ${endY - size * Math.sin(angle - .45)} L ${endX} ${endY} L ${endX - size * Math.cos(angle + .45)} ${endY - size * Math.sin(angle + .45)}" ${style}/>`;
+      return line + `<path d="${diagramPathPoints(e).map(([px, py], i) => `${i ? "L" : "M"} ${px} ${py}`).join(" ")}" ${style}/>`;
     }
-    case "callout": return `<path d="M ${x} ${y} H ${x + w} V ${y + h * .75} H ${x + w * .4} L ${x + w * .2} ${y + h} V ${y + h * .75} H ${x} Z" ${style}/>` + label;
+    case "callout": return `<path d="${diagramPathPoints(e).map(([px, py], i) => `${i ? "L" : "M"} ${px} ${py}`).join(" ")} Z" ${style}/>` + label;
     case "text": return label;
   }
 }

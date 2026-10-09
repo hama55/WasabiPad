@@ -98,10 +98,36 @@ describe("Feature: window layout integration", () => {
   it("Scenario: エディタ右端のボタンで閲覧中プレビューの配置だけ切り替える", () => {
     expect(mainSource).toMatch(/const boundary = editorHost\.getBoundingClientRect\(\)\.right;/);
     expect(mainSource).toContain("button.hidden = !isPreviewOpenButtonShown(previewState, previewPlacement, placement);");
-    const shownBranch = mainSource.match(/function openPreview\(placement\?: PreviewPlacement\)\s*\{\s*if \(paneVisibilityAt\(measuredMainWidth\(\)\)\.previewShown\)\s*\{([^}]+)\}/s)?.[1];
+    const shownBranch = mainSource.match(/function openPreview\(placement\?: PreviewPlacement\)\s*\{\s*if \(paneVisibilityAt\(measuredMainWidth\(\)\)\.previewShown\)\s*\{([\s\S]*?)\n  \}/)?.[1];
     expect(shownBranch).toContain("selectPreviewPlacement(placement)");
     expect(shownBranch).toContain("updatePreviewVisibility()");
-    expect(shownBranch).not.toMatch(/resend|openPreviewFormat|closePreview/);
+    expect(shownBranch).not.toMatch(/resend|openPreviewFormat/);
+    expect(shownBranch).toMatch(/if \(!placement \|\| placement === previewPlacement\) \{\s*closePreview\(\);\s*return;/);
+  });
+
+  // Feature: 選択行プレビューの明示的解除
+  // Given: 選択行プレビューが表示されている
+  // When: ×または同じ配置の切替ボタンで閉じる。幅不足では自動退避する
+  // Then: 明示的な閉操作だけ範囲を解除し、次回は同じ形式で全文を再生成する
+  it("Scenario: 明示閉と自動退避を区別して全文へ戻す経路を接続する", () => {
+    const close = mainSource.slice(mainSource.indexOf("function closePreview("), mainSource.indexOf("function selectPreviewPlacement("));
+    expect(mainSource).toContain("onClose: closePreview");
+    expect(close).toContain("editor.resetPreviewRange()");
+    expect(close).toContain("previewDocument.rangeReset = true");
+    const openStart = mainSource.indexOf("function openPreview(");
+    const open = mainSource.slice(openStart, mainSource.indexOf("for (const button of previewOpenButtons)", openStart));
+    expect(open).toMatch(/previewDocument\?\.rangeReset[\s\S]*openPreviewFormat\(doc\.current, previewDocument\.path, previewDocument\.format, null, \{ keepPreviewRange: true, placement, externalAdapter: previewDocument\.externalAdapter \}\)/);
+    const visibility = mainSource.slice(mainSource.indexOf("function applyPaneVisibility("), mainSource.indexOf("function updateSidebarVisibility("));
+    expect(visibility).not.toMatch(/resetPreviewRange|closePreview\(/);
+  });
+
+  // Feature: Gitプレビューの表示維持
+  // Given: 同じ.gitをすでに閲覧している
+  // When: ツリーで同じ.gitを再選択する
+  // Then: 閉操作へ渡さず、非表示のときだけ再表示する
+  it("Scenario: 同じGit対象の再選択はプレビューを閉じない", () => {
+    const openGit = mainSource.slice(mainSource.indexOf("async function openGitPreview("), mainSource.indexOf("async function navigateTreeEntry("));
+    expect(openGit).toMatch(/if \(gitPreviewTarget\?\.path === path\) \{\s*gitPreviewTarget\.collapsed = false;\s*if \(!paneVisibilityAt\(measuredMainWidth\(\)\)\.previewShown\) openPreview\(\);/);
   });
 
   // Given: 独立viewerが最大化・最小化・復元と内容更新を受け取る

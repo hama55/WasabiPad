@@ -710,11 +710,17 @@ body.fv-dragging { cursor: grabbing; user-select: none; }
 .diagram-tools button { border: 1px solid var(--border-strong); border-radius: 4px; padding: 5px 9px; background: var(--bg-editor); color: var(--fg); cursor: pointer; }
 .diagram-tools button[aria-pressed="true"] { outline: 2px solid #0078d4; outline-offset: -2px; }
 .diagram-tools button:disabled { opacity: .45; cursor: default; }
+.diagram-tools button, .diagram-heading button, .diagram-editor .pf-btns button { display: inline-flex; align-items: center; justify-content: center; min-width: 32px; min-height: 32px; }
 .diagram-properties label { display: flex; align-items: center; gap: 4px; font-size: 12px; }
 .diagram-properties input[type="number"] { width: 64px; padding: 3px; background: var(--bg-editor); color: var(--fg); border: 1px solid var(--border-strong); }
 .diagram-properties input[type="color"] { width: 30px; height: 25px; padding: 0; }
 .diagram-viewport { min-height: 180px; height: 52vh; flex: 1 1 auto; overflow: auto; border: 1px solid var(--border-strong); background: #dddddd; }
 .diagram-canvas { display: block; background: #ffffff; touch-action: none; user-select: none; }
+.diagram-canvas-frame { position: relative; margin: 18px; }
+.diagram-canvas-resize { position: absolute; padding: 0; border: 1px solid #0078d4; background: #ffffff; touch-action: none; }
+.diagram-canvas-resize[data-canvas-resize="e"] { right: -8px; top: 0; width: 8px; height: 100%; cursor: ew-resize; }
+.diagram-canvas-resize[data-canvas-resize="s"] { bottom: -8px; left: 0; height: 8px; width: 100%; cursor: ns-resize; }
+.diagram-canvas-resize[data-canvas-resize="se"] { right: -9px; bottom: -9px; width: 12px; height: 12px; cursor: nwse-resize; }
 .diagram-canvas [data-handle] { cursor: nwse-resize; }
 .diagram-canvas [data-handle="ne"], .diagram-canvas [data-handle="sw"] { cursor: nesw-resize; }
 .diagram-text-editor { min-height: 56px; resize: vertical; background: var(--bg-editor); color: var(--fg); border: 1px solid var(--border-strong); padding: 6px; }

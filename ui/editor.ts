@@ -1731,6 +1731,13 @@ export class VirtualEditor {
   }
 
 
+  resetPreviewRange(): boolean {
+    const [start, end] = this.sel.norm();
+    const reset = this.liveViewers.resetPreviewRange({ start, end }, this.sel.caret);
+    if (reset) this.render();
+    return reset;
+  }
+
   async openTextViewer(
     format: api.ViewerFormat,
     keepPreviewRange = false,
@@ -1754,7 +1761,7 @@ export class VirtualEditor {
     const [selectionStart, selectionEnd] = this.sel.norm();
     const selection = { start: selectionStart, end: selectionEnd };
     const previewRange = keepPreviewRange ? this.liveViewers.previewRange() : null;
-    const range = format === "image" ? null : previewRange ?? (this.sel.hasSel()
+    const range = format === "image" ? null : keepPreviewRange ? previewRange : (this.sel.hasSel()
       ? { start: { ...selectionStart }, end: { ...selectionEnd } }
       : null);
     if (!keepCurrentUntilOpened) this.liveViewers.clear();

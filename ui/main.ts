@@ -463,7 +463,7 @@ const inlinePreviewPorts = {
   onError: (error) => reportBackgroundError("プレビュー通知を処理できませんでした", error),
 } satisfies InlinePreviewPorts;
 
-let previewDocument: (PreviewDocument & { externalAdapter?: ExternalPreviewAdapter }) | null = null;
+let previewDocument: (PreviewDocument & { externalAdapter?: ExternalPreviewAdapter; rangeReset?: boolean }) | null = null;
 let gitPreviewTarget: (GitPreviewTarget & { token: string }) | null = null;
 let gitSelectionGeneration = 0;
 let previewRequestGeneration = 0;
@@ -789,7 +789,7 @@ async function openGitPreview(relPath: string) {
   if (generation !== gitSelectionGeneration || tabs.state.activeId !== owner || documentPathOf(doc.current) !== documentPath) return;
   if (gitPreviewTarget?.path === path) {
     gitPreviewTarget.collapsed = false;
-    openPreview();
+    if (!paneVisibilityAt(measuredMainWidth()).previewShown) openPreview();
     return;
   }
   gitPreviewTarget = { path, documentPath, collapsed: false, token: window.crypto.randomUUID() };
@@ -1061,6 +1061,10 @@ const editorPorts = {
     } else if (openingPreviewRequestGeneration === null
       && isCurrentPreviewDocument(previewDocument, ownerTabId, path)) {
       previewDocument.format = format;
+      delete previewDocument.rangeReset;
+    } else if (label && openingPreviewRequestGeneration === null
+      && ownerTabId === (tabs?.state.activeId ?? null) && path === documentPathOf(doc.current)) {
+      previewDocument = { ownerTabId, path, format };
     }
     return label;
   },
@@ -1528,6 +1532,7 @@ function closePreview(returnFocusToOpenButton = false) {
   const layoutWidth = measuredMainWidth();
   if (!Number.isFinite(layoutWidth) || layoutWidth <= 0 || !paneVisibilityAt(layoutWidth).previewShown) return;
   ++gitSelectionGeneration;
+  if (editor.resetPreviewRange() && previewDocument) previewDocument.rangeReset = true;
   if (previewDocument?.externalAdapter && (previewReplacementLifecycle.isReplacing() || externalPreviewRefreshPending)) {
     clearPreview(doc.current);
     runBackground("プレビューの表示待ちを取り消せませんでした", () => editor.cancelPendingTextViewerOpens());
@@ -1554,9 +1559,13 @@ function selectPreviewPlacement(placement?: PreviewPlacement) {
 
 function openPreview(placement?: PreviewPlacement) {
   if (paneVisibilityAt(measuredMainWidth()).previewShown) {
-    if (!placement || placement === previewPlacement) return;
+    if (!placement || placement === previewPlacement) { closePreview(); return; }
     selectPreviewPlacement(placement);
     updatePreviewVisibility();
+    return;
+  }
+  if (previewDocument?.rangeReset) {
+    openPreviewFormat(doc.current, previewDocument.path, previewDocument.format, null, { keepPreviewRange: true, placement, externalAdapter: previewDocument.externalAdapter });
     return;
   }
   if (gitPreviewTarget && (!previewAvailable || previewDocument?.format !== "git")) {

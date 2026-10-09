@@ -36,6 +36,16 @@ export const MENU_ICON = {
   closeRight: "menu-icon-close-right",
   closeSaved: "menu-icon-close-saved",
   chart: "menu-icon-chart",
+  pointer: "menu-icon-pointer",
+  rectangle: "menu-icon-rectangle",
+  ellipse: "menu-icon-ellipse",
+  line: "menu-icon-line",
+  arrow: "menu-icon-arrow",
+  callout: "menu-icon-callout",
+  front: "menu-icon-front",
+  back: "menu-icon-back",
+  fit: "menu-icon-fit",
+  confirm: "menu-icon-confirm",
 } as const;
 
 export type MenuIconClass = typeof MENU_ICON[keyof typeof MENU_ICON];
