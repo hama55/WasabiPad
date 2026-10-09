@@ -13,6 +13,8 @@ export interface DiagramElement {
   fontSize?: number;
   textColor?: string;
   src?: string;
+  wrapText?: boolean;
+  tail?: { x: number; y: number };
 }
 export interface Diagram {
   width: number;
@@ -20,6 +22,12 @@ export interface Diagram {
   elements: DiagramElement[];
 }
 export interface DiagramBounds { x: number; y: number; width: number; height: number }
+
+export function editableCallout(e: DiagramElement): DiagramElement {
+  if (e.kind !== "callout" || e.tail) return e;
+  const x = Math.min(e.x, e.x + e.width), y = Math.min(e.y, e.y + e.height), width = Math.abs(e.width), height = Math.abs(e.height);
+  return { ...e, x, y, width, height: height * .75, tail: { x: x + width * .2, y: y + height } };
+}
 
 function diagramPathPoints(e: DiagramElement): [number, number][] {
   if (e.kind === "arrow") {
@@ -29,6 +37,20 @@ function diagramPathPoints(e: DiagramElement): [number, number][] {
       [x - size * Math.cos(angle + .45), y - size * Math.sin(angle + .45)]];
   }
   const x = Math.min(e.x, e.x + e.width), y = Math.min(e.y, e.y + e.height), w = Math.abs(e.width), h = Math.abs(e.height);
+  if (e.tail) {
+    const { x: tx, y: ty } = e.tail;
+    const corners: [number, number][] = [[x, y], [x + w, y], [x + w, y + h], [x, y + h]];
+    if (tx >= x && tx <= x + w && ty >= y && ty <= y + h) return corners;
+    const dx = tx - x - w / 2, dy = ty - y - h / 2;
+    const edge = Math.abs(dx) * h > Math.abs(dy) * w ? dx > 0 ? 1 : 3 : dy > 0 ? 2 : 0;
+    const horizontal = edge === 0 || edge === 2, length = horizontal ? w : h;
+    const start = horizontal ? x : y, position = horizontal ? tx : ty, size = length * .2;
+    const low = Math.max(start, Math.min(start + length - size, position)), high = low + size;
+    const a: [number, number] = horizontal ? [edge === 0 ? low : high, edge === 0 ? y : y + h] : [edge === 1 ? x + w : x, edge === 1 ? low : high];
+    const b: [number, number] = horizontal ? [edge === 0 ? high : low, a[1]] : [a[0], edge === 1 ? high : low];
+    corners.splice(edge + 1, 0, a, [tx, ty], b);
+    return corners;
+  }
   return [[x, y], [x + w, y], [x + w, y + h * .75], [x + w * .4, y + h * .75],
     [x + w * .2, y + h], [x + w * .2, y + h * .75], [x, y + h * .75]];
 }
@@ -67,8 +89,8 @@ export function diagramContentBounds(diagram: Diagram, measureText: (element: Di
       if (e.kind === "arrow") for (const p of strokePoints(diagramPathPoints(e), half)) include(...p);
     } else if (e.kind === "callout") {
       for (const p of strokePoints(diagramPathPoints(e), half, true)) include(...p);
-    } else if (e.kind !== "text") {
-      const stroke = e.kind === "image" ? 0 : half;
+    } else if (e.kind !== "text" || e.wrapText) {
+      const stroke = e.kind === "image" || e.kind === "text" ? 0 : half;
       include(x - stroke, y - stroke); include(x + w + stroke, y + h + stroke);
     }
     if ((e.kind === "text" || e.kind === "callout") && e.text) {
@@ -86,7 +108,8 @@ export function fitDiagramCanvas(diagram: Diagram, bounds: DiagramBounds | null,
   const width = trim ? Math.max(1, bounds.width) : Math.max(diagram.width, bounds.x + bounds.width) + dx;
   const height = trim ? Math.max(1, bounds.height) : Math.max(diagram.height, bounds.y + bounds.height) + dy;
   if (width > 10000 || height > 10000) throw new Error("図の内容がキャンバスの上限（10000）を超えています");
-  return validateDiagram({ width, height, elements: diagram.elements.map((e) => ({ ...e, x: e.x + dx, y: e.y + dy })) });
+  return validateDiagram({ width, height, elements: diagram.elements.map((e) => ({ ...e, x: e.x + dx, y: e.y + dy,
+    ...e.tail ? { tail: { x: e.tail.x + dx, y: e.tail.y + dy } } : {} })) });
 }
 const kinds: DiagramKind[] = ["rect", "ellipse", "line", "arrow", "callout", "text", "image"];
 export const DIAGRAM_MARKER = "wasabipad-diagram";
@@ -112,6 +135,8 @@ export function validateDiagram(value: unknown): Diagram {
       || e.strokeWidth !== undefined && !finite(e.strokeWidth, 0, 100)
       || e.fontSize !== undefined && !finite(e.fontSize, 1, 300)
       || e.text !== undefined && (typeof e.text !== "string" || e.text.length > 100000)
+      || e.wrapText !== undefined && typeof e.wrapText !== "boolean"
+      || e.tail !== undefined && (e.kind !== "callout" || !e.tail || !finite(e.tail.x) || !finite(e.tail.y))
       || e.kind === "image" && (typeof e.src !== "string" || !isLocalDiagramImage(e.src))) return fail();
     ids.add(e.id);
     // Only the editor's schema is retained; untrusted SVG markup never becomes executable DOM.
@@ -119,6 +144,8 @@ export function validateDiagram(value: unknown): Diagram {
       ...e.stroke !== undefined ? { stroke: e.stroke } : {}, ...e.strokeWidth !== undefined ? { strokeWidth: e.strokeWidth } : {},
       ...e.fill !== undefined ? { fill: e.fill } : {}, ...e.text !== undefined ? { text: e.text } : {},
       ...e.fontSize !== undefined ? { fontSize: e.fontSize } : {}, ...e.textColor !== undefined ? { textColor: e.textColor } : {},
+      ...e.wrapText !== undefined ? { wrapText: e.wrapText } : {},
+      ...e.tail !== undefined ? { tail: { x: e.tail.x, y: e.tail.y } } : {},
       ...e.kind === "image" ? { src: e.src } : {} };
   });
   return { width: d.width, height: d.height, elements };
@@ -155,12 +182,32 @@ export class DiagramDocument {
   redo() { const next = this.redoStack.pop(); if (next) { this.undoStack.push(this.value); this.value = next; } }
 }
 
+export function diagramTextLines(e: DiagramElement): string[] {
+  const lines = (e.text ?? "").split("\n");
+  if (!e.wrapText) return lines;
+  const context = document.createElement("canvas").getContext("2d");
+  if (!context) throw new Error("文字の表示幅を取得できません");
+  context.font = `${e.fontSize ?? 20}px sans-serif`; context.fontKerning = "none";
+  const width = Math.max(1, Math.abs(e.width) - 16), result: string[] = [];
+  const segments = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+  for (const original of lines) {
+    let line = "", used = 0;
+    for (const { segment } of segments.segment(original)) {
+      const advance = context.measureText(segment).width;
+      if (line && used + advance > width) { result.push(line); line = ""; used = 0; }
+      line += segment; used += advance;
+    }
+    result.push(line);
+  }
+  return result;
+}
+
 export function diagramElementSvg(e: DiagramElement, imageSrc = e.src ?? ""): string {
   const x = Math.min(e.x, e.x + e.width), y = Math.min(e.y, e.y + e.height);
   const w = Math.abs(e.width), h = Math.abs(e.height);
   const style = `stroke="${e.stroke ?? "#ff0000"}" stroke-width="${e.strokeWidth ?? 2}" fill="${e.fill ?? "none"}"`;
-  const text = (e.text ?? "").split("\n").map((line, i) => `<tspan x="${x + 8}" dy="${i ? (e.fontSize ?? 20) * 1.3 : 0}">${escapeXml(line)}</tspan>`).join("");
-  const label = `<text x="${x + 8}" y="${y + (e.fontSize ?? 20) + 4}" fill="${e.textColor ?? (e.kind === "text" ? e.fill ?? "#000000" : "#000000")}" font-size="${e.fontSize ?? 20}" font-family="sans-serif">${text}</text>`;
+  const text = (e.kind === "text" || e.kind === "callout" ? diagramTextLines(e) : []).map((line, i) => `<tspan x="${x + 8}" dy="${i ? (e.fontSize ?? 20) * 1.3 : 0}">${escapeXml(line)}</tspan>`).join("");
+  const label = `<text x="${x + 8}" y="${y + (e.fontSize ?? 20) + 4}" fill="${e.textColor ?? (e.kind === "text" ? e.fill ?? "#000000" : "#000000")}" font-size="${e.fontSize ?? 20}" font-family="sans-serif"${e.wrapText ? ' font-kerning="none"' : ""}>${text}</text>`;
   switch (e.kind) {
     case "image": return imageSrc ? `<image x="${x}" y="${y}" width="${w}" height="${h}" preserveAspectRatio="none" href="${escapeXml(imageSrc)}"/>`
       : `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="none" stroke="#888888" stroke-dasharray="4 3"/><text x="${x + 8}" y="${y + 24}" fill="#666666" font-size="16">背景画像が見つからないか、読み込めません</text>`;

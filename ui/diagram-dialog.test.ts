@@ -1,13 +1,16 @@
 // @vitest-environment jsdom
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { openDiagramEditor, type DiagramEditorOptions } from "./diagram-dialog";
-afterEach(() => { document.body.replaceChildren(); vi.restoreAllMocks(); delete (SVGElement.prototype as SVGElement & { getBBox?: unknown }).getBBox; });
+afterEach(() => { document.body.replaceChildren(); vi.restoreAllMocks(); vi.useRealTimers(); delete (SVGElement.prototype as SVGElement & { getBBox?: unknown }).getBBox; });
+beforeEach(() => {
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ measureText: (text: string) => ({ width: Array.from(text).length * 10 }) } as CanvasRenderingContext2D);
+});
 
 // Feature: 図編集ダイアログ
 // Scenario: 赤枠を描いて保存する
 // Given: 白紙の図編集画面
 // When: 四角形をドラッグして OK を押す
-// Then: 四角形と線の外周まで追加余白0pxでトリムして保存される
+// Then: 四角形を保存しキャンバスを自動縮小しない
 it("Scenario: 四角形を描いて確定できる", async () => {
   let saved: unknown;
   const result = openDiagramEditor({ initial: { width: 800, height: 600, elements: [] }, sources: new Map(), save: async (diagram) => { saved = diagram; } });
@@ -19,7 +22,7 @@ it("Scenario: 四角形を描いて確定できる", async () => {
   window.dispatchEvent(new MouseEvent("pointerup", { clientX: 120, clientY: 90 }));
   button("OK").click();
   await result;
-  expect(saved).toMatchObject({ width: 102, height: 62, elements: [{ kind: "rect", x: 1, y: 1, width: 100, height: 60, stroke: "#ff0000" }] });
+  expect(saved).toMatchObject({ width: 800, height: 600, elements: [{ kind: "rect", x: 20, y: 30, width: 100, height: 60, stroke: "#ff0000" }] });
 });
 
 // Feature: 図編集ダイアログ
@@ -39,6 +42,249 @@ function button(label: string): HTMLButtonElement {
   return [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.getAttribute("aria-label") === label || b.textContent === label)!;
 }
 const rect = { id: 1, kind: "rect" as const, x: 10, y: 10, width: 100, height: 60, stroke: "#ff0000", fill: "none" };
+
+// Feature: 実際のクリック列からの直接編集
+// Given: 文字が表示されている
+// When: 押下・解放を二回行ってダブルクリックする
+// Then: クリック対象の再生成で編集開始を失わない
+it("Scenario: 押下と解放を経由したダブルクリックでも直接編集できる", async () => {
+  Object.defineProperty(SVGElement.prototype, "getBBox", { configurable: true, value: () => ({ x: 18, y: 14, width: 60, height: 24 }) });
+  const result = openDiagramEditor({ initial: { width: 800, height: 600, elements: [{ ...rect, kind: "text", text: "元" }] }, sources: new Map(), save: async () => {} });
+  const canvas = document.querySelector<SVGSVGElement>(".diagram-canvas")!, original = canvas.querySelector('[data-element="1"] tspan')!;
+  for (let click = 0; click < 2; click++) {
+    const target = original.isConnected ? original : canvas;
+    target.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 }));
+    window.dispatchEvent(new MouseEvent("pointerup"));
+  }
+  (original.isConnected ? original : canvas).dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+  expect(document.querySelector<HTMLTextAreaElement>(".diagram-text-editor")!.hidden).toBe(false);
+  button("OK").click(); await result;
+});
+
+// Feature: 文字サイズ変更後の吹き出し
+// Given: 折返し済みの本文と固定した先端がある
+// When: 文字サイズを大きくする
+// Then: 本文の高さを確保し先端位置と幅を維持する
+it("Scenario: 文字サイズ変更でも本文を収め先端の位置を保つ", async () => {
+  Object.defineProperty(SVGElement.prototype, "getBBox", { configurable: true, value: () => ({ x: 18, y: 14, width: 80, height: 50 }) });
+  const save = vi.fn<DiagramEditorOptions["save"]>(async () => {});
+  const result = openDiagramEditor({ initial: { width: 800, height: 600, elements: [{ ...rect, kind: "callout", text: "123456789", wrapText: true, tail: { x: 30, y: 90 } }] }, sources: new Map(), save });
+  document.querySelector('[data-element="1"]')!.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 })); window.dispatchEvent(new MouseEvent("pointerup"));
+  const size = document.querySelector<HTMLInputElement>('input[aria-label="文字サイズ"]')!; size.value = "32"; size.dispatchEvent(new Event("change"));
+  button("OK").click(); await result;
+  expect(save.mock.calls[0][0].elements[0]).toMatchObject({ width: 100, height: 81.6, fontSize: 32, tail: { x: 30, y: 90 } });
+});
+
+// Feature: 拡張時の画面位置
+// Given: 背景画像と四角形を100%で表示している
+// When: 四角形を左上へ移動してキャンバスを拡張しUndoする
+// Then: 拡張の前後で背景の画面位置を変えずUndoで画面状態も戻す
+it("Scenario: 左上拡張で背景の画面位置と倍率を保持する", async () => {
+  const result = openDiagramEditor({ initial: { width: 800, height: 600, elements: [rect, { id: 2, kind: "image", x: 200, y: 200, width: 100, height: 80, src: "shared.png" }] }, sources: new Map([["shared.png", "data:image/png;base64,AQID"]]), save: async () => {} });
+  const zoom = document.querySelector<HTMLInputElement>('input[aria-label="倍率 %"]')!; zoom.value = "100"; zoom.dispatchEvent(new Event("change"));
+  const canvas = document.querySelector<SVGSVGElement>(".diagram-canvas")!, frame = document.querySelector<HTMLElement>(".diagram-canvas-frame")!, viewport = document.querySelector<HTMLElement>(".diagram-viewport")!;
+  canvas.getBoundingClientRect = () => ({ left: parseFloat(frame.style.left) - viewport.scrollLeft, top: parseFloat(frame.style.top) - viewport.scrollTop, width: parseFloat(canvas.style.width), height: parseFloat(canvas.style.height) } as DOMRect);
+  const screenPosition = () => { const image = canvas.querySelector('[data-element="2"] image')!; return [parseFloat(frame.style.left) - viewport.scrollLeft + Number(image.getAttribute("x")), parseFloat(frame.style.top) - viewport.scrollTop + Number(image.getAttribute("y"))]; };
+  const before = screenPosition();
+  canvas.querySelector('[data-element="1"]')!.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 38, clientY: 38 }));
+  window.dispatchEvent(new MouseEvent("pointerup", { clientX: -62, clientY: -42 }));
+  expect(screenPosition()).toEqual(before); expect(zoom.value).toBe("100");
+  button("元に戻す").click(); expect(screenPosition()).toEqual(before); expect(frame.style.left).toBe("160px"); expect(viewport.scrollLeft).toBe(142);
+  button("OK").click(); await result;
+});
+
+// Feature: 日本語入力と編集取消
+// Given: 文字を直接編集中
+// When: 変換中にEnter/Escを押し、変換終了後にEscを押す
+// Then: 変換を優先し、Escは文字編集だけを取り消す
+it("Scenario: 日本語変換中に文字編集を終了せずEscで元へ戻す", async () => {
+  const result = openDiagramEditor({ initial: { width: 800, height: 600, elements: [{ ...rect, kind: "text", text: "元" }] }, sources: new Map(), save: async () => {} });
+  document.querySelector('[data-element="1"]')!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+  const text = document.querySelector<HTMLTextAreaElement>(".diagram-text-editor")!;
+  text.value = "変換中"; text.dispatchEvent(new CompositionEvent("compositionstart"));
+  for (const key of ["Enter", "Escape"]) {
+    const event = new KeyboardEvent("keydown", { key, ctrlKey: key === "Enter", isComposing: true, bubbles: true, cancelable: true });
+    text.dispatchEvent(event); expect(event.defaultPrevented).toBe(false); expect(text.hidden).toBe(false);
+  }
+  button("OK").click(); expect(text.hidden).toBe(false);
+  text.dispatchEvent(new CompositionEvent("compositionend"));
+  text.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  expect(text.hidden).toBe(true); expect(document.querySelector('[data-element="1"]')!.textContent).toBe("元");
+  expect(button("元に戻す").disabled).toBe(true); expect(document.querySelectorAll(".pf-overlay")).toHaveLength(1);
+  button("OK").click(); await result;
+});
+
+// Feature: 未確定文字の破棄確認
+// Given: 直接編集で未確定の入力がある
+// When: キャンセルし、編集へ戻ってからOKで保存する
+// Then: 入力途中も破棄確認し、入力を保持して保存できる
+it("Scenario: 未確定入力の破棄確認から戻りOKで保存する", async () => {
+  Object.defineProperty(SVGElement.prototype, "getBBox", { configurable: true, value: () => ({ x: 18, y: 14, width: 60, height: 24 }) });
+  const save = vi.fn<DiagramEditorOptions["save"]>(async () => {});
+  const result = openDiagramEditor({ initial: { width: 800, height: 600, elements: [{ ...rect, kind: "text", text: "元" }] }, sources: new Map(), save });
+  document.querySelector('[data-element="1"]')!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+  const text = document.querySelector<HTMLTextAreaElement>(".diagram-text-editor")!; text.value = "未確定";
+  button("キャンセル").click(); expect(document.querySelectorAll(".pf-overlay")).toHaveLength(2);
+  button("編集に戻る").click(); await vi.waitFor(() => expect(document.querySelectorAll(".pf-overlay")).toHaveLength(1));
+  expect(text.value).toBe("未確定"); expect(text.hidden).toBe(false);
+  button("OK").click(); await result;
+  expect(save.mock.calls[0][0].elements[0].text).toBe("未確定");
+});
+
+// Feature: 文字確定の上限超過
+// Given: 入力するとキャンバスの上限を超える文字
+// When: 文字を確定またはOKで保存する
+// Then: 部分反映せず入力を保持し、修正後に確定できる
+it("Scenario: 文字確定が上限を超えても入力を失わず修正できる", async () => {
+  Object.defineProperty(SVGElement.prototype, "getBBox", { configurable: true, value: function (this: SVGElement) { return { x: 18, y: 14, width: 60, height: this.textContent === "超過" ? 11000 : 24 }; } });
+  const save = vi.fn<DiagramEditorOptions["save"]>(async () => {});
+  const result = openDiagramEditor({ initial: { width: 800, height: 600, elements: [{ ...rect, kind: "text", text: "元" }] }, sources: new Map(), save });
+  document.querySelector('[data-element="1"]')!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+  const text = document.querySelector<HTMLTextAreaElement>(".diagram-text-editor")!; text.value = "超過";
+  text.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true }));
+  expect(text.hidden).toBe(false); expect(text.value).toBe("超過"); expect(document.querySelector(".diagram-message")!.textContent).toContain("上限");
+  button("OK").click(); expect(save).not.toHaveBeenCalled(); expect(button("元に戻す").disabled).toBe(true);
+  text.value = "修正"; button("OK").click(); await result;
+  expect(save.mock.calls[0][0].elements[0].text).toBe("修正");
+});
+
+// Feature: ドラッグ終了時の上限超過
+// Given: 有効な位置まで移動したドラッグ
+// When: 上限を超えた位置で離す
+// Then: 最後の有効位置を部分反映せず操作全体を戻す
+it("Scenario: 有効な中間位置があっても上限超過で操作全体を戻す", async () => {
+  const save = vi.fn(async () => {});
+  const result = openDiagramEditor({ initial: { width: 800, height: 600, elements: [rect] }, sources: new Map(), save });
+  const canvas = document.querySelector<SVGSVGElement>(".diagram-canvas")!;
+  canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 800, height: 600 } as DOMRect);
+  canvas.querySelector('[data-element="1"]')!.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 20, clientY: 20 }));
+  window.dispatchEvent(new MouseEvent("pointermove", { clientX: 100, clientY: 20 }));
+  window.dispatchEvent(new MouseEvent("pointerup", { clientX: 11000, clientY: 20 }));
+  expect(canvas.querySelector('[data-element="1"] rect')!.getAttribute("x")).toBe("10");
+  expect(button("元に戻す").disabled).toBe(true); expect(document.querySelector(".diagram-message")!.textContent).toContain("上限");
+  button("OK").click(); await result; expect(save).not.toHaveBeenCalled();
+});
+
+// Feature: 作業領域の自動スクロールとドラッグ取消
+// Given: 狭い作業領域で図形をドラッグしている
+// When: 端で待ち、Escで中断する
+// Then: 自動スクロールと作業余白を広げ、中断では画面位置も戻す
+it("Scenario: 端で自動スクロールしてEscで配置と画面を戻す", async () => {
+  vi.useFakeTimers();
+  const result = openDiagramEditor({ initial: { width: 800, height: 600, elements: [rect] }, sources: new Map(), save: async () => {} });
+  const viewport = document.querySelector<HTMLElement>(".diagram-viewport")!;
+  const workspace = document.querySelector<HTMLElement>(".diagram-workspace")!;
+  viewport.getBoundingClientRect = () => ({ left: 0, top: 0, width: 300, height: 200, right: 300, bottom: 200 } as DOMRect);
+  const zoom = document.querySelector<HTMLInputElement>('input[aria-label="倍率 %"]')!; zoom.value = "100"; zoom.dispatchEvent(new Event("change"));
+  const canvas = document.querySelector<SVGSVGElement>(".diagram-canvas")!;
+  canvas.getBoundingClientRect = () => ({ left: 18, top: 18, width: 800, height: 600 } as DOMRect);
+  canvas.querySelector('[data-element="1"]')!.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 38, clientY: 38 }));
+  window.dispatchEvent(new MouseEvent("pointermove", { clientX: 298, clientY: 100 }));
+  vi.advanceTimersByTime(1200);
+  expect(viewport.scrollLeft).toBeGreaterThan(142);
+  expect(parseFloat(workspace.style.width)).toBeGreaterThan(1120);
+  expect(document.querySelector<HTMLInputElement>('input[aria-label="図の幅"]')!.value).toBe("800");
+  window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  expect(viewport.scrollLeft).toBe(142); expect(workspace.style.width).toBe("1120px");
+  expect(canvas.querySelector('[data-element="1"] rect')!.getAttribute("x")).toBe("10");
+  expect(button("元に戻す").disabled).toBe(true);
+  expect(document.querySelectorAll(".pf-overlay")).toHaveLength(1);
+  vi.useRealTimers(); button("OK").click(); await result;
+});
+
+// Feature: キャンバス外からの作成
+// Given: 四辺に作業用余白のある図
+// When: 左上の外側から新規四角形を作成する
+// Then: ドラッグ中は寸法を維持し終了時に拡張し、一回で戻せる
+it("Scenario: 外側で作成を開始して終了時だけキャンバスを広げる", async () => {
+  const result = openDiagramEditor({ initial: { width: 800, height: 600, elements: [] }, sources: new Map(), save: async () => {} });
+  const canvas = document.querySelector<SVGSVGElement>(".diagram-canvas")!;
+  canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 800, height: 600 } as DOMRect);
+  button("四角形").click();
+  document.querySelector(".diagram-viewport")!.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: -50, clientY: -40 }));
+  window.dispatchEvent(new MouseEvent("pointermove", { clientX: -10, clientY: -10 }));
+  const dimensions = () => ["図の幅", "図の高さ"].map((label) => document.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!.value);
+  expect(dimensions()).toEqual(["800", "600"]);
+  expect(canvas.querySelector('[data-element="1"]')).not.toBeNull();
+  window.dispatchEvent(new MouseEvent("pointerup", { clientX: -10, clientY: -10 }));
+  expect(dimensions()).toEqual(["851", "641"]);
+  button("元に戻す").click();
+  expect(dimensions()).toEqual(["800", "600"]); expect(canvas.querySelector('[data-element]')).toBeNull();
+  expect(button("元に戻す").disabled).toBe(true);
+  button("OK").click(); await result;
+});
+
+// Feature: 吹き出しの先端編集
+// Given: 旧形式の吹き出しがある
+// When: 先端を右へドラッグし、本体のサイズと位置を変更する
+// Then: サイズ変更では先端を固定し、本体移動では一緒に移動して保存する
+it("Scenario: 先端を自由に移動し本体の移動とサイズ変更を区別する", async () => {
+  const save = vi.fn<DiagramEditorOptions["save"]>(async () => {});
+  const result = openDiagramEditor({ initial: { width: 800, height: 600, elements: [{ ...rect, kind: "callout", height: 80, text: "" }] }, sources: new Map(), save });
+  const canvas = document.querySelector<SVGSVGElement>(".diagram-canvas")!;
+  canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 800, height: 600 } as DOMRect);
+  const down = (node: Element, x: number, y: number) => node.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: x, clientY: y }));
+  const up = (x: number, y: number) => window.dispatchEvent(new MouseEvent("pointerup", { clientX: x, clientY: y }));
+  down(canvas.querySelector('[data-element="1"]')!, 20, 20); up(20, 20);
+  const tip = () => canvas.querySelector('[data-handle="tail"]')!;
+  expect(tip()).not.toBeNull();
+  down(tip(), 30, 90); up(150, 20);
+  expect(canvas.querySelector('[data-element="1"] path')!.getAttribute("d")).toContain("L 150 20");
+  down(canvas.querySelector('[data-handle="se"]')!, 110, 70); up(130, 100);
+  expect(tip().getAttribute("cx")).toBe("150"); expect(tip().getAttribute("cy")).toBe("20");
+  down(canvas.querySelector('[data-element="1"]')!, 20, 20); up(40, 50);
+  expect(tip().getAttribute("cx")).toBe("170"); expect(tip().getAttribute("cy")).toBe("50");
+  button("元に戻す").click(); button("やり直す").click(); button("OK").click(); await result;
+  expect(save.mock.calls[0][0]).toMatchObject({ elements: [{ x: 30, y: 40, width: 120, height: 90, tail: { x: 170, y: 50 } }] });
+});
+
+// Feature: 文字の収まりとキャンバス拡張
+// Given: 下端近くに単独文字がある
+// When: 幅を超える文字と改行を入力し確定する
+// Then: 折返しと高さ・キャンバス拡張を一回のUndoで戻せる
+it("Scenario: 文字の折返しと高さ・キャンバスをまとめて拡張する", async () => {
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ measureText: (text: string) => ({ width: Array.from(text).length * 10 }) } as CanvasRenderingContext2D);
+  Object.defineProperty(SVGElement.prototype, "getBBox", { configurable: true, value: () => ({ x: 18, y: 564, width: 80, height: 72 }) });
+  const save = vi.fn<DiagramEditorOptions["save"]>(async () => {});
+  const result = openDiagramEditor({ initial: { width: 800, height: 600, elements: [{ ...rect, kind: "text", y: 560, text: "元" }] }, sources: new Map(), save });
+  document.querySelector('[data-element="1"]')!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+  const text = document.querySelector<HTMLTextAreaElement>(".diagram-text-editor")!;
+  text.value = "123456789\n次";
+  text.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true }));
+  expect([...document.querySelectorAll('[data-element="1"] tspan')].map((node) => node.textContent)).toEqual(["12345678", "9", "次"]);
+  expect(document.querySelector<HTMLInputElement>('input[aria-label="図の高さ"]')!.value).toBe("640");
+  button("元に戻す").click();
+  expect(document.querySelector<HTMLInputElement>('input[aria-label="図の高さ"]')!.value).toBe("600");
+  expect(document.querySelector('[data-element="1"]')!.textContent).toBe("元");
+  expect(button("元に戻す").disabled).toBe(true);
+  button("やり直す").click(); button("OK").click(); await result;
+  expect(save.mock.calls[0][0]).toMatchObject({ width: 800, height: 640, elements: [{ text: "123456789\n次", width: 100, height: 80 }] });
+});
+
+// Feature: 図上の直接文字編集
+// Given: 文字のある図を選択している
+// When: ダブルクリックで入力しCtrl+Enterで確定する
+// Then: 図上で編集し、一回のUndoで入力前に戻せる
+it("Scenario: 選択だけでは入力欄を出さず図上で文字を確定する", async () => {
+  Object.defineProperty(SVGElement.prototype, "getBBox", { configurable: true, value: () => ({ x: 18, y: 14, width: 60, height: 24 }) });
+  const result = openDiagramEditor({ initial: { width: 800, height: 600, elements: [{ ...rect, kind: "text", text: "元" }] }, sources: new Map(), save: async () => {} });
+  const element = () => document.querySelector('[data-element="1"]')!;
+  element().dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 }));
+  window.dispatchEvent(new MouseEvent("pointerup"));
+  const text = document.querySelector<HTMLTextAreaElement>(".diagram-text-editor")!;
+  expect(text.hidden).toBe(true);
+  element().dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+  expect(text.closest(".diagram-canvas-frame")).not.toBeNull();
+  expect(text.hidden).toBe(false);
+  text.value = "編集\n次";
+  text.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true }));
+  expect(text.hidden).toBe(true);
+  expect(element().textContent).toContain("編集");
+  button("元に戻す").click();
+  expect(element().textContent).toBe("元");
+  expect(button("元に戻す").disabled).toBe(true);
+  button("OK").click(); await result;
+});
 
 // Feature: キャンバスの寸法変更
 // Given: 四角形のある図を50%で表示している
@@ -73,7 +319,7 @@ it.each([[-30, -30, "821", "621"], [850, 650, "961", "721"]])("Scenario: 範囲�
   canvas.querySelector('[data-element="1"]')!.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 20, clientY: 20 }));
   window.dispatchEvent(new MouseEvent("pointermove", { clientX: 20 + dx / 2, clientY: 20 + dy / 2 }));
   const dimensions = () => ["図の幅", "図の高さ"].map((label) => document.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!.value);
-  expect(dimensions()).toEqual(dx < 0 ? ["806", "606"] : ["800", "600"]);
+  expect(dimensions()).toEqual(["800", "600"]);
   window.dispatchEvent(new MouseEvent("pointerup", { clientX: 20 + dx, clientY: 20 + dy }));
   const width = document.querySelector<HTMLInputElement>('input[aria-label="図の幅"]')!;
   const height = document.querySelector<HTMLInputElement>('input[aria-label="図の高さ"]')!;
@@ -148,7 +394,7 @@ it("Scenario: 保存失敗後も編集内容を保持して再試行する", asy
   await vi.waitFor(() => expect(document.querySelector(".diagram-message")?.textContent).toContain("保存できませんでした"));
   expect(width.value).toBe("900"); expect(button("OK").disabled).toBe(false);
   button("OK").click(); await result;
-  expect(save.mock.calls[1][0].width).toBe(102);
+  expect(save.mock.calls[1][0].width).toBe(900);
 });
 
 // Feature: 変更の破棄確認
@@ -190,7 +436,7 @@ it("Scenario: 吹き出しの本文と属性を編集できる", async () => {
   const element = document.querySelector('[data-element="1"]')!;
   element.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
   const text = document.querySelector<HTMLTextAreaElement>(".diagram-text-editor")!;
-  text.value = "説明\n補足"; text.dispatchEvent(new Event("change"));
+  text.value = "説明\n補足"; text.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true }));
   const size = document.querySelector<HTMLInputElement>('input[aria-label="文字サイズ"]')!;
   size.value = "28"; size.dispatchEvent(new Event("change"));
   const stroke = document.querySelector<HTMLInputElement>('input[aria-label="線の色"]')!;
@@ -199,32 +445,32 @@ it("Scenario: 吹き出しの本文と属性を編集できる", async () => {
   expect(saved).toMatchObject({ elements: [{ kind: "callout", text: "説明\n補足", stroke: "#0000ff", fontSize: 28 }] });
 });
 
-// Feature: 表示される内容のトリム
+// Feature: 表示される文字範囲の保持
 // Given: 小さい編集枠を超えて表示される複数行文字
 // When: 文字を編集して保存する
-// Then: ブラウザで実測した文字外周を使い、選択枠の寸法では切らない
-it("Scenario: 文字の実測範囲まで追加余白0pxで保存する", async () => {
+// Then: 文字の高さを広げ、キャンバスを自動縮小しない
+it("Scenario: 文字の収まりを調整してキャンバス寸法を保持する", async () => {
   Object.defineProperty(SVGElement.prototype, "getBBox", { configurable: true, value: () => ({ x: 18, y: 14, width: 300, height: 80 }) });
   const save = vi.fn<DiagramEditorOptions["save"]>(async () => {});
   const result = openDiagramEditor({ initial: { width: 800, height: 600, elements: [{ ...rect, kind: "text", width: 20, height: 10, text: "説明\n補足" }] }, sources: new Map(), save });
   document.querySelector('[data-element="1"]')!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
   const text = document.querySelector<HTMLTextAreaElement>(".diagram-text-editor")!;
-  text.value = "長い説明\n補足"; text.dispatchEvent(new Event("change"));
+  text.value = "長い説明\n補足"; text.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true }));
   button("OK").click(); await result;
-  expect(save.mock.calls[0][0]).toMatchObject({ width: 300, height: 80, elements: [{ x: -8, y: -4, width: 20, height: 10, text: "長い説明\n補足" }] });
+  expect(save.mock.calls[0][0]).toMatchObject({ width: 800, height: 600, elements: [{ x: 10, y: 10, width: 20, height: 158, text: "長い説明\n補足" }] });
 });
 
-// Feature: 背景画像を含むトリム
+// Feature: 背景画像とキャンバスの保持
 // Given: 共有背景画像と、その内側の四角形
 // When: 図を編集して保存する
-// Then: 背景全体と共有参照を保ち、外側のキャンバスだけをトリムする
-it("Scenario: 背景画像全体と原本への参照を保持してトリムする", async () => {
+// Then: 背景全体と共有参照とキャンバス寸法を保つ
+it("Scenario: 背景画像全体と原本への参照を保持して保存する", async () => {
   const save = vi.fn<DiagramEditorOptions["save"]>(async () => {});
   const result = openDiagramEditor({ initial: { width: 800, height: 600, elements: [{ id: 2, kind: "image", src: "shared.png", x: 20, y: 30, width: 300, height: 200 }, { ...rect, x: 50, y: 50 }] }, sources: new Map([["shared.png", "data:image/png;base64,AQID"]]), save });
   const width = document.querySelector<HTMLInputElement>('input[aria-label="図の幅"]')!;
   width.value = "900"; width.dispatchEvent(new Event("change"));
   button("OK").click(); await result;
-  expect(save.mock.calls[0][0]).toMatchObject({ width: 300, height: 200, elements: [{ kind: "image", x: 0, y: 0, width: 300, height: 200, src: "shared.png" }, { x: 30, y: 20 }] });
+  expect(save.mock.calls[0][0]).toMatchObject({ width: 900, height: 600, elements: [{ kind: "image", x: 20, y: 30, width: 300, height: 200, src: "shared.png" }, { x: 50, y: 50 }] });
   expect(save.mock.calls[0][1].size).toBe(0);
 });
 
@@ -265,10 +511,10 @@ it("Scenario: ドラッグ中のCtrl+Zで以前の履歴を失わない", async 
   button("OK").click(); await result;
 });
 
-// Feature: 太い線と尖った線端のトリム
+// Feature: 太い線と尖った線端の保持
 // Given: 斜線、逆向き矢印、吹き出しの太い線
 // When: 変更して保存する
-// Then: butt端とmiterの先端を含む外周まで保存し、再編集できる
+// Then: butt端とmiterの先端を含む外周を保持し、再編集できる
 it.each([
   [{ ...rect, kind: "line" as const, x: 20, y: 20, width: 100, height: 100, strokeWidth: 20 }, 114.142136, 114.142136],
   [{ ...rect, kind: "arrow" as const, x: 120, y: 20, width: -100, height: 0, strokeWidth: 20 }, 122.990327, 44.106874],
@@ -279,6 +525,7 @@ it.each([
   const width = document.querySelector<HTMLInputElement>('input[aria-label="図の幅"]')!;
   width.value = "900"; width.dispatchEvent(new Event("change"));
   button("OK").click(); await result;
-  expect(save.mock.calls[0][0].width).toBeCloseTo(expectedWidth, 5);
-  expect(save.mock.calls[0][0].height).toBeCloseTo(expectedHeight, 5);
+  expect(save.mock.calls[0][0].width).toBeGreaterThanOrEqual(expectedWidth);
+  expect(save.mock.calls[0][0].height).toBeGreaterThanOrEqual(expectedHeight);
+  expect(save.mock.calls[0][0].width).toBeGreaterThanOrEqual(900);
 });

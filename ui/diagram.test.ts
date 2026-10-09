@@ -1,9 +1,47 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { DiagramDocument, readDiagramSvg, writeDiagramSvg, validateStandaloneSvg } from "./diagram";
+import { DiagramDocument, diagramElementSvg, editableCallout, diagramContentBounds, fitDiagramCanvas, readDiagramSvg, writeDiagramSvg, validateStandaloneSvg } from "./diagram";
 import { composeDiagramPreview } from "./diagram-assets";
 
 describe("Feature: 編集図の保存と再編集", () => {
+  // Given: 旧形式の吹き出し
+  // When: 先端を編集可能にして保存・読込みする
+  // Then: 元の描画を変えず先端座標を保持し、不正な座標は拒否する
+  it("Scenario: 旧吹き出しの形を保って先端を保存し再編集できる", () => {
+    const old = { id: 1, kind: "callout" as const, x: 10, y: 20, width: 100, height: 80, text: "旧図" };
+    const converted = editableCallout(old);
+    expect(diagramElementSvg(converted)).toBe(diagramElementSvg(old));
+    const diagram = { width: 800, height: 600, elements: [converted] };
+    expect(readDiagramSvg(writeDiagramSvg(diagram))).toEqual(diagram);
+    expect(() => new DiagramDocument({ ...diagram, elements: [{ ...converted, tail: { x: Infinity, y: 20 } }] })).toThrow();
+    expect(() => new DiagramDocument({ ...diagram, elements: [{ ...converted, kind: "rect" }] })).toThrow();
+  });
+
+  // Given: 本体の各方向または内側に先端がある吹き出し
+  // When: SVGとして表示する
+  // Then: 方向に合う辺へ接続し、本体内では尾を隠す
+  it.each([
+    [{ x: 50, y: -20 }, "L 50 0 L 50 -20 L 70 0"],
+    [{ x: 120, y: 30 }, "L 100 30 L 120 30 L 100 42"],
+    [{ x: 50, y: 100 }, "L 70 60 L 50 100 L 50 60"],
+    [{ x: -20, y: 30 }, "L 0 42 L -20 30 L 0 30"],
+    [{ x: 50, y: 30 }, "M 0 0 L 100 0 L 100 60 L 0 60 Z"],
+  ])("Scenario: 先端の方向へ尾を接続する (例%#)", (tail, expectedPath) => {
+    const svg = diagramElementSvg({ id: 1, kind: "callout", x: 0, y: 0, width: 100, height: 60, tail });
+    expect(svg).toContain(expectedPath);
+  });
+
+  // Given: 左上のキャンバス外を指す先端と共有画像
+  // When: 全体が収まるよう拡張する
+  // Then: 先端と本体と背景を同じ距離だけ移し、相対位置を保持する
+  it("Scenario: 拡張時に先端座標も背景と一緒に移す", () => {
+    const diagram = { width: 800, height: 600, elements: [
+      { id: 1, kind: "callout" as const, x: 10, y: 20, width: 100, height: 60, tail: { x: -30, y: -40 }, stroke: "none" },
+      { id: 2, kind: "image" as const, x: 0, y: 0, width: 800, height: 600, src: "shared.png" },
+    ] };
+    const fitted = fitDiagramCanvas(diagram, diagramContentBounds(diagram, () => { throw new Error("文字なし"); }));
+    expect(fitted).toMatchObject({ width: 830, height: 640, elements: [{ x: 40, y: 60, tail: { x: 0, y: 0 } }, { x: 30, y: 40, width: 800, height: 600, src: "shared.png" }] });
+  });
   // Given: 六種類の図形と二つの重なり要素
   // When: 前面・背面へ変更し、SVG に保存する
   // Then: 各種類と色・太さ・文字を保持する
