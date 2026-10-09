@@ -32,7 +32,7 @@ pub use crate::folder::FolderEntry;
 use crate::search_replace::{self, FindStep};
 use crate::undo::UndoStack;
 use std::collections::{HashMap, HashSet};
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -2212,7 +2212,12 @@ impl Doc {
             }
             false
         });
-        if !owns && !referenced { return Err(io::Error::new(io::ErrorKind::PermissionDenied, "文書の画像資産以外は読み込めません")); }
+        let current_svg_background = memo.file_name().and_then(|name| name.to_str()).is_some_and(crate::document_assets::generated_diagram_name)
+            && crate::document_assets::diagram_backgrounds(&(0..self.buf.line_count()).map(|line| self.buf.line(line).into_owned()).collect::<Vec<_>>().join("\n"))
+                .ok().flatten().is_some_and(|backgrounds| backgrounds.iter().any(|name| {
+                    parent.join(name).canonicalize().is_ok_and(|background| background == canonical)
+                }));
+        if !owns && !referenced && !current_svg_background { return Err(io::Error::new(io::ErrorKind::PermissionDenied, "文書の画像資産以外は読み込めません")); }
         let file = std::fs::File::open(canonical)?;
         if file.metadata()?.len() > FILE_ASSET_MAX_BYTES { return Err(io::Error::new(io::ErrorKind::FileTooLarge, "画像サイズが大きすぎます")); }
         let mut bytes = Vec::new(); file.take(FILE_ASSET_MAX_BYTES + 1).read_to_end(&mut bytes)?;
@@ -2224,8 +2229,6 @@ impl Doc {
         if self.is_view_only() { return Err(io::Error::new(io::ErrorKind::PermissionDenied, "閲覧専用の文書は編集できません")); }
         if bytes.is_empty() || bytes.len() as u64 > FILE_ASSET_MAX_BYTES { return Err(io::Error::new(io::ErrorKind::InvalidInput, "画像サイズが不正です")); }
         let extension = crate::protocol::image_extension_for_mime(mime_type).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "対応していない画像形式です"))?;
-        let identity = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(io::Error::other)?.as_nanos();
-        let stem = format!("diagram-{identity}");
         let src = if let Target::Archive { path, editable_entry: Some(entry), .. } = &self.source.target {
             let archive = path.clone(); let entry = entry.clone();
             let password = self.sevenz_password(&archive).to_string();
@@ -2243,7 +2246,7 @@ impl Doc {
                     }
                 }
             }
-            self.save_archive_image_with_stem(&archive, &entry, bytes, extension, if shared { PASTED_IMAGE_STEM } else { &stem })?
+            self.save_archive_image_with_stem(&archive, &entry, bytes, extension, if shared { PASTED_IMAGE_STEM } else { "diagram" })?
         } else {
             let memo = self.source.path().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "先に文書を保存してください"))?;
             let memo_name = memo.file_stem().and_then(|n| n.to_str()).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "文書名が不正です"))?;
@@ -2259,8 +2262,25 @@ impl Doc {
                     }
                 }
             }
-            let path = next_available_path(&directory, if shared { PASTED_IMAGE_STEM } else { &stem }, extension)?;
-            std::fs::write(&path, bytes)?;
+            let path = if shared { next_available_path(&directory, PASTED_IMAGE_STEM, extension)? } else {
+                loop {
+                    let names = std::fs::read_dir(&directory)?.map(|entry| {
+                        let path = entry?.path();
+                        Ok(path.extension().and_then(|value| value.to_str()).filter(|value| value.eq_ignore_ascii_case(extension))
+                            .and_then(|_| path.file_stem().and_then(|value| value.to_str()).map(str::to_owned)))
+                    }).collect::<io::Result<Vec<_>>>()?.into_iter().flatten();
+                    let path = directory.join(format!("{}.{}", crate::document_assets::next_diagram_image_name(names), extension));
+                    match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+                        Ok(mut file) => {
+                            if let Err(error) = file.write_all(bytes) { drop(file); let _ = std::fs::remove_file(&path); return Err(error); }
+                            break path;
+                        }
+                        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                        Err(error) => return Err(error),
+                    }
+                }
+            };
+            if shared { std::fs::write(&path, bytes)?; }
             markdown_image_relative_path(memo_name, &path.file_name().unwrap().to_string_lossy())
         };
         self.diagram_pending_assets.insert(src.clone());
@@ -2365,7 +2385,20 @@ impl Doc {
         let parent = archive_entry_parent(memo_entry);
         let relative_image_dir = markdown_image_relative_dir(memo_name);
         let relative_dir = archive_join(parent, &relative_image_dir);
-        let image_name = if stem == PASTED_IMAGE_STEM { next_archive_image_name(&existing, &relative_dir, extension)? } else { format!("{stem}.{extension}") };
+        let image_name = if stem == PASTED_IMAGE_STEM { next_archive_image_name(&existing, &relative_dir, extension)? }
+            else if stem == "diagram" {
+                let relative_dir = relative_dir.replace('\\', "/");
+                let prefix = format!("{relative_dir}/");
+                let names = existing.iter().filter_map(|entry| {
+                    let entry = entry.replace('\\', "/");
+                    if !entry.starts_with(&prefix) { return None; }
+                    if entry.rsplit_once('/')?.0 != relative_dir { return None; }
+                    let name = entry.rsplit('/').next()?;
+                    let (stem, ext) = name.rsplit_once('.')?;
+                    ext.eq_ignore_ascii_case(extension).then(|| stem.to_owned())
+                });
+                format!("{}.{}", crate::document_assets::next_diagram_image_name(names), extension)
+            } else { format!("{stem}.{extension}") };
         let relative_src = markdown_image_relative_path(memo_name, &image_name);
         let entry = archive_join(parent, &relative_src);
         let workspace = self.archive_port.new_workspace(archive)?;
@@ -3816,6 +3849,37 @@ mod tests {
                 .to_string_lossy()
                 .starts_with(crate::sevenz::WORKSPACE_PREFIX)));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Feature: アーカイブ内の編集図連番
+    // Scenario: アーカイブ内の欠番を埋めず旧タイムスタンプ名を除外する
+    // Given: アーカイブ文書と図の画像フォルダにある旧図・連番図
+    // When: 新しい編集図を保存する
+    // Then: diagram-0003.svg をアーカイブへ追加し、旧図を維持する
+    #[test]
+    fn diagram_save_uses_sequence_for_archive_entries() {
+        if !crate::sevenz::available() { return; }
+        let root = sevenz_root("zip-diagram-sequence");
+        let src = root.join("src");
+        let image_dir = src.join("image_markdown/memo");
+        std::fs::create_dir_all(&image_dir).unwrap();
+        std::fs::create_dir_all(image_dir.join("sub")).unwrap();
+        std::fs::write(src.join("memo.md"), "# memo\n").unwrap();
+        for name in ["diagram-0000.svg", "diagram-0002.svg", "diagram-1791554197819879100.svg"] {
+            std::fs::write(image_dir.join(name), "old").unwrap();
+        }
+        std::fs::write(image_dir.join("sub/diagram-9999.svg"), "nested document").unwrap();
+        let archive = root.join("memo.zip");
+        crate::sevenz::create_archive_for_test(&archive, &src, "", false).unwrap();
+        let mut doc = Doc::open(&archive).unwrap();
+        doc.select_entry("memo.md").unwrap().unwrap();
+        let bytes = b"<svg/>";
+        let saved = doc.save_diagram_image(bytes, "image/svg+xml", false).unwrap();
+        assert_eq!(saved, "image_markdown/memo/diagram-0003.svg");
+        assert_eq!(crate::sevenz::extract(&archive, &saved, "").unwrap(), bytes);
+        assert_eq!(crate::sevenz::extract(&archive, "image_markdown/memo/diagram-1791554197819879100.svg", "").unwrap(), b"old");
+        drop(doc);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -5282,6 +5346,69 @@ mod tests {
         assert_eq!(d.read_diagram_asset(&external.join("photo space.png")).unwrap(), [8, 9]);
         drop(d);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Feature: 編集図の保存名
+    // Scenario: 保存先内の最大連番の次へ保存し、旧ファイルを残す
+    // Given: 欠番と旧タイムスタンプ名を含む編集図フォルダ
+    // When: 新しい編集図を保存する
+    // Then: 欠番を埋めず diagram-0003.svg を作成し、旧ファイルを維持する
+    #[test]
+    fn diagram_save_uses_next_sequence_and_preserves_legacy_names() {
+        let (root, mut doc) = image_fixture("diagram_sequence");
+        let directory = root.join("image_markdown/memo");
+        std::fs::create_dir_all(&directory).unwrap();
+        for name in ["diagram-0000.svg", "diagram-0002.svg", "diagram-1791554197819879100.svg"] {
+            std::fs::write(directory.join(name), "old").unwrap();
+        }
+        std::fs::create_dir_all(root.join("image_markdown/other")).unwrap();
+        std::fs::write(root.join("image_markdown/other/diagram-9999.svg"), "other document").unwrap();
+        let saved = doc.save_diagram_image(b"<svg/>", "image/svg+xml", false).unwrap();
+        assert_eq!(saved, "image_markdown/memo/diagram-0003.svg");
+        assert_eq!(std::fs::read(directory.join("diagram-1791554197819879100.svg")).unwrap(), b"old");
+        drop(doc);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    // Feature: 編集図の保存名の衝突回避
+    // Scenario: 拡張子の大文字小文字だけが異なる既存ファイルを上書きしない
+    // Given: diagram-0000.SVG が保存先にある
+    // When: 新しい編集図を保存する
+    // Then: diagram-0001.svg を作り既存ファイルを維持する
+    #[test]
+    fn diagram_save_skips_case_insensitive_existing_svg_names() {
+        let (root, mut doc) = image_fixture("diagram_case_collision");
+        let directory = root.join("image_markdown/memo");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("diagram-0000.SVG"), "keep").unwrap();
+        let saved = doc.save_diagram_image(b"<svg/>", "image/svg+xml", false).unwrap();
+        assert_eq!(saved, "image_markdown/memo/diagram-0001.svg");
+        assert_eq!(std::fs::read(directory.join("diagram-0000.SVG")).unwrap(), b"keep");
+        drop(doc);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    // Feature: SVGを直接開いたときの共有背景読込
+    // Scenario: 開いている編集図が宣言した隣接背景だけを読む
+    // Given: 共有PNG参照を持つ編集図と未宣言の隣接画像
+    // When: それぞれの画像を読み込む
+    // Then: 宣言したPNGは読め、未宣言画像は拒否する
+    #[test]
+    fn directly_opened_diagram_can_read_only_declared_backgrounds() {
+        let root = std::env::temp_dir().join(format!("wasabipad_direct_diagram_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let svg = root.join("diagram-0000.svg");
+        let background = root.join("pasted-image.png");
+        let secret = root.join("secret.png");
+        std::fs::write(&svg, r#"<svg><metadata id="wasabipad-diagram">{"width":10,"height":10,"elements":[{"kind":"image","src":"pasted-image.png"}]}</metadata></svg>"#).unwrap();
+        std::fs::write(&background, [1, 2, 3]).unwrap();
+        std::fs::write(&secret, [4, 5, 6]).unwrap();
+        let doc = Doc::open(&svg).unwrap();
+        assert_eq!(doc.read_diagram_asset(&background).unwrap(), [1, 2, 3]);
+        assert_eq!(doc.read_diagram_asset(&secret).unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+        drop(doc);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     // Feature: 図保存の取り消しと文書変更

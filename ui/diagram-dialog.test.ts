@@ -10,7 +10,7 @@ beforeEach(() => {
 // Scenario: 赤枠を描いて保存する
 // Given: 白紙の図編集画面
 // When: 四角形をドラッグして OK を押す
-// Then: 四角形を保存しキャンバスを自動縮小しない
+// Then: 四角形を保存し内容の外側を詰める
 it("Scenario: 四角形を描いて確定できる", async () => {
   let saved: unknown;
   const result = openDiagramEditor({ initial: { width: 800, height: 600, elements: [] }, sources: new Map(), save: async (diagram) => { saved = diagram; } });
@@ -22,7 +22,7 @@ it("Scenario: 四角形を描いて確定できる", async () => {
   window.dispatchEvent(new MouseEvent("pointerup", { clientX: 120, clientY: 90 }));
   button("OK").click();
   await result;
-  expect(saved).toMatchObject({ width: 800, height: 600, elements: [{ kind: "rect", x: 20, y: 30, width: 100, height: 60, stroke: "#ff0000" }] });
+  expect(saved).toMatchObject({ width: 102, height: 62, elements: [{ kind: "rect", x: 1, y: 1, width: 100, height: 60, stroke: "#ff0000" }] });
 });
 
 // Feature: 図編集ダイアログ
@@ -72,7 +72,7 @@ it("Scenario: 文字サイズ変更でも本文を収め先端の位置を保つ
   document.querySelector('[data-element="1"]')!.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 })); window.dispatchEvent(new MouseEvent("pointerup"));
   const size = document.querySelector<HTMLInputElement>('input[aria-label="文字サイズ"]')!; size.value = "32"; size.dispatchEvent(new Event("change"));
   button("OK").click(); await result;
-  expect(save.mock.calls[0][0].elements[0]).toMatchObject({ width: 100, height: 81.6, fontSize: 32, tail: { x: 30, y: 90 } });
+  expect(save.mock.calls[0][0].elements[0]).toMatchObject({ width: 100, height: 81.6, fontSize: 32, tail: { x: 21, y: 81 } });
 });
 
 // Feature: 拡張時の画面位置
@@ -235,7 +235,7 @@ it("Scenario: 先端を自由に移動し本体の移動とサイズ変更を区
   down(canvas.querySelector('[data-element="1"]')!, 20, 20); up(40, 50);
   expect(tip().getAttribute("cx")).toBe("170"); expect(tip().getAttribute("cy")).toBe("50");
   button("元に戻す").click(); button("やり直す").click(); button("OK").click(); await result;
-  expect(save.mock.calls[0][0]).toMatchObject({ elements: [{ x: 30, y: 40, width: 120, height: 90, tail: { x: 170, y: 50 } }] });
+  expect(save.mock.calls[0][0]).toMatchObject({ elements: [{ x: 1, y: 1, width: 120, height: 90, tail: { x: 141, y: 11 } }] });
 });
 
 // Feature: 文字の収まりとキャンバス拡張
@@ -258,7 +258,7 @@ it("Scenario: 文字の折返しと高さ・キャンバスをまとめて拡張
   expect(document.querySelector('[data-element="1"]')!.textContent).toBe("元");
   expect(button("元に戻す").disabled).toBe(true);
   button("やり直す").click(); button("OK").click(); await result;
-  expect(save.mock.calls[0][0]).toMatchObject({ width: 800, height: 640, elements: [{ text: "123456789\n次", width: 100, height: 80 }] });
+  expect(save.mock.calls[0][0]).toMatchObject({ width: 100, height: 80, elements: [{ x: 0, y: 0, text: "123456789\n次", width: 100, height: 80 }] });
 });
 
 // Feature: 図上の直接文字編集
@@ -394,7 +394,7 @@ it("Scenario: 保存失敗後も編集内容を保持して再試行する", asy
   await vi.waitFor(() => expect(document.querySelector(".diagram-message")?.textContent).toContain("保存できませんでした"));
   expect(width.value).toBe("900"); expect(button("OK").disabled).toBe(false);
   button("OK").click(); await result;
-  expect(save.mock.calls[1][0].width).toBe(900);
+  expect(save.mock.calls[1][0].width).toBe(102);
 });
 
 // Feature: 変更の破棄確認
@@ -448,8 +448,8 @@ it("Scenario: 吹き出しの本文と属性を編集できる", async () => {
 // Feature: 表示される文字範囲の保持
 // Given: 小さい編集枠を超えて表示される複数行文字
 // When: 文字を編集して保存する
-// Then: 文字の高さを広げ、キャンバスを自動縮小しない
-it("Scenario: 文字の収まりを調整してキャンバス寸法を保持する", async () => {
+// Then: 文字の高さを広げ、文字の表示範囲にキャンバスを詰める
+it("Scenario: OKで文字と図形に合わせてキャンバスの余白を詰める", async () => {
   Object.defineProperty(SVGElement.prototype, "getBBox", { configurable: true, value: () => ({ x: 18, y: 14, width: 300, height: 80 }) });
   const save = vi.fn<DiagramEditorOptions["save"]>(async () => {});
   const result = openDiagramEditor({ initial: { width: 800, height: 600, elements: [{ ...rect, kind: "text", width: 20, height: 10, text: "説明\n補足" }] }, sources: new Map(), save });
@@ -457,20 +457,20 @@ it("Scenario: 文字の収まりを調整してキャンバス寸法を保持す
   const text = document.querySelector<HTMLTextAreaElement>(".diagram-text-editor")!;
   text.value = "長い説明\n補足"; text.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true }));
   button("OK").click(); await result;
-  expect(save.mock.calls[0][0]).toMatchObject({ width: 800, height: 600, elements: [{ x: 10, y: 10, width: 20, height: 158, text: "長い説明\n補足" }] });
+  expect(save.mock.calls[0][0]).toMatchObject({ width: 308, height: 158, elements: [{ x: 0, y: 0, width: 20, height: 158, text: "長い説明\n補足" }] });
 });
 
 // Feature: 背景画像とキャンバスの保持
 // Given: 共有背景画像と、その内側の四角形
 // When: 図を編集して保存する
-// Then: 背景全体と共有参照とキャンバス寸法を保つ
+// Then: 背景全体と共有参照を保ち、背景の外側の余白を詰める
 it("Scenario: 背景画像全体と原本への参照を保持して保存する", async () => {
   const save = vi.fn<DiagramEditorOptions["save"]>(async () => {});
   const result = openDiagramEditor({ initial: { width: 800, height: 600, elements: [{ id: 2, kind: "image", src: "shared.png", x: 20, y: 30, width: 300, height: 200 }, { ...rect, x: 50, y: 50 }] }, sources: new Map([["shared.png", "data:image/png;base64,AQID"]]), save });
   const width = document.querySelector<HTMLInputElement>('input[aria-label="図の幅"]')!;
   width.value = "900"; width.dispatchEvent(new Event("change"));
   button("OK").click(); await result;
-  expect(save.mock.calls[0][0]).toMatchObject({ width: 900, height: 600, elements: [{ kind: "image", x: 20, y: 30, width: 300, height: 200, src: "shared.png" }, { x: 50, y: 50 }] });
+  expect(save.mock.calls[0][0]).toMatchObject({ width: 300, height: 200, elements: [{ kind: "image", x: 0, y: 0, width: 300, height: 200, src: "shared.png" }, { x: 30, y: 20 }] });
   expect(save.mock.calls[0][1].size).toBe(0);
 });
 
@@ -525,7 +525,6 @@ it.each([
   const width = document.querySelector<HTMLInputElement>('input[aria-label="図の幅"]')!;
   width.value = "900"; width.dispatchEvent(new Event("change"));
   button("OK").click(); await result;
-  expect(save.mock.calls[0][0].width).toBeGreaterThanOrEqual(expectedWidth);
-  expect(save.mock.calls[0][0].height).toBeGreaterThanOrEqual(expectedHeight);
-  expect(save.mock.calls[0][0].width).toBeGreaterThanOrEqual(900);
+  expect(save.mock.calls[0][0].width).toBeGreaterThanOrEqual(expectedWidth - 0.001);
+  expect(save.mock.calls[0][0].height).toBeGreaterThanOrEqual(expectedHeight - 0.001);
 });

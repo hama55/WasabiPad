@@ -771,7 +771,7 @@ async function renderAssetPreview(
   name: string,
   mimeType: string,
   createTarget: () => AssetPreviewTarget,
-  sourceText?: string,
+  sourceText?: string | (() => Promise<string>),
   cacheBustFile = false,
   state: ViewerRenderState = currentViewerRenderState(),
   nextImageZoom = imageZoom,
@@ -810,8 +810,9 @@ async function renderAssetPreview(
       committed = true;
     };
 
-    if (sourceText !== undefined) {
-      assetUrl = imageUrlFromText(sourceText, mimeType);
+    const preparedSourceText = typeof sourceText === "function" ? await sourceText() : sourceText;
+    if (preparedSourceText !== undefined) {
+      assetUrl = imageUrlFromText(preparedSourceText, mimeType);
       if (!retainAssetUrl(assetUrl, generation)) {
         assetUrl = null;
         discardTarget();
@@ -896,6 +897,14 @@ async function renderImage(
     : source;
   const mimeType = imageMimeType(classificationSource);
   const editedSvg = imageExtensionOf(classificationSource) === "svg" ? text : undefined;
+  const previewSvg = editedSvg && /\bdiagram-[\d-]+\.svg$/i.test(source) ? async () => {
+    const readDiagramImage = createDiagramAssetReader(
+      { sourcePath: state.sourcePath ?? state.archivePath ?? source, archivePath: state.archivePath, archiveEntry: state.archiveEntry },
+      { readLocal: readDiagramAsset, readArchive: readArchiveAsset },
+    );
+    const preview = await composeDiagramPreview(editedSvg, (relative) => readDiagramImage(relative));
+    return preview?.svg ?? editedSvg;
+  } : editedSvg;
   return renderAssetPreview(name, mimeType, () => {
     const { wrapper, image } = createImagePreview(name);
     const dispose = bindImagePan(image, content);
@@ -911,7 +920,7 @@ async function renderImage(
       dispose,
       activate: () => { disposeImagePan = dispose; },
     };
-  }, editedSvg, true, state, nextImageZoom);
+  }, previewSvg, true, state, nextImageZoom);
 }
 
 async function renderPdf(

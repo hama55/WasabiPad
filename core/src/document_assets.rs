@@ -78,6 +78,31 @@ pub(crate) fn next_archive_image_name(
     ))
 }
 
+pub(crate) fn next_diagram_image_name(names: impl Iterator<Item = String>) -> String {
+    let mut highest: Option<String> = None;
+    for name in names {
+        let Some(index) = name.strip_prefix("diagram-") else { continue };
+        if index.len() < 4 || !index.bytes().all(|byte| byte.is_ascii_digit()) { continue; }
+        // Unix-nanosecond IDs from the old writer occupy this range; keep them out of the new sequence.
+        if index.len() >= 19 && index[..19].parse::<u64>().is_ok_and(|timestamp| (1_000_000_000_000_000_000..2_000_000_000_000_000_000).contains(&timestamp)) { continue; }
+        let index = index.trim_start_matches('0');
+        let index = if index.is_empty() { "0" } else { index };
+        if highest.as_deref().is_none_or(|highest| index.len() > highest.len() || index.len() == highest.len() && index > highest) {
+            highest = Some(index.to_string());
+        }
+    }
+    let Some(highest) = highest else { return "diagram-0000".to_string(); };
+    let mut digits = highest.into_bytes();
+    for digit in digits.iter_mut().rev() {
+        if *digit < b'9' { *digit += 1; break; }
+        *digit = b'0';
+    }
+    if digits.iter().all(|digit| *digit == b'0') { digits.insert(0, b'1'); }
+    let mut next = String::from_utf8(digits).expect("decimal digits remain valid UTF-8");
+    if next.len() < 4 { next.insert_str(0, &"0".repeat(4 - next.len())); }
+    format!("diagram-{next}")
+}
+
 pub(crate) fn referenced_image_files(buf: &TextBuffer) -> HashSet<String> {
     image_sources(buf).into_iter().filter_map(|src| image_name_from_src(&src)).collect()
 }
@@ -393,6 +418,25 @@ mod tests {
         assert!(referenced.contains("image_markdown/memo/pasted-image-3.PNG"));
         assert!(referenced.contains("image/kept.jpg"));
         assert_eq!(next, "pasted-image-3.png");
+    }
+
+    // Feature: 編集図の連番
+    // Scenario: 欠番を使わず旧タイムスタンプ名を飛ばし最低4桁で採番する
+    // Given: 0000、0002、9999と旧タイムスタンプ名がある
+    // When: 次の編集図名を求める
+    // Then: 最大の連番の次を返し、4桁を超えても採番する
+    #[test]
+    fn diagram_names_follow_sequence_and_ignore_legacy_timestamps() {
+        let next = next_diagram_image_name([
+            "diagram-0000".to_string(),
+            "diagram-0002".to_string(),
+            "diagram-1791554197819879100".to_string(),
+            "diagram-17915541978198791001".to_string(),
+        ].into_iter());
+        assert_eq!(next, "diagram-0003");
+        assert_eq!(next_diagram_image_name(std::iter::empty()), "diagram-0000");
+        assert_eq!(next_diagram_image_name(["diagram-9999".to_string()].into_iter()), "diagram-10000");
+        assert_eq!(next_diagram_image_name(["diagram-0000".to_string(), "diagram-0002".to_string()].into_iter()), "diagram-0003");
     }
 
     // Feature: アーカイブ内部画像名の同一性

@@ -449,7 +449,7 @@ export function openDiagramEditor(options: DiagramEditorOptions): Promise<void> 
       if (!commitText()) return;
       if (JSON.stringify(model.value) === original || model.value.elements.length === 0 && options.initial.elements.length === 0) { finish(); return; }
       setPending(true); message.textContent = "保存中…";
-      try { await options.save(fitDiagramCanvas(model.value, contentBounds(model.value)), backgrounds); finish(); }
+      try { await options.save(fitDiagramCanvas(model.value, contentBounds(model.value), true), backgrounds); finish(); }
       catch (error) { message.textContent = `保存できませんでした: ${String(error)}`; }
       finally { setPending(false); }
     });
