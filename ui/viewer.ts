@@ -73,7 +73,7 @@ import {
 } from "./viewer-image-source";
 import { scheduleMarkdownImageLoads } from "./viewer-markdown-images";
 import { composeDiagramPreview } from "./diagram-assets";
-import { createDiagramAssetReader } from "./diagram-asset-reader";
+import { createDiagramAssetReader, isDiagramSvgPath } from "./diagram-asset-reader";
 import {
   bindImagePan,
   createImagePreview,
@@ -641,7 +641,7 @@ async function loadArchiveImages(
       const src = image.getAttribute(MARKDOWN_IMAGE_SOURCE_ATTRIBUTE)
         ?? image.getAttribute("src")
         ?? "";
-      if ((sourcePath || archivePath && archiveEntry) && /\bdiagram-[\d-]+\.svg$/i.test(src)) {
+      if ((sourcePath || archivePath && archiveEntry) && isDiagramSvgPath(src)) {
         const readImage = createDiagramAssetReader({ sourcePath: sourcePath ?? archivePath!, archivePath, archiveEntry }, { readLocal: readDiagramAsset, readArchive: readArchiveAsset });
         const bytes = await readImage(src);
         const preview = await composeDiagramPreview(new TextDecoder().decode(bytes), (relative) => readImage(relative, src));
@@ -897,7 +897,7 @@ async function renderImage(
     : source;
   const mimeType = imageMimeType(classificationSource);
   const editedSvg = imageExtensionOf(classificationSource) === "svg" ? text : undefined;
-  const previewSvg = editedSvg && /\bdiagram-[\d-]+\.svg$/i.test(source) ? async () => {
+  const previewSvg = editedSvg && isDiagramSvgPath(source) ? async () => {
     const readDiagramImage = createDiagramAssetReader(
       { sourcePath: state.sourcePath ?? state.archivePath ?? source, archivePath: state.archivePath, archiveEntry: state.archiveEntry },
       { readLocal: readDiagramAsset, readArchive: readArchiveAsset },

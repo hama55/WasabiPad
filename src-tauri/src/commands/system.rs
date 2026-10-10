@@ -95,12 +95,7 @@ pub(crate) fn open_in_default_browser(
         let extension = effective_extension
             .as_deref()
             .or_else(|| target.extension().and_then(|value| value.to_str()));
-        if !target.is_file()
-            || !matches!(
-                extension.map(str::to_ascii_lowercase).as_deref(),
-                Some("html" | "htm")
-            )
-        {
+        if !target.is_file() || !is_html_extension(extension) {
             return Err("HTMLファイルが見つかりません".to_string());
         }
         shell_execute_open(&browser_target(&target, effective_extension.as_deref()))
@@ -113,17 +108,19 @@ pub(crate) fn open_in_default_browser(
 }
 
 #[cfg(target_os = "windows")]
+fn is_html_extension(extension: Option<&str>) -> bool {
+    matches!(
+        extension.map(str::to_ascii_lowercase).as_deref(),
+        Some("html" | "htm")
+    )
+}
+
+#[cfg(target_os = "windows")]
 fn browser_target(path: &std::path::Path, effective_extension: Option<&str>) -> String {
     let physical_extension = path
         .extension()
-        .and_then(|value| value.to_str())
-        .map(str::to_ascii_lowercase);
-    let effective_is_html = matches!(
-        effective_extension.map(str::to_ascii_lowercase).as_deref(),
-        Some("html" | "htm")
-    );
-    let physical_is_html = matches!(physical_extension.as_deref(), Some("html" | "htm"));
-    if effective_is_html && !physical_is_html {
+        .and_then(|value| value.to_str());
+    if is_html_extension(effective_extension) && !is_html_extension(physical_extension) {
         file_uri_for_path(path)
     } else {
         path.to_string_lossy().into_owned()

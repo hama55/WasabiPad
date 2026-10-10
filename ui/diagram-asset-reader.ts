@@ -1,6 +1,10 @@
 import { basename } from "./path";
 import { resolveAssetPath, resolveArchiveAssetEntry } from "./viewer-assets";
 
+export function isDiagramSvgPath(source: string): boolean {
+  return /\bdiagram-[\d-]+\.svg$/i.test(source);
+}
+
 export function diagramAssetPrefix(path: string): string {
   const name = basename(path), dot = name.lastIndexOf(".");
   return `image_markdown/${dot > 0 ? name.slice(0, dot) : name}`;
@@ -21,7 +25,7 @@ export function createDiagramAssetReader(context: DiagramAssetContext, ports: {
       if (!entry) throw new Error("ローカル画像以外は図の背景に使えません");
       try { return await ports.readArchive(context.archivePath, entry); }
       catch (error) {
-        if (!base && !/\bdiagram-[\d-]+\.svg$/i.test(src) || base && !/\bdiagram-[\d-]+\.svg$/i.test(base)) throw error;
+        if (!isDiagramSvgPath(base || src)) throw error;
         const fallback = resolveArchiveAssetEntry(context.archiveEntry, `${diagramAssetPrefix(context.archiveEntry)}/${basename(src)}`);
         if (!fallback || fallback === entry) throw error;
         return ports.readArchive(context.archivePath, fallback);
