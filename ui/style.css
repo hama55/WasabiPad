@@ -704,7 +704,9 @@ body.fv-dragging { cursor: grabbing; user-select: none; }
 
 /* スクロールバー */
 .pf-box.diagram-editor { width: min(1120px, 94vw); max-width: 94vw; max-height: 94vh; display: flex; flex-direction: column; gap: 10px; }
+.pf-box.diagram-editor.diagram-editor-maximized { position: absolute; inset: 0; box-sizing: border-box; width: auto; height: auto; max-width: none; max-height: none; margin: 0; border-radius: 0; }
 .diagram-heading { display: flex; align-items: center; justify-content: space-between; margin: 0; }
+.diagram-heading-actions { display: flex; align-items: center; gap: 4px; }
 .diagram-heading button { border: 0; background: none; color: inherit; font: inherit; font-size: 22px; cursor: pointer; }
 .diagram-tools, .diagram-properties { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 .diagram-tools button { border: 1px solid var(--border-strong); border-radius: 4px; padding: 5px 9px; background: var(--bg-editor); color: var(--fg); cursor: pointer; }

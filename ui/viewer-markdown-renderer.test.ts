@@ -296,6 +296,21 @@ describe("Feature: Markdown viewer drawing boundary", () => {
     expect(image?.alt).toBe("diagram");
   });
 
+  // Feature: Markdown画像のソース位置
+  // Scenario: 画像ごとに元の記法位置を保つ
+  // Given: 同じ行にMarkdown画像とHTML imgが複数ある
+  // When: Markdownプレビューを描画する
+  // Then: 各画像の位置がそれぞれの記法範囲を指す
+  it("Scenario: Markdown画像とHTML imgに元記法の位置を付ける", () => {
+    const source = '![first](one.png) ![second](two.png) <img src="three.png">';
+    const { article } = renderMarkdownDocument(source, null);
+    const ranges = [...article.querySelectorAll<HTMLImageElement>("img")].map((image) =>
+      source.slice(Number(image.dataset.sourceOffsetStart), Number(image.dataset.sourceOffsetEnd)),
+    );
+
+    expect(ranges).toEqual(["![first](one.png)", "![second](two.png)", '<img src="three.png">']);
+  });
+
   // Given: Markdownの見出しと明示的な空アンカー
   // When: Markdownを描画する
   // Then: 見出しと明示アンカーの両方をfragmentの移動先として残す

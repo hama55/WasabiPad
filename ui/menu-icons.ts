@@ -45,6 +45,7 @@ export const MENU_ICON = {
   front: "menu-icon-front",
   back: "menu-icon-back",
   fit: "menu-icon-fit",
+  restore: "menu-icon-restore",
   confirm: "menu-icon-confirm",
 } as const;
 

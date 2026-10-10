@@ -283,9 +283,9 @@ function scrollCsvRows(rows: HTMLElement[], selection: ViewerSelection | null) {
   });
 }
 
-function notifyParentOfSelection() {
+function notifyParentOfSelection(target?: EventTarget | null) {
   if (!isInlineViewer || content.classList.contains("viewer-loading")) return;
-  const selection = viewerSelectionFromDom(content);
+  const selection = viewerSelectionFromDom(content, target);
   if (!selection) return;
   postToParent({
     type: INLINE_PREVIEW_MESSAGES.SELECTION_CHANGE_MESSAGE,
@@ -564,9 +564,9 @@ function bindViewerControls() {
       postToParent({ type: INLINE_PREVIEW_MESSAGES.REFRESH_MESSAGE });
     }
   }, { signal: viewerDomListeners.signal });
-  const notifySelection = () => runViewerOperation(
+  const notifySelection = (event: Event) => runViewerOperation(
     "プレビューの選択位置を通知できませんでした",
-    notifyParentOfSelection,
+    () => notifyParentOfSelection(event.target),
   );
   document.addEventListener("selectionchange", notifySelection, { signal: viewerDomListeners.signal });
   content.addEventListener("mouseup", notifySelection, { signal: viewerDomListeners.signal });

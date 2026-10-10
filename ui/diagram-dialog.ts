@@ -11,6 +11,7 @@ const buttonIcons: Record<string, MenuIconClass> = {
   矢印: MENU_ICON.arrow, 吹き出し: MENU_ICON.callout, 文字: MENU_ICON.text,
   元に戻す: MENU_ICON.undo, やり直す: MENU_ICON.redo, 削除: MENU_ICON.delete,
   最前面: MENU_ICON.front, 最背面: MENU_ICON.back, 全体を表示: MENU_ICON.fit,
+  最大化: MENU_ICON.fit, 通常サイズに戻す: MENU_ICON.restore,
   画像を追加: MENU_ICON.image, 背景を選び直す: MENU_ICON.image, キャンセル: MENU_ICON.close, 閉じる: MENU_ICON.close, OK: MENU_ICON.confirm,
 };
 
@@ -53,7 +54,7 @@ export function openDiagramEditor(options: DiagramEditorOptions): Promise<void> 
       }
       void cancel();
     } }, "diagram-editor");
-    box.innerHTML = `<div class="pf-title diagram-heading"><span>図を編集</span><button type="button" aria-label="閉じる">×</button></div>
+    box.innerHTML = `<div class="pf-title diagram-heading"><span>図を編集</span><div class="diagram-heading-actions"><button type="button" class="diagram-maximize"></button><button type="button" class="diagram-close"></button></div></div>
       <div class="diagram-tools"></div><div class="diagram-properties"></div>
       <div class="diagram-viewport"><div class="diagram-workspace"><div class="diagram-canvas-frame"><svg class="diagram-canvas" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="図の編集領域" tabindex="0"></svg></div></div></div>
       <div class="diagram-message" role="status" aria-live="polite"></div>
@@ -66,10 +67,19 @@ export function openDiagramEditor(options: DiagramEditorOptions): Promise<void> 
     const workspace = box.querySelector<HTMLElement>(".diagram-workspace")!;
     const message = box.querySelector<HTMLElement>(".diagram-message")!;
     const ok = box.querySelector<HTMLButtonElement>(".pf-ok")!;
-    for (const [selector, label] of [[".diagram-heading button", "閉じる"], [".diagram-cancel", "キャンセル"], [".pf-ok", "OK"]]) {
+    for (const [selector, label] of [[".diagram-maximize", "最大化"], [".diagram-close", "閉じる"], [".diagram-cancel", "キャンセル"], [".pf-ok", "OK"]]) {
       const b = box.querySelector<HTMLButtonElement>(selector)!;
       b.title = label; b.setAttribute("aria-label", label); b.replaceChildren(createMenuIcon(buttonIcons[label]));
     }
+    const maximize = box.querySelector<HTMLButtonElement>(".diagram-maximize")!;
+    let maximized = false;
+    maximize.addEventListener("click", () => {
+      maximized = !maximized;
+      box.classList.toggle("diagram-editor-maximized", maximized);
+      const label = maximized ? "通常サイズに戻す" : "最大化";
+      maximize.title = label; maximize.setAttribute("aria-label", label);
+      maximize.replaceChildren(createMenuIcon(buttonIcons[label]));
+    });
     function contentBounds(diagram: Diagram) {
       return diagramContentBounds(diagram, (element) => {
         const group = document.createElementNS("http://www.w3.org/2000/svg", "g");
@@ -454,7 +464,7 @@ export function openDiagramEditor(options: DiagramEditorOptions): Promise<void> 
       finally { setPending(false); }
     });
     box.querySelector(".diagram-cancel")!.addEventListener("click", () => { void cancel(); });
-    box.querySelector(".diagram-heading button")!.addEventListener("click", () => { void cancel(); });
+    box.querySelector(".diagram-close")!.addEventListener("click", () => { void cancel(); });
     if (options.missing?.length) message.textContent = "背景画像が見つからないか、読み込めません。背景画像を選び直してください。";
     fit(); scrollTo = { left: 142, top: 142 }; render(); canvas.focus({ preventScroll: true });
   });

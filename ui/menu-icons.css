@@ -47,6 +47,7 @@
 .menu-icon-front::after { content: "↑"; right: -3px; top: -3px; font-size: 10px; }
 .menu-icon-back::after { content: "↓"; right: -3px; bottom: -3px; font-size: 10px; }
 .menu-icon-fit::before { content: "⛶"; font-size: 18px; }
+.menu-icon-restore::before { content: "❐"; }
 .menu-icon-confirm::before { content: "✓"; }
 .menu-icon-csv::before { content: "▤"; }
 .menu-icon-markdown::before { content: "▧"; }

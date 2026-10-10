@@ -5,6 +5,7 @@ import {
   sourcePositionFromPoint,
   viewerSelectionFromDom,
 } from "./viewer-selection";
+import { renderMarkdownDocument } from "./viewer-markdown-renderer";
 
 describe("Feature: viewer source selection mapping", () => {
   // Given: 表示値`a"b`と原文`"a""b",c`を持つCSVセル
@@ -80,5 +81,45 @@ describe("Feature: viewer source selection mapping", () => {
   it("Scenario: empty selection is not treated as a preview range", () => {
     expect(isCollapsedViewerSelection(null)).toBe(false);
     expect(isCollapsedViewerSelection({ start: { line: 1, col: 2 }, end: { line: 1, col: 2 } })).toBe(true);
+  });
+
+  // Feature: Markdownプレビューの画像クリックからキャレット位置へ移動する
+  // Scenario: 同じ行にある複数画像のうち、クリックした画像記法の先頭へ移動する
+  // Given: Markdown画像が2つ並ぶプレビュー
+  // When: 2つ目の画像をクリックする
+  // Then: 2つ目の記法の先頭にキャレット位置を返す
+  it("Scenario: クリックしたMarkdown画像の記法先頭を返す", () => {
+    const source = "![first](one.png) ![second](two.png)";
+    const { article } = renderMarkdownDocument(source, null);
+    const images = article.querySelectorAll<HTMLImageElement>("img");
+
+    expect(viewerSelectionFromDom(article, images[1])).toEqual({
+      start: { line: 0, col: 18 },
+      end: { line: 0, col: 18 },
+    });
+  });
+
+  // Given: 生HTMLのimgを含むMarkdownプレビュー
+  // When: 画像をクリックする
+  // Then: HTMLタグの先頭にキャレット位置を返す
+  it("Scenario: クリックしたHTML imgのタグ先頭を返す", () => {
+    const source = '<img src="diagram.png">';
+    const { article } = renderMarkdownDocument(source, null);
+    const image = article.querySelector<HTMLImageElement>("img")!;
+
+    expect(viewerSelectionFromDom(article, image)).toEqual({
+      start: { line: 0, col: 0 },
+      end: { line: 0, col: 0 },
+    });
+  });
+
+  // Given: Markdown画像がリンク内にある
+  // When: 画像をクリックする
+  // Then: キャレット移動を通知せず既存のリンク操作に委ねる
+  it("Scenario: リンク内画像はキャレット移動の対象にしない", () => {
+    const { article } = renderMarkdownDocument("[![diagram](diagram.png)](target.html)", null);
+    const image = article.querySelector<HTMLImageElement>("img")!;
+
+    expect(viewerSelectionFromDom(article, image)).toBeNull();
   });
 });

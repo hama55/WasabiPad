@@ -363,6 +363,33 @@ it("Scenario: 全操作を名前付きアイコンで表示する", async () => 
   button("OK").click(); await result;
 });
 
+// Feature: 図編集画面の最大化
+// Scenario: 最大化を戻せて次回は通常サイズで開く
+// Given: 通常サイズの図編集画面
+// When: 最大化と復元を切り替え、最大化したまま閉じて再度開く
+// Then: 元に戻せて、次回は通常サイズから始まる
+it("Scenario: 図編集画面を最大化して復元し、再表示では通常サイズにする", async () => {
+  let result = openDiagramEditor({ initial: { width: 800, height: 600, elements: [] }, sources: new Map(), save: async () => {} });
+  const dialog = document.querySelector<HTMLElement>(".diagram-editor")!;
+
+  expect(button("最大化")).toBeTruthy();
+  button("最大化").click();
+  expect(dialog.classList.contains("diagram-editor-maximized")).toBe(true);
+  expect(button("通常サイズに戻す")).toBeTruthy();
+
+  button("通常サイズに戻す").click();
+  expect(dialog.classList.contains("diagram-editor-maximized")).toBe(false);
+  button("最大化").click();
+  button("閉じる").click();
+  await result;
+
+  result = openDiagramEditor({ initial: { width: 800, height: 600, elements: [] }, sources: new Map(), save: async () => {} });
+  expect(document.querySelector(".diagram-editor-maximized")).toBeNull();
+  expect(button("最大化")).toBeTruthy();
+  button("キャンセル").click();
+  await result;
+});
+
 // Feature: 単一要素選択
 // Scenario: 空白をドラッグしても選択済み図形を動かさない
 // Given: 選択した四角形

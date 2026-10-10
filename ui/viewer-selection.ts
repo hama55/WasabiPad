@@ -94,7 +94,15 @@ export function sourcePositionFromPoint(
   return markdownSourcePositionAtOffset(source, sourceOffset);
 }
 
-export function viewerSelectionFromDom(content: HTMLElement): ViewerSelection | null {
+export function viewerSelectionFromDom(content: HTMLElement, target?: EventTarget | null): ViewerSelection | null {
+  const targetElement = target instanceof Element ? target : null;
+  const image = targetElement?.closest<HTMLImageElement>("img");
+  if (image && content.contains(image)) {
+    if (image.closest("a")) return null;
+    const position = sourcePositionFromPoint(image, 0);
+    return position ? { start: position, end: position } : null;
+  }
+
   const selection = window.getSelection();
   if (!selection?.rangeCount || !selection.anchorNode || !selection.focusNode) return null;
   if (!content.contains(selection.anchorNode) || !content.contains(selection.focusNode)) return null;

@@ -40,6 +40,28 @@ it("Scenario: source_path が null でもアーカイブの背景を表示する
   expect(document.querySelector<HTMLImageElement>("article img")?.src).toBe("blob:diagram-preview");
 });
 
+// Feature: Markdownプレビューからエディタのキャレット位置へ移動する
+// Scenario: 画像をクリックして、その記法の先頭位置を親へ通知する
+// Given: 行頭に文字を持つMarkdown画像のプレビュー
+// When: プレビュー上の画像でマウスを離す
+// Then: 画像記法の先頭位置を選択変更メッセージで通知する
+it("Scenario: Markdown画像のクリック位置を選択変更メッセージで通知する", async () => {
+  const source = "前 ![diagram](https://example.test/diagram.png) 後";
+  window.dispatchEvent(new MessageEvent("message", { source: window.parent, origin: window.location.origin, data: {
+    type: messages.PAYLOAD_MESSAGE,
+    payload: { format: "markdown", text: source, selection: null, source_path: "C:\\notes\\memo.md", effective_extension: null, archive_path: null, archive_entry: null, external_output_path: null },
+  } }));
+  await vi.waitFor(() => expect(document.querySelector("article img")).not.toBeNull());
+
+  const post = vi.spyOn(window.parent, "postMessage");
+  document.querySelector<HTMLImageElement>("article img")!.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+
+  expect(post).toHaveBeenCalledWith({
+    type: messages.SELECTION_CHANGE_MESSAGE,
+    selection: { start: { line: 0, col: 2 }, end: { line: 0, col: 2 } },
+  }, window.location.origin);
+});
+
 // Feature: 編集図SVGの直接プレビュー
 // Scenario: 通常ファイルのSVGから相対参照PNGを合成する
 // Given: 共有背景参照を持つ編集図SVG
