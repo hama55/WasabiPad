@@ -357,12 +357,14 @@ export const readSqlitePreview = (
   offset: number,
   limit: number,
   includeMetadata: boolean,
+  querySql?: string,
 ) => invoke<SqlitePreview>(IPC_COMMANDS.readSqlitePreview, {
   path,
   selectedName,
   offset,
   limit,
   includeMetadata,
+  querySql: querySql ?? null,
 });
 
 export const externalPreviewGenerate = (request: ExternalPreviewRequest) =>

@@ -329,4 +329,88 @@ describe("Feature: SQLite viewer", () => {
     await vi.waitFor(() => expect(host.querySelector(".viewer-grid")).not.toBeNull());
     controller.dispose();
   });
+
+  // Given: 通常のSQLiteテーブルを表示している
+  // When: 有効なSELECTの後に無効なSQLを実行し、表示をスクロールする
+  // Then: 一時ビューを表示し、失敗時は前回結果を残し、後続ページにも成功済みSQLを使う
+  it("Scenario: 一時ビューを成功時だけ置き換え、前回のSQL結果を保つ", async () => {
+    const host = document.createElement("div");
+    const summary = document.createElement("span");
+    const validSql = "SELECT id FROM items ORDER BY id";
+    const invalidSql = "not valid SQL";
+    const delayedInvalidSql = "SELECT id FROM later";
+    const temporaryName = "__wasabipad_temporary_view__";
+    let rejectDelayedQuery: ((error: Error) => void) | undefined;
+    const read = vi.fn(async (
+      _path: string,
+      _selectedName: string | null,
+      offset: number,
+      _limit: number,
+      includeMetadata: boolean,
+      querySql?: string,
+    ) => {
+      if (querySql === invalidSql) throw new Error("syntax error");
+      if (querySql === delayedInvalidSql) {
+        await new Promise<never>((_resolve, reject) => { rejectDelayedQuery = reject; });
+      }
+      if (querySql === validSql) {
+        return preview({
+          objects: [{ name: temporaryName, kind: "temporary view" }],
+          selectedName: temporaryName,
+          columns: ["id"],
+          rows: [[{ kind: "integer", value: String(42 + offset) }]],
+          hasMore: offset === 0,
+          totalRows: includeMetadata ? 2 : null,
+          viewDefinition: includeMetadata ? validSql : null,
+        });
+      }
+      return preview({ rows: rows(1), hasMore: true, totalRows: 2 });
+    });
+    const controller = createSqlitePreviewController(host, summary, "C:\\work\\data.sqlite", {
+      read,
+      getRowLimit: () => 1,
+    });
+    const bodyHost = host.querySelector<HTMLElement>(".sqlite-table-wrap")!;
+    Object.defineProperty(bodyHost, "clientHeight", { configurable: true, value: 28 });
+
+    await controller.load();
+
+    const queryInput = host.querySelector<HTMLTextAreaElement>("[data-action=sqlite-query-input]");
+    expect(queryInput).not.toBeNull();
+    queryInput!.value = validSql;
+    host.querySelector<HTMLFormElement>("[data-action=sqlite-query]")!
+      .dispatchEvent(new SubmitEvent("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    expect(read).toHaveBeenLastCalledWith("C:\\work\\data.sqlite", null, 0, 1, true, validSql);
+    expect(host.querySelector("[data-sqlite-view-definition]")?.textContent).toContain(validSql);
+    expect(host.querySelector(".sqlite-data-row td")?.textContent).toBe("42");
+
+    queryInput!.value = invalidSql;
+    host.querySelector<HTMLFormElement>("[data-action=sqlite-query]")!
+      .dispatchEvent(new SubmitEvent("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(host.querySelector(".sqlite-query-error")?.textContent).toContain("syntax error"));
+    expect(host.querySelector(".sqlite-data-row td")?.textContent).toBe("42");
+    expect(host.querySelector("[data-sqlite-view-definition]")?.textContent).toContain(validSql);
+
+    queryInput!.value = delayedInvalidSql;
+    host.querySelector<HTMLFormElement>("[data-action=sqlite-query]")!
+      .dispatchEvent(new SubmitEvent("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(4));
+    Object.defineProperty(bodyHost, "scrollTop", { configurable: true, writable: true, value: 28 });
+    bodyHost.dispatchEvent(new Event("scroll"));
+    await Promise.resolve();
+    expect(read).toHaveBeenCalledTimes(4);
+    rejectDelayedQuery!(new Error("delayed syntax error"));
+    await vi.waitFor(() => expect(host.querySelector(".sqlite-query-error")?.textContent).toContain("delayed syntax error"));
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(5));
+    expect(read).toHaveBeenLastCalledWith(
+      "C:\\work\\data.sqlite",
+      temporaryName,
+      1,
+      1,
+      false,
+      validSql,
+    );
+    controller.dispose();
+  });
 });
