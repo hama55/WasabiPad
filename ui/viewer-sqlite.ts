@@ -83,6 +83,15 @@ export function createSqlitePreviewController(
   const orderNote = document.createElement("p");
   orderNote.className = "sqlite-order-note";
   orderNote.textContent = "現在の結果順の位置です。再読み込みやDB更新後に同じ行を指す保証はありません";
+  const orderDetails = document.createElement("details");
+  orderDetails.className = "sqlite-disclosure";
+  const orderSummary = document.createElement("summary");
+  orderSummary.textContent = "表示上の注意";
+  orderDetails.append(orderSummary, orderNote);
+  const queryDetails = document.createElement("details");
+  queryDetails.className = "sqlite-disclosure";
+  const querySummary = document.createElement("summary");
+  querySummary.textContent = "SQLite一時ビュー";
   const queryForm = document.createElement("form");
   queryForm.className = "sqlite-query";
   queryForm.dataset.action = "sqlite-query";
@@ -106,6 +115,7 @@ export function createSqlitePreviewController(
   queryError.setAttribute("role", "alert");
   queryError.hidden = true;
   queryForm.append(queryLabel, queryNote, queryButton);
+  queryDetails.append(querySummary, queryForm);
   const viewDefinition = document.createElement("details");
   viewDefinition.className = "sqlite-view-definition";
   viewDefinition.dataset.sqliteViewDefinition = "";
@@ -126,7 +136,7 @@ export function createSqlitePreviewController(
   bodyHost.className = "sqlite-table-wrap";
   bodyHost.tabIndex = 0;
   bodyHost.setAttribute("aria-label", "SQLiteレコード");
-  root.append(toolbar, queryForm, queryError, orderNote, pageError, bodyHost);
+  root.append(toolbar, queryDetails, queryError, orderDetails, pageError, bodyHost);
   host.replaceChildren(root);
 
   let selectedName: string | null = null;
@@ -607,6 +617,8 @@ export function createSqlitePreviewController(
     void moveToRow();
   }, { signal: listeners.signal });
   bodyHost.addEventListener("scroll", scheduleRender, { signal: listeners.signal });
+  queryDetails.addEventListener("toggle", scheduleRender, { signal: listeners.signal });
+  orderDetails.addEventListener("toggle", scheduleRender, { signal: listeners.signal });
 
   return {
     load: () => load(true),

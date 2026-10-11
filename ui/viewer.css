@@ -257,11 +257,12 @@ main.viewer-loading > * { pointer-events: none; }
 .sqlite-query-error { flex: none; padding: 0 0 8px; color: #e81123; }
 .sqlite-query-error[hidden] { display: none; }
 .sqlite-row-count { color: var(--fg-dim); font-size: 12px; }
-.sqlite-order-note { padding: 0 0 8px; color: var(--fg-dim); font-size: 12px; }
+.sqlite-order-note { margin: 6px 0 0; color: var(--fg-dim); font-size: 12px; }
 .sqlite-page-error { display: flex; align-items: center; gap: 8px; padding: 0 0 8px; color: #e81123; }
 .sqlite-page-error[hidden] { display: none; }
-.sqlite-view-definition { flex: none; padding: 0 0 8px; color: var(--fg-dim); font-size: 12px; }
-.sqlite-view-definition summary { cursor: pointer; }
+.sqlite-view-definition, .sqlite-disclosure { flex: none; padding: 0 0 8px; color: var(--fg-dim); font-size: 12px; }
+.sqlite-view-definition summary, .sqlite-disclosure summary { cursor: pointer; }
+.sqlite-disclosure .sqlite-query { padding: 6px 0 0; }
 .sqlite-view-definition pre { max-height: 160px; margin-top: 6px; overflow: auto; color: var(--fg); white-space: pre-wrap; }
 .sqlite-table-wrap { flex: 1; min-width: 0; min-height: 0; overflow: auto; }
 .sqlite-grid thead th { position: sticky; top: 0; z-index: 1; }
