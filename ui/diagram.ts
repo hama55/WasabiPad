@@ -13,6 +13,8 @@ export interface DiagramElement {
   fontSize?: number;
   textColor?: string;
   src?: string;
+  background?: boolean;
+  crop?: DiagramBounds;
   wrapText?: boolean;
   tail?: { x: number; y: number };
 }
@@ -137,6 +139,11 @@ export function validateDiagram(value: unknown): Diagram {
       || e.text !== undefined && (typeof e.text !== "string" || e.text.length > 100000)
       || e.wrapText !== undefined && typeof e.wrapText !== "boolean"
       || e.tail !== undefined && (e.kind !== "callout" || !e.tail || !finite(e.tail.x) || !finite(e.tail.y))
+      || e.background !== undefined && (e.kind !== "image" || typeof e.background !== "boolean")
+      || e.crop !== undefined && (e.kind !== "image" || e.background !== false || !e.crop
+        || !finite(e.crop.x, 0, 1) || !finite(e.crop.y, 0, 1)
+        || !finite(e.crop.width, Number.EPSILON, 1) || !finite(e.crop.height, Number.EPSILON, 1)
+        || e.crop.x + e.crop.width > 1 || e.crop.y + e.crop.height > 1)
       || e.kind === "image" && (typeof e.src !== "string" || !isLocalDiagramImage(e.src))) return fail();
     ids.add(e.id);
     // Only the editor's schema is retained; untrusted SVG markup never becomes executable DOM.
@@ -146,6 +153,8 @@ export function validateDiagram(value: unknown): Diagram {
       ...e.fontSize !== undefined ? { fontSize: e.fontSize } : {}, ...e.textColor !== undefined ? { textColor: e.textColor } : {},
       ...e.wrapText !== undefined ? { wrapText: e.wrapText } : {},
       ...e.tail !== undefined ? { tail: { x: e.tail.x, y: e.tail.y } } : {},
+      ...e.background !== undefined ? { background: e.background } : {},
+      ...e.crop !== undefined ? { crop: { x: e.crop.x, y: e.crop.y, width: e.crop.width, height: e.crop.height } } : {},
       ...e.kind === "image" ? { src: e.src } : {} };
   });
   return { width: d.width, height: d.height, elements };
@@ -209,7 +218,9 @@ export function diagramElementSvg(e: DiagramElement, imageSrc = e.src ?? ""): st
   const text = (e.kind === "text" || e.kind === "callout" ? diagramTextLines(e) : []).map((line, i) => `<tspan x="${x + 8}" dy="${i ? (e.fontSize ?? 20) * 1.3 : 0}">${escapeXml(line)}</tspan>`).join("");
   const label = `<text x="${x + 8}" y="${y + (e.fontSize ?? 20) + 4}" fill="${e.textColor ?? (e.kind === "text" ? e.fill ?? "#000000" : "#000000")}" font-size="${e.fontSize ?? 20}" font-family="sans-serif"${e.wrapText ? ' font-kerning="none"' : ""}>${text}</text>`;
   switch (e.kind) {
-    case "image": return imageSrc ? `<image x="${x}" y="${y}" width="${w}" height="${h}" preserveAspectRatio="none" href="${escapeXml(imageSrc)}"/>`
+    case "image": return imageSrc ? e.crop
+      ? `<svg x="${x}" y="${y}" width="${w}" height="${h}" viewBox="${e.crop.x} ${e.crop.y} ${e.crop.width} ${e.crop.height}" preserveAspectRatio="none" overflow="hidden"><image width="1" height="1" preserveAspectRatio="none" href="${escapeXml(imageSrc)}"/></svg>`
+      : `<image x="${x}" y="${y}" width="${w}" height="${h}" preserveAspectRatio="none" href="${escapeXml(imageSrc)}"/>`
       : `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="none" stroke="#888888" stroke-dasharray="4 3"/><text x="${x + 8}" y="${y + 24}" fill="#666666" font-size="16">背景画像が見つからないか、読み込めません</text>`;
     case "rect": return `<rect x="${x}" y="${y}" width="${w}" height="${h}" ${style}/>`;
     case "ellipse": return `<ellipse cx="${x + w / 2}" cy="${y + h / 2}" rx="${w / 2}" ry="${h / 2}" ${style}/>`;

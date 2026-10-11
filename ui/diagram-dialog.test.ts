@@ -43,6 +43,228 @@ function button(label: string): HTMLButtonElement {
 }
 const rect = { id: 1, kind: "rect" as const, x: 10, y: 10, width: 100, height: 60, stroke: "#ff0000", fill: "none" };
 
+function clipboardEvent(type: string, data: Record<string, string> = {}, image?: File) {
+  const event = new Event(type, { bubbles: true, cancelable: true });
+  Object.defineProperty(event, "clipboardData", { value: {
+    items: image ? [{ type: image.type, getAsFile: () => image }] : [],
+    getData: (type: string) => data[type] ?? "", setData: (type: string, value: string) => { data[type] = value; },
+  } });
+  return event;
+}
+
+// Feature: 画像部品のトリム
+// Given: 画像部品と背景画像がある
+// When: トリム枠をドラッグして適用しUndo/Redo・再トリム・解除する
+// Then: 元画像を保ち、キャンセルと履歴と保存で表示範囲を保持する
+it("Scenario: トリム枠をドラッグし、取消・解除・保存できる", async () => {
+  const save = vi.fn<DiagramEditorOptions["save"]>(async () => {});
+  const image = { id: 1, kind: "image" as const, background: false, src: "part.png", x: 10, y: 20, width: 200, height: 100 };
+  const result = openDiagramEditor({ initial: { width: 800, height: 600, elements: [image] }, sources: new Map([["part.png", "data:image/png;base64,AQID"]]), save });
+  const select = () => { document.querySelector('[data-element="1"]')!.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 })); window.dispatchEvent(new MouseEvent("pointerup")); };
+  select(); button("トリム").click();
+  const area = document.querySelector<SVGSVGElement>(".diagram-crop-canvas")!;
+  area.getBoundingClientRect = () => ({ left: 0, top: 0, width: 200, height: 100 } as DOMRect);
+  area.querySelector('[data-crop-handle="nw"]')!.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 0, clientY: 0 }));
+  window.dispatchEvent(new MouseEvent("pointermove", { clientX: 50, clientY: 20 }));
+  window.dispatchEvent(new MouseEvent("pointerup", { clientX: 50, clientY: 20 }));
+  button("トリムを適用").click();
+  expect(document.querySelector('[data-element="1"] svg')?.getAttribute("viewBox")).toBe("0.25 0.2 0.75 0.8");
+  button("元に戻す").click(); expect(document.querySelector('[data-element="1"] svg')).toBeNull();
+  button("やり直す").click(); select(); button("トリム").click();
+  expect(button("元に戻す").disabled).toBe(true);
+  expect(button("OK").disabled).toBe(true);
+  document.querySelector<HTMLInputElement>('input[aria-label="トリムの左 %"]')!.value = "0";
+  button("トリムをキャンセル").click();
+  expect(document.querySelector('[data-element="1"] svg')?.getAttribute("viewBox")).toBe("0.25 0.2 0.75 0.8");
+  button("トリム解除").click(); expect(document.querySelector('[data-element="1"] svg')).toBeNull();
+  button("元に戻す").click(); button("OK").click(); await result;
+  expect(save.mock.calls[0][0].elements[0]).toMatchObject({ src: "part.png", width: 150, height: 80, crop: { x: .25, y: .2, width: .75, height: .8 } });
+});
+
+// Feature: 図への画像コピー・貼り付け
+// Given: 外部画像のクリップボードと白紙の図
+// When: 貼り付け、コピー、複製してUndo/Redoし保存する
+// Then: 即時表示・中央配置・一操作Undo・共有元画像を保持する
+it("Scenario: 外部画像を貼り付けて図内で複製する", async () => {
+  vi.spyOn(window, "Image").mockImplementation(function () {
+    const image = document.createElement("img");
+    Object.defineProperties(image, { naturalWidth: { value: 200 }, naturalHeight: { value: 100 },
+      src: { set: () => { queueMicrotask(() => image.onload?.(new Event("load"))); } } });
+    return image;
+  } as unknown as typeof Image);
+  const save = vi.fn<DiagramEditorOptions["save"]>(async () => {});
+  const result = openDiagramEditor({ initial: { width: 800, height: 600, elements: [] }, sources: new Map(), save });
+  const canvas = document.querySelector<SVGSVGElement>(".diagram-canvas")!;
+  const image = { type: "image/png", name: "clip.png", arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer } as File;
+  canvas.dispatchEvent(clipboardEvent("paste", {}, image));
+  await vi.waitFor(() => expect(canvas.querySelectorAll("image")).toHaveLength(1));
+  expect(canvas.querySelector("image")?.getAttribute("x")).toBe("300");
+  expect(canvas.querySelector("image")?.getAttribute("y")).toBe("250");
+  const data: Record<string, string> = {};
+  canvas.dispatchEvent(clipboardEvent("copy", data));
+  canvas.dispatchEvent(clipboardEvent("paste", data));
+  expect(canvas.querySelectorAll("image")).toHaveLength(2);
+  button("元に戻す").click(); expect(canvas.querySelectorAll("image")).toHaveLength(1);
+  button("元に戻す").click(); expect(canvas.querySelectorAll("image")).toHaveLength(0);
+  button("やり直す").click(); button("やり直す").click();
+  button("OK").click(); await result;
+  const [diagram, assets] = save.mock.calls[0];
+  expect(diagram.elements).toHaveLength(2);
+  expect(diagram.elements[0]).toMatchObject({ background: false, x: 0, y: 0, width: 200, height: 100 });
+  expect(diagram.elements[1]).toMatchObject({ x: 20, y: 20, src: diagram.elements[0].src });
+  expect(assets.size).toBe(1);
+});
+
+// Feature: ファイルからの画像部品追加と保存失敗
+// Given: ファイルから追加した画像部品
+// When: トリムして保存に失敗し、再度保存する
+// Then: 編集内容・元画像を失わず再試行できる
+it("Scenario: ファイル追加した画像もトリムでき保存失敗時に保持する", async () => {
+  vi.spyOn(window, "Image").mockImplementation(function () {
+    const image = document.createElement("img");
+    Object.defineProperties(image, { naturalWidth: { value: 200 }, naturalHeight: { value: 100 },
+      src: { set: () => { queueMicrotask(() => image.onload?.(new Event("load"))); } } });
+    return image;
+  } as unknown as typeof Image);
+  const save = vi.fn<DiagramEditorOptions["save"]>().mockRejectedValueOnce(new Error("保存失敗")).mockResolvedValue(undefined);
+  const result = openDiagramEditor({ initial: { width: 800, height: 600, elements: [] }, sources: new Map(), save });
+  button("画像を追加").click();
+  const file = document.querySelector<HTMLInputElement>('input[type="file"]')!;
+  Object.defineProperty(file, "files", { value: [{ name: "part.png", type: "image/png", arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer }] });
+  file.dispatchEvent(new Event("change"));
+  await vi.waitFor(() => expect(button("トリム").disabled).toBe(false));
+  expect(button("背景を選び直す").disabled).toBe(true);
+  button("トリム").click();
+  document.querySelector<HTMLInputElement>('input[aria-label="トリムの幅 %"]')!.value = "50";
+  button("トリムを適用").click(); button("OK").click();
+  await vi.waitFor(() => expect(document.querySelector(".diagram-editor > .diagram-message")!.textContent).toContain("保存失敗"));
+  expect(document.querySelector('[data-element="1"] svg')!.getAttribute("viewBox")).toBe("0 0 0.5 1");
+  expect(button("元に戻す").disabled).toBe(false);
+  button("OK").click(); await result;
+  expect(save.mock.calls[1][0]).toEqual(save.mock.calls[0][0]);
+  expect(save.mock.calls[1][1].size).toBe(1);
+});
+
+// Feature: 貼り付け失敗とキャンセル
+// Given: 画像部品のある図と読み込めない外部画像
+// When: 貼り付けに失敗して図編集をキャンセルする
+// Then: 元の図を保持し、保存を行わない
+it("Scenario: 画像読込に失敗しても図を壊さずキャンセルできる", async () => {
+  vi.spyOn(window, "Image").mockImplementation(function () {
+    const image = document.createElement("img");
+    Object.defineProperty(image, "src", { set: () => { queueMicrotask(() => image.onerror?.(new Event("error"))); } });
+    return image;
+  } as unknown as typeof Image);
+  const save = vi.fn<DiagramEditorOptions["save"]>(async () => {});
+  const result = openDiagramEditor({ initial: { width: 800, height: 600, elements: [rect] }, sources: new Map(), save });
+  document.querySelector(".diagram-canvas")!.dispatchEvent(clipboardEvent("paste", {}, { type: "image/png", arrayBuffer: async () => new Uint8Array([1]).buffer } as File));
+  await vi.waitFor(() => expect(document.querySelector(".diagram-message")!.textContent).toContain("画像を表示できません"));
+  expect(document.querySelectorAll("[data-element]")).toHaveLength(1); expect(button("元に戻す").disabled).toBe(true);
+  button("キャンセル").click(); await result; expect(save).not.toHaveBeenCalled();
+});
+
+// Feature: 追加画像の破棄
+// Given: 図内で画像部品を複製した図
+// When: 図編集をキャンセルして変更を破棄する
+// Then: 保存処理を呼ばない
+it("Scenario: 画像部品の追加をキャンセルしてファイルを作らない", async () => {
+  const save = vi.fn<DiagramEditorOptions["save"]>(async () => {});
+  const result = openDiagramEditor({ initial: { width: 800, height: 600, elements: [{ id: 1, kind: "image", background: false, x: 0, y: 0, width: 200, height: 100, src: "part.png" }] }, sources: new Map([["part.png", "data:image/png;base64,AQID"]]), save });
+  const canvas = document.querySelector<SVGSVGElement>(".diagram-canvas")!;
+  canvas.querySelector('[data-element="1"]')!.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 })); window.dispatchEvent(new MouseEvent("pointerup"));
+  const data: Record<string, string> = {}; canvas.dispatchEvent(clipboardEvent("copy", data)); canvas.dispatchEvent(clipboardEvent("paste", data));
+  button("キャンセル").click(); button("破棄").click(); await result; expect(save).not.toHaveBeenCalled();
+});
+
+// Feature: 図の配色セット
+// Given: 透明な図形を選択している
+// When: 青の配色を選び、次の図形を作る
+// Then: 両方に線・塗り・文字の配色を適用し、次回は標準に戻る
+it("Scenario: 配色を選択図形と次の図形へまとめて適用する", async () => {
+  const save = vi.fn<DiagramEditorOptions["save"]>(async () => {});
+  let result = openDiagramEditor({ initial: { width: 800, height: 600, elements: [rect] }, sources: new Map(), save });
+  const canvas = document.querySelector<SVGSVGElement>(".diagram-canvas")!;
+  canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 800, height: 600 } as DOMRect);
+  canvas.querySelector('[data-element="1"]')!.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 }));
+  window.dispatchEvent(new MouseEvent("pointerup"));
+  expect(document.querySelectorAll('.diagram-palette button')).toHaveLength(6);
+  button("配色: 青").click();
+  button("四角形").click();
+  canvas.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 200, clientY: 200 }));
+  window.dispatchEvent(new MouseEvent("pointerup", { clientX: 300, clientY: 260 }));
+  button("OK").click(); await result;
+  for (const e of save.mock.calls[0][0].elements) expect(e).toMatchObject({ stroke: "#1565c0", fill: "#e3f2fd", textColor: "#0d47a1" });
+  result = openDiagramEditor({ initial: { width: 800, height: 600, elements: [] }, sources: new Map(), save });
+  expect(button("配色: 標準").getAttribute("aria-pressed")).toBe("true");
+  button("OK").click(); await result;
+});
+
+// Feature: 画像部品と背景の区別
+// Given: 従来の背景画像と画像部品
+// When: 背景を選択し、画像部品の配色を選ぶ
+// Then: 背景をトリムできず、画像の描画色は変わらない
+it("Scenario: 背景を保護し、配色で画像本体を変えない", async () => {
+  const save = vi.fn<DiagramEditorOptions["save"]>(async () => {});
+  const result = openDiagramEditor({ initial: { width: 800, height: 600, elements: [
+    { id: 1, kind: "image", x: 0, y: 0, width: 200, height: 100, src: "old.png" },
+    { id: 2, kind: "image", background: false, x: 200, y: 200, width: 200, height: 100, src: "part.png" },
+  ] }, sources: new Map([["old.png", "data:image/png;base64,AQID"], ["part.png", "data:image/png;base64,AQID"]]), save });
+  for (const [id, disabled] of [[1, true], [2, false]] as const) {
+    document.querySelector(`[data-element="${id}"]`)!.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 }));
+    window.dispatchEvent(new MouseEvent("pointerup")); expect(button("トリム").disabled).toBe(disabled);
+  }
+  button("配色: 赤").click(); button("OK").click(); await result;
+  expect(save).not.toHaveBeenCalled();
+});
+
+// Feature: 文字貼り付けの優先
+// Given: 説明文を直接編集中
+// When: 画像も含むクリップボードをコピー・貼り付けする
+// Then: 通常の文字操作を妨げず画像を追加しない
+it("Scenario: 文字入力中のコピーと貼り付けを奪わない", async () => {
+  const result = openDiagramEditor({ initial: { width: 800, height: 600, elements: [{ ...rect, kind: "text", text: "元" }] }, sources: new Map(), save: async () => {} });
+  document.querySelector('[data-element="1"]')!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+  const text = document.querySelector<HTMLTextAreaElement>(".diagram-text-editor")!;
+  const paste = clipboardEvent("paste", { "text/plain": "文字" }, { type: "image/png" } as File);
+  const copy = clipboardEvent("copy"); text.dispatchEvent(copy); text.dispatchEvent(paste);
+  expect(copy.defaultPrevented).toBe(false); expect(paste.defaultPrevented).toBe(false);
+  expect(document.querySelector(".diagram-canvas image")).toBeNull();
+  text.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  button("OK").click(); await result;
+});
+
+// Feature: トリムの取消と範囲検証
+// Given: トリム画面を開いた画像部品
+// When: 不正な範囲を適用し、Escで閉じる
+// Then: 図編集画面と元画像を保持し、変更履歴を作らない
+it("Scenario: 不正なトリムを拒否しEscでトリムだけ取り消す", async () => {
+  const result = openDiagramEditor({ initial: { width: 800, height: 600, elements: [{ id: 1, kind: "image", background: false, x: 0, y: 0, width: 200, height: 100, src: "part.png" }] }, sources: new Map([["part.png", "data:image/png;base64,AQID"]]), save: async () => {} });
+  document.querySelector('[data-element="1"]')!.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 })); window.dispatchEvent(new MouseEvent("pointerup"));
+  button("トリム").click();
+  const left = document.querySelector<HTMLInputElement>('input[aria-label="トリムの左 %"]')!; left.value = "80";
+  button("トリムを適用").click();
+  expect(document.querySelector(".diagram-crop .diagram-message")!.textContent).toBeTruthy();
+  left.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  expect(document.querySelector(".diagram-crop")).toBeNull(); expect(document.querySelector(".diagram-editor")).not.toBeNull();
+  expect(button("元に戻す").disabled).toBe(true);
+  button("OK").click(); await result;
+});
+
+// Feature: 配色後の微調整
+// Given: 青の配色を選んだ白紙の図
+// When: 線の色を微調整して図形を作る
+// Then: 微調整した色を次の図形に使う
+it("Scenario: 配色選択後も個別に色を調整できる", async () => {
+  const save = vi.fn<DiagramEditorOptions["save"]>(async () => {});
+  const result = openDiagramEditor({ initial: { width: 800, height: 600, elements: [] }, sources: new Map(), save });
+  button("配色: 青").click();
+  const stroke = document.querySelector<HTMLInputElement>('input[aria-label="線の色"]')!; stroke.value = "#123456"; stroke.dispatchEvent(new Event("change"));
+  button("四角形").click();
+  document.querySelector(".diagram-canvas")!.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 })); window.dispatchEvent(new MouseEvent("pointerup"));
+  button("OK").click(); await result;
+  expect(save.mock.calls[0][0].elements[0]).toMatchObject({ stroke: "#123456", fill: "#e3f2fd" });
+});
+
 // Feature: 実際のクリック列からの直接編集
 // Given: 文字が表示されている
 // When: 押下・解放を二回行ってダブルクリックする

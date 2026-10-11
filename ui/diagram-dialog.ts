@@ -1,6 +1,6 @@
-import { DiagramDocument, diagramElementSvg, diagramTextLines, editableCallout, diagramContentBounds, fitDiagramCanvas, readDiagramSvg, type Diagram, type DiagramElement, type DiagramKind, validateStandaloneSvg } from "./diagram";
+import { DiagramDocument, diagramElementSvg, diagramTextLines, editableCallout, diagramContentBounds, fitDiagramCanvas, readDiagramSvg, type Diagram, type DiagramBounds, type DiagramElement, type DiagramKind, validateStandaloneSvg } from "./diagram";
 import { imageDataUrl } from "./diagram-assets";
-import { imageMimeType } from "./image-formats";
+import { imageMimeType, IMAGE_MIME_TYPES } from "./image-formats";
 import { openModal } from "./modal";
 import { confirmMessage } from "./prompt";
 import { iconButton } from "./icon-button";
@@ -12,6 +12,7 @@ const buttonIcons: Record<string, MenuIconClass> = {
   元に戻す: MENU_ICON.undo, やり直す: MENU_ICON.redo, 削除: MENU_ICON.delete,
   最前面: MENU_ICON.front, 最背面: MENU_ICON.back, 全体を表示: MENU_ICON.fit,
   最大化: MENU_ICON.fit, 通常サイズに戻す: MENU_ICON.restore,
+  トリム: MENU_ICON.rectangle, トリム解除: MENU_ICON.restore,
   画像を追加: MENU_ICON.image, 背景を選び直す: MENU_ICON.image, キャンセル: MENU_ICON.close, 閉じる: MENU_ICON.close, OK: MENU_ICON.confirm,
 };
 
@@ -37,7 +38,7 @@ export function openDiagramEditor(options: DiagramEditorOptions): Promise<void> 
     const renderedElements = new Map<number, { node: SVGGElement; svg: string }>();
     let selected: number | null = null;
     let tool: DiagramKind | "select" = "select";
-    let pending = false, confirming = false, closed = false;
+    let pending = false, confirming = false, closed = false, cropping = false;
     let editing: DiagramElement | null = null, composing = false;
     type View = { left: number; top: number; right: number; bottom: number; scrollLeft: number; scrollTop: number };
     let workLeft = 160, workTop = 160, workRight = 160, workBottom = 160;
@@ -47,6 +48,7 @@ export function openDiagramEditor(options: DiagramEditorOptions): Promise<void> 
     function stopScroll() { if (scrollTimer !== null) window.clearInterval(scrollTimer); scrollTimer = null; pointer = null; }
     let drag: { clientX: number; clientY: number; scaleX: number; scaleY: number; initial: Diagram; element: DiagramElement | null; mode: string; id: number; view: View } | null = null;
     const { box, close } = openModal({ onCancel: (event) => {
+      if (cropping) return;
       if (event instanceof KeyboardEvent && !pending && !confirming) {
         if (composing) return;
         if (editing) { endText(); return; }
@@ -159,32 +161,60 @@ export function openDiagramEditor(options: DiagramEditorOptions): Promise<void> 
       return { ...next, height: Math.sign(next.height || 1) * Math.max(Math.abs(next.height), needed) };
     }
     const updateSelected = (changes: Partial<DiagramElement>) => { if (selected !== null) change({ ...model.value, elements: model.value.elements.map((e) => e.id === selected ? fitText({ ...e, ...changes }) : e) }); };
-    const stroke = input("線の色", "color", "#ff0000", (value) => updateSelected({ stroke: value }));
+    const stroke = input("線の色", "color", "#ff0000", (value) => { updateSelected({ stroke: value }); if (creationColors) creationColors.stroke = value; });
     const strokeWidth = input("線の太さ", "number", "2", (value) => updateSelected({ strokeWidth: Number(value) }), "0", "100");
-    const fill = input("塗りつぶし", "color", "#ffffff", (value) => { if (!transparent.checked) updateSelected({ fill: value }); });
-    const transparent = input("透明", "checkbox", "", () => updateSelected({ fill: transparent.checked ? "none" : fill.value }));
+    const fill = input("塗りつぶし", "color", "#ffffff", (value) => { if (!transparent.checked) { updateSelected({ fill: value }); if (creationColors) creationColors.fill = value; } });
+    const transparent = input("透明", "checkbox", "", () => { const value = transparent.checked ? "none" : fill.value; updateSelected({ fill: value }); if (creationColors) creationColors.fill = value; });
     transparent.checked = true;
-    const textColor = input("文字色", "color", "#000000", (value) => updateSelected({ textColor: value }));
+    const textColor = input("文字色", "color", "#000000", (value) => { updateSelected({ textColor: value }); if (creationColors) creationColors.textColor = value; });
     const fontSize = input("文字サイズ", "number", "20", (value) => updateSelected({ fontSize: Number(value) }), "1", "300");
     const width = input("図の幅", "number", String(model.value.width), (value) => change({ ...model.value, width: Number(value) }), "1", "10000");
     const height = input("図の高さ", "number", String(model.value.height), (value) => change({ ...model.value, height: Number(value) }), "1", "10000");
     width.step = height.step = "any";
     const zoom = input("倍率 %", "number", "100", () => {}, "5", "400");
+    let creationColors: Pick<DiagramElement, "stroke" | "fill" | "textColor"> | null = null;
+    let paletteName = "標準";
+    const palette = document.createElement("div"); palette.className = "diagram-palette"; palette.setAttribute("aria-label", "配色セット"); properties.prepend(palette);
+    for (const [name, line, paint, text] of [
+      ["標準", "#ff0000", "#ffffff", "#000000"], ["赤", "#c62828", "#ffebee", "#b71c1c"],
+      ["青", "#1565c0", "#e3f2fd", "#0d47a1"], ["緑", "#2e7d32", "#e8f5e9", "#1b5e20"],
+      ["黄", "#f9a825", "#fffde7", "#5d4037"], ["グレー", "#616161", "#eeeeee", "#212121"],
+    ]) {
+      const b = document.createElement("button"); b.type = "button"; b.title = `配色: ${name}`; b.setAttribute("aria-label", b.title); b.dataset.palette = name;
+      const swatch = document.createElement("span"); swatch.textContent = "Aa"; swatch.setAttribute("aria-hidden", "true");
+      Object.assign(swatch.style, { border: `2px solid ${line}`, background: paint, color: text, padding: "2px 8px" });
+      b.append(swatch, document.createTextNode(name)); palette.append(b);
+      b.addEventListener("click", () => {
+        if (pending || confirming || drag || !commitText()) return;
+        try {
+          const colors = { stroke: line, fill: paint, textColor: text };
+          const e = model.value.elements.find((e) => e.id === selected);
+          if (e && e.kind !== "image") updateSelected(colors);
+          creationColors = colors; paletteName = name;
+          stroke.value = line; fill.value = paint; textColor.value = text; transparent.checked = false;
+          render();
+        } catch (error) { message.textContent = String(error); }
+      });
+    }
     button("全体を表示", () => { fit(); render(); });
     const file = document.createElement("input"); file.type = "file"; file.accept = "image/png,image/jpeg,image/gif,image/webp,image/bmp,image/svg+xml,image/avif";
     file.hidden = true; box.append(file);
     let replacementId: number | null = null;
     button("画像を追加", () => { replacementId = null; file.click(); });
     const replaceBackground = button("背景を選び直す", () => {
-      replacementId = model.value.elements.find((e) => e.kind === "image" && e.id === selected)?.id ?? model.value.elements.find((e) => e.kind === "image")?.id ?? null;
+      replacementId = model.value.elements.find((e) => e.kind === "image" && e.background !== false && e.id === selected)?.id ?? model.value.elements.find((e) => e.kind === "image" && e.background !== false)?.id ?? null;
       file.click();
     });
     file.addEventListener("change", async () => {
       const selectedFile = file.files?.[0]; if (!selectedFile || pending) return;
+      await addImage(selectedFile, imageMimeType(selectedFile.name), selectedFile.name.split(".").pop()?.toLowerCase() ?? "png", replacementId);
+      file.value = "";
+    });
+    async function addImage(blob: Blob, mimeType: string, extension: string, replacement: number | null = null) {
       setPending(true);
       try {
-        const bytes = await selectedFile.arrayBuffer();
-        const mimeType = imageMimeType(selectedFile.name);
+        if (!Object.values(IMAGE_MIME_TYPES).includes(mimeType as typeof IMAGE_MIME_TYPES[keyof typeof IMAGE_MIME_TYPES])) throw new Error("対応していない画像形式です");
+        const bytes = await blob.arrayBuffer();
         if (mimeType === "image/svg+xml") {
           const svg = new TextDecoder().decode(bytes);
           if (readDiagramSvg(svg)) throw new Error("編集図は背景に取り込めません。本文の「図を編集」から開いてください。");
@@ -192,25 +222,135 @@ export function openDiagramEditor(options: DiagramEditorOptions): Promise<void> 
         }
         const dataUrl = imageDataUrl(bytes, mimeType);
         const dimensions = await imageDimensions(dataUrl);
+        if (!(dimensions.width > 0 && dimensions.height > 0)) throw new Error("画像の寸法が不正です");
         if (closed) return;
         let index = backgrounds.size + 1;
-        const extension = selectedFile.name.split(".").pop()?.toLowerCase() ?? "png";
         while (sources.has(`background-${index}.${extension}`)) index += 1;
         const src = `background-${index}.${extension}`;
-        const existing = model.value.elements.find((e) => e.kind === "image" && e.id === replacementId);
+        const existing = model.value.elements.find((e) => e.kind === "image" && e.id === replacement);
         if (existing) change({ ...model.value, elements: model.value.elements.map((e) => e.id === existing.id ? { ...e, src } : e) });
         else {
-          const blank = model.value.elements.length === 0;
           const id = Math.max(0, ...model.value.elements.map((e) => e.id)) + 1;
-          change({ width: blank ? Math.min(10000, dimensions.width) : model.value.width,
-            height: blank ? Math.min(10000, dimensions.height) : model.value.height,
-            elements: [{ id, kind: "image", src, x: 0, y: 0, width: dimensions.width, height: dimensions.height }, ...model.value.elements] });
+          const scale = Math.min(1, model.value.width / dimensions.width, model.value.height / dimensions.height);
+          const width = dimensions.width * scale, height = dimensions.height * scale;
+          const area = viewport.getBoundingClientRect(), center = point({ clientX: area.left + area.width / 2, clientY: area.top + area.height / 2 } as MouseEvent);
+          const x = area.width ? center.x - width / 2 : (model.value.width - width) / 2;
+          const y = area.height ? center.y - height / 2 : (model.value.height - height) / 2;
+          change({ ...model.value, elements: [...model.value.elements, { id, kind: "image", background: false, src, x, y, width, height }] });
           selected = id;
         }
         backgrounds.set(src, { bytes, mimeType, dataUrl }); sources.set(src, dataUrl);
-        message.textContent = ""; fit(); render();
-      } catch (error) { if (!closed) message.textContent = `背景画像を読み込めませんでした: ${String(error)}`; }
-      finally { setPending(false); file.value = ""; }
+        message.textContent = ""; render();
+      } catch (error) { if (!closed) message.textContent = `画像を読み込めませんでした: ${String(error)}`; }
+      finally { setPending(false); }
+    }
+    const clipboardPrefix = "wasabipad-diagram-image:";
+    // shortcut: 図内コピーは同じ編集画面だけ、図をまたぐコピーが必要なら画像バイトも受け渡す。
+    let copiedImage: string | null = null;
+    const textInput = (target: EventTarget | null) => target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLElement && target.isContentEditable;
+    box.addEventListener("copy", (event) => {
+      if (textInput(event.target) || pending || confirming || drag) return;
+      const e = model.value.elements.find((e) => e.id === selected && e.kind === "image" && e.background === false);
+      if (!e || !event.clipboardData) return;
+      event.preventDefault(); event.stopPropagation();
+      copiedImage = clipboardPrefix + JSON.stringify(e);
+      event.clipboardData.setData("text/plain", copiedImage);
+    });
+    box.addEventListener("paste", (event) => {
+      if (textInput(event.target)) return;
+      event.stopPropagation();
+      if (pending || confirming || drag) { event.preventDefault(); return; }
+      const text = event.clipboardData?.getData("text/plain") ?? "";
+      if (text.startsWith(clipboardPrefix)) {
+        event.preventDefault();
+        try {
+          if (text !== copiedImage) throw new Error("コピーした画像をこの図で利用できません");
+          const e = JSON.parse(text.slice(clipboardPrefix.length)) as DiagramElement;
+          if (e.kind !== "image" || e.background !== false || !e.src || !sources.get(e.src)) throw new Error("コピーした画像をこの図で利用できません");
+          const id = Math.max(0, ...model.value.elements.map((e) => e.id)) + 1;
+          change({ ...model.value, elements: [...model.value.elements, { ...e, id, x: e.x + 20, y: e.y + 20 }] }); selected = id; render();
+        } catch (error) { message.textContent = String(error); }
+        return;
+      }
+      const image = [...(event.clipboardData?.items ?? [])].find((item) => item.type.toLowerCase().startsWith("image/"))?.getAsFile();
+      if (!image) return;
+      event.preventDefault();
+      const extension = Object.entries(IMAGE_MIME_TYPES).find(([, type]) => type === image.type)?.[0] ?? "png";
+      void addImage(image, image.type, extension);
+    });
+
+    function applyCrop(e: DiagramElement, crop?: DiagramBounds) {
+      const old = e.crop ?? { x: 0, y: 0, width: 1, height: 1 }, next = crop ?? { x: 0, y: 0, width: 1, height: 1 };
+      const fullWidth = Math.abs(e.width) / old.width, fullHeight = Math.abs(e.height) / old.height;
+      updateSelected({ crop, x: Math.min(e.x, e.x + e.width) + (next.x - old.x) * fullWidth,
+        y: Math.min(e.y, e.y + e.height) + (next.y - old.y) * fullHeight,
+        width: next.width * fullWidth, height: next.height * fullHeight });
+    }
+    const cropButton = button("トリム", () => {
+      const e = model.value.elements.find((e) => e.id === selected);
+      if (!e || e.kind !== "image" || e.background !== false || !sources.get(e.src!)) return;
+      cropping = true;
+      setPending(true);
+      let crop = { ...(e.crop ?? { x: 0, y: 0, width: 1, height: 1 }) };
+      let cropDrag: { x: number; y: number; crop: DiagramBounds; handle: string } | null = null;
+      const finishCrop = () => {
+        window.removeEventListener("pointermove", moveCrop); window.removeEventListener("pointerup", upCrop); window.removeEventListener("pointercancel", cancelCropDrag);
+        closeCrop(); cropping = false; setPending(false); canvas.focus({ preventScroll: true });
+      };
+      const { box: cropBox, close: closeCrop } = openModal({ onCancel: () => { finishCrop(); } }, "diagram-crop");
+      cropBox.innerHTML = '<div class="pf-title">画像部品をトリム</div><p>枠の角をドラッグして残す範囲を指定</p><svg class="diagram-crop-canvas" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1" preserveAspectRatio="none" role="img" aria-label="トリム範囲"></svg><div class="diagram-properties"></div><div class="diagram-message" role="status"></div><div class="pf-btns"></div>';
+      const area = cropBox.querySelector<SVGSVGElement>("svg")!;
+      const old = e.crop ?? { x: 0, y: 0, width: 1, height: 1 };
+      const fullWidth = Math.abs(e.width) / old.width, fullHeight = Math.abs(e.height) / old.height;
+      const scale = Math.min(640 / fullWidth, 360 / fullHeight);
+      area.setAttribute("width", String(fullWidth * scale)); area.setAttribute("height", String(fullHeight * scale));
+      const fields = new Map<keyof DiagramBounds, HTMLInputElement>();
+      for (const [key, label] of [["x", "左"], ["y", "上"], ["width", "幅"], ["height", "高さ"]] as const) {
+        const wrapper = document.createElement("label"); wrapper.textContent = label + " %";
+        const field = document.createElement("input"); field.type = "number"; field.min = "0"; field.max = "100"; field.step = "any"; field.setAttribute("aria-label", `トリムの${label} %`);
+        wrapper.append(field); cropBox.querySelector(".diagram-properties")!.append(wrapper); fields.set(key, field);
+        field.addEventListener("change", () => { crop[key] = Number(field.value) / 100; drawCrop(); });
+      }
+      function drawCrop() {
+        area.innerHTML = diagramElementSvg({ ...e!, crop: undefined, x: 0, y: 0, width: 1, height: 1 }, sources.get(e!.src!)!) +
+          `<rect x="${crop.x}" y="${crop.y}" width="${crop.width}" height="${crop.height}" fill="#0078d4" fill-opacity="0.12" stroke="#0078d4" stroke-width="0.004" pointer-events="none"/>` +
+          [["nw", crop.x, crop.y], ["ne", crop.x + crop.width, crop.y], ["sw", crop.x, crop.y + crop.height], ["se", crop.x + crop.width, crop.y + crop.height]].map(([handle, x, y]) => `<rect data-crop-handle="${handle}" x="${Number(x) - .012}" y="${Number(y) - .012}" width=".024" height=".024" fill="#ffffff" stroke="#0078d4" stroke-width=".004"/>`).join("");
+        for (const [key, field] of fields) field.value = String(crop[key] * 100);
+      }
+      function moveCrop(event: PointerEvent) {
+        if (!cropDrag) return;
+        const rect = area.getBoundingClientRect(), initial = cropDrag.crop;
+        const dx = (event.clientX - cropDrag.x) / rect.width, dy = (event.clientY - cropDrag.y) / rect.height;
+        if (!Number.isFinite(dx) || !Number.isFinite(dy)) return;
+        let left = initial.x, top = initial.y, right = left + initial.width, bottom = top + initial.height;
+        if (cropDrag.handle.includes("w")) left = Math.max(0, Math.min(right - .001, left + dx)); else right = Math.min(1, Math.max(left + .001, right + dx));
+        if (cropDrag.handle.includes("n")) top = Math.max(0, Math.min(bottom - .001, top + dy)); else bottom = Math.min(1, Math.max(top + .001, bottom + dy));
+        crop = { x: left, y: top, width: right - left, height: bottom - top }; drawCrop();
+      }
+      function upCrop(event: PointerEvent) { moveCrop(event); cropDrag = null; }
+      function cancelCropDrag() { if (cropDrag) { crop = cropDrag.crop; cropDrag = null; drawCrop(); } }
+      area.addEventListener("pointerdown", (event) => {
+        const handle = (event.target as Element).getAttribute("data-crop-handle");
+        if (!handle || event.button !== 0) return;
+        event.preventDefault(); cropDrag = { x: event.clientX, y: event.clientY, crop: { ...crop }, handle };
+      });
+      window.addEventListener("pointermove", moveCrop); window.addEventListener("pointerup", upCrop); window.addEventListener("pointercancel", cancelCropDrag);
+      for (const [label, action] of [["トリムをキャンセル", finishCrop], ["トリムを適用", () => {
+        try {
+          for (const [key, field] of fields) {
+            if (!field.value || !field.checkValidity()) throw new Error("トリム範囲を確認してください");
+            crop[key] = Number(field.value) / 100;
+          }
+          applyCrop(e!, crop); render(); finishCrop();
+        } catch (error) { cropBox.querySelector(".diagram-message")!.textContent = String(error); }
+      }]] as const) {
+        const b = document.createElement("button"); b.type = "button"; b.textContent = label; b.title = label; b.setAttribute("aria-label", label); b.addEventListener("click", action); cropBox.querySelector(".pf-btns")!.append(b);
+      }
+      drawCrop(); fields.get("x")!.focus();
+    });
+    const resetCrop = button("トリム解除", () => {
+      const e = model.value.elements.find((e) => e.id === selected);
+      if (e?.crop) { try { applyCrop(e); render(); } catch (error) { message.textContent = String(error); } }
     });
 
     const textEditor = document.createElement("textarea"); textEditor.className = "diagram-text-editor";
@@ -280,6 +420,7 @@ export function openDiagramEditor(options: DiagramEditorOptions): Promise<void> 
         const element: DiagramElement = { id, kind: tool, x: p.x, y: p.y, width: 0, height: 0,
           stroke: stroke.value, strokeWidth: Number(strokeWidth.value), fill: transparent.checked ? "none" : fill.value,
           textColor: textColor.value, fontSize: Number(fontSize.value), ...["text", "callout"].includes(tool) ? { text: "説明" } : {} };
+        if (creationColors) Object.assign(element, creationColors);
         drag = { ...start, element, mode: "create", id }; selected = id;
       }
       render();
@@ -412,9 +553,11 @@ export function openDiagramEditor(options: DiagramEditorOptions): Promise<void> 
         canvas.insertAdjacentHTML("beforeend", `<g class="diagram-selection"><rect x="${x}" y="${y}" width="${w}" height="${h}" fill="none" stroke="#0078d4" stroke-dasharray="4 3" pointer-events="none"/>` +
           [["nw", x, y], ["ne", x + w, y], ["sw", x, y + h], ["se", x + w, y + h]].map(([corner, cx, cy]) => `<rect data-handle="${corner}" x="${Number(cx) - 4}" y="${Number(cy) - 4}" width="8" height="8" fill="#ffffff" stroke="#0078d4"/>`).join("") +
           (e.tail ? `<circle data-handle="tail" cx="${e.tail.x}" cy="${e.tail.y}" r="6" fill="#ffffff" stroke="#0078d4"/>` : "") + "</g>");
-        stroke.value = e.stroke ?? "#ff0000"; strokeWidth.value = String(e.strokeWidth ?? 2);
-        transparent.checked = !e.fill || e.fill === "none"; if (e.fill && e.fill !== "none") fill.value = e.fill;
-        textColor.value = e.textColor ?? "#000000"; fontSize.value = String(e.fontSize ?? 20);
+        if (e.kind !== "image") {
+          stroke.value = e.stroke ?? "#ff0000"; strokeWidth.value = String(e.strokeWidth ?? 2);
+          transparent.checked = !e.fill || e.fill === "none"; if (e.fill && e.fill !== "none") fill.value = e.fill;
+          textColor.value = e.textColor ?? "#000000"; fontSize.value = String(e.fontSize ?? 20);
+        }
       }
       textEditor.hidden = !editing;
       if (editing) {
@@ -427,8 +570,11 @@ export function openDiagramEditor(options: DiagramEditorOptions): Promise<void> 
         canvas.querySelector(`[data-element="${editing.id}"] text`)?.setAttribute("visibility", "hidden");
       }
       undo.disabled = !model.canUndo; redo.disabled = !model.canRedo;
-      replaceBackground.disabled = !d.elements.some((e) => e.kind === "image");
+      replaceBackground.disabled = !d.elements.some((e) => e.kind === "image" && e.background !== false);
+      cropButton.disabled = !e || e.kind !== "image" || e.background !== false || !e.width || !e.height || !sources.get(e.src!);
+      resetCrop.disabled = !e?.crop;
       for (const [kind, button] of tools) button.setAttribute("aria-pressed", String(kind === tool));
+      for (const b of palette.querySelectorAll<HTMLButtonElement>("button")) b.setAttribute("aria-pressed", String(b.dataset.palette === paletteName));
       if (scrollTo) { viewport.scrollLeft = scrollTo.left; viewport.scrollTop = scrollTo.top; scrollTo = null; }
       if (!drag) views.set(model.value, view());
     }
@@ -444,7 +590,7 @@ export function openDiagramEditor(options: DiagramEditorOptions): Promise<void> 
       if (!value) render();
     }
     async function cancel() {
-      if (pending || confirming || closed) return;
+      if (pending || confirming || closed || cropping) return;
       cancelDrag();
       if (JSON.stringify(model.value) !== original || editing && textEditor.value !== (editing.text ?? "")) {
         confirming = true;
@@ -455,7 +601,7 @@ export function openDiagramEditor(options: DiagramEditorOptions): Promise<void> 
       finish();
     }
     ok.addEventListener("click", async () => {
-      if (pending || confirming || drag) return;
+      if (pending || confirming || drag || cropping) return;
       if (!commitText()) return;
       if (JSON.stringify(model.value) === original || model.value.elements.length === 0 && options.initial.elements.length === 0) { finish(); return; }
       setPending(true); message.textContent = "保存中…";

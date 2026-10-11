@@ -4,6 +4,22 @@ import { DiagramDocument, diagramElementSvg, editableCallout, diagramContentBoun
 import { composeDiagramPreview } from "./diagram-assets";
 
 describe("Feature: 編集図の保存と再編集", () => {
+  // Given: 元画像を参照する画像部品
+  // When: トリムして保存・再読込みし、Undo/Redoする
+  // Then: 元画像と表示範囲を保持して履歴を戻せる
+  it("Scenario: 非破壊トリムの範囲を保存と履歴で保持する", () => {
+    const doc = new DiagramDocument({ width: 800, height: 600, elements: [{ id: 1, kind: "image", x: 10, y: 20, width: 200, height: 100, src: "part.png", background: false }] });
+    doc.update(1, { crop: { x: .25, y: .1, width: .5, height: .8 } });
+    const svg = writeDiagramSvg(doc.value);
+    expect(readDiagramSvg(svg)).toEqual(doc.value);
+    expect(svg).toContain('viewBox="0.25 0.1 0.5 0.8"');
+    expect(svg).toContain('href="part.png"');
+    doc.undo(); expect(doc.value.elements[0].crop).toBeUndefined();
+    doc.redo(); expect(doc.value.elements[0].crop).toEqual({ x: .25, y: .1, width: .5, height: .8 });
+    expect(() => doc.update(1, { crop: { x: .8, y: 0, width: .5, height: 1 } })).toThrow();
+    expect(() => doc.update(1, { crop: { x: 0, y: 0, width: 0, height: 1 } })).toThrow();
+    expect(() => doc.update(1, { background: true })).toThrow();
+  });
   // Given: 旧形式の吹き出し
   // When: 先端を編集可能にして保存・読込みする
   // Then: 元の描画を変えず先端座標を保持し、不正な座標は拒否する
