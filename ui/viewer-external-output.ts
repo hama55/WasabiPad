@@ -1,3 +1,4 @@
+import { EXTERNAL_SOURCE_NAVIGATION_RESULT, isExternalSourceNavigationRequest, type ExternalSourceNavigationRequest } from "./external-source-navigation";
 import { convertFileSrc } from "@tauri-apps/api/core";
 
 export type ExternalOutputFormat = "html" | "svg";
@@ -110,4 +111,24 @@ export async function commitTrustedExternalHtmlPreview(
   wrapper.classList.remove("viewer-pending");
   content.replaceChildren(wrapper);
   return true;
+}
+
+/** Only this active opaque child may cross the external-preview boundary. */
+export function bindExternalSourceNavigation(
+  frame: HTMLIFrameElement,
+  renderId: string,
+  relay: (request: ExternalSourceNavigationRequest & { render_id: string }) => void,
+  signal: AbortSignal,
+) {
+  window.addEventListener("message", event => {
+    if (!frame.isConnected || signal.aborted) return;
+    if (event.source === frame.contentWindow && isExternalSourceNavigationRequest(event.data)) {
+      relay({ type: event.data.type, request_id: event.data.request_id, offset: event.data.offset,
+        source_hash: event.data.source_hash, render_id: renderId });
+    } else if (event.source === window.parent && event.origin === window.location.origin
+      && event.data?.type === EXTERNAL_SOURCE_NAVIGATION_RESULT && event.data.render_id === renderId
+      && Number.isSafeInteger(event.data.request_id) && (event.data.reason === null || typeof event.data.reason === "string")) {
+      frame.contentWindow?.postMessage(event.data, "*");
+    }
+  }, { signal });
 }

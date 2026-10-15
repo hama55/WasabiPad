@@ -653,6 +653,9 @@ function openPreviewFormat(
         });
         requestId = window.crypto.randomUUID();
         externalPreviewRequestId = requestId;
+        const navigateSource = await editor.createExternalSourceNavigator(() =>
+          document.ownerTabId === (tabs?.state.activeId ?? null) && document.path === documentPathOf(doc.current));
+        if (!isCurrentRequest()) return;
         generatedOutputPath = await api.externalPreviewGenerate({
           inputPath,
           executable: externalAdapter.command,
@@ -669,6 +672,7 @@ function openPreviewFormat(
           );
           return;
         }
+        inlinePreview.setExternalSourceNavigator(generatedOutputPath, navigateSource);
         setExternalPreviewLog(null);
         inlinePreview.setExternalStatus({ message: "読み込み中…", busy: true });
         resolvedFormat = externalAdapter.outputFormat === "svg" ? "image" : "html";

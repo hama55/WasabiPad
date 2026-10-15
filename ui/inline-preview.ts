@@ -1,3 +1,4 @@
+import { EXTERNAL_SOURCE_NAVIGATION_RESULT, isExternalSourceNavigationRequest, type ExternalSourceNavigator } from "./external-source-navigation";
 import { setInlinePreviewFocus } from "./api";
 import type { ViewerFormat, ViewerPayload, ViewerSelection } from "./api";
 import { runAsyncBoundary } from "./async-boundary";
@@ -61,6 +62,11 @@ export class InlinePreview {
   private nextLabel = 0;
   private nextRenderId = 0;
   private ready = false;
+  private activeRenderId: string | null = null;
+  private pendingResendRenderIds = new Map<string, number>();
+  private lastCommittedRender = 0;
+  private sourceNavigationGeneration = 0;
+  private externalSourceNavigators = new Map<string, ExternalSourceNavigator>();
   private externalStatus: ExternalPreviewStatus | null = null;
   private pendingCloseFocus = false;
   private pendingExternalOpen: PendingExternalOpen | null = null;
@@ -104,6 +110,25 @@ export class InlinePreview {
         try { token = JSON.parse(this.payload.text).token; } catch { return; }
         if (typeof token !== "string" || data.token !== token) return;
         this.notifyPort(() => this.ports.onGitOpenFile?.(data.path, data.commit, data.file));
+        return;
+      }
+      if (isExternalSourceNavigationRequest(event.data)) {
+        const renderId = (event.data as { render_id?: unknown }).render_id;
+        if (typeof renderId !== "string") return;
+        const data = event.data;
+        const path = this.payload?.external_output_path;
+        if (renderId !== this.activeRenderId || !path || this.pendingExternalOpen || this.clearing) return;
+        const generation = ++this.sourceNavigationGeneration;
+        const current = () => generation === this.sourceNavigationGeneration && !!path && this.payload?.external_output_path === path
+          && renderId === this.activeRenderId && !this.pendingExternalOpen && !this.clearing;
+        if (!current()) return;
+        const navigate = path ? this.externalSourceNavigators.get(path) : undefined;
+        this.notifyPort(async () => {
+          const reason = navigate ? await navigate(data, current) : "元ソースの位置を特定できません。";
+          if (!current()) return;
+          this.frame.contentWindow?.postMessage({ type: EXTERNAL_SOURCE_NAVIGATION_RESULT,
+            render_id: renderId, request_id: data.request_id, reason }, window.location.origin);
+        });
         return;
       }
       if (event.data?.type === READY_MESSAGE) {
@@ -175,6 +200,13 @@ export class InlinePreview {
         return;
       }
     });
+  }
+
+  setExternalSourceNavigator(path: string, navigate: ExternalSourceNavigator) {
+    for (const previous of this.externalSourceNavigators.keys()) {
+      if (previous !== this.payload?.external_output_path) this.externalSourceNavigators.delete(previous);
+    }
+    this.externalSourceNavigators.set(path, navigate);
   }
 
   setSourcePath(
@@ -329,7 +361,8 @@ export class InlinePreview {
       archive_entry: currentPayload.archive_entry,
       external_output_path: currentPayload.external_output_path,
     };
-    this.send();
+    // External output changes only on explicit regeneration; caret sync must not restart it.
+    if (!currentPayload.external_output_path) this.send();
     return true;
   }
 
@@ -345,6 +378,9 @@ export class InlinePreview {
     this.setPreviewFocused(false);
     this.setVisibility(false, true);
     this.payload = null;
+    this.activeRenderId = null;
+    this.pendingResendRenderIds.clear();
+    this.externalSourceNavigators.clear();
     this.setExternalStatus(null);
     this.label = "";
     this.pendingMarkdownFragment = null;
@@ -436,6 +472,11 @@ export class InlinePreview {
       ? pending.rollbackRenderId ? this.payload : pending.payload
       : this.payload;
     if (!payload) return;
+    let renderId = pending?.rollbackRenderId ?? pending?.renderId;
+    if (!pending && payload.external_output_path) {
+      renderId = `inline-preview-render-${++this.nextRenderId}`;
+      this.pendingResendRenderIds.set(renderId, this.nextRenderId);
+    }
     // 区切り文字の変更は、現在のビューがCSVなら再描画を開始する。
     // 本文を先に送ると、その再描画が非同期の本文描画を中断するため、
     // 付随設定を先に同期してから本文を送る。
@@ -446,7 +487,7 @@ export class InlinePreview {
     this.frame.contentWindow?.postMessage({
       type: PAYLOAD_MESSAGE,
       payload,
-      ...(pending ? { render_id: pending.rollbackRenderId ?? pending.renderId } : {}),
+      ...(renderId ? { render_id: renderId } : {}),
     }, window.location.origin);
     if (this.pendingMarkdownFragment !== null) {
       this.frame.contentWindow?.postMessage({
@@ -482,6 +523,15 @@ export class InlinePreview {
   }
 
   private handleExternalRenderResult(renderId: string, displayCommitted: boolean) {
+    const generation = this.pendingResendRenderIds.get(renderId);
+    if (generation !== undefined) {
+      this.pendingResendRenderIds.delete(renderId);
+      if (displayCommitted && generation > this.lastCommittedRender) {
+        this.activeRenderId = renderId;
+        this.lastCommittedRender = generation;
+      }
+      return;
+    }
     const pending = this.pendingExternalOpen;
     if (!pending) return;
     if (pending.rollbackRenderId === renderId) {
@@ -494,6 +544,9 @@ export class InlinePreview {
         rejectCancellation?.(new Error("External preview rollback was not confirmed"));
         return;
       }
+      this.activeRenderId = renderId;
+      this.lastCommittedRender = this.nextRenderId;
+      this.pendingResendRenderIds.clear();
       this.pendingExternalOpen = null;
       pending.resolve(null);
       pending.resolveCancellation?.();
@@ -510,6 +563,9 @@ export class InlinePreview {
       void this.cancelPendingExternalOpen();
       return;
     }
+    this.activeRenderId = pending.renderId;
+    this.lastCommittedRender = this.nextRenderId;
+    this.pendingResendRenderIds.clear();
     this.payload = pending.payload;
     this.label = pending.label;
     this.externalOutputPath = pending.payload.external_output_path;

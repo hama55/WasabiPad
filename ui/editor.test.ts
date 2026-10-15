@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { createHash, webcrypto } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { readClipboardText, writeClipboardText } = vi.hoisted(() => ({
@@ -3374,4 +3375,58 @@ describe("Feature: VirtualEditor", () => {
     expect(scroll.scrollLeft).toBeGreaterThan(0);
     rect.mockRestore();
   });
+});
+
+// Feature: 外部プレビューから元ソースへのキャレット移動
+it("Scenario: external source navigation uses the full document and keeps preview focus", async () => {
+  // Given: 補助文字を含む文書、部分プレビュー、フォーカスのあるプレビュー
+  vi.stubGlobal("crypto", webcrypto);
+  try {
+    const text = "zero\n😀C D";
+    const { editor, host } = mount(text, undefined, { openViewer: vi.fn(async () => "preview") });
+    editor.open(2, false);
+    await settle();
+    await editor.selectRange(1, 1, 4);
+    await editor.openTextViewer("markdown");
+    const preview = document.createElement("button");
+    document.body.append(preview);
+    preview.focus();
+    const navigate = await editor.createExternalSourceNavigator();
+    // When: 全文のUTF-16 offsetでCを指す
+    const reason = await navigate({ type: "wasabipad-external-source-navigation", request_id: 1,
+      source_hash: createHash("sha256").update(text).digest("hex"), offset: 7 });
+    // Then: 部分範囲の開始を加算せずCへ移動し、フォーカスを奪わない
+    expect(reason).toBeNull();
+    expect(editor.captureViewState().caret).toEqual({ line: 1, col: 1 });
+    expect(document.activeElement).toBe(preview);
+    preview.remove(); host.remove();
+  } finally { vi.unstubAllGlobals(); }
+});
+
+// Feature: 古い・不明・不正な外部プレビュー位置は文書を動かさない
+it.each(["edited", "reopened", "hash", "unknown", "negative", "fraction", "range", "surrogate"])("Scenario: external source navigation rejects %s", async kind => {
+  // Given: 表示時点の文書snapshot
+  vi.stubGlobal("crypto", webcrypto);
+  try {
+    const text = "😀C D";
+    const { editor, host, type } = mount(text);
+    editor.open(1, false); await settle();
+    const navigate = await editor.createExternalSourceNavigator();
+    const request = { type: "wasabipad-external-source-navigation" as const, request_id: 1,
+      source_hash: createHash("sha256").update(text).digest("hex"), offset: 2 as number | null };
+    // When: 編集・文書再読込または対応しない位置を渡す
+    if (kind === "edited") { type("x"); await settle(); }
+    if (kind === "reopened") { editor.open(1, false); await settle(); }
+    if (kind === "hash") request.source_hash = "0".repeat(64);
+    if (kind === "unknown") request.offset = null;
+    if (kind === "negative") request.offset = -1;
+    if (kind === "fraction") request.offset = 2.5;
+    if (kind === "range") request.offset = 99;
+    if (kind === "surrogate") request.offset = 1;
+    const before = editor.captureViewState();
+    // Then: 理由を返し、キャレットとスクロールを維持
+    expect(await navigate(request)).toEqual(expect.any(String));
+    expect(editor.captureViewState()).toEqual(before);
+    host.remove();
+  } finally { vi.unstubAllGlobals(); }
 });

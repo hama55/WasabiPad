@@ -1,3 +1,4 @@
+import { sourceTextHash, sourcePositionAtOffset, type ExternalSourceNavigator } from "./external-source-navigation";
 import * as api from "./api";
 import type { Pos } from "./api";
 import { readText as readClipboardText, writeText as writeClipboardText } from "@tauri-apps/plugin-clipboard-manager";
@@ -175,7 +176,7 @@ export class VirtualEditor {
   private togglePreview: EditorPorts["togglePreview"];
   private onPasteImage?: (bytes: number[], mimeType: string) => Promise<string>;
   private prepareDiagram?: EditorPorts["prepareDiagram"];
-  private diagramRevision = 0;
+  private contentRevision = 0;
   private diagramEditing = false;
   private rectangularClipboard = new RectangularClipboard();
   private liveViewers: LiveViewers;
@@ -535,12 +536,29 @@ export class VirtualEditor {
     this.focus();
   }
 
-  async goToPreview(selection: api.ViewerSelection) {
+  async createExternalSourceNavigator(isCurrent: () => boolean = () => true): Promise<ExternalSourceNavigator> {
+    const generation = this.documentGeneration, revision = this.contentRevision;
+    const valid = () => generation === this.documentGeneration && revision === this.contentRevision && isCurrent();
+    const last = this.lineCount - 1;
+    const text = await this.lineCache.textInRange({ line: 0, col: 0 }, { line: last, col: await this.lineCache.lineLength(last) });
+    const hash = await sourceTextHash(text);
+    return async (request, currentDisplay = () => true) => {
+      const current = () => valid() && currentDisplay();
+      if (!current() || request.source_hash !== hash) return "元の文書が変更されています。プレビューを更新してください。";
+      const pos = sourcePositionAtOffset(text, request.offset);
+      if (!pos) return "元ソースの位置を特定できません。";
+      await this.goToPreview({ start: pos, end: pos }, { focus: false, absolute: true, isCurrent: current });
+      return current() ? null : "元の文書が変更されています。プレビューを更新してください。";
+    };
+  }
+
+  async goToPreview(selection: api.ViewerSelection, options: { focus?: boolean; absolute?: boolean; isCurrent?: () => boolean } = {}) {
     const generation = this.documentGeneration;
-    const target = this.liveViewers.positionInDocument(selection.end);
+    const target = options.absolute ? selection.end : this.liveViewers.positionInDocument(selection.end);
     const line = Math.max(0, Math.min(this.lineCount - 1, target.line));
     const text = await this.lineCache.line(line);
     if (generation !== this.documentGeneration) return;
+    if (options.isCurrent && !options.isCurrent()) return;
     const pos = { line, col: Math.max(0, Math.min(charLen(text), target.col)) };
     this.sel.reset(pos);
     this.centerLine(line);
@@ -554,7 +572,7 @@ export class VirtualEditor {
     }
     this.render();
     this.notifyCursor();
-    this.focus();
+    if (options.focus !== false) this.focus();
   }
 
   async selectRange(line: number, startCol: number, endCol: number) {
@@ -1632,7 +1650,7 @@ export class VirtualEditor {
 
   // ---- 編集 (backend へ委譲・順序保証) ----
   private applyResult(r: api.EditResult, fromLine: number, edits: api.EditManyItem[] = []) {
-    this.diagramRevision += 1;
+    this.contentRevision += 1;
     const oldScrollTop = this.scroll.scrollTop;
     const oldTopLine = this.wrap || this.metrics.scaleMode ? this.topLineF : this.pxToLine(oldScrollTop);
     const oldIntraLinePx = this.wrapIntraLinePx;
@@ -1881,11 +1899,11 @@ export class VirtualEditor {
     try {
       const session = await this.prepareDiagram();
       if (!session || !session.isCurrent()) return;
-      const generation = this.documentGeneration, revision = this.diagramRevision;
+      const generation = this.documentGeneration, revision = this.contentRevision;
       const last = this.lineCount - 1;
       const text = await this.lineCache.textInRange({ line: 0, col: 0 }, { line: last, col: await this.lineCache.lineLength(last) });
       const check = () => {
-        if (generation !== this.documentGeneration || revision !== this.diagramRevision || !session.isCurrent() || this.readOnly) throw new Error("元の文書が変更されました。図の編集内容は保持しています。");
+        if (generation !== this.documentGeneration || revision !== this.contentRevision || !session.isCurrent() || this.readOnly) throw new Error("元の文書が変更されました。図の編集内容は保持しています。");
       };
       check();
       const lines = text.split("\n");

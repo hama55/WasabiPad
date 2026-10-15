@@ -86,6 +86,7 @@ import { createPdfPreview, markPdfLoadFailure } from "./viewer-pdf";
 import { createVideoPreview } from "./viewer-video";
 import { createHtmlPreview } from "./viewer-html";
 import {
+  bindExternalSourceNavigation,
   commitTrustedExternalHtmlPreview,
   createTrustedExternalHtmlPreview,
   resolveExternalOutputSource,
@@ -156,6 +157,8 @@ let currentEffectiveExtension: string | null = null;
 let currentArchivePath: string | null = null;
 let currentArchiveEntry: string | null = null;
 let currentExternalOutputPath: string | null = null;
+let currentExternalRenderId: string | undefined;
+let externalSourceNavigationController: AbortController | null = null;
 let pendingMarkdownFragment: string | null = null;
 let markdownReadyForFragment = false;
 let renderGeneration = 0;
@@ -182,6 +185,7 @@ let viewerLayoutRuntime: WindowLayoutRuntime | null = null;
 let viewerDisposed = false;
 
 interface ViewerRenderState {
+  renderId?: string;
   format: ViewerFormat;
   text: string;
   selection: ViewerSelectionWithCaret | null;
@@ -206,10 +210,11 @@ function currentViewerRenderState(): ViewerRenderState {
     archivePath: currentArchivePath,
     archiveEntry: currentArchiveEntry,
     externalOutputPath: currentExternalOutputPath,
+    renderId: currentExternalRenderId,
   };
 }
 
-function viewerRenderStateOf(payload: ViewerPayload): ViewerRenderState {
+function viewerRenderStateOf(payload: ViewerPayload, renderId?: string): ViewerRenderState {
   return {
     format: payload.format,
     text: payload.text,
@@ -219,6 +224,7 @@ function viewerRenderStateOf(payload: ViewerPayload): ViewerRenderState {
     archivePath: payload.archive_path,
     archiveEntry: payload.archive_entry,
     externalOutputPath: payload.external_output_path ?? null,
+    renderId,
   };
 }
 
@@ -231,6 +237,11 @@ function publishViewerRenderState(state: ViewerRenderState, nextImageZoom: numbe
   currentArchivePath = state.archivePath;
   currentArchiveEntry = state.archiveEntry;
   currentExternalOutputPath = state.externalOutputPath;
+  currentExternalRenderId = state.renderId;
+  if (!state.externalOutputPath) {
+    externalSourceNavigationController?.abort();
+    externalSourceNavigationController = null;
+  }
   syncExternalStatus();
   imageZoom = nextImageZoom;
   const classificationSource = state.effectiveExtension && !archiveFormatExtension(state.effectiveExtension, state.archiveEntry)
@@ -409,6 +420,8 @@ function disposeViewer() {
   gitPreview = null;
   if (viewerDisposed) return;
   viewerDisposed = true;
+  externalSourceNavigationController?.abort();
+  externalSourceNavigationController = null;
   renderAbortController.abort();
   renderGeneration += 1;
   disposeImagePan?.();
@@ -1018,6 +1031,10 @@ async function renderExternalOutput(
         () => generation === renderGeneration,
         renderSignal,
       )) return false;
+      externalSourceNavigationController?.abort();
+      externalSourceNavigationController = new AbortController();
+      if (isInlineViewer && state.renderId) bindExternalSourceNavigation(preview.frame, state.renderId,
+        postToParent, externalSourceNavigationController.signal);
     } else {
       const preview = createImagePreview(basename(outputPath));
       wrapper = preview.wrapper;
@@ -1261,10 +1278,10 @@ function renderCurrentViewer(): Promise<boolean> {
   return renderViewerState(state, imageZoom);
 }
 
-async function renderPayload(payload: ViewerPayload, requireLoadedOutput = false): Promise<boolean> {
+async function renderPayload(payload: ViewerPayload, requireLoadedOutput = false, renderId?: string): Promise<boolean> {
   if (!isViewerPayload(payload)) throw new Error("ビューのデータが不正です");
   const previousState = currentViewerRenderState();
-  const nextState = viewerRenderStateOf(payload);
+  const nextState = viewerRenderStateOf(payload, renderId);
   const sourceChanged = nextState.sourcePath !== previousState.sourcePath
     || nextState.effectiveExtension !== previousState.effectiveExtension
     || nextState.archivePath !== previousState.archivePath
@@ -1434,7 +1451,7 @@ async function start() {
           if (typeof renderId === "string") {
             runViewerOperation("ビューを更新できませんでした", async () => {
               try {
-                const rendered = await renderPayload(event.data.payload, true);
+                const rendered = await renderPayload(event.data.payload, true, renderId);
                 postToParent({
                   type: rendered
                     ? INLINE_PREVIEW_MESSAGES.DISPLAY_COMMITTED_MESSAGE
@@ -1457,6 +1474,8 @@ async function start() {
         if (event.data?.type === INLINE_PREVIEW_MESSAGES.CLEAR_MESSAGE) {
           if (typeof event.data.render_id !== "string") return;
           const generation = beginRender();
+          externalSourceNavigationController?.abort();
+          externalSourceNavigationController = null;
           gitPreview?.dispose();
           gitPreview = null;
           disposeSqlitePreview?.();

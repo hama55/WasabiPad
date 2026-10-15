@@ -3,6 +3,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mockConvertFileSrc } from "@tauri-apps/api/mocks";
 import {
+  bindExternalSourceNavigation,
   commitTrustedExternalHtmlPreview,
   createTrustedExternalHtmlPreview,
   resolveExternalOutputSource,
@@ -208,4 +209,39 @@ describe("Feature: trusted external preview output", () => {
   ])("Scenario: diagnoses invalid output path %j", (path, message) => {
     expect(() => resolveExternalOutputSource(path)).toThrow(message);
   });
+});
+
+// Feature: 外部プレビューから入力元文書への位置移動要求
+it("Scenario: current opaque iframe alone can request source navigation and closes with its display", () => {
+  // Given: 現在の表示に結び付いた外部iframe
+  const frame = document.createElement("iframe");
+  document.body.append(frame);
+  const relay = vi.fn();
+  const controller = new AbortController();
+  bindExternalSourceNavigation(frame, "render-1", relay, controller.signal);
+  const data = { type: "wasabipad-external-source-navigation", request_id: 1, offset: 4, source_hash: "a".repeat(64) };
+  // When: 偽window、正規window、破棄済みwindowから同じ要求
+  window.dispatchEvent(new MessageEvent("message", { source: window, origin: "null", data }));
+  window.dispatchEvent(new MessageEvent("message", { source: frame.contentWindow, origin: "null", data }));
+  controller.abort();
+  window.dispatchEvent(new MessageEvent("message", { source: frame.contentWindow, origin: "null", data }));
+  // Then: 正規表示の要求だけを、その表示IDとともに中継
+  expect(relay.mock.calls).toEqual([[{ ...data, render_id: "render-1" }]]);
+  frame.remove();
+});
+
+// Feature: 外部HTMLの要求は公開契約の型だけを受理
+it.each([
+  { offset: -1 }, { offset: 1.5 }, { offset: Infinity }, { source_hash: "wrong" },
+  { request_id: -1 }, { request_id: "1" }, { offset: undefined }, { type: "unknown" },
+])("Scenario: ignores malformed external source request %j", bad => {
+  // Given: 表示中の正規iframeからの不正payload
+  const frame = document.createElement("iframe"); document.body.append(frame);
+  const relay = vi.fn(); const controller = new AbortController();
+  bindExternalSourceNavigation(frame, "render", relay, controller.signal);
+  // When: 境界外の値を送る
+  window.dispatchEvent(new MessageEvent("message", { source: frame.contentWindow, origin: "null",
+    data: { type: "wasabipad-external-source-navigation", request_id: 0, offset: 2, source_hash: "a".repeat(64), ...bad } }));
+  // Then: 本体へ渡さない
+  expect(relay).not.toHaveBeenCalled(); controller.abort(); frame.remove();
 });
