@@ -545,14 +545,15 @@ export class VirtualEditor {
     return async (request, currentDisplay = () => true) => {
       const current = () => valid() && currentDisplay();
       if (!current() || request.source_hash !== hash) return "元の文書が変更されています。プレビューを更新してください。";
-      const pos = sourcePositionAtOffset(text, request.offset);
-      if (!pos) return "元ソースの位置を特定できません。";
-      await this.goToPreview({ start: pos, end: pos }, { focus: false, absolute: true, isCurrent: current });
+      const start = sourcePositionAtOffset(text, request.offset);
+      const end = sourcePositionAtOffset(text, request.end_offset ?? request.offset);
+      if (!start || !end || (request.end_offset !== undefined && (request.offset === null || request.end_offset < request.offset))) return "元ソースの位置を特定できません。";
+      await this.goToPreview({ start, end }, { focus: false, absolute: true, select: request.end_offset !== undefined, isCurrent: current });
       return current() ? null : "元の文書が変更されています。プレビューを更新してください。";
     };
   }
 
-  async goToPreview(selection: api.ViewerSelection, options: { focus?: boolean; absolute?: boolean; isCurrent?: () => boolean } = {}) {
+  async goToPreview(selection: api.ViewerSelection, options: { focus?: boolean; absolute?: boolean; select?: boolean; isCurrent?: () => boolean } = {}) {
     const generation = this.documentGeneration;
     const target = options.absolute ? selection.end : this.liveViewers.positionInDocument(selection.end);
     const line = Math.max(0, Math.min(this.lineCount - 1, target.line));
@@ -560,6 +561,12 @@ export class VirtualEditor {
     if (generation !== this.documentGeneration) return;
     if (options.isCurrent && !options.isCurrent()) return;
     const pos = { line, col: Math.max(0, Math.min(charLen(text), target.col)) };
+    if (options.select) {
+      const start = options.absolute ? selection.start : this.liveViewers.positionInDocument(selection.start);
+      this.selectAndCenter(start, pos, false);
+      if (options.focus !== false) this.focus();
+      return;
+    }
     this.sel.reset(pos);
     this.centerLine(line);
     this.render();

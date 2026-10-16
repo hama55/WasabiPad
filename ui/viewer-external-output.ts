@@ -124,7 +124,8 @@ export function bindExternalSourceNavigation(
     if (!frame.isConnected || signal.aborted) return;
     if (event.source === frame.contentWindow && isExternalSourceNavigationRequest(event.data)) {
       relay({ type: event.data.type, request_id: event.data.request_id, offset: event.data.offset,
-        source_hash: event.data.source_hash, render_id: renderId });
+        source_hash: event.data.source_hash, render_id: renderId,
+        ...(event.data.end_offset === undefined ? {} : { end_offset: event.data.end_offset }) });
     } else if (event.source === window.parent && event.origin === window.location.origin
       && event.data?.type === EXTERNAL_SOURCE_NAVIGATION_RESULT && event.data.render_id === renderId
       && Number.isSafeInteger(event.data.request_id) && (event.data.reason === null || typeof event.data.reason === "string")) {

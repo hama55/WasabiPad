@@ -219,7 +219,7 @@ it("Scenario: current opaque iframe alone can request source navigation and clos
   const relay = vi.fn();
   const controller = new AbortController();
   bindExternalSourceNavigation(frame, "render-1", relay, controller.signal);
-  const data = { type: "wasabipad-external-source-navigation", request_id: 1, offset: 4, source_hash: "a".repeat(64) };
+  const data = { type: "wasabipad-external-source-navigation", request_id: 1, offset: 4, end_offset: 6, source_hash: "a".repeat(64) };
   // When: 偽window、正規window、破棄済みwindowから同じ要求
   window.dispatchEvent(new MessageEvent("message", { source: window, origin: "null", data }));
   window.dispatchEvent(new MessageEvent("message", { source: frame.contentWindow, origin: "null", data }));
@@ -234,6 +234,7 @@ it("Scenario: current opaque iframe alone can request source navigation and clos
 it.each([
   { offset: -1 }, { offset: 1.5 }, { offset: Infinity }, { source_hash: "wrong" },
   { request_id: -1 }, { request_id: "1" }, { offset: undefined }, { type: "unknown" },
+  { end_offset: -1 }, { end_offset: 1 }, { end_offset: 2.5 }, { end_offset: null }, { end_offset: Infinity }, { offset: null, end_offset: 2 },
 ])("Scenario: ignores malformed external source request %j", bad => {
   // Given: 表示中の正規iframeからの不正payload
   const frame = document.createElement("iframe"); document.body.append(frame);

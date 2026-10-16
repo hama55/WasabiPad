@@ -3430,3 +3430,56 @@ it.each(["edited", "reopened", "hash", "unknown", "negative", "fraction", "range
     host.remove();
   } finally { vi.unstubAllGlobals(); }
 });
+
+// Feature: 楽譜で選んだ音符の元記述を選択表示する
+it.each([
+  { text: "zero\n😀C4 D", offset: 7, end_offset: 9, anchor: {line:1,col:1}, caret: {line:1,col:3} },
+  { text: "<score>\n<note>\n <rest/>\n</note>\n</score>", offset: 8, end_offset: 31, anchor: {line:1,col:0}, caret: {line:3,col:7} },
+])("Scenario: selects the source range without taking preview focus: $text", async sample => {
+  // Given: 元ソースとフォーカスのあるプレビュー
+  vi.stubGlobal("crypto", webcrypto);
+  try {
+    const {editor,host}=mount(sample.text);editor.open(sample.text.split("\n").length,false);await settle();
+    const preview=document.createElement('button');document.body.append(preview);preview.focus();
+    const navigate=await editor.createExternalSourceNavigator();
+    // When: 音符記述の開始と終了を受け取る
+    const reason=await navigate({type:'wasabipad-external-source-navigation',request_id:1,source_hash:createHash('sha256').update(sample.text).digest('hex'),offset:sample.offset,end_offset:sample.end_offset});
+    // Then: 全記述を選択して強調し、楽譜側のフォーカスを維持する
+    expect(reason).toBeNull();
+    expect(editor.captureViewState()).toMatchObject({anchor:sample.anchor,caret:sample.caret});
+    expect(host.querySelector('.ve-sel')).not.toBeNull();expect(document.activeElement).toBe(preview);
+    preview.remove();host.remove();
+  } finally {vi.unstubAllGlobals();}
+});
+
+// Feature: 終端が不正な範囲は選択を変えない
+it.each([-1, 1, 3.5, 99, NaN])("Scenario: rejects invalid source selection end %s", async end_offset=>{
+  // Given: 補助文字を含む入力元と既存の選択
+  vi.stubGlobal("crypto",webcrypto);
+  try {
+    const text="😀C4 D";const {editor,host}=mount(text);editor.open(1,false);await settle();
+    await editor.selectRange(0,2,3);const before=editor.captureViewState();const navigate=await editor.createExternalSourceNavigator();
+    // When: 開始より前、小数、範囲外などの終端を受ける
+    const reason=await navigate({type:'wasabipad-external-source-navigation',request_id:1,offset:2,end_offset,source_hash:createHash('sha256').update(text).digest('hex')});
+    // Then: キャレット・選択・スクロールを維持して理由を返す
+    expect(reason).toEqual(expect.any(String));expect(editor.captureViewState()).toEqual(before);host.remove();
+  } finally {vi.unstubAllGlobals();}
+});
+
+// Feature: 外部プレビューの表示用選択は置換対象範囲を上書きしない
+it("Scenario: source highlighting preserves the explicit replace-selection scope", async()=>{
+  // Given: FindBarに元の置換対象範囲を保持している
+  vi.stubGlobal('crypto',webcrypto);
+  try {
+    const text='needle needle needle needle';const {editor,doc,host}=mount(text);editor.open(1,false);await settle();
+    await editor.selectRange(0,7,20);editor.openSearch();
+    host.querySelector<HTMLInputElement>('.ve-find-in')!.value='needle';
+    const navigate=await editor.createExternalSourceNavigator();
+    // When: 範囲外の音符を表示用に選択してから選択のみを置換
+    await navigate({type:'wasabipad-external-source-navigation',request_id:1,offset:21,end_offset:27,source_hash:createHash('sha256').update(text).digest('hex')});
+    const replacement=host.querySelector<HTMLInputElement>('.ve-rep-in')!;replacement.focus();replacement.value='hit';
+    host.querySelector<HTMLButtonElement>('.ve-rep-selection')!.click();await settle();
+    // Then: 明示した元範囲だけを置換し、表示用の音符は変更しない
+    expect(doc.text()).toBe('needle hit hit needle');host.remove();
+  } finally {vi.unstubAllGlobals();}
+});

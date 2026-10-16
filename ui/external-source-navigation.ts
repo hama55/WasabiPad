@@ -7,6 +7,7 @@ export interface ExternalSourceNavigationRequest {
   type: typeof EXTERNAL_SOURCE_NAVIGATION;
   request_id: number;
   offset: number | null;
+  end_offset?: number;
   source_hash: string;
 }
 export type ExternalSourceNavigator = (request: ExternalSourceNavigationRequest, isCurrent?: () => boolean) => Promise<string | null>;
@@ -17,6 +18,7 @@ export function isExternalSourceNavigationRequest(data: unknown): data is Extern
   return value.type === EXTERNAL_SOURCE_NAVIGATION
     && Number.isSafeInteger(value.request_id) && value.request_id >= 0
     && (value.offset === null || (Number.isSafeInteger(value.offset) && value.offset >= 0))
+    && (value.end_offset === undefined || (value.offset !== null && Number.isSafeInteger(value.end_offset) && value.end_offset >= value.offset))
     && typeof value.source_hash === "string" && /^[a-f0-9]{64}$/.test(value.source_hash);
 }
 
