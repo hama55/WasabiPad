@@ -416,6 +416,17 @@ const inlinePreviewPorts = {
     updatePreviewVisibility();
   },
   onExternalOutputReleased: (path) => externalPreviewOutputLifecycle.discardGeneratedOutput(path),
+  onExternalPreference: async (key, value, isCurrent) => {
+    if (!isCurrent()) return null;
+    if (value === undefined) {
+      await flushSettings();
+      const preferences = getSetting("externalPreviewPreferences");
+      return Object.hasOwn(preferences, key) ? preferences[key] : null;
+    }
+    setSetting("externalPreviewPreferences", { ...getSetting("externalPreviewPreferences"), [key]: value });
+    await flushSettings();
+    return value;
+  },
   onFormatChange: (format) => openPreviewFormat(
     doc.current,
     documentPathOf(doc.current),

@@ -1,5 +1,7 @@
 import { EXTERNAL_SOURCE_NAVIGATION_RESULT, isExternalSourceNavigationRequest, type ExternalSourceNavigationRequest } from "./external-source-navigation";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { EXTERNAL_PREFERENCE_READY, isExternalPreferenceRequest, isExternalPreferenceResult,
+  type ExternalPreferenceRequest } from "./external-preview-preferences";
 
 export type ExternalOutputFormat = "html" | "svg";
 
@@ -130,6 +132,42 @@ export function bindExternalSourceNavigation(
       && event.data?.type === EXTERNAL_SOURCE_NAVIGATION_RESULT && event.data.render_id === renderId
       && Number.isSafeInteger(event.data.request_id) && (event.data.reason === null || typeof event.data.reason === "string")) {
       frame.contentWindow?.postMessage(event.data, "*");
+    }
+  }, { signal });
+}
+
+/** Preferences cross only the active opaque iframe; the host owns persistence. */
+export function bindExternalPreviewPreferences(
+  frame: HTMLIFrameElement,
+  renderId: string,
+  relay: (request: ExternalPreferenceRequest & { render_id: string }) => void,
+  signal: AbortSignal,
+) {
+  let ready = false;
+  const notifyReady = () => {
+    if (ready && frame.isConnected && !signal.aborted) {
+      frame.contentWindow?.postMessage({ type: EXTERNAL_PREFERENCE_READY }, "*");
+    }
+  };
+  frame.addEventListener("load", notifyReady, { signal });
+  window.addEventListener("message", event => {
+    if (!frame.isConnected || signal.aborted) return;
+    if (event.source === frame.contentWindow) {
+      if (event.data?.type === EXTERNAL_PREFERENCE_READY) notifyReady();
+      else if (ready && isExternalPreferenceRequest(event.data)) {
+        relay({ type: event.data.type, request_id: event.data.request_id, key: event.data.key,
+          ...(Object.hasOwn(event.data, "value") ? { value: event.data.value } : {}), render_id: renderId });
+      }
+      return;
+    }
+    if (event.source !== window.parent || event.origin !== window.location.origin
+      || event.data?.render_id !== renderId) return;
+    if (event.data.type === EXTERNAL_PREFERENCE_READY) {
+      ready = true;
+      notifyReady();
+    } else if (isExternalPreferenceResult(event.data)) {
+      frame.contentWindow?.postMessage({ type: event.data.type, request_id: event.data.request_id,
+        key: event.data.key, value: event.data.value, reason: event.data.reason }, "*");
     }
   }, { signal });
 }

@@ -1,4 +1,5 @@
 import { EXTERNAL_SOURCE_NAVIGATION_RESULT, isExternalSourceNavigationRequest, type ExternalSourceNavigator } from "./external-source-navigation";
+import { EXTERNAL_PREFERENCE_READY, EXTERNAL_PREFERENCE_RESULT, isExternalPreferenceRequest } from "./external-preview-preferences";
 import { setInlinePreviewFocus } from "./api";
 import type { ViewerFormat, ViewerPayload, ViewerSelection } from "./api";
 import { runAsyncBoundary } from "./async-boundary";
@@ -52,6 +53,7 @@ export interface InlinePreviewPorts {
   onSelectionChange?: (selection: ViewerSelection) => void | Promise<void>;
   onMarkdownLink?: (href: string, newTab: boolean) => void | Promise<void>;
   onExternalOutputReleased?: (path: string) => void | Promise<void>;
+  onExternalPreference?: (key: string, value: boolean | undefined, isCurrent: () => boolean) => Promise<boolean | null>;
   onError?: (error: unknown) => void | Promise<void>;
 }
 
@@ -112,6 +114,28 @@ export class InlinePreview {
         this.notifyPort(() => this.ports.onGitOpenFile?.(data.path, data.commit, data.file));
         return;
       }
+      if (isExternalPreferenceRequest(event.data)) {
+        const data = event.data;
+        const renderId = (data as { render_id?: unknown }).render_id;
+        const path = this.payload?.external_output_path;
+        const current = () => typeof renderId === "string" && renderId === this.activeRenderId
+          && !!path && this.payload?.external_output_path === path && !this.pendingExternalOpen && !this.clearing;
+        if (!current()) return;
+        this.notifyPort(async () => {
+          let value: boolean | null = null;
+          let reason: string | null = null;
+          try {
+            if (!this.ports.onExternalPreference) throw new Error("Preference persistence unavailable");
+            value = await this.ports.onExternalPreference(data.key, data.value, current);
+          } catch {
+            reason = "外部プレビューの表示設定を保存できませんでした。";
+          }
+          if (!current()) return;
+          this.frame.contentWindow?.postMessage({ type: EXTERNAL_PREFERENCE_RESULT,
+            render_id: renderId, request_id: data.request_id, key: data.key, value, reason }, window.location.origin);
+        });
+        return;
+      }
       if (isExternalSourceNavigationRequest(event.data)) {
         const renderId = (event.data as { render_id?: unknown }).render_id;
         if (typeof renderId !== "string") return;
@@ -145,6 +169,11 @@ export class InlinePreview {
           event.data.render_id,
           event.data.type === DISPLAY_COMMITTED_MESSAGE,
         );
+        if (event.data.type === DISPLAY_COMMITTED_MESSAGE && this.activeRenderId === event.data.render_id
+          && this.payload?.external_output_path && !this.pendingExternalOpen && !this.clearing) {
+          this.frame.contentWindow?.postMessage({ type: EXTERNAL_PREFERENCE_READY,
+            render_id: this.activeRenderId }, window.location.origin);
+        }
         return;
       }
       if (event.data?.type === CLEARED_MESSAGE) {

@@ -531,4 +531,29 @@ describe("Feature: settings", () => {
     await flushing;
     expect(updateSettingMock).toHaveBeenCalledTimes(2);
   });
+
+  // Given: 共通名の外部表示設定が未設定か、保存済みの真偽値がある
+  // When: 保存・再読込し、不正なkeyや真偽値以外を読み込む
+  // Then: 形式やadapterに依存せず有効な真偽値だけを復元する
+  it("Scenario: 外部プレビューの真偽値表示設定を保存し検証する", async () => {
+    const key = "wasabipad.music-preview.chord-keyboard-diagrams";
+    expect(parseSettings("{}").externalPreviewPreferences).toEqual({});
+    setSetting("externalPreviewPreferences", { [key]: true });
+    await flushSettings();
+    expect(updateSettingMock).toHaveBeenCalledWith("externalPreviewPreferences", JSON.stringify({ [key]: true }));
+    loadSettingsMock.mockResolvedValue(JSON.stringify({ externalPreviewPreferences: { [key]: false } }));
+    await initSettings();
+    expect(getSetting("externalPreviewPreferences")).toEqual({ [key]: false });
+    const longest = "x".repeat(128);
+    expect(parseSettings(JSON.stringify({ externalPreviewPreferences: {
+      [key]: false, [longest]: true, "Bad Key": true, other: "true", "": true, ["x".repeat(129)]: true,
+    } })).externalPreviewPreferences).toEqual({ [key]: false, [longest]: true });
+    for (const value of [null, [], true, "true"]) {
+      expect(parseSettings(JSON.stringify({ externalPreviewPreferences: value })).externalPreviewPreferences).toEqual({});
+    }
+    resetUserSettings();
+    expect(getSetting("externalPreviewPreferences")).toEqual({});
+    await flushSettings();
+  });
+
 });

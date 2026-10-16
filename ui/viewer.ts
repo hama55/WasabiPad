@@ -87,6 +87,7 @@ import { createVideoPreview } from "./viewer-video";
 import { createHtmlPreview } from "./viewer-html";
 import {
   bindExternalSourceNavigation,
+  bindExternalPreviewPreferences,
   commitTrustedExternalHtmlPreview,
   createTrustedExternalHtmlPreview,
   resolveExternalOutputSource,
@@ -1033,8 +1034,12 @@ async function renderExternalOutput(
       )) return false;
       externalSourceNavigationController?.abort();
       externalSourceNavigationController = new AbortController();
-      if (isInlineViewer && state.renderId) bindExternalSourceNavigation(preview.frame, state.renderId,
-        postToParent, externalSourceNavigationController.signal);
+      if (isInlineViewer && state.renderId) {
+        bindExternalSourceNavigation(preview.frame, state.renderId,
+          postToParent, externalSourceNavigationController.signal);
+        bindExternalPreviewPreferences(preview.frame, state.renderId,
+          postToParent, externalSourceNavigationController.signal);
+      }
     } else {
       const preview = createImagePreview(basename(outputPath));
       wrapper = preview.wrapper;

@@ -1012,3 +1012,81 @@ it.each(["open", "resend", "overlap", "mixed"])("Scenario: failed external %s re
   expect(navigate).toHaveBeenCalledTimes(1);
   await preview.close(label!,true);host.remove();
 });
+
+
+// Feature: 外部表示設定は表示世代と保存完了に結び付く
+it("Scenario: committed external render alone saves preferences and receives the persisted result", async () => {
+  // Given: 保存処理の完了を待てる外部プレビュー
+  const host = document.createElement("div");
+  host.append(document.createElement("iframe")); document.body.append(host);
+  let finishSave!: (value: boolean) => void;
+  const onExternalPreference = vi.fn((_key: string, _value: boolean | undefined, _current: () => boolean) => new Promise<boolean>(resolve => { finishSave = resolve; }));
+  const preview = new InlinePreview(host, { onExternalPreference });
+  const frame = host.querySelector("iframe")!;
+  const post = vi.spyOn(frame.contentWindow!, "postMessage");
+  const receive = (data: unknown, source: MessageEventSource | null = frame.contentWindow, origin = window.location.origin) =>
+    window.dispatchEvent(new MessageEvent("message", { source, origin, data }));
+  receive({ type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE });
+  const opening = preview.open("html", "source", null, "C:/work/score.html");
+  const renderId = post.mock.calls.filter(([m]) => m.type === INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE).at(-1)![0].render_id;
+  const request = { type: "wasabipad-external-preference-request", render_id: renderId,
+    request_id: 0, key: "wasabipad.music-preview.chord-keyboard-diagrams", value: true };
+  receive(request);
+  expect(onExternalPreference).not.toHaveBeenCalled();
+  receive({ type: INLINE_PREVIEW_MESSAGES.DISPLAY_COMMITTED_MESSAGE, render_id: renderId });
+  const label = await opening;
+  expect(post.mock.calls.some(([m]) => m.type === "wasabipad-external-preference-ready" && m.render_id === renderId)).toBe(true);
+  const results = () => post.mock.calls.filter(([m]) => m.type === "wasabipad-external-preference-result").map(([m]) => m);
+  // When: 不正な送信元や古い世代を経由してから、有効な設定要求を送る
+  receive(request, window);
+  receive(request, frame.contentWindow, "https://foreign.invalid");
+  receive({ ...request, render_id: "old" });
+  receive(request);
+  await vi.waitFor(() => expect(onExternalPreference).toHaveBeenCalledOnce());
+  expect(results()).toEqual([]);
+  const current = onExternalPreference.mock.calls[0][2];
+  expect(current()).toBe(true);
+  finishSave(true);
+  // Then: 保存完了後だけ結果を返し、保存失敗と閉じた後の要求も区別する
+  await vi.waitFor(() => expect(results()).toEqual([{ type: "wasabipad-external-preference-result",
+    render_id: renderId, request_id: 0, key: request.key, value: true, reason: null }]));
+  onExternalPreference.mockRejectedValueOnce(new Error("save failed"));
+  receive({ ...request, request_id: 1, value: false });
+  await vi.waitFor(() => expect(results().at(-1)).toMatchObject({ request_id: 1, value: null, reason: expect.any(String) }));
+  await preview.close(label!, true);
+  expect(current()).toBe(false);
+  receive({ ...request, request_id: 2 });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(onExternalPreference).toHaveBeenCalledTimes(2);
+  host.remove();
+});
+
+it("Scenario: replacing an external output suppresses an old pending preference response", async () => {
+  // Given: 旧出力からの読み込み要求がまだ完了していない
+  const host = document.createElement("div");
+  host.append(document.createElement("iframe")); document.body.append(host);
+  let finishRead!: (value: boolean | null) => void;
+  const onExternalPreference = vi.fn((_key: string, _value: boolean | undefined, _current: () => boolean) => new Promise<boolean | null>(resolve => { finishRead = resolve; }));
+  const preview = new InlinePreview(host, { onExternalPreference });
+  const frame = host.querySelector("iframe")!;
+  const post = vi.spyOn(frame.contentWindow!, "postMessage");
+  const receive = (data: unknown) => window.dispatchEvent(new MessageEvent("message", {
+    source: frame.contentWindow, origin: window.location.origin, data }));
+  const render = () => post.mock.calls.filter(([m]) => m.type === INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE).at(-1)![0].render_id;
+  receive({ type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE });
+  const first = preview.open("html", "first", null, "C:/work/first.html");
+  receive({ type: INLINE_PREVIEW_MESSAGES.DISPLAY_COMMITTED_MESSAGE, render_id: render() });
+  await first;
+  receive({ type: "wasabipad-external-preference-request", render_id: render(), request_id: 1, key: "display.option" });
+  await vi.waitFor(() => expect(onExternalPreference).toHaveBeenCalledOnce());
+  expect(onExternalPreference.mock.calls[0][1]).toBeUndefined();
+  // When: 別出力への置換が確定してから旧要求が完了する
+  const second = preview.open("html", "second", null, "C:/work/second.html");
+  receive({ type: INLINE_PREVIEW_MESSAGES.DISPLAY_COMMITTED_MESSAGE, render_id: render() });
+  const label = await second;
+  finishRead(null);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  // Then: 新しい表示へ旧要求の結果を返さない
+  expect(post.mock.calls.filter(([m]) => m.type === "wasabipad-external-preference-result")).toEqual([]);
+  await preview.close(label!, true); host.remove();
+});

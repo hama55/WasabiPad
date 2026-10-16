@@ -1,6 +1,7 @@
 // 設定の永続化 (保存先は core/src/settings.rs が決める)。
 // UI から同期的に読めるよう、起動時に一度だけ読み込んでメモリへ載せる。
 // 配色モードだけは localStorage に残す (ウィンドウ間の即時同期を storage イベントに任せるため)。
+import { parseExternalPreviewPreferences } from "./external-preview-preferences";
 import type { WorkspaceSearchOptions } from "./api";
 import { loadSettings as loadSettingsJson, updateSetting } from "./api";
 import { clampSearchOptions, DEFAULT_SEARCH_OPTIONS } from "./workspace-search-options";
@@ -58,6 +59,7 @@ export interface Settings {
   registeredCommands: RegisteredCommand[];
   externalPreviewAdapters: ExternalPreviewAdapter[];
   externalPreviewAdapterSelections: Record<string, string>;
+  externalPreviewPreferences: Record<string, boolean>;
   trustedExternalPreviewAdapterIds: string[];
   // null は「未設定」。既定値は ui/workspace-search-options.ts だけが持つ
   workspaceSearchOptions: WorkspaceSearchOptions | null;
@@ -91,6 +93,7 @@ const DEFAULT_USER_SETTINGS: Pick<Settings, UserSettingKey> = {
   registeredCommands: [],
   externalPreviewAdapters: [],
   externalPreviewAdapterSelections: {},
+  externalPreviewPreferences: {},
   trustedExternalPreviewAdapterIds: [],
   workspaceSearchOptions: null,
 };
@@ -207,6 +210,7 @@ export function parseSettingsResult(text: string): SettingsParseResult {
         .map(normalizeRegisteredCommand)
       : [],
     externalPreviewAdapters,
+    externalPreviewPreferences: parseExternalPreviewPreferences(value.externalPreviewPreferences),
     externalPreviewAdapterSelections: parseExternalPreviewAdapterSelections(
       value.externalPreviewAdapterSelections,
       externalPreviewAdapters,

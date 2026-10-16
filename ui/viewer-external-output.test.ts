@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mockConvertFileSrc } from "@tauri-apps/api/mocks";
 import {
   bindExternalSourceNavigation,
+  bindExternalPreviewPreferences,
   commitTrustedExternalHtmlPreview,
   createTrustedExternalHtmlPreview,
   resolveExternalOutputSource,
@@ -245,4 +246,73 @@ it.each([
     data: { type: "wasabipad-external-source-navigation", request_id: 0, offset: 2, source_hash: "a".repeat(64), ...bad } }));
   // Then: 本体へ渡さない
   expect(relay).not.toHaveBeenCalled(); controller.abort(); frame.remove();
+});
+
+
+// Feature: opaque外部HTMLの設定保存境界
+it("Scenario: external preferences use a committed host handshake and validate both message directions", () => {
+  // Given: opaque childと表示世代に結び付いた設定bridge
+  const frame = document.createElement("iframe"); document.body.append(frame);
+  const post = vi.spyOn(frame.contentWindow!, "postMessage");
+  const relay = vi.fn(); const controller = new AbortController();
+  bindExternalPreviewPreferences(frame, "render-1", relay, controller.signal);
+  const child = (data: unknown, source: MessageEventSource | null = frame.contentWindow) =>
+    window.dispatchEvent(new MessageEvent("message", { source, origin: "null", data }));
+  const host = (data: unknown, origin = window.location.origin, source: MessageEventSource | null = window.parent) =>
+    window.dispatchEvent(new MessageEvent("message", { source, origin, data }));
+  const ready = { type: "wasabipad-external-preference-ready", render_id: "render-1" };
+  const request = { type: "wasabipad-external-preference-request", request_id: 0, key: "display.option" };
+  try {
+    // When: host確定前・不正host・確定後・遅延child・再loadの順でhandshakeする
+    child({ type: ready.type }); child(request);
+    host({ ...ready, render_id: "old" }); host(ready, "https://foreign.invalid");
+    host(ready, window.location.origin, frame.contentWindow);
+    expect(post).not.toHaveBeenCalled(); expect(relay).not.toHaveBeenCalled();
+    host(ready);
+    child({ type: ready.type });
+    frame.dispatchEvent(new Event("load"));
+    expect(post.mock.calls).toEqual(Array.from({ length: 3 }, () => [{ type: ready.type }, "*"]));
+    // Then: 正規childのGET/SETだけを、自己申告の世代を捨てて中継する
+    child(request, window);
+    child({ ...request, render_id: "forged" });
+    child({ ...request, request_id: 1, value: false });
+    expect(relay.mock.calls).toEqual([
+      [{ ...request, render_id: "render-1" }],
+      [{ ...request, request_id: 1, value: false, render_id: "render-1" }],
+    ]);
+    const result = { type: "wasabipad-external-preference-result", render_id: "render-1",
+      request_id: 0, key: request.key, value: true, reason: null };
+    const prior = post.mock.calls.length;
+    host(result, window.location.origin, frame.contentWindow);
+    host(result, "https://foreign.invalid"); host({ ...result, render_id: "old" });
+    for (const bad of [{ value: "true" }, { reason: undefined }, { request_id: -1 }, { key: "Bad Key" }]) host({ ...result, ...bad });
+    expect(post.mock.calls).toHaveLength(prior);
+    host(result);
+    expect(post.mock.calls.at(-1)).toEqual([{ type: result.type, request_id: 0, key: request.key, value: true, reason: null }, "*"]);
+    controller.abort();
+    const count = post.mock.calls.length;
+    child(request); host(result); frame.dispatchEvent(new Event("load"));
+    expect(relay).toHaveBeenCalledTimes(2); expect(post.mock.calls).toHaveLength(count);
+  } finally { controller.abort(); frame.remove(); }
+});
+
+// Feature: 外部表示設定の公開契約は1件の真偽値だけを受理する
+it.each([
+  { request_id: -1 }, { request_id: 1.5 }, { request_id: "0" }, { request_id: Infinity },
+  { key: "" }, { key: "Bad Key" }, { key: "../private_key" }, { key: "x".repeat(129) },
+  { value: undefined }, { value: null }, { value: "true" }, { value: 1 }, { type: "unknown" },
+])("Scenario: rejects malformed external preference request %j", bad => {
+  // Given: host確定済みの正規opaque child
+  const frame = document.createElement("iframe"); document.body.append(frame);
+  const relay = vi.fn(); const controller = new AbortController();
+  bindExternalPreviewPreferences(frame, "render", relay, controller.signal);
+  window.dispatchEvent(new MessageEvent("message", { source: window.parent, origin: window.location.origin,
+    data: { type: "wasabipad-external-preference-ready", render_id: "render" } }));
+  try {
+    // When: request ID・key・valueが契約外の要求を送る
+    window.dispatchEvent(new MessageEvent("message", { source: frame.contentWindow, origin: "null",
+      data: { type: "wasabipad-external-preference-request", request_id: 0, key: "display.option", ...bad } }));
+    // Then: hostへの設定要求に変換しない
+    expect(relay).not.toHaveBeenCalled();
+  } finally { controller.abort(); frame.remove(); }
 });

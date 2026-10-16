@@ -42,6 +42,7 @@ function makePorts(
     registeredCommands: [],
     externalPreviewAdapters: [],
     externalPreviewAdapterSelections: {},
+    externalPreviewPreferences: {},
     trustedExternalPreviewAdapterIds: [],
     workspaceSearchOptions: null,
     openTabs: { tabs: [], activeId: null },
