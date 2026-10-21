@@ -97,12 +97,14 @@ body {
 #win-close:hover { background: #e81123; color: #fff; }
 #viewer-fullscreen,
 #viewer-close,
+#viewer-output-folder,
 #viewer-refresh {
   display: none; width: 36px; flex: none;
   border: 0; background: none; color: var(--fg);
   font: 16px var(--font-ui); cursor: default;
 }
 #viewer-fullscreen:hover,
+#viewer-output-folder:hover,
 #viewer-refresh:hover,
 #viewer-close:hover { background: var(--hover); }
 body.inline-viewer #viewer-title-spacer { width: 8px; }
@@ -112,6 +114,8 @@ body.inline-viewer #viewer-format { display: block; }
 body.inline-viewer #viewer-fullscreen { display: block; }
 body.inline-viewer #viewer-close { display: block; }
 body.inline-viewer #viewer-refresh:not([hidden]) { display: block; }
+body.inline-viewer #viewer-output-folder:not([hidden]) { display: block; }
+#viewer-output-folder:disabled { opacity: .45; }
 
 main {
   position: relative;

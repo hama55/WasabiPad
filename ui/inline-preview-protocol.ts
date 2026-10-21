@@ -1,6 +1,6 @@
 export const INLINE_PREVIEW_MESSAGES = {
   READY_MESSAGE: "wasabipad-viewer-ready",
-  EXTERNAL_STATUS_MESSAGE: "wasabipad-viewer-external-status",
+  PREVIEW_STATUS_MESSAGE: "wasabipad-viewer-external-status",
   PAYLOAD_MESSAGE: "wasabipad-viewer-payload",
   // Confirms viewer DOM commit only; external iframe load does not certify HTML semantics.
   DISPLAY_COMMITTED_MESSAGE: "wasabipad-viewer-display-committed",
@@ -21,6 +21,8 @@ export const INLINE_PREVIEW_MESSAGES = {
   VISIBILITY_MESSAGE: "wasabipad-viewer-visibility",
   CLOSE_MESSAGE: "wasabipad-viewer-close",
   REFRESH_MESSAGE: "wasabipad-viewer-refresh",
+  OUTPUT_FOLDER_STATE_MESSAGE: "wasabipad-viewer-output-folder-state",
+  REVEAL_OUTPUT_MESSAGE: "wasabipad-viewer-reveal-output",
   GIT_OPEN_FILE_MESSAGE: "wasabipad-viewer-git-open-file",
   FOCUS_CLOSE_MESSAGE: "wasabipad-viewer-focus-close",
   SELECTION_CHANGE_MESSAGE: "wasabipad-viewer-selection-change",
@@ -28,7 +30,8 @@ export const INLINE_PREVIEW_MESSAGES = {
   MARKDOWN_FRAGMENT_MESSAGE: "wasabipad-viewer-markdown-fragment",
 } as const;
 
-export interface ExternalPreviewStatus {
+export interface PreviewStatus {
   message: string;
   busy: boolean;
+  kind?: "standard" | "external";
 }

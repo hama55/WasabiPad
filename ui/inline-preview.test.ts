@@ -4,6 +4,7 @@ import type { ViewerFormat } from "./api";
 import { InlinePreview, INLINE_PREVIEW_MESSAGES } from "./inline-preview";
 import { createExternalPreviewOutputLifecycle } from "./preview-replacement";
 import { resolveAssetPath } from "./viewer-assets";
+import { LiveViewers } from "./live-viewers";
 
 const { setInlinePreviewFocusMock } = vi.hoisted(() => ({
   setInlinePreviewFocusMock: vi.fn(async () => undefined),
@@ -37,6 +38,66 @@ function mount(
 }
 
 describe("Feature: inline preview", () => {
+  // Feature: 外部プレビュー生成物のフォルダ操作
+  // Given: 出力準備中と表示確定済みの生成物がある
+  // When: ビューアがフォルダ操作を通知し、その後表示を閉じる
+  // Then: 表示確定後だけ操作を受け付け、準備中のパスで有効化せず、閉じると解除する
+  it("Scenario: 表示確定した生成物だけフォルダ操作を許可する", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const onRevealExternalOutput = vi.fn();
+    const preview = new InlinePreview(host, { onRevealExternalOutput });
+    const frame = host.querySelector("iframe")!;
+    const post = vi.spyOn(frame.contentWindow!, "postMessage");
+    const receive = (data: unknown, source = frame.contentWindow) => window.dispatchEvent(new MessageEvent("message", {
+      source, origin: window.location.origin, data,
+    }));
+    const reveal = { type: INLINE_PREVIEW_MESSAGES.REVEAL_OUTPUT_MESSAGE, path: "C:/untrusted" };
+    preview.setPreviewStatus({ message: "変換中…", busy: true });
+    preview.setPendingExternalOutputPath("C:/temp/new/index.html");
+    receive(reveal);
+    expect(onRevealExternalOutput).not.toHaveBeenCalled();
+    preview.setExternalOutputPath("C:/temp/old/index.html");
+    receive({ type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE });
+    expect(post).toHaveBeenCalledWith({ type: INLINE_PREVIEW_MESSAGES.OUTPUT_FOLDER_STATE_MESSAGE, available: true }, window.location.origin);
+    receive(reveal, window);
+    expect(onRevealExternalOutput).not.toHaveBeenCalled();
+    receive(reveal);
+    expect(onRevealExternalOutput).toHaveBeenCalledWith();
+    preview.setPendingExternalOutputPath("C:/temp/new/index.html");
+    receive(reveal);
+    expect(onRevealExternalOutput).toHaveBeenCalledTimes(2);
+    await preview.clear();
+    receive(reveal);
+    expect(onRevealExternalOutput).toHaveBeenCalledTimes(2);
+    expect(post).toHaveBeenCalledWith({ type: INLINE_PREVIEW_MESSAGES.OUTPUT_FOLDER_STATE_MESSAGE, available: false }, window.location.origin);
+    host.remove();
+  });
+  // Feature: プレビュー枠の先行表示
+  // Given: 標準プレビューの本文取得が終わらない
+  // When: 枠を開いて本文を取得し、途中で閉じる
+  // Then: 本文未到着でも待機枠が可視になり、閉じた後に本文が届いても再表示しない
+  it("Scenario: 本文取得中に待機枠を表示し閉鎖後の完了を無視する", async () => {
+    const { host, preview } = mount();
+    let finishText!: (text: string) => void;
+    const pendingText = new Promise<string>((resolve) => { finishText = resolve; });
+    const viewers = new LiveViewers({
+      wholeRange: async () => ({ start: { line: 0, col: 0 }, end: { line: 1, col: 0 } }),
+      textInRange: () => pendingText,
+      openViewer: (...args) => preview.open(...args),
+      updateViewer: async () => true,
+    });
+    preview.setPreviewStatus({ message: "読み込み中…", busy: true, kind: "standard" });
+    const opened = viewers.open("markdown", null, { start: { line: 0, col: 0 }, end: { line: 0, col: 0 } });
+    await Promise.resolve();
+    expect(host.hidden).toBe(false);
+    viewers.invalidatePendingOpens();
+    await preview.clear();
+    finishText("# late");
+    expect(await opened).toBeNull();
+    expect(host.hidden).toBe(true);
+    host.remove();
+  });
   // Feature: 貼り付け画像の即時プレビュー
   // Given: txt・md・任意拡張子の文書と、文書画像フォルダの相対参照がある
   // When: 保存せず初回プレビュー、連続貼り付け、別フォルダの文書のプレビューを行う
@@ -115,7 +176,7 @@ describe("Feature: inline preview", () => {
     expect(preview.clear()).toBe(cleared);
     const reopening = cleared.then(() => {
       finished = true;
-      preview.setExternalStatus({ message: "変換中…", busy: true });
+      preview.setPreviewStatus({ message: "変換中…", busy: true });
     });
     await Promise.resolve();
     expect(finished).toBe(false);
@@ -125,7 +186,7 @@ describe("Feature: inline preview", () => {
     expect(host.hidden).toBe(false);
     expect(onAvailabilityChange).toHaveBeenLastCalledWith(true, expect.any(String));
     expect(post).toHaveBeenLastCalledWith({
-      type: INLINE_PREVIEW_MESSAGES.EXTERNAL_STATUS_MESSAGE,
+      type: INLINE_PREVIEW_MESSAGES.PREVIEW_STATUS_MESSAGE,
       status: { message: "変換中…", busy: true },
     }, window.location.origin);
   });
@@ -136,7 +197,7 @@ describe("Feature: inline preview", () => {
     const { host, preview, onAvailabilityChange } = mount();
     const frame = host.querySelector("iframe")!;
     const post = vi.spyOn(frame.contentWindow!, "postMessage");
-    preview.setExternalStatus({ message: "変換中…", busy: true });
+    preview.setPreviewStatus({ message: "変換中…", busy: true });
     expect(onAvailabilityChange).toHaveBeenCalledWith(true, expect.any(String));
     expect(host.hidden).toBe(false);
     window.dispatchEvent(new MessageEvent("message", {
@@ -144,7 +205,7 @@ describe("Feature: inline preview", () => {
       data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
     }));
     expect(post).toHaveBeenCalledWith({
-      type: INLINE_PREVIEW_MESSAGES.EXTERNAL_STATUS_MESSAGE,
+      type: INLINE_PREVIEW_MESSAGES.PREVIEW_STATUS_MESSAGE,
       status: { message: "変換中…", busy: true },
     }, window.location.origin);
     expect(post.mock.calls.some(([message]) => message.type === INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE)).toBe(false);
@@ -160,13 +221,13 @@ describe("Feature: inline preview", () => {
       source: frame.contentWindow, origin: window.location.origin,
       data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
     }));
-    preview.setExternalStatus({ message: "実行確認待ち…", busy: true });
-    preview.setExternalStatus({ message: "変換中…", busy: true });
+    preview.setPreviewStatus({ message: "実行確認待ち…", busy: true });
+    preview.setPreviewStatus({ message: "変換中…", busy: true });
     expect(onAvailabilityChange.mock.calls.filter(([available]) => available)).toHaveLength(1);
     preview.clear();
     await Promise.resolve();
     expect(host.hidden).toBe(true);
-    expect(post).toHaveBeenCalledWith({ type: INLINE_PREVIEW_MESSAGES.EXTERNAL_STATUS_MESSAGE, status: null }, window.location.origin);
+    expect(post).toHaveBeenCalledWith({ type: INLINE_PREVIEW_MESSAGES.PREVIEW_STATUS_MESSAGE, status: null }, window.location.origin);
   });
   // Given: 準備済みの動画プレビュー
   // When: 一時退避と閉じる操作を通知する

@@ -60,7 +60,7 @@ import {
   DEFAULT_CSV_DELIMITER,
 } from "./viewer-delimiter";
 import { openViewerDelimiterDialog } from "./viewer-delimiter-dialog";
-import { INLINE_PREVIEW_MESSAGES, type ExternalPreviewStatus } from "./inline-preview-protocol";
+import { INLINE_PREVIEW_MESSAGES, type PreviewStatus } from "./inline-preview-protocol";
 import { isViewerPayload } from "./viewer-payload";
 import {
   createArchiveAssetSession,
@@ -125,19 +125,24 @@ const actionButtons = document.getElementById("viewer-csv-actions")!;
 const fullscreenButton = document.getElementById("viewer-fullscreen") as HTMLButtonElement;
 const previewCloseButton = document.getElementById("viewer-close") as HTMLButtonElement;
 const previewRefreshButton = document.getElementById("viewer-refresh") as HTMLButtonElement;
-const externalStatusBanner = document.getElementById("viewer-external-status")!;
-let externalStatus: ExternalPreviewStatus | null = null;
+const outputFolderButton = document.getElementById("viewer-output-folder") as HTMLButtonElement;
+let outputFolderAvailable = false;
+const previewStatusBanner = document.getElementById("viewer-external-status")!;
+let previewStatus: PreviewStatus | null = null;
 
-function syncExternalStatus() {
+function syncPreviewStatus() {
+  const external = previewStatus ? previewStatus.kind !== "standard" : !!currentExternalOutputPath;
   const kind = document.getElementById("viewer-preview-kind");
-  if (kind) kind.textContent = externalStatus || currentExternalOutputPath ? "外部プレビュー" : "標準プレビュー";
-  externalStatusBanner.hidden = externalStatus === null;
-  externalStatusBanner.textContent = externalStatus?.message ?? "";
-  previewRefreshButton.disabled = externalStatus?.busy ?? false;
-  previewRefreshButton.hidden = !isInlineViewer || (!externalStatus && !currentExternalOutputPath && currentFormat !== "video" && currentFormat !== "git");
-  const refreshLabel = externalStatus || currentExternalOutputPath ? "外部プレビューを更新" : currentFormat === "git" ? "Git履歴を更新" : "動画プレビューを更新";
+  if (kind) kind.textContent = external ? "外部プレビュー" : "標準プレビュー";
+  previewStatusBanner.hidden = previewStatus === null;
+  previewStatusBanner.textContent = previewStatus?.message ?? "";
+  previewRefreshButton.disabled = previewStatus?.busy ?? false;
+  previewRefreshButton.hidden = !isInlineViewer || (!external && currentFormat !== "video" && currentFormat !== "git");
+  const refreshLabel = external ? "外部プレビューを更新" : currentFormat === "git" ? "Git履歴を更新" : "動画プレビューを更新";
   previewRefreshButton.title = refreshLabel;
   previewRefreshButton.setAttribute("aria-label", refreshLabel);
+  outputFolderButton.hidden = !isInlineViewer || !external;
+  outputFolderButton.disabled = !outputFolderAvailable;
 }
 const summary = document.getElementById("viewer-summary")!;
 const themeButton = document.getElementById("viewer-theme")!;
@@ -243,7 +248,7 @@ function publishViewerRenderState(state: ViewerRenderState, nextImageZoom: numbe
     externalSourceNavigationController?.abort();
     externalSourceNavigationController = null;
   }
-  syncExternalStatus();
+  syncPreviewStatus();
   imageZoom = nextImageZoom;
   const classificationSource = state.effectiveExtension && !archiveFormatExtension(state.effectiveExtension, state.archiveEntry)
     ? `${state.archiveEntry ?? state.sourcePath ?? "source"}.${state.effectiveExtension}`
@@ -574,8 +579,13 @@ function bindViewerControls() {
     });
   }, { signal: viewerDomListeners.signal });
   previewRefreshButton.addEventListener("click", () => {
-    if (isInlineViewer && !externalStatus?.busy && (externalStatus || currentExternalOutputPath || currentFormat === "video" || currentFormat === "git")) {
+    if (isInlineViewer && !previewStatus?.busy && (previewStatus || currentExternalOutputPath || currentFormat === "video" || currentFormat === "git")) {
       postToParent({ type: INLINE_PREVIEW_MESSAGES.REFRESH_MESSAGE });
+    }
+  }, { signal: viewerDomListeners.signal });
+  outputFolderButton.addEventListener("click", () => {
+    if (isInlineViewer && !outputFolderButton.hidden && !outputFolderButton.disabled) {
+      postToParent({ type: INLINE_PREVIEW_MESSAGES.REVEAL_OUTPUT_MESSAGE });
     }
   }, { signal: viewerDomListeners.signal });
   const notifySelection = (event: Event) => runViewerOperation(
@@ -1432,11 +1442,18 @@ async function start() {
     if (isInlineViewer) {
       window.addEventListener("message", (event) => {
         if (event.source !== window.parent || event.origin !== window.location.origin) return;
-        if (event.data?.type === INLINE_PREVIEW_MESSAGES.EXTERNAL_STATUS_MESSAGE) {
+        if (event.data?.type === INLINE_PREVIEW_MESSAGES.OUTPUT_FOLDER_STATE_MESSAGE) {
+          if (typeof event.data.available !== "boolean") return;
+          outputFolderAvailable = event.data.available;
+          syncPreviewStatus();
+          return;
+        }
+        if (event.data?.type === INLINE_PREVIEW_MESSAGES.PREVIEW_STATUS_MESSAGE) {
           const status = event.data.status;
-          if (status !== null && (typeof status?.message !== "string" || typeof status?.busy !== "boolean")) return;
-          externalStatus = status;
-          syncExternalStatus();
+          if (status !== null && (typeof status?.message !== "string" || typeof status?.busy !== "boolean"
+            || (status.kind !== undefined && status.kind !== "standard" && status.kind !== "external"))) return;
+          previewStatus = status;
+          syncPreviewStatus();
           return;
         }
         if (event.data?.type === INLINE_PREVIEW_MESSAGES.VISIBILITY_MESSAGE) {

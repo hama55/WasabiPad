@@ -7,6 +7,48 @@ const viewerSource = readFileSync(new URL("./viewer.ts", import.meta.url), "utf8
 const viewerRustSource = readFileSync(new URL("../src-tauri/src/viewer.rs", import.meta.url), "utf8");
 
 describe("Feature: window layout integration", () => {
+  // Feature: 外部プレビュー生成物の保存場所
+  // Given: 表示済みの生成物と別の生成待ちパスがある
+  // When: 本体のフォルダ操作経路を検査する
+  // Then: 表示済み生成物のパスだけを既存Explorer APIへ渡す
+  it("Scenario: 生成フォルダ操作は表示済みの結果を使う", () => {
+    const reveal = mainSource.slice(mainSource.indexOf("  onRevealExternalOutput:"), mainSource.indexOf("  onRefresh:"));
+    expect(reveal).toContain("externalPreviewOutputLifecycle.displayedOutputPath()");
+    expect(reveal).toContain("if (!previewDocument?.externalAdapter || !path) return;");
+    expect(reveal).toContain("await revealInExplorer(path, false);");
+  });
+  // Feature: プレビュー枠の先行表示
+  // Given: 標準・外部のプレビューで本文準備や取消完了が遅れる
+  // When: プレビュー開始経路を検査する
+  // Then: 非同期処理を待つ前に共通の待機表示を開き、待機中の閉鎖も取り消す
+  it("Scenario: 標準と外部の待機枠を準備処理より先に開く", () => {
+    const open = mainSource.slice(mainSource.indexOf("function openPreviewFormat("), mainSource.indexOf("function sqlitePreviewSourcePath("));
+    expect(open).toMatch(/openingPreviewRequestGeneration = requestGeneration;[\s\S]*?inlinePreview\.setPreviewStatus\([\s\S]*?await pendingViewerOpenCancellation/);
+    expect(open).toContain('kind: externalAdapter ? "external" : "standard"');
+    const close = mainSource.slice(mainSource.indexOf("function closePreview("), mainSource.indexOf("function selectPreviewPlacement("));
+    expect(close).toContain("if (previewReplacementLifecycle.isReplacing() || externalPreviewRefreshPending)");
+  });
+  // Feature: 標準プレビューの読み込み失敗
+  // Given: プレビューの本文準備が失敗する
+  // When: 本体のエラー処理経路を検査する
+  // Then: 現在の要求だけ待機を解除して理由を表示し、既存エラー通知を維持する
+  it("Scenario: 標準の準備失敗を待機中のまま残さない", () => {
+    const open = mainSource.slice(mainSource.indexOf("function openPreviewFormat("), mainSource.indexOf("function sqlitePreviewSourcePath("));
+    const onError = open.slice(open.indexOf("  }, async (error) => {"));
+    expect(onError).toMatch(/if \(!isCurrentRequest\(\)\) return;[\s\S]*?if \(!externalAdapter\)/);
+    expect(onError).toContain('message: "読み込み失敗: " + detail, busy: false');
+    expect(onError).toContain("await reportBackgroundError(errorTitle, error);");
+  });
+  // Feature: 外部生成物から標準プレビューへの切替失敗
+  // Given: 外部プレビュー生成物が表示中
+  // When: 標準の本文準備が失敗する経路を検査する
+  // Then: 旧表示の文書と種別を戻してフォルダ操作との紐付けを保持する
+  it("Scenario: 標準への切替失敗時は表示中の外部結果へ戻す", () => {
+    const open = mainSource.slice(mainSource.indexOf("function openPreviewFormat("), mainSource.indexOf("function sqlitePreviewSourcePath("));
+    const onError = open.slice(open.indexOf("  }, async (error) => {"));
+    expect(onError).toContain("previewDocument = previousPreviewDocument ?? document;");
+    expect(onError).toMatch(/kind: previousPreviewDocument\?\.externalAdapter && externalPreviewOutputLifecycle\.displayedOutputPath\(\)\s*\? "external" : "standard"/);
+  });
   // Feature: 貼り付け画像の即時プレビュー
   // Given: 通常のプレビュー切替を通らずMarkdownを開く文書がある
   // When: エディタが画像貼り付けから直接プレビューを開く
@@ -19,7 +61,7 @@ describe("Feature: window layout integration", () => {
   // When: 外部生成物の表示・標準表示・表示クリアへ遷移する
   // Then: 外部生成物と動画で更新を表示し、外部生成物は保存確認付き更新へ渡す
   it("Scenario: 外部生成物と動画をツールバーから更新できる", () => {
-    expect(viewerSource).toContain('previewRefreshButton.hidden = !isInlineViewer || (!externalStatus && !currentExternalOutputPath && currentFormat !== "video" && currentFormat !== "git");');
+    expect(viewerSource).toContain('previewRefreshButton.hidden = !isInlineViewer || (!external && currentFormat !== "video" && currentFormat !== "git");');
     expect(viewerSource).toMatch(/INLINE_PREVIEW_MESSAGES\.CLEAR_MESSAGE[\s\S]*?previewRefreshButton\.hidden = true;/);
     expect(mainSource).toContain('onRefresh: () => runBackground("プレビューを更新できませんでした"');
     expect(mainSource).toContain('if (previewDocument?.format === "video") inlinePreview.resend();');

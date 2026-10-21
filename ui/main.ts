@@ -382,6 +382,11 @@ function updatePreviewVisibility() {
 
 const inlinePreviewPorts = {
   onClose: closePreview,
+  onRevealExternalOutput: () => runBackground("生成結果のフォルダを開けませんでした", async () => {
+    const path = externalPreviewOutputLifecycle.displayedOutputPath();
+    if (!previewDocument?.externalAdapter || !path) return;
+    await revealInExplorer(path, false);
+  }),
   onRefresh: () => runBackground("プレビューを更新できませんでした", () => {
     if (previewDocument?.format === "git") inlinePreview.refreshGit();
     else if (previewDocument?.format === "video") inlinePreview.resend();
@@ -509,7 +514,7 @@ function clearDisplayedExternalPreviewOutput() {
 function clearExternalPreviewOutput() {
   cancelPendingExternalPreviewRequest();
   openingPreviewRequestGeneration = null;
-  inlinePreview?.setExternalStatus(null);
+  inlinePreview?.setPreviewStatus(null);
   clearDisplayedExternalPreviewOutput();
 }
 
@@ -533,7 +538,7 @@ function clearPreview(session: Readonly<DocumentSession>) {
   previewRequestGeneration++;
   openingPreviewRequestGeneration = null;
   cancelPendingExternalPreviewRequest();
-  inlinePreview.setExternalStatus(null);
+  inlinePreview.setPreviewStatus(null);
   inlinePreview.setPendingExternalOutputPath(null);
   inlinePreview.setSourcePath(null, session.archivePath, session.archiveEntry);
   previewDocument = null;
@@ -592,14 +597,24 @@ function openPreviewFormat(
   const isCurrentRequest = () => requestGeneration === previewRequestGeneration
     && document.ownerTabId === (tabs?.state.activeId ?? null)
     && document.path === (format === "git" ? gitPreviewTarget?.path : documentPathOf(doc.current));
-  if (externalAdapter || format === "git") {
-    previewDocument = document;
-    openingPreviewRequestGeneration = requestGeneration;
-  } else inlinePreview.setExternalStatus(null);
+  previewDocument = document;
+  openingPreviewRequestGeneration = requestGeneration;
+  const initialStatus = {
+    kind: externalAdapter ? "external" : "standard",
+    message: externalAdapter
+      ? getSetting("trustedExternalPreviewAdapterIds").includes(externalAdapter.id)
+        ? externalPreviewOutputLifecycle.displayedOutputPath() ? "更新中…" : "変換中…"
+        : "実行確認待ち…"
+      : "読み込み中…",
+    busy: true,
+  } as const;
+  inlinePreview.setPreviewStatus(initialStatus);
+  previewCollapsed = false;
+  updatePreviewVisibility();
   const restoreAfterDecline = () => {
     if (!isCurrentRequest()) return;
     previewDocument = previousPreviewDocument;
-    inlinePreview.setExternalStatus(null);
+    inlinePreview.setPreviewStatus(null);
     if (!previousPreviewDocument) clearPreview(session);
   };
   runBackground(errorTitle, async () => {
@@ -608,17 +623,10 @@ function openPreviewFormat(
     try {
       await pendingViewerOpenCancellation;
       if (!isCurrentRequest()) return;
+      inlinePreview.setPreviewStatus(initialStatus);
       let resolvedFormat = format;
       let effectiveExtension = session.effectiveExtension;
       if (externalAdapter) {
-        inlinePreview.setExternalStatus({
-          message: getSetting("trustedExternalPreviewAdapterIds").includes(externalAdapter.id)
-            ? externalPreviewOutputLifecycle.displayedOutputPath() ? "更新中…" : "変換中…"
-            : "実行確認待ち…",
-          busy: true,
-        });
-        previewCollapsed = false;
-        updatePreviewVisibility();
         const inputPath = externalPreviewInputPath(session);
         if (!inputPath) throw new Error("外部プレビューは保存済みの通常ファイルだけに対応しています");
         if (!getSetting("trustedExternalPreviewAdapterIds").includes(externalAdapter.id)) {
@@ -658,7 +666,7 @@ function openPreviewFormat(
             return;
           }
         }
-        inlinePreview.setExternalStatus({
+        inlinePreview.setPreviewStatus({
           message: externalPreviewOutputLifecycle.displayedOutputPath() ? "更新中…" : "変換中…",
           busy: true,
         });
@@ -685,7 +693,7 @@ function openPreviewFormat(
         }
         inlinePreview.setExternalSourceNavigator(generatedOutputPath, navigateSource);
         setExternalPreviewLog(null);
-        inlinePreview.setExternalStatus({ message: "読み込み中…", busy: true });
+        inlinePreview.setPreviewStatus({ message: "読み込み中…", busy: true });
         resolvedFormat = externalAdapter.outputFormat === "svg" ? "image" : "html";
         effectiveExtension = null;
       }
@@ -698,6 +706,7 @@ function openPreviewFormat(
         if (!isCurrentRequest()) return;
         if (action === "keep") {
           previewDocument = previousPreviewDocument;
+          inlinePreview.setPreviewStatus(null);
           return;
         }
         if (action === "clear") {
@@ -738,7 +747,7 @@ function openPreviewFormat(
       }
       if (openedLabel === null || !previewReplacementLifecycle.isActive(openedLabel)) {
         if (externalAdapter) throw new Error("外部プレビューの表示を完了できませんでした");
-        return;
+        throw new Error("プレビューの表示を完了できませんでした");
       }
 
       if (!isCurrentRequest()) return;
@@ -759,7 +768,7 @@ function openPreviewFormat(
         previewCollapsed = true;
         updatePreviewVisibility();
       }
-      inlinePreview.setExternalStatus(null);
+      inlinePreview.setPreviewStatus(null);
       editingStatusbar.setPreviewFormat(resolvedFormat);
       if (fragment !== null && resolvedFormat === "markdown") inlinePreview.setMarkdownFragment(fragment);
     } catch (error) {
@@ -777,15 +786,25 @@ function openPreviewFormat(
       if (openingPreviewRequestGeneration === requestGeneration) openingPreviewRequestGeneration = null;
       if (requestId && externalPreviewRequestId === requestId) externalPreviewRequestId = null;
     }
-  }, externalAdapter ? async (error) => {
+  }, async (error) => {
     if (!isCurrentRequest()) return;
     const detail = error instanceof Error ? error.message : String(error);
+    if (!externalAdapter) {
+      previewDocument = previousPreviewDocument ?? document;
+      inlinePreview.setPreviewStatus({
+        kind: previousPreviewDocument?.externalAdapter && externalPreviewOutputLifecycle.displayedOutputPath()
+          ? "external" : "standard",
+        message: "読み込み失敗: " + detail, busy: false,
+      });
+      await reportBackgroundError(errorTitle, error);
+      return;
+    }
     setExternalPreviewLog(detail);
-    inlinePreview.setExternalStatus({
+    inlinePreview.setPreviewStatus({
       message: "変換失敗: " + detail + "\n「更新」から再試行できます。ログは上部の「実行ログ」から確認できます。",
       busy: false,
     });
-  } : undefined);
+  });
 }
 
 function sqlitePreviewSourcePath(session: Readonly<DocumentSession>): string | null {
@@ -1548,7 +1567,7 @@ function closePreview(returnFocusToOpenButton = false) {
   if (!Number.isFinite(layoutWidth) || layoutWidth <= 0 || !paneVisibilityAt(layoutWidth).previewShown) return;
   ++gitSelectionGeneration;
   if (editor.resetPreviewRange() && previewDocument) previewDocument.rangeReset = true;
-  if (previewDocument?.externalAdapter && (previewReplacementLifecycle.isReplacing() || externalPreviewRefreshPending)) {
+  if (previewReplacementLifecycle.isReplacing() || externalPreviewRefreshPending) {
     clearPreview(doc.current);
     runBackground("プレビューの表示待ちを取り消せませんでした", () => editor.cancelPendingTextViewerOpens());
   }

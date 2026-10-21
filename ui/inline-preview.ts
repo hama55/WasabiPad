@@ -6,7 +6,7 @@ import { runAsyncBoundary } from "./async-boundary";
 import { isViewerFormat } from "./viewer-formats";
 import { isViewerSelection } from "./viewer-payload";
 import { INLINE_PREVIEW_MESSAGES } from "./inline-preview-protocol";
-import type { ExternalPreviewStatus } from "./inline-preview-protocol";
+import type { PreviewStatus } from "./inline-preview-protocol";
 import { DEFAULT_CSV_DELIMITER } from "./viewer-delimiter";
 
 const {
@@ -49,6 +49,7 @@ export interface InlinePreviewPorts {
   onFullscreenChange?: () => void | Promise<void>;
   onClose?: (returnFocus: boolean) => void | Promise<void>;
   onRefresh?: () => void | Promise<void>;
+  onRevealExternalOutput?: () => void | Promise<void>;
   onGitOpenFile?: (path: string, commit: string, file: string) => void | Promise<void>;
   onSelectionChange?: (selection: ViewerSelection) => void | Promise<void>;
   onMarkdownLink?: (href: string, newTab: boolean) => void | Promise<void>;
@@ -69,7 +70,7 @@ export class InlinePreview {
   private lastCommittedRender = 0;
   private sourceNavigationGeneration = 0;
   private externalSourceNavigators = new Map<string, ExternalSourceNavigator>();
-  private externalStatus: ExternalPreviewStatus | null = null;
+  private previewStatus: PreviewStatus | null = null;
   private pendingCloseFocus = false;
   private pendingExternalOpen: PendingExternalOpen | null = null;
   private pendingClearAcks = new Map<string, () => void>();
@@ -79,6 +80,7 @@ export class InlinePreview {
   private archivePath: string | null = null;
   private archiveEntry: string | null = null;
   private externalOutputPath: string | null = null;
+  private outputFolderAvailable = false;
   private delimiter = DEFAULT_CSV_DELIMITER;
   private fontFamily: string | null = null;
   private fontSize: number | null = null;
@@ -159,7 +161,8 @@ export class InlinePreview {
         this.ready = true;
         if (this.pendingExternalOpen) this.sendPendingExternalOpen();
         else this.send();
-        this.sendExternalStatus();
+        this.sendPreviewStatus();
+        this.sendOutputFolderState();
         if (this.pendingCloseFocus) this.focusCloseButton();
         return;
       }
@@ -218,6 +221,12 @@ export class InlinePreview {
         this.notifyPort(() => this.ports.onRefresh?.());
         return;
       }
+      if (event.data?.type === INLINE_PREVIEW_MESSAGES.REVEAL_OUTPUT_MESSAGE) {
+        if (this.outputFolderAvailable && !this.clearing && this.previewStatus?.kind !== "standard") {
+          this.notifyPort(() => this.ports.onRevealExternalOutput?.());
+        }
+        return;
+      }
       if (event.data?.type === INLINE_PREVIEW_MESSAGES.SELECTION_CHANGE_MESSAGE) {
         if (!isViewerSelection(event.data.selection)) return;
         this.notifyPort(() => this.ports.onSelectionChange?.(event.data.selection));
@@ -250,21 +259,21 @@ export class InlinePreview {
     this.effectiveExtension = effectiveExtension;
   }
 
-  setExternalStatus(status: ExternalPreviewStatus | null) {
-    this.externalStatus = status;
+  setPreviewStatus(status: PreviewStatus | null) {
+    this.previewStatus = status;
     if (status && !this.label) {
       this.label = `inline-preview-${++this.nextLabel}`;
       this.host.hidden = false;
       this.notifyPort(() => this.ports.onAvailabilityChange?.(true, this.label));
     }
-    this.sendExternalStatus();
+    this.sendPreviewStatus();
   }
 
-  private sendExternalStatus() {
+  private sendPreviewStatus() {
     if (!this.ready) return;
     this.frame.contentWindow?.postMessage({
-      type: INLINE_PREVIEW_MESSAGES.EXTERNAL_STATUS_MESSAGE,
-      status: this.externalStatus,
+      type: INLINE_PREVIEW_MESSAGES.PREVIEW_STATUS_MESSAGE,
+      status: this.previewStatus,
     }, window.location.origin);
   }
 
@@ -275,9 +284,19 @@ export class InlinePreview {
 
   setExternalOutputPath(path: string | null) {
     this.externalOutputPath = path;
+    this.outputFolderAvailable = path !== null;
+    this.sendOutputFolderState();
     if (path !== null || !this.payload || this.payload.external_output_path === null) return;
     this.payload = { ...this.payload, external_output_path: null };
     this.send();
+  }
+
+  private sendOutputFolderState() {
+    if (!this.ready) return;
+    this.frame.contentWindow?.postMessage({
+      type: INLINE_PREVIEW_MESSAGES.OUTPUT_FOLDER_STATE_MESSAGE,
+      available: this.outputFolderAvailable,
+    }, window.location.origin);
   }
 
   setPendingExternalOutputPath(path: string | null) {
@@ -410,7 +429,9 @@ export class InlinePreview {
     this.activeRenderId = null;
     this.pendingResendRenderIds.clear();
     this.externalSourceNavigators.clear();
-    this.setExternalStatus(null);
+    this.outputFolderAvailable = false;
+    this.sendOutputFolderState();
+    this.setPreviewStatus(null);
     this.label = "";
     this.pendingMarkdownFragment = null;
     this.host.hidden = true;
