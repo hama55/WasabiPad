@@ -38,6 +38,55 @@ function mount(
 }
 
 describe("Feature: inline preview", () => {
+  // Feature: プレビュー再開時の消去
+  // Given: 同じ文書のプレビューを閉じて再開する
+  // When: 消去付きで表示データを再送する
+  // Then: 本文消去の後に現在のデータだけを再送する
+  it("Scenario: 再開するときも前の描画を消してから再送する", async () => {
+    const { host, preview } = mount();
+    const frame = host.querySelector("iframe")!;
+    const post = vi.spyOn(frame.contentWindow!, "postMessage");
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow, origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
+    }));
+    await preview.open("markdown", "current document", null);
+    post.mockClear();
+    preview.resend(true);
+    const messages = post.mock.calls.map(([message]) => message);
+    const clearIndex = messages.findIndex(message => message.type === INLINE_PREVIEW_MESSAGES.CLEAR_MESSAGE);
+    const payloadIndex = messages.findIndex(message => message.type === INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE);
+    expect(clearIndex).toBeGreaterThanOrEqual(0);
+    expect(payloadIndex).toBeGreaterThan(clearIndex);
+    expect(messages[payloadIndex].payload.text).toBe("current document");
+    host.remove();
+  });
+  // Feature: プレビュー開始前の消去
+  // Given: 前の標準プレビューの本文がビューアに表示されている
+  // When: 表示を消して新しい読み込み状態を開く
+  // Then: 待機表示より先に本文消去を送り、古い本文を再送しない
+  it("Scenario: 標準プレビューの前の本文を消してから待機する", async () => {
+    const { host, preview } = mount();
+    const frame = host.querySelector("iframe")!;
+    const post = vi.spyOn(frame.contentWindow!, "postMessage");
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow, origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
+    }));
+    await preview.open("markdown", "old document", null);
+    post.mockClear();
+    const clearing = preview.clear();
+    preview.setPreviewStatus({ kind: "standard", message: "読み込み中…", busy: true });
+    await clearing;
+    const messages = post.mock.calls.map(([message]) => message);
+    const clearIndex = messages.findIndex(message => message.type === INLINE_PREVIEW_MESSAGES.CLEAR_MESSAGE);
+    const statusIndex = messages.findIndex(message => message.status?.busy);
+    expect(clearIndex).toBeGreaterThanOrEqual(0);
+    expect(clearIndex).toBeLessThan(statusIndex);
+    expect(messages.some(message => message.type === INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE)).toBe(false);
+    expect(host.hidden).toBe(false);
+    host.remove();
+  });
   // Feature: 外部プレビュー生成物のフォルダ操作
   // Given: 出力準備中と表示確定済みの生成物がある
   // When: ビューアがフォルダ操作を通知し、その後表示を閉じる

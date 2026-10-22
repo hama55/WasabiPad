@@ -421,6 +421,8 @@ export class InlinePreview {
       viewerAlreadyCleared = true;
     } else if (!viewerAlreadyCleared && this.payload?.external_output_path) {
       await this.clearViewerAndWait();
+    } else if (!viewerAlreadyCleared && this.ready) {
+      void this.clearViewerAndWait();
     }
     if (label !== this.label) return;
     this.setPreviewFocused(false);
@@ -483,7 +485,8 @@ export class InlinePreview {
     return pending.cancellation;
   }
 
-  resend() {
+  resend(clearContent = false) {
+    if (clearContent) void this.clearViewerAndWait();
     this.send();
   }
 

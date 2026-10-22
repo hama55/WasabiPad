@@ -560,6 +560,7 @@ function openPreviewFormat(
   options: {
     sqliteMismatch?: SqlitePreviewFallback;
     keepPreviewRange?: boolean;
+    keepCurrentUntilOpened?: boolean;
     errorTitle?: string;
     externalAdapter?: ExternalPreviewAdapter;
     placement?: PreviewPlacement;
@@ -568,6 +569,7 @@ function openPreviewFormat(
   const {
     sqliteMismatch = "markdown",
     keepPreviewRange = false,
+    keepCurrentUntilOpened = false,
     errorTitle = "ビューを表示できませんでした",
     externalAdapter,
   } = options;
@@ -579,7 +581,7 @@ function openPreviewFormat(
   }
   openingPreviewRequestGeneration = null;
   cancelPendingExternalPreviewRequest();
-  const previousPreviewDocument = previewDocument;
+  const previousPreviewDocument = keepCurrentUntilOpened ? previewDocument : null;
   const document: PreviewDocument & { externalAdapter?: ExternalPreviewAdapter } = {
     ownerTabId: tabs?.state.activeId ?? null,
     path,
@@ -594,6 +596,7 @@ function openPreviewFormat(
       await editor.cancelPendingTextViewerOpens();
     },
   );
+  const pendingContentClear = keepCurrentUntilOpened ? Promise.resolve() : inlinePreview.clear();
   const isCurrentRequest = () => requestGeneration === previewRequestGeneration
     && document.ownerTabId === (tabs?.state.activeId ?? null)
     && document.path === (format === "git" ? gitPreviewTarget?.path : documentPathOf(doc.current));
@@ -603,7 +606,7 @@ function openPreviewFormat(
     kind: externalAdapter ? "external" : "standard",
     message: externalAdapter
       ? getSetting("trustedExternalPreviewAdapterIds").includes(externalAdapter.id)
-        ? externalPreviewOutputLifecycle.displayedOutputPath() ? "更新中…" : "変換中…"
+        ? keepCurrentUntilOpened && externalPreviewOutputLifecycle.displayedOutputPath() ? "更新中…" : "変換中…"
         : "実行確認待ち…"
       : "読み込み中…",
     busy: true,
@@ -622,7 +625,9 @@ function openPreviewFormat(
     let generatedOutputPath: string | null = null;
     try {
       await pendingViewerOpenCancellation;
+      await pendingContentClear;
       if (!isCurrentRequest()) return;
+      if (!keepCurrentUntilOpened) clearDisplayedExternalPreviewOutput();
       inlinePreview.setPreviewStatus(initialStatus);
       let resolvedFormat = format;
       let effectiveExtension = session.effectiveExtension;
@@ -1636,7 +1641,7 @@ function openPreview(placement?: PreviewPlacement) {
   previewCollapsed = false;
   if (gitPreviewTarget) gitPreviewTarget.collapsed = false;
   updatePreviewVisibility();
-  if (shouldResendPreviewOnRestore(previewDocument?.format ?? null)) inlinePreview.resend();
+  if (shouldResendPreviewOnRestore(previewDocument?.format ?? null)) inlinePreview.resend(true);
 }
 
 for (const button of previewOpenButtons) {
@@ -1881,6 +1886,7 @@ async function refreshExternalPreview() {
       || !isCurrentPreviewDocument(opened, tabs.state.activeId, documentPathOf(doc.current))) return;
     openPreviewFormat(doc.current, documentPathOf(doc.current), opened.format, null, {
       keepPreviewRange: true,
+      keepCurrentUntilOpened: true,
       errorTitle: "外部プレビューを更新できませんでした",
       externalAdapter: adapter,
     });

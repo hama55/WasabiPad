@@ -7,6 +7,19 @@ const viewerSource = readFileSync(new URL("./viewer.ts", import.meta.url), "utf8
 const viewerRustSource = readFileSync(new URL("../src-tauri/src/viewer.rs", import.meta.url), "utf8");
 
 describe("Feature: window layout integration", () => {
+  // Feature: 新規プレビューは空から読み込む
+  // Given: 前のプレビュー表示と明示的な外部更新がある
+  // When: 開始経路と更新経路を検査する
+  // Then: 通常開始だけ旧本文と生成物を消し、明示更新だけ旧結果を維持する
+  it("Scenario: 新しく開くときだけ前の表示を消す", () => {
+    const open = mainSource.slice(mainSource.indexOf("function openPreviewFormat("), mainSource.indexOf("function sqlitePreviewSourcePath("));
+    expect(open).toContain("const pendingContentClear = keepCurrentUntilOpened ? Promise.resolve() : inlinePreview.clear();");
+    expect(open).toMatch(/await pendingContentClear;\s*if \(!isCurrentRequest\(\)\) return;\s*if \(!keepCurrentUntilOpened\) clearDisplayedExternalPreviewOutput\(\);/);
+    expect(open).toContain("const previousPreviewDocument = keepCurrentUntilOpened ? previewDocument : null;");
+    const refresh = mainSource.slice(mainSource.indexOf("async function refreshExternalPreview()"));
+    expect(refresh).toContain("keepCurrentUntilOpened: true,");
+    expect(mainSource).toContain("if (shouldResendPreviewOnRestore(previewDocument?.format ?? null)) inlinePreview.resend(true);");
+  });
   // Feature: 外部プレビュー生成物の保存場所
   // Given: 表示済みの生成物と別の生成待ちパスがある
   // When: 本体のフォルダ操作経路を検査する
@@ -39,13 +52,14 @@ describe("Feature: window layout integration", () => {
     expect(onError).toContain('message: "読み込み失敗: " + detail, busy: false');
     expect(onError).toContain("await reportBackgroundError(errorTitle, error);");
   });
-  // Feature: 外部生成物から標準プレビューへの切替失敗
-  // Given: 外部プレビュー生成物が表示中
+  // Feature: 読み込み失敗時の文書情報
+  // Given: 通常の開始では前の本文を消し、明示更新では旧結果を保持する
   // When: 標準の本文準備が失敗する経路を検査する
-  // Then: 旧表示の文書と種別を戻してフォルダ操作との紐付けを保持する
-  it("Scenario: 標準への切替失敗時は表示中の外部結果へ戻す", () => {
+  // Then: 保持を指定した要求だけ旧文書を参照し、通常開始は現在の文書を使う
+  it("Scenario: 通常開始で消した旧文書の情報を失敗時に復元しない", () => {
     const open = mainSource.slice(mainSource.indexOf("function openPreviewFormat("), mainSource.indexOf("function sqlitePreviewSourcePath("));
     const onError = open.slice(open.indexOf("  }, async (error) => {"));
+    expect(open).toContain("const previousPreviewDocument = keepCurrentUntilOpened ? previewDocument : null;");
     expect(onError).toContain("previewDocument = previousPreviewDocument ?? document;");
     expect(onError).toMatch(/kind: previousPreviewDocument\?\.externalAdapter && externalPreviewOutputLifecycle\.displayedOutputPath\(\)\s*\? "external" : "standard"/);
   });

@@ -28,6 +28,28 @@ describe("Feature: 外部プレビューの待機と失敗表示", () => {
     vi.restoreAllMocks();
   });
 
+  // Feature: 新しいプレビューの読み込み前の消去
+  // Given: 以前の本文が表示されている
+  // When: 本文を消去してから新しい読み込み状態を通知する
+  // Then: 待機中・失敗時とも以前の本文を表示しない
+  it("Scenario: 以前の内容をまっさらにしてから読み込み中を表示する", async () => {
+    const receive = (data: unknown) => window.dispatchEvent(new MessageEvent("message", {
+      source: window.parent, origin: window.location.origin, data,
+    }));
+    receive({ type: messages.PAYLOAD_MESSAGE, payload: {
+      format: "csv", text: "old document", selection: null,
+      source_path: null, effective_extension: null, archive_path: null, archive_entry: null, external_output_path: null,
+    } });
+    await vi.waitFor(() => expect(document.querySelector("#viewer-content")?.textContent).toContain("old document"));
+    receive({ type: messages.CLEAR_MESSAGE, render_id: "new-opening" });
+    send({ kind: "standard", message: "読み込み中…", busy: true });
+    expect(document.querySelector("#viewer-content")?.childElementCount).toBe(0);
+    expect(document.querySelector("#viewer-external-status")?.textContent).toBe("読み込み中…");
+    send({ kind: "standard", message: "読み込み失敗", busy: false });
+    expect(document.querySelector("#viewer-content")?.childElementCount).toBe(0);
+    send(null);
+  });
+
   // Feature: 標準プレビューの待機表示
   // Given: 本文の準備が終わっていない標準プレビュー
   // When: 読み込み中の状態を通知する
