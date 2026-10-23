@@ -30,6 +30,55 @@ import { readDiagramSvg } from "./diagram";
 
 installDomStubs();
 
+describe("Feature: 全選択時の表示位置維持", () => {
+  // Given: 長文または短文を縦横スクロールし、折返しの有無を設定している
+  // When: Ctrl+A または本文メニューからすべて選択する
+  // Then: 全文をコピーでき、縦横の表示位置を維持する
+  it.each([
+    ["Ctrl+A・長文", false, false, 40],
+    ["本文メニュー・長文", true, false, 40],
+    ["Ctrl+A・折返し", false, true, 40],
+    ["本文メニュー・折返し", true, true, 40],
+    ["Ctrl+A・短文", false, false, 1],
+  ] as const)("Scenario: %sで全文選択しても表示位置を変えない", async (_name, menu, wrap, count) => {
+    const text = Array.from({ length: count }, (_, i) => `line ${i} ${"x".repeat(100)}`).join("\n");
+    const { editor, host, press } = mount(text);
+    editor.open(count, false);
+    editor.setWrap(wrap);
+    await settle();
+    const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
+    const dropdown = document.createElement("div");
+    dropdown.id = "dropdown";
+    document.body.appendChild(dropdown);
+    if (menu) {
+      scroll.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 0, clientY: 0 }));
+    }
+    scroll.scrollTop = count > 1 ? 207 : 0;
+    scroll.scrollLeft = wrap ? 0 : 35;
+    scroll.dispatchEvent(new Event("scroll"));
+    await settle();
+    const before = editor.captureViewState();
+    const top = scroll.scrollTop;
+    const left = scroll.scrollLeft;
+    if (menu) {
+      [...dropdown.querySelectorAll<HTMLElement>(".dd-label")]
+        .find((item) => item.textContent === "すべて選択")!.click();
+    } else {
+      press("a", { ctrlKey: true });
+    }
+    await settle();
+    expect(scroll.scrollTop).toBe(top);
+    expect(scroll.scrollLeft).toBe(left);
+    expect(editor.captureViewState()).toMatchObject({
+      topLine: before.topLine, wrapIntraLinePx: before.wrapIntraLinePx,
+      anchor: { line: 0, col: 0 }, caret: { line: count - 1, col: count > 1 ? 108 : 107 },
+    });
+    press("c", { ctrlKey: true });
+    await vi.waitFor(() => expect(writeClipboardText).toHaveBeenLastCalledWith(text));
+    dropdown.remove();
+  });
+});
+
 describe("Feature: エディタ全て検索", () => {
   it("Scenario: ゼロ幅一致の単発置換後は次の行へ進む", async () => {
     // Given: 2行の本文と行末に一致する正規表現

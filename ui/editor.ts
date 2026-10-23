@@ -1427,7 +1427,7 @@ export class VirtualEditor {
     this.onCursor(this.sel.caret.line + 1, this.sel.caret.col + 1);
   }
 
-  private moveTo(pos: Pos, extend: boolean, keepGoal = false, keepSecondary = false, updateReplacementSelection = true) {
+  private moveTo(pos: Pos, extend: boolean, keepGoal = false, keepSecondary = false, updateReplacementSelection = true, reveal = true) {
     if (!keepSecondary) {
       this.sel.secondary = [];
       this.sel.block = null;
@@ -1436,7 +1436,7 @@ export class VirtualEditor {
     this.sel.caret = pos;
     if (!extend) this.sel.anchor = pos;
     if (!keepGoal) this.sel.goalX = null;
-    this.ensureVisible();
+    if (reveal) this.ensureVisible();
     this.render();
     this.notifyCursor(updateReplacementSelection);
   }
@@ -1652,7 +1652,7 @@ export class VirtualEditor {
     const last = this.lineCount - 1;
     const len = await this.lineCache.lineLength(last);
     this.sel.anchor = { line: 0, col: 0 };
-    this.moveTo({ line: last, col: len }, true);
+    this.moveTo({ line: last, col: len }, true, false, false, true, false);
   }
 
   // ---- 編集 (backend へ委譲・順序保証) ----
