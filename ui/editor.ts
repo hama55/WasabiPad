@@ -1770,6 +1770,7 @@ export class VirtualEditor {
     keepCurrentUntilOpened = false,
     externalOutputPath?: string | null,
     isCurrentRequest?: () => boolean,
+    sourceSelection: Pick<EditorViewState, "anchor" | "caret"> = this.captureViewState(),
   ) {
     await this.liveViewers.cancelPendingOpen();
     if (isCurrentRequest && !isCurrentRequest()) return null;
@@ -1783,16 +1784,17 @@ export class VirtualEditor {
       }
       return opened;
     }
-    const [selectionStart, selectionEnd] = this.sel.norm();
+    const { anchor, caret } = sourceSelection;
+    const [selectionStart, selectionEnd] = cmp(anchor, caret) <= 0 ? [anchor, caret] : [caret, anchor];
     const selection = { start: selectionStart, end: selectionEnd };
     const previewRange = keepPreviewRange ? this.liveViewers.previewRange() : null;
-    const range = format === "image" ? null : keepPreviewRange ? previewRange : (this.sel.hasSel()
+    const range = format === "image" ? null : keepPreviewRange ? previewRange : (cmp(selectionStart, selectionEnd) !== 0
       ? { start: { ...selectionStart }, end: { ...selectionEnd } }
       : null);
     if (!keepCurrentUntilOpened) this.liveViewers.clear();
     const opened = await (keepCurrentUntilOpened
-      ? this.liveViewers.replace(format, range, selection, this.sel.caret, externalOutputPath, isCurrentRequest)
-      : this.liveViewers.open(format, range, selection, this.sel.caret, externalOutputPath, isCurrentRequest));
+      ? this.liveViewers.replace(format, range, selection, caret, externalOutputPath, isCurrentRequest)
+      : this.liveViewers.open(format, range, selection, caret, externalOutputPath, isCurrentRequest));
     this.render();
     return opened;
   }

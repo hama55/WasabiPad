@@ -164,15 +164,12 @@ describe("Feature: window layout integration", () => {
   // Feature: 選択行プレビューの明示的解除
   // Given: 選択行プレビューが表示されている
   // When: ×または同じ配置の切替ボタンで閉じる。幅不足では自動退避する
-  // Then: 明示的な閉操作だけ範囲を解除し、次回は同じ形式で全文を再生成する
-  it("Scenario: 明示閉と自動退避を区別して全文へ戻す経路を接続する", () => {
+  // Then: 明示的な閉操作だけ以前のプレビュー範囲を解除する
+  it("Scenario: 明示閉では範囲を解除し自動退避では保持する", () => {
     const close = mainSource.slice(mainSource.indexOf("function closePreview("), mainSource.indexOf("function selectPreviewPlacement("));
     expect(mainSource).toContain("onClose: closePreview");
     expect(close).toContain("editor.resetPreviewRange()");
     expect(close).toContain("previewDocument.rangeReset = true");
-    const openStart = mainSource.indexOf("function openPreview(");
-    const open = mainSource.slice(openStart, mainSource.indexOf("for (const button of previewOpenButtons)", openStart));
-    expect(open).toMatch(/previewDocument\?\.rangeReset[\s\S]*openPreviewFormat\(doc\.current, previewDocument\.path, previewDocument\.format, null, \{ keepPreviewRange: true, placement, externalAdapter: previewDocument\.externalAdapter \}\)/);
     const visibility = mainSource.slice(mainSource.indexOf("function applyPaneVisibility("), mainSource.indexOf("function updateSidebarVisibility("));
     expect(visibility).not.toMatch(/resetPreviewRange|closePreview\(/);
   });

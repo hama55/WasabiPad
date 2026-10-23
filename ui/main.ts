@@ -576,6 +576,7 @@ function openPreviewFormat(
   if (externalAdapter && previewReplacementLifecycle.isReplacing()
     && previewDocument?.externalAdapter?.id === externalAdapter.id
     && isCurrentPreviewDocument(previewDocument, tabs?.state.activeId ?? null, path)) return;
+  const sourceSelection = editor.captureViewState();
   if (options.placement || !previewAvailable || previewCollapsed) {
     selectPreviewPlacement(options.placement);
   }
@@ -740,6 +741,7 @@ function openPreviewFormat(
         true,
         generatedOutputPath,
         isCurrentRequest,
+        sourceSelection,
       );
       if (!isCurrentRequest()) {
         if (generatedOutputPath) {
@@ -1601,6 +1603,11 @@ function openPreview(placement?: PreviewPlacement) {
     if (!placement || placement === previewPlacement) { closePreview(); return; }
     selectPreviewPlacement(placement);
     updatePreviewVisibility();
+    return;
+  }
+  if (previewDocument && !previewDocument.externalAdapter
+    && (previewDocument.format === "markdown" || previewDocument.format === "csv" || previewDocument.format === "html")) {
+    openPreviewFormat(doc.current, previewDocument.path, previewDocument.format, null, { placement });
     return;
   }
   if (previewDocument?.rangeReset) {

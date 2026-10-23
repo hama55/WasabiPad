@@ -3399,7 +3399,7 @@ describe("Feature: VirtualEditor", () => {
   // Given: エディタの選択とCSVの選択範囲プレビューがある
   // When: 明示的に範囲モードを解除して同じ形式を再表示する
   // Then: 選択は保持し、全文表示になりPマークが消える。再度の明示的な選択行表示もできる
-  it.each(["csv", "markdown", "html"] as const)("Scenario: プレビューを閉じると選択を保持して全文に戻る (%s)", async (format) => {
+  it.each(["csv", "markdown", "html"] as const)("Scenario: 範囲解除後の形式切替は全文を維持し明示表示で再選択する (%s)", async (format) => {
     const openViewer = vi.fn<EditorPorts["openViewer"]>(async () => "inline-viewer");
     const { editor, host } = mount("one\ntwo\nthree", undefined, { openViewer });
     editor.open(3, false); await settle();
