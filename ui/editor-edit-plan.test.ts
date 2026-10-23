@@ -102,15 +102,15 @@ describe("Feature: editor edit plans", () => {
     expect(plan.nextCaret).toEqual({ line: 1, col: 2 });
   });
 
-  // Given: 選択範囲が行頭を含まない
+  // Given: 複数行の選択範囲が行頭を含まない
   // When: `selectedLineRange`と`planLineIndent`を評価する
-  // Then: 行単位indentの対象外になる
-  it("Scenario: 行頭を含まない選択ではTab用の行indent計画を作らない", () => {
+  // Then: 選択された両行をインデントする
+  it("Scenario: 行途中からの複数行選択でもTab用の行indent計画を作る", () => {
     const anchor = { line: 0, col: 1 };
     const caret = { line: 1, col: 1 };
 
     expect(selectedLineRange(anchor, caret)).toBeNull();
-    expect(planLineIndent(anchor, caret)).toBeNull();
+    expect(planLineIndent(anchor, caret)?.nextAnchor).toEqual({ line: 0, col: 2 });
   });
 
   // Given: anchorとcaretがともに`{line:1,col:2}`

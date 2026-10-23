@@ -586,8 +586,8 @@ describe("Feature: VirtualEditor", () => {
 
   // Given: 文書が「one\ntwo\nthree」、選択範囲が0行1列から1行1列までである
   // When: Tab を押す
-  // Then: 選択文字列がタブで置換され、行単位indentは発生しない
-  it("Scenario: 行頭を含まない選択中のTabは選択文字列を置換する", async () => {
+  // Then: 選択された各行の先頭へタブを挿入して本文を残す
+  it("Scenario: 行途中からの複数行選択もTabでインデントする", async () => {
     const { editor, doc, press } = mount("one\ntwo\nthree");
     editor.open(3, false);
     await settle();
@@ -602,8 +602,83 @@ describe("Feature: VirtualEditor", () => {
     press("Tab");
     await settle();
 
-    expect(doc.text()).toBe("o\two\nthree");
-    expect(doc.calls).not.toContain("editMany(2)");
+    expect(doc.text()).toBe("\tone\n\ttwo\nthree");
+    expect(editor.captureViewState().anchor).toEqual({ line: 0, col: 2 });
+    expect(editor.captureViewState().caret).toEqual({ line: 1, col: 2 });
+  });
+
+  // Given: 通常選択の部分・全体・逆向き・行頭終端と折り返し表示の例
+  // When: Tabを押し、その後Undoを一回実行する
+  // Then: 選択状態に応じて置換または行インデントし、Undoで元の本文に戻る
+  it.each([
+    ["行頭部分", "one", 0, 0, 0, 2, "\te", false],
+    ["行途中部分", "one", 0, 1, 0, 2, "o\te", false],
+    ["一行全体", "one", 0, 0, 0, 3, "\tone", false],
+    ["先頭空白と絵文字を含む全体", " 😀a", 0, 0, 0, 3, "\t 😀a", false],
+    ["逆向き全体", "one", 0, 3, 0, 0, "\tone", false],
+    ["選択なし", "one", 0, 1, 0, 1, "o\tne", false],
+    ["空行", "", 0, 0, 0, 0, "\t", false],
+    ["改行を含む一行全体", "one\ntwo", 0, 0, 1, 0, "\tone\ntwo", false],
+    ["次行頭終端", "one\ntwo\nthree", 0, 1, 2, 0, "\tone\n\ttwo\nthree", false],
+    ["逆向き複数行", "one\ntwo", 1, 1, 0, 1, "\tone\n\ttwo", false],
+    ["折り返し内の部分", "one two three", 0, 0, 0, 7, "\t three", true],
+  ] as const)("Scenario: Tabの選択境界 — %s", async (_name, initial, al, ac, cl, cc, expected, wrap) => {
+    const { editor, doc, press } = mount(initial);
+    editor.open(initial.split("\n").length, false);
+    editor.setWrap(wrap);
+    await settle();
+    await editor.restoreViewState({
+      anchor: { line: al, col: ac }, caret: { line: cl, col: cc },
+      topLine: 0, wrapIntraLinePx: 0, scrollLeft: 0,
+    });
+    press("Tab");
+    await settle();
+    expect(doc.text()).toBe(expected);
+    if (_name === "逆向き全体") {
+      expect(editor.captureViewState()).toMatchObject({
+        anchor: { line: 0, col: 4 }, caret: { line: 0, col: 0 },
+      });
+    }
+    press("z", { ctrlKey: true });
+    await settle();
+    expect(doc.text()).toBe(initial);
+  });
+
+  // Given: 選択なしで通常文字を入力した直後
+  // When: Tabを入力する
+  // Then: 文書編集APIへ履歴を結合しない指定で渡し、UndoはTabだけを戻す
+  it("Scenario: Tabを直前の文字入力のUndo単位に結合しない", async () => {
+    const { editor, doc, press, type } = mount("");
+    const edit = vi.spyOn(doc.client, "edit");
+    editor.open(1, false);
+    await settle();
+    type("a");
+    await settle();
+    press("Tab");
+    await settle();
+    expect(doc.text()).toBe("a\t");
+    expect(edit.mock.calls.at(-1)?.[4]).toBe(false);
+    press("z", { ctrlKey: true });
+    await settle();
+    expect(doc.text()).toBe("a");
+  });
+
+  // Given: 二行の同じ列に複数キャレットがある
+  // When: Tabを押す
+  // Then: 全キャレットへタブを挿入し、Undo一回で戻る
+  it("Scenario: Tabは複数キャレットの全位置へ挿入する", async () => {
+    const { editor, doc, press } = mount("one\ntwo");
+    editor.open(2, false);
+    await settle();
+    editor.goTo(0, 0);
+    press("ArrowDown", { altKey: true });
+    await settle();
+    press("Tab");
+    await settle();
+    expect(doc.text()).toBe("\tone\n\ttwo");
+    press("z", { ctrlKey: true });
+    await settle();
+    expect(doc.text()).toBe("one\ntwo");
   });
 
   // Given: 文書が「one\ntwo\nthree」、選択範囲が行頭を含む0行0列から1行1列までである
@@ -956,6 +1031,33 @@ describe("Feature: VirtualEditor", () => {
       expect(editor.captureViewState().caret).toEqual({ line: 0, col: 9 });
     } finally {
       hitTesting.restore();
+      layout.restore();
+    }
+  });
+
+  // Given: 行頭を含めて二行の本文全体を矩形選択している
+  // When: Tabを押す
+  // Then: 行インデントせず各行の選択文字をタブに置換し、Undo一回で戻る
+  it("Scenario: Tabは行頭からの矩形選択でも置換を優先する", async () => {
+    const { editor, doc, host, press } = mount("abcd\nABCD");
+    editor.open(2, false);
+    await settle();
+    const layout = installMouseLayout(host);
+    const points = mockBlockSelectionPoints(editor);
+    try {
+      layout.scroll.dispatchEvent(new MouseEvent("mousedown", {
+        bubbles: true, button: 0, clientX: 8, clientY: 10, altKey: true,
+      }));
+      window.dispatchEvent(new MouseEvent("mousemove", { clientX: 48, clientY: 30, altKey: true }));
+      window.dispatchEvent(new MouseEvent("mouseup", { clientX: 48, clientY: 30, altKey: true }));
+      press("Tab");
+      await settle();
+      expect(doc.text()).toBe("\t\n\t");
+      press("z", { ctrlKey: true });
+      await settle();
+      expect(doc.text()).toBe("abcd\nABCD");
+    } finally {
+      points.mockRestore();
       layout.restore();
     }
   });
