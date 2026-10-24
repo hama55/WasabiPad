@@ -54,7 +54,7 @@ export interface Settings {
   previewCacheDirectory: string | null;
   externalPreviewTemporaryDirectory: string | null;
   externalPreviewTemporaryDirectories: string[];
-  startupPath: string | null;
+  defaultSaveDirectory: string | null;
   registeredStrings: string[];
   registeredCommands: RegisteredCommand[];
   externalPreviewAdapters: ExternalPreviewAdapter[];
@@ -88,7 +88,7 @@ const DEFAULT_USER_SETTINGS: Pick<Settings, UserSettingKey> = {
   previewCacheDirectory: null,
   externalPreviewTemporaryDirectory: null,
   externalPreviewTemporaryDirectories: [],
-  startupPath: null,
+  defaultSaveDirectory: null,
   registeredStrings: [],
   registeredCommands: [],
   externalPreviewAdapters: [],
@@ -200,7 +200,7 @@ export function parseSettingsResult(text: string): SettingsParseResult {
       : DEFAULTS.previewCacheDirectory,
     externalPreviewTemporaryDirectory,
     externalPreviewTemporaryDirectories,
-    startupPath: typeof value.startupPath === "string" ? value.startupPath : null,
+    defaultSaveDirectory: typeof value.defaultSaveDirectory === "string" ? value.defaultSaveDirectory : null,
     registeredStrings: Array.isArray(value.registeredStrings)
       ? value.registeredStrings.filter((item): item is string => typeof item === "string" && item.length > 0)
       : [],

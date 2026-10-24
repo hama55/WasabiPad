@@ -2,7 +2,7 @@
 // 文書の状態は DocumentController、画面の状態は各部品が持つ。
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { desktopDir, join as joinPath, tempDir } from "@tauri-apps/api/path";
+import { desktopDir, documentDir, join as joinPath, tempDir } from "@tauri-apps/api/path";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { writeText as writeClipboardText } from "@tauri-apps/plugin-clipboard-manager";
 import * as api from "./api";
@@ -1349,7 +1349,7 @@ const workspaceHost = new WorkspaceHost(
       onOpenInNewWindow: (path) => launchNewWindow({ path }),
       onAddGroupToTabs: (items) => tabs.addLinks(items),
       revealInExplorer,
-      currentFile: () => addressbar.path || null,
+      currentFile: () => doc.current.draftSavePath !== undefined ? null : addressbar.path || null,
       onError: (error) => showError("お気に入りを移動できませんでした", error),
     },
   },
@@ -1509,7 +1509,6 @@ const folderActions = new FolderActions(doc, {
     runBackground("指定した形式で開けませんでした", () => navigateTreeEntry(relPath, openAs));
   },
   onAddFavorite: (path) => runBackground("お気に入りに追加できませんでした", () => favbar.addExternal(path)),
-  onSetStartupPath: (path) => setSetting("startupPath", path),
   onOpenPath: (path) => {
     runBackground("開けませんでした", () => openPathInTabs(tabs, path));
   },
@@ -1522,7 +1521,6 @@ const folderActions = new FolderActions(doc, {
     runExternalCommand: api.runExternalCommand,
     writeClipboardText,
   },
-  getStartupPath: () => getSetting("startupPath"),
   revealInExplorer,
   openInOtherApp,
   onClipboardChange: () => sidebar.refreshFileOperationState(),
@@ -1818,7 +1816,6 @@ try {
 } catch (error) {
   await reportBackgroundError("お気に入りを読み込めませんでした", error);
 }
-const startupPath = getSetting("startupPath");
 tabs = new TabManager($("tabs"), doc, {
   onChange: (state) => {
     if (!secondaryInstance) setSetting("openTabs", state);
@@ -1846,6 +1843,8 @@ tabs = new TabManager($("tabs"), doc, {
   onDetach: (request) => launchNewWindow(request),
   onOpenInNewWindow: (request) => launchNewWindow(request),
   defaultMemoDirectory: desktopDir,
+  defaultSaveDirectory: async () => getSetting("defaultSaveDirectory")?.trim() || await documentDir(),
+  nextMemoPath: api.nextMemoPath,
   revealInExplorer,
 }, {
   ...registeredCommandPorts,
@@ -1855,7 +1854,6 @@ try {
   await tabs.init(
     storedTabs,
     windowRequest.path,
-    secondaryInstance ? null : startupPath,
     windowRequest.goto ?? undefined,
     windowRequest.selectedRelPath ?? undefined,
     windowRequest.viewState ?? undefined,
@@ -1863,7 +1861,7 @@ try {
 } catch (error) {
   await reportBackgroundError("タブを復元できませんでした", error);
   try {
-    await tabs.init({ tabs: [], activeId: null }, null, null);
+    await tabs.init({ tabs: [], activeId: null }, null);
   } catch (fallbackError) {
     await reportBackgroundError("空の文書を開始できませんでした", fallbackError);
   }

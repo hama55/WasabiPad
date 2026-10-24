@@ -55,6 +55,28 @@ describe("Feature: pathSegments", () => {
 });
 
 describe("Feature: AddressBar breadcrumbs", () => {
+  // Scenario: 仮保存パスは開かず、編集した別パスは従来どおり開く
+  // Given: 未保存文書の仮保存パスを表示している
+  // When: 未変更Enter・末尾パンくず操作、その後別パスを入力してEnter
+  // Then: 未作成ファイルは開かず、入力された別パスだけ開く
+  it("Scenario: 仮保存パスを実ファイルとして開かない", () => {
+    const { host, ports } = addressBarFixture();
+    const addressbar = new AddressBar(host, ports);
+    addressbar.render("C:\\notes\\memo.txt", null, true);
+    addressbar.edit();
+    const input = host.querySelector<HTMLInputElement>("#addressbar")!;
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    host.querySelectorAll<HTMLButtonElement>(".addressbar-crumb")[2].click();
+    expect(ports.onOpen).not.toHaveBeenCalled();
+    input.value = "C:\\other";
+    input.dispatchEvent(new Event("blur"));
+    addressbar.edit();
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    expect(ports.onOpen).toHaveBeenCalledExactlyOnceWith("C:\\other");
+    addressbar.render("C:\\notes\\memo.txt");
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    expect(ports.onOpen).toHaveBeenLastCalledWith("C:\\notes\\memo.txt");
+  });
   // Given: `C:\\work\\memo.txt`を入力欄に入力したAddressBar
   // When: Enterを押す
   // Then: 入力欄のパスは現在タブ用の開く通知だけを送る

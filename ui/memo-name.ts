@@ -3,6 +3,9 @@ export interface MemoSpec {
   extension: string;
 }
 
+export const DEFAULT_MEMO_STEM = "memo";
+export const DEFAULT_MEMO_EXTENSION = "txt";
+
 export function fileNameOf(spec: MemoSpec): string {
   return `${spec.stem}${spec.extension ? `.${spec.extension}` : ""}`;
 }

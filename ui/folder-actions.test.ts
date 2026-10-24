@@ -66,7 +66,6 @@ function fixture(
     onOpenInNewTab: vi.fn(),
     onOpenInNewWindow: vi.fn(),
     onAddFavorite: vi.fn(),
-    onSetStartupPath: vi.fn(),
     onOpenPath: vi.fn(),
     onOpenAs: vi.fn(),
   } satisfies FolderActionsPorts;
@@ -77,7 +76,6 @@ function fixture(
       confirmMessage,
       promptFields,
       registeredCommandPorts,
-      getStartupPath: () => null,
       revealInExplorer,
       openInOtherApp,
       writeClipboardText,

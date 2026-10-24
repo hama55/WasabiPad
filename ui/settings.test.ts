@@ -20,6 +20,15 @@ import {
 } from "./settings";
 
 describe("Feature: settings", () => {
+  // Scenario: 旧起動パスを保存先へ流用しない
+  // Given: 旧起動パスと、新しい保存先の有無が異なる設定
+  // When: 設定を読み込む
+  // Then: 新しい保存先だけを復元し、旧起動パスは無視する
+  it("Scenario: 旧起動パスをデフォルト保存先へ移行しない", () => {
+    expect(parseSettings(JSON.stringify({ startupPath: "C:\\old.txt" })).defaultSaveDirectory).toBeNull();
+    expect(parseSettings(JSON.stringify({ defaultSaveDirectory: "C:\\notes" })).defaultSaveDirectory).toBe("C:\\notes");
+    expect(parseSettings(JSON.stringify({ defaultSaveDirectory: 42 })).defaultSaveDirectory).toBeNull();
+  });
   // Given: 貼り付け画像の幅指定と表示幅の上限が保存されている、または未設定・不正値である
   // When: 設定を保存して再読込する
   // Then: 有効な値を復元し、未設定・不正値は幅指定あり・900pxへ戻す
@@ -146,15 +155,15 @@ describe("Feature: settings", () => {
     expect(updateSettingMock).toHaveBeenCalledWith("externalPreviewAdapters", "[]");
   });
 
-  // Given: `indentSize:"4"`、`startupPath`、不正要素を含む`registeredStrings`を保存
+  // Given: `indentSize:"4"`、`defaultSaveDirectory`、不正要素を含む`registeredStrings`を保存
   // When: `parseSettings`を呼ぶ
-  // Then: `indentSize`は8、`startupPath`は維持、`registeredStrings`は`["ok"]`
+  // Then: `indentSize`は8、`defaultSaveDirectory`は維持、`registeredStrings`は`["ok"]`
   it("Scenario: 型の合わない項目だけ既定値へ落とす", () => {
     const settings = parseSettings(
-      JSON.stringify({ indentSize: "4", startupPath: "C:\\memo.txt", registeredStrings: ["ok", 42, ""] })
+      JSON.stringify({ indentSize: "4", defaultSaveDirectory: "C:\\memo.txt", registeredStrings: ["ok", 42, ""] })
     );
     expect(settings.indentSize).toBe(8);
-    expect(settings.startupPath).toBe("C:\\memo.txt");
+    expect(settings.defaultSaveDirectory).toBe("C:\\memo.txt");
     expect(settings.registeredStrings).toEqual(["ok"]);
   });
 
@@ -323,7 +332,7 @@ describe("Feature: settings", () => {
     expect(parseSettings(JSON.stringify({ previewCacheDirectory: [] })).previewCacheDirectory).toBeNull();
   });
 
-  // Given: フォント・起動パス・登録項目を変更し、再開タブも保存済み
+  // Given: フォント・デフォルト保存先・登録項目を変更し、再開タブも保存済み
   // When: アプリ設定だけを初期化する
   // Then: ユーザー設定は既定値へ戻り、再開タブは保持する
   it("Scenario: アプリ設定の初期化はセッション状態を保持する", async () => {
@@ -337,7 +346,7 @@ describe("Feature: settings", () => {
     setSetting("markdownLineHeight", 1.9);
     setSetting("markdownHeadingUnderlines", true);
     setSetting("sqlitePreviewRows", 250);
-    setSetting("startupPath", "C:\\work");
+    setSetting("defaultSaveDirectory", "C:\\work");
     setSetting("registeredStrings", ["snippet"]);
     await flushSettings();
     updateSettingMock.mockClear();
@@ -350,7 +359,7 @@ describe("Feature: settings", () => {
     expect(getSetting("markdownLineHeight")).toBe(1.65);
     expect(getSetting("markdownHeadingUnderlines")).toBe(false);
     expect(getSetting("sqlitePreviewRows")).toBe(100);
-    expect(getSetting("startupPath")).toBeNull();
+    expect(getSetting("defaultSaveDirectory")).toBeNull();
     expect(getSetting("registeredStrings")).toEqual([]);
     expect(getSetting("openTabs")).toEqual(openTabs);
     expect(updateSettingMock).not.toHaveBeenCalledWith("openTabs", expect.anything());
