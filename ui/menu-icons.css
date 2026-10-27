@@ -35,6 +35,20 @@
 .menu-icon-registered-string::before { content: "❝"; }
 .menu-icon-select-all::before { content: "☷"; }
 .menu-icon-text::before { content: "T"; }
+.menu-icon-pointer::before { content: "➚"; }
+.menu-icon-rectangle::before, .menu-icon-ellipse::before, .menu-icon-callout::before { content: ""; inset: 2px; border: 1.5px solid currentColor; }
+.menu-icon-ellipse::before { border-radius: 50%; }
+.menu-icon-callout::before { bottom: 5px; border-radius: 3px; }
+.menu-icon-callout::after { content: ""; left: 4px; bottom: 2px; width: 4px; height: 4px; border-left: 1.5px solid currentColor; transform: skewY(-40deg); }
+.menu-icon-line::before { content: ""; left: 1px; top: 7px; width: 14px; border-top: 1.5px solid currentColor; transform: rotate(-35deg); }
+.menu-icon-arrow::before { content: "↗"; font-size: 18px; }
+.menu-icon-front::before { content: "▣"; }
+.menu-icon-back::before { content: "▣"; }
+.menu-icon-front::after { content: "↑"; right: -3px; top: -3px; font-size: 10px; }
+.menu-icon-back::after { content: "↓"; right: -3px; bottom: -3px; font-size: 10px; }
+.menu-icon-fit::before { content: "⛶"; font-size: 18px; }
+.menu-icon-restore::before { content: "❐"; }
+.menu-icon-confirm::before { content: "✓"; }
 .menu-icon-csv::before { content: "▤"; }
 .menu-icon-markdown::before { content: "▧"; }
 .menu-icon-image::before { content: "▨"; }

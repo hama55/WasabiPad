@@ -472,8 +472,12 @@ describe("Feature: preview replacement lifecycle", () => {
     const obsoleteOpen = viewers.replace("html", null, selection, selection.end, obsoletePath);
     await delayedTextReadStarted;
 
+    const previousRenderId = latestRenderId();
     const currentReplacement = viewers.replace("html", null, selection, selection.end, newPath);
-    await vi.waitFor(() => expect(latestRenderId()).toEqual(expect.any(String)));
+    await vi.waitFor(() => {
+      expect(latestRenderId()).toEqual(expect.any(String));
+      expect(latestRenderId()).not.toBe(previousRenderId);
+    });
     notifyRendered(latestRenderId()!);
     expect(await currentReplacement).not.toBeNull();
     outputLifecycle.replaceDisplayedOutput(newPath);

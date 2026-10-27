@@ -151,31 +151,34 @@ export class EditorMutationController {
         await this.ports.renderAfterEdit();
       });
     }
-    return this.run(async () => {
-      const [start, end] = selection.norm();
-      let inserted = text;
-      let caret: Pos | null = null;
-      if (this.markdownEnabled()) {
-        const line = await this.ports.lineCache.line(start.line);
-        const candidate = autoCloseMarkdownFence(line, start.col, end.col, text, null);
-        if (candidate) {
-          const fenceState = await this.markdownFenceStateBefore(start.line);
-          const fence = autoCloseMarkdownFence(line, start.col, end.col, text, fenceState);
-          if (fence) {
-            inserted = fence.text;
-            caret = { line: start.line + fence.caretLineOffset, col: fence.caretCol };
-          }
+    return this.run(() => this.insertSelectionText(text));
+  }
+
+  private async insertSelectionText(text: string): Promise<void> {
+    const selection = this.ports.selection;
+    const [start, end] = selection.norm();
+    let inserted = text;
+    let caret: Pos | null = null;
+    if (this.markdownEnabled()) {
+      const line = await this.ports.lineCache.line(start.line);
+      const candidate = autoCloseMarkdownFence(line, start.col, end.col, text, null);
+      if (candidate) {
+        const fenceState = await this.markdownFenceStateBefore(start.line);
+        const fence = autoCloseMarkdownFence(line, start.col, end.col, text, fenceState);
+        if (fence) {
+          inserted = fence.text;
+          caret = { line: start.line + fence.caretLineOffset, col: fence.caretCol };
         }
       }
-      const coalesce = !selection.hasSel() && inserted.length === 1 && inserted !== "\n";
-      const result = await this.ports.doc.edit(start, end, selection.caret, inserted, coalesce);
-      this.ports.applyResult(
-        { caret: caret ?? result.caret, line_count: result.line_count },
-        start.line,
-        [{ start, end, text: inserted }],
-      );
-      await this.ports.renderAfterEdit();
-    });
+    }
+    const coalesce = !selection.hasSel() && inserted.length === 1 && inserted !== "\n" && inserted !== "\t";
+    const result = await this.ports.doc.edit(start, end, selection.caret, inserted, coalesce);
+    this.ports.applyResult(
+      { caret: caret ?? result.caret, line_count: result.line_count },
+      start.line,
+      [{ start, end, text: inserted }],
+    );
+    await this.ports.renderAfterEdit();
   }
 
   pasteBlock(rows: string[]): Promise<void> {
@@ -234,10 +237,14 @@ export class EditorMutationController {
 
   indentSelection(): Promise<void> {
     const selection = this.ports.selection;
-    const plan = planLineIndent(selection.anchor, selection.caret);
-    if (!plan) return this.insertText("\t");
+    if (selection.blockBounds() || selection.secondary.length) return this.insertText("\t");
     if (this.ports.isReadOnly()) return Promise.resolve();
     return this.run(async () => {
+      const lineLength = selection.anchor.line === selection.caret.line && selection.hasSel()
+        ? await this.ports.lineCache.lineLength(selection.caret.line)
+        : undefined;
+      const plan = planLineIndent(selection.anchor, selection.caret, lineLength);
+      if (!plan) return this.insertSelectionText("\t");
       const caret = { ...selection.caret };
       const result = await this.ports.doc.editMany(plan.edits, caret, plan.primaryIndex);
       this.ports.applyResult(

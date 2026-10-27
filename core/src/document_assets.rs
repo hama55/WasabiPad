@@ -78,20 +78,56 @@ pub(crate) fn next_archive_image_name(
     ))
 }
 
+pub(crate) fn next_diagram_image_name(names: impl Iterator<Item = String>) -> String {
+    let mut highest: Option<String> = None;
+    for name in names {
+        let Some(index) = name.strip_prefix("diagram-") else { continue };
+        if index.len() < 4 || !index.bytes().all(|byte| byte.is_ascii_digit()) { continue; }
+        // Unix-nanosecond IDs from the old writer occupy this range; keep them out of the new sequence.
+        if index.len() >= 19 && index[..19].parse::<u64>().is_ok_and(|timestamp| (1_000_000_000_000_000_000..2_000_000_000_000_000_000).contains(&timestamp)) { continue; }
+        let index = index.trim_start_matches('0');
+        let index = if index.is_empty() { "0" } else { index };
+        if highest.as_deref().is_none_or(|highest| index.len() > highest.len() || index.len() == highest.len() && index > highest) {
+            highest = Some(index.to_string());
+        }
+    }
+    let Some(highest) = highest else { return "diagram-0000".to_string(); };
+    let mut digits = highest.into_bytes();
+    for digit in digits.iter_mut().rev() {
+        if *digit < b'9' { *digit += 1; break; }
+        *digit = b'0';
+    }
+    if digits.iter().all(|digit| *digit == b'0') { digits.insert(0, b'1'); }
+    let mut next = String::from_utf8(digits).expect("decimal digits remain valid UTF-8");
+    if next.len() < 4 { next.insert_str(0, &"0".repeat(4 - next.len())); }
+    format!("diagram-{next}")
+}
+
 pub(crate) fn referenced_image_files(buf: &TextBuffer) -> HashSet<String> {
+    image_sources(buf).into_iter().filter_map(|src| image_name_from_src(&src)).collect()
+}
+
+pub(crate) fn image_sources(buf: &TextBuffer) -> HashSet<String> {
     let mut referenced = HashSet::new();
+    let mut pending = String::new();
     for line in 0..buf.line_count() {
-        let text = buf.line(line);
+        let value = buf.line(line);
+        let text = if pending.is_empty() { value.into_owned() } else { pending.push('\n'); pending.push_str(&value); std::mem::take(&mut pending) };
         let lower = text.to_ascii_lowercase();
         let mut from = 0;
         while let Some(relative) = lower[from..].find("<img") {
             let start = from + relative;
-            let Some(end_relative) = lower[start..].find('>') else {
+            if lower.as_bytes().get(start + 4).is_some_and(|byte| !byte.is_ascii_whitespace() && *byte != b'>' && *byte != b'/') {
+                from = start + 4;
+                continue;
+            }
+            let Some(end_relative) = image_tag_end(&text[start..]) else {
+                pending = text[start..].to_string();
                 break;
             };
             let end = start + end_relative;
             if let Some(src) = image_src_in_tag(&text[start..=end]) {
-                add_referenced_image(&mut referenced, &src);
+                referenced.insert(decode_image_src(&decode_image_entities(&src)));
             }
             from = end + 1;
         }
@@ -110,12 +146,127 @@ pub(crate) fn referenced_image_files(buf: &TextBuffer) -> HashSet<String> {
             };
             let source_end = source_start + source_end_relative;
             if let Some(src) = markdown_image_src(&text[source_start..source_end]) {
-                add_referenced_image(&mut referenced, src);
+                referenced.insert(decode_image_src(src));
             }
             from = source_end + 1;
         }
     }
     referenced
+}
+
+pub(crate) fn image_references_in_lines(buf: &TextBuffer, first: usize, last: usize) -> HashSet<String> {
+    let mut references = HashSet::new();
+    let mut first = first.min(buf.line_count().saturating_sub(1));
+    let mut last = last.min(buf.line_count().saturating_sub(1));
+    // The buffer index avoids scanning ordinary documents on each keystroke.
+    if let Some(opening) = buf.preceding_image_tag_line(first) {
+        let mut prefix = buf.line(opening).into_owned();
+        let start = prefix.to_ascii_lowercase().rfind("<img").unwrap();
+        let mut end_line = opening;
+        while end_line < first && image_tag_end(&prefix[start..]).is_none() {
+            end_line += 1; prefix.push('\n'); prefix.push_str(&buf.line(end_line));
+        }
+        if end_line == first { first = opening; }
+    }
+    let mut block = (first..=last).map(|line| buf.line(line)).collect::<Vec<_>>().join("\n");
+    if let Some(start) = block.to_ascii_lowercase().rfind("<img") {
+        while image_tag_end(&block[start..]).is_none() && last + 1 < buf.line_count() {
+            last += 1; block.push('\n'); block.push_str(&buf.line(last));
+        }
+    }
+    references.extend(referenced_image_files(&TextBuffer::from_text(&block)));
+    for line in first..=last {
+        let text = buf.line(line);
+        if !text.contains("image") && !text.contains("diagram-") { continue; }
+        references.extend(referenced_image_files(&TextBuffer::from_text(&text)));
+        // A source attribute may occupy its own line in a multiline img tag.
+        if let Some(src) = image_src_in_tag(&format!("<img {text}>")) { add_referenced_image(&mut references, &decode_image_src(&decode_image_entities(&src))); }
+    }
+    references.retain(|reference| generated_diagram_name(reference.rsplit('/').next().unwrap_or_default()));
+    references
+}
+
+fn image_tag_end(text: &str) -> Option<usize> {
+    let mut quote = None;
+    for (index, byte) in text.bytes().enumerate() {
+        if let Some(delimiter) = quote { if byte == delimiter { quote = None; } }
+        else if byte == b'\'' || byte == b'"' { quote = Some(byte); }
+        else if byte == b'>' { return Some(index); }
+    }
+    None
+}
+
+fn decode_image_entities(text: &str) -> String {
+    text.replace("&quot;", "\"").replace("&apos;", "'").replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+}
+
+fn decode_image_src(text: &str) -> String {
+    let mut bytes = Vec::with_capacity(text.len());
+    let mut input = text.as_bytes().iter().copied();
+    while let Some(byte) = input.next() {
+        if byte == b'%' {
+            let Some(high) = input.next().and_then(|b| (b as char).to_digit(16)) else { return text.to_string(); };
+            let Some(low) = input.next().and_then(|b| (b as char).to_digit(16)) else { return text.to_string(); };
+            bytes.push((high * 16 + low) as u8);
+        } else { bytes.push(byte); }
+    }
+    String::from_utf8(bytes).unwrap_or_else(|_| text.to_string())
+}
+
+pub(crate) fn diagram_backgrounds(svg: &str) -> io::Result<Option<Vec<String>>> {
+    let marker = "<metadata id=\"wasabipad-diagram\">";
+    let Some(start) = svg.find(marker) else { return Ok(None); };
+    let content = &svg[start + marker.len()..];
+    let end = content.find("</metadata>").ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "図の編集情報が不正です"))?;
+    let model: serde_json::Value = serde_json::from_str(&decode_image_entities(&content[..end]))
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let elements = model["elements"].as_array().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "図の編集情報が不正です"))?;
+    let mut result = Vec::new();
+    for element in elements {
+        if element["kind"].as_str() != Some("image") { continue; }
+        let src = element["src"].as_str().filter(|src| valid_image_path_part(src) && !src.contains(['/', '\\', ':', '%', '?', '#']) && !src.chars().any(char::is_control))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "図の背景参照が不正です"))?;
+        result.push(src.to_string());
+    }
+    Ok(Some(result))
+}
+
+pub(crate) fn generated_diagram_name(name: &str) -> bool {
+    name.starts_with("diagram-") && name.ends_with(".svg")
+        && name[8..name.len() - 4].chars().all(|c| c.is_ascii_digit() || c == '-')
+}
+
+pub(crate) fn expand_diagram_references(
+    references: &mut HashSet<String>,
+    current_prefix: &str,
+    read: impl Fn(&str) -> io::Result<Vec<u8>>,
+) -> io::Result<()> {
+    let roots: Vec<_> = references.iter().cloned().collect();
+    for reference in roots {
+        if !reference.to_ascii_lowercase().ends_with(".svg") { continue; }
+        let name = reference.rsplit('/').next().unwrap_or_default();
+        let mut actual = reference.clone();
+        let bytes = match read(&reference) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound && generated_diagram_name(name) => {
+                actual = format!("{current_prefix}/{name}");
+                match read(&actual) {
+                    Ok(bytes) => bytes,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                    Err(error) => return Err(error),
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        let svg = std::str::from_utf8(&bytes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        if let Some(backgrounds) = diagram_backgrounds(svg)? {
+            references.insert(actual.clone());
+            let prefix = actual.rsplit_once('/').map(|(p, _)| p).unwrap_or_default();
+            for src in backgrounds { references.insert(format!("{prefix}/{src}")); }
+        }
+    }
+    Ok(())
 }
 
 fn add_referenced_image(referenced: &mut HashSet<String>, src: &str) {
@@ -137,7 +288,7 @@ fn image_src_in_tag(tag: &str) -> Option<String> {
     let mut from = 0;
     while let Some(relative) = lower[from..].find("src") {
         let start = from + relative;
-        let before_ok = start == 0 || !lower.as_bytes()[start - 1].is_ascii_alphanumeric();
+        let before_ok = start == 0 || lower.as_bytes()[start - 1].is_ascii_whitespace();
         let after = start + 3;
         let after_ok = after == lower.len()
             || lower.as_bytes()[after].is_ascii_whitespace()
@@ -161,7 +312,7 @@ fn image_src_in_tag(tag: &str) -> Option<String> {
                     return Some(tag[begin..begin + end].to_string());
                 }
                 let value_end = tag[value..]
-                    .find(char::is_whitespace)
+                    .find(|character: char| character.is_whitespace() || character == '>')
                     .map(|end| value + end)
                     .unwrap_or(tag.len());
                 return Some(tag[value..value_end].trim_end_matches('/').to_string());
@@ -269,6 +420,25 @@ mod tests {
         assert_eq!(next, "pasted-image-3.png");
     }
 
+    // Feature: 編集図の連番
+    // Scenario: 欠番を使わず旧タイムスタンプ名を飛ばし最低4桁で採番する
+    // Given: 0000、0002、9999と旧タイムスタンプ名がある
+    // When: 次の編集図名を求める
+    // Then: 最大の連番の次を返し、4桁を超えても採番する
+    #[test]
+    fn diagram_names_follow_sequence_and_ignore_legacy_timestamps() {
+        let next = next_diagram_image_name([
+            "diagram-0000".to_string(),
+            "diagram-0002".to_string(),
+            "diagram-1791554197819879100".to_string(),
+            "diagram-17915541978198791001".to_string(),
+        ].into_iter());
+        assert_eq!(next, "diagram-0003");
+        assert_eq!(next_diagram_image_name(std::iter::empty()), "diagram-0000");
+        assert_eq!(next_diagram_image_name(["diagram-9999".to_string()].into_iter()), "diagram-10000");
+        assert_eq!(next_diagram_image_name(["diagram-0000".to_string(), "diagram-0002".to_string()].into_iter()), "diagram-0003");
+    }
+
     // Feature: アーカイブ内部画像名の同一性
     // Scenario: 大文字小文字だけ異なる画像名を別項目として扱う
     // Given: `Pasted-Image.png`だけが存在するアーカイブ内画像フォルダ
@@ -284,5 +454,29 @@ mod tests {
         .unwrap();
 
         assert_eq!(next, "pasted-image.png");
+    }
+    // Feature: 図履歴の参照取得
+    // Scenario: 大きな通常文書の > 入力で画像タグを探索しない
+    // Given: 100000 行の画像なし文書
+    // When: 最終行の参照を調べる
+    // Then: タグ位置は存在せず、対象行の参照も空
+    #[test]
+    fn ordinary_large_document_has_no_image_tag_scan() {
+        let buf = TextBuffer::from_text(&format!("{}>", "ordinary\n".repeat(100_000)));
+        assert_eq!(buf.preceding_image_tag_line(100_000), None);
+        assert!(image_references_in_lines(&buf, 99_999, 100_000).is_empty());
+    }
+
+    // Feature: HTML 図参照
+    // Given: 引用符なしおよび自己終了形式の src
+    // When: 本文と履歴の参照を抽出する
+    // Then: > や / をファイル名に含めない
+    #[test]
+    fn unquoted_diagram_source_preserves_asset_reference() {
+        for tag in ["<img src=image_markdown/memo/diagram-123.svg>", "<img src=image_markdown/memo/diagram-123.svg/>"] {
+            let buf = TextBuffer::from_text(tag);
+            assert!(referenced_image_files(&buf).contains("image_markdown/memo/diagram-123.svg"));
+            assert!(image_references_in_lines(&buf, 0, 0).contains("image_markdown/memo/diagram-123.svg"));
+        }
     }
 }

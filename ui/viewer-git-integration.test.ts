@@ -58,11 +58,11 @@ describe("Feature: Git標準プレビューの通知経路", () => {
   it("Scenario: 標準と外部の種別をタイトルに表示する", async () => {
     await open();
     expect(document.querySelector("#viewer-preview-kind")?.textContent).toBe("標準プレビュー");
-    send({ type: messages.EXTERNAL_STATUS_MESSAGE, status: { busy: true, message: "生成中" } });
+    send({ type: messages.PREVIEW_STATUS_MESSAGE, status: { busy: true, message: "生成中" } });
     expect(document.querySelector("#viewer-preview-kind")?.textContent).toBe("外部プレビュー");
-    send({ type: messages.EXTERNAL_STATUS_MESSAGE, status: { busy: false, message: "失敗" } });
+    send({ type: messages.PREVIEW_STATUS_MESSAGE, status: { busy: false, message: "失敗" } });
     expect(document.querySelector("#viewer-preview-kind")?.textContent).toBe("外部プレビュー");
-    send({ type: messages.EXTERNAL_STATUS_MESSAGE, status: null });
+    send({ type: messages.PREVIEW_STATUS_MESSAGE, status: null });
     expect(document.querySelector("#viewer-preview-kind")?.textContent).toBe("標準プレビュー");
   });
 

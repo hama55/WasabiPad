@@ -17,11 +17,11 @@ import { viewerFormatForPath } from "./viewer-formats";
 import { basename, joinWindowsRoot, relativePathWithinRoot } from "./path";
 import type { EditorViewState } from "./editor-view-state";
 import { reportErrorSafely } from "./report-error";
-import { fileNameOf, memoStemOf, type MemoSpec } from "./memo-name";
+import { DEFAULT_MEMO_STEM, DEFAULT_MEMO_EXTENSION, fileNameOf, memoStemOf, type MemoSpec } from "./memo-name";
 
 // 保存ダイアログのフィルタと新規メモの拡張子候補で共有する
 export const SAVE_EXTENSIONS = [
-  { name: "テキスト", extension: "txt" },
+  { name: "テキスト", extension: DEFAULT_MEMO_EXTENSION },
   { name: "Markdown", extension: "md" },
   { name: "ログ", extension: "log" },
 ] as const;
@@ -35,14 +35,12 @@ export interface MemoCreationSpec {
   format: SaveFormat;
 }
 
-const DEFAULT_MEMO_STEM = "memo";
-const DEFAULT_MEMO_EXTENSION = SAVE_EXTENSIONS[0].extension;
 const DEFAULT_MEMO_FORMAT: SaveFormat = { encoding: "utf8", eol: "crlf" };
 
 export type DocumentControllerApi = Pick<
   typeof api,
   "openPath" | "newDoc" | "selectEntry" | "reloadWithEncoding" | "saveFile" |
-  "nextMemoPath" | "listFolderEntries"
+  "nextMemoPath" | "listFolderEntries" | "pathIsDirectory"
 >;
 
 export interface DocumentControllerServices {
@@ -84,7 +82,7 @@ export interface DocumentFileStatusPort {
 }
 
 export interface DocumentAddressPort {
-  render: (path: string, folderRoot: string | null) => void;
+  render: (path: string, folderRoot: string | null, draft?: boolean) => void;
 }
 
 export interface DocumentSidebarPort {
@@ -326,7 +324,7 @@ export class DocumentController {
     }
   }
 
-  async newFile(confirm = true, draftDirectory: string | null = null) {
+  async newFile(confirm = true, draftDirectory: string | null = null, draftSavePath?: string | null) {
     if (confirm && !(await this.confirmDiscard())) return;
     const request = ++this.loadRequest;
     try {
@@ -337,12 +335,14 @@ export class DocumentController {
     }
     if (request !== this.loadRequest) return;
     this.session = initialSession();
+    if (draftSavePath !== undefined) this.session.draftSavePath = draftSavePath;
     this.draftDirectory = draftDirectory;
     this.view.statusbar.setFormat(this.session);
     this.view.fileStatusbar.setByteSize(null);
     this.view.fileStatusbar.setModifiedAt(null);
     this.view.statusbar.setLineCount(1);
-    this.renderAddressbar("");
+    if (draftSavePath) this.view.addressbar.render(draftSavePath, null, true);
+    else this.renderAddressbar("");
     this.view.setSidebar(false);
     this.view.sidebar.setWorkspaceSearch(null);
     this.view.editor.open(1, false);
@@ -380,7 +380,20 @@ export class DocumentController {
       }
       let defaultPath = this.session.savePath ?? "";
       let newMemoFormat: SaveFormat | undefined;
-      if (!defaultPath) {
+      if (!defaultPath && this.session.draftSavePath !== undefined) {
+        defaultPath = this.session.draftSavePath ?? `${DEFAULT_MEMO_STEM}.${DEFAULT_MEMO_EXTENSION}`;
+        newMemoFormat = DEFAULT_MEMO_FORMAT;
+        let directoryAvailable = false;
+        try {
+          directoryAvailable = !!this.draftDirectory && await this.services.api.pathIsDirectory(this.draftDirectory);
+        } catch {
+          // 保存先を調べられなくても、本文を保持して別の保存先を選べる。
+        }
+        if (!directoryAvailable) {
+          await this.reportError("デフォルトの保存フォルダを使用できません", "保存ダイアログで別の保存先を選んでください。");
+          defaultPath = basename(defaultPath);
+        }
+      } else if (!defaultPath) {
         const spec = await this.promptNewMemoSave();
         if (!spec) return false;
         defaultPath = fileNameOf(spec.memo);
@@ -456,6 +469,7 @@ export class DocumentController {
     this.session.encoding = format.encoding;
     this.session.eol = format.eol;
     this.session.savePath = path;
+    delete this.session.draftSavePath;
     this.session.displayPath = path;
     this.session.sourceEncoding = this.session.encoding;
     this.session.sourceEol = this.session.eol;

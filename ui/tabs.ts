@@ -6,6 +6,7 @@ import {
   basename,
   comparableDocumentPath,
   comparablePath,
+  joinWindowsRoot,
   rebaseDocumentPath,
   rebaseWindowsPath,
   type PathRebase,
@@ -23,13 +24,14 @@ import {
 export { isStoredTab, isStoredTabs, type StoredTab, type StoredTabs } from "./stored-tabs";
 import type { StoredTab, StoredTabs } from "./stored-tabs";
 import type { SearchHighlightQuery } from "./workspace-search-options";
+import { DEFAULT_MEMO_STEM, DEFAULT_MEMO_EXTENSION, fileNameOf } from "./memo-name";
 
 export interface TabDocumentPort {
   readonly current: Readonly<DocumentSession>;
   confirmDiscard: (onProceed?: () => void | Promise<void>) => Promise<boolean>;
   openPath: (path: string, confirm?: boolean, openAs?: OpenAs) => Promise<boolean>;
   selectEntry: (relPath: string, openAs?: OpenAs) => Promise<boolean>;
-  newFile: (confirm?: boolean, draftDirectory?: string | null) => Promise<void>;
+  newFile: (confirm?: boolean, draftDirectory?: string | null, draftSavePath?: string | null) => Promise<void>;
   goTo: (position: Pos) => void;
   captureViewState: () => EditorViewState;
   restoreViewState: (state: EditorViewState) => Promise<void>;
@@ -57,6 +59,8 @@ interface TabPorts {
   onDetach?: (request: WindowRequest) => Promise<boolean>;
   onOpenInNewWindow?: (request: WindowRequest) => Promise<boolean>;
   defaultMemoDirectory?: () => Promise<string>;
+  defaultSaveDirectory?: () => Promise<string>;
+  nextMemoPath?: (directory: string, stem: string, extension: string) => Promise<string>;
   onHistoryChange?: (state: NavigationState) => void;
   revealInExplorer?: (path: string, isDir: boolean) => void | Promise<unknown>;
 }
@@ -101,6 +105,7 @@ export class TabManager {
   }>();
   private closedTabs: { tab: StoredTab; index: number; replacementId?: string }[] = [];
   private view: TabBarView;
+  private newMemoPending = Promise.resolve();
 
   constructor(
     host: HTMLElement,
@@ -111,7 +116,7 @@ export class TabManager {
     this.view = new TabBarView(host, {
       onActivate: (id) => this.activate(id),
       onClose: (id) => this.close(id),
-      onNewBlank: () => this.newBlank(),
+      onNewBlank: () => this.newDefaultMemo(),
       onKeepOnly: (id) => this.keepOnly(id),
       onCloseRight: (id) => this.closeRight(id),
       onCloseSaved: (id) => this.closeSaved(id),
@@ -139,7 +144,6 @@ export class TabManager {
   async init(
     stored: StoredTabs,
     initialPath: string | null,
-    startupPath: string | null,
     initialGoto?: Pos,
     initialSelectedRelPath?: string,
     initialViewState?: EditorViewState,
@@ -149,13 +153,18 @@ export class TabManager {
     this.closedTabs = [];
     this.workspaceStates.clear();
     this.findHighlightStates.clear();
-    const startupTarget = initialPath ?? startupPath;
-    const initialTab = stored.tabs.length || startupTarget
-      ? this.link(startupTarget, initialPath ? initialGoto : undefined)
+    const initialTab = stored.tabs.length || initialPath
+      ? this.link(initialPath, initialPath ? initialGoto : undefined)
       : await this.blankTab(null);
     initialTab.selectedRelPath = initialSelectedRelPath;
     initialTab.viewState = initialViewState;
     this.tabs = stored.tabs.length ? stored.tabs.map((tab) => ({ ...tab })) : [initialTab];
+    const drafts = this.tabs.filter((tab) => tab.kind === "blank" && tab.draftSavePath !== undefined);
+    for (const tab of drafts) tab.draftSavePath = null;
+    for (const tab of drafts) {
+      tab.draftDirectory ??= await this.resolveDefaultSaveDirectory() ?? undefined;
+      tab.draftSavePath = await this.nextDraftSavePath(tab.draftDirectory ?? null);
+    }
     const incoming = initialPath && stored.tabs.length ? this.link(initialPath, initialGoto) : null;
     if (incoming) {
       incoming.selectedRelPath = initialSelectedRelPath;
@@ -179,7 +188,10 @@ export class TabManager {
     tab.path = session.folderRoot ?? session.savePath ?? (session.readOnly ? session.displayPath : null);
     tab.kind = session.folderRoot ? "folder" : tab.path ? "file" : "blank";
     tab.label = tab.kind === "blank" ? "無題" : basename(tab.path!);
-    if (tab.kind !== "blank") delete tab.draftDirectory;
+    if (tab.kind !== "blank") {
+      delete tab.draftDirectory;
+      delete tab.draftSavePath;
+    }
     tab.selectedRelPath = session.selectedRelPath || undefined;
     if (tab.kind !== "folder" || !tab.selectedRelPath) delete tab.selectedLine;
     // セッション変更通知はタブ切替処理の途中でも届く。ここでDOMを作り直すと、
@@ -242,6 +254,50 @@ export class TabManager {
 
   async newBlank() {
     await this.addAndActivate(await this.blankTab());
+  }
+
+  private queueNewMemo<T>(operation: () => Promise<T>): Promise<T> {
+    const run = this.newMemoPending.then(operation);
+    this.newMemoPending = run.then(() => {}, () => {});
+    return run;
+  }
+
+  private newDefaultMemo(): Promise<void> {
+    return this.queueNewMemo(async () => {
+      const directory = await this.resolveDefaultSaveDirectory();
+      const tab = this.link(null, undefined, directory);
+      tab.draftSavePath = await this.nextDraftSavePath(directory);
+      await this.addAndActivate(tab);
+    });
+  }
+
+  private async resolveDefaultSaveDirectory(): Promise<string | null> {
+    try {
+      return await this.ports.defaultSaveDirectory?.() ?? null;
+    } catch {
+      // 保存先を取得できなくても入力を開始し、保存時に別の場所を選べる。
+      return null;
+    }
+  }
+
+  private async nextDraftSavePath(directory: string | null): Promise<string | null> {
+    if (!directory || !this.ports.nextMemoPath) return null;
+    try {
+      const reserved = new Set(this.tabs.flatMap((tab) => tab.draftSavePath ? [comparablePath(tab.draftSavePath)] : []));
+      const first = await this.ports.nextMemoPath(directory, DEFAULT_MEMO_STEM, DEFAULT_MEMO_EXTENSION);
+      if (!reserved.has(comparablePath(first))) return first;
+      const firstNumber = Number(basename(first).slice(DEFAULT_MEMO_STEM.length, -DEFAULT_MEMO_EXTENSION.length - 1));
+      for (let number = firstNumber + 1; ; number++) {
+        const stem = `${DEFAULT_MEMO_STEM}${number}`;
+        const candidate = joinWindowsRoot(directory.replace(/[\\/]+$/, ""), fileNameOf({ stem, extension: DEFAULT_MEMO_EXTENSION }));
+        if (reserved.has(comparablePath(candidate))) continue;
+        // 番号付きstemの衝突ではmemo11等が返るため、要求した候補そのものが空いているかを調べる。
+        const available = await this.ports.nextMemoPath(directory, stem, DEFAULT_MEMO_EXTENSION);
+        if (comparablePath(available) === comparablePath(candidate)) return candidate;
+      }
+    } catch {
+      return null;
+    }
   }
 
   async open(path: string, goto?: Pos): Promise<boolean> {
@@ -633,7 +689,11 @@ export class TabManager {
     }
   }
 
-  async reopenLastClosed(): Promise<boolean> {
+  reopenLastClosed(): Promise<boolean> {
+    return this.queueNewMemo(() => this.restoreLastClosed());
+  }
+
+  private async restoreLastClosed(): Promise<boolean> {
     const closed = this.closedTabs.at(-1);
     if (!closed || this.navigationBusy || this.transitionTarget) return false;
     this.transitionTarget = closed.tab.id;
@@ -647,6 +707,10 @@ export class TabManager {
             viewState: closed.tab.viewState ? cloneEditorViewState(closed.tab.viewState) : undefined,
           };
           delete tab.fileTreeWidth;
+          if (tab.draftSavePath && this.tabs.some((other) => other.draftSavePath
+            && comparablePath(other.draftSavePath) === comparablePath(tab.draftSavePath!))) {
+            tab.draftSavePath = await this.nextDraftSavePath(tab.draftDirectory ?? null);
+          }
           const replacementIndex = closed.replacementId
             ? this.tabs.findIndex((candidate) => candidate.id === closed.replacementId && candidate.kind === "blank")
             : -1;
@@ -818,7 +882,11 @@ export class TabManager {
           await this.doc.restoreViewState(tab.viewState);
         }
       } else {
-        await this.doc.newFile(false, tab.draftDirectory ?? null);
+        if (tab.draftSavePath !== undefined) {
+          await this.doc.newFile(false, tab.draftDirectory ?? null, tab.draftSavePath);
+        } else {
+          await this.doc.newFile(false, tab.draftDirectory ?? null);
+        }
         if (tab.viewState) await this.doc.restoreViewState(tab.viewState);
       }
       const findHighlightState = this.findHighlightStates.get(tab.id);

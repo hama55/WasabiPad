@@ -20,6 +20,42 @@ import {
 } from "./settings";
 
 describe("Feature: settings", () => {
+  // Scenario: 旧起動パスを保存先へ流用しない
+  // Given: 旧起動パスと、新しい保存先の有無が異なる設定
+  // When: 設定を読み込む
+  // Then: 新しい保存先だけを復元し、旧起動パスは無視する
+  it("Scenario: 旧起動パスをデフォルト保存先へ移行しない", () => {
+    expect(parseSettings(JSON.stringify({ startupPath: "C:\\old.txt" })).defaultSaveDirectory).toBeNull();
+    expect(parseSettings(JSON.stringify({ defaultSaveDirectory: "C:\\notes" })).defaultSaveDirectory).toBe("C:\\notes");
+    expect(parseSettings(JSON.stringify({ defaultSaveDirectory: 42 })).defaultSaveDirectory).toBeNull();
+  });
+  // Given: 貼り付け画像の幅指定と表示幅の上限が保存されている、または未設定・不正値である
+  // When: 設定を保存して再読込する
+  // Then: 有効な値を復元し、未設定・不正値は幅指定あり・900pxへ戻す
+  it("Scenario: 貼り付け画像の表示幅を保存し検証する", async () => {
+    expect(parseSettings("{}").pastedImageWidthEnabled).toBe(true);
+    expect(parseSettings("{}").pastedImageWidth).toBe(900);
+    setSetting("pastedImageWidthEnabled", false);
+    setSetting("pastedImageWidth", 1200);
+    await flushSettings();
+    expect(updateSettingMock).toHaveBeenCalledWith("pastedImageWidthEnabled", "false");
+    expect(updateSettingMock).toHaveBeenCalledWith("pastedImageWidth", "1200");
+    loadSettingsMock.mockResolvedValue(JSON.stringify({ pastedImageWidthEnabled: false, pastedImageWidth: 1200 }));
+    await initSettings();
+    expect(getSetting("pastedImageWidthEnabled")).toBe(false);
+    expect(getSetting("pastedImageWidth")).toBe(1200);
+    for (const width of [1, 900, 10000]) {
+      expect(parseSettings(JSON.stringify({ pastedImageWidth: width })).pastedImageWidth).toBe(width);
+    }
+    for (const width of [0, -1, 1.5, 10001, "900", null]) {
+      expect(parseSettings(JSON.stringify({ pastedImageWidth: width, pastedImageWidthEnabled: "false" })).pastedImageWidth).toBe(900);
+      expect(parseSettings(JSON.stringify({ pastedImageWidthEnabled: "false" })).pastedImageWidthEnabled).toBe(true);
+    }
+    resetUserSettings();
+    expect(getSetting("pastedImageWidthEnabled")).toBe(true);
+    expect(getSetting("pastedImageWidth")).toBe(900);
+    await flushSettings();
+  });
   // Given: Gitプレビューの分割比率が保存されている
   // When: 保存・再読込し、境界値と不正値を読み込む
   // Then: 15〜85%を復元し、不正値と未設定は40%へ戻る
@@ -119,15 +155,15 @@ describe("Feature: settings", () => {
     expect(updateSettingMock).toHaveBeenCalledWith("externalPreviewAdapters", "[]");
   });
 
-  // Given: `indentSize:"4"`、`startupPath`、不正要素を含む`registeredStrings`を保存
+  // Given: `indentSize:"4"`、`defaultSaveDirectory`、不正要素を含む`registeredStrings`を保存
   // When: `parseSettings`を呼ぶ
-  // Then: `indentSize`は8、`startupPath`は維持、`registeredStrings`は`["ok"]`
+  // Then: `indentSize`は8、`defaultSaveDirectory`は維持、`registeredStrings`は`["ok"]`
   it("Scenario: 型の合わない項目だけ既定値へ落とす", () => {
     const settings = parseSettings(
-      JSON.stringify({ indentSize: "4", startupPath: "C:\\memo.txt", registeredStrings: ["ok", 42, ""] })
+      JSON.stringify({ indentSize: "4", defaultSaveDirectory: "C:\\memo.txt", registeredStrings: ["ok", 42, ""] })
     );
     expect(settings.indentSize).toBe(8);
-    expect(settings.startupPath).toBe("C:\\memo.txt");
+    expect(settings.defaultSaveDirectory).toBe("C:\\memo.txt");
     expect(settings.registeredStrings).toEqual(["ok"]);
   });
 
@@ -296,7 +332,7 @@ describe("Feature: settings", () => {
     expect(parseSettings(JSON.stringify({ previewCacheDirectory: [] })).previewCacheDirectory).toBeNull();
   });
 
-  // Given: フォント・起動パス・登録項目を変更し、再開タブも保存済み
+  // Given: フォント・デフォルト保存先・登録項目を変更し、再開タブも保存済み
   // When: アプリ設定だけを初期化する
   // Then: ユーザー設定は既定値へ戻り、再開タブは保持する
   it("Scenario: アプリ設定の初期化はセッション状態を保持する", async () => {
@@ -310,7 +346,7 @@ describe("Feature: settings", () => {
     setSetting("markdownLineHeight", 1.9);
     setSetting("markdownHeadingUnderlines", true);
     setSetting("sqlitePreviewRows", 250);
-    setSetting("startupPath", "C:\\work");
+    setSetting("defaultSaveDirectory", "C:\\work");
     setSetting("registeredStrings", ["snippet"]);
     await flushSettings();
     updateSettingMock.mockClear();
@@ -323,7 +359,7 @@ describe("Feature: settings", () => {
     expect(getSetting("markdownLineHeight")).toBe(1.65);
     expect(getSetting("markdownHeadingUnderlines")).toBe(false);
     expect(getSetting("sqlitePreviewRows")).toBe(100);
-    expect(getSetting("startupPath")).toBeNull();
+    expect(getSetting("defaultSaveDirectory")).toBeNull();
     expect(getSetting("registeredStrings")).toEqual([]);
     expect(getSetting("openTabs")).toEqual(openTabs);
     expect(updateSettingMock).not.toHaveBeenCalledWith("openTabs", expect.anything());
@@ -504,4 +540,29 @@ describe("Feature: settings", () => {
     await flushing;
     expect(updateSettingMock).toHaveBeenCalledTimes(2);
   });
+
+  // Given: 共通名の外部表示設定が未設定か、保存済みの真偽値がある
+  // When: 保存・再読込し、不正なkeyや真偽値以外を読み込む
+  // Then: 形式やadapterに依存せず有効な真偽値だけを復元する
+  it("Scenario: 外部プレビューの真偽値表示設定を保存し検証する", async () => {
+    const key = "wasabipad.music-preview.chord-keyboard-diagrams";
+    expect(parseSettings("{}").externalPreviewPreferences).toEqual({});
+    setSetting("externalPreviewPreferences", { [key]: true });
+    await flushSettings();
+    expect(updateSettingMock).toHaveBeenCalledWith("externalPreviewPreferences", JSON.stringify({ [key]: true }));
+    loadSettingsMock.mockResolvedValue(JSON.stringify({ externalPreviewPreferences: { [key]: false } }));
+    await initSettings();
+    expect(getSetting("externalPreviewPreferences")).toEqual({ [key]: false });
+    const longest = "x".repeat(128);
+    expect(parseSettings(JSON.stringify({ externalPreviewPreferences: {
+      [key]: false, [longest]: true, "Bad Key": true, other: "true", "": true, ["x".repeat(129)]: true,
+    } })).externalPreviewPreferences).toEqual({ [key]: false, [longest]: true });
+    for (const value of [null, [], true, "true"]) {
+      expect(parseSettings(JSON.stringify({ externalPreviewPreferences: value })).externalPreviewPreferences).toEqual({});
+    }
+    resetUserSettings();
+    expect(getSetting("externalPreviewPreferences")).toEqual({});
+    await flushSettings();
+  });
+
 });

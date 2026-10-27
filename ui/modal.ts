@@ -7,7 +7,7 @@
 
 export interface ModalPorts {
   // Escape と背景クリック。どちらも同じ「やめる」として扱う
-  onCancel: () => void;
+  onCancel: (event?: KeyboardEvent | MouseEvent) => void;
   // Enter。無い画面では素通しする (入力欄が自前で Enter を使うため)
   onAccept?: () => void;
 }
@@ -29,16 +29,17 @@ export function openModal(ports: ModalPorts, boxClass = ""): Modal {
     window.removeEventListener("keydown", onKey, true);
   };
   const onKey = (e: KeyboardEvent) => {
+    if (e.isComposing || e.keyCode === 229) return;
     if (e.key === "Escape") {
       e.preventDefault();
-      ports.onCancel();
+      ports.onCancel(e);
     } else if (e.key === "Enter" && ports.onAccept) {
       e.preventDefault();
       ports.onAccept();
     }
   };
   overlay.addEventListener("mousedown", (e) => {
-    if (e.target === overlay) ports.onCancel();
+    if (e.target === overlay) ports.onCancel(e);
   });
   window.addEventListener("keydown", onKey, true);
   document.body.append(overlay);

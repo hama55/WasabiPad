@@ -300,6 +300,30 @@ fn save_pasted_image(bytes: Vec<u8>, mime_type: String, state: State) -> Result<
 }
 
 #[tauri::command]
+fn save_diagram_image(bytes: Vec<u8>, mime_type: String, shared: bool, source_path: String, archive_entry: Option<String>, state: State) -> Result<String, String> {
+    document::save_diagram_image(bytes, mime_type, shared, source_path, archive_entry, state)
+}
+
+#[tauri::command]
+fn finish_diagram_assets(source_path: String, archive_entry: Option<String>, state: State) -> Result<(), String> {
+    document::finish_diagram_assets(source_path, archive_entry, state)
+}
+
+#[tauri::command]
+async fn read_diagram_asset(path: String, source_path: String, app: AppHandle) -> Result<tauri::ipc::Response, String> {
+    let bytes = tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<DocState>>();
+        document::read_diagram_asset(path, source_path, state)
+    }).await.map_err(|error| error.to_string())??;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+#[tauri::command]
+fn apply_diagram_edit(start: PosC, end: PosC, caret_before: PosC, text: String, expected: String, expected_line: String, source_path: String, archive_entry: Option<String>, state: State) -> Result<EditResult, String> {
+    document::apply_diagram_edit(start, end, caret_before, text, expected, expected_line, source_path, archive_entry, state)
+}
+
+#[tauri::command]
 fn cleanup_unused_images(path: String, state: State) -> Result<(), String> {
     document::cleanup_unused_images(path, state)
 }
@@ -785,6 +809,7 @@ async fn read_sqlite_preview(
     offset: usize,
     limit: usize,
     include_metadata: bool,
+    query_sql: Option<String>,
 ) -> Result<SqlitePreview, String> {
     tauri::async_runtime::spawn_blocking(move || {
         read_sqlite_preview_core(
@@ -793,6 +818,7 @@ async fn read_sqlite_preview(
             offset,
             limit,
             include_metadata,
+            query_sql.as_deref(),
         )
     })
     .await
@@ -905,6 +931,10 @@ fn main() {
             delete_entry_without_backup,
             restore_deleted_entry,
             save_pasted_image,
+            save_diagram_image,
+            finish_diagram_assets,
+            read_diagram_asset,
+            apply_diagram_edit,
             cleanup_unused_images,
             read_archive_asset,
             read_file_asset,

@@ -18,7 +18,7 @@ ab：単語単位で検索する。例：cat は scatter の一部には一致�
 
 置換
 置換：検索で見つけた一致を選択中なら置換して次へ進む。それ以外は次の一致を探す。
-画面内：縦方向に一部でも見えている行全体を置換する。横に隠れた文字や折り返し元の行全体も対象。画面外の行は含まない。
+選択のみ：本文で選んだ範囲に完全に収まる一致だけ一括置換する。検索・置換欄へ移動しても対象範囲を保持する。本文で選び直すと対象範囲を更新する。選択がなければ使えない。
 全置換：現在の文書全体を置換する。
 置換欄が空なら一致文字列を削除する。検索欄が空なら置換しない。
 
@@ -47,7 +47,7 @@ export class FindBar {
   private onFind: (pat: string, forward: boolean, matchCase: boolean, useRegex: boolean, wholeWord: boolean) => Promise<boolean>;
   private onReplaceAll: (pat: string, rep: string, matchCase: boolean, useRegex: boolean, wholeWord: boolean) => Promise<number>;
   private onReplaceNext: (pat: string, rep: string, matchCase: boolean, useRegex: boolean, wholeWord: boolean) => Promise<boolean>;
-  private onReplaceVisible: (pat: string, rep: string, matchCase: boolean, useRegex: boolean, wholeWord: boolean) => Promise<number>;
+  private onReplaceSelection: (pat: string, rep: string, matchCase: boolean, useRegex: boolean, wholeWord: boolean) => Promise<number>;
   private onDone: () => void;
   private onError: (message: string, error: unknown) => void | Promise<void>;
   private onInitialQuery?: (pat: string, matchCase: boolean, useRegex: boolean, wholeWord: boolean) => void;
@@ -58,7 +58,7 @@ export class FindBar {
     private host: HTMLElement,
     onFind: FindBar["onFind"],
     onReplaceAll: FindBar["onReplaceAll"],
-    onReplaceVisible: FindBar["onReplaceVisible"],
+    onReplaceSelection: FindBar["onReplaceSelection"],
     onReplaceNext: FindBar["onReplaceNext"],
     onDone: () => void,
     onError: (message: string, error: unknown) => void | Promise<void>,
@@ -71,7 +71,7 @@ export class FindBar {
     this.onDone = onDone;
     this.onError = onError;
     this.onInitialQuery = onInitialQuery;
-    this.onReplaceVisible = onReplaceVisible;
+    this.onReplaceSelection = onReplaceSelection;
 
     this.root = document.createElement("div");
     this.root.className = "ve-find";
@@ -90,7 +90,7 @@ export class FindBar {
         <button class="ve-find-help" type="button" title="検索・置換のヘルプ" aria-label="検索・置換のヘルプ">?</button>
         <span class="ve-find-status"></span>
         <input class="ve-rep-in" placeholder="置換" aria-label="置換" spellcheck="false" />
-        <div class="ve-rep-actions"><button class="ve-rep-next">置換</button><button class="ve-rep-visible">画面内</button><button class="ve-rep-all">全置換</button></div>
+        <div class="ve-rep-actions"><button class="ve-rep-next">置換</button><button class="ve-rep-selection" disabled>選択のみ</button><button class="ve-rep-all">全置換</button></div>
         <button class="ve-find-close" title="閉じる (Esc)">✕</button>
       </div>`;
     host.appendChild(this.root);
@@ -135,7 +135,7 @@ export class FindBar {
     this.root.querySelector(".ve-find-all")!.addEventListener("click", () => this.run(async () => { await this.onFindAll?.(this.query); }));
     this.root.querySelector(".ve-find-close")!.addEventListener("click", () => this.close());
     this.root.querySelector(".ve-rep-all")!.addEventListener("click", () => this.run(() => this.replaceAll()));
-    this.root.querySelector(".ve-rep-visible")!.addEventListener("click", () => this.run(() => this.replaceVisible()));
+    this.root.querySelector(".ve-rep-selection")!.addEventListener("click", () => this.run(() => this.replaceSelection()));
     this.root.querySelector(".ve-rep-next")!.addEventListener("click", () => this.run(() => this.replaceNext()));
   }
 
@@ -160,6 +160,10 @@ export class FindBar {
   setProgress(text: string) {
     this.status.textContent = text;
     this.status.title = text;
+  }
+
+  setSelectionAvailable(available: boolean) {
+    this.root.querySelector<HTMLButtonElement>(".ve-rep-selection")!.disabled = !available;
   }
 
   private get options(): [boolean, boolean, boolean] {
@@ -205,10 +209,10 @@ export class FindBar {
     this.status.textContent = `${n}件置換`;
   }
 
-  private async replaceVisible() {
+  private async replaceSelection() {
     const pat = this.findIn.value;
     if (!pat) return;
-    const n = await this.onReplaceVisible(pat, this.repIn.value, ...this.options);
+    const n = await this.onReplaceSelection(pat, this.repIn.value, ...this.options);
     this.status.textContent = `${n}件置換`;
   }
 

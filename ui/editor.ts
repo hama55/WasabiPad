@@ -1,3 +1,4 @@
+import { sourceTextHash, sourcePositionAtOffset, type ExternalSourceNavigator } from "./external-source-navigation";
 import * as api from "./api";
 import type { Pos } from "./api";
 import { readText as readClipboardText, writeText as writeClipboardText } from "@tauri-apps/plugin-clipboard-manager";
@@ -30,7 +31,7 @@ import {
   removeRegisteredString,
 } from "./registered-strings";
 import { promptAndSaveRegisteredString } from "./registered-string-dialog";
-import { flushSettings } from "./settings";
+import { flushSettings, getSetting } from "./settings";
 import {
   charClass,
   charLen,
@@ -45,7 +46,15 @@ import {
 } from "./editor-math";
 import type { EditorViewState } from "./editor-view-state";
 import { selectedLineRange } from "./editor-edit-plan";
+import { transformTrackedRange } from "./viewer-range";
 import type { SearchHighlightQuery } from "./workspace-search-options";
+import { readDiagramSvg, writeDiagramSvg, validateStandaloneSvg, type Diagram } from "./diagram";
+import { imageDataUrl } from "./diagram-assets";
+import { openDiagramEditor, imageDimensions, type DiagramBackground } from "./diagram-dialog";
+import { diagramTargetAt, diagramInsertion, diagramImageTag, replaceDiagramTarget, offsetToDiagramPos } from "./diagram-target";
+import type { DiagramAssetSession } from "./diagram-editor-session";
+import { imageMimeType } from "./image-formats";
+import { basename } from "./path";
 
 const OVERSCAN = 8;
 
@@ -84,11 +93,13 @@ export interface EditorPorts {
   updateViewer: (label: string, text: string, selection: api.ViewerSelection | null) => Promise<boolean>;
   closeViewer: (label: string) => Promise<void>;
   saveImage?: (bytes: number[], mimeType: string) => Promise<string>;
+  prepareDiagram?: () => Promise<DiagramAssetSession | null>;
 }
 
 // 全ファイル共通の仮想スクロールエディタ。文書は backend(mmap/overlay)が所有し、
 // ここは可視スライスの描画と入力の中継のみを行う (全文を持たない)。
 export class VirtualEditor {
+  private replacementSelection: { start: Pos; end: Pos; backwards: boolean } | null = null;
   private gutter: HTMLElement;
   private scroll: HTMLElement;
   private hScroll: HTMLElement;
@@ -164,6 +175,9 @@ export class VirtualEditor {
   private onError: (message: string, error: unknown) => Promise<void>;
   private togglePreview: EditorPorts["togglePreview"];
   private onPasteImage?: (bytes: number[], mimeType: string) => Promise<string>;
+  private prepareDiagram?: EditorPorts["prepareDiagram"];
+  private contentRevision = 0;
+  private diagramEditing = false;
   private rectangularClipboard = new RectangularClipboard();
   private liveViewers: LiveViewers;
   private openViewer: EditorPorts["openViewer"];
@@ -183,6 +197,7 @@ export class VirtualEditor {
     );
     this.lineCache = new LineCache(doc);
     this.openViewer = ports.openViewer;
+    this.prepareDiagram = ports.prepareDiagram;
     this.liveViewers = new LiveViewers({
       openViewer: (format, text, selection, externalOutputPath, isCurrentRequest) => {
         if (externalOutputPath === undefined && !isCurrentRequest) {
@@ -268,7 +283,7 @@ export class VirtualEditor {
         if (this.busy) return;
         this.findGen++;
         this.setFindHighlightQuery(query.pat, query.matchCase, query.useRegex, query.wholeWord);
-        this.selectAndCenter(match.start, match.end);
+        this.selectAndCenter(match.start, match.end, false);
         this.lastFindMatch = { ...match, ...query };
         this.focus();
       },
@@ -277,7 +292,7 @@ export class VirtualEditor {
       this.host,
       (pat, forward, mc, regex, word) => this.doFind(pat, forward, mc, regex, word),
       (pat, rep, mc, regex, word) => this.doReplaceAll(pat, rep, mc, regex, word),
-      (pat, rep, mc, regex, word) => this.doReplaceVisible(pat, rep, mc, regex, word),
+      (pat, rep, mc, regex, word) => this.doReplaceSelection(pat, rep, mc, regex, word),
       (pat, rep, mc, regex, word) => this.doReplaceNext(pat, rep, mc, regex, word),
       () => {
         this.findGen++;
@@ -429,6 +444,7 @@ export class VirtualEditor {
 
   setReadOnly(on: boolean) {
     this.readOnly = on;
+    this.findBar.setSelectionAvailable(!this.readOnly && this.replacementSelection !== null);
   }
 
   setExternalFilePath(
@@ -508,6 +524,7 @@ export class VirtualEditor {
 
   openSearch() {
     const sel = this.selectionText();
+    this.notifyCursor();
     this.findBar.open(sel);
   }
 
@@ -519,13 +536,37 @@ export class VirtualEditor {
     this.focus();
   }
 
-  async goToPreview(selection: api.ViewerSelection) {
+  async createExternalSourceNavigator(isCurrent: () => boolean = () => true): Promise<ExternalSourceNavigator> {
+    const generation = this.documentGeneration, revision = this.contentRevision;
+    const valid = () => generation === this.documentGeneration && revision === this.contentRevision && isCurrent();
+    const last = this.lineCount - 1;
+    const text = await this.lineCache.textInRange({ line: 0, col: 0 }, { line: last, col: await this.lineCache.lineLength(last) });
+    const hash = await sourceTextHash(text);
+    return async (request, currentDisplay = () => true) => {
+      const current = () => valid() && currentDisplay();
+      if (!current() || request.source_hash !== hash) return "元の文書が変更されています。プレビューを更新してください。";
+      const start = sourcePositionAtOffset(text, request.offset);
+      const end = sourcePositionAtOffset(text, request.end_offset ?? request.offset);
+      if (!start || !end || (request.end_offset !== undefined && (request.offset === null || request.end_offset < request.offset))) return "元ソースの位置を特定できません。";
+      await this.goToPreview({ start, end }, { focus: false, absolute: true, select: request.end_offset !== undefined, isCurrent: current });
+      return current() ? null : "元の文書が変更されています。プレビューを更新してください。";
+    };
+  }
+
+  async goToPreview(selection: api.ViewerSelection, options: { focus?: boolean; absolute?: boolean; select?: boolean; isCurrent?: () => boolean } = {}) {
     const generation = this.documentGeneration;
-    const target = this.liveViewers.positionInDocument(selection.end);
+    const target = options.absolute ? selection.end : this.liveViewers.positionInDocument(selection.end);
     const line = Math.max(0, Math.min(this.lineCount - 1, target.line));
     const text = await this.lineCache.line(line);
     if (generation !== this.documentGeneration) return;
+    if (options.isCurrent && !options.isCurrent()) return;
     const pos = { line, col: Math.max(0, Math.min(charLen(text), target.col)) };
+    if (options.select) {
+      const start = options.absolute ? selection.start : this.liveViewers.positionInDocument(selection.start);
+      this.selectAndCenter(start, pos, false);
+      if (options.focus !== false) this.focus();
+      return;
+    }
     this.sel.reset(pos);
     this.centerLine(line);
     this.render();
@@ -538,7 +579,7 @@ export class VirtualEditor {
     }
     this.render();
     this.notifyCursor();
-    this.focus();
+    if (options.focus !== false) this.focus();
   }
 
   async selectRange(line: number, startCol: number, endCol: number) {
@@ -709,9 +750,9 @@ export class VirtualEditor {
     this.scrollWrapBy(selectionCenter - (this.viewTop + viewportHeight / 2));
   }
 
-  private selectAndCenter(start: Pos, end: Pos) {
+  private selectAndCenter(start: Pos, end: Pos, updateReplacementSelection = true) {
     this.sel.anchor = start;
-    this.moveTo(end, true);
+    this.moveTo(end, true, false, false, updateReplacementSelection);
     // moveTo() の描画後に横方向の可視性を確定し、行高を反映した中央配置を
     // 最後に行う。フォルダ検索と本文検索の結果を同じ規則へ通す。
     this.ensureVisible();
@@ -1374,13 +1415,19 @@ export class VirtualEditor {
   }
 
   // ---- カーソル移動 ----
-  private notifyCursor() {
+  private notifyCursor(updateReplacementSelection = true) {
     const [start, end] = this.sel.norm();
+    if (updateReplacementSelection) {
+      this.replacementSelection = this.sel.hasSel() && !this.sel.blockBounds()
+        ? { start: { ...start }, end: { ...end }, backwards: cmp(this.sel.anchor, this.sel.caret) > 0 }
+        : null;
+    }
+    this.findBar.setSelectionAvailable(!this.readOnly && this.replacementSelection !== null);
     this.liveViewers.setSelection({ start, end }, this.sel.caret);
     this.onCursor(this.sel.caret.line + 1, this.sel.caret.col + 1);
   }
 
-  private moveTo(pos: Pos, extend: boolean, keepGoal = false, keepSecondary = false) {
+  private moveTo(pos: Pos, extend: boolean, keepGoal = false, keepSecondary = false, updateReplacementSelection = true, reveal = true) {
     if (!keepSecondary) {
       this.sel.secondary = [];
       this.sel.block = null;
@@ -1389,9 +1436,9 @@ export class VirtualEditor {
     this.sel.caret = pos;
     if (!extend) this.sel.anchor = pos;
     if (!keepGoal) this.sel.goalX = null;
-    this.ensureVisible();
+    if (reveal) this.ensureVisible();
     this.render();
-    this.notifyCursor();
+    this.notifyCursor(updateReplacementSelection);
   }
 
   private syncCaretVisibility() {
@@ -1605,11 +1652,12 @@ export class VirtualEditor {
     const last = this.lineCount - 1;
     const len = await this.lineCache.lineLength(last);
     this.sel.anchor = { line: 0, col: 0 };
-    this.moveTo({ line: last, col: len }, true);
+    this.moveTo({ line: last, col: len }, true, false, false, true, false);
   }
 
   // ---- 編集 (backend へ委譲・順序保証) ----
   private applyResult(r: api.EditResult, fromLine: number, edits: api.EditManyItem[] = []) {
+    this.contentRevision += 1;
     const oldScrollTop = this.scroll.scrollTop;
     const oldTopLine = this.wrap || this.metrics.scaleMode ? this.topLineF : this.pxToLine(oldScrollTop);
     const oldIntraLinePx = this.wrapIntraLinePx;
@@ -1708,6 +1756,13 @@ export class VirtualEditor {
   }
 
 
+  resetPreviewRange(): boolean {
+    const [start, end] = this.sel.norm();
+    const reset = this.liveViewers.resetPreviewRange({ start, end }, this.sel.caret);
+    if (reset) this.render();
+    return reset;
+  }
+
   async openTextViewer(
     format: api.ViewerFormat,
     keepPreviewRange = false,
@@ -1715,6 +1770,7 @@ export class VirtualEditor {
     keepCurrentUntilOpened = false,
     externalOutputPath?: string | null,
     isCurrentRequest?: () => boolean,
+    sourceSelection: Pick<EditorViewState, "anchor" | "caret"> = this.captureViewState(),
   ) {
     await this.liveViewers.cancelPendingOpen();
     if (isCurrentRequest && !isCurrentRequest()) return null;
@@ -1728,16 +1784,17 @@ export class VirtualEditor {
       }
       return opened;
     }
-    const [selectionStart, selectionEnd] = this.sel.norm();
+    const { anchor, caret } = sourceSelection;
+    const [selectionStart, selectionEnd] = cmp(anchor, caret) <= 0 ? [anchor, caret] : [caret, anchor];
     const selection = { start: selectionStart, end: selectionEnd };
     const previewRange = keepPreviewRange ? this.liveViewers.previewRange() : null;
-    const range = format === "image" ? null : previewRange ?? (this.sel.hasSel()
+    const range = format === "image" ? null : keepPreviewRange ? previewRange : (cmp(selectionStart, selectionEnd) !== 0
       ? { start: { ...selectionStart }, end: { ...selectionEnd } }
       : null);
     if (!keepCurrentUntilOpened) this.liveViewers.clear();
     const opened = await (keepCurrentUntilOpened
-      ? this.liveViewers.replace(format, range, selection, this.sel.caret, externalOutputPath, isCurrentRequest)
-      : this.liveViewers.open(format, range, selection, this.sel.caret, externalOutputPath, isCurrentRequest));
+      ? this.liveViewers.replace(format, range, selection, caret, externalOutputPath, isCurrentRequest)
+      : this.liveViewers.open(format, range, selection, caret, externalOutputPath, isCurrentRequest));
     this.render();
     return opened;
   }
@@ -1826,9 +1883,107 @@ export class VirtualEditor {
 
   private async insertImage(bytes: number[], mimeType: string) {
     if (!this.onPasteImage) return;
+    let widthAttribute = "";
+    if (getSetting("pastedImageWidthEnabled")) {
+      const maximumWidth = getSetting("pastedImageWidth");
+      try {
+        const image = await createImageBitmap(new Blob([new Uint8Array(bytes)], { type: mimeType }));
+        try {
+          if (image.width > 0) widthAttribute = ` width="${Math.min(maximumWidth, image.width)}"`;
+        } finally {
+          image.close();
+        }
+      } catch {
+        // 寸法を取得できない画像は、拡大を避けるため幅を指定せず貼り付ける。
+      }
+    }
     const src = await this.onPasteImage(bytes, mimeType);
-    await this.insertText(`<img src="${src}" alt="貼り付け画像" width="900">\n`);
+    await this.insertText(`<img src="${src}" alt="貼り付け画像"${widthAttribute}>\n`);
     if (!this.liveViewers.has("markdown")) await this.openTextViewer("markdown");
+  }
+
+  async editDiagramAt(pos: Pos): Promise<void> {
+    if (this.readOnly || this.busy || this.diagramEditing || !this.prepareDiagram) return;
+    this.diagramEditing = true;
+    try {
+      const session = await this.prepareDiagram();
+      if (!session || !session.isCurrent()) return;
+      const generation = this.documentGeneration, revision = this.contentRevision;
+      const last = this.lineCount - 1;
+      const text = await this.lineCache.textInRange({ line: 0, col: 0 }, { line: last, col: await this.lineCache.lineLength(last) });
+      const check = () => {
+        if (generation !== this.documentGeneration || revision !== this.contentRevision || !session.isCurrent() || this.readOnly) throw new Error("元の文書が変更されました。図の編集内容は保持しています。");
+      };
+      check();
+      const lines = text.split("\n");
+      const clickedOffset = lines.slice(0, pos.line).reduce((sum, line) => sum + line.length + 1, 0) + charToU16(lines[pos.line] ?? "", pos.col);
+      const target = diagramTargetAt(text, clickedOffset);
+      let initial: Diagram = { width: 800, height: 600, elements: [] };
+      const sources = new Map<string, string>(), initialBackgrounds = new Map<string, DiagramBackground>(), missing: string[] = [];
+      if (target) {
+        const bytes = await session.readImage(target.src);
+        check();
+        const mimeType = imageMimeType(target.src);
+        const svg = mimeType === "image/svg+xml" ? new TextDecoder().decode(bytes) : null;
+        const diagram = svg !== null ? readDiagramSvg(svg) : null;
+        if (diagram) {
+          initial = diagram;
+          for (const element of diagram.elements) {
+            if (element.kind !== "image" || !element.src || sources.has(element.src)) continue;
+            try {
+              const background = await session.readImage(element.src, target.src);
+              const backgroundMime = imageMimeType(element.src);
+              if (backgroundMime === "image/svg+xml") validateStandaloneSvg(new TextDecoder().decode(background));
+              const dataUrl = imageDataUrl(background, backgroundMime);
+              sources.set(element.src, dataUrl);
+              if (!target.src.replace(/\\/g, "/").startsWith(`${session.assetPrefix}/`)) initialBackgrounds.set(element.src, { bytes: background, mimeType: backgroundMime, dataUrl });
+            } catch { sources.set(element.src, ""); missing.push(element.src); }
+          }
+        } else {
+          if (svg !== null) validateStandaloneSvg(svg);
+          const dataUrl = imageDataUrl(bytes, mimeType), size = await imageDimensions(dataUrl);
+          const src = basename(target.src);
+          initial = { width: Math.min(10000, size.width), height: Math.min(10000, size.height), elements: [{ id: 1, kind: "image", src, x: 0, y: 0, width: size.width, height: size.height }] };
+          sources.set(src, dataUrl);
+          if (!target.src.replace(/\\/g, "/").startsWith(`${session.assetPrefix}/`)) initialBackgrounds.set(src, { bytes, mimeType, dataUrl });
+        }
+      }
+      check();
+      await openDiagramEditor({ initial, sources, initialBackgrounds, missing, save: async (diagram, backgrounds) => {
+        check();
+        let committed = false;
+        try {
+          const elements = [];
+          const imported = new Map<string, string>();
+          for (const element of diagram.elements) {
+            const background = element.src ? backgrounds.get(element.src) : null;
+            if (element.kind === "image" && element.src && background) {
+              let src = imported.get(element.src);
+              if (!src) { src = basename(await session.saveImage(background.bytes, background.mimeType, true)); imported.set(element.src, src); check(); }
+              elements.push({ ...element, src });
+            } else elements.push(element);
+          }
+          const svg = writeDiagramSvg({ ...diagram, elements });
+          const src = await session.saveImage(new TextEncoder().encode(svg).buffer, "image/svg+xml", false);
+          check();
+          const width = getSetting("pastedImageWidthEnabled") ? Math.min(getSetting("pastedImageWidth"), diagram.width) : undefined;
+          const edit = target ? { start: target.start, end: target.end, text: replaceDiagramTarget(target, src) }
+            : diagramInsertion(text, clickedOffset, diagramImageTag(src, width) + "\n");
+          const start = offsetToDiagramPos(text, edit.start), end = offsetToDiagramPos(text, edit.end);
+          const result = await session.applyEdit(start, end, this.sel.caret, edit.text, text.slice(edit.start, edit.end), lines[start.line] ?? "");
+          committed = true;
+          if (generation !== this.documentGeneration || !session.isCurrent()) return;
+          this.applyResult(result, start.line, [{ start, end, text: edit.text }]);
+          try {
+            await this.renderAfterEdit();
+            if (!this.liveViewers.has("markdown")) await this.openTextViewer("markdown");
+          } catch (error) { await this.reportActionError("図は反映しましたが、プレビューを更新できませんでした", error); }
+        } finally {
+          try { await session.finish(); }
+          catch (error) { if (!committed) throw error; await this.reportActionError("図は反映しましたが、不要画像を整理できませんでした", error); }
+        }
+      } });
+    } finally { this.diagramEditing = false; this.focus(); }
   }
 
   // ---- キー入力 ----
@@ -2322,6 +2477,7 @@ export class VirtualEditor {
       customStarted = true;
     };
     if (!this.readOnly) {
+      if (this.prepareDiagram && pos) addCustomItem({ label: "図を編集", iconClass: MENU_ICON.image, action: () => this.dispatch("図を編集できませんでした", () => this.editDiagramAt({ ...pos })) });
       const addRegisteredString: MenuItem = {
         label: "選択範囲を登録文字列に追加",
         iconClass: MENU_ICON.registeredString,
@@ -2501,7 +2657,7 @@ export class VirtualEditor {
       const r = await this.doc.find(p, from, false, matchCase, useRegex, wholeWord);
       if (myGen !== this.findGen) return false;
       if (!r) { this.lastFindMatch = null; return false; }
-      this.selectAndCenter(r.start, r.end);
+      this.selectAndCenter(r.start, r.end, false);
       this.lastFindMatch = { start: r.start, end: r.end, pat: p, matchCase, useRegex, wholeWord };
       return true;
     }
@@ -2523,7 +2679,7 @@ export class VirtualEditor {
       return false;
     }
     this.findBar.setProgress("");
-    this.selectAndCenter(outcome.start, outcome.end);
+    this.selectAndCenter(outcome.start, outcome.end, false);
     this.lastFindMatch = { start: outcome.start, end: outcome.end, pat: p, matchCase, useRegex, wholeWord };
     return true;
   }
@@ -2554,45 +2710,29 @@ export class VirtualEditor {
     return this.doFind(pat, true, matchCase, useRegex, wholeWord);
   }
 
-  private visibleLogicalLineRange(): { first: number; last: number } {
-    if (this.lineCount <= 0 || this.scroll.clientHeight <= 0) return { first: 0, last: 0 };
-    const viewportTop = this.viewTop;
-    const viewportBottom = viewportTop + this.scroll.clientHeight;
-    const visibleLines = [...this.linesLayer.querySelectorAll<HTMLElement>(":scope > .ve-line")]
-      .map((line) => Number(line.dataset.line))
-      .filter((line) => Number.isInteger(line) && line >= 0 && line < this.lineCount)
-      .filter((line) => {
-        const top = this.rowTop(line);
-        const bottom = top + this.wrappedLineHeight(line);
-        return top < viewportBottom && bottom > viewportTop;
-      });
-    if (visibleLines.length > 0) {
-      return {
-        first: Math.min(...visibleLines),
-        last: Math.max(...visibleLines) + 1,
-      };
-    }
-    return { first: 0, last: 0 };
-  }
-
-  private async doReplaceVisible(pat: string, rep: string, matchCase: boolean, useRegex = false, wholeWord = false): Promise<number> {
-    if (this.readOnly || this.busy) return 0;
+  private async doReplaceSelection(pat: string, rep: string, matchCase: boolean, useRegex = false, wholeWord = false): Promise<number> {
+    if (this.readOnly || this.busy || !this.replacementSelection) return 0;
     const p = useRegex ? pat : unescapePattern(pat);
     if (!p) return 0;
     const r = unescapePattern(rep);
     const generation = this.documentGeneration;
-    this.render();
-    const { first, last } = this.visibleLogicalLineRange();
-    if (first >= last) return 0;
+    const { start, end, backwards } = this.replacementSelection;
 
     this.busy = true;
     try {
-      const matches = await this.doc.findAllInRange(p, first, last, matchCase, useRegex, wholeWord, 0);
-      if (generation !== this.documentGeneration || matches.length === 0) return 0;
-      const edits = matches.map(({ start, end }) => ({ start, end, text: r }));
+      const matches = await this.doc.findAllInRange(p, start.line, end.line + 1, matchCase, useRegex, wholeWord, 0);
+      if (generation !== this.documentGeneration) return 0;
+      const edits = matches
+        .filter(match => cmp(match.start, start) >= 0 && cmp(match.end, end) <= 0)
+        .map(({ start, end }) => ({ start, end, text: r }));
+      if (edits.length === 0) return 0;
       const primaryIndex = edits.length - 1;
       const result = await this.doc.editMany(edits, this.sel.caret, primaryIndex);
-      this.applyResult({ caret: result.carets[primaryIndex] ?? this.sel.caret, line_count: result.line_count }, first, edits);
+      if (generation !== this.documentGeneration) return 0;
+      const updated = transformTrackedRange({ start, end }, edits);
+      this.applyResult({ caret: result.carets[primaryIndex] ?? this.sel.caret, line_count: result.line_count }, start.line, edits);
+      this.sel.anchor = backwards ? updated.end : updated.start;
+      this.sel.caret = backwards ? updated.start : updated.end;
       this.ensureVisible();
       this.render();
       this.notifyCursor();

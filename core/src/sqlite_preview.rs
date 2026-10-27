@@ -3,6 +3,7 @@ use std::{fs::File, io::Read, path::Path};
 
 const MAX_TEXT_CHARS: usize = 4096;
 const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
+const TEMPORARY_VIEW_NAME: &str = "__wasabipad_temporary_view__";
 
 #[derive(Clone, serde::Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
@@ -43,6 +44,7 @@ pub fn read_sqlite_preview(
     offset: usize,
     limit: usize,
     include_metadata: bool,
+    query_sql: Option<&str>,
 ) -> Result<SqlitePreview, String> {
     if !is_sqlite_preview_eligible(path) {
         return Err("SQLiteプレビューの対象ファイルではありません".to_string());
@@ -52,8 +54,42 @@ pub fn read_sqlite_preview(
     }
     let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|error| error.to_string())?;
-    let objects = sqlite_objects(&connection).map_err(|error| error.to_string())?;
-    let selected_name = select_object(&objects, selected_name)?.map(|object| object.name.clone());
+    let mut objects = sqlite_objects(&connection).map_err(|error| error.to_string())?;
+    let temporary_view_name = if let Some(query_sql) = query_sql {
+        if !starts_with_select(query_sql) {
+            return Err("入力はSELECTで始まるSQLにしてください".to_string());
+        }
+        connection
+            .execute_batch("PRAGMA temp_store=MEMORY;")
+            .map_err(|error| error.to_string())?;
+        let mut name = TEMPORARY_VIEW_NAME.to_string();
+        let mut suffix = 0usize;
+        while objects.iter().any(|object| object.name == name) {
+            suffix += 1;
+            name = format!("{TEMPORARY_VIEW_NAME}{suffix}");
+        }
+        connection
+            .execute(
+                &format!(
+                    "CREATE TEMP VIEW {} AS {query_sql}",
+                    quote_identifier(&name)
+                ),
+                [],
+            )
+            .map_err(|error| format!("一時ビューを作成できませんでした: {error}"))?;
+        objects.push(SqliteObject {
+            name: name.clone(),
+            kind: "temporary view".to_string(),
+        });
+        Some(name)
+    } else {
+        None
+    };
+    let selected_name = if let Some(name) = temporary_view_name {
+        Some(name)
+    } else {
+        select_object(&objects, selected_name)?.map(|object| object.name.clone())
+    };
     let Some(selected_name) = selected_name else {
         return Ok(SqlitePreview {
             objects,
@@ -67,10 +103,11 @@ pub fn read_sqlite_preview(
         });
     };
 
-    let is_view = objects
-        .iter()
-        .find(|object| object.name == selected_name)
-        .is_some_and(|object| object.kind == "view");
+    let is_view = query_sql.is_some()
+        || objects
+            .iter()
+            .find(|object| object.name == selected_name)
+            .is_some_and(|object| object.kind == "view");
     let identifier = quote_identifier(&selected_name);
     let (total_rows, view_definition, metadata_error) = if include_metadata {
         let (total_rows, count_error) =
@@ -83,7 +120,9 @@ pub fn read_sqlite_preview(
                 },
                 Err(error) => (None, Some(format!("総行数を取得できませんでした: {error}"))),
             };
-        let (view_definition, definition_error) = if is_view {
+        let (view_definition, definition_error) = if let Some(query_sql) = query_sql {
+            (Some(query_sql.to_string()), None)
+        } else if is_view {
             match connection
                 .query_row(
                     "SELECT sql FROM sqlite_schema WHERE type = 'view' AND name = ?1",
@@ -165,6 +204,31 @@ fn is_sqlite_candidate_path(path: &Path) -> bool {
                 || extension.eq_ignore_ascii_case("sqlite")
                 || extension.eq_ignore_ascii_case("sqlite3")
         })
+}
+
+fn starts_with_select(sql: &str) -> bool {
+    let mut remaining = sql.trim_start();
+    loop {
+        if let Some(comment) = remaining.strip_prefix("--") {
+            remaining = comment.split_once('\n').map_or("", |(_, rest)| rest);
+        } else if let Some(comment) = remaining.strip_prefix("/*") {
+            let Some((_, rest)) = comment.split_once("*/") else {
+                return false;
+            };
+            remaining = rest;
+        } else {
+            break;
+        }
+        remaining = remaining.trim_start();
+    }
+
+    remaining
+        .get(..6)
+        .is_some_and(|keyword| keyword.eq_ignore_ascii_case("SELECT"))
+        && remaining
+            .get(6..)
+            .and_then(|tail| tail.chars().next())
+            .is_none_or(|character| !character.is_ascii_alphanumeric() && character != '_')
 }
 
 fn sqlite_objects(connection: &Connection) -> rusqlite::Result<Vec<SqliteObject>> {
@@ -332,7 +396,7 @@ mod tests {
         drop(connection);
         let before = std::fs::read(&path).unwrap();
 
-        let preview = read_sqlite_preview(&path, None, 0, 100, true).unwrap();
+        let preview = read_sqlite_preview(&path, None, 0, 100, true, None).unwrap();
 
         assert_eq!(preview.selected_name.as_deref(), Some("items"));
         assert!(preview
@@ -356,7 +420,7 @@ mod tests {
         assert_eq!(preview.total_rows, Some(2));
         assert_eq!(preview.view_definition, None);
 
-        let view = read_sqlite_preview(&path, Some("item_view"), 0, 100, true).unwrap();
+        let view = read_sqlite_preview(&path, Some("item_view"), 0, 100, true, None).unwrap();
         assert_eq!(view.columns, ["id"]);
         assert_eq!(view.rows.len(), 2);
         assert_eq!(view.total_rows, Some(2));
@@ -365,7 +429,7 @@ mod tests {
             .as_deref()
             .is_some_and(|sql| sql.contains("CREATE VIEW item_view")));
 
-        let schema = read_sqlite_preview(&path, Some("sqlite_schema"), 0, 100, true).unwrap();
+        let schema = read_sqlite_preview(&path, Some("sqlite_schema"), 0, 100, true, None).unwrap();
         assert!(schema.columns.iter().any(|column| column == "sql"));
         assert!(schema.rows.iter().any(|row| row.iter().any(|cell| {
             matches!(cell, SqliteCell::Text { value, .. } if value == "item_view")
@@ -388,7 +452,7 @@ mod tests {
             .unwrap();
         drop(connection);
 
-        let preview = read_sqlite_preview(&path, Some("items"), 0, 100, false).unwrap();
+        let preview = read_sqlite_preview(&path, Some("items"), 0, 100, false, None).unwrap();
 
         assert_eq!(preview.columns, ["id"]);
         assert!(matches!(&preview.rows[0][0], SqliteCell::Integer { value } if value == "7"));
@@ -409,7 +473,7 @@ mod tests {
             .unwrap();
         drop(connection);
 
-        let preview = read_sqlite_preview(&path, Some("items"), 1, 1, false).unwrap();
+        let preview = read_sqlite_preview(&path, Some("items"), 1, 1, false, None).unwrap();
 
         assert_eq!(preview.columns, ["id"]);
         assert!(matches!(&preview.rows[0][0], SqliteCell::Integer { value } if value == "2"));
@@ -449,7 +513,8 @@ mod tests {
             .unwrap();
         drop(connection);
 
-        let preview = read_sqlite_preview(&path, Some("price_history_view"), 0, 100, true).unwrap();
+        let preview =
+            read_sqlite_preview(&path, Some("price_history_view"), 0, 100, true, None).unwrap();
 
         assert_eq!(preview.total_rows, Some(2));
         assert_eq!(preview.rows.len(), 2);
@@ -476,11 +541,96 @@ mod tests {
         ));
         std::fs::write(&path, b"not sqlite").unwrap();
 
-        let result = read_sqlite_preview(&path, None, 0, 100, false);
+        let result = read_sqlite_preview(&path, None, 0, 100, false, None);
         assert!(result.is_err());
         let error = result.err().unwrap();
 
         assert!(error.contains("対象ファイルではありません"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    // Feature: SQLiteプレビューで一時ビューを確認する
+    // Scenario: SELECTをページ単位で読み、元DBへ定義やデータを保存しない
+    // Given: 読み取り対象のitemsテーブル
+    // When: 単一のSELECTを一時ビューとして複数ページ読む
+    // Then: 結果、総行数、SQL定義を返し、元DBの内容は変わらない
+    #[test]
+    fn reads_ephemeral_select_as_a_paged_view_without_writing_database() {
+        let path = test_path();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE items (id INTEGER); INSERT INTO items VALUES (1), (2), (3), (4);",
+            )
+            .unwrap();
+        drop(connection);
+        let before = std::fs::read(&path).unwrap();
+        let query = "SELECT id FROM items ORDER BY id DESC";
+
+        let first = read_sqlite_preview(&path, None, 0, 2, true, Some(query)).unwrap();
+        assert_eq!(
+            first.selected_name.as_deref(),
+            Some("__wasabipad_temporary_view__")
+        );
+        assert_eq!(first.columns, ["id"]);
+        assert_eq!(first.total_rows, Some(4));
+        assert_eq!(first.view_definition.as_deref(), Some(query));
+        assert!(matches!(&first.rows[0][0], SqliteCell::Integer { value } if value == "4"));
+        assert!(first.objects.iter().any(|object| {
+            object.name == "__wasabipad_temporary_view__" && object.kind == "temporary view"
+        }));
+
+        let second = read_sqlite_preview(
+            &path,
+            first.selected_name.as_deref(),
+            2,
+            2,
+            false,
+            Some(query),
+        )
+        .unwrap();
+        assert!(matches!(&second.rows[0][0], SqliteCell::Integer { value } if value == "2"));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+
+        let connection = Connection::open(&path).unwrap();
+        let saved_views: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'view' AND name = '__wasabipad_temporary_view__'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(saved_views, 0);
+        let _ = std::fs::remove_file(path);
+    }
+
+    // Feature: SQLiteプレビューで一時ビューを確認する
+    // Scenario: SELECT以外や複数ステートメントを拒否する
+    // Given: 読み取り対象のitemsテーブル
+    // When: DMLまたは追加ステートメントを含むSQLを渡す
+    // Then: SQLを拒否し、元DBの内容を変えない
+    #[test]
+    fn rejects_writes_and_multiple_statements_for_ephemeral_views() {
+        let path = test_path();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch("CREATE TABLE items (id INTEGER); INSERT INTO items VALUES (1);")
+            .unwrap();
+        drop(connection);
+        let before = std::fs::read(&path).unwrap();
+
+        for query in [
+            "DELETE FROM items",
+            "VALUES (1)",
+            "SELECT id FROM items; DROP TABLE items",
+        ] {
+            assert!(
+                read_sqlite_preview(&path, None, 0, 10, true, Some(query)).is_err(),
+                "{query}"
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), before, "{query}");
+        }
+
         let _ = std::fs::remove_file(path);
     }
 }

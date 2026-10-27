@@ -50,10 +50,10 @@ describe("Feature: 動画プレビューの通知経路", () => {
   it("Scenario: 外部変換の待機を解除して旧表示へ戻れる", async () => {
     await open();
     const video = document.querySelector("video");
-    send({ type: messages.EXTERNAL_STATUS_MESSAGE, status: { message: "実行確認待ち…", busy: true } });
+    send({ type: messages.PREVIEW_STATUS_MESSAGE, status: { message: "実行確認待ち…", busy: true } });
     const refresh = document.querySelector<HTMLButtonElement>("#viewer-refresh")!;
     expect(refresh.disabled).toBe(true);
-    send({ type: messages.EXTERNAL_STATUS_MESSAGE, status: null });
+    send({ type: messages.PREVIEW_STATUS_MESSAGE, status: null });
     expect(document.querySelector("video")).toBe(video);
     expect(refresh.disabled).toBe(false);
     expect(refresh.getAttribute("aria-label")).toBe("動画プレビューを更新");

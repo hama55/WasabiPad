@@ -22,6 +22,8 @@ function makePorts(
     sidebarWidth: 220,
     fontFamily: 'Consolas, "MS Gothic", monospace',
     fontSize: 14,
+    pastedImageWidthEnabled: true,
+    pastedImageWidth: 900,
     previewFontSize: 14,
     previewOpenPlacement: "right",
     previewLastPlacement: "right",
@@ -35,11 +37,12 @@ function makePorts(
     previewCacheDirectory: null,
     externalPreviewTemporaryDirectory: null,
     externalPreviewTemporaryDirectories: [],
-    startupPath: null,
+    defaultSaveDirectory: null,
     registeredStrings: [],
     registeredCommands: [],
     externalPreviewAdapters: [],
     externalPreviewAdapterSelections: {},
+    externalPreviewPreferences: {},
     trustedExternalPreviewAdapterIds: [],
     workspaceSearchOptions: null,
     openTabs: { tabs: [], activeId: null },
@@ -80,6 +83,61 @@ async function answerConfirmation(approved: boolean): Promise<void> {
 
 describe("Feature: settings modal", () => {
   afterEach(() => document.body.replaceChildren());
+
+  // Feature: デフォルトの保存フォルダ
+  // Scenario: 起動パスの代わりに＋ボタン用の保存先を設定する
+  // Given: 設定画面と未指定の保存先
+  // When: 保存先を入力し、その後空欄へ戻す
+  // Then: 入力を保存し、空欄はWindowsのドキュメントを使う未指定値に戻す
+  it("Scenario: デフォルトの保存フォルダを変更して既定に戻せる", () => {
+    const ports = makePorts();
+    openSettingsModal(ports);
+    expect(document.querySelector('[data-setting="startup-path"]')).toBeNull();
+    const input = document.querySelector<HTMLInputElement>('[data-setting="default-save-directory"]')!;
+    expect(input.closest("label")!.textContent).toContain("デフォルトの保存フォルダ");
+    expect(input.placeholder).toContain("ドキュメント");
+    input.value = "  C:\\memos  ";
+    input.dispatchEvent(new Event("change"));
+    expect(ports.setSetting).toHaveBeenLastCalledWith("defaultSaveDirectory", "C:\\memos");
+    input.value = "  ";
+    input.dispatchEvent(new Event("change"));
+    expect(ports.setSetting).toHaveBeenLastCalledWith("defaultSaveDirectory", null);
+  });
+
+  // Given: 貼り付け画像の表示幅は900pxで幅指定が有効
+  // When: 上限を変更し、不正な値を入力し、幅指定を無効・有効へ切り替える
+  // Then: 有効値だけを保存し、無効中は数値欄を無効化して直前の値を保持する
+  it("Scenario: エディタ設定で貼り付け画像の表示幅を変更する", () => {
+    const ports = makePorts();
+    openSettingsModal(ports);
+    const section = document.querySelector('#settings-editor')!;
+    const enabled = section.querySelector<HTMLInputElement>('[data-setting="pasted-image-width-enabled"]')!;
+    const width = section.querySelector<HTMLInputElement>('[data-setting="pasted-image-width"]')!;
+    expect(enabled.checked).toBe(true);
+    expect(width.value).toBe("900");
+    expect(width.min).toBe("1");
+    expect(width.max).toBe("10000");
+    for (const valid of [1, 10000, 1200]) {
+      width.value = String(valid);
+      width.dispatchEvent(new Event("change"));
+      expect(ports.setSetting).toHaveBeenLastCalledWith("pastedImageWidth", valid);
+    }
+    vi.mocked(ports.setSetting).mockClear();
+    for (const invalid of ["", "0", "-1", "1.5", "10001"]) {
+      width.value = invalid;
+      width.dispatchEvent(new Event("change"));
+      expect(width.value).toBe("1200");
+    }
+    expect(ports.setSetting).not.toHaveBeenCalled();
+    enabled.checked = false;
+    enabled.dispatchEvent(new Event("change"));
+    expect(ports.setSetting).toHaveBeenLastCalledWith("pastedImageWidthEnabled", false);
+    expect(width.disabled).toBe(true);
+    enabled.checked = true;
+    enabled.dispatchEvent(new Event("change"));
+    expect(width.disabled).toBe(false);
+    expect(width.value).toBe("1200");
+  });
 
   // Given: 初期設定は右固定
   // When: プレビュー設定から配置オプションを変更する
@@ -273,7 +331,7 @@ describe("Feature: settings modal", () => {
     expect(document.querySelector("[data-settings-section=登録文字列]")).not.toBeNull();
     expect(document.querySelector("[data-settings-section='登録コマンド（ファイル）']")).not.toBeNull();
     expect(document.querySelector("[data-settings-section='登録コマンド（選択文字列）']")).not.toBeNull();
-    expect(document.querySelector('[data-setting="startup-path"]')).not.toBeNull();
+    expect(document.querySelector('[data-setting="default-save-directory"]')).not.toBeNull();
     expect(document.querySelector('[data-setting="markdown-line-height"]')).not.toBeNull();
     expect(document.querySelector('[data-setting="markdown-heading-underlines"]')).not.toBeNull();
     expect(document.querySelector('[data-setting="sqlite-preview-rows"]')).not.toBeNull();

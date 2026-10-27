@@ -40,7 +40,11 @@ function fixture() {
       else if (!relPath.includes("::")) session.effectiveExtension = null;
       return true;
     }),
-    newFile: vi.fn(async () => {}),
+    newFile: vi.fn(async (_confirm?: boolean, _directory?: string | null, draftSavePath?: string | null) => {
+      Object.assign(session, initialSession());
+      delete session.draftSavePath;
+      if (draftSavePath !== undefined) session.draftSavePath = draftSavePath;
+    }),
     goTo: vi.fn(),
     captureViewState: vi.fn(() => ({
       anchor: { line: 0, col: 0 },
@@ -105,6 +109,185 @@ function dragOnto(from: HTMLElement, to: HTMLElement, ratio: number) {
 }
 
 describe("Feature: TabManager", () => {
+  // Feature: 仮名割り当ての非同期競合
+  // Scenario: ＋の候補取得中に閉じた＋タブを復活する
+  // Given: 閉じたmemo.txtのタブと、未完了の候補取得
+  // When: ＋と閉じたタブの復活を並行して実行する
+  // Then: 両方のタブを保持し、仮保存名は重複しない
+  it("Scenario: ＋と閉じたタブの復活が重なっても仮名を重複させない", async () => {
+    const { doc, host } = fixture();
+    let pause = false;
+    let resume!: () => void;
+    const gate = new Promise<void>((resolve) => { resume = resolve; });
+    const nextMemoPath = vi.fn(async (dir: string, stem: string) => {
+      if (pause) await gate;
+      return `${dir}\\${stem}.txt`;
+    });
+    const manager = new TabManager(host, doc, {
+      onChange: () => {}, defaultSaveDirectory: async () => "C:\\notes", nextMemoPath,
+    }, registeredCommandPorts);
+    await manager.init({ tabs: [], activeId: null }, null);
+    host.querySelector<HTMLButtonElement>(".doc-tab-add")!.click();
+    await vi.waitFor(() => expect(manager.state.tabs).toHaveLength(2));
+    const closedId = manager.state.activeId!;
+    await manager.close(closedId);
+    pause = true;
+    host.querySelector<HTMLButtonElement>(".doc-tab-add")!.click();
+    await vi.waitFor(() => expect(nextMemoPath).toHaveBeenCalledTimes(2));
+    const reopening = manager.reopenLastClosed();
+    await Promise.resolve();
+    resume();
+    expect(await reopening).toBe(true);
+    await vi.waitFor(() => expect(manager.state.tabs).toHaveLength(3));
+    expect(manager.state.tabs.find((tab) => tab.id === closedId)?.draftSavePath).toBe("C:\\notes\\memo1.txt");
+    expect(manager.state.tabs.find((tab) => tab.id !== closedId && tab.draftSavePath)?.draftSavePath).toBe("C:\\notes\\memo.txt");
+  });
+  // Feature: 保存先設定の適用時点
+  // Scenario: 設定変更は新しい＋タブだけへ適用する
+  // Given: 最初の保存先で作った＋タブと、その後に変更された設定
+  // When: 新しい＋タブを作って元のタブに戻る
+  // Then: 既存タブは元の候補を保持し、新しいタブだけ新設定を使う
+  it("Scenario: 保存先設定の変更は既存の仮保存パスを変えない", async () => {
+    const { doc, host } = fixture();
+    let directory = "C:\\old";
+    const manager = new TabManager(host, doc, {
+      onChange: () => {}, defaultSaveDirectory: async () => directory,
+      nextMemoPath: async (dir) => `${dir}\\memo.txt`,
+    }, registeredCommandPorts);
+    await manager.init({ tabs: [], activeId: null }, null);
+    host.querySelector<HTMLButtonElement>(".doc-tab-add")!.click();
+    await vi.waitFor(() => expect(manager.state.tabs).toHaveLength(2));
+    const first = manager.state.activeId!;
+    directory = "C:\\new";
+    host.querySelector<HTMLButtonElement>(".doc-tab-add")!.click();
+    await vi.waitFor(() => expect(manager.state.tabs).toHaveLength(3));
+    expect(manager.state.tabs.at(-1)?.draftSavePath).toBe("C:\\new\\memo.txt");
+    await manager.activate(first);
+    expect(doc.newFile).toHaveBeenLastCalledWith(false, "C:\\old", "C:\\old\\memo.txt");
+  });
+
+  // Feature: 保存先取得失敗時の新規タブ
+  // Scenario: ドキュメントや候補を取得できなくても編集を始められる
+  // Given: 保存先解決または候補の取得が失敗する環境
+  // When: ＋を押す
+  // Then: 初回保存を選び直せる未保存文書を作り、他の新規タブへ影響しない
+  it.each(["directory", "candidate"])("Scenario: %s の取得失敗でも＋で文書を作る", async (failure) => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, {
+      onChange: () => {},
+      defaultSaveDirectory: async () => {
+        if (failure === "directory") throw new Error("unavailable");
+        return "C:\\notes";
+      },
+      nextMemoPath: async () => { throw new Error("denied"); },
+    }, registeredCommandPorts);
+    await manager.init({ tabs: [], activeId: null }, null);
+    host.querySelector<HTMLButtonElement>(".doc-tab-add")!.click();
+    await vi.waitFor(() => expect(manager.state.tabs).toHaveLength(2));
+    expect(doc.current.savePath).toBeNull();
+    expect(doc.current.draftSavePath).toBeNull();
+  });
+  // Feature: 閉じた＋タブの再表示
+  // Scenario: 解放された仮名を別タブが使った後に閉じたタブを戻す
+  // Given: memo.txtの＋タブを閉じ、別の＋タブがmemo.txtを使っている
+  // When: 閉じたタブを復活する
+  // Then: 復活したタブはmemo1.txtを使い、仮名を重複させない
+  it("Scenario: 閉じた＋タブを戻す際にも仮名の重複を避ける", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, {
+      onChange: () => {},
+      defaultSaveDirectory: async () => "C:\\notes",
+      nextMemoPath: async (_dir, stem) => `C:\\notes\\${stem}.txt`,
+    }, registeredCommandPorts);
+    await manager.init({ tabs: [], activeId: null }, null);
+    host.querySelector<HTMLButtonElement>(".doc-tab-add")!.click();
+    await vi.waitFor(() => expect(manager.state.tabs).toHaveLength(2));
+    const closedId = manager.state.activeId!;
+    await manager.close(closedId);
+    host.querySelector<HTMLButtonElement>(".doc-tab-add")!.click();
+    await vi.waitFor(() => expect(manager.state.tabs).toHaveLength(2));
+    expect(await manager.reopenLastClosed()).toBe(true);
+    expect(manager.state.tabs.find((tab) => tab.id === closedId)?.draftSavePath).toBe("C:\\notes\\memo1.txt");
+  });
+  // Feature: ＋由来の空タブ復元
+  // Scenario: 仮保存名を再起動時だけ再選定し、通常の切替では保持する
+  // Given: 古い候補を持つ＋由来タブと従来の空タブが保存されている
+  // When: 初期化してタブを往復する
+  // Then: ＋由来だけ再採番し、その候補と従来タブの保存先を保持する
+  it("Scenario: ＋由来の仮名だけ再起動時に再選定する", async () => {
+    const { doc, host } = fixture();
+    const nextMemoPath = vi.fn(async (_directory: string, stem: string) =>
+      stem === "memo" ? "C:\\old\\memo2.txt" : `C:\\old\\${stem}.txt`);
+    const manager = new TabManager(host, doc, { onChange: () => {}, nextMemoPath }, registeredCommandPorts);
+    await manager.init({ tabs: [
+      { id: "plus1", path: null, kind: "blank", label: "無題", draftDirectory: "C:\\old", draftSavePath: "C:\\old\\memo.txt" },
+      { id: "plus2", path: null, kind: "blank", label: "無題", draftDirectory: "C:\\old", draftSavePath: "C:\\old\\memo1.txt" },
+      { id: "legacy", path: null, kind: "blank", label: "無題", draftDirectory: "C:\\Desktop" },
+    ], activeId: "plus1" }, null);
+    expect(manager.state.tabs.map((tab) => tab.draftSavePath)).toEqual([
+      "C:\\old\\memo2.txt", "C:\\old\\memo3.txt", undefined,
+    ]);
+    nextMemoPath.mockClear();
+    await manager.activate("legacy");
+    expect(doc.newFile).toHaveBeenLastCalledWith(false, "C:\\Desktop");
+    await manager.activate("plus1");
+    expect(doc.newFile).toHaveBeenLastCalledWith(false, "C:\\old", "C:\\old\\memo2.txt");
+    expect(nextMemoPath).not.toHaveBeenCalled();
+  });
+  // Feature: 仮保存名の重複回避
+  // Scenario: ＋を連打してもディスクと未保存タブに重複しない既存規則の名前を選ぶ
+  // Given: memo.txtとmemo2.txtが存在し、最初の空き名は大文字のMEMO1.TXT
+  // When: ＋を3回続けて押す
+  // Then: memo1、memo3、memo4を割り当て、番号付きstem照会のmemo21は採用しない
+  it("Scenario: ＋連打で既存ファイルと未保存タブの仮名重複を避ける", async () => {
+    const { doc, host } = fixture();
+    const manager = new TabManager(host, doc, {
+      onChange: () => {},
+      defaultSaveDirectory: async () => "C:\\notes\\",
+      nextMemoPath: async (_directory, stem) => {
+        await Promise.resolve();
+        if (Number(stem.slice(4)) > 4) throw new Error("unexpected candidate");
+        if (stem === "memo") return "C:\\NOTES\\MEMO1.TXT";
+        if (stem === "memo2") return "C:\\notes\\memo21.txt";
+        return `C:\\notes\\${stem}.txt`;
+      },
+    }, registeredCommandPorts);
+    await manager.init({ tabs: [], activeId: null }, null);
+    const add = host.querySelector<HTMLButtonElement>(".doc-tab-add")!;
+    add.click(); add.click(); add.click();
+    await vi.waitFor(() => expect(manager.state.tabs).toHaveLength(4));
+    expect(manager.state.tabs.slice(1).map((tab) => tab.draftSavePath)).toEqual([
+      "C:\\NOTES\\MEMO1.TXT", "C:\\notes\\memo3.txt", "C:\\notes\\memo4.txt",
+    ]);
+  });
+  // Feature: ＋ボタン専用のデフォルト保存先
+  // Scenario: 表示中のフォルダに関係なく＋だけが新設定を使う
+  // Given: 別のフォルダタブと、memo.txtが存在する保存先
+  // When: ＋を押し、その後従来の新規タブ作成を行う
+  // Then: ＋にはmemo1.txtの仮パスを渡し、従来入口には従来の保存先だけを渡す
+  it("Scenario: ＋だけがデフォルト保存フォルダと仮名を使う", async () => {
+    const { doc, host } = fixture();
+    doc.openPath.mockImplementation(async (path: string) => {
+      doc.current.folderRoot = path;
+      doc.current.savePath = null;
+      return true;
+    });
+    doc.newFile.mockImplementation(async () => { Object.assign(doc.current, initialSession()); });
+    const manager = new TabManager(host, doc, {
+      onChange: () => {},
+      defaultMemoDirectory: async () => "C:\\Desktop",
+      defaultSaveDirectory: async () => "C:\\notes",
+      nextMemoPath: async () => "C:\\notes\\memo1.txt",
+    }, registeredCommandPorts);
+    await manager.init({ tabs: [{ id: "folder", path: "C:\\work", kind: "folder", label: "work" }], activeId: "folder" }, null);
+    host.querySelector<HTMLButtonElement>(".doc-tab-add")!.click();
+    await vi.waitFor(() => expect(doc.newFile).toHaveBeenLastCalledWith(false, "C:\\notes", "C:\\notes\\memo1.txt"));
+    expect(manager.state.tabs.at(-1)).toMatchObject({ path: null, kind: "blank", draftSavePath: "C:\\notes\\memo1.txt" });
+    await manager.activate("folder");
+    await manager.newBlank();
+    expect(doc.newFile).toHaveBeenLastCalledWith(false, "C:\\work");
+    expect(manager.state.tabs.at(-1)?.draftSavePath).toBeUndefined();
+  });
   // Given: ファイルツリーを展開したフォルダタブと別タブ
   // When: タブを往復してから再起動相当のinitを行う
   // Then: 閲覧元リポジトリだけ保持し、Git内部状態や再起動状態を保存しない
@@ -120,7 +303,7 @@ describe("Feature: TabManager", () => {
     const workspace = { capture: () => state, reset: () => { state = null; }, restore: (value: TabWorkspaceState | null) => { state = value; } };
     const manager = new TabManager(host, doc, { onChange: () => {}, workspace }, registeredCommandPorts);
     const tabs: StoredTabs = { tabs: [{ id: "git", path: "C:/repo", kind: "folder", label: "repo" }, { id: "other", path: "C:/other", kind: "folder", label: "other" }], activeId: "git" };
-    await manager.init(tabs, null, null);
+    await manager.init(tabs, null);
     const saved: TabWorkspaceState = {
       kind: "folder", expandedRelPaths: [".git"], search: null,
       gitPreviewPath: "C:/repo/.git",
@@ -130,7 +313,7 @@ describe("Feature: TabManager", () => {
     await manager.activate("git");
     expect(state).toEqual(saved);
     expect(JSON.stringify(manager.state)).not.toContain("gitPreviewPath");
-    await manager.init(manager.state, null, null);
+    await manager.init(manager.state, null);
     expect(state).toBeNull();
   });
   beforeEach(async () => {
@@ -147,7 +330,7 @@ describe("Feature: TabManager", () => {
   it("Scenario: 起動時はactive tabのリンクだけを開く", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
 
     expect(doc.openPath).toHaveBeenCalledTimes(1);
     expect(doc.openPath).toHaveBeenCalledWith("C:\\work\\a.txt", false);
@@ -169,7 +352,7 @@ describe("Feature: TabManager", () => {
       activeId: "second",
     };
 
-    await manager.init(duplicateStored, null, null);
+    await manager.init(duplicateStored, null);
 
     expect(manager.state.tabs.map((tab) => tab.id)).toEqual(["first", "second"]);
     expect(manager.state.activeId).toBe("second");
@@ -193,7 +376,7 @@ describe("Feature: TabManager", () => {
         },
       ],
       activeId: "a",
-    }, null, null);
+    }, null);
 
     manager.rebasePaths({
       oldAbsolute: "C:\\work\\docs",
@@ -223,7 +406,7 @@ describe("Feature: TabManager", () => {
         selectedRelPath: "docs/data.zip::Sheet1",
       }],
       activeId: "folder",
-    }, null, null);
+    }, null);
 
     manager.rebasePaths({
       oldAbsolute: "C:\\work\\docs\\data.zip",
@@ -259,7 +442,7 @@ describe("Feature: TabManager", () => {
     };
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
 
-    await manager.init(folderTabs, null, null);
+    await manager.init(folderTabs, null);
 
     expect(doc.selectEntry).toHaveBeenCalledWith("sub\\memo.txt");
     expect(doc.goTo).not.toHaveBeenCalled();
@@ -286,7 +469,7 @@ describe("Feature: TabManager", () => {
     };
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
 
-    await expect(manager.init(folderTabs, null, null)).resolves.toBeUndefined();
+    await expect(manager.init(folderTabs, null)).resolves.toBeUndefined();
     expect(doc.openPath).toHaveBeenCalledWith("C:\\work", false);
     expect(manager.state.tabs[0].selectedRelPath).toBe("deleted.txt");
   });
@@ -302,7 +485,7 @@ describe("Feature: TabManager", () => {
     await manager.init({
       tabs: [{ id: "folder", path: "C:\\work", kind: "folder", label: "work" }],
       activeId: "folder",
-    }, null, null);
+    }, null);
     doc.current.folderRoot = "C:\\work";
     doc.current.selectedRelPath = "sub/memo.txt";
     doc.current.dirty = true;
@@ -327,7 +510,7 @@ describe("Feature: TabManager", () => {
     await manager.init({
       tabs: [{ id: "folder", path: "C:\\work", kind: "folder", label: "work" }],
       activeId: "folder",
-    }, null, null);
+    }, null);
     doc.current.folderRoot = "C:\\work";
     doc.current.selectedRelPath = "Docs/Data.zip::Readme.txt";
     doc.current.dirty = true;
@@ -352,7 +535,7 @@ describe("Feature: TabManager", () => {
     await manager.init({
       tabs: [{ id: "folder", path: "C:\\work", kind: "folder", label: "work" }],
       activeId: "folder",
-    }, null, null);
+    }, null);
     doc.current.folderRoot = "C:\\work";
     doc.current.selectedRelPath = "memo.bin";
     vi.mocked(doc.confirmDiscard).mockClear();
@@ -378,7 +561,7 @@ describe("Feature: TabManager", () => {
         { id: "other", path: "C:\\work\\other.txt", kind: "file", label: "other.txt" },
       ],
       activeId: "folder",
-    }, null, null);
+    }, null);
 
     await manager.navigateEntry("memo.bin", "md");
     await manager.activate("other");
@@ -400,7 +583,7 @@ describe("Feature: TabManager", () => {
     await manager.init({
       tabs: [{ id: "file", path: "C:\\work\\memo.bin", kind: "file", label: "memo.bin" }],
       activeId: "file",
-    }, null, null);
+    }, null);
 
     await expect(manager.openCurrentAs("md")).resolves.toBe(true);
 
@@ -419,7 +602,7 @@ describe("Feature: TabManager", () => {
     await manager.init({
       tabs: [{ id: "archive", path: "C:\\work\\archive.zip", kind: "file", label: "archive.zip" }],
       activeId: "archive",
-    }, null, null);
+    }, null);
     doc.current.archivePath = "C:\\work\\archive.zip";
     doc.current.archiveEntry = "memo.bin";
     doc.current.selectedRelPath = "memo.bin";
@@ -448,7 +631,7 @@ describe("Feature: TabManager", () => {
         selectedRelPath: "archive.zip::memo.bin",
       }],
       activeId: "folder",
-    }, null, null);
+    }, null);
     vi.mocked(doc.selectEntry).mockClear();
 
     await expect(manager.openCurrentAs("txt")).resolves.toBe(true);
@@ -473,7 +656,7 @@ describe("Feature: TabManager", () => {
         selectedRelPath: "memo.txt",
       }],
       activeId: "folder",
-    }, null, null);
+    }, null);
     doc.current.folderRoot = "C:\\work";
     doc.current.selectedRelPath = "memo.txt";
     doc.current.displayPath = "C:\\work\\memo.txt";
@@ -511,7 +694,7 @@ describe("Feature: TabManager", () => {
         selectedRelPath: "archive.zip::memo.txt",
       }],
       activeId: "folder",
-    }, null, null);
+    }, null);
     doc.current.folderRoot = "C:\\work";
     doc.current.selectedRelPath = "archive.zip::memo.txt";
     doc.current.archivePath = "C:\\work\\archive.zip";
@@ -545,7 +728,7 @@ describe("Feature: TabManager", () => {
         { id: "other", path: "C:\\work\\other.txt", kind: "file", label: "other.txt" },
       ],
       activeId: "folder",
-    }, null, null);
+    }, null);
     await manager.navigateEntry("archive.bin", "zip");
     await manager.navigateEntry("archive.bin::memo.txt");
 
@@ -569,7 +752,7 @@ describe("Feature: TabManager", () => {
         { id: "other", path: "C:\\work\\other.txt", kind: "file", label: "other.txt" },
       ],
       activeId: "folder",
-    }, null, null);
+    }, null);
     await manager.navigateEntry("archive.bin", "7z");
     await manager.navigateEntry("archive.bin::memo.txt", "txt");
     await manager.activate("other");
@@ -594,7 +777,7 @@ describe("Feature: TabManager", () => {
         { id: "other", path: "C:\\work\\other.txt", kind: "file", label: "other.txt" },
       ],
       activeId: "folder",
-    }, null, null);
+    }, null);
     await manager.navigateEntry("Docs/Archive.bin", "7z");
     await manager.navigateEntry("Docs/Archive.bin::Readme.txt", "txt");
     doc.current.selectedRelPath = "docs/archive.bin::Readme.txt";
@@ -618,7 +801,7 @@ describe("Feature: TabManager", () => {
     await manager.init({
       tabs: [{ id: "folder", path: "C:\\work", kind: "folder", label: "work" }],
       activeId: "folder",
-    }, null, null);
+    }, null);
 
     await manager.navigateEntry("archive.bin", "7z");
     await manager.navigateEntry("archive.bin::memo.txt", "txt");
@@ -643,7 +826,7 @@ describe("Feature: TabManager", () => {
         { id: "other", path: "C:\\work\\other.txt", kind: "file", label: "other.txt" },
       ],
       activeId: "archive",
-    }, null, null);
+    }, null);
     doc.current.archivePath = "C:\\work\\archive.bin";
     doc.current.folderRoot = null;
     doc.current.selectedRelPath = "memo.bin";
@@ -672,7 +855,7 @@ describe("Feature: TabManager", () => {
     await manager.init({
       tabs: [{ id: "folder", path: "C:\\work", kind: "folder", label: "work" }],
       activeId: "folder",
-    }, null, null);
+    }, null);
 
     await manager.navigateEntry("archive.bin", "zip");
     await manager.navigatePath("C:\\other");
@@ -692,7 +875,7 @@ describe("Feature: TabManager", () => {
   it("Scenario: 終了前に未保存メモの確認結果を待つ", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
     doc.current.dirty = true;
     vi.mocked(doc.confirmDiscard).mockResolvedValue(false);
 
@@ -709,7 +892,7 @@ describe("Feature: TabManager", () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
     const onProceed = vi.fn();
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
     vi.mocked(doc.confirmDiscard).mockClear();
 
     await expect(manager.saveForExit(onProceed)).resolves.toBe(true);
@@ -724,7 +907,7 @@ describe("Feature: TabManager", () => {
   it("Scenario: tab移動前に未保存確認を通し、移動先のリンクを読み込む", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
     await manager.activate("b");
 
     expect(doc.confirmDiscard).toHaveBeenCalledTimes(1);
@@ -754,7 +937,7 @@ describe("Feature: TabManager", () => {
         { id: "c", path: "C:\\work\\c.txt", kind: "file", label: "c.txt" },
       ],
       activeId: "a",
-    }, null, null);
+    }, null);
 
     const first = manager.activate("b");
     await vi.waitFor(() => expect(continueFirst).toBeTypeOf("function"));
@@ -778,7 +961,7 @@ describe("Feature: TabManager", () => {
       onChange: () => {},
       onHistoryChange: (state) => navigationStates.push(state),
     }, registeredCommandPorts);
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
     vi.mocked(doc.captureViewState).mockReturnValueOnce({
       anchor: { line: 4, col: 1 }, caret: { line: 4, col: 1 }, topLine: 4, wrapIntraLinePx: 0, scrollLeft: 0,
     });
@@ -812,7 +995,7 @@ describe("Feature: TabManager", () => {
         id: "folder", path: "C:\\work", kind: "folder", label: "work", selectedRelPath: "a.txt",
       }],
       activeId: "folder",
-    }, null, null);
+    }, null);
     vi.mocked(doc.captureViewState).mockReturnValueOnce({
       anchor: { line: 6, col: 0 }, caret: { line: 6, col: 0 }, topLine: 6, wrapIntraLinePx: 0, scrollLeft: 0,
     });
@@ -831,7 +1014,7 @@ describe("Feature: TabManager", () => {
   it("Scenario: 戻った後に別のファイルへ移動すると進む履歴を破棄する", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
     await manager.navigatePath("C:\\work\\c.txt");
     await manager.goBack();
     await manager.navigatePath("C:\\work\\d.txt");
@@ -845,7 +1028,7 @@ describe("Feature: TabManager", () => {
   it("Scenario: 戻る履歴は10件まで保持する", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
     const paths = Array.from({ length: 12 }, (_, index) => `C:\\work\\${String.fromCharCode(99 + index)}.txt`);
     for (const path of paths) await manager.navigatePath(path);
 
@@ -861,7 +1044,7 @@ describe("Feature: TabManager", () => {
   it("Scenario: ナビゲーション中の連打は2件目を実行しない", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
     let release!: (result: boolean) => void;
     vi.mocked(doc.openPath).mockImplementationOnce((path) => new Promise((resolve) => {
       release = (result) => {
@@ -890,7 +1073,7 @@ describe("Feature: TabManager", () => {
       onChange: () => {},
       onHistoryChange: (state) => navigationStates.push(state),
     }, registeredCommandPorts);
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
     await manager.navigatePath("C:\\work\\c.txt");
     vi.mocked(doc.openPath).mockRejectedValueOnce(new Error("history load failed"));
 
@@ -908,7 +1091,7 @@ describe("Feature: TabManager", () => {
     const { doc, host } = fixture();
     const onError = vi.fn();
     const manager = new TabManager(host, doc, { onChange: () => {}, onError }, registeredCommandPorts);
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
     vi.mocked(doc.openPath)
       .mockRejectedValueOnce(new Error("transition failed"))
       .mockRejectedValueOnce(new Error("restore failed"));
@@ -927,7 +1110,7 @@ describe("Feature: TabManager", () => {
       onChange: () => {},
       onHistoryChange: (state) => navigationStates.push(state),
     }, registeredCommandPorts);
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
     vi.mocked(doc.openPath).mockResolvedValueOnce(false);
 
     expect(await manager.navigatePath("C:\\work\\c.txt")).toBe(false);
@@ -959,7 +1142,7 @@ describe("Feature: TabManager", () => {
     await manager.init({
       tabs: [{ id: "folder", path: "C:\\work", kind: "folder", label: "work" }],
       activeId: "folder",
-    }, null, null);
+    }, null);
     workspace.reset.mockClear();
     vi.mocked(doc.openPath).mockResolvedValueOnce(false);
 
@@ -979,7 +1162,7 @@ describe("Feature: TabManager", () => {
     await manager.init({
       tabs: [{ id: "folder", path: "C:\\work", kind: "folder", label: "work", selectedRelPath: "a.txt" }],
       activeId: "folder",
-    }, null, null);
+    }, null);
     await manager.navigateEntry("b.txt");
     vi.mocked(doc.selectEntry).mockResolvedValueOnce(false);
 
@@ -994,7 +1177,7 @@ describe("Feature: TabManager", () => {
   it("Scenario: タブごとに移動履歴を分離し、再起動相当の初期化で履歴を消去する", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
     await manager.navigatePath("C:\\work\\c.txt");
     await manager.activate("b");
 
@@ -1004,7 +1187,7 @@ describe("Feature: TabManager", () => {
     await manager.activate("a");
     expect(await manager.goBack()).toBe(true);
 
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
     expect(await manager.goBack()).toBe(false);
   });
 
@@ -1014,7 +1197,7 @@ describe("Feature: TabManager", () => {
   it("Scenario: active tabを検索結果の飛び先付きで開いたら、その場で位置を適用する", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
 
     await manager.open("C:\\work\\a.txt", { line: 8, col: 3 });
 
@@ -1028,7 +1211,7 @@ describe("Feature: TabManager", () => {
   it("Scenario: 通常のopenは同じパスの既存タブを再利用する", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
 
     await manager.open("C:\\work\\b.txt");
 
@@ -1045,7 +1228,7 @@ describe("Feature: TabManager", () => {
   it("Scenario: 明示的新規タブは同じパスを重複して開く", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
 
     await expect(manager.openInNewTab("C:\\work\\a.txt")).resolves.toBe(true);
 
@@ -1066,7 +1249,7 @@ describe("Feature: TabManager", () => {
   it("Scenario: Markdownリンクを起点タブの直後へ重複タブとして開く", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
 
     await expect(manager.openMarkdownLink("C:\\work\\a.txt", "a", "install")).resolves.toBe(true);
 
@@ -1085,7 +1268,7 @@ describe("Feature: TabManager", () => {
   it("Scenario: Markdownリンク先が存在しない場合はタブを増やさない", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
     vi.mocked(doc.openPath).mockResolvedValueOnce(false);
     const before = manager.state;
 
@@ -1101,7 +1284,7 @@ describe("Feature: TabManager", () => {
   it("Scenario: 起点タブが消えたMarkdownリンクはタブを増やさない", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
     const before = manager.state;
 
     await expect(manager.openMarkdownLink("C:\\work\\missing.md", "gone", null)).resolves.toBe(false);
@@ -1116,7 +1299,7 @@ describe("Feature: TabManager", () => {
   it("Scenario: active tabの飛び先適用に失敗しても、消費済みの要求を残さない", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
     vi.mocked(doc.goTo).mockImplementationOnce(() => { throw new Error("invalid position"); });
 
     await expect(manager.open("C:\\work\\a.txt", { line: 8, col: 3 })).rejects.toThrow("invalid position");
@@ -1130,7 +1313,7 @@ describe("Feature: TabManager", () => {
   it("Scenario: 未保存確認で既存tabへの移動を取り消したら飛び先を残さない", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
     vi.mocked(doc.confirmDiscard).mockResolvedValue(false);
 
     await manager.open("C:\\work\\b.txt", { line: 8, col: 3 });
@@ -1147,7 +1330,7 @@ describe("Feature: TabManager", () => {
   it("Scenario: 新規tabの作成を取り消した結果を呼び出し元へ返す", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
     vi.mocked(doc.confirmDiscard).mockResolvedValue(false);
 
     await expect(manager.open("C:\\work\\c.txt")).resolves.toBe(false);
@@ -1164,7 +1347,7 @@ describe("Feature: TabManager", () => {
     const { doc, host } = fixture();
     const changes: StoredTabs[] = [];
     const manager = new TabManager(host, doc, { onChange: (state) => changes.push(state) }, registeredCommandPorts);
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
     changes.length = 0;
     vi.mocked(doc.openPath).mockRejectedValueOnce(new Error("load failed"));
 
@@ -1182,7 +1365,7 @@ describe("Feature: TabManager", () => {
   it("Scenario: tabごとに選択位置と表示位置を復元する", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
     await manager.activate("b");
     await manager.activate("a");
 
@@ -1245,7 +1428,7 @@ describe("Feature: TabManager", () => {
         { id: "b", path: "C:\\work", kind: "folder", label: "work (2)" },
       ],
       activeId: "a",
-    }, null, null);
+    }, null);
     await manager.activate("b");
     currentState = bState;
     await manager.activate("a");
@@ -1291,7 +1474,7 @@ describe("Feature: TabManager", () => {
         { id: "b", path: "C:\\other", kind: "folder", label: "other" },
       ],
       activeId: "a",
-    }, null, null);
+    }, null);
     restored.length = 0;
 
     await manager.activate("b");
@@ -1334,7 +1517,7 @@ describe("Feature: TabManager", () => {
     await manager.init({
       tabs: [{ id: "a", path: "C:\\work", kind: "folder", label: "work" }],
       activeId: "a",
-    }, null, null);
+    }, null);
     currentState = aState;
     restored.length = 0;
 
@@ -1377,7 +1560,7 @@ describe("Feature: TabManager", () => {
     await manager.init({
       tabs: [{ id: "folder", path: "C:\\work", kind: "folder", label: "work", fileTreeWidth: 300 }],
       activeId: "folder",
-    }, null, null);
+    }, null);
 
     expect(restored).toEqual([{
       kind: null,
@@ -1425,7 +1608,7 @@ describe("Feature: TabManager", () => {
     await manager.init({
       tabs: [{ id: "folder", path: "C:\\work", kind: "folder", label: "work" }],
       activeId: "folder",
-    }, null, null);
+    }, null);
     changes.length = 0;
 
     await expect(manager.saveForExit()).resolves.toBe(true);
@@ -1453,7 +1636,7 @@ describe("Feature: TabManager", () => {
         { id: "b", path: "C:\\other", kind: "folder", label: "other" },
       ],
       activeId: "a",
-    }, null, null);
+    }, null);
     current.workspace = aState;
     current.query = aQuery;
     await manager.activate("b");
@@ -1498,7 +1681,7 @@ describe("Feature: TabManager", () => {
         { id: "b", path: "C:\\work", kind: "folder", label: "work (2)" },
       ],
       activeId: "a",
-    }, null, null);
+    }, null);
     restored.length = 0;
     currentQuery = aQuery;
 
@@ -1517,7 +1700,7 @@ describe("Feature: TabManager", () => {
     const { doc, host } = fixture();
     const changes: StoredTabs[] = [];
     const manager = new TabManager(host, doc, { onChange: (state) => changes.push(state) }, registeredCommandPorts);
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
     changes.length = 0;
     vi.mocked(doc.captureViewState).mockReturnValue({
       anchor: { line: 12, col: 2 },
@@ -1549,7 +1732,7 @@ describe("Feature: TabManager", () => {
   it("Scenario: 保存完了時にtabが再描画されても要求したtabへ切り替える", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
     vi.mocked(doc.confirmDiscard).mockImplementation(async (onProceed) => {
       manager.syncActive(doc.current);
       await onProceed?.();
@@ -1568,7 +1751,7 @@ describe("Feature: TabManager", () => {
   it("Scenario: 確認処理がfalseかつdirtyのままなら切り替えない", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
     doc.current.dirty = true;
     vi.mocked(doc.confirmDiscard).mockResolvedValue(false);
 
@@ -1585,7 +1768,7 @@ describe("Feature: TabManager", () => {
   it("Scenario: 未保存確認の例外後もtab切替を再試行できる", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
     const error = new Error("confirm failed");
     vi.mocked(doc.confirmDiscard).mockRejectedValueOnce(error);
 
@@ -1601,7 +1784,7 @@ describe("Feature: TabManager", () => {
   it("Scenario: 変更中のactive tabだけファイル名の先頭に印を付ける", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
 
     doc.current.dirty = true;
     manager.syncActive(doc.current);
@@ -1616,7 +1799,7 @@ describe("Feature: TabManager", () => {
   it("Scenario: 保存処理へ渡した継続処理が、確定した移動先tabを開く", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
     let continuation: (() => void | Promise<void>) | undefined;
     vi.mocked(doc.confirmDiscard).mockImplementation((onProceed) => new Promise((resolve) => {
       continuation = async () => {
@@ -1677,7 +1860,7 @@ describe("Feature: TabManager", () => {
       return true;
     });
 
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
     doc.current.dirty = true;
     await manager.activate("b");
 
@@ -1752,7 +1935,7 @@ describe("Feature: TabManager", () => {
         { id: "b", path: "C:\\work\\b.txt", kind: "file", label: "b.txt" },
       ],
       activeId: "folder",
-    }, null, null);
+    }, null);
     doc.current.dirty = true;
     await manager.activate("b");
 
@@ -1772,7 +1955,7 @@ describe("Feature: TabManager", () => {
   it("Scenario: tab列の末尾にある＋で新規tabを追加する", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
 
     host.querySelector<HTMLButtonElement>(".doc-tab-add")!.click();
     await vi.waitFor(() => expect(host.querySelectorAll(".doc-tab")).toHaveLength(3));
@@ -1793,7 +1976,7 @@ describe("Feature: TabManager", () => {
     await manager.init({
       tabs: [{ id: "a", path: "C:\\work", kind: "folder", label: "work" }],
       activeId: "a",
-    }, null, null);
+    }, null);
     current.workspace = aState;
     current.query = aQuery;
 
@@ -1803,10 +1986,10 @@ describe("Feature: TabManager", () => {
     expect(current.query).toBeNull();
   });
 
-  // Feature: ＋から作る無題メモの既定保存先
+  // Feature: 従来入口から作る無題メモの既定保存先
   // Scenario: カレントタブがフォルダの場合はフォルダを下書き保存先にする
   // Given: C:\workのフォルダタブがアクティブ
-  // When: タブバーの＋を押す
+  // When: 従来の新規タブ作成を実行する
   // Then: 新規文書へC:\workを渡す
   it("Scenario: フォルダタブから作る無題メモは同じフォルダを使う", async () => {
     const { doc, host } = fixture();
@@ -1814,9 +1997,9 @@ describe("Feature: TabManager", () => {
     await manager.init({
       tabs: [{ id: "folder", path: "C:\\work", kind: "folder", label: "work" }],
       activeId: "folder",
-    }, null, null);
+    }, null);
 
-    host.querySelector<HTMLButtonElement>(".doc-tab-add")!.click();
+    await manager.newBlank();
     await vi.waitFor(() => expect(doc.newFile).toHaveBeenLastCalledWith(false, "C:\\work"));
 
     expect(manager.state.tabs.at(-1)?.draftDirectory).toBe("C:\\work");
@@ -1824,7 +2007,7 @@ describe("Feature: TabManager", () => {
 
   // Scenario: カレントタブがファイルの場合はデスクトップを下書き保存先にする
   // Given: ファイルタブがアクティブで、デスクトップ取得口がC:\Users\sample\Desktopを返す
-  // When: タブバーの＋を押す
+  // When: 従来の新規タブ作成を実行する
   // Then: 新規文書へデスクトップを渡す
   it("Scenario: ファイルタブから作る無題メモはデスクトップを使う", async () => {
     const { doc, host } = fixture();
@@ -1833,9 +2016,9 @@ describe("Feature: TabManager", () => {
       onChange: () => {},
       defaultMemoDirectory,
     }, registeredCommandPorts);
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
 
-    host.querySelector<HTMLButtonElement>(".doc-tab-add")!.click();
+    await manager.newBlank();
     await vi.waitFor(() => expect(doc.newFile).toHaveBeenLastCalledWith(false, "C:\\Users\\sample\\Desktop"));
 
     expect(defaultMemoDirectory).toHaveBeenCalledOnce();
@@ -1844,7 +2027,7 @@ describe("Feature: TabManager", () => {
 
   // Scenario: デスクトップ取得に失敗しても無題タブ作成を中断しない
   // Given: ファイルタブがアクティブで、デスクトップ取得口が失敗する
-  // When: タブバーの＋を押す
+  // When: 従来の新規タブ作成を実行する
   // Then: エラーを通知し、保存先なしの無題タブを作成する
   it("Scenario: デスクトップ取得失敗時も無題タブを作成する", async () => {
     const { doc, host } = fixture();
@@ -1856,9 +2039,9 @@ describe("Feature: TabManager", () => {
       defaultMemoDirectory,
       onError,
     }, registeredCommandPorts);
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
 
-    host.querySelector<HTMLButtonElement>(".doc-tab-add")!.click();
+    await manager.newBlank();
     await vi.waitFor(() => expect(manager.state.tabs.at(-1)?.kind).toBe("blank"));
 
     expect(onError).toHaveBeenCalledWith(error, "新規メモの既定保存先を取得できませんでした");
@@ -1876,7 +2059,7 @@ describe("Feature: TabManager", () => {
     await manager.init({
       tabs: [{ id: "blank", path: null, kind: "blank", label: "無題", draftDirectory: "C:\\work" }],
       activeId: "blank",
-    }, null, null);
+    }, null);
 
     expect(doc.newFile).toHaveBeenCalledWith(false, "C:\\work");
   });
@@ -1892,7 +2075,7 @@ describe("Feature: TabManager", () => {
       onChange: () => {},
       defaultMemoDirectory,
     }, registeredCommandPorts);
-    await manager.init({ tabs: [], activeId: null }, null, null);
+    await manager.init({ tabs: [], activeId: null }, null);
 
     expect(defaultMemoDirectory).toHaveBeenCalledOnce();
     expect(doc.newFile).toHaveBeenCalledWith(false, "C:\\Users\\sample\\Desktop");
@@ -1912,7 +2095,7 @@ describe("Feature: TabManager", () => {
     await manager.init({
       tabs: [{ id: "a", path: "C:\\work\\a.txt", kind: "file", label: "a.txt" }],
       activeId: "a",
-    }, null, null);
+    }, null);
     doc.newFile.mockClear();
 
     await manager.close("a");
@@ -1942,7 +2125,7 @@ describe("Feature: TabManager", () => {
         { id: "c", path: "C:\\work\\c.txt", kind: "file", label: "c.txt" },
       ],
       activeId: closedId,
-    }, null, null);
+    }, null);
 
     await manager.close(closedId);
 
@@ -1976,7 +2159,7 @@ describe("Feature: TabManager", () => {
         },
       ],
       activeId: "b",
-    }, null, null);
+    }, null);
     vi.mocked(doc.captureViewState).mockReturnValue(viewState);
 
     await manager.close("b");
@@ -2008,7 +2191,7 @@ describe("Feature: TabManager", () => {
         { id: "b", path: "C:\\other", kind: "folder", label: "other" },
       ],
       activeId: "a",
-    }, null, null);
+    }, null);
     current.workspace = aState;
     current.query = aQuery;
     await manager.activate("b");
@@ -2027,7 +2210,7 @@ describe("Feature: TabManager", () => {
   it("Scenario: 復活時の一時的な読込失敗で閉じたtab履歴を失わない", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
     await manager.close("b");
     let bAttempts = 0;
     vi.mocked(doc.openPath).mockImplementation(async (path) => {
@@ -2057,7 +2240,7 @@ describe("Feature: TabManager", () => {
     await manager.init({
       tabs: [stored.tabs[0], { id: "draft", path: null, kind: "blank", label: "無題" }],
       activeId: "draft",
-    }, null, null);
+    }, null);
     doc.current.dirty = true;
     vi.mocked(doc.confirmDiscard).mockImplementation(async (onProceed) => {
       doc.current.savePath = "C:\\work\\memo.md";
@@ -2089,7 +2272,7 @@ describe("Feature: TabManager", () => {
       doc.current.dirty = false;
     });
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
-    await manager.init({ tabs: [stored.tabs[0]], activeId: "a" }, null, null);
+    await manager.init({ tabs: [stored.tabs[0]], activeId: "a" }, null);
 
     await manager.close("a");
     await manager.reopenLastClosed();
@@ -2114,7 +2297,7 @@ describe("Feature: TabManager", () => {
     await manager.init({
       tabs: [...stored.tabs, { id: "c", path: "C:\\work\\c.txt", kind: "file", label: "c.txt" }],
       activeId: "a",
-    }, null, null);
+    }, null);
 
     host.querySelectorAll<HTMLElement>(".doc-tab")[1]
       .dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
@@ -2133,10 +2316,10 @@ describe("Feature: TabManager", () => {
   it("Scenario: 再初期化後は閉じたタブを復活しない", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
     await manager.close("b");
 
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
 
     await expect(manager.reopenLastClosed()).resolves.toBe(false);
   });
@@ -2158,11 +2341,11 @@ describe("Feature: TabManager", () => {
       activeId: "a",
     };
 
-    await manager.init(tabs, null, null);
+    await manager.init(tabs, null);
     current.workspace = aState;
     current.query = aQuery;
     await manager.activate("b");
-    await manager.init(tabs, null, null);
+    await manager.init(tabs, null);
 
     expect(current.workspace).toBeNull();
     expect(current.query).toBeNull();
@@ -2174,7 +2357,7 @@ describe("Feature: TabManager", () => {
   it("Scenario: 一括追加は重複を除き、active tabを切り替えない", async () => {
     const { doc, host } = fixture();
     const manager = new TabManager(host, doc, { onChange: () => {} }, registeredCommandPorts);
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
     manager.addLinks([
       { path: "C:\\work\\a.txt", kind: "file" },
       { path: "C:\\work\\src", kind: "folder" },
@@ -2196,7 +2379,7 @@ describe("Feature: TabManager", () => {
     const { doc, host } = fixture();
     const changes: StoredTabs[] = [];
     const manager = new TabManager(host, doc, { onChange: (state) => changes.push(state) }, registeredCommandPorts);
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
     const [a, b] = host.querySelectorAll<HTMLElement>(".doc-tab");
 
     dragOnto(b, a, 0.1);
@@ -2215,7 +2398,7 @@ describe("Feature: TabManager", () => {
     const { doc, host } = fixture();
     const onDetach = vi.fn(async () => true);
     const manager = new TabManager(host, doc, { onChange: () => {}, onDetach }, registeredCommandPorts);
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
     const a = host.querySelector<HTMLElement>(".doc-tab")!;
     document.elementFromPoint = () => null;
     const at = (type: string, x: number) =>
@@ -2246,7 +2429,7 @@ describe("Feature: TabManager", () => {
     const { doc, host } = fixture();
     const onDetach = vi.fn(async () => true);
     const manager = new TabManager(host, doc, { onChange: () => {}, onDetach }, registeredCommandPorts);
-    await manager.init(stored, null, null);
+    await manager.init(stored, null);
     const a = host.querySelector<HTMLElement>(".doc-tab")!;
     document.elementFromPoint = () => document.body;
     const at = (type: string, x: number) =>
@@ -2271,7 +2454,7 @@ describe("Feature: TabManager", () => {
     await manager.init({
       tabs: [{ id: "file", path: "C:\\work\\memo.txt", kind: "file", label: "memo.txt" }],
       activeId: "file",
-    }, null, null);
+    }, null);
 
     registeredCommandPorts.promptFields.mockResolvedValueOnce(["メモ帳", "notepad {file}"]);
     const tab = host.querySelector<HTMLElement>(".doc-tab")!;
@@ -2307,7 +2490,7 @@ describe("Feature: TabManager", () => {
     await manager.init({
       tabs: [{ id: "file", path: "C:\\work\\memo.txt", kind: "file", label: "memo.txt" }],
       activeId: "file",
-    }, null, null);
+    }, null);
 
     const tab = host.querySelector<HTMLElement>(".doc-tab")!;
     tab.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
@@ -2339,7 +2522,7 @@ describe("Feature: TabManager", () => {
           { id: "folder", path: "C:\\work\\docs", kind: "folder", label: "docs" },
         ],
         activeId: "file",
-      }, null, null);
+      }, null);
 
       const tabs = host.querySelectorAll<HTMLElement>(".doc-tab");
       tabs[0].dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
@@ -2415,7 +2598,7 @@ describe("Feature: TabManager", () => {
       await manager.init({
         tabs: [{ id: "file", path: "C:\\work\\memo.txt", kind: "file", label: "memo.txt" }],
         activeId: "file",
-      }, null, null);
+      }, null);
 
       host.querySelector<HTMLElement>(".doc-tab")!.dispatchEvent(
         new MouseEvent("contextmenu", { bubbles: true }),
@@ -2442,7 +2625,7 @@ describe("Feature: TabManager", () => {
     await manager.init({
       tabs: [{ id: "blank", path: null, kind: "blank", label: "無題" }],
       activeId: "blank",
-    }, null, null);
+    }, null);
 
     host.querySelector<HTMLElement>(".doc-tab")!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
 

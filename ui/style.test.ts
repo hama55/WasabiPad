@@ -168,10 +168,11 @@ describe("Feature: pane toggle placement", () => {
   // Scenario: 外部プレビュー更新操作を共通ツールバーへ移す
   // Given: プレビューのツールバーに更新ボタンがある
   // When: 親の重ね表示とボタンの幅指定を調べる
-  // Then: 親の更新ボタンはなく、3ボタンが同じ幅のflex itemになる
+  // Then: 親の更新ボタンはなく、4ボタンが同じ幅のflex itemになる
   it("Scenario: 外部プレビュー更新ボタンで全画面ボタンを覆わない", () => {
     expect(indexHtml).not.toContain('id="preview-refresh"');
-    expect(viewerStyle).toMatch(/#viewer-fullscreen,\s*#viewer-close,\s*#viewer-refresh\s*\{[^}]*width:\s*36px;\s*flex:\s*none;/s);
+    expect(viewerStyle).toMatch(/#viewer-fullscreen,\s*#viewer-close,\s*#viewer-output-folder,\s*#viewer-refresh\s*\{[^}]*width:\s*36px;\s*flex:\s*none;/s);
+    expect(viewerHtml).toMatch(/id="viewer-output-folder"[^>]*aria-label="生成結果のフォルダを開く"[^>]*hidden disabled[^>]*>[\s\S]*?id="viewer-refresh"/s);
   });
 
   // Feature: 検索バー表示中のプレビューを開く操作

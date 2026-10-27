@@ -37,16 +37,17 @@ export class AddressBar {
   private input: HTMLInputElement;
   private breadcrumb: HTMLElement;
   private folderRoot: string | null = null;
+  private draftPath: string | null = null;
 
   constructor(private host: HTMLElement, private ports: AddressBarPorts) {
     this.input = this.pick<HTMLInputElement>("addressbar");
     this.breadcrumb = this.pick("addressbar-breadcrumb");
 
     this.input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && this.path) this.ports.onOpen(this.path);
-      else if (e.key === "Escape") this.render(this.input.value, this.folderRoot);
+      if (e.key === "Enter" && this.path && !this.isDraftPath(this.path)) this.ports.onOpen(this.path);
+      else if (e.key === "Escape") this.renderPath(this.input.value);
     });
-    this.input.addEventListener("blur", () => this.render(this.input.value, this.folderRoot));
+    this.input.addEventListener("blur", () => this.renderPath(this.input.value));
     this.breadcrumb.addEventListener("click", () => this.edit());
     this.pick("addressbar-fav").addEventListener("click", ports.onFavorite);
     this.pick("addressbar-save").addEventListener("click", ports.onSave);
@@ -66,9 +67,18 @@ export class AddressBar {
     return this.input.value.trim();
   }
 
-  render(path: string, folderRoot: string | null = null) {
+  render(path: string, folderRoot: string | null = null, draft = false) {
     this.folderRoot = folderRoot;
-    const folderRootKey = folderRoot ? comparablePath(folderRoot) : null;
+    this.draftPath = draft ? path : null;
+    this.renderPath(path);
+  }
+
+  private isDraftPath(path: string): boolean {
+    return this.draftPath !== null && comparablePath(path) === comparablePath(this.draftPath);
+  }
+
+  private renderPath(path: string) {
+    const folderRootKey = this.folderRoot ? comparablePath(this.folderRoot) : null;
     this.input.value = path;
     this.breadcrumb.replaceChildren(...pathSegments(path).flatMap((segment, index) => {
       const items: Node[] = [];
@@ -82,12 +92,18 @@ export class AddressBar {
       button.className = "addressbar-crumb";
       button.textContent = segment.label;
       button.title = segment.path;
+      if (this.isDraftPath(segment.path)) {
+        button.disabled = true;
+        button.title = `${segment.path}（未保存）`;
+      }
       const isFolderRoot = folderRootKey !== null && comparablePath(segment.path) === folderRootKey;
       if (isFolderRoot) {
         button.classList.add("addressbar-crumb-root");
         button.setAttribute("aria-current", "location");
       }
-      const open = (newTab: boolean) => this.ports.onOpen(segment.path, newTab);
+      const open = (newTab: boolean) => {
+        if (!this.isDraftPath(segment.path)) this.ports.onOpen(segment.path, newTab);
+      };
       button.addEventListener("click", (event) => {
         event.stopPropagation();
         open(!isFolderRoot);

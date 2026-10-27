@@ -12,6 +12,8 @@ import {
   readGitWorktreeFiles,
   readGitWorktreeDiff,
   takeViewerPayload,
+  readDiagramAsset,
+  readArchiveAsset,
   type ViewerFormat,
   type ViewerPayload,
   type ViewerSelection,
@@ -58,7 +60,7 @@ import {
   DEFAULT_CSV_DELIMITER,
 } from "./viewer-delimiter";
 import { openViewerDelimiterDialog } from "./viewer-delimiter-dialog";
-import { INLINE_PREVIEW_MESSAGES, type ExternalPreviewStatus } from "./inline-preview-protocol";
+import { INLINE_PREVIEW_MESSAGES, type PreviewStatus } from "./inline-preview-protocol";
 import { isViewerPayload } from "./viewer-payload";
 import {
   createArchiveAssetSession,
@@ -70,6 +72,8 @@ import {
   revokeImageUrl,
 } from "./viewer-image-source";
 import { scheduleMarkdownImageLoads } from "./viewer-markdown-images";
+import { composeDiagramPreview } from "./diagram-assets";
+import { createDiagramAssetReader, isDiagramSvgPath } from "./diagram-asset-reader";
 import {
   bindImagePan,
   createImagePreview,
@@ -82,6 +86,8 @@ import { createPdfPreview, markPdfLoadFailure } from "./viewer-pdf";
 import { createVideoPreview } from "./viewer-video";
 import { createHtmlPreview } from "./viewer-html";
 import {
+  bindExternalSourceNavigation,
+  bindExternalPreviewPreferences,
   commitTrustedExternalHtmlPreview,
   createTrustedExternalHtmlPreview,
   resolveExternalOutputSource,
@@ -119,19 +125,24 @@ const actionButtons = document.getElementById("viewer-csv-actions")!;
 const fullscreenButton = document.getElementById("viewer-fullscreen") as HTMLButtonElement;
 const previewCloseButton = document.getElementById("viewer-close") as HTMLButtonElement;
 const previewRefreshButton = document.getElementById("viewer-refresh") as HTMLButtonElement;
-const externalStatusBanner = document.getElementById("viewer-external-status")!;
-let externalStatus: ExternalPreviewStatus | null = null;
+const outputFolderButton = document.getElementById("viewer-output-folder") as HTMLButtonElement;
+let outputFolderAvailable = false;
+const previewStatusBanner = document.getElementById("viewer-external-status")!;
+let previewStatus: PreviewStatus | null = null;
 
-function syncExternalStatus() {
+function syncPreviewStatus() {
+  const external = previewStatus ? previewStatus.kind !== "standard" : !!currentExternalOutputPath;
   const kind = document.getElementById("viewer-preview-kind");
-  if (kind) kind.textContent = externalStatus || currentExternalOutputPath ? "外部プレビュー" : "標準プレビュー";
-  externalStatusBanner.hidden = externalStatus === null;
-  externalStatusBanner.textContent = externalStatus?.message ?? "";
-  previewRefreshButton.disabled = externalStatus?.busy ?? false;
-  previewRefreshButton.hidden = !isInlineViewer || (!externalStatus && !currentExternalOutputPath && currentFormat !== "video" && currentFormat !== "git");
-  const refreshLabel = externalStatus || currentExternalOutputPath ? "外部プレビューを更新" : currentFormat === "git" ? "Git履歴を更新" : "動画プレビューを更新";
+  if (kind) kind.textContent = external ? "外部プレビュー" : "標準プレビュー";
+  previewStatusBanner.hidden = previewStatus === null;
+  previewStatusBanner.textContent = previewStatus?.message ?? "";
+  previewRefreshButton.disabled = previewStatus?.busy ?? false;
+  previewRefreshButton.hidden = !isInlineViewer || (!external && currentFormat !== "video" && currentFormat !== "git");
+  const refreshLabel = external ? "外部プレビューを更新" : currentFormat === "git" ? "Git履歴を更新" : "動画プレビューを更新";
   previewRefreshButton.title = refreshLabel;
   previewRefreshButton.setAttribute("aria-label", refreshLabel);
+  outputFolderButton.hidden = !isInlineViewer || !external;
+  outputFolderButton.disabled = !outputFolderAvailable;
 }
 const summary = document.getElementById("viewer-summary")!;
 const themeButton = document.getElementById("viewer-theme")!;
@@ -152,6 +163,8 @@ let currentEffectiveExtension: string | null = null;
 let currentArchivePath: string | null = null;
 let currentArchiveEntry: string | null = null;
 let currentExternalOutputPath: string | null = null;
+let currentExternalRenderId: string | undefined;
+let externalSourceNavigationController: AbortController | null = null;
 let pendingMarkdownFragment: string | null = null;
 let markdownReadyForFragment = false;
 let renderGeneration = 0;
@@ -178,6 +191,7 @@ let viewerLayoutRuntime: WindowLayoutRuntime | null = null;
 let viewerDisposed = false;
 
 interface ViewerRenderState {
+  renderId?: string;
   format: ViewerFormat;
   text: string;
   selection: ViewerSelectionWithCaret | null;
@@ -202,10 +216,11 @@ function currentViewerRenderState(): ViewerRenderState {
     archivePath: currentArchivePath,
     archiveEntry: currentArchiveEntry,
     externalOutputPath: currentExternalOutputPath,
+    renderId: currentExternalRenderId,
   };
 }
 
-function viewerRenderStateOf(payload: ViewerPayload): ViewerRenderState {
+function viewerRenderStateOf(payload: ViewerPayload, renderId?: string): ViewerRenderState {
   return {
     format: payload.format,
     text: payload.text,
@@ -215,6 +230,7 @@ function viewerRenderStateOf(payload: ViewerPayload): ViewerRenderState {
     archivePath: payload.archive_path,
     archiveEntry: payload.archive_entry,
     externalOutputPath: payload.external_output_path ?? null,
+    renderId,
   };
 }
 
@@ -227,7 +243,12 @@ function publishViewerRenderState(state: ViewerRenderState, nextImageZoom: numbe
   currentArchivePath = state.archivePath;
   currentArchiveEntry = state.archiveEntry;
   currentExternalOutputPath = state.externalOutputPath;
-  syncExternalStatus();
+  currentExternalRenderId = state.renderId;
+  if (!state.externalOutputPath) {
+    externalSourceNavigationController?.abort();
+    externalSourceNavigationController = null;
+  }
+  syncPreviewStatus();
   imageZoom = nextImageZoom;
   const classificationSource = state.effectiveExtension && !archiveFormatExtension(state.effectiveExtension, state.archiveEntry)
     ? `${state.archiveEntry ?? state.sourcePath ?? "source"}.${state.effectiveExtension}`
@@ -279,9 +300,9 @@ function scrollCsvRows(rows: HTMLElement[], selection: ViewerSelection | null) {
   });
 }
 
-function notifyParentOfSelection() {
+function notifyParentOfSelection(target?: EventTarget | null) {
   if (!isInlineViewer || content.classList.contains("viewer-loading")) return;
-  const selection = viewerSelectionFromDom(content);
+  const selection = viewerSelectionFromDom(content, target);
   if (!selection) return;
   postToParent({
     type: INLINE_PREVIEW_MESSAGES.SELECTION_CHANGE_MESSAGE,
@@ -405,6 +426,8 @@ function disposeViewer() {
   gitPreview = null;
   if (viewerDisposed) return;
   viewerDisposed = true;
+  externalSourceNavigationController?.abort();
+  externalSourceNavigationController = null;
   renderAbortController.abort();
   renderGeneration += 1;
   disposeImagePan?.();
@@ -556,13 +579,18 @@ function bindViewerControls() {
     });
   }, { signal: viewerDomListeners.signal });
   previewRefreshButton.addEventListener("click", () => {
-    if (isInlineViewer && !externalStatus?.busy && (externalStatus || currentExternalOutputPath || currentFormat === "video" || currentFormat === "git")) {
+    if (isInlineViewer && !previewStatus?.busy && (previewStatus || currentExternalOutputPath || currentFormat === "video" || currentFormat === "git")) {
       postToParent({ type: INLINE_PREVIEW_MESSAGES.REFRESH_MESSAGE });
     }
   }, { signal: viewerDomListeners.signal });
-  const notifySelection = () => runViewerOperation(
+  outputFolderButton.addEventListener("click", () => {
+    if (isInlineViewer && !outputFolderButton.hidden && !outputFolderButton.disabled) {
+      postToParent({ type: INLINE_PREVIEW_MESSAGES.REVEAL_OUTPUT_MESSAGE });
+    }
+  }, { signal: viewerDomListeners.signal });
+  const notifySelection = (event: Event) => runViewerOperation(
     "プレビューの選択位置を通知できませんでした",
-    notifyParentOfSelection,
+    () => notifyParentOfSelection(event.target),
   );
   document.addEventListener("selectionchange", notifySelection, { signal: viewerDomListeners.signal });
   content.addEventListener("mouseup", notifySelection, { signal: viewerDomListeners.signal });
@@ -637,6 +665,20 @@ async function loadArchiveImages(
       const src = image.getAttribute(MARKDOWN_IMAGE_SOURCE_ATTRIBUTE)
         ?? image.getAttribute("src")
         ?? "";
+      if ((sourcePath || archivePath && archiveEntry) && isDiagramSvgPath(src)) {
+        const readImage = createDiagramAssetReader({ sourcePath: sourcePath ?? archivePath!, archivePath, archiveEntry }, { readLocal: readDiagramAsset, readArchive: readArchiveAsset });
+        const bytes = await readImage(src);
+        const preview = await composeDiagramPreview(new TextDecoder().decode(bytes), (relative) => readImage(relative, src));
+        if (!preview) throw new Error("図の編集情報がありません");
+        if (generation !== renderGeneration) return;
+        archiveUrl = imageUrlFromText(preview.svg, "image/svg+xml");
+        if (!retainAssetUrl(archiveUrl, generation)) { archiveUrl = null; return; }
+        image.src = archiveUrl;
+        if (preview.missing.length) image.title = "背景画像が見つからないか、読み込めません";
+        if (!await waitForImageLayout(image)) { if (generation === renderGeneration) markImageLoadFailure(image); return; }
+        keepArchiveUrl = true;
+        return;
+      }
       const entry = resolveArchiveAssetEntry(archiveEntry, src);
       if (archivePath && archiveEntry && entry) {
         archiveUrl = await archiveAssetSession.imageUrlFromArchive(archivePath, entry, imageMimeType(src));
@@ -753,7 +795,7 @@ async function renderAssetPreview(
   name: string,
   mimeType: string,
   createTarget: () => AssetPreviewTarget,
-  sourceText?: string,
+  sourceText?: string | (() => Promise<string>),
   cacheBustFile = false,
   state: ViewerRenderState = currentViewerRenderState(),
   nextImageZoom = imageZoom,
@@ -792,8 +834,9 @@ async function renderAssetPreview(
       committed = true;
     };
 
-    if (sourceText !== undefined) {
-      assetUrl = imageUrlFromText(sourceText, mimeType);
+    const preparedSourceText = typeof sourceText === "function" ? await sourceText() : sourceText;
+    if (preparedSourceText !== undefined) {
+      assetUrl = imageUrlFromText(preparedSourceText, mimeType);
       if (!retainAssetUrl(assetUrl, generation)) {
         assetUrl = null;
         discardTarget();
@@ -878,6 +921,14 @@ async function renderImage(
     : source;
   const mimeType = imageMimeType(classificationSource);
   const editedSvg = imageExtensionOf(classificationSource) === "svg" ? text : undefined;
+  const previewSvg = editedSvg && isDiagramSvgPath(source) ? async () => {
+    const readDiagramImage = createDiagramAssetReader(
+      { sourcePath: state.sourcePath ?? state.archivePath ?? source, archivePath: state.archivePath, archiveEntry: state.archiveEntry },
+      { readLocal: readDiagramAsset, readArchive: readArchiveAsset },
+    );
+    const preview = await composeDiagramPreview(editedSvg, (relative) => readDiagramImage(relative));
+    return preview?.svg ?? editedSvg;
+  } : editedSvg;
   return renderAssetPreview(name, mimeType, () => {
     const { wrapper, image } = createImagePreview(name);
     const dispose = bindImagePan(image, content);
@@ -893,7 +944,7 @@ async function renderImage(
       dispose,
       activate: () => { disposeImagePan = dispose; },
     };
-  }, editedSvg, true, state, nextImageZoom);
+  }, previewSvg, true, state, nextImageZoom);
 }
 
 async function renderPdf(
@@ -991,6 +1042,14 @@ async function renderExternalOutput(
         () => generation === renderGeneration,
         renderSignal,
       )) return false;
+      externalSourceNavigationController?.abort();
+      externalSourceNavigationController = new AbortController();
+      if (isInlineViewer && state.renderId) {
+        bindExternalSourceNavigation(preview.frame, state.renderId,
+          postToParent, externalSourceNavigationController.signal);
+        bindExternalPreviewPreferences(preview.frame, state.renderId,
+          postToParent, externalSourceNavigationController.signal);
+      }
     } else {
       const preview = createImagePreview(basename(outputPath));
       wrapper = preview.wrapper;
@@ -1234,10 +1293,10 @@ function renderCurrentViewer(): Promise<boolean> {
   return renderViewerState(state, imageZoom);
 }
 
-async function renderPayload(payload: ViewerPayload, requireLoadedOutput = false): Promise<boolean> {
+async function renderPayload(payload: ViewerPayload, requireLoadedOutput = false, renderId?: string): Promise<boolean> {
   if (!isViewerPayload(payload)) throw new Error("ビューのデータが不正です");
   const previousState = currentViewerRenderState();
-  const nextState = viewerRenderStateOf(payload);
+  const nextState = viewerRenderStateOf(payload, renderId);
   const sourceChanged = nextState.sourcePath !== previousState.sourcePath
     || nextState.effectiveExtension !== previousState.effectiveExtension
     || nextState.archivePath !== previousState.archivePath
@@ -1383,11 +1442,18 @@ async function start() {
     if (isInlineViewer) {
       window.addEventListener("message", (event) => {
         if (event.source !== window.parent || event.origin !== window.location.origin) return;
-        if (event.data?.type === INLINE_PREVIEW_MESSAGES.EXTERNAL_STATUS_MESSAGE) {
+        if (event.data?.type === INLINE_PREVIEW_MESSAGES.OUTPUT_FOLDER_STATE_MESSAGE) {
+          if (typeof event.data.available !== "boolean") return;
+          outputFolderAvailable = event.data.available;
+          syncPreviewStatus();
+          return;
+        }
+        if (event.data?.type === INLINE_PREVIEW_MESSAGES.PREVIEW_STATUS_MESSAGE) {
           const status = event.data.status;
-          if (status !== null && (typeof status?.message !== "string" || typeof status?.busy !== "boolean")) return;
-          externalStatus = status;
-          syncExternalStatus();
+          if (status !== null && (typeof status?.message !== "string" || typeof status?.busy !== "boolean"
+            || (status.kind !== undefined && status.kind !== "standard" && status.kind !== "external"))) return;
+          previewStatus = status;
+          syncPreviewStatus();
           return;
         }
         if (event.data?.type === INLINE_PREVIEW_MESSAGES.VISIBILITY_MESSAGE) {
@@ -1407,7 +1473,7 @@ async function start() {
           if (typeof renderId === "string") {
             runViewerOperation("ビューを更新できませんでした", async () => {
               try {
-                const rendered = await renderPayload(event.data.payload, true);
+                const rendered = await renderPayload(event.data.payload, true, renderId);
                 postToParent({
                   type: rendered
                     ? INLINE_PREVIEW_MESSAGES.DISPLAY_COMMITTED_MESSAGE
@@ -1430,6 +1496,8 @@ async function start() {
         if (event.data?.type === INLINE_PREVIEW_MESSAGES.CLEAR_MESSAGE) {
           if (typeof event.data.render_id !== "string") return;
           const generation = beginRender();
+          externalSourceNavigationController?.abort();
+          externalSourceNavigationController = null;
           gitPreview?.dispose();
           gitPreview = null;
           disposeSqlitePreview?.();

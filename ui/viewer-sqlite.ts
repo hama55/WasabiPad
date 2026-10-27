@@ -10,6 +10,7 @@ export interface SqlitePreviewRendererPorts {
     offset: number,
     limit: number,
     includeMetadata: boolean,
+    querySql?: string,
   ) => Promise<SqlitePreview>;
   getRowLimit: () => number;
 }
@@ -46,10 +47,10 @@ export function createSqlitePreviewController(
   const toolbar = document.createElement("div");
   toolbar.className = "sqlite-toolbar";
   const tableLabel = document.createElement("label");
-  tableLabel.textContent = "テーブル";
+  tableLabel.textContent = "表示対象";
   const tableSelect = document.createElement("select");
   tableSelect.dataset.sqliteTable = "";
-  tableSelect.setAttribute("aria-label", "SQLiteテーブル");
+  tableSelect.setAttribute("aria-label", "SQLite表示対象");
   tableLabel.append(tableSelect);
   const reload = document.createElement("button");
   reload.type = "button";
@@ -82,6 +83,39 @@ export function createSqlitePreviewController(
   const orderNote = document.createElement("p");
   orderNote.className = "sqlite-order-note";
   orderNote.textContent = "現在の結果順の位置です。再読み込みやDB更新後に同じ行を指す保証はありません";
+  const orderDetails = document.createElement("details");
+  orderDetails.className = "sqlite-disclosure";
+  const orderSummary = document.createElement("summary");
+  orderSummary.textContent = "表示上の注意";
+  orderDetails.append(orderSummary, orderNote);
+  const queryDetails = document.createElement("details");
+  queryDetails.className = "sqlite-disclosure";
+  const querySummary = document.createElement("summary");
+  querySummary.textContent = "SQLite一時ビュー";
+  const queryForm = document.createElement("form");
+  queryForm.className = "sqlite-query";
+  queryForm.dataset.action = "sqlite-query";
+  const queryLabel = document.createElement("label");
+  queryLabel.textContent = "一時ビューのSELECT";
+  const queryInput = document.createElement("textarea");
+  queryInput.rows = 3;
+  queryInput.spellcheck = false;
+  queryInput.placeholder = "SELECT ...";
+  queryInput.dataset.action = "sqlite-query-input";
+  queryInput.setAttribute("aria-label", "一時ビューのSELECT");
+  queryLabel.append(queryInput);
+  const queryNote = document.createElement("p");
+  queryNote.className = "sqlite-query-note";
+  queryNote.textContent = "SELECTで始まる読み取り用SQLのみ。SQL定義はこのプレビュー内だけに保持し、SQLiteファイルへ保存しません。ページを移動するとSQLを再実行します。";
+  const queryButton = document.createElement("button");
+  queryButton.type = "submit";
+  queryButton.textContent = "一時ビューを表示";
+  const queryError = document.createElement("div");
+  queryError.className = "sqlite-query-error";
+  queryError.setAttribute("role", "alert");
+  queryError.hidden = true;
+  queryForm.append(queryLabel, queryNote, queryButton);
+  queryDetails.append(querySummary, queryForm);
   const viewDefinition = document.createElement("details");
   viewDefinition.className = "sqlite-view-definition";
   viewDefinition.dataset.sqliteViewDefinition = "";
@@ -102,10 +136,11 @@ export function createSqlitePreviewController(
   bodyHost.className = "sqlite-table-wrap";
   bodyHost.tabIndex = 0;
   bodyHost.setAttribute("aria-label", "SQLiteレコード");
-  root.append(toolbar, orderNote, pageError, bodyHost);
+  root.append(toolbar, queryDetails, queryError, orderDetails, pageError, bodyHost);
   host.replaceChildren(root);
 
   let selectedName: string | null = null;
+  let activeQuery: string | null = null;
   let pageSize = 0;
   let totalRows: number | null = null;
   let metadataError: string | null = null;
@@ -134,6 +169,8 @@ export function createSqlitePreviewController(
     reload.disabled = value;
     gotoInput.disabled = value;
     gotoButton.disabled = value;
+    queryInput.disabled = value;
+    queryButton.disabled = value;
   }
 
   function setGotoError(message = "") {
@@ -217,7 +254,9 @@ export function createSqlitePreviewController(
     tableSelect.replaceChildren(...objects.map((object) => {
       const option = document.createElement("option");
       option.value = object.name;
-      option.textContent = `${object.name}（${object.kind}）`;
+      option.textContent = object.kind === "temporary view"
+        ? "一時ビュー"
+        : `${object.name}（${object.kind}）`;
       return option;
     }));
     if (selectedName && objects.some((object) => object.name === selectedName)) {
@@ -313,8 +352,15 @@ export function createSqlitePreviewController(
     };
   }
 
-  async function readPage(offset: number, includeMetadata: boolean, id: number): Promise<SqlitePreview | null> {
-    const result = await ports.read(sourcePath, selectedName, offset, pageSize, includeMetadata);
+  async function readPage(
+    offset: number,
+    includeMetadata: boolean,
+    id: number,
+    querySql: string | null = activeQuery,
+  ): Promise<SqlitePreview | null> {
+    const result = querySql === null
+      ? await ports.read(sourcePath, selectedName, offset, pageSize, includeMetadata)
+      : await ports.read(sourcePath, selectedName, offset, pageSize, includeMetadata, querySql);
     if (!isCurrent(id)) return null;
     pages.set(offset, result.rows);
     knownRows = Math.max(knownRows, offset + result.rows.length);
@@ -489,13 +535,78 @@ export function createSqlitePreviewController(
     }
   }
 
+  function setQueryError(error: unknown) {
+    queryError.textContent = error instanceof Error ? error.message : String(error);
+    queryError.hidden = false;
+  }
+
+  function clearQueryError() {
+    queryError.textContent = "";
+    queryError.hidden = true;
+  }
+
+  async function runQuery(query: string) {
+    if (disposed || pending) return;
+    const querySql = query.trim();
+    clearQueryError();
+    if (!querySql) {
+      setQueryError("SELECTを入力してください");
+      return;
+    }
+    pending = true;
+    const id = ++generation;
+    setPending(true);
+    try {
+      const result = await ports.read(sourcePath, null, 0, pageSize, true, querySql);
+      if (!isCurrent(id)) return;
+      activeQuery = querySql;
+      selectedName = result.selectedName;
+      pages = new Map([[0, result.rows]]);
+      totalRows = result.totalRows;
+      metadataError = result.metadataError;
+      hasMore = result.hasMore;
+      knownRows = result.rows.length;
+      currentWindowStart = 0;
+      currentWindowEnd = 0;
+      setObjects(result.objects);
+      setViewDefinition(result.viewDefinition);
+      clearPageError();
+      bodyHost.scrollTop = 0;
+      createTable(result.columns);
+      const range = windowRange();
+      renderWindow(range.start, range.end);
+    } catch (error) {
+      if (isCurrent(id)) setQueryError(error);
+    } finally {
+      if (isCurrent(id)) {
+        pending = false;
+        setPending(false);
+        if (renderAgain) {
+          renderAgain = false;
+          scheduleRender();
+        }
+      }
+    }
+  }
+
   tableSelect.addEventListener("change", () => {
+    activeQuery = null;
     selectedName = tableSelect.value || null;
+    clearQueryError();
     void load(true);
   }, { signal: listeners.signal });
   reload.addEventListener("click", () => {
-    selectedName = null;
-    void load(true);
+    if (activeQuery !== null) {
+      queryInput.value = activeQuery;
+      void runQuery(activeQuery);
+    } else {
+      selectedName = null;
+      void load(true);
+    }
+  }, { signal: listeners.signal });
+  queryForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void runQuery(queryInput.value);
   }, { signal: listeners.signal });
   gotoInput.addEventListener("input", () => setGotoError(), { signal: listeners.signal });
   gotoInput.addEventListener("invalid", () => {
@@ -506,6 +617,8 @@ export function createSqlitePreviewController(
     void moveToRow();
   }, { signal: listeners.signal });
   bodyHost.addEventListener("scroll", scheduleRender, { signal: listeners.signal });
+  queryDetails.addEventListener("toggle", scheduleRender, { signal: listeners.signal });
+  orderDetails.addEventListener("toggle", scheduleRender, { signal: listeners.signal });
 
   return {
     load: () => load(true),

@@ -2,6 +2,7 @@ use crate::buffer::{Pos, TextBuffer};
 use crate::document_types::FindCursor;
 use crate::search::{find_backward, find_chunk, ChunkStep};
 use crate::undo::{Edit, UndoEntry, UndoStack};
+use crate::document_assets::image_references_in_lines;
 
 pub(crate) enum FindStep {
     Found(Pos, Pos),
@@ -18,6 +19,7 @@ pub(crate) struct ReplaceProgress {
     matches: Option<Vec<(Pos, Pos)>>,
     collected_lines: usize,
     collected: bool,
+    pub(crate) image_references: std::collections::HashSet<String>,
 }
 
 pub(crate) fn find(
@@ -124,6 +126,7 @@ pub(crate) fn replace_all_chunk(
         match step {
             ChunkStep::Found(start, end) => {
                 state.find_cursor = None;
+                state.image_references.extend(image_references_in_lines(buf, start.line.saturating_sub(1), end.line.saturating_add(1)));
                 let removed = buf.delete(start, end);
                 state.edits.push(Edit::Delete { start, text: removed });
                 let after = buf.insert(start, rep);
@@ -132,6 +135,7 @@ pub(crate) fn replace_all_chunk(
                     text: rep.to_string(),
                 });
                 state.pos = after;
+                state.image_references.extend(image_references_in_lines(buf, start.line.saturating_sub(1), after.line.saturating_add(1)));
                 state.count += 1;
                 replaced += 1;
             }
@@ -153,6 +157,7 @@ pub(crate) fn replace_all_chunk(
                             edits: state.edits,
                             caret_before: Pos::default(),
                             caret_after: state.pos,
+                            image_references: state.image_references,
                         },
                         false,
                     );
@@ -181,6 +186,7 @@ pub(crate) fn replace_all_cancel(
                 edits: state.edits,
                 caret_before: Pos::default(),
                 caret_after: state.pos,
+                image_references: state.image_references,
             },
             false,
         );

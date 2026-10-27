@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { createHash, webcrypto } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { readClipboardText, writeClipboardText } = vi.hoisted(() => ({
@@ -20,13 +21,63 @@ vi.mock("./api", async (importOriginal) => ({
 }));
 import { fakeDocument, installDomStubs, settle } from "./test-doubles";
 import { VirtualEditor, type EditorPorts } from "./editor";
-import { initSettings } from "./settings";
+import { initSettings, setSetting } from "./settings";
 import { promptFields as promptFieldsImpl } from "./prompt";
 import type { RegisteredCommandMenuPorts } from "./registered-command-menu";
 import { MENU_ICON } from "./menu-icons";
 import { loadRegisteredStrings } from "./registered-strings";
+import { readDiagramSvg } from "./diagram";
 
 installDomStubs();
+
+describe("Feature: 全選択時の表示位置維持", () => {
+  // Given: 長文または短文を縦横スクロールし、折返しの有無を設定している
+  // When: Ctrl+A または本文メニューからすべて選択する
+  // Then: 全文をコピーでき、縦横の表示位置を維持する
+  it.each([
+    ["Ctrl+A・長文", false, false, 40],
+    ["本文メニュー・長文", true, false, 40],
+    ["Ctrl+A・折返し", false, true, 40],
+    ["本文メニュー・折返し", true, true, 40],
+    ["Ctrl+A・短文", false, false, 1],
+  ] as const)("Scenario: %sで全文選択しても表示位置を変えない", async (_name, menu, wrap, count) => {
+    const text = Array.from({ length: count }, (_, i) => `line ${i} ${"x".repeat(100)}`).join("\n");
+    const { editor, host, press } = mount(text);
+    editor.open(count, false);
+    editor.setWrap(wrap);
+    await settle();
+    const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
+    const dropdown = document.createElement("div");
+    dropdown.id = "dropdown";
+    document.body.appendChild(dropdown);
+    if (menu) {
+      scroll.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 0, clientY: 0 }));
+    }
+    scroll.scrollTop = count > 1 ? 207 : 0;
+    scroll.scrollLeft = wrap ? 0 : 35;
+    scroll.dispatchEvent(new Event("scroll"));
+    await settle();
+    const before = editor.captureViewState();
+    const top = scroll.scrollTop;
+    const left = scroll.scrollLeft;
+    if (menu) {
+      [...dropdown.querySelectorAll<HTMLElement>(".dd-label")]
+        .find((item) => item.textContent === "すべて選択")!.click();
+    } else {
+      press("a", { ctrlKey: true });
+    }
+    await settle();
+    expect(scroll.scrollTop).toBe(top);
+    expect(scroll.scrollLeft).toBe(left);
+    expect(editor.captureViewState()).toMatchObject({
+      topLine: before.topLine, wrapIntraLinePx: before.wrapIntraLinePx,
+      anchor: { line: 0, col: 0 }, caret: { line: count - 1, col: count > 1 ? 108 : 107 },
+    });
+    press("c", { ctrlKey: true });
+    await vi.waitFor(() => expect(writeClipboardText).toHaveBeenLastCalledWith(text));
+    dropdown.remove();
+  });
+});
 
 describe("Feature: エディタ全て検索", () => {
   it("Scenario: ゼロ幅一致の単発置換後は次の行へ進む", async () => {
@@ -96,7 +147,7 @@ describe("Feature: エディタ全て検索", () => {
 function mount(
   initial: string,
   saveImage?: EditorPorts["saveImage"],
-  overrides: Partial<Pick<EditorPorts, "revealInExplorer" | "openInNewTab" | "openInNewWindow" | "openAs" | "registeredCommandPorts" | "openViewer" | "updateViewer" | "closeViewer" | "togglePreview">> = {},
+  overrides: Partial<Pick<EditorPorts, "revealInExplorer" | "openInNewTab" | "openInNewWindow" | "openAs" | "registeredCommandPorts" | "openViewer" | "updateViewer" | "closeViewer" | "togglePreview" | "prepareDiagram">> = {},
 ) {
   const host = document.createElement("div");
   document.body.replaceChildren(host);
@@ -126,6 +177,7 @@ function mount(
     updateViewer: overrides.updateViewer ?? (async () => true),
     closeViewer: overrides.closeViewer ?? (async () => {}),
     saveImage,
+    prepareDiagram: overrides.prepareDiagram,
   };
   const editor = new VirtualEditor(host, ports, undefined, doc.client);
   const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
@@ -142,6 +194,40 @@ function mount(
     input.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, ...options }));
   return { editor, doc, events, host, input, type, press };
 }
+
+describe("Feature: 図編集から本文への反映", () => {
+  // Given: 選択文章を含む文書
+  // When: 図を編集で赤枠を作り OK を押す
+  // Then: 選択文章は保持し行直後に挿入、本文 Undo で戻せる
+  it("Scenario: 図の挿入は選択文章を保持し本文で戻せる", async () => {
+    setSetting("pastedImageWidthEnabled", false);
+    const saved: string[] = [];
+    const openViewer = vi.fn(async () => "markdown-preview");
+    const { editor, doc, press } = mount("説明\n次の行", undefined, {
+      openViewer,
+      prepareDiagram: async () => ({ assetPrefix: "image_markdown/memo", isCurrent: () => true,
+        readImage: async () => { throw new Error("unused"); },
+        saveImage: async (bytes) => { saved.push(new TextDecoder().decode(bytes)); return "image_markdown/memo/diagram-123.svg"; }, finish: async () => {},
+        applyEdit: (start, end, caret, text) => doc.client.edit(start, end, caret, text, false) }),
+    });
+    editor.open(2, false); await settle();
+    await editor.selectRange(0, 0, 2);
+    const edit = editor.editDiagramAt({ line: 0, col: 1 });
+    await vi.waitFor(() => expect(document.querySelector(".diagram-canvas")).not.toBeNull());
+    const canvas = document.querySelector<SVGSVGElement>(".diagram-canvas")!;
+    canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 800, height: 600 } as DOMRect);
+    document.querySelector<HTMLButtonElement>('.diagram-tools button[aria-label="四角形"]')!.click();
+    canvas.dispatchEvent(new MouseEvent("pointerdown", { clientX: 10, clientY: 20, bubbles: true, button: 0 }));
+    window.dispatchEvent(new MouseEvent("pointermove", { clientX: 110, clientY: 80 }));
+    window.dispatchEvent(new MouseEvent("pointerup", { clientX: 110, clientY: 80 }));
+    document.querySelector<HTMLButtonElement>(".diagram-editor .pf-ok")!.click(); await edit;
+    expect(doc.text()).toBe('説明\n<img src="image_markdown/memo/diagram-123.svg" alt="図">\n次の行');
+    expect(readDiagramSvg(saved[0])?.elements[0].kind).toBe("rect");
+    expect(openViewer).toHaveBeenCalled();
+    press("z", { ctrlKey: true }); await settle();
+    expect(doc.text()).toBe("説明\n次の行");
+  });
+});
 
 function installMouseLayout(host: HTMLElement) {
   const dropdown = document.createElement("div");
@@ -222,6 +308,7 @@ describe("Feature: VirtualEditor", () => {
   afterEach(() => {
     // 失敗したテストでもプロトタイプ上のレイアウトモックを次のテストへ残さない。
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   beforeEach(async () => {
@@ -548,8 +635,8 @@ describe("Feature: VirtualEditor", () => {
 
   // Given: 文書が「one\ntwo\nthree」、選択範囲が0行1列から1行1列までである
   // When: Tab を押す
-  // Then: 選択文字列がタブで置換され、行単位indentは発生しない
-  it("Scenario: 行頭を含まない選択中のTabは選択文字列を置換する", async () => {
+  // Then: 選択された各行の先頭へタブを挿入して本文を残す
+  it("Scenario: 行途中からの複数行選択もTabでインデントする", async () => {
     const { editor, doc, press } = mount("one\ntwo\nthree");
     editor.open(3, false);
     await settle();
@@ -564,8 +651,83 @@ describe("Feature: VirtualEditor", () => {
     press("Tab");
     await settle();
 
-    expect(doc.text()).toBe("o\two\nthree");
-    expect(doc.calls).not.toContain("editMany(2)");
+    expect(doc.text()).toBe("\tone\n\ttwo\nthree");
+    expect(editor.captureViewState().anchor).toEqual({ line: 0, col: 2 });
+    expect(editor.captureViewState().caret).toEqual({ line: 1, col: 2 });
+  });
+
+  // Given: 通常選択の部分・全体・逆向き・行頭終端と折り返し表示の例
+  // When: Tabを押し、その後Undoを一回実行する
+  // Then: 選択状態に応じて置換または行インデントし、Undoで元の本文に戻る
+  it.each([
+    ["行頭部分", "one", 0, 0, 0, 2, "\te", false],
+    ["行途中部分", "one", 0, 1, 0, 2, "o\te", false],
+    ["一行全体", "one", 0, 0, 0, 3, "\tone", false],
+    ["先頭空白と絵文字を含む全体", " 😀a", 0, 0, 0, 3, "\t 😀a", false],
+    ["逆向き全体", "one", 0, 3, 0, 0, "\tone", false],
+    ["選択なし", "one", 0, 1, 0, 1, "o\tne", false],
+    ["空行", "", 0, 0, 0, 0, "\t", false],
+    ["改行を含む一行全体", "one\ntwo", 0, 0, 1, 0, "\tone\ntwo", false],
+    ["次行頭終端", "one\ntwo\nthree", 0, 1, 2, 0, "\tone\n\ttwo\nthree", false],
+    ["逆向き複数行", "one\ntwo", 1, 1, 0, 1, "\tone\n\ttwo", false],
+    ["折り返し内の部分", "one two three", 0, 0, 0, 7, "\t three", true],
+  ] as const)("Scenario: Tabの選択境界 — %s", async (_name, initial, al, ac, cl, cc, expected, wrap) => {
+    const { editor, doc, press } = mount(initial);
+    editor.open(initial.split("\n").length, false);
+    editor.setWrap(wrap);
+    await settle();
+    await editor.restoreViewState({
+      anchor: { line: al, col: ac }, caret: { line: cl, col: cc },
+      topLine: 0, wrapIntraLinePx: 0, scrollLeft: 0,
+    });
+    press("Tab");
+    await settle();
+    expect(doc.text()).toBe(expected);
+    if (_name === "逆向き全体") {
+      expect(editor.captureViewState()).toMatchObject({
+        anchor: { line: 0, col: 4 }, caret: { line: 0, col: 0 },
+      });
+    }
+    press("z", { ctrlKey: true });
+    await settle();
+    expect(doc.text()).toBe(initial);
+  });
+
+  // Given: 選択なしで通常文字を入力した直後
+  // When: Tabを入力する
+  // Then: 文書編集APIへ履歴を結合しない指定で渡し、UndoはTabだけを戻す
+  it("Scenario: Tabを直前の文字入力のUndo単位に結合しない", async () => {
+    const { editor, doc, press, type } = mount("");
+    const edit = vi.spyOn(doc.client, "edit");
+    editor.open(1, false);
+    await settle();
+    type("a");
+    await settle();
+    press("Tab");
+    await settle();
+    expect(doc.text()).toBe("a\t");
+    expect(edit.mock.calls.at(-1)?.[4]).toBe(false);
+    press("z", { ctrlKey: true });
+    await settle();
+    expect(doc.text()).toBe("a");
+  });
+
+  // Given: 二行の同じ列に複数キャレットがある
+  // When: Tabを押す
+  // Then: 全キャレットへタブを挿入し、Undo一回で戻る
+  it("Scenario: Tabは複数キャレットの全位置へ挿入する", async () => {
+    const { editor, doc, press } = mount("one\ntwo");
+    editor.open(2, false);
+    await settle();
+    editor.goTo(0, 0);
+    press("ArrowDown", { altKey: true });
+    await settle();
+    press("Tab");
+    await settle();
+    expect(doc.text()).toBe("\tone\n\ttwo");
+    press("z", { ctrlKey: true });
+    await settle();
+    expect(doc.text()).toBe("one\ntwo");
   });
 
   // Given: 文書が「one\ntwo\nthree」、選択範囲が行頭を含む0行0列から1行1列までである
@@ -918,6 +1080,33 @@ describe("Feature: VirtualEditor", () => {
       expect(editor.captureViewState().caret).toEqual({ line: 0, col: 9 });
     } finally {
       hitTesting.restore();
+      layout.restore();
+    }
+  });
+
+  // Given: 行頭を含めて二行の本文全体を矩形選択している
+  // When: Tabを押す
+  // Then: 行インデントせず各行の選択文字をタブに置換し、Undo一回で戻る
+  it("Scenario: Tabは行頭からの矩形選択でも置換を優先する", async () => {
+    const { editor, doc, host, press } = mount("abcd\nABCD");
+    editor.open(2, false);
+    await settle();
+    const layout = installMouseLayout(host);
+    const points = mockBlockSelectionPoints(editor);
+    try {
+      layout.scroll.dispatchEvent(new MouseEvent("mousedown", {
+        bubbles: true, button: 0, clientX: 8, clientY: 10, altKey: true,
+      }));
+      window.dispatchEvent(new MouseEvent("mousemove", { clientX: 48, clientY: 30, altKey: true }));
+      window.dispatchEvent(new MouseEvent("mouseup", { clientX: 48, clientY: 30, altKey: true }));
+      press("Tab");
+      await settle();
+      expect(doc.text()).toBe("\t\n\t");
+      press("z", { ctrlKey: true });
+      await settle();
+      expect(doc.text()).toBe("abcd\nABCD");
+    } finally {
+      points.mockRestore();
       layout.restore();
     }
   });
@@ -1419,6 +1608,7 @@ describe("Feature: VirtualEditor", () => {
     { scenario: "文字が空なら画像へフォールバックする", text: "", hasImage: true, readError: undefined },
     { scenario: "文字の読み込みに失敗したら画像へフォールバックする", text: "", hasImage: true, readError: new Error("text unavailable") },
   ])("Scenario: 貼り付けメニューは$scenario", async ({ text, hasImage, readError }) => {
+    vi.stubGlobal("createImageBitmap", vi.fn(async () => ({ width: 300, close: vi.fn() })));
     const saveImage = vi.fn(async () => "image_markdown/memo/pasted-image.png");
     const { editor, doc, events, host } = mount("", saveImage);
     editor.open(1, false);
@@ -1455,6 +1645,7 @@ describe("Feature: VirtualEditor", () => {
         expect(clipboardRead).toHaveBeenCalledOnce();
         expect(saveImage).toHaveBeenCalledWith([1, 2, 3], "image/png");
         expect(doc.text()).toContain("<img src=\"image_markdown/memo/pasted-image.png\"");
+        expect(doc.text()).toContain('width="300"');
       }
       expect(events.errors).toHaveLength(0);
     } finally {
@@ -1464,10 +1655,11 @@ describe("Feature: VirtualEditor", () => {
     }
   });
 
-  // Given: 文書が「memo」、画像BlobがPNG形式でバイト列 [1,2,3]、saveImage が相対パスを返す
+  // Given: 文書が「memo」、画像BlobがPNG形式でバイト列 [1,2,3]、元画像の幅が1600px、saveImage が相対パスを返す
   // When: その画像を clipboardData.items から paste する
   // Then: paste が preventDefault され、saveImage([1,2,3], "image/png") が呼ばれ、文書に `<img src="image_markdown/memo/pasted-image.png" alt="貼り付け画像" width="900">` が含まれる
   it("Scenario: 画像の貼り付けで相対リンク付きタグを挿入する", async () => {
+    vi.stubGlobal("createImageBitmap", vi.fn(async () => ({ width: 1600, close: vi.fn() })));
     const saveImage = vi.fn(async () => "image_markdown/memo/pasted-image.png");
     const { editor, doc, input } = mount("memo", saveImage);
     editor.open(1, false);
@@ -1487,6 +1679,83 @@ describe("Feature: VirtualEditor", () => {
     expect(event.defaultPrevented).toBe(true);
     expect(saveImage).toHaveBeenCalledWith([1, 2, 3], "image/png");
     expect(doc.text()).toContain("<img src=\"image_markdown/memo/pasted-image.png\" alt=\"貼り付け画像\" width=\"900\">");
+  });
+
+  // Given: 設定幅900pxより小さい300pxの画像がある
+  // When: Ctrl+Vで画像を貼り付ける
+  // Then: 保存画像は変えず、タグは元画像の幅300pxを使う
+  it("Scenario: 小さい貼り付け画像を拡大しない", async () => {
+    const close = vi.fn();
+    vi.stubGlobal("createImageBitmap", vi.fn(async () => ({ width: 300, close })));
+    const saveImage = vi.fn(async () => "image_markdown/memo/pasted-image.png");
+    const { editor, doc, input } = mount("", saveImage);
+    editor.open(1, false);
+    await settle();
+    const image = new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" });
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", { value: {
+      items: [{ type: "image/png", getAsFile: () => image }], getData: () => "",
+    } });
+    input.dispatchEvent(event);
+    await settle();
+    expect(doc.text()).toBe('<img src="image_markdown/memo/pasted-image.png" alt="貼り付け画像" width="300">\n');
+    expect(saveImage).toHaveBeenCalledWith([1, 2, 3], "image/png");
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  // Given: 1600pxの画像があり、幅指定が有効である
+  // When: 同じエディタで設定を変更して画像を繰り返し貼り付ける
+  // Then: 既存タグは変えず、次の貼り付けから新しい上限を使い、無指定時は寸法を調べない
+  it("Scenario: 表示幅の設定変更を次の画像貼り付けから適用する", async () => {
+    const decode = vi.fn(async () => ({ width: 1600, close: vi.fn() }));
+    vi.stubGlobal("createImageBitmap", decode);
+    const { editor, doc, input } = mount("", vi.fn(async () => "image.png"));
+    editor.open(1, false);
+    await settle();
+    const image = new Blob([new Uint8Array([1])], { type: "image/png" });
+    const paste = async () => {
+      const event = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "clipboardData", { value: {
+        items: [{ type: "image/png", getAsFile: () => image }], getData: () => "",
+      } });
+      input.dispatchEvent(event);
+      await settle();
+    };
+    await paste();
+    setSetting("pastedImageWidth", 1200);
+    await paste();
+    setSetting("pastedImageWidthEnabled", false);
+    await paste();
+    expect(doc.text()).toBe([
+      '<img src="image.png" alt="貼り付け画像" width="900">',
+      '<img src="image.png" alt="貼り付け画像" width="1200">',
+      '<img src="image.png" alt="貼り付け画像">', "",
+    ].join("\n"));
+    expect(decode).toHaveBeenCalledTimes(2);
+  });
+
+  // Given: 画像の寸法取得が失敗する、APIが利用できない、または幅が0である
+  // When: 画像を貼り付ける
+  // Then: 保存と貼り付けは成功し、width属性を省略する
+  it.each(["error", "unavailable", "zero"])("Scenario: 寸法不明の画像も幅指定なしで貼り付ける（%s）", async (scenario) => {
+    vi.stubGlobal("createImageBitmap", scenario === "unavailable" ? undefined : vi.fn(async () => {
+      if (scenario === "error") throw new Error("decode failed");
+      return { width: 0, close: vi.fn() };
+    }));
+    const saveImage = vi.fn(async () => "image.png");
+    const { editor, doc, input, events } = mount("", saveImage);
+    editor.open(1, false);
+    await settle();
+    const image = new Blob([new Uint8Array([1])], { type: "image/png" });
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", { value: {
+      items: [{ type: "image/png", getAsFile: () => image }], getData: () => "",
+    } });
+    input.dispatchEvent(event);
+    await settle();
+    expect(doc.text()).toBe('<img src="image.png" alt="貼り付け画像">\n');
+    expect(saveImage).toHaveBeenCalledWith([1], "image/png");
+    expect(events.errors).toHaveLength(0);
   });
 
   // Given: 外部ファイルパスが「C:\work\memo.txt」、revealInExplorer がspyである
@@ -2302,48 +2571,170 @@ describe("Feature: VirtualEditor", () => {
     expect(host.querySelector<HTMLElement>(".ve-find")?.hidden).toBe(true);
   });
 
-  // Feature: エディタの表示範囲置換
-  // Scenario: 表示中の論理行だけを全置換する
-  // Given: 画面外にもneedleがあり、1行目と2行目を表示している
-  // When: 「画面内」を押す
-  // Then: 表示中の2行だけが置換され、画面外の一致は残る
-  it("Scenario: 画面内の一致だけを全置換する", async () => {
-    const { editor, doc, host } = mount("outside\nneedle\nneedle\noutside\nneedle");
-    const scroll = host.querySelector<HTMLElement>(".ve-scroll")!;
-    Object.defineProperty(scroll, "clientHeight", { configurable: true, value: 40 });
-    editor.open(5, false);
+  // Feature: エディタの選択範囲置換
+  // Given: 同じ行の選択範囲内外にneedleがある
+  // When: 置換入力欄へ移動して選択のみを押す
+  // Then: 選択内だけ置換し、文字数が増えた対象範囲を選択し続ける
+  it("Scenario: 部分行の選択内だけを一括置換する", async () => {
+    const { editor, doc, host } = mount("needle needle needle needle");
+    editor.open(1, false);
     await settle();
-    await editor.restoreViewState({
-      anchor: { line: 1, col: 0 },
-      caret: { line: 1, col: 0 },
-      topLine: 1,
-      wrapIntraLinePx: 0,
-      scrollLeft: 0,
-    });
+    await editor.selectRange(0, 7, 20);
 
     editor.openSearch();
     host.querySelector<HTMLInputElement>(".ve-find-in")!.value = "needle";
-    host.querySelector<HTMLInputElement>(".ve-rep-in")!.value = "hit";
-    host.querySelector<HTMLButtonElement>(".ve-rep-visible")!.click();
+    const replacement = host.querySelector<HTMLInputElement>(".ve-rep-in")!;
+    replacement.focus();
+    replacement.value = "longer hit";
+    host.querySelector<HTMLButtonElement>(".ve-rep-selection")!.click();
     await settle();
 
-    expect(doc.text()).toBe("outside\nhit\nhit\noutside\nneedle");
+    expect(doc.text()).toBe("needle longer hit longer hit needle");
+    expect(editor.captureViewState()).toMatchObject({ anchor: { line: 0, col: 7 }, caret: { line: 0, col: 28 } });
   });
 
-  // Feature: エディタの表示範囲置換
-  // Scenario: 閲覧専用文書では画面内全置換を実行しない
+  // When: 本文の一部を選んで検索語を入力し、一致箇所へ移動した後に選択のみを押す
+  // Then: 最初に選んだ範囲内を置換し、検索一致の選択へ対象範囲を縮めない
+  it("Scenario: 検索語入力後も元の選択範囲を置換対象に保つ", async () => {
+    // Given: 置換対象の範囲と、その外に検索一致がある本文
+    const { editor, doc, host } = mount("needle needle needle needle");
+    editor.open(1, false);
+    await settle();
+    await editor.selectRange(0, 7, 20);
+    doc.client.findStep = async () => ({ kind: "Found", start: { line: 0, col: 21 }, end: { line: 0, col: 27 } });
+    editor.openSearch();
+    const search = host.querySelector<HTMLInputElement>(".ve-find-in")!;
+    search.value = "needle";
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    await vi.waitFor(() => expect(editor.captureViewState().caret).toEqual({ line: 0, col: 27 }));
+    const replacement = host.querySelector<HTMLInputElement>(".ve-rep-in")!;
+    replacement.focus();
+    replacement.value = "hit";
+    host.querySelector<HTMLButtonElement>(".ve-rep-selection")!.click();
+    await vi.waitFor(() => expect(doc.text()).toBe("needle hit hit needle"));
+    expect(editor.captureViewState()).toMatchObject({ anchor: { line: 0, col: 7 }, caret: { line: 0, col: 14 } });
+  });
+
+  // Given: 未選択の本文に検索一致がある
+  // When: 検索語入力で一致が選択表示される
+  // Then: 本文で選んだ範囲がなければ選択のみは使えない
+  it("Scenario: 検索一致の選択だけでは選択のみを有効にしない", async () => {
+    const { editor, doc, host } = mount("needle needle");
+    editor.open(1, false);
+    await settle();
+    doc.client.findStep = async () => ({ kind: "Found", start: { line: 0, col: 0 }, end: { line: 0, col: 6 } });
+    editor.openSearch();
+    const search = host.querySelector<HTMLInputElement>(".ve-find-in")!;
+    search.value = "needle";
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    await vi.waitFor(() => expect(editor.captureViewState().caret).toEqual({ line: 0, col: 6 }));
+    expect(host.querySelector<HTMLButtonElement>(".ve-rep-selection")!.disabled).toBe(true);
+  });
+
+  // Given: 選択境界をまたぐ一致と範囲内の一致があり、逆向きに選択している
+  // When: 選択のみで置換後、Undoを1回実行する
+  // Then: 完全に収まる一致だけ置換し、選択方向を保ち、全文を1回で戻せる
+  it("Scenario: 逆方向選択の境界をまたぐ一致は置換せずUndo一回で戻す", async () => {
+    const original = "needle needle needle needle";
+    const { editor, doc, host, press } = mount(original);
+    editor.open(1, false);
+    await settle();
+    await editor.restoreViewState({ anchor: { line: 0, col: 24 }, caret: { line: 0, col: 3 }, topLine: 0, wrapIntraLinePx: 0, scrollLeft: 0 });
+    editor.openSearch();
+    host.querySelector<HTMLInputElement>(".ve-find-in")!.value = "needle";
+    host.querySelector<HTMLInputElement>(".ve-rep-in")!.value = "hit";
+    host.querySelector<HTMLButtonElement>(".ve-rep-selection")!.click();
+    await vi.waitFor(() => expect(doc.text()).toBe("needle hit hit needle"));
+    expect(editor.captureViewState()).toMatchObject({ anchor: { line: 0, col: 18 }, caret: { line: 0, col: 3 } });
+    editor.focus();
+    press("z", { ctrlKey: true });
+    await vi.waitFor(() => expect(doc.text()).toBe(original));
+  });
+
+  // Given: 表示外まで続く複数行の選択範囲がある
+  // When: 改行を含む文字列で選択のみを置換する
+  // Then: 表示外も選択範囲内なら置換し、改行増加後の範囲を選択する
+  it("Scenario: 表示外までの複数行選択で改行を増やしても範囲を保持する", async () => {
+    const { editor, doc, host } = mount("needle\nneedle\nneedle\nneedle");
+    Object.defineProperty(host.querySelector(".ve-scroll")!, "clientHeight", { configurable: true, value: 20 });
+    editor.open(4, false);
+    await settle();
+    await editor.restoreViewState({ anchor: { line: 0, col: 6 }, caret: { line: 2, col: 6 }, topLine: 0, wrapIntraLinePx: 0, scrollLeft: 0 });
+    editor.openSearch();
+    host.querySelector<HTMLInputElement>(".ve-find-in")!.value = "needle";
+    host.querySelector<HTMLInputElement>(".ve-rep-in")!.value = "猫\\n犬";
+    host.querySelector<HTMLButtonElement>(".ve-rep-selection")!.click();
+    await vi.waitFor(() => expect(doc.text()).toBe("needle\n猫\n犬\n猫\n犬\nneedle"));
+    expect(editor.captureViewState()).toMatchObject({ anchor: { line: 0, col: 6 }, caret: { line: 4, col: 1 } });
+  });
+
+  // Given: 検索中に保持した範囲がある
+  // When: バーを開いたまま本文で選び直し、空文字で選択のみを置換する
+  // Then: 新しい選択内だけ削除し、削除後の選択を保つ
+  it("Scenario: 本文で選び直した範囲内だけ削除する", async () => {
+    const { editor, doc, host } = mount("needle needle needle");
+    editor.open(1, false);
+    await settle();
+    await editor.selectRange(0, 0, 6);
+    editor.openSearch();
+    await editor.selectRange(0, 7, 20);
+    host.querySelector<HTMLInputElement>(".ve-rep-in")!.focus();
+    host.querySelector<HTMLButtonElement>(".ve-rep-selection")!.click();
+    await vi.waitFor(() => expect(doc.text()).toBe("needle  "));
+    expect(editor.captureViewState()).toMatchObject({ anchor: { line: 0, col: 7 }, caret: { line: 0, col: 8 } });
+  });
+
+  // Given: 文書検索から選択範囲端にもゼロ幅一致が返る
+  // When: 大文字小文字・正規表現の既存条件で選択のみを押す
+  // Then: 選択外を除外し、端の一致を一度ずつ挿入して更新範囲を保持する
+  it("Scenario: 正規表現のゼロ幅一致を選択範囲内だけ置換する", async () => {
+    const { editor, doc, host } = mount("猫ab犬");
+    editor.open(1, false);
+    await settle();
+    await editor.selectRange(0, 1, 3);
+    const find = vi.fn(async () => [0, 1, 2, 3, 4].map(col => ({ start: { line: 0, col }, end: { line: 0, col } })));
+    doc.client.findAllInRange = find;
+    editor.openSearch();
+    host.querySelector<HTMLInputElement>(".ve-find-in")!.value = "x*";
+    host.querySelector<HTMLInputElement>(".ve-rep-in")!.value = "!";
+    for (const condition of ["case", "regex"]) host.querySelector<HTMLInputElement>(`.ve-find-${condition} input`)!.checked = true;
+    host.querySelector<HTMLButtonElement>(".ve-rep-selection")!.click();
+    await vi.waitFor(() => expect(doc.text()).toBe("猫!a!b!犬"));
+    expect(find).toHaveBeenCalledWith("x*", 0, 1, true, true, false, 0);
+    expect(editor.captureViewState()).toMatchObject({ anchor: { line: 0, col: 1 }, caret: { line: 0, col: 6 } });
+  });
+
+  // Given: 選択がない本文
+  // When: 検索バーを開き、本文を選択してから選択を解除する
+  // Then: 選択のみボタンは選択がある間だけ有効になる
+  it("Scenario: 選択がないと選択のみを無効にする", async () => {
+    const { editor, host, press } = mount("needle");
+    editor.open(1, false);
+    await settle();
+    editor.openSearch();
+    const button = host.querySelector<HTMLButtonElement>(".ve-rep-selection")!;
+    expect(button.disabled).toBe(true);
+    await editor.selectRange(0, 0, 6);
+    expect(button.disabled).toBe(false);
+    press("ArrowRight");
+    await vi.waitFor(() => expect(button.disabled).toBe(true));
+  });
+
+  // Feature: エディタの選択範囲置換
+  // Scenario: 閲覧専用文書では選択内一括置換を実行しない
   // Given: needleを含む閲覧専用文書を表示している
-  // When: 「画面内」を押す
+  // When: 「選択のみ」を押す
   // Then: 本文と編集系のbackend呼び出しは変わらない
-  it("Scenario: 閲覧専用文書では画面内全置換を実行しない", async () => {
+  it("Scenario: 閲覧専用文書では選択内一括置換を実行しない", async () => {
     const { editor, doc, host } = mount("needle");
     editor.open(1, true);
     await settle();
+    await editor.selectRange(0, 0, 6);
 
     editor.openSearch();
     host.querySelector<HTMLInputElement>(".ve-find-in")!.value = "needle";
     host.querySelector<HTMLInputElement>(".ve-rep-in")!.value = "hit";
-    host.querySelector<HTMLButtonElement>(".ve-rep-visible")!.click();
+    host.querySelector<HTMLButtonElement>(".ve-rep-selection")!.click();
     await settle();
 
     expect(doc.text()).toBe("needle");
@@ -3004,6 +3395,28 @@ describe("Feature: VirtualEditor", () => {
     expect(openViewer.mock.calls[1][1]).toBe("two\nthree");
   });
 
+  // Feature: 選択行プレビューの解除
+  // Given: エディタの選択とCSVの選択範囲プレビューがある
+  // When: 明示的に範囲モードを解除して同じ形式を再表示する
+  // Then: 選択は保持し、全文表示になりPマークが消える。再度の明示的な選択行表示もできる
+  it.each(["csv", "markdown", "html"] as const)("Scenario: 範囲解除後の形式切替は全文を維持し明示表示で再選択する (%s)", async (format) => {
+    const openViewer = vi.fn<EditorPorts["openViewer"]>(async () => "inline-viewer");
+    const { editor, host } = mount("one\ntwo\nthree", undefined, { openViewer });
+    editor.open(3, false); await settle();
+    await editor.restoreViewState({ anchor: { line: 1, col: 0 }, caret: { line: 2, col: 5 }, topLine: 0, wrapIntraLinePx: 0, scrollLeft: 0 });
+    await editor.openTextViewer(format);
+    const selection = editor.captureViewState();
+    expect(editor.resetPreviewRange()).toBe(true);
+    expect([...host.querySelectorAll<HTMLElement>(".ve-preview-mark")].every((mark) => mark.hidden)).toBe(true);
+    await editor.openTextViewer(format, true);
+    expect(openViewer.mock.calls[1].slice(0, 2)).toEqual([format, "one\ntwo\nthree"]);
+    expect(editor.captureViewState()).toMatchObject({ anchor: selection.anchor, caret: selection.caret });
+    await editor.openTextViewer("markdown", true);
+    expect(openViewer.mock.calls[2][1]).toBe("one\ntwo\nthree");
+    await editor.openTextViewer("csv");
+    expect(openViewer.mock.calls[3][1]).toBe("two\nthree");
+  });
+
   // Feature: SQLite適格性確認で不一致になった場合は表示中ビューを維持する
   // Scenario: SQLiteビューを開けなかった場合に既存の追随ビューを閉じない
   // Given: Markdownビューが開いておりSQLiteを開く要求は拒否される
@@ -3113,4 +3526,111 @@ describe("Feature: VirtualEditor", () => {
     expect(scroll.scrollLeft).toBeGreaterThan(0);
     rect.mockRestore();
   });
+});
+
+// Feature: 外部プレビューから元ソースへのキャレット移動
+it("Scenario: external source navigation uses the full document and keeps preview focus", async () => {
+  // Given: 補助文字を含む文書、部分プレビュー、フォーカスのあるプレビュー
+  vi.stubGlobal("crypto", webcrypto);
+  try {
+    const text = "zero\n😀C D";
+    const { editor, host } = mount(text, undefined, { openViewer: vi.fn(async () => "preview") });
+    editor.open(2, false);
+    await settle();
+    await editor.selectRange(1, 1, 4);
+    await editor.openTextViewer("markdown");
+    const preview = document.createElement("button");
+    document.body.append(preview);
+    preview.focus();
+    const navigate = await editor.createExternalSourceNavigator();
+    // When: 全文のUTF-16 offsetでCを指す
+    const reason = await navigate({ type: "wasabipad-external-source-navigation", request_id: 1,
+      source_hash: createHash("sha256").update(text).digest("hex"), offset: 7 });
+    // Then: 部分範囲の開始を加算せずCへ移動し、フォーカスを奪わない
+    expect(reason).toBeNull();
+    expect(editor.captureViewState().caret).toEqual({ line: 1, col: 1 });
+    expect(document.activeElement).toBe(preview);
+    preview.remove(); host.remove();
+  } finally { vi.unstubAllGlobals(); }
+});
+
+// Feature: 古い・不明・不正な外部プレビュー位置は文書を動かさない
+it.each(["edited", "reopened", "hash", "unknown", "negative", "fraction", "range", "surrogate"])("Scenario: external source navigation rejects %s", async kind => {
+  // Given: 表示時点の文書snapshot
+  vi.stubGlobal("crypto", webcrypto);
+  try {
+    const text = "😀C D";
+    const { editor, host, type } = mount(text);
+    editor.open(1, false); await settle();
+    const navigate = await editor.createExternalSourceNavigator();
+    const request = { type: "wasabipad-external-source-navigation" as const, request_id: 1,
+      source_hash: createHash("sha256").update(text).digest("hex"), offset: 2 as number | null };
+    // When: 編集・文書再読込または対応しない位置を渡す
+    if (kind === "edited") { type("x"); await settle(); }
+    if (kind === "reopened") { editor.open(1, false); await settle(); }
+    if (kind === "hash") request.source_hash = "0".repeat(64);
+    if (kind === "unknown") request.offset = null;
+    if (kind === "negative") request.offset = -1;
+    if (kind === "fraction") request.offset = 2.5;
+    if (kind === "range") request.offset = 99;
+    if (kind === "surrogate") request.offset = 1;
+    const before = editor.captureViewState();
+    // Then: 理由を返し、キャレットとスクロールを維持
+    expect(await navigate(request)).toEqual(expect.any(String));
+    expect(editor.captureViewState()).toEqual(before);
+    host.remove();
+  } finally { vi.unstubAllGlobals(); }
+});
+
+// Feature: 楽譜で選んだ音符の元記述を選択表示する
+it.each([
+  { text: "zero\n😀C4 D", offset: 7, end_offset: 9, anchor: {line:1,col:1}, caret: {line:1,col:3} },
+  { text: "<score>\n<note>\n <rest/>\n</note>\n</score>", offset: 8, end_offset: 31, anchor: {line:1,col:0}, caret: {line:3,col:7} },
+])("Scenario: selects the source range without taking preview focus: $text", async sample => {
+  // Given: 元ソースとフォーカスのあるプレビュー
+  vi.stubGlobal("crypto", webcrypto);
+  try {
+    const {editor,host}=mount(sample.text);editor.open(sample.text.split("\n").length,false);await settle();
+    const preview=document.createElement('button');document.body.append(preview);preview.focus();
+    const navigate=await editor.createExternalSourceNavigator();
+    // When: 音符記述の開始と終了を受け取る
+    const reason=await navigate({type:'wasabipad-external-source-navigation',request_id:1,source_hash:createHash('sha256').update(sample.text).digest('hex'),offset:sample.offset,end_offset:sample.end_offset});
+    // Then: 全記述を選択して強調し、楽譜側のフォーカスを維持する
+    expect(reason).toBeNull();
+    expect(editor.captureViewState()).toMatchObject({anchor:sample.anchor,caret:sample.caret});
+    expect(host.querySelector('.ve-sel')).not.toBeNull();expect(document.activeElement).toBe(preview);
+    preview.remove();host.remove();
+  } finally {vi.unstubAllGlobals();}
+});
+
+// Feature: 終端が不正な範囲は選択を変えない
+it.each([-1, 1, 3.5, 99, NaN])("Scenario: rejects invalid source selection end %s", async end_offset=>{
+  // Given: 補助文字を含む入力元と既存の選択
+  vi.stubGlobal("crypto",webcrypto);
+  try {
+    const text="😀C4 D";const {editor,host}=mount(text);editor.open(1,false);await settle();
+    await editor.selectRange(0,2,3);const before=editor.captureViewState();const navigate=await editor.createExternalSourceNavigator();
+    // When: 開始より前、小数、範囲外などの終端を受ける
+    const reason=await navigate({type:'wasabipad-external-source-navigation',request_id:1,offset:2,end_offset,source_hash:createHash('sha256').update(text).digest('hex')});
+    // Then: キャレット・選択・スクロールを維持して理由を返す
+    expect(reason).toEqual(expect.any(String));expect(editor.captureViewState()).toEqual(before);host.remove();
+  } finally {vi.unstubAllGlobals();}
+});
+
+// Feature: 外部プレビューの表示用選択は置換対象範囲を上書きしない
+it("Scenario: source highlighting preserves the explicit replace-selection scope", async()=>{
+  // Given: FindBarに元の置換対象範囲を保持している
+  vi.stubGlobal('crypto',webcrypto);
+  try {
+    const text='needle needle needle needle';const {editor,doc,host}=mount(text);editor.open(1,false);await settle();
+    await editor.selectRange(0,7,20);editor.openSearch();
+    host.querySelector<HTMLInputElement>('.ve-find-in')!.value='needle';
+    const navigate=await editor.createExternalSourceNavigator();
+    // When: 範囲外の音符を表示用に選択してから選択のみを置換
+    await navigate({type:'wasabipad-external-source-navigation',request_id:1,offset:21,end_offset:27,source_hash:createHash('sha256').update(text).digest('hex')});
+    const replacement=host.querySelector<HTMLInputElement>('.ve-rep-in')!;replacement.focus();replacement.value='hit';
+    host.querySelector<HTMLButtonElement>('.ve-rep-selection')!.click();await settle();
+    // Then: 明示した元範囲だけを置換し、表示用の音符は変更しない
+    expect(doc.text()).toBe('needle hit hit needle');host.remove();
+  } finally {vi.unstubAllGlobals();}
 });

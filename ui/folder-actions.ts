@@ -14,7 +14,6 @@ import {
   isSameOrDescendantDocumentPath,
   joinWindowsRoot,
   movedRelativePath,
-  rebaseWindowsPath,
   relativePathFromRoot,
   type PathRebase,
 } from "./path";
@@ -48,7 +47,6 @@ export interface FolderActionsPorts {
   onOpenInNewTab: (relPath: string, goto?: api.Pos) => void;
   onOpenInNewWindow: (path: string, goto?: api.Pos) => void;
   onAddFavorite: (path: string) => void;
-  onSetStartupPath: (path: string) => void;
   onOpenPath: (path: string) => void;
   onOpenAs: (relPath: string, openAs: api.OpenAs) => void;
 }
@@ -83,7 +81,6 @@ export interface FolderActionsServices {
   confirmMessage: typeof confirmMessage;
   promptFields: typeof promptFields;
   registeredCommandPorts: Omit<RegisteredCommandMenuPorts, "promptFields">;
-  getStartupPath: () => string | null;
   revealInExplorer: typeof revealInExplorer;
   openInOtherApp: typeof openInOtherApp;
   onClipboardChange?: () => void;
@@ -891,10 +888,6 @@ export class FolderActions {
       this.doc.applyRenamed(info, selectedRelPath);
       await this.ports.sidebar.selectByRelPath(selectedRelPath);
     }
-    // 起動時に開く既定パスが改名対象の下にあると、次回起動で開けなくなる
-    const startupPath = this.services.getStartupPath();
-    const rebased = startupPath && rebaseWindowsPath(startupPath, rebase.oldAbsolute, rebase.newAbsolute);
-    if (rebased) this.ports.onSetStartupPath(rebased);
   }
 
   private async deleteEntries(targets: ContextTarget[]) {

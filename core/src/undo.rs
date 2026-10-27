@@ -1,4 +1,5 @@
 use crate::buffer::{Pos, TextBuffer};
+use std::collections::HashSet;
 
 pub enum Edit {
     Insert { pos: Pos, text: String },
@@ -9,6 +10,7 @@ pub struct UndoEntry {
     pub edits: Vec<Edit>,
     pub caret_before: Pos,
     pub caret_after: Pos,
+    pub image_references: HashSet<String>,
 }
 
 pub struct UndoStack {
@@ -40,6 +42,7 @@ impl UndoStack {
                     if TextBuffer::end_of_insert(*lpos, ltext) == *pos && !text.contains('\n') {
                         ltext.push_str(text);
                         last.caret_after = entry.caret_after;
+                        last.image_references.extend(entry.image_references);
                         return;
                     }
                 }
@@ -51,6 +54,10 @@ impl UndoStack {
 
     pub fn break_coalescing(&mut self) {
         self.coalescing = false;
+    }
+
+    pub(crate) fn image_references(&self) -> HashSet<String> {
+        self.undo.iter().chain(&self.redo).flat_map(|entry| entry.image_references.iter().cloned()).collect()
     }
 
     pub fn undo(&mut self, buf: &mut TextBuffer) -> Option<(Pos, Vec<usize>)> {
@@ -105,6 +112,7 @@ mod tests {
             edits: vec![Edit::Insert { pos, text: text.to_string() }],
             caret_before: pos,
             caret_after,
+            image_references: HashSet::new(),
         }
     }
 

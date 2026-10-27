@@ -1,6 +1,7 @@
 // 設定の永続化 (保存先は core/src/settings.rs が決める)。
 // UI から同期的に読めるよう、起動時に一度だけ読み込んでメモリへ載せる。
 // 配色モードだけは localStorage に残す (ウィンドウ間の即時同期を storage イベントに任せるため)。
+import { parseExternalPreviewPreferences } from "./external-preview-preferences";
 import type { WorkspaceSearchOptions } from "./api";
 import { loadSettings as loadSettingsJson, updateSetting } from "./api";
 import { clampSearchOptions, DEFAULT_SEARCH_OPTIONS } from "./workspace-search-options";
@@ -18,6 +19,11 @@ export const DEFAULT_MARKDOWN_LINE_HEIGHT = 1.65;
 export const MIN_MARKDOWN_LINE_HEIGHT = 1.4;
 export const MAX_MARKDOWN_LINE_HEIGHT = 2;
 export const DEFAULT_SQLITE_PREVIEW_ROWS = 100;
+export const MAX_PASTED_IMAGE_WIDTH = 10000;
+
+export function isValidPastedImageWidth(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= MAX_PASTED_IMAGE_WIDTH;
+}
 
 export function isValidSqlitePreviewRows(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && Number.isInteger(value) && value > 0;
@@ -33,6 +39,8 @@ export interface Settings {
   sidebarWidth: number;
   fontFamily: string;
   fontSize: number;
+  pastedImageWidthEnabled: boolean;
+  pastedImageWidth: number;
   previewFontSize: number;
   previewOpenPlacement: PreviewOpenPlacement;
   previewLastPlacement: PreviewPlacement;
@@ -46,11 +54,12 @@ export interface Settings {
   previewCacheDirectory: string | null;
   externalPreviewTemporaryDirectory: string | null;
   externalPreviewTemporaryDirectories: string[];
-  startupPath: string | null;
+  defaultSaveDirectory: string | null;
   registeredStrings: string[];
   registeredCommands: RegisteredCommand[];
   externalPreviewAdapters: ExternalPreviewAdapter[];
   externalPreviewAdapterSelections: Record<string, string>;
+  externalPreviewPreferences: Record<string, boolean>;
   trustedExternalPreviewAdapterIds: string[];
   // null は「未設定」。既定値は ui/workspace-search-options.ts だけが持つ
   workspaceSearchOptions: WorkspaceSearchOptions | null;
@@ -64,6 +73,8 @@ const DEFAULT_USER_SETTINGS: Pick<Settings, UserSettingKey> = {
   sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
   fontFamily: DEFAULT_EDITOR_CONFIG.fontFamily,
   fontSize: DEFAULT_EDITOR_CONFIG.fontSize,
+  pastedImageWidthEnabled: true,
+  pastedImageWidth: 900,
   previewFontSize: DEFAULT_EDITOR_CONFIG.fontSize,
   previewOpenPlacement: "right",
   previewLastPlacement: "right",
@@ -77,11 +88,12 @@ const DEFAULT_USER_SETTINGS: Pick<Settings, UserSettingKey> = {
   previewCacheDirectory: null,
   externalPreviewTemporaryDirectory: null,
   externalPreviewTemporaryDirectories: [],
-  startupPath: null,
+  defaultSaveDirectory: null,
   registeredStrings: [],
   registeredCommands: [],
   externalPreviewAdapters: [],
   externalPreviewAdapterSelections: {},
+  externalPreviewPreferences: {},
   trustedExternalPreviewAdapterIds: [],
   workspaceSearchOptions: null,
 };
@@ -167,6 +179,10 @@ export function parseSettingsResult(text: string): SettingsParseResult {
     previewFontSize: isValidFontSize(value.previewFontSize)
       ? value.previewFontSize
       : isValidFontSize(value.fontSize) ? value.fontSize : DEFAULTS.previewFontSize,
+    pastedImageWidthEnabled: typeof value.pastedImageWidthEnabled === "boolean"
+      ? value.pastedImageWidthEnabled : DEFAULTS.pastedImageWidthEnabled,
+    pastedImageWidth: isValidPastedImageWidth(value.pastedImageWidth)
+      ? value.pastedImageWidth : DEFAULTS.pastedImageWidth,
     markdownSoftBreaks: typeof value.markdownSoftBreaks === "boolean"
       ? value.markdownSoftBreaks
       : DEFAULTS.markdownSoftBreaks,
@@ -184,7 +200,7 @@ export function parseSettingsResult(text: string): SettingsParseResult {
       : DEFAULTS.previewCacheDirectory,
     externalPreviewTemporaryDirectory,
     externalPreviewTemporaryDirectories,
-    startupPath: typeof value.startupPath === "string" ? value.startupPath : null,
+    defaultSaveDirectory: typeof value.defaultSaveDirectory === "string" ? value.defaultSaveDirectory : null,
     registeredStrings: Array.isArray(value.registeredStrings)
       ? value.registeredStrings.filter((item): item is string => typeof item === "string" && item.length > 0)
       : [],
@@ -194,6 +210,7 @@ export function parseSettingsResult(text: string): SettingsParseResult {
         .map(normalizeRegisteredCommand)
       : [],
     externalPreviewAdapters,
+    externalPreviewPreferences: parseExternalPreviewPreferences(value.externalPreviewPreferences),
     externalPreviewAdapterSelections: parseExternalPreviewAdapterSelections(
       value.externalPreviewAdapterSelections,
       externalPreviewAdapters,

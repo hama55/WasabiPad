@@ -167,9 +167,11 @@ export function autoCloseMarkdownFence(
   };
 }
 
-export function planLineIndent(anchor: Pos, caret: Pos): LineIndentPlan | null {
-  const range = selectedLineRange(anchor, caret);
-  if (!range) return null;
+export function planLineIndent(anchor: Pos, caret: Pos, lineLength?: number): LineIndentPlan | null {
+  const [start, end] = before(anchor, caret) ? [anchor, caret] : [caret, anchor];
+  if (start.line === end.line
+    && (start.col !== 0 || end.col === 0 || end.col !== lineLength)) return null;
+  const range = selectedLineRangeForUnindent(anchor, caret);
   const edits = Array.from({ length: range.last - range.first + 1 }, (_, index) => {
     const pos = { line: range.first + index, col: 0 };
     return { start: pos, end: pos, text: "\t" };

@@ -12,6 +12,8 @@ export function readEncodingOf(encoding: Encoding): ReadEncoding {
 export interface DocumentSession {
   displayPath: string;
   savePath: string | null;
+  // undefined は従来の空タブ、null は＋タブの候補取得失敗。
+  draftSavePath?: string | null;
   folderRoot: string | null;
   readOnly: boolean;
   isBinary: boolean;

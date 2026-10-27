@@ -90,6 +90,87 @@ function fakeView() {
 }
 
 describe("Feature: DocumentController", () => {
+  // Feature: デフォルト保存先の失効
+  // Scenario: 保存先が使えなくても本文と仮名を保持して保存先を選び直せる
+  // Given: 削除された保存先、または保存先の取得失敗がある＋由来文書
+  // When: 保存を開始してキャンセルする
+  // Then: 理由を案内してフォルダ指定なしの保存ダイアログを開き、文書は未保存のまま残る
+  it.each(["C:\\missing\\memo2.txt", null])("Scenario: 使えない保存先から別の保存先を選べる (%s)", async (candidate) => {
+    const { view } = fakeView();
+    const error = vi.fn(async () => {});
+    const controller = new DocumentController(view, {
+      ...services(),
+      showError: error,
+      api: { ...api, newDoc: vi.fn(async () => {}), pathIsDirectory: vi.fn(async () => false) },
+    });
+    await controller.newFile(false, "C:\\missing", candidate);
+    controller.onEdit(5);
+    expect(await controller.save()).toBe(false);
+    expect(error).toHaveBeenCalledWith("デフォルトの保存フォルダを使用できません", expect.any(String));
+    expect(view.pickSavePath).toHaveBeenCalledWith(candidate ? "memo2.txt" : "memo.txt");
+    expect(controller.current.dirty).toBe(true);
+    expect(controller.current.draftSavePath).toBe(candidate);
+    expect(controller.current.savePath).toBeNull();
+    expect(controller.current.lineCount).toBe(5);
+  });
+
+  // Feature: 仮保存文書の保存失敗
+  // Scenario: 権限エラーの後も本文と候補を失わず保存を再試行する
+  // Given: 仮保存パスの文書と保存権限エラー
+  // When: 保存に失敗した後に保存先を変更して再試行する
+  // Then: 未保存状態と本文を維持し、2回目は選んだ先へ保存できる
+  it("Scenario: 仮保存パスの保存失敗後に再試行できる", async () => {
+    const { view } = fakeView();
+    const saveFile = vi.fn().mockRejectedValueOnce(new Error("denied")).mockResolvedValueOnce({ kind: "saved", modified_at: null });
+    const controller = new DocumentController(view, {
+      ...services(),
+      api: { ...api, newDoc: vi.fn(async () => {}), pathIsDirectory: vi.fn(async () => true), saveFile },
+    });
+    await controller.newFile(false, "C:\\notes", "C:\\notes\\memo.txt");
+    controller.onEdit(8);
+    view.pickSavePath.mockResolvedValueOnce("C:\\notes\\memo.txt");
+    expect(await controller.save()).toBe(false);
+    expect(controller.current).toMatchObject({ dirty: true, savePath: null, draftSavePath: "C:\\notes\\memo.txt", lineCount: 8 });
+    view.pickSavePath.mockResolvedValueOnce("C:\\other\\memo.txt");
+    expect(await controller.save()).toBe(true);
+    expect(controller.current).toMatchObject({ dirty: false, savePath: "C:\\other\\memo.txt", lineCount: 8 });
+  });
+  // Feature: ＋ボタンの仮保存パス
+  // Scenario: 仮名の表示からキャンセル、保存、通常保存へ進む
+  // Given: 実ファイルを作らずに仮保存パスを割り当てた新規文書
+  // When: 初回保存をキャンセルした後、別名で保存して再度保存する
+  // Then: キャンセルでは未保存状態を保持し、名前・形式の追加入力なく選択先へ保存する
+  it("Scenario: 仮保存パスを表示し初回保存はOSダイアログだけを使う", async () => {
+    const { view } = fakeView();
+    const saveFile = vi.fn(async () => ({ kind: "saved" as const, modified_at: null }));
+    const prompt = vi.fn();
+    const controller = new DocumentController(view, {
+      ...services(),
+      api: { ...api, newDoc: vi.fn(async () => {}), saveFile, pathIsDirectory: vi.fn(async () => true) },
+      promptFields: prompt,
+      promptSaveFormat: prompt,
+    });
+    await controller.newFile(false, "C:\\notes", "C:\\notes\\memo1.txt");
+    controller.onEdit(3);
+    expect(view.addressbar.render).toHaveBeenLastCalledWith("C:\\notes\\memo1.txt", null, true);
+    expect(controller.current.savePath).toBeNull();
+    expect(controller.current.displayPath).toBe("");
+    expect(await controller.save()).toBe(false);
+    expect(controller.current.dirty).toBe(true);
+    expect(controller.current.draftSavePath).toBe("C:\\notes\\memo1.txt");
+    expect(saveFile).not.toHaveBeenCalled();
+    view.pickSavePath.mockResolvedValueOnce("C:\\elsewhere\\chosen.txt");
+    expect(await controller.save()).toBe(true);
+    expect(view.pickSavePath).toHaveBeenLastCalledWith("C:\\notes\\memo1.txt");
+    expect(saveFile).toHaveBeenLastCalledWith("C:\\elsewhere\\chosen.txt", "utf8", "crlf");
+    expect(controller.current.savePath).toBe("C:\\elsewhere\\chosen.txt");
+    expect(controller.current.draftSavePath).toBeUndefined();
+    expect(prompt).not.toHaveBeenCalled();
+    expect(view.addressbar.render).toHaveBeenLastCalledWith("C:\\elsewhere\\chosen.txt", null);
+    controller.onEdit(4);
+    expect(await controller.save()).toBe(true);
+    expect(view.pickSavePath).toHaveBeenCalledTimes(2);
+  });
   // Given: `openPath` mockが`info()`を返すDocumentController
   // When: `controller.openPath("C:\\work\\memo.txt")`
   // Then: trueを返し、mockが同じpathで呼ばれる

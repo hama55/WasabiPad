@@ -10,6 +10,18 @@ const tab = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe("Feature: 保存タブの検証", () => {
+  // Scenario: 仮保存パスの状態を検証して再開タブ全体の破損を防ぐ
+  // Given: ＋由来・取得失敗・従来タブと不正な候補の保存データ
+  // When: 保存タブを検証する
+  // Then: 文字列・null・未指定だけ受理する
+  it("Scenario: 仮保存パスの型を検証する", () => {
+    for (const draftSavePath of ["C:\\notes\\memo.txt", null, undefined]) {
+      expect(isStoredTab(tab({ path: null, kind: "blank", draftSavePath }))).toBe(true);
+    }
+    for (const draftSavePath of [42, true, {}]) {
+      expect(isStoredTab(tab({ path: null, kind: "blank", draftSavePath }))).toBe(false);
+    }
+  });
   // Given: 必須項目と任意の位置情報を持つStoredTab
   // When: isStoredTabを呼ぶ
   // Then: 正しいタブだけを受理する

@@ -250,7 +250,7 @@ function markdownSourceMapNode(node: HastNode, source: string, parentTag?: strin
     return [node];
   }
 
-  if (node.tagName === "br" && node.position?.start?.offset !== undefined && node.position.end?.offset !== undefined) {
+  if ((node.tagName === "br" || node.tagName === "img") && node.position?.start?.offset !== undefined && node.position.end?.offset !== undefined) {
     node.properties = {
       ...node.properties,
       dataSourceOffsetStart: node.position.start.offset,

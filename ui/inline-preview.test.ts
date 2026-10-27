@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { ViewerFormat } from "./api";
 import { InlinePreview, INLINE_PREVIEW_MESSAGES } from "./inline-preview";
 import { createExternalPreviewOutputLifecycle } from "./preview-replacement";
+import { resolveAssetPath } from "./viewer-assets";
+import { LiveViewers } from "./live-viewers";
 
 const { setInlinePreviewFocusMock } = vi.hoisted(() => ({
   setInlinePreviewFocusMock: vi.fn(async () => undefined),
@@ -36,6 +38,150 @@ function mount(
 }
 
 describe("Feature: inline preview", () => {
+  // Feature: プレビュー再開時の消去
+  // Given: 同じ文書のプレビューを閉じて再開する
+  // When: 消去付きで表示データを再送する
+  // Then: 本文消去の後に現在のデータだけを再送する
+  it("Scenario: 再開するときも前の描画を消してから再送する", async () => {
+    const { host, preview } = mount();
+    const frame = host.querySelector("iframe")!;
+    const post = vi.spyOn(frame.contentWindow!, "postMessage");
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow, origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
+    }));
+    await preview.open("markdown", "current document", null);
+    post.mockClear();
+    preview.resend(true);
+    const messages = post.mock.calls.map(([message]) => message);
+    const clearIndex = messages.findIndex(message => message.type === INLINE_PREVIEW_MESSAGES.CLEAR_MESSAGE);
+    const payloadIndex = messages.findIndex(message => message.type === INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE);
+    expect(clearIndex).toBeGreaterThanOrEqual(0);
+    expect(payloadIndex).toBeGreaterThan(clearIndex);
+    expect(messages[payloadIndex].payload.text).toBe("current document");
+    host.remove();
+  });
+  // Feature: プレビュー開始前の消去
+  // Given: 前の標準プレビューの本文がビューアに表示されている
+  // When: 表示を消して新しい読み込み状態を開く
+  // Then: 待機表示より先に本文消去を送り、古い本文を再送しない
+  it("Scenario: 標準プレビューの前の本文を消してから待機する", async () => {
+    const { host, preview } = mount();
+    const frame = host.querySelector("iframe")!;
+    const post = vi.spyOn(frame.contentWindow!, "postMessage");
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow, origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
+    }));
+    await preview.open("markdown", "old document", null);
+    post.mockClear();
+    const clearing = preview.clear();
+    preview.setPreviewStatus({ kind: "standard", message: "読み込み中…", busy: true });
+    await clearing;
+    const messages = post.mock.calls.map(([message]) => message);
+    const clearIndex = messages.findIndex(message => message.type === INLINE_PREVIEW_MESSAGES.CLEAR_MESSAGE);
+    const statusIndex = messages.findIndex(message => message.status?.busy);
+    expect(clearIndex).toBeGreaterThanOrEqual(0);
+    expect(clearIndex).toBeLessThan(statusIndex);
+    expect(messages.some(message => message.type === INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE)).toBe(false);
+    expect(host.hidden).toBe(false);
+    host.remove();
+  });
+  // Feature: 外部プレビュー生成物のフォルダ操作
+  // Given: 出力準備中と表示確定済みの生成物がある
+  // When: ビューアがフォルダ操作を通知し、その後表示を閉じる
+  // Then: 表示確定後だけ操作を受け付け、準備中のパスで有効化せず、閉じると解除する
+  it("Scenario: 表示確定した生成物だけフォルダ操作を許可する", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const onRevealExternalOutput = vi.fn();
+    const preview = new InlinePreview(host, { onRevealExternalOutput });
+    const frame = host.querySelector("iframe")!;
+    const post = vi.spyOn(frame.contentWindow!, "postMessage");
+    const receive = (data: unknown, source = frame.contentWindow) => window.dispatchEvent(new MessageEvent("message", {
+      source, origin: window.location.origin, data,
+    }));
+    const reveal = { type: INLINE_PREVIEW_MESSAGES.REVEAL_OUTPUT_MESSAGE, path: "C:/untrusted" };
+    preview.setPreviewStatus({ message: "変換中…", busy: true });
+    preview.setPendingExternalOutputPath("C:/temp/new/index.html");
+    receive(reveal);
+    expect(onRevealExternalOutput).not.toHaveBeenCalled();
+    preview.setExternalOutputPath("C:/temp/old/index.html");
+    receive({ type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE });
+    expect(post).toHaveBeenCalledWith({ type: INLINE_PREVIEW_MESSAGES.OUTPUT_FOLDER_STATE_MESSAGE, available: true }, window.location.origin);
+    receive(reveal, window);
+    expect(onRevealExternalOutput).not.toHaveBeenCalled();
+    receive(reveal);
+    expect(onRevealExternalOutput).toHaveBeenCalledWith();
+    preview.setPendingExternalOutputPath("C:/temp/new/index.html");
+    receive(reveal);
+    expect(onRevealExternalOutput).toHaveBeenCalledTimes(2);
+    await preview.clear();
+    receive(reveal);
+    expect(onRevealExternalOutput).toHaveBeenCalledTimes(2);
+    expect(post).toHaveBeenCalledWith({ type: INLINE_PREVIEW_MESSAGES.OUTPUT_FOLDER_STATE_MESSAGE, available: false }, window.location.origin);
+    host.remove();
+  });
+  // Feature: プレビュー枠の先行表示
+  // Given: 標準プレビューの本文取得が終わらない
+  // When: 枠を開いて本文を取得し、途中で閉じる
+  // Then: 本文未到着でも待機枠が可視になり、閉じた後に本文が届いても再表示しない
+  it("Scenario: 本文取得中に待機枠を表示し閉鎖後の完了を無視する", async () => {
+    const { host, preview } = mount();
+    let finishText!: (text: string) => void;
+    const pendingText = new Promise<string>((resolve) => { finishText = resolve; });
+    const viewers = new LiveViewers({
+      wholeRange: async () => ({ start: { line: 0, col: 0 }, end: { line: 1, col: 0 } }),
+      textInRange: () => pendingText,
+      openViewer: (...args) => preview.open(...args),
+      updateViewer: async () => true,
+    });
+    preview.setPreviewStatus({ message: "読み込み中…", busy: true, kind: "standard" });
+    const opened = viewers.open("markdown", null, { start: { line: 0, col: 0 }, end: { line: 0, col: 0 } });
+    await Promise.resolve();
+    expect(host.hidden).toBe(false);
+    viewers.invalidatePendingOpens();
+    await preview.clear();
+    finishText("# late");
+    expect(await opened).toBeNull();
+    expect(host.hidden).toBe(true);
+    host.remove();
+  });
+  // Feature: 貼り付け画像の即時プレビュー
+  // Given: txt・md・任意拡張子の文書と、文書画像フォルダの相対参照がある
+  // When: 保存せず初回プレビュー、連続貼り付け、別フォルダの文書のプレビューを行う
+  // Then: 各payloadの参照元から現在の文書の画像を解決でき、前の文書の場所を引き継がない
+  it.each(["txt", "md", "custom"])("Scenario: %s文書の貼り付け画像を現在の文書から解決する", async (extension) => {
+    const { host, preview } = mount();
+    const frame = host.querySelector("iframe")!;
+    const post = vi.spyOn(frame.contentWindow!, "postMessage");
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow, origin: window.location.origin,
+      data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
+    }));
+    const first = '<img src="image_markdown/memo/pasted-image.png" alt="貼り付け画像" width="900">';
+    const second = '<img src="image_markdown/memo/pasted-image-2.png" alt="貼り付け画像" width="900">';
+    const payload = () => post.mock.calls.filter(([message]) => message.type === INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE).at(-1)![0].payload;
+
+    preview.setSourcePath(`C:\\work\\notes\\memo.${extension}`);
+    const label = await preview.open("markdown", first, null);
+    expect(payload().source_path).toBe(`C:\\work\\notes\\memo.${extension}`);
+    expect(payload().text).toBe(first);
+    expect(resolveAssetPath(payload().source_path, "image_markdown/memo/pasted-image.png"))
+      .toBe("C:\\work\\notes\\image_markdown\\memo\\pasted-image.png");
+
+    preview.update(label!, `${first}\n${second}`, null);
+    expect(payload().text).toBe(`${first}\n${second}`);
+    expect(resolveAssetPath(payload().source_path, "image_markdown/memo/pasted-image-2.png"))
+      .toBe("C:\\work\\notes\\image_markdown\\memo\\pasted-image-2.png");
+
+    preview.setSourcePath(`D:\\other\\memo.${extension}`);
+    await preview.open("markdown", first, null);
+    expect(payload().source_path).toBe(`D:\\other\\memo.${extension}`);
+    expect(resolveAssetPath(payload().source_path, "image_markdown/memo/pasted-image.png"))
+      .toBe("D:\\other\\image_markdown\\memo\\pasted-image.png");
+    host.remove();
+  });
   // Given: Git表示の所有tokenと同じパスの古いtokenがある
   // When: 古い世代と正規世代から新規タブ要求を受ける
   // Then: 正規世代のファイル要求だけを親画面へ渡す
@@ -79,7 +225,7 @@ describe("Feature: inline preview", () => {
     expect(preview.clear()).toBe(cleared);
     const reopening = cleared.then(() => {
       finished = true;
-      preview.setExternalStatus({ message: "変換中…", busy: true });
+      preview.setPreviewStatus({ message: "変換中…", busy: true });
     });
     await Promise.resolve();
     expect(finished).toBe(false);
@@ -89,7 +235,7 @@ describe("Feature: inline preview", () => {
     expect(host.hidden).toBe(false);
     expect(onAvailabilityChange).toHaveBeenLastCalledWith(true, expect.any(String));
     expect(post).toHaveBeenLastCalledWith({
-      type: INLINE_PREVIEW_MESSAGES.EXTERNAL_STATUS_MESSAGE,
+      type: INLINE_PREVIEW_MESSAGES.PREVIEW_STATUS_MESSAGE,
       status: { message: "変換中…", busy: true },
     }, window.location.origin);
   });
@@ -100,7 +246,7 @@ describe("Feature: inline preview", () => {
     const { host, preview, onAvailabilityChange } = mount();
     const frame = host.querySelector("iframe")!;
     const post = vi.spyOn(frame.contentWindow!, "postMessage");
-    preview.setExternalStatus({ message: "変換中…", busy: true });
+    preview.setPreviewStatus({ message: "変換中…", busy: true });
     expect(onAvailabilityChange).toHaveBeenCalledWith(true, expect.any(String));
     expect(host.hidden).toBe(false);
     window.dispatchEvent(new MessageEvent("message", {
@@ -108,7 +254,7 @@ describe("Feature: inline preview", () => {
       data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
     }));
     expect(post).toHaveBeenCalledWith({
-      type: INLINE_PREVIEW_MESSAGES.EXTERNAL_STATUS_MESSAGE,
+      type: INLINE_PREVIEW_MESSAGES.PREVIEW_STATUS_MESSAGE,
       status: { message: "変換中…", busy: true },
     }, window.location.origin);
     expect(post.mock.calls.some(([message]) => message.type === INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE)).toBe(false);
@@ -124,13 +270,13 @@ describe("Feature: inline preview", () => {
       source: frame.contentWindow, origin: window.location.origin,
       data: { type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE },
     }));
-    preview.setExternalStatus({ message: "実行確認待ち…", busy: true });
-    preview.setExternalStatus({ message: "変換中…", busy: true });
+    preview.setPreviewStatus({ message: "実行確認待ち…", busy: true });
+    preview.setPreviewStatus({ message: "変換中…", busy: true });
     expect(onAvailabilityChange.mock.calls.filter(([available]) => available)).toHaveLength(1);
     preview.clear();
     await Promise.resolve();
     expect(host.hidden).toBe(true);
-    expect(post).toHaveBeenCalledWith({ type: INLINE_PREVIEW_MESSAGES.EXTERNAL_STATUS_MESSAGE, status: null }, window.location.origin);
+    expect(post).toHaveBeenCalledWith({ type: INLINE_PREVIEW_MESSAGES.PREVIEW_STATUS_MESSAGE, status: null }, window.location.origin);
   });
   // Given: 準備済みの動画プレビュー
   // When: 一時退避と閉じる操作を通知する
@@ -888,4 +1034,169 @@ describe("Feature: inline preview", () => {
       consoleError.mockRestore();
     }
   });
+});
+
+// Feature: 本体は表示世代に対応する入力元だけへ移動する
+it("Scenario: external source requests are bound to the committed render and output", async () => {
+  // Given: 同じ外部ファイルを表示する二つの世代
+  const { host, preview } = mount();
+  const frame = host.querySelector("iframe")!;
+  const post = vi.spyOn(frame.contentWindow!, "postMessage");
+  const receive = (data: unknown) => window.dispatchEvent(new MessageEvent("message", { source: frame.contentWindow, origin: window.location.origin, data }));
+  receive({ type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE });
+  const navigate = vi.fn(async () => null);
+  preview.setExternalSourceNavigator("C:\\work\\score.html", navigate);
+  const opening = preview.open("html", "source", null, "C:\\work\\score.html");
+  const message = post.mock.calls.filter(([m]) => m.type === INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE).at(-1)![0];
+  receive({ type: INLINE_PREVIEW_MESSAGES.DISPLAY_COMMITTED_MESSAGE, render_id: message.render_id });
+  const label = await opening;
+  const request = { type: "wasabipad-external-source-navigation", render_id: message.render_id, request_id: 1, offset: 2, source_hash: "a".repeat(64) };
+  // When: 古い世代と有効な世代から要求し、閉じた後にも要求
+  receive({ ...request, render_id: "old" });
+  receive(request);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(navigate).toHaveBeenCalledTimes(1);
+  expect(post.mock.calls.some(([m]) => m.type === "wasabipad-external-source-navigation-result" && m.reason === null)).toBe(true);
+  await preview.close(label!, true);
+  receive(request);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  // Then: 表示中の入力元の要求一回だけを受理
+  expect(navigate).toHaveBeenCalledTimes(1);
+  host.remove();
+});
+
+// Feature: 音符からの位置移動で演奏中の外部HTMLを再読込しない
+it("Scenario: selection and editor text updates preserve the external output iframe", async () => {
+  // Given: 確定済みの外部HTML表示
+  const { host, preview } = mount();
+  const frame = host.querySelector("iframe")!;
+  const post = vi.spyOn(frame.contentWindow!, "postMessage");
+  const receive = (data: unknown) => window.dispatchEvent(new MessageEvent("message", { source: frame.contentWindow, origin: window.location.origin, data }));
+  receive({ type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE });
+  const opening = preview.open("html", "saved", null, "C:\\work\\score.html");
+  const render = post.mock.calls.filter(([m]) => m.type === INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE).at(-1)![0];
+  receive({ type: INLINE_PREVIEW_MESSAGES.DISPLAY_COMMITTED_MESSAGE, render_id: render.render_id });
+  const label = await opening;
+  post.mockClear();
+  // When: 音符クリックで選択が更新され、さらに本文が編集される
+  await preview.update(label!, "saved", { start: {line:0,col:1}, end:{line:0,col:1} });
+  await preview.update(label!, "edited", null);
+  // Then: 表示中の外部HTMLを再生成・再読込せず、演奏を維持
+  expect(post.mock.calls.filter(([m]) => m.type === INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE)).toEqual([]);
+  await preview.close(label!, true); host.remove();
+});
+
+// Feature: 更新失敗後も有効な旧表示から移動できる
+it.each(["open", "resend", "overlap", "mixed"])("Scenario: failed external %s retains the committed source navigation", async action => {
+  // Given: 有効な旧表示とその入力元
+  const {host,preview}=mount(); const frame=host.querySelector('iframe')!;
+  const post=vi.spyOn(frame.contentWindow!,'postMessage');
+  const receive=(data:unknown)=>window.dispatchEvent(new MessageEvent('message',{source:frame.contentWindow,origin:window.location.origin,data}));
+  const render=()=>post.mock.calls.filter(([m])=>m.type===INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE).at(-1)![0].render_id;
+  receive({type:INLINE_PREVIEW_MESSAGES.READY_MESSAGE});
+  const navigate=vi.fn(async()=>null); preview.setExternalSourceNavigator('C:\\work\\old.html',navigate);
+  const opening=preview.open('html','source',null,'C:\\work\\old.html'); const oldId=render();
+  receive({type:INLINE_PREVIEW_MESSAGES.DISPLAY_COMMITTED_MESSAGE,render_id:oldId}); const label=await opening;
+  // When: 新しい表示への置換に失敗後、旧表示から要求
+  let displayedId = oldId;
+  if (action === 'open') {
+    const replacement=preview.open('html','source',null,'C:\\work\\new.html');
+    receive({type:INLINE_PREVIEW_MESSAGES.DISPLAY_FAILED_MESSAGE,render_id:render()}); expect(await replacement).toBeNull();
+  } else if (action === 'resend') {
+    preview.resend(); receive({type:INLINE_PREVIEW_MESSAGES.DISPLAY_FAILED_MESSAGE,render_id:render()});
+  } else if (action === 'mixed') {
+    preview.resend(); displayedId = render();
+    const replacement=preview.open('html','source',null,'C:\\work\\new.html'); const failedId=render();
+    receive({type:INLINE_PREVIEW_MESSAGES.DISPLAY_COMMITTED_MESSAGE,render_id:displayedId});
+    receive({type:INLINE_PREVIEW_MESSAGES.DISPLAY_FAILED_MESSAGE,render_id:failedId});
+    expect(await replacement).toBeNull();
+  } else {
+    preview.resend(); displayedId = render();
+    preview.resend(); const failedId = render();
+    receive({type:INLINE_PREVIEW_MESSAGES.DISPLAY_COMMITTED_MESSAGE,render_id:displayedId});
+    receive({type:INLINE_PREVIEW_MESSAGES.DISPLAY_FAILED_MESSAGE,render_id:failedId});
+  }
+  receive({type:'wasabipad-external-source-navigation',render_id:displayedId,request_id:1,source_hash:'a'.repeat(64),offset:1});
+  await new Promise(resolve=>setTimeout(resolve,0));
+  // Then: 本文無変更の旧表示の要求を有効として扱う
+  expect(navigate).toHaveBeenCalledTimes(1);
+  await preview.close(label!,true);host.remove();
+});
+
+
+// Feature: 外部表示設定は表示世代と保存完了に結び付く
+it("Scenario: committed external render alone saves preferences and receives the persisted result", async () => {
+  // Given: 保存処理の完了を待てる外部プレビュー
+  const host = document.createElement("div");
+  host.append(document.createElement("iframe")); document.body.append(host);
+  let finishSave!: (value: boolean) => void;
+  const onExternalPreference = vi.fn((_key: string, _value: boolean | undefined, _current: () => boolean) => new Promise<boolean>(resolve => { finishSave = resolve; }));
+  const preview = new InlinePreview(host, { onExternalPreference });
+  const frame = host.querySelector("iframe")!;
+  const post = vi.spyOn(frame.contentWindow!, "postMessage");
+  const receive = (data: unknown, source: MessageEventSource | null = frame.contentWindow, origin = window.location.origin) =>
+    window.dispatchEvent(new MessageEvent("message", { source, origin, data }));
+  receive({ type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE });
+  const opening = preview.open("html", "source", null, "C:/work/score.html");
+  const renderId = post.mock.calls.filter(([m]) => m.type === INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE).at(-1)![0].render_id;
+  const request = { type: "wasabipad-external-preference-request", render_id: renderId,
+    request_id: 0, key: "wasabipad.music-preview.chord-keyboard-diagrams", value: true };
+  receive(request);
+  expect(onExternalPreference).not.toHaveBeenCalled();
+  receive({ type: INLINE_PREVIEW_MESSAGES.DISPLAY_COMMITTED_MESSAGE, render_id: renderId });
+  const label = await opening;
+  expect(post.mock.calls.some(([m]) => m.type === "wasabipad-external-preference-ready" && m.render_id === renderId)).toBe(true);
+  const results = () => post.mock.calls.filter(([m]) => m.type === "wasabipad-external-preference-result").map(([m]) => m);
+  // When: 不正な送信元や古い世代を経由してから、有効な設定要求を送る
+  receive(request, window);
+  receive(request, frame.contentWindow, "https://foreign.invalid");
+  receive({ ...request, render_id: "old" });
+  receive(request);
+  await vi.waitFor(() => expect(onExternalPreference).toHaveBeenCalledOnce());
+  expect(results()).toEqual([]);
+  const current = onExternalPreference.mock.calls[0][2];
+  expect(current()).toBe(true);
+  finishSave(true);
+  // Then: 保存完了後だけ結果を返し、保存失敗と閉じた後の要求も区別する
+  await vi.waitFor(() => expect(results()).toEqual([{ type: "wasabipad-external-preference-result",
+    render_id: renderId, request_id: 0, key: request.key, value: true, reason: null }]));
+  onExternalPreference.mockRejectedValueOnce(new Error("save failed"));
+  receive({ ...request, request_id: 1, value: false });
+  await vi.waitFor(() => expect(results().at(-1)).toMatchObject({ request_id: 1, value: null, reason: expect.any(String) }));
+  await preview.close(label!, true);
+  expect(current()).toBe(false);
+  receive({ ...request, request_id: 2 });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(onExternalPreference).toHaveBeenCalledTimes(2);
+  host.remove();
+});
+
+it("Scenario: replacing an external output suppresses an old pending preference response", async () => {
+  // Given: 旧出力からの読み込み要求がまだ完了していない
+  const host = document.createElement("div");
+  host.append(document.createElement("iframe")); document.body.append(host);
+  let finishRead!: (value: boolean | null) => void;
+  const onExternalPreference = vi.fn((_key: string, _value: boolean | undefined, _current: () => boolean) => new Promise<boolean | null>(resolve => { finishRead = resolve; }));
+  const preview = new InlinePreview(host, { onExternalPreference });
+  const frame = host.querySelector("iframe")!;
+  const post = vi.spyOn(frame.contentWindow!, "postMessage");
+  const receive = (data: unknown) => window.dispatchEvent(new MessageEvent("message", {
+    source: frame.contentWindow, origin: window.location.origin, data }));
+  const render = () => post.mock.calls.filter(([m]) => m.type === INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE).at(-1)![0].render_id;
+  receive({ type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE });
+  const first = preview.open("html", "first", null, "C:/work/first.html");
+  receive({ type: INLINE_PREVIEW_MESSAGES.DISPLAY_COMMITTED_MESSAGE, render_id: render() });
+  await first;
+  receive({ type: "wasabipad-external-preference-request", render_id: render(), request_id: 1, key: "display.option" });
+  await vi.waitFor(() => expect(onExternalPreference).toHaveBeenCalledOnce());
+  expect(onExternalPreference.mock.calls[0][1]).toBeUndefined();
+  // When: 別出力への置換が確定してから旧要求が完了する
+  const second = preview.open("html", "second", null, "C:/work/second.html");
+  receive({ type: INLINE_PREVIEW_MESSAGES.DISPLAY_COMMITTED_MESSAGE, render_id: render() });
+  const label = await second;
+  finishRead(null);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  // Then: 新しい表示へ旧要求の結果を返さない
+  expect(post.mock.calls.filter(([m]) => m.type === "wasabipad-external-preference-result")).toEqual([]);
+  await preview.close(label!, true); host.remove();
 });

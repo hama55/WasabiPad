@@ -219,6 +219,34 @@ pub(crate) fn cleanup_unused_images(path: String, state: State) -> Result<(), St
     .map_err(|e| e.to_string())
 }
 
+pub(crate) fn save_diagram_image(bytes: Vec<u8>, mime_type: String, shared: bool, source_path: String, archive_entry: Option<String>, state: State) -> Result<String, String> {
+    with_doc(&state, |doc| {
+        doc.check_diagram_source(&PathBuf::from(source_path), archive_entry.as_deref())?;
+        doc.save_diagram_image(&bytes, &mime_type, shared)
+    })?.map_err(|error| error.to_string())
+}
+
+pub(crate) fn finish_diagram_assets(source_path: String, archive_entry: Option<String>, state: State) -> Result<(), String> {
+    with_doc(&state, |doc| {
+        doc.check_diagram_source(&PathBuf::from(source_path), archive_entry.as_deref())?;
+        doc.finish_diagram_assets()
+    })?.map_err(|error| error.to_string())
+}
+
+pub(crate) fn read_diagram_asset(path: String, source_path: String, state: State) -> Result<Vec<u8>, String> {
+    with_doc(&state, |doc| {
+        doc.check_diagram_source(&PathBuf::from(source_path), None)?;
+        doc.read_diagram_asset(&PathBuf::from(path))
+    })?.map_err(|error| error.to_string())
+}
+
+pub(crate) fn apply_diagram_edit(start: PosC, end: PosC, caret_before: PosC, text: String, expected: String, expected_line: String, source_path: String, archive_entry: Option<String>, state: State) -> Result<EditResult, String> {
+    with_doc(&state, |doc| {
+        doc.check_diagram_source(&PathBuf::from(source_path), archive_entry.as_deref())?;
+        doc.apply_diagram_edit(start, end, caret_before, &text, &expected, &expected_line)
+    })?.map_err(|error| error.to_string())
+}
+
 pub(crate) fn edit(
     start: PosC,
     end: PosC,
