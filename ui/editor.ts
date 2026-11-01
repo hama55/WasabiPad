@@ -876,7 +876,7 @@ export class VirtualEditor {
     }
 
     // 行 + ガター
-    // selectLines() でガター上の行をクリックすると、改行込みで選択するため
+    // 行番号から行を選択すると、改行込みで選択するため
     // caret は選択末尾の「次の行の先頭」に置かれる (行1をクリック→caretは行2)。
     // それをそのまま「現在行」として使うと、クリックした行の1つ下が光って見える
     // ため、この形の行選択中は1つ前の行(実際に選択されている行)を現在行として扱う。
@@ -2343,7 +2343,10 @@ export class VirtualEditor {
     }
     this.moveTo(pos, e.shiftKey);
     const move = (ev: MouseEvent) => {
-      const p = this.posFromPoint(ev.clientX, ev.clientY);
+      const hit = document.elementFromPoint?.(ev.clientX, ev.clientY);
+      const p = hit?.closest(".ve-gutter")
+        ? { line: this.lineFromGutterY(ev.clientY), col: 0 }
+        : this.posFromPoint(ev.clientX, ev.clientY);
       if (p) this.moveTo(p, true);
     };
     const cleanup = () => {
@@ -2587,27 +2590,36 @@ export class VirtualEditor {
     return Math.max(0, Math.min(this.lineCount - 1, line));
   }
 
-  private async selectLines(a: number, b: number) {
-    const lo = Math.min(a, b);
-    const hi = Math.max(a, b);
-    this.sel.anchor = { line: lo, col: 0 };
-    const caret =
-      hi + 1 < this.lineCount ? { line: hi + 1, col: 0 } : { line: hi, col: await this.lineCache.lineLength(hi) };
-    this.moveTo(caret, true);
-  }
-
   private onGutterMouseDown(e: MouseEvent) {
     if (e.button !== 0 || this.busy) return;
     e.preventDefault();
     this.focus();
     const clicked = this.lineFromGutterY(e.clientY);
     const startLine = e.shiftKey ? this.sel.anchor.line : clicked;
-    const update = (line: number) => {
-      this.dispatch("行選択を更新できませんでした", () => this.selectLines(startLine, line));
+    let revision = 0;
+    const update = (line: number, pos: Pos | null = null) => {
+      const current = ++revision;
+      this.dispatch("行選択を更新できませんでした", async () => {
+        const wholeLines = !pos || pos.line === startLine;
+        const lo = wholeLines ? Math.min(startLine, line) : startLine;
+        const hi = wholeLines ? Math.max(startLine, line) : startLine;
+        const end = hi + 1 < this.lineCount
+          ? { line: hi + 1, col: 0 }
+          : { line: hi, col: await this.lineCache.lineLength(hi) };
+        if (current !== revision) return;
+        this.sel.anchor = wholeLines || pos!.line > startLine ? { line: lo, col: 0 } : end;
+        this.moveTo(wholeLines ? end : pos!, true);
+      });
     };
     update(clicked);
     const move = (ev: MouseEvent) => {
-      update(this.lineFromGutterY(ev.clientY));
+      const hit = document.elementFromPoint?.(ev.clientX, ev.clientY);
+      if (!hit || !this.scroll.contains(hit) || hit.closest(".ve-gutter")) {
+        update(this.lineFromGutterY(ev.clientY));
+      } else {
+        const pos = this.posFromPoint(ev.clientX, ev.clientY);
+        if (pos) update(pos.line, pos);
+      }
     };
     const cleanup = () => {
       window.removeEventListener("mousemove", move);
