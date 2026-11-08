@@ -20,6 +20,15 @@ import {
 } from "./settings";
 
 describe("Feature: settings", () => {
+  // Scenario: ツリー幅の自動調整設定を復元する
+  // Given: 自動調整は未設定または保存済み
+  // When: 設定を読み込む
+  // Then: 未設定はオフ、保存済みの真偽値を復元する
+  it("Scenario: 自動幅の設定を復元する", () => {
+    expect(parseSettings("{}").treeAutoFitWidth).toBe(false);
+    expect(parseSettings('{"treeAutoFitWidth":true}').treeAutoFitWidth).toBe(true);
+    expect(parseSettings('{"treeAutoFitWidth":"true"}').treeAutoFitWidth).toBe(false);
+  });
   // Scenario: ファイルツリーの表示項目を保存して復元する
   // Given: 初期状態は両方オフ
   // When: 両項目をオンにして保存済み設定を読み直す

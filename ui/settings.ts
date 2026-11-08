@@ -39,6 +39,7 @@ export interface Settings {
   sidebarWidth: number;
   treeShowModified: boolean;
   treeShowSize: boolean;
+  treeAutoFitWidth: boolean;
   fontFamily: string;
   fontSize: number;
   pastedImageWidthEnabled: boolean;
@@ -75,6 +76,7 @@ const DEFAULT_USER_SETTINGS: Pick<Settings, UserSettingKey> = {
   sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
   treeShowModified: false,
   treeShowSize: false,
+  treeAutoFitWidth: false,
   fontFamily: DEFAULT_EDITOR_CONFIG.fontFamily,
   fontSize: DEFAULT_EDITOR_CONFIG.fontSize,
   pastedImageWidthEnabled: true,
@@ -168,6 +170,7 @@ export function parseSettingsResult(text: string): SettingsParseResult {
     sidebarWidth: clampSidebarWidth(value.sidebarWidth),
     treeShowModified: value.treeShowModified === true,
     treeShowSize: value.treeShowSize === true,
+    treeAutoFitWidth: value.treeAutoFitWidth === true,
     previewOpenPlacement: value.previewOpenPlacement === "last" || isPreviewPlacement(value.previewOpenPlacement)
       ? value.previewOpenPlacement : DEFAULTS.previewOpenPlacement,
     previewLastPlacement: isPreviewPlacement(value.previewLastPlacement)

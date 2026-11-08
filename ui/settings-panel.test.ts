@@ -22,6 +22,7 @@ function makePorts(
     sidebarWidth: 220,
     treeShowModified: false,
     treeShowSize: false,
+    treeAutoFitWidth: false,
     fontFamily: 'Consolas, "MS Gothic", monospace',
     fontSize: 14,
     pastedImageWidthEnabled: true,

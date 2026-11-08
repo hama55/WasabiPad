@@ -113,7 +113,7 @@ describe("Feature: window layout integration", () => {
   // When: workspace状態のcapture/restore経路を検査する
   // Then: 幅をタブ状態へ保存し、未保存時は共通設定へ戻す
   it("Scenario: タブ切替のworkspace状態へファイルツリー幅を接続する", () => {
-    expect(mainSource).toMatch(/capture:\s*\(\)\s*=>\s*\(\{\s*\.\.\.sidebar\.captureViewState\(\),\s*fileTreeWidth:\s*readSidebarWidth\(\)/s);
+    expect(mainSource).toMatch(/capture:\s*\(\)\s*=>\s*\(\{\s*\.\.\.sidebar\.captureViewState\(\),\s*fileTreeWidth:\s*manualSidebarWidth/s);
     expect(mainSource).toMatch(/restore:\s*async \(state\)\s*=>\s*\{[\s\S]*?setSidebarWidth\(state\?\.fileTreeWidth\s*\?\?\s*getSetting\("sidebarWidth"\)\);\s*updateSidebarVisibility\(\);[\s\S]*?await sidebar\.restoreViewState\(state\);/s);
   });
 

@@ -46,22 +46,6 @@ pub fn tree_metadata(path: &Path) -> TreeMetadata {
     }
     if is_link { result.is_link = true; return result; }
     if metadata.is_file() { result.size = metadata.len(); }
-    if metadata.is_dir() {
-        match std::fs::read_dir(path) {
-            Ok(entries) => for entry in entries {
-                match entry {
-                    Ok(entry) => {
-                        let child = tree_metadata(&entry.path());
-                        result.size = result.size.saturating_add(child.size);
-                        result.modified = result.modified.max(child.modified);
-                        result.incomplete |= child.incomplete;
-                    }
-                    Err(_) => result.incomplete = true,
-                }
-            },
-            Err(_) => result.incomplete = true,
-        }
-    }
     result
 }
 
@@ -142,18 +126,18 @@ mod tests {
     use std::cmp::Ordering;
 
     // Feature: フォルダの情報表示
-    // Scenario: 未展開の子や隠しファイルを含めてサイズを集計する
+    // Scenario: フォルダの配下を集計しない
     // Given: フォルダに 3 バイトのファイルと子フォルダ内に 5 バイトの隠しファイルがある
     // When: フォルダ情報を取得する
-    // Then: 合計 8 バイトと最新の更新日時を返す
+    // Then: サイズを集計せず、フォルダ自身の更新日時を返す
     #[test]
-    fn folder_metadata_includes_descendants() {
+    fn folder_metadata_does_not_include_descendants() {
         let root = std::env::temp_dir().join(format!("wasabipad_metadata_{}", std::process::id()));
         std::fs::create_dir_all(root.join("sub")).unwrap();
         std::fs::write(root.join("a.txt"), "abc").unwrap();
         std::fs::write(root.join("sub/.hidden"), "12345").unwrap();
         let metadata = super::tree_metadata(&root);
-        assert_eq!(metadata.size, 8);
+        assert_eq!(metadata.size, 0);
         assert!(metadata.modified.is_some());
         assert!(!metadata.incomplete);
         std::fs::remove_dir_all(root).unwrap();
@@ -172,15 +156,16 @@ mod tests {
     // Scenario: 子ファイルの更新日時がフォルダ自身より新しい
     // Given: 子ファイルを将来の日時に設定したフォルダ
     // When: フォルダ情報を取得する
-    // Then: 子ファイルの日時を返す
+    // Then: フォルダ自身の日時を返す
     #[test]
-    fn folder_metadata_uses_latest_descendant_time() {
+    fn folder_metadata_uses_own_time() {
         let root = std::env::temp_dir().join(format!("wasabipad_metadata_time_{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let file = std::fs::File::create(root.join("file.txt")).unwrap();
         let time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(4_000_000_000);
         file.set_times(std::fs::FileTimes::new().set_modified(time)).unwrap();
-        assert_eq!(super::tree_metadata(&root).modified, Some(4_000_000_000_000));
+        let own_time = std::fs::metadata(&root).unwrap().modified().unwrap().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        assert_eq!(super::tree_metadata(&root).modified, Some(own_time));
         std::fs::remove_dir_all(root).unwrap();
     }
 

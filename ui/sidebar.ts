@@ -97,6 +97,7 @@ export interface SidebarPorts extends Omit<WorkspaceSearchPorts, "onViewChange" 
   onExpandArchive: (relPath: string) => Promise<string[]>;
   onExpandFolder: (relDir: string) => Promise<FolderEntry[]>;
   onFolderMetadata?: (paths: string[]) => Promise<TreeMetadata[]>;
+  onAutoFitChange?: (enabled: boolean, width: number) => void;
   onDropEntries: (request: FileTreeDropRequest) => Promise<FileTreeDropResult>;
   onUndoLastDrop: () => Promise<boolean>;
   onTreeError: (error: unknown) => Promise<void>;
@@ -140,9 +141,13 @@ export class Sidebar {
   private metadataGeneration = 0;
   private metadataRunning: number | null = null;
   private metadataPending = false;
+  private metadataRefreshAll = false;
   private showModified = getSetting("treeShowModified");
   private showSize = getSetting("treeShowSize");
   private onFolderMetadata?: SidebarPorts["onFolderMetadata"];
+  private onAutoFitChange?: SidebarPorts["onAutoFitChange"];
+  private autoFit = getSetting("treeAutoFitWidth");
+  private autoFitInput: HTMLInputElement;
 
   constructor(host: HTMLElement, ports: SidebarPorts, searchOptions: WorkspaceSearchOptions) {
     this.host = host;
@@ -156,6 +161,7 @@ export class Sidebar {
     this.onExpandArchive = ports.onExpandArchive;
     this.onExpandFolder = ports.onExpandFolder;
     this.onFolderMetadata = ports.onFolderMetadata;
+    this.onAutoFitChange = ports.onAutoFitChange;
     this.onDropEntries = ports.onDropEntries;
     this.onUndoLastDrop = ports.onUndoLastDrop;
     this.onTreeError = ports.onTreeError;
@@ -215,6 +221,14 @@ export class Sidebar {
       wrapper.append(input, document.createTextNode(label));
       this.createActions.append(wrapper);
     }
+    const fitLabel = document.createElement("label");
+    this.autoFitInput = document.createElement("input");
+    this.autoFitInput.type = "checkbox";
+    this.autoFitInput.setAttribute("aria-label", "幅を自動調整");
+    this.autoFitInput.checked = this.autoFit;
+    this.autoFitInput.addEventListener("change", () => this.setAutoFit(this.autoFitInput.checked));
+    fitLabel.append(this.autoFitInput, document.createTextNode("幅を自動調整"));
+    this.createActions.append(fitLabel);
     this.host.append(toolbar, this.panel.bar, this.tree, this.createActions);
     this.host.addEventListener("contextmenu", (e) => {
       if (e.target !== this.host && e.target !== this.tree
@@ -407,10 +421,11 @@ export class Sidebar {
   }
 
   async refreshFolderEntries() {
-    this.renamingRelPath = null;
+    if (this.renamingRelPath) return;
     const request = ++this.selectionRequest;
     this.invalidateOpenRequests();
-    const oldRows = this.rows;
+    const oldRows = [...this.rows];
+    const oldTreeState = oldRows.map(row => ({ expanded: row.expanded, childrenLoaded: row.childrenLoaded }));
     const oldByPath = new Map(oldRows.map((row) => [row.relPath, row]));
     const archiveChildren = new Map<string, Row[]>();
     for (let i = 0; i < oldRows.length; i++) {
@@ -439,14 +454,22 @@ export class Sidebar {
     };
 
     const rows = await rebuild(await this.onExpandFolder(""), 0, "");
-    if (request !== this.selectionRequest) return;
-    this.rows = rows;
-    this.refreshMetadata();
+    if (request !== this.selectionRequest || this.renamingRelPath || this.rows.length !== oldRows.length || oldRows.some((row, i) => this.rows[i] !== row || row.expanded !== oldTreeState[i].expanded || row.childrenLoaded !== oldTreeState[i].childrenLoaded)) return;
+    const changed = rows.length !== oldRows.length || rows.some((row, i) => {
+      const old = oldRows[i];
+      return !old || row.relPath !== old.relPath || row.kind !== old.kind || row.depth !== old.depth || row.label !== old.label || row.expanded !== old.expanded || row.childrenLoaded !== old.childrenLoaded;
+    });
+    if (changed) this.rows = rows;
+    const currentRows = new Map(rows.map(row => [row.relPath, row]));
+    for (const path of this.metadata.keys()) {
+      if (!currentRows.has(path) || oldByPath.get(path)?.kind !== currentRows.get(path)?.kind) this.metadata.delete(path);
+    }
+    this.refreshMetadata(true);
     const available = new Set(this.rows.map((row) => row.relPath));
     this.selected = new Set([...this.selected].filter((path) => available.has(path)));
     if (this.sel && !available.has(this.sel)) this.sel = null;
     if (this.selectionAnchor && !available.has(this.selectionAnchor)) this.selectionAnchor = null;
-    this.render();
+    if (changed) this.render();
   }
 
   setArchiveEntries(names: string[]) {
@@ -475,7 +498,8 @@ export class Sidebar {
     }));
   }
 
-  private refreshMetadata() {
+  private refreshMetadata(refreshAll = false) {
+    this.metadataRefreshAll ||= refreshAll;
     this.metadataPending = this.showModified || this.showSize;
     void this.loadMetadata();
   }
@@ -485,23 +509,38 @@ export class Sidebar {
     this.metadataRunning = this.metadataGeneration;
     this.metadataPending = false;
     const generation = this.metadataGeneration;
-    const candidates = this.rows.filter(row => (row.kind === "dir" || row.kind === "file" || row.kind === "archive") && !this.metadata.has(row.relPath));
-    const files = candidates.filter(row => row.kind !== "dir").map(row => row.relPath);
+    const refreshAll = this.metadataRefreshAll;
+    this.metadataRefreshAll = false;
+    const sourceRows = refreshAll ? this.visible().map(i => this.rows[i]) : this.rows;
+    const candidates = sourceRows.filter(row => (row.kind === "file" || row.kind === "archive" || (row.kind === "dir" && this.showModified)) && (refreshAll || !this.metadata.has(row.relPath)));
+    const pathsToLoad = candidates.map(row => row.relPath);
     const batches: string[][] = [];
-    for (let i = 0; i < files.length; i += 64) batches.push(files.slice(i, i + 64));
-    batches.push(...candidates.filter(row => row.kind === "dir").map(row => [row.relPath]));
+    for (let i = 0; i < pathsToLoad.length; i += 64) batches.push(pathsToLoad.slice(i, i + 64));
     try {
       for (const paths of batches) {
         if (generation !== this.metadataGeneration) break;
+        let changed = false;
         try {
           const values = await this.onFolderMetadata(paths);
           if (generation !== this.metadataGeneration) break;
-          paths.forEach((path, i) => { if (values[i]) this.metadata.set(path, values[i]); });
+          paths.forEach((path, i) => {
+            const value = values[i];
+            const previous = this.metadata.get(path);
+            if (value && (!previous || value.size !== previous.size || value.modified !== previous.modified || value.incomplete !== previous.incomplete || value.is_link !== previous.is_link)) {
+              this.metadata.set(path, value);
+              changed = true;
+            }
+          });
         } catch {
           if (generation !== this.metadataGeneration) break;
-          paths.forEach((path) => this.metadata.set(path, { size: 0, modified: null, incomplete: true, is_link: false }));
+          paths.forEach((path) => {
+            if (!this.metadata.get(path)?.incomplete) {
+              this.metadata.set(path, { size: 0, modified: null, incomplete: true, is_link: false });
+              changed = true;
+            }
+          });
         }
-        if (!this.renamingRelPath) this.render();
+        if (changed && !this.renamingRelPath) this.render();
       }
     } finally {
       if (this.metadataRunning === generation) this.metadataRunning = null;
@@ -674,8 +713,32 @@ export class Sidebar {
 
   // ツリーの置き場は1つ。検索中と検索後は結果を出し、それ以外はフォルダを出す
   private render() {
+    const scrollTop = this.tree.scrollTop;
+    const scrollLeft = this.tree.scrollLeft;
     this.createActions.hidden = this.panel.showing;
     this.tree.replaceChildren(this.panel.showing ? this.panel.renderTree() : this.folderTree());
+    this.tree.scrollTop = scrollTop;
+    this.tree.scrollLeft = scrollLeft;
+    if (this.autoFit) this.fitWidth();
+  }
+
+  setAutoFit(enabled: boolean) {
+    this.autoFit = enabled;
+    this.autoFitInput.checked = enabled;
+    setSetting("treeAutoFitWidth", enabled);
+    if (enabled) this.fitWidth();
+    else this.onAutoFitChange?.(false, 0);
+  }
+
+  fitWidth() {
+    if (!this.autoFit || this.panel.showing) return;
+    const rows = this.tree.querySelector<HTMLElement>(".fv-folder-rows");
+    if (!rows) return;
+    const previous = rows.style.minWidth;
+    rows.style.minWidth = "0";
+    const width = Math.ceil(rows.getBoundingClientRect().width) + 18;
+    rows.style.minWidth = previous;
+    this.onAutoFitChange?.(true, width);
   }
 
   private invalidateOpenRequests() {
@@ -1099,6 +1162,21 @@ export class Sidebar {
     const frag = document.createDocumentFragment();
     const rows = document.createElement("div");
     rows.className = "fv-folder-rows";
+    const groups = new Map<string, { oldest: number; newest: number; maxSize: number }>();
+    for (const i of this.visible()) {
+      const row = this.rows[i];
+      const value = this.metadata.get(row.relPath);
+      if (!value || value.incomplete) continue;
+      const parent = row.relPath.replace(/[\\/][^\\/]*$/, "");
+      const key = parent === row.relPath ? "" : parent;
+      const group = groups.get(key) ?? { oldest: Infinity, newest: -Infinity, maxSize: 0 };
+      if (value.modified != null) {
+        group.oldest = Math.min(group.oldest, value.modified);
+        group.newest = Math.max(group.newest, value.modified);
+      }
+      if (row.kind !== "dir" && !value.is_link) group.maxSize = Math.max(group.maxSize, value.size);
+      groups.set(key, group);
+    }
     for (const i of this.visible()) {
       const r = this.rows[i];
       const div = document.createElement("div");
@@ -1132,21 +1210,6 @@ export class Sidebar {
             return;
           }
           event.stopPropagation();
-    const groups = new Map<string, { oldest: number; newest: number; maxSize: number }>();
-    for (const i of this.visible()) {
-      const row = this.rows[i];
-      const value = this.metadata.get(row.relPath);
-      if (!value || value.incomplete) continue;
-      const parent = row.relPath.replace(/[\\/][^\\/]*$/, "");
-      const key = parent === row.relPath ? "" : parent;
-      const group = groups.get(key) ?? { oldest: Infinity, newest: -Infinity, maxSize: 0 };
-      if (value.modified != null) {
-        group.oldest = Math.min(group.oldest, value.modified);
-        group.newest = Math.max(group.newest, value.modified);
-      }
-      if (!value.is_link) group.maxSize = Math.max(group.maxSize, value.size);
-      groups.set(key, group);
-    }
           if (event.key === "Enter") {
             event.preventDefault();
             this.finishRename(r.relPath, input.value, false);
@@ -1166,10 +1229,22 @@ export class Sidebar {
           const details = document.createElement("span");
           details.className = "fv-metadata";
           const status = !metadata ? "集計中…" : metadata.incomplete ? "一部取得不可" : null;
+          const parent = r.relPath.replace(/[\\/][^\\/]*$/, "");
+          const group = groups.get(parent === r.relPath ? "" : parent);
           if (this.showModified) {
             const modified = document.createElement("span");
             modified.className = "fv-modified";
-            modified.textContent = status ?? (metadata?.modified != null ? new Date(metadata.modified).toLocaleString(undefined, { year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "");
+            if (status) modified.textContent = status;
+            else if (metadata?.modified != null) {
+              const date = new Date(metadata.modified);
+              const datePart = document.createElement("span");
+              datePart.className = "fv-modified-date";
+              datePart.textContent = date.toLocaleDateString();
+              const timePart = document.createElement("span");
+              timePart.className = "fv-modified-time";
+              timePart.textContent = date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+              modified.append(datePart, document.createTextNode(" "), timePart);
+            }
             if (!status && metadata?.modified != null && group) {
               modified.style.setProperty("--bar-width", `${group.newest === group.oldest ? 100 : (group.newest - metadata.modified) / (group.newest - group.oldest) * 100}%`);
             }
@@ -1178,7 +1253,10 @@ export class Sidebar {
           if (this.showSize) {
             const size = document.createElement("span");
             size.className = "fv-size";
-            size.textContent = status ?? (metadata?.is_link ? "—" : formatFileSize(metadata!.size));
+            size.textContent = r.kind === "dir" ? "—" : status ?? (metadata?.is_link ? "—" : formatFileSize(metadata!.size));
+            if (r.kind !== "dir" && !status && metadata && !metadata.is_link && group) {
+              size.style.setProperty("--bar-width", `${group.maxSize ? metadata.size / group.maxSize * 100 : 0}%`);
+            }
             details.append(size);
           }
           div.appendChild(details);
@@ -1202,8 +1280,6 @@ export class Sidebar {
           if (isGitRow(r)) void this.requestSelection(r.relPath, false).catch((error) => this.reportTreeError(error));
         } else if (r.kind === "archive") {
           void this.expandArchiveRow(r).catch((error) => this.reportTreeError(error));
-          const parent = r.relPath.replace(/[\\/][^\\/]*$/, "");
-          const group = groups.get(parent === r.relPath ? "" : parent);
         } else if (r.kind === "archiveDir") {
           r.expanded = !r.expanded;
           this.render();
@@ -1214,9 +1290,6 @@ export class Sidebar {
       div.addEventListener("click", (e) => {
         if (this.suppressRowClick) return;
         this.focusTree();
-            if (!status && metadata && !metadata.is_link && group) {
-              size.style.setProperty("--bar-width", `${group.maxSize ? metadata.size / group.maxSize * 100 : 0}%`);
-            }
         if (e.ctrlKey || e.shiftKey) {
           this.selectWithModifier(r, e.shiftKey, e.ctrlKey);
           return;

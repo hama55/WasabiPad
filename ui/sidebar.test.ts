@@ -12,6 +12,7 @@ interface MountOptions {
   onUndoLastDrop?: SidebarPorts["onUndoLastDrop"];
   onGitPreview?: (relPath: string) => void;
   onFolderMetadata?: SidebarPorts["onFolderMetadata"];
+  onAutoFitChange?: (enabled: boolean, width: number) => void;
 }
 
 function mount({
@@ -25,6 +26,7 @@ function mount({
   onUndoLastDrop = vi.fn(async () => true),
   onGitPreview,
   onFolderMetadata,
+  onAutoFitChange,
 }: MountOptions = {}) {
   const host = document.createElement("div");
   document.body.replaceChildren(host);
@@ -38,6 +40,7 @@ function mount({
     onExpandArchive: vi.fn(async (_relPath: string): Promise<string[]> => []),
     onExpandFolder: vi.fn(async (_relDir: string): Promise<FolderEntry[]> => []),
     onFolderMetadata,
+    onAutoFitChange,
     onTreeError: vi.fn(async () => {}),
     onSearch,
     onCancel: vi.fn(),
@@ -52,6 +55,114 @@ function mount({
 }
 
 describe("Feature: Sidebar", () => {
+  // Scenario: 一覧更新中の折りたたみ操作
+  // Given: 展開済みフォルダの一覧更新が進行中
+  // When: 更新完了前にフォルダを折りたたむ
+  // Then: 古い一覧結果で展開状態を戻さない
+  it("Scenario: 一覧更新中の折りたたみを維持する", async () => {
+    const { host, sidebar, ports } = mount();
+    const entries = [{ name: "dir", is_dir: true, is_archive: false }];
+    ports.onExpandFolder.mockResolvedValue([]);
+    sidebar.setEntries(entries);
+    host.querySelector<HTMLElement>('[data-rel-path="dir"]')!.click();
+    await vi.waitFor(() => expect(host.querySelector('[data-rel-path="dir"] .fv-arrow')?.textContent).toBe("🗂️"));
+    let finish!: (entries: FolderEntry[]) => void;
+    ports.onExpandFolder.mockImplementation(path => path === "" ? Promise.resolve(entries) : new Promise(resolve => { finish = resolve; }));
+    const refreshing = sidebar.refreshFolderEntries();
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    host.querySelector<HTMLElement>('[data-rel-path="dir"]')!.click();
+    await vi.waitFor(() => expect(host.querySelector('[data-rel-path="dir"] .fv-arrow')?.textContent).toBe("📁"));
+    finish([]);
+    await refreshing;
+    expect(host.querySelector('[data-rel-path="dir"] .fv-arrow')?.textContent).toBe("📁");
+  });
+  // Scenario: 定期更新中も名前変更の入力を維持する
+  // Given: ファイル名を編集中である
+  // When: 一覧更新を要求する
+  // Then: 入力欄と入力内容を維持する
+  it("Scenario: 定期更新で名前変更中の入力を維持する", async () => {
+    const { host, sidebar, ports } = mount({ onRenameEntry: vi.fn() });
+    sidebar.setWorkspaceSearch("C:\\work");
+    sidebar.setEntries([{ name: "memo.txt", is_dir: false, is_archive: false }]);
+    host.querySelector<HTMLElement>('[data-rel-path="memo.txt"]')!.click();
+    host.querySelector<HTMLElement>(".fv-tree")!.dispatchEvent(new KeyboardEvent("keydown", { key: "F2", bubbles: true, cancelable: true }));
+    const input = host.querySelector<HTMLInputElement>(".fv-rename-input")!;
+    input.value = "editing.txt";
+    await sidebar.refreshFolderEntries();
+    expect(host.querySelector(".fv-rename-input")).toBe(input);
+    expect(input.value).toBe("editing.txt");
+    expect(ports.onExpandFolder).not.toHaveBeenCalled();
+  });
+  // Scenario: 一覧が同じでもファイルの内容変更を反映する
+  // Given: サイズが 42 B のファイルを表示している
+  // When: ファイルサイズの変更後に一覧を更新する
+  // Then: 行を集計中に戻さず新しいサイズを表示する
+  it("Scenario: 定期更新でファイルサイズの変更を反映する", async () => {
+    let bytes = 42;
+    const onFolderMetadata = vi.fn(async (paths: string[]) => paths.map(() => ({ size: bytes, modified: 0, incomplete: false, is_link: false })));
+    const { host, sidebar, ports } = mount({ onFolderMetadata });
+    const entries = [{ name: "file", is_dir: false, is_archive: false }];
+    ports.onExpandFolder.mockResolvedValue(entries);
+    sidebar.setEntries(entries);
+    const checkbox = host.querySelector<HTMLInputElement>('input[aria-label="サイズ"]')!;
+    checkbox.click();
+    await vi.waitFor(() => expect(host.querySelector(".fv-size")?.textContent).toBe("42 B"));
+    bytes = 84;
+    await sidebar.refreshFolderEntries();
+    expect(host.querySelector(".fv-size")?.textContent).not.toBe("集計中…");
+    await vi.waitFor(() => expect(host.querySelector(".fv-size")?.textContent).toBe("84 B"));
+    checkbox.click();
+  });
+  // Scenario: 更新日時の日付と時刻を両端に配置する
+  // Given: 更新日時が分かっているファイルがある
+  // When: 更新日時を表示する
+  // Then: 日付と秒を含まない時刻を別々に表示する
+  it("Scenario: 日付と時刻を別々に表示する", async () => {
+    const onFolderMetadata = vi.fn(async (paths: string[]) => paths.map(() => ({ size: 1, modified: 0, incomplete: false, is_link: false })));
+    const { host, sidebar } = mount({ onFolderMetadata });
+    sidebar.setEntries([{ name: "file", is_dir: false, is_archive: false }]);
+    const checkbox = host.querySelector<HTMLInputElement>('input[aria-label="更新日時"]')!;
+    checkbox.click();
+    await vi.waitFor(() => expect(host.querySelector(".fv-modified-date")).not.toBeNull());
+    expect(host.querySelector(".fv-modified-date")?.textContent).toBe(new Date(0).toLocaleDateString());
+    expect(host.querySelector(".fv-modified-time")?.textContent).toBe(new Date(0).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }));
+    checkbox.click();
+  });
+  // Scenario: 変更のない一覧の定期更新
+  // Given: ファイルの情報と行が表示されている
+  // When: 同じ一覧を再取得する
+  // Then: 行を作り直さず、表示済み情報を維持する
+  it("Scenario: 変化のない一覧更新で行を維持する", async () => {
+    const onFolderMetadata = vi.fn(async (paths: string[]) => paths.map(() => ({ size: 42, modified: 0, incomplete: false, is_link: false })));
+    const { host, sidebar, ports } = mount({ onFolderMetadata });
+    const entries = [{ name: "file", is_dir: false, is_archive: false }];
+    ports.onExpandFolder.mockResolvedValue(entries);
+    sidebar.setEntries(entries);
+    const checkbox = host.querySelector<HTMLInputElement>('input[aria-label="サイズ"]')!;
+    checkbox.click();
+    await vi.waitFor(() => expect(host.querySelector(".fv-size")?.textContent).toBe("42 B"));
+    const row = host.querySelector('[data-rel-path="file"]');
+    await sidebar.refreshFolderEntries();
+    expect(host.querySelector('[data-rel-path="file"]')).toBe(row);
+    expect(host.querySelector(".fv-size")?.textContent).toBe("42 B");
+    checkbox.click();
+  });
+  // Scenario: フォルダのサイズを表示しない
+  // Given: フォルダとファイルの情報が取得できる
+  // When: サイズ表示をオンにする
+  // Then: フォルダはバーなしの —、ファイルはサイズを表示する
+  it("Scenario: フォルダのサイズは表示しない", async () => {
+    const onFolderMetadata = vi.fn(async (paths: string[]) => paths.map(() => ({ size: 100, modified: 0, incomplete: false, is_link: false })));
+    const { host, sidebar } = mount({ onFolderMetadata });
+    sidebar.setEntries([{ name: "dir", is_dir: true, is_archive: false }, { name: "file", is_dir: false, is_archive: false }]);
+    const checkbox = host.querySelector<HTMLInputElement>('input[aria-label="サイズ"]')!;
+    checkbox.click();
+    await vi.waitFor(() => expect(host.querySelector('[data-rel-path="file"] .fv-size')?.textContent).toBe("100 B"));
+    const folderSize = host.querySelector<HTMLElement>('[data-rel-path="dir"] .fv-size')!;
+    expect(folderSize.textContent).toBe("—");
+    expect(folderSize.style.getPropertyValue("--bar-width")).toBe("");
+    checkbox.click();
+  });
   // Scenario: 展開したフォルダの子の情報を取得する
   // Given: 集計済みの閉じたフォルダがある
   // When: フォルダを展開する
@@ -63,7 +174,7 @@ describe("Feature: Sidebar", () => {
     sidebar.setEntries([{ name: "dir", is_dir: true, is_archive: false }]);
     const checkbox = host.querySelector<HTMLInputElement>('input[aria-label="サイズ"]')!;
     checkbox.click();
-    await vi.waitFor(() => expect(host.querySelector('[data-rel-path="dir"] .fv-size')?.textContent).toBe("42 B"));
+    expect(host.querySelector('[data-rel-path="dir"] .fv-size')?.textContent).toBe("—");
     host.querySelector<HTMLElement>('[data-rel-path="dir"]')!.click();
     await vi.waitFor(() => expect(host.querySelector('[data-rel-path="dir/child"] .fv-size')?.textContent).toBe("42 B"));
     checkbox.click();
@@ -88,20 +199,19 @@ describe("Feature: Sidebar", () => {
     expect([...host.querySelectorAll<HTMLElement>(".fv-size")].map(x => x.style.getPropertyValue("--bar-width"))).toEqual(["0%", "0%", ""]);
     modified.click(); size.click();
   });
-  // Scenario: フォルダの集計を待たずにファイルの情報を表示する
-  // Given: ファイルと集計に時間のかかるフォルダがある
+  // Scenario: サイズ表示ではフォルダの情報を取得しない
+  // Given: ファイルとフォルダがある
   // When: サイズ表示をオンにする
-  // Then: ファイルを先に表示し、フォルダは集計中とする
-  it("Scenario: ファイルを先に表示してフォルダを段階集計する", async () => {
-    const onFolderMetadata = vi.fn((paths: string[]) => paths.includes("dir")
-      ? new Promise<never>(() => {})
-      : Promise.resolve(paths.map(() => ({ size: 42, modified: 0, incomplete: false, is_link: false }))));
+  // Then: ファイルのサイズを表示し、フォルダの情報は取得しない
+  it("Scenario: サイズ表示ではフォルダの情報を取得しない", async () => {
+    const onFolderMetadata = vi.fn(async (paths: string[]) => paths.map(() => ({ size: 42, modified: 0, incomplete: false, is_link: false })));
     const { host, sidebar } = mount({ onFolderMetadata });
     sidebar.setEntries([{ name: "dir", is_dir: true, is_archive: false }, { name: "file", is_dir: false, is_archive: false }]);
     const checkbox = host.querySelector<HTMLInputElement>('input[aria-label="サイズ"]')!;
     checkbox.click();
     await vi.waitFor(() => expect(host.querySelector('[data-rel-path="file"] .fv-size')?.textContent).toBe("42 B"));
-    expect(host.querySelector('[data-rel-path="dir"] .fv-size')?.textContent).toBe("集計中…");
+    expect(host.querySelector('[data-rel-path="dir"] .fv-size')?.textContent).toBe("—");
+    expect(onFolderMetadata).toHaveBeenCalledWith(["file"]);
     checkbox.click();
   });
   // Scenario: 兄弟項目の更新日時とサイズを比較する
@@ -124,6 +234,24 @@ describe("Feature: Sidebar", () => {
     expect([...host.querySelectorAll<HTMLElement>(".fv-modified")].map(x => x.style.getPropertyValue("--bar-width"))).toEqual(["100%", "50%", "0%"]);
     expect(host.querySelector(".fv-modified")?.textContent).toBe(new Date(0).toLocaleString(undefined, { year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }));
     modified.click(); size.click();
+  });
+  // Scenario: 内容に合わせた幅の自動調整を切り替える
+  // Given: ファイルツリーの内容が表示されている
+  // When: 幅を自動調整をオン・オフする
+  // Then: 内容幅と有効状態を親画面に通知する
+  it("Scenario: チェックでツリー幅の自動調整を切り替える", () => {
+    const onAutoFitChange = vi.fn();
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ width: 320 } as DOMRect);
+    const { host, sidebar } = mount({ onAutoFitChange });
+    sidebar.setEntries([{ name: "memo.txt", is_dir: false, is_archive: false }]);
+    const checkbox = host.querySelector<HTMLInputElement>('input[aria-label="幅を自動調整"]')!;
+    expect(checkbox.checked).toBe(false);
+    checkbox.click();
+    expect(onAutoFitChange).toHaveBeenCalledWith(true, 338);
+    sidebar.setEntries([{ name: "別の名前.txt", is_dir: false, is_archive: false }]);
+    expect(onAutoFitChange).toHaveBeenLastCalledWith(true, 338);
+    checkbox.click();
+    expect(onAutoFitChange).toHaveBeenLastCalledWith(false, expect.any(Number));
   });
   // Scenario: 日時とサイズを別々の列に表示する
   // Given: 名前の長さが異なるファイルがある

@@ -402,10 +402,10 @@ body.preview-resizing iframe { pointer-events: none; }
 .fv-folder-rows { width: max-content; min-width: 100%; }
 .fv-folder-rows > .fv-row { width: auto; }
 .fv-name { flex: 1 0 auto; min-width: 0; }
-.fv-metadata { display: flex; gap: 12px; flex: none; color: var(--fg-dim); font-size: 11px; margin-left: 6px; }
-.fv-modified { width: 24ch; flex: none; text-align: left; }
+.fv-metadata { display: flex; gap: 2px; flex: none; color: var(--fg-dim); font-size: 11px; margin-left: 6px; }
+.fv-modified { width: 19ch; flex: none; display: flex; justify-content: space-between; text-align: left; }
 .fv-size { width: 12ch; flex: none; text-align: right; }
-.fv-modified, .fv-size { background: linear-gradient(to right, color-mix(in srgb, var(--accent) 18%, transparent) var(--bar-width, 0%), transparent var(--bar-width, 0%)); }
+.fv-modified, .fv-size { background: linear-gradient(to right, color-mix(in srgb, var(--accent) 9%, transparent) var(--bar-width, 0%), transparent var(--bar-width, 0%)); }
 .fv-row.sel { background: var(--sel-row); }
 .fv-row.fv-cut { opacity: .55; }
 .fv-row.fv-drop-target { background: color-mix(in srgb, var(--accent) 25%, transparent); }
