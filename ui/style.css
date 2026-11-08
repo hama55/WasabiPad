@@ -258,16 +258,11 @@ body.preview-resizing iframe { pointer-events: none; }
 .fv-tree-bottom-padding { flex: none; height: calc(var(--fv-row-height) * 3); }
 .fv-create-actions {
   flex: none;
-  display: flex; gap: 6px; padding: 6px 4px 2px;
+  display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 4px 2px;
   border-top: 1px solid var(--border); background: var(--bg-side);
 }
 .fv-create-actions[hidden] { display: none; }
-.fv-create-actions button {
-  flex: 1; min-width: 0; padding: 4px 6px;
-  border: 1px solid var(--border-strong); border-radius: 4px;
-  background: var(--bg-editor); color: var(--fg); font: 12px var(--font-ui);
-}
-.fv-create-actions button:hover { background: var(--hover); }
+.fv-create-actions label { white-space: nowrap; font-size: 12px; }
 /* ---- フォルダ検索バー ---- */
 /* 結果が長くなるため、入力欄と件数は上端へ貼り付けたままにする */
 .ws-search {
@@ -398,11 +393,20 @@ body.preview-resizing iframe { pointer-events: none; }
 #splitter:hover { background: var(--bg-status); }
 .fv-row {
   display: flex; align-items: center;
+  width: max-content; min-width: 100%; box-sizing: border-box;
   height: var(--fv-row-height); font-size: 13px;
   white-space: nowrap; overflow: hidden;
   cursor: default;
 }
 .fv-row:hover { background: var(--hover); }
+.fv-folder-rows { width: max-content; min-width: 100%; }
+.fv-folder-rows > .fv-row { width: auto; }
+.fv-name { flex: 1 0 auto; min-width: 0; }
+.fv-metadata { display: flex; gap: 2px; flex: none; color: var(--fg-dim); font-size: 11px; margin-left: 6px; }
+.fv-modified { width: 16ch; flex: none; text-align: left; }
+.fv-modified-value { display: inline-flex; gap: 1ch; white-space: nowrap; }
+.fv-size { width: 12ch; flex: none; text-align: right; }
+.fv-modified-value, .fv-size { background: linear-gradient(to left, color-mix(in srgb, var(--accent) 13.5%, transparent) var(--bar-width, 0%), transparent var(--bar-width, 0%)); }
 .fv-row.sel { background: var(--sel-row); }
 .fv-row.fv-cut { opacity: .55; }
 .fv-row.fv-drop-target { background: color-mix(in srgb, var(--accent) 25%, transparent); }

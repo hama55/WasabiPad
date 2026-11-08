@@ -9,6 +9,7 @@ export const IPC_COMMANDS = {
   listArchiveEntries: "list_archive_entries",
   setArchivePassword: "set_archive_password",
   listFolderEntries: "list_folder_entries",
+  folderMetadata: "folder_metadata",
   workspaceSearch: "workspace_search",
   workspaceSearchCancel: "workspace_search_cancel",
   createNote: "create_note",

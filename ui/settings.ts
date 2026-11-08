@@ -37,6 +37,9 @@ export function isValidMarkdownLineHeight(value: unknown): value is number {
 export interface Settings {
   indentSize: number;
   sidebarWidth: number;
+  treeShowModified: boolean;
+  treeShowSize: boolean;
+  treeAutoFitWidth: boolean;
   fontFamily: string;
   fontSize: number;
   pastedImageWidthEnabled: boolean;
@@ -71,6 +74,9 @@ type UserSettingKey = Exclude<keyof Settings, "openTabs">;
 const DEFAULT_USER_SETTINGS: Pick<Settings, UserSettingKey> = {
   indentSize: DEFAULT_INDENT_SIZE,
   sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
+  treeShowModified: false,
+  treeShowSize: false,
+  treeAutoFitWidth: false,
   fontFamily: DEFAULT_EDITOR_CONFIG.fontFamily,
   fontSize: DEFAULT_EDITOR_CONFIG.fontSize,
   pastedImageWidthEnabled: true,
@@ -162,6 +168,9 @@ export function parseSettingsResult(text: string): SettingsParseResult {
       ? value.indentSize
       : DEFAULTS.indentSize,
     sidebarWidth: clampSidebarWidth(value.sidebarWidth),
+    treeShowModified: value.treeShowModified === true,
+    treeShowSize: value.treeShowSize === true,
+    treeAutoFitWidth: value.treeAutoFitWidth === true,
     previewOpenPlacement: value.previewOpenPlacement === "last" || isPreviewPlacement(value.previewOpenPlacement)
       ? value.previewOpenPlacement : DEFAULTS.previewOpenPlacement,
     previewLastPlacement: isPreviewPlacement(value.previewLastPlacement)

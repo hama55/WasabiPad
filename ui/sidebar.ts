@@ -8,7 +8,8 @@ import { archiveEntryPath, isArchiveEntryPath, splitArchiveEntryPath } from "./a
 import type { ContextTarget } from "./context-target";
 import { preventMiddleClickDefault } from "./interaction-constants";
 import { iconButton } from "./icon-button";
-import { createMenuIcon, MENU_ICON } from "./menu-icons";
+import { getSetting, setSetting } from "./settings";
+import type { TreeMetadata } from "./api";
 import { runAsyncBoundary } from "./async-boundary";
 import {
   comparableDocumentPath,
@@ -62,6 +63,17 @@ const DRAG_SCROLL_EDGE = 40;
 const DRAG_SCROLL_STEP = 12;
 const DRAG_SCROLL_INTERVAL = 16;
 
+function formatFileSize(bytes: number): string {
+  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit++;
+  }
+  return `${value.toLocaleString(undefined, { maximumFractionDigits: unit === 0 ? 0 : 1 })} ${units[unit]}`;
+}
+
 // 行頭の記号 [閉じているとき, 開いているとき]。種別を足したらここも足りなくなる
 // (Record なので、足し忘れは型が落とす)。
 const ROW_GLYPHS: Record<RowKind, [string, string]> = {
@@ -77,6 +89,7 @@ const ROW_GLYPHS: Record<RowKind, [string, string]> = {
 // WorkspaceSearchPanel のもので、ここはそのまま素通しする。
 export interface SidebarPorts extends Omit<WorkspaceSearchPorts, "onViewChange" | "onContextMenu"> {
   onSelect: (relPath: string, newTab: boolean) => void | Promise<boolean | void>;
+  onClearSelection?: () => boolean | Promise<boolean>;
   onGitPreview?: (relPath: string) => void | Promise<void>;
   onContextMenu: (x: number, y: number, target: ContextTarget | null, selected?: ContextTarget[]) => void;
   onFileCommand?: (command: SidebarFileCommand, selected: ContextTarget[]) => void | Promise<void>;
@@ -84,10 +97,10 @@ export interface SidebarPorts extends Omit<WorkspaceSearchPorts, "onViewChange" 
   isCut?: (relPath: string) => boolean;
   onExpandArchive: (relPath: string) => Promise<string[]>;
   onExpandFolder: (relDir: string) => Promise<FolderEntry[]>;
+  onFolderMetadata?: (paths: string[], includeCounts: boolean) => Promise<TreeMetadata[]>;
+  onAutoFitChange?: (enabled: boolean, width: number) => void;
   onDropEntries: (request: FileTreeDropRequest) => Promise<FileTreeDropResult>;
   onUndoLastDrop: () => Promise<boolean>;
-  onCreateFolder: (relDir: string) => void | Promise<void>;
-  onCreateNote: (relDir: string) => void | Promise<void>;
   onTreeError: (error: unknown) => Promise<void>;
 }
 
@@ -97,6 +110,7 @@ export class Sidebar {
   private createActions: HTMLElement;
   private panel: WorkspaceSearchPanel;
   private rows: Row[] = [];
+  private expansionRevision = new WeakMap<Row, number>();
   private sel: string | null = null; // 選択中の relPath
   private selected = new Set<string>();
   private selectionAnchor: string | null = null;
@@ -125,6 +139,17 @@ export class Sidebar {
   private defaultSearchOptions: WorkspaceSearchOptions;
   private dragScrollTimer: number | null = null;
   private renamingRelPath: string | null = null;
+  private metadata = new Map<string, TreeMetadata>();
+  private metadataGeneration = 0;
+  private metadataRunning: number | null = null;
+  private metadataPending = false;
+  private metadataRefreshAll = false;
+  private showModified = getSetting("treeShowModified");
+  private showSize = getSetting("treeShowSize");
+  private onFolderMetadata?: SidebarPorts["onFolderMetadata"];
+  private onAutoFitChange?: SidebarPorts["onAutoFitChange"];
+  private autoFit = getSetting("treeAutoFitWidth");
+  private autoFitInput: HTMLInputElement;
 
   constructor(host: HTMLElement, ports: SidebarPorts, searchOptions: WorkspaceSearchOptions) {
     this.host = host;
@@ -137,6 +162,8 @@ export class Sidebar {
     this.isCut = ports.isCut;
     this.onExpandArchive = ports.onExpandArchive;
     this.onExpandFolder = ports.onExpandFolder;
+    this.onFolderMetadata = ports.onFolderMetadata;
+    this.onAutoFitChange = ports.onAutoFitChange;
     this.onDropEntries = ports.onDropEntries;
     this.onUndoLastDrop = ports.onUndoLastDrop;
     this.onTreeError = ports.onTreeError;
@@ -159,6 +186,21 @@ export class Sidebar {
     this.tree.className = "fv-tree";
     this.tree.tabIndex = 0;
     this.tree.addEventListener("keydown", (event) => this.onTreeKeyDown(event));
+    this.tree.addEventListener("click", (event) => {
+      const target = event.target;
+      if (this.panel.showing || this.renamingRelPath || !(target instanceof Element)
+        || !(target === this.tree || target.matches(".fv-folder-rows, .fv-tree-bottom-padding"))) return;
+      const request = ++this.selectionRequest;
+      this.invalidateOpenRequests();
+      runAsyncBoundary(async () => {
+        if (ports.onClearSelection && !await ports.onClearSelection()) return;
+        if (request !== this.selectionRequest) return;
+        this.sel = null;
+        this.selected.clear();
+        this.selectionAnchor = null;
+        this.render();
+      }, (error) => this.reportTreeError(error));
+    });
     this.host.addEventListener("mousedown", (event) => this.onBackButton(event), true);
     this.host.addEventListener("auxclick", (event) => this.onBackButton(event), true);
     document.addEventListener("pointerdown", (event) => {
@@ -179,29 +221,35 @@ export class Sidebar {
     toolbar.append(fold, unfold);
     this.createActions = document.createElement("div");
     this.createActions.className = "fv-create-actions";
-    const createFolder = document.createElement("button");
-    createFolder.type = "button";
-    createFolder.className = "fv-create-folder";
-    createFolder.append(createMenuIcon(MENU_ICON.newFolder), document.createTextNode("フォルダ"));
-    createFolder.title = "新規フォルダ";
-    createFolder.addEventListener("click", () => runAsyncBoundary(
-      () => ports.onCreateFolder(this.selectedFolderRelDir()),
-      (error) => this.reportTreeError(error),
-    ));
-    const createNote = document.createElement("button");
-    createNote.type = "button";
-    createNote.className = "fv-create-note";
-    createNote.append(createMenuIcon(MENU_ICON.newMemo), document.createTextNode("メモ"));
-    createNote.title = "新規メモ";
-    createNote.addEventListener("click", () => runAsyncBoundary(
-      () => ports.onCreateNote(this.selectedFolderRelDir()),
-      (error) => this.reportTreeError(error),
-    ));
-    this.createActions.append(createFolder, createNote);
+    for (const [label, key] of [["更新日時", "treeShowModified"], ["サイズ", "treeShowSize"]] as const) {
+      const wrapper = document.createElement("label");
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.setAttribute("aria-label", label);
+      input.checked = getSetting(key);
+      input.addEventListener("change", () => {
+        this.metadataGeneration++;
+        setSetting(key, input.checked);
+        this.showModified = getSetting("treeShowModified");
+        this.showSize = getSetting("treeShowSize");
+        this.refreshMetadata(this.showSize);
+        this.render();
+      });
+      wrapper.append(input, document.createTextNode(label));
+      this.createActions.append(wrapper);
+    }
+    const fitLabel = document.createElement("label");
+    this.autoFitInput = document.createElement("input");
+    this.autoFitInput.type = "checkbox";
+    this.autoFitInput.setAttribute("aria-label", "幅を自動調整");
+    this.autoFitInput.checked = this.autoFit;
+    this.autoFitInput.addEventListener("change", () => this.setAutoFit(this.autoFitInput.checked));
+    fitLabel.append(this.autoFitInput, document.createTextNode("幅を自動調整"));
+    this.createActions.append(fitLabel);
     this.host.append(toolbar, this.panel.bar, this.tree, this.createActions);
     this.host.addEventListener("contextmenu", (e) => {
       if (e.target !== this.host && e.target !== this.tree
-        && !(e.target instanceof Element && e.target.closest(".fv-tree-bottom-padding"))) return;
+        && !(e.target instanceof Element && (e.target.closest(".fv-tree-bottom-padding") || e.target.matches(".fv-folder-rows")))) return;
       e.preventDefault();
       this.onContextMenu(e.clientX, e.clientY, null, []);
     });
@@ -214,6 +262,8 @@ export class Sidebar {
       this.managedDropUndo = false;
     }
     this.workspaceRoot = folderRoot;
+    this.metadataGeneration++;
+    this.metadata.clear();
     this.viewKind = folderRoot === null ? null : "folder";
     this.panel.setFolderRoot(folderRoot);
   }
@@ -260,9 +310,10 @@ export class Sidebar {
       if (request !== this.selectionRequest) return;
       const row = this.rows.find((candidate) => candidate.relPath === relPath);
       if (!row || !isExpandable(row)) continue;
+      const revision = this.expansionRevision.get(row) ?? 0;
       if (!await this.ensureChildrenLoaded(row, request)) return;
       if (request !== this.selectionRequest) return;
-      row.expanded = true;
+      if ((this.expansionRevision.get(row) ?? 0) === revision) row.expanded = true;
     }
     if (state.kind === "folder" && state.search) {
       const search = await this.filterSearchViewState(state.search, request);
@@ -377,7 +428,10 @@ export class Sidebar {
     this.renamingRelPath = null;
     this.selectionRequest++;
     this.invalidateOpenRequests();
+    this.metadataGeneration++;
+    this.metadata.clear();
     this.rows = this.folderRows(entries, 0, "");
+    this.refreshMetadata();
     this.sel = null;
     this.selected.clear();
     this.selectionAnchor = null;
@@ -385,10 +439,11 @@ export class Sidebar {
   }
 
   async refreshFolderEntries() {
-    this.renamingRelPath = null;
+    if (this.renamingRelPath) return;
     const request = ++this.selectionRequest;
     this.invalidateOpenRequests();
-    const oldRows = this.rows;
+    const oldRows = [...this.rows];
+    const oldTreeState = oldRows.map(row => ({ expanded: row.expanded, childrenLoaded: row.childrenLoaded }));
     const oldByPath = new Map(oldRows.map((row) => [row.relPath, row]));
     const archiveChildren = new Map<string, Row[]>();
     for (let i = 0; i < oldRows.length; i++) {
@@ -417,13 +472,22 @@ export class Sidebar {
     };
 
     const rows = await rebuild(await this.onExpandFolder(""), 0, "");
-    if (request !== this.selectionRequest) return;
-    this.rows = rows;
+    if (request !== this.selectionRequest || this.renamingRelPath || this.rows.length !== oldRows.length || oldRows.some((row, i) => this.rows[i] !== row || row.expanded !== oldTreeState[i].expanded || row.childrenLoaded !== oldTreeState[i].childrenLoaded)) return;
+    const changed = rows.length !== oldRows.length || rows.some((row, i) => {
+      const old = oldRows[i];
+      return !old || row.relPath !== old.relPath || row.kind !== old.kind || row.depth !== old.depth || row.label !== old.label || row.expanded !== old.expanded || row.childrenLoaded !== old.childrenLoaded;
+    });
+    if (changed) this.rows = rows;
+    const currentRows = new Map(rows.map(row => [row.relPath, row]));
+    for (const path of this.metadata.keys()) {
+      if (!currentRows.has(path) || oldByPath.get(path)?.kind !== currentRows.get(path)?.kind) this.metadata.delete(path);
+    }
+    this.refreshMetadata(true);
     const available = new Set(this.rows.map((row) => row.relPath));
     this.selected = new Set([...this.selected].filter((path) => available.has(path)));
     if (this.sel && !available.has(this.sel)) this.sel = null;
     if (this.selectionAnchor && !available.has(this.selectionAnchor)) this.selectionAnchor = null;
-    this.render();
+    if (changed) this.render();
   }
 
   setArchiveEntries(names: string[]) {
@@ -431,6 +495,8 @@ export class Sidebar {
     this.renamingRelPath = null;
     this.selectionRequest++;
     this.invalidateOpenRequests();
+    this.metadataGeneration++;
+    this.metadata.clear();
     this.managedDropUndo = false;
     this.rows = this.buildRows(names, 0, "", () => "archiveEntry");
     this.sel = null;
@@ -448,6 +514,56 @@ export class Sidebar {
       expanded: false,
       childrenLoaded: false,
     }));
+  }
+
+  private refreshMetadata(refreshAll = false) {
+    this.metadataRefreshAll ||= refreshAll;
+    this.metadataPending = this.showModified || this.showSize;
+    void this.loadMetadata();
+  }
+
+  private async loadMetadata() {
+    if (this.metadataRunning === this.metadataGeneration || !this.metadataPending || !this.onFolderMetadata || this.viewKind !== "folder") return;
+    this.metadataRunning = this.metadataGeneration;
+    this.metadataPending = false;
+    const generation = this.metadataGeneration;
+    const refreshAll = this.metadataRefreshAll;
+    this.metadataRefreshAll = false;
+    const sourceRows = refreshAll ? this.visible().map(i => this.rows[i]) : this.rows;
+    const candidates = sourceRows.filter(row => (row.kind === "file" || row.kind === "archive" || (row.kind === "dir" && (this.showModified || this.showSize))) && (refreshAll || !this.metadata.has(row.relPath)));
+    const pathsToLoad = candidates.map(row => row.relPath);
+    const batches: string[][] = [];
+    for (let i = 0; i < pathsToLoad.length; i += 64) batches.push(pathsToLoad.slice(i, i + 64));
+    try {
+      for (const paths of batches) {
+        if (generation !== this.metadataGeneration) break;
+        let changed = false;
+        try {
+          const values = await this.onFolderMetadata(paths, this.showSize);
+          if (generation !== this.metadataGeneration) break;
+          paths.forEach((path, i) => {
+            const value = values[i];
+            const previous = this.metadata.get(path);
+            if (value && (!previous || value.size !== previous.size || value.modified !== previous.modified || value.incomplete !== previous.incomplete || value.is_link !== previous.is_link || value.child_count !== previous.child_count)) {
+              this.metadata.set(path, value);
+              changed = true;
+            }
+          });
+        } catch {
+          if (generation !== this.metadataGeneration) break;
+          paths.forEach((path) => {
+            if (!this.metadata.get(path)?.incomplete) {
+              this.metadata.set(path, { size: 0, modified: null, incomplete: true, is_link: false });
+              changed = true;
+            }
+          });
+        }
+        if (changed && !this.renamingRelPath) this.render();
+      }
+    } finally {
+      if (this.metadataRunning === generation) this.metadataRunning = null;
+      void this.loadMetadata();
+    }
   }
 
   // 直接開いた (フォルダ非経由の) zip/xlsx/xls 自身を、展開前の単一行として表示する。
@@ -473,13 +589,7 @@ export class Sidebar {
     this.render();
   }
 
-  private selectedFolderRelDir(): string {
-    if (!this.sel) return "";
-    const selected = this.rows.find((row) => row.relPath === this.sel);
-    if (selected?.kind === "dir") return selected.relPath;
-    if (selected && (selected.kind === "file" || selected.kind === "archive")) return parentRelPath(selected.relPath);
-    return "";
-  }
+
 
   async expandAllFolder(relDir: string) {
     if (this.panel.showing) return;
@@ -540,14 +650,22 @@ export class Sidebar {
 
   private async expandArchiveRow(r: Row) {
     const request = this.selectionRequest;
-    if (!await this.ensureChildrenLoaded(r, request)) return;
-    r.expanded = !r.expanded;
+    const revision = this.expansionRevision.get(r) ?? 0;
+    const expanded = !r.expanded;
+    if (expanded && !await this.ensureChildrenLoaded(r, request)) return;
+    if (request !== this.selectionRequest) return;
+    if ((this.expansionRevision.get(r) ?? 0) !== revision) return;
+    r.expanded = expanded;
     this.render();
   }
 
   private async expandFolderRow(r: Row, request = this.selectionRequest) {
-    if (!await this.ensureChildrenLoaded(r, request)) return;
-    r.expanded = !r.expanded;
+    const revision = this.expansionRevision.get(r) ?? 0;
+    const expanded = !r.expanded;
+    if (expanded && !await this.ensureChildrenLoaded(r, request)) return;
+    if (request !== this.selectionRequest) return;
+    if ((this.expansionRevision.get(r) ?? 0) !== revision) return;
+    r.expanded = expanded;
     this.render();
   }
 
@@ -561,8 +679,10 @@ export class Sidebar {
     if (request !== this.selectionRequest) return false;
     const index = this.rows.indexOf(r);
     if (index < 0) return false;
+    if (r.childrenLoaded) return true;
     this.rows.splice(index + 1, 0, ...children);
     r.childrenLoaded = true;
+    if (r.kind === "dir") this.refreshMetadata();
     return true;
   }
 
@@ -620,8 +740,32 @@ export class Sidebar {
 
   // ツリーの置き場は1つ。検索中と検索後は結果を出し、それ以外はフォルダを出す
   private render() {
+    const scrollTop = this.tree.scrollTop;
+    const scrollLeft = this.tree.scrollLeft;
     this.createActions.hidden = this.panel.showing;
     this.tree.replaceChildren(this.panel.showing ? this.panel.renderTree() : this.folderTree());
+    this.tree.scrollTop = scrollTop;
+    this.tree.scrollLeft = scrollLeft;
+    if (this.autoFit) this.fitWidth();
+  }
+
+  setAutoFit(enabled: boolean) {
+    this.autoFit = enabled;
+    this.autoFitInput.checked = enabled;
+    setSetting("treeAutoFitWidth", enabled);
+    if (enabled) this.fitWidth();
+    else this.onAutoFitChange?.(false, 0);
+  }
+
+  fitWidth() {
+    if (!this.autoFit || this.panel.showing) return;
+    const rows = this.tree.querySelector<HTMLElement>(".fv-folder-rows");
+    if (!rows) return;
+    const previous = rows.style.minWidth;
+    rows.style.minWidth = "0";
+    const width = Math.ceil(rows.getBoundingClientRect().width) + 18;
+    rows.style.minWidth = previous;
+    this.onAutoFitChange?.(true, width);
   }
 
   private invalidateOpenRequests() {
@@ -1043,6 +1187,23 @@ export class Sidebar {
   // ---- フォルダ/アーカイブのツリー ----
   private folderTree(): DocumentFragment {
     const frag = document.createDocumentFragment();
+    const rows = document.createElement("div");
+    rows.className = "fv-folder-rows";
+    const groups = new Map<string, { oldest: number; newest: number; maxSize: number }>();
+    for (const i of this.visible()) {
+      const row = this.rows[i];
+      const value = this.metadata.get(row.relPath);
+      if (!value || value.incomplete) continue;
+      const parent = row.relPath.replace(/[\\/][^\\/]*$/, "");
+      const key = parent === row.relPath ? "" : parent;
+      const group = groups.get(key) ?? { oldest: Infinity, newest: -Infinity, maxSize: 0 };
+      if (value.modified != null) {
+        group.oldest = Math.min(group.oldest, value.modified);
+        group.newest = Math.max(group.newest, value.modified);
+      }
+      if (row.kind !== "dir" && !value.is_link) group.maxSize = Math.max(group.maxSize, value.size);
+      groups.set(key, group);
+    }
     for (const i of this.visible()) {
       const r = this.rows[i];
       const div = document.createElement("div");
@@ -1086,7 +1247,52 @@ export class Sidebar {
         });
         div.appendChild(input);
       } else {
-        div.appendChild(document.createTextNode(r.label));
+        const name = document.createElement("span");
+        name.className = "fv-name";
+        name.textContent = r.label;
+        div.appendChild(name);
+        if (this.viewKind === "folder" && r.kind !== "archiveDir" && r.kind !== "archiveEntry" && (this.showModified || this.showSize)) {
+          const metadata = this.metadata.get(r.relPath);
+          const details = document.createElement("span");
+          details.className = "fv-metadata";
+          const status = !metadata ? "集計中…" : metadata.incomplete ? "一部取得不可" : null;
+          const parent = r.relPath.replace(/[\\/][^\\/]*$/, "");
+          const group = groups.get(parent === r.relPath ? "" : parent);
+          if (this.showModified) {
+            const modified = document.createElement("span");
+            modified.className = "fv-modified";
+            if (status) modified.textContent = status;
+            else if (metadata?.modified != null) {
+              const date = new Date(metadata.modified);
+              const datePart = document.createElement("span");
+              datePart.className = "fv-modified-date";
+              datePart.textContent = date.toLocaleDateString("ja-JP", { year: "numeric", month: "2-digit", day: "2-digit" });
+              const timePart = document.createElement("span");
+              timePart.className = "fv-modified-time";
+              timePart.textContent = date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+              const value = document.createElement("span");
+              value.className = "fv-modified-value";
+              value.append(datePart, document.createTextNode(" "), timePart);
+              modified.append(value);
+            }
+            if (!status && metadata?.modified != null && group) {
+              modified.style.setProperty("--bar-width", `${group.newest === group.oldest ? 100 : (group.newest - metadata.modified) / (group.newest - group.oldest) * 100}%`);
+            }
+            details.append(modified);
+          }
+          if (this.showSize) {
+            const size = document.createElement("span");
+            size.className = "fv-size";
+            size.textContent = r.kind === "dir"
+              ? metadata?.child_count == null ? "—" : metadata.child_count >= 100 ? "100件以上" : `${metadata.child_count}件`
+              : status ?? (metadata?.is_link ? "—" : formatFileSize(metadata!.size));
+            if (r.kind !== "dir" && !status && metadata && !metadata.is_link && group) {
+              size.style.setProperty("--bar-width", `${group.maxSize ? metadata.size / group.maxSize * 100 : 0}%`);
+            }
+            details.append(size);
+          }
+          div.appendChild(details);
+        }
       }
 
       const activate = (newTab: boolean) => {
@@ -1098,6 +1304,7 @@ export class Sidebar {
           void this.requestSelection(r.relPath, true).catch((error) => this.reportTreeError(error));
           return;
         }
+        if (isExpandable(r)) this.expansionRevision.set(r, (this.expansionRevision.get(r) ?? 0) + 1);
         if (r.kind === "dir") {
           this.sel = r.relPath;
           this.selected = new Set([r.relPath]);
@@ -1153,8 +1360,9 @@ export class Sidebar {
           );
         });
       }
-      frag.appendChild(div);
+      rows.appendChild(div);
     }
+    frag.appendChild(rows);
     const bottomPadding = document.createElement("div");
     bottomPadding.className = "fv-tree-bottom-padding";
     bottomPadding.setAttribute("aria-hidden", "true");

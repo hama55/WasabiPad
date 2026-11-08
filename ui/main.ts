@@ -56,7 +56,7 @@ import {
 } from "./settings-panel";
 import { searchResultGoto } from "./search-results";
 import { runAsyncBoundary, reportUnhandledRejection } from "./async-boundary";
-import { openPath as openPathInTabs } from "./path-opener";
+import { openPath as openPathInTabs, reopenFolderPreservingTree } from "./path-opener";
 import { promptRegisteredCommand, saveRegisteredCommand } from "./registered-command-menu";
 import type { CommandValueKind, RegisteredCommand } from "./registered-commands";
 import { promptExternalPreviewAdapter } from "./external-preview-adapter-dialog";
@@ -85,6 +85,7 @@ import {
   isPreviewOpenButtonShown,
   isPreviewSplitterShown,
   PREVIEW_MIN_WIDTH,
+  EDITOR_MIN_WIDTH,
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MIN_WIDTH,
   PANE_SPLITTER_WIDTH,
@@ -267,13 +268,23 @@ function measuredMainWidth(): number {
   return Number.isFinite(width) && width > 0 ? width : 0;
 }
 
+let manualSidebarWidth = SIDEBAR_DEFAULT_WIDTH;
 function setSidebarWidth(width: unknown) {
-  sidebarEl.style.width = `${clampSidebarWidth(width)}px`;
+  manualSidebarWidth = clampSidebarWidth(width);
+  sidebarEl.style.width = `${manualSidebarWidth}px`;
 }
 
 function readSidebarWidth(): number {
   const width = Number.parseFloat(sidebarEl.style.width);
   return Number.isFinite(width) ? clampSidebarWidth(width) : clampSidebarWidth(getSetting("sidebarWidth"));
+}
+
+function autoFitMaximum(mainWidth: number): number {
+  const previewOpen = previewAvailable && !previewCollapsed;
+  const contentMinimum = previewOpen && previewFullscreen ? PREVIEW_MIN_WIDTH : EDITOR_MIN_WIDTH;
+  const previewReserve = previewOpen && !previewFullscreen && previewPlacement === "right"
+    ? PREVIEW_MIN_WIDTH + PANE_SPLITTER_WIDTH : 0;
+  return Math.max(SIDEBAR_MIN_WIDTH, Math.floor(mainWidth - contentMinimum - PANE_SPLITTER_WIDTH - previewReserve));
 }
 
 function paneVisibilityAt(mainWidth: number) {
@@ -304,9 +315,13 @@ function applyPaneVisibility(mainWidth: number) {
     layoutRuntime?.coordinator.request();
     return;
   }
+  if (getSetting("treeAutoFitWidth")) {
+    sidebarEl.style.width = `${Math.min(readSidebarWidth(), autoFitMaximum(mainWidth))}px`;
+  }
   const layout = paneVisibilityAt(mainWidth);
   const sidebarShown = layout.sidebarShown;
   sidebarEl.hidden = !sidebarShown;
+  if (sidebarShown && getSetting("treeAutoFitWidth")) requestAnimationFrame(() => sidebar?.fitWidth());
   splitter.hidden = !sidebarShown;
   const sidebarToggle = $<HTMLButtonElement>("sidebar-toggle");
   const sidebarView = paneToggleView("sidebar", sidebarShown);
@@ -1293,6 +1308,13 @@ const workspaceHost = new WorkspaceHost(
       onSettings: openSettings,
     },
     sidebar: {
+      onClearSelection: () => {
+        const root = doc.current.folderRoot;
+        if (!root) return Promise.resolve(false);
+        const owner = tabs.state.activeId;
+        return reopenFolderPreservingTree(tabs, root, sidebar, () =>
+          tabs.state.activeId === owner && doc.current.folderRoot === root && !doc.current.selectedRelPath);
+      },
       onSelect: async (relPath, newTab) => {
         if (newTab) return openInNewTab(relPath);
         return navigateTreeEntry(relPath);
@@ -1305,10 +1327,21 @@ const workspaceHost = new WorkspaceHost(
       onExpandArchive: (relPath) =>
         withArchivePassword(relPath, () => api.listArchiveEntries(relPath)),
       onExpandFolder: (relDir) => api.listFolderEntries(relDir),
+      onFolderMetadata: (paths, includeCounts) => api.folderMetadata(paths, includeCounts),
+      onAutoFitChange: (enabled, width) => {
+        if (!enabled) {
+          sidebarEl.style.width = `${manualSidebarWidth}px`;
+        } else {
+          const mainWidth = measuredMainWidth();
+          if (width <= 18 || mainWidth <= 0 || sidebarEl.hidden) return;
+          const fitted = Math.min(clampSidebarWidth(width), autoFitMaximum(mainWidth));
+          if (readSidebarWidth() === fitted) return;
+          sidebarEl.style.width = `${fitted}px`;
+        }
+        updateSidebarVisibility();
+      },
       onDropEntries: (request) => folderActions.dropEntries(request),
       onUndoLastDrop: () => folderActions.undoLastDrop(),
-      onCreateFolder: (relDir) => folderActions.createFolder(relDir),
-      onCreateNote: (relDir) => folderActions.createNote(relDir),
       onTreeError: async (error) => {
         if (!isPasswordCancelled(error)) await showError("フォルダを展開できませんでした", error);
       },
@@ -1357,6 +1390,7 @@ const workspaceHost = new WorkspaceHost(
 );
 addressbar = workspaceHost.addressbar;
 sidebar = workspaceHost.sidebar;
+window.addEventListener("resize", () => sidebar.fitWidth());
 favbar = workspaceHost.favbar;
 fileStatusbar = workspaceHost.fileStatusbar;
 
@@ -1702,6 +1736,7 @@ document.addEventListener("contextmenu", (e) => e.preventDefault());
 // サイドバー幅のドラッグ変更
 splitter.addEventListener("mousedown", (e) => {
   e.preventDefault();
+  if (getSetting("treeAutoFitWidth")) sidebar.setAutoFit(false);
   const move = (ev: MouseEvent) => {
     setSidebarWidth(ev.clientX);
     updateSidebarVisibility();
@@ -1821,13 +1856,14 @@ tabs = new TabManager($("tabs"), doc, {
     if (!secondaryInstance) setSetting("openTabs", state);
   },
   workspace: {
-    capture: () => ({ ...sidebar.captureViewState(), fileTreeWidth: readSidebarWidth(), gitPreviewPath: gitPreviewTarget?.path ?? null }),
+    capture: () => ({ ...sidebar.captureViewState(), fileTreeWidth: manualSidebarWidth, gitPreviewPath: gitPreviewTarget?.path ?? null }),
     reset: () => { ++gitSelectionGeneration; gitPreviewTarget = null; sidebar.resetViewState(); },
     restore: async (state) => {
       const owner = tabs.state.activeId;
       setSidebarWidth(state?.fileTreeWidth ?? getSetting("sidebarWidth"));
       updateSidebarVisibility();
       await sidebar.restoreViewState(state);
+      sidebar.fitWidth();
       if (owner !== tabs.state.activeId) return;
       if (state?.gitPreviewPath) {
         gitPreviewTarget = { path: state.gitPreviewPath, documentPath: documentPathOf(doc.current), collapsed: false, token: window.crypto.randomUUID() };

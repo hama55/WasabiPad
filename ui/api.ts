@@ -17,6 +17,7 @@ import type { FindCursor } from "./generated/FindCursor";
 import type { FindResult } from "./generated/FindResult";
 import type { FindOutcome } from "./generated/FindOutcome";
 import type { FolderEntry } from "./generated/FolderEntry";
+import type { TreeMetadata } from "./generated/TreeMetadata";
 import type { OpenAs } from "./generated/OpenAs";
 import type { Pos } from "./generated/Pos";
 import type { ReplaceChunkResult } from "./generated/ReplaceChunkResult";
@@ -116,6 +117,8 @@ export const setArchivePassword = (relPath: string, password: string) =>
 // 指定フォルダの直下だけを取得する。サブフォルダの中身は展開時まで取得しない。
 export const listFolderEntries = (relDir: string) =>
   invoke<FolderEntry[]>(IPC_COMMANDS.listFolderEntries, { relDir });
+export type { TreeMetadata } from "./generated/TreeMetadata";
+export const folderMetadata = (paths: string[], includeCounts: boolean) => invoke<TreeMetadata[]>(IPC_COMMANDS.folderMetadata, { paths, includeCounts });
 
 // searchId は打ち切った検索の取りこぼしを次の検索から締め出すための世代番号
 export const workspaceSearch = (pat: string, options: WorkspaceSearchOptions, searchId: number) =>

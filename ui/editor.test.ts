@@ -974,7 +974,7 @@ describe("Feature: VirtualEditor", () => {
   // Scenario: 本文の選択を行番号領域へドラッグしても選択終点をEOFへ拡張しない
   // Given: 「abcdefghij\nklmnopqrst\nuvwxyz」を折り返し表示している
   // When: 本文で選択を開始し、本文内で移動した後、行番号領域を経由して本文へ戻りmouseupする
-  // Then: 行番号領域上では直前の本文位置を維持し、本文へ戻ると選択更新を再開する
+  // Then: 行番号領域上では対象行の先頭を選択し、本文へ戻ると選択更新を続ける
   it("Scenario: 行番号領域へドラッグしても本文選択をEOFへ拡張しない", async () => {
     const { editor, host } = mount("abcdefghij\nklmnopqrst\nuvwxyz");
     editor.open(3, false);
@@ -994,7 +994,7 @@ describe("Feature: VirtualEditor", () => {
       window.dispatchEvent(new MouseEvent("mousemove", {
         bubbles: true, clientX: 20, clientY: 10,
       }));
-      expect(editor.captureViewState().caret).toEqual({ line: 0, col: 9 });
+      expect(editor.captureViewState().caret).toEqual({ line: 0, col: 0 });
       window.dispatchEvent(new MouseEvent("mousemove", {
         bubbles: true, clientX: 78, clientY: 30,
       }));
@@ -1005,6 +1005,67 @@ describe("Feature: VirtualEditor", () => {
       const state = editor.captureViewState();
       expect(state.anchor).toEqual({ line: 0, col: 6 });
       expect(state.caret).toEqual({ line: 1, col: 7 });
+    } finally {
+      hitTesting.restore();
+      layout.restore();
+    }
+  });
+
+  // Feature: 行番号領域からの選択
+  // Scenario: 本文へ移り行番号領域へ戻る
+  // Given: 3行の本文を折り返し表示している
+  // When: 2行目の行番号から上の本文、下の本文、行番号領域へドラッグする
+  // Then: 開始行全体を含み、本文では文字位置、行番号領域では行単位で選択する
+  it("Scenario: 行番号から本文と行番号へ連続して選択する", async () => {
+    const { editor, host } = mount("abcdefghij\nklmnopqrst\nuvwxyz");
+    editor.open(3, false);
+    await settle();
+    const layout = installMouseLayout(host);
+    const hitTesting = installWrappedMouseHitTesting(host);
+    editor.setWrap(true);
+    try {
+      host.querySelector<HTMLElement>(".ve-gutter")!.dispatchEvent(new MouseEvent("mousedown", {
+        bubbles: true, button: 0, clientX: 20, clientY: 30,
+      }));
+      await settle();
+      window.dispatchEvent(new MouseEvent("mousemove", { clientX: 78, clientY: 10 }));
+      await settle();
+      expect(editor.captureViewState()).toMatchObject({ anchor: { line: 2, col: 0 }, caret: { line: 0, col: 7 } });
+      window.dispatchEvent(new MouseEvent("mousemove", { clientX: 78, clientY: 50 }));
+      await settle();
+      expect(editor.captureViewState()).toMatchObject({ anchor: { line: 1, col: 0 }, caret: { line: 2, col: 6 } });
+      window.dispatchEvent(new MouseEvent("mousemove", { clientX: 20, clientY: 10 }));
+      await settle();
+      expect(editor.captureViewState()).toMatchObject({ anchor: { line: 0, col: 0 }, caret: { line: 2, col: 0 } });
+      window.dispatchEvent(new MouseEvent("mouseup"));
+    } finally {
+      hitTesting.restore();
+      layout.restore();
+    }
+  });
+
+  // Feature: 行番号領域からの選択延長
+  // Scenario: Shiftで既存の始点行から本文まで選択する
+  // Given: 2行目に選択始点がある
+  // When: Shiftを押して3行目の行番号から1行目の本文までドラッグする
+  // Then: 2行目全体と1行目の文字位置までを選択する
+  it("Scenario: Shiftで行番号から既存の始点行を基準に選択する", async () => {
+    const { editor, host } = mount("abcdefghij\nklmnopqrst\nuvwxyz");
+    editor.open(3, false);
+    await settle();
+    const layout = installMouseLayout(host);
+    const hitTesting = installWrappedMouseHitTesting(host);
+    editor.setWrap(true);
+    try {
+      layout.scroll.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, clientX: 78, clientY: 30 }));
+      window.dispatchEvent(new MouseEvent("mouseup"));
+      host.querySelector<HTMLElement>(".ve-gutter")!.dispatchEvent(new MouseEvent("mousedown", {
+        bubbles: true, button: 0, shiftKey: true, clientX: 20, clientY: 50,
+      }));
+      window.dispatchEvent(new MouseEvent("mousemove", { clientX: 78, clientY: 10 }));
+      await settle();
+      expect(editor.captureViewState()).toMatchObject({ anchor: { line: 2, col: 0 }, caret: { line: 0, col: 7 } });
+      window.dispatchEvent(new MouseEvent("mouseup"));
     } finally {
       hitTesting.restore();
       layout.restore();
