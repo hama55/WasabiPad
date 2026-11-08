@@ -110,6 +110,7 @@ export class Sidebar {
   private createActions: HTMLElement;
   private panel: WorkspaceSearchPanel;
   private rows: Row[] = [];
+  private expansionRevision = new WeakMap<Row, number>();
   private sel: string | null = null; // 選択中の relPath
   private selected = new Set<string>();
   private selectionAnchor: string | null = null;
@@ -309,9 +310,10 @@ export class Sidebar {
       if (request !== this.selectionRequest) return;
       const row = this.rows.find((candidate) => candidate.relPath === relPath);
       if (!row || !isExpandable(row)) continue;
+      const revision = this.expansionRevision.get(row) ?? 0;
       if (!await this.ensureChildrenLoaded(row, request)) return;
       if (request !== this.selectionRequest) return;
-      row.expanded = true;
+      if ((this.expansionRevision.get(row) ?? 0) === revision) row.expanded = true;
     }
     if (state.kind === "folder" && state.search) {
       const search = await this.filterSearchViewState(state.search, request);
@@ -648,14 +650,22 @@ export class Sidebar {
 
   private async expandArchiveRow(r: Row) {
     const request = this.selectionRequest;
-    if (!await this.ensureChildrenLoaded(r, request)) return;
-    r.expanded = !r.expanded;
+    const revision = this.expansionRevision.get(r) ?? 0;
+    const expanded = !r.expanded;
+    if (expanded && !await this.ensureChildrenLoaded(r, request)) return;
+    if (request !== this.selectionRequest) return;
+    if ((this.expansionRevision.get(r) ?? 0) !== revision) return;
+    r.expanded = expanded;
     this.render();
   }
 
   private async expandFolderRow(r: Row, request = this.selectionRequest) {
-    if (!await this.ensureChildrenLoaded(r, request)) return;
-    r.expanded = !r.expanded;
+    const revision = this.expansionRevision.get(r) ?? 0;
+    const expanded = !r.expanded;
+    if (expanded && !await this.ensureChildrenLoaded(r, request)) return;
+    if (request !== this.selectionRequest) return;
+    if ((this.expansionRevision.get(r) ?? 0) !== revision) return;
+    r.expanded = expanded;
     this.render();
   }
 
@@ -669,6 +679,7 @@ export class Sidebar {
     if (request !== this.selectionRequest) return false;
     const index = this.rows.indexOf(r);
     if (index < 0) return false;
+    if (r.childrenLoaded) return true;
     this.rows.splice(index + 1, 0, ...children);
     r.childrenLoaded = true;
     if (r.kind === "dir") this.refreshMetadata();
@@ -1293,6 +1304,7 @@ export class Sidebar {
           void this.requestSelection(r.relPath, true).catch((error) => this.reportTreeError(error));
           return;
         }
+        if (isExpandable(r)) this.expansionRevision.set(r, (this.expansionRevision.get(r) ?? 0) + 1);
         if (r.kind === "dir") {
           this.sel = r.relPath;
           this.selected = new Set([r.relPath]);

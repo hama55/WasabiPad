@@ -59,6 +59,111 @@ function mount({
 }
 
 describe("Feature: Sidebar", () => {
+  // Feature: 展開状態の復元
+  // Scenario: 復元中に同じフォルダをクリックする
+  // Given: フォルダの子一覧取得が未完了である
+  // When: 利用者が同じフォルダを開き、両方の取得が完了する
+  // Then: 子は重複せず、フォルダは開いている
+  it("Scenario: 復元中に同じフォルダを開いても子が重複しない", async () => {
+    const { host, sidebar, ports } = mount();
+    const pending: ((entries: FolderEntry[]) => void)[] = [];
+    ports.onExpandFolder.mockImplementation(() => new Promise(resolve => pending.push(resolve)));
+    sidebar.setWorkspaceSearch("C:\\work");
+    sidebar.setEntries([{ name: "dir", is_dir: true, is_archive: false }]);
+    const restoring = sidebar.restoreViewState({ kind: "folder", expandedRelPaths: ["dir"], search: null });
+    await vi.waitFor(() => expect(pending).toHaveLength(1));
+    host.querySelector<HTMLElement>('[data-rel-path="dir"]')!.click();
+    await vi.waitFor(() => expect(pending).toHaveLength(2));
+    const children = [{ name: "memo.txt", is_dir: false, is_archive: false }];
+    pending[0](children);
+    await restoring;
+    pending[1](children);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await vi.waitFor(() => expect(host.querySelectorAll('[data-rel-path="dir/memo.txt"]')).toHaveLength(1));
+    expect(host.querySelector('[data-rel-path="dir"] .fv-arrow')?.textContent).toBe("🗂️");
+  });
+  // Scenario: 復元の読込中に利用者が開いて閉じる
+  // Given: フォルダの展開状態を復元するために子一覧を取得中である
+  // When: 利用者が同じフォルダを開いて閉じた後、復元の取得が完了する
+  // Then: 利用者の最後の操作どおり閉じた状態を維持する
+  it("Scenario: 復元より後の折りたたみ操作を維持する", async () => {
+    const { host, sidebar, ports } = mount();
+    const pending: ((entries: FolderEntry[]) => void)[] = [];
+    ports.onExpandFolder.mockImplementation(() => new Promise(resolve => pending.push(resolve)));
+    sidebar.setWorkspaceSearch("C:\\work");
+    sidebar.setEntries([{ name: "dir", is_dir: true, is_archive: false }]);
+    const restoring = sidebar.restoreViewState({ kind: "folder", expandedRelPaths: ["dir"], search: null });
+    await vi.waitFor(() => expect(pending).toHaveLength(1));
+    host.querySelector<HTMLElement>('[data-rel-path="dir"]')!.click();
+    await vi.waitFor(() => expect(pending).toHaveLength(2));
+    const children = [{ name: "memo.txt", is_dir: false, is_archive: false }];
+    pending[1](children);
+    await vi.waitFor(() => expect(host.querySelector('[data-rel-path="dir"] .fv-arrow')?.textContent).toBe("🗂️"));
+    host.querySelector<HTMLElement>('[data-rel-path="dir"]')!.click();
+    await vi.waitFor(() => expect(host.querySelector('[data-rel-path="dir"] .fv-arrow')?.textContent).toBe("📁"));
+    pending[0](children);
+    await restoring;
+    expect(host.querySelector('[data-rel-path="dir"] .fv-arrow')?.textContent).toBe("📁");
+  });
+  // Scenario: 古い展開要求は後の操作を上書きしない
+  // Given: 同じフォルダを2回クリックし、2つの読込が進行中である
+  // When: 後の読込が完了してから折りたたみ、古い読込が完了する
+  // Then: 最後の操作どおり折りたたんだ状態を維持する
+  it("Scenario: 遅い展開要求で折りたたみを上書きしない", async () => {
+    const { host, sidebar, ports } = mount();
+    const pending: ((entries: FolderEntry[]) => void)[] = [];
+    ports.onExpandFolder.mockImplementation(() => new Promise(resolve => pending.push(resolve)));
+    sidebar.setEntries([{ name: "dir", is_dir: true, is_archive: false }]);
+    host.querySelector<HTMLElement>('[data-rel-path="dir"]')!.click();
+    host.querySelector<HTMLElement>('[data-rel-path="dir"]')!.click();
+    await vi.waitFor(() => expect(pending).toHaveLength(2));
+    const children = [{ name: "memo.txt", is_dir: false, is_archive: false }];
+    pending[1](children);
+    await vi.waitFor(() => expect(host.querySelector('[data-rel-path="dir"] .fv-arrow')?.textContent).toBe("🗂️"));
+    host.querySelector<HTMLElement>('[data-rel-path="dir"]')!.click();
+    await vi.waitFor(() => expect(host.querySelector('[data-rel-path="dir"] .fv-arrow')?.textContent).toBe("📁"));
+    pending[0](children);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(host.querySelector('[data-rel-path="dir"] .fv-arrow')?.textContent).toBe("📁");
+  });
+  // Scenario: 復元中にアーカイブを開く
+  // Given: アーカイブの子一覧を復元中である
+  // When: 同じアーカイブをクリックし、両方の取得が完了する
+  // Then: アーカイブは開き、項目は一度だけ表示される
+  it("Scenario: 復元中のアーカイブ操作で項目が重複しない", async () => {
+    const { host, sidebar, ports } = mount();
+    const pending: ((entries: string[]) => void)[] = [];
+    ports.onExpandArchive.mockImplementation(() => new Promise(resolve => pending.push(resolve)));
+    sidebar.setEntries([{ name: "data.zip", is_dir: false, is_archive: true }]);
+    const restoring = sidebar.restoreViewState({ kind: "folder", expandedRelPaths: ["data.zip"], search: null });
+    await vi.waitFor(() => expect(pending).toHaveLength(1));
+    host.querySelector<HTMLElement>('[data-rel-path="data.zip"]')!.click();
+    await vi.waitFor(() => expect(pending).toHaveLength(2));
+    pending[0](["memo.txt"]);
+    await restoring;
+    pending[1](["memo.txt"]);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(host.querySelectorAll(".fv-row")).toHaveLength(2);
+    expect(host.querySelector('[data-rel-path="data.zip"] .fv-arrow')?.textContent).toBe("⌄");
+  });
+  // Scenario: 子一覧の読込中に全フォルダを折りたたむ
+  // Given: 復元の子一覧取得が未完了である
+  // When: 全フォルダを折りたたんだ後、取得が完了する
+  // Then: 遅れて完了した取得でフォルダを開かない
+  it("Scenario: 復元中の全折りたたみを維持する", async () => {
+    const { host, sidebar, ports } = mount();
+    let finish!: (entries: FolderEntry[]) => void;
+    ports.onExpandFolder.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    sidebar.setWorkspaceSearch("C:\\work");
+    sidebar.setEntries([{ name: "dir", is_dir: true, is_archive: false }]);
+    const restoring = sidebar.restoreViewState({ kind: "folder", expandedRelPaths: ["dir"], search: null });
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    host.querySelector<HTMLButtonElement>(".fv-fold")!.click();
+    finish([{ name: "memo.txt", is_dir: false, is_archive: false }]);
+    await restoring;
+    expect(host.querySelector('[data-rel-path="dir"] .fv-arrow')?.textContent).toBe("📁");
+    expect(host.querySelector('[data-rel-path="dir/memo.txt"]')).toBeNull();
+  });
   // Scenario: 空白を選んでフォルダへ戻っても展開状態を保つ
   // Given: フォルダを展開して中のファイルを開いている
   // When: ツリーの空白をクリックしてフォルダへ戻る
