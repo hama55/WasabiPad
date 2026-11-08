@@ -1305,10 +1305,9 @@ const workspaceHost = new WorkspaceHost(
       onExpandArchive: (relPath) =>
         withArchivePassword(relPath, () => api.listArchiveEntries(relPath)),
       onExpandFolder: (relDir) => api.listFolderEntries(relDir),
+      onFolderMetadata: (paths) => api.folderMetadata(paths),
       onDropEntries: (request) => folderActions.dropEntries(request),
       onUndoLastDrop: () => folderActions.undoLastDrop(),
-      onCreateFolder: (relDir) => folderActions.createFolder(relDir),
-      onCreateNote: (relDir) => folderActions.createNote(relDir),
       onTreeError: async (error) => {
         if (!isPasswordCancelled(error)) await showError("フォルダを展開できませんでした", error);
       },

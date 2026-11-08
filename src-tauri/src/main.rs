@@ -187,6 +187,21 @@ fn list_folder_entries(rel_dir: String, state: State) -> Result<Vec<FolderEntry>
 }
 
 #[tauri::command]
+async fn folder_metadata(paths: Vec<String>, state: State<'_>) -> Result<Vec<wasabipad_core::TreeMetadata>, String> {
+    let root = state::with_doc(&state, |doc| doc.workspace_root())?
+        .ok_or_else(|| "no folder".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        paths.into_iter().map(|path| {
+            let relative = std::path::Path::new(&path);
+            if relative.components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
+                return Err("invalid path".to_string());
+            }
+            Ok(wasabipad_core::tree_metadata(&root.join(relative)))
+        }).collect()
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 async fn workspace_search(
     pat: String,
     options: SearchOptions,
@@ -918,6 +933,7 @@ fn main() {
             list_archive_entries,
             set_archive_password,
             list_folder_entries,
+            folder_metadata,
             workspace_search,
             workspace_search_cancel,
             create_note,

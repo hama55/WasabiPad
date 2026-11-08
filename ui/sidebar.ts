@@ -8,7 +8,8 @@ import { archiveEntryPath, isArchiveEntryPath, splitArchiveEntryPath } from "./a
 import type { ContextTarget } from "./context-target";
 import { preventMiddleClickDefault } from "./interaction-constants";
 import { iconButton } from "./icon-button";
-import { createMenuIcon, MENU_ICON } from "./menu-icons";
+import { getSetting, setSetting } from "./settings";
+import type { TreeMetadata } from "./api";
 import { runAsyncBoundary } from "./async-boundary";
 import {
   comparableDocumentPath,
@@ -84,10 +85,9 @@ export interface SidebarPorts extends Omit<WorkspaceSearchPorts, "onViewChange" 
   isCut?: (relPath: string) => boolean;
   onExpandArchive: (relPath: string) => Promise<string[]>;
   onExpandFolder: (relDir: string) => Promise<FolderEntry[]>;
+  onFolderMetadata?: (paths: string[]) => Promise<TreeMetadata[]>;
   onDropEntries: (request: FileTreeDropRequest) => Promise<FileTreeDropResult>;
   onUndoLastDrop: () => Promise<boolean>;
-  onCreateFolder: (relDir: string) => void | Promise<void>;
-  onCreateNote: (relDir: string) => void | Promise<void>;
   onTreeError: (error: unknown) => Promise<void>;
 }
 
@@ -125,6 +125,13 @@ export class Sidebar {
   private defaultSearchOptions: WorkspaceSearchOptions;
   private dragScrollTimer: number | null = null;
   private renamingRelPath: string | null = null;
+  private metadata = new Map<string, TreeMetadata>();
+  private metadataGeneration = 0;
+  private metadataRunning: number | null = null;
+  private metadataPending = false;
+  private showModified = getSetting("treeShowModified");
+  private showSize = getSetting("treeShowSize");
+  private onFolderMetadata?: SidebarPorts["onFolderMetadata"];
 
   constructor(host: HTMLElement, ports: SidebarPorts, searchOptions: WorkspaceSearchOptions) {
     this.host = host;
@@ -137,6 +144,7 @@ export class Sidebar {
     this.isCut = ports.isCut;
     this.onExpandArchive = ports.onExpandArchive;
     this.onExpandFolder = ports.onExpandFolder;
+    this.onFolderMetadata = ports.onFolderMetadata;
     this.onDropEntries = ports.onDropEntries;
     this.onUndoLastDrop = ports.onUndoLastDrop;
     this.onTreeError = ports.onTreeError;
@@ -179,25 +187,23 @@ export class Sidebar {
     toolbar.append(fold, unfold);
     this.createActions = document.createElement("div");
     this.createActions.className = "fv-create-actions";
-    const createFolder = document.createElement("button");
-    createFolder.type = "button";
-    createFolder.className = "fv-create-folder";
-    createFolder.append(createMenuIcon(MENU_ICON.newFolder), document.createTextNode("フォルダ"));
-    createFolder.title = "新規フォルダ";
-    createFolder.addEventListener("click", () => runAsyncBoundary(
-      () => ports.onCreateFolder(this.selectedFolderRelDir()),
-      (error) => this.reportTreeError(error),
-    ));
-    const createNote = document.createElement("button");
-    createNote.type = "button";
-    createNote.className = "fv-create-note";
-    createNote.append(createMenuIcon(MENU_ICON.newMemo), document.createTextNode("メモ"));
-    createNote.title = "新規メモ";
-    createNote.addEventListener("click", () => runAsyncBoundary(
-      () => ports.onCreateNote(this.selectedFolderRelDir()),
-      (error) => this.reportTreeError(error),
-    ));
-    this.createActions.append(createFolder, createNote);
+    for (const [label, key] of [["更新日時", "treeShowModified"], ["サイズ", "treeShowSize"]] as const) {
+      const wrapper = document.createElement("label");
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.setAttribute("aria-label", label);
+      input.checked = getSetting(key);
+      input.addEventListener("change", () => {
+        this.metadataGeneration++;
+        setSetting(key, input.checked);
+        this.showModified = getSetting("treeShowModified");
+        this.showSize = getSetting("treeShowSize");
+        this.refreshMetadata();
+        this.render();
+      });
+      wrapper.append(input, document.createTextNode(label));
+      this.createActions.append(wrapper);
+    }
     this.host.append(toolbar, this.panel.bar, this.tree, this.createActions);
     this.host.addEventListener("contextmenu", (e) => {
       if (e.target !== this.host && e.target !== this.tree
@@ -214,6 +220,8 @@ export class Sidebar {
       this.managedDropUndo = false;
     }
     this.workspaceRoot = folderRoot;
+    this.metadataGeneration++;
+    this.metadata.clear();
     this.viewKind = folderRoot === null ? null : "folder";
     this.panel.setFolderRoot(folderRoot);
   }
@@ -377,7 +385,10 @@ export class Sidebar {
     this.renamingRelPath = null;
     this.selectionRequest++;
     this.invalidateOpenRequests();
+    this.metadataGeneration++;
+    this.metadata.clear();
     this.rows = this.folderRows(entries, 0, "");
+    this.refreshMetadata();
     this.sel = null;
     this.selected.clear();
     this.selectionAnchor = null;
@@ -419,6 +430,7 @@ export class Sidebar {
     const rows = await rebuild(await this.onExpandFolder(""), 0, "");
     if (request !== this.selectionRequest) return;
     this.rows = rows;
+    this.refreshMetadata();
     const available = new Set(this.rows.map((row) => row.relPath));
     this.selected = new Set([...this.selected].filter((path) => available.has(path)));
     if (this.sel && !available.has(this.sel)) this.sel = null;
@@ -450,6 +462,34 @@ export class Sidebar {
     }));
   }
 
+  private refreshMetadata() {
+    this.metadataPending = this.showModified || this.showSize;
+    void this.loadMetadata();
+  }
+
+  private async loadMetadata() {
+    if (this.metadataRunning === this.metadataGeneration || !this.metadataPending || !this.onFolderMetadata || this.viewKind !== "folder") return;
+    this.metadataRunning = this.metadataGeneration;
+    this.metadataPending = false;
+    const generation = this.metadataGeneration;
+    const paths = this.rows.filter((row) => row.kind === "dir" || row.kind === "file" || row.kind === "archive").map((row) => row.relPath);
+    try {
+      const values = await this.onFolderMetadata(paths);
+      if (generation === this.metadataGeneration) {
+        paths.forEach((path, i) => { if (values[i]) this.metadata.set(path, values[i]); });
+        if (!this.renamingRelPath) this.render();
+      }
+    } catch {
+      if (generation === this.metadataGeneration) {
+        paths.forEach((path) => this.metadata.set(path, { size: 0, modified: null, incomplete: true, is_link: false }));
+        if (!this.renamingRelPath) this.render();
+      }
+    } finally {
+      if (this.metadataRunning === generation) this.metadataRunning = null;
+      void this.loadMetadata();
+    }
+  }
+
   // 直接開いた (フォルダ非経由の) zip/xlsx/xls 自身を、展開前の単一行として表示する。
   setArchiveRoot(displayName: string) {
     this.viewKind = "archive";
@@ -473,13 +513,7 @@ export class Sidebar {
     this.render();
   }
 
-  private selectedFolderRelDir(): string {
-    if (!this.sel) return "";
-    const selected = this.rows.find((row) => row.relPath === this.sel);
-    if (selected?.kind === "dir") return selected.relPath;
-    if (selected && (selected.kind === "file" || selected.kind === "archive")) return parentRelPath(selected.relPath);
-    return "";
-  }
+
 
   async expandAllFolder(relDir: string) {
     if (this.panel.showing) return;
@@ -563,6 +597,7 @@ export class Sidebar {
     if (index < 0) return false;
     this.rows.splice(index + 1, 0, ...children);
     r.childrenLoaded = true;
+    if (r.kind === "dir") this.refreshMetadata();
     return true;
   }
 
@@ -1086,7 +1121,20 @@ export class Sidebar {
         });
         div.appendChild(input);
       } else {
-        div.appendChild(document.createTextNode(r.label));
+        const name = document.createElement("span");
+        name.className = "fv-name";
+        name.textContent = r.label;
+        div.appendChild(name);
+        if (this.viewKind === "folder" && r.kind !== "archiveDir" && r.kind !== "archiveEntry" && (this.showModified || this.showSize)) {
+          const metadata = this.metadata.get(r.relPath);
+          const details = document.createElement("span");
+          details.className = "fv-metadata";
+          details.textContent = !metadata ? "集計中…" : metadata.incomplete ? "一部取得不可" : [
+            this.showModified && metadata.modified !== null ? new Date(metadata.modified).toLocaleString() : "",
+            this.showSize ? metadata.is_link ? "—" : `${metadata.size.toLocaleString()} B` : "",
+          ].filter(Boolean).join("  ");
+          div.appendChild(details);
+        }
       }
 
       const activate = (newTab: boolean) => {

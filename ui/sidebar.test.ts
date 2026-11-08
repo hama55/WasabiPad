@@ -3,7 +3,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Sidebar, type SidebarPorts } from "./sidebar";
 import { DEFAULT_SEARCH_OPTIONS } from "./workspace-search-options";
 import type { FolderEntry, WorkspaceSearchResult } from "./api";
-import { MENU_ICON } from "./menu-icons";
 
 interface MountOptions {
   onSearch?: SidebarPorts["onSearch"];
@@ -12,6 +11,7 @@ interface MountOptions {
   onDropEntries?: SidebarPorts["onDropEntries"];
   onUndoLastDrop?: SidebarPorts["onUndoLastDrop"];
   onGitPreview?: (relPath: string) => void;
+  onFolderMetadata?: SidebarPorts["onFolderMetadata"];
 }
 
 function mount({
@@ -24,6 +24,7 @@ function mount({
   onDropEntries = vi.fn(async () => ({ undoable: true })),
   onUndoLastDrop = vi.fn(async () => true),
   onGitPreview,
+  onFolderMetadata,
 }: MountOptions = {}) {
   const host = document.createElement("div");
   document.body.replaceChildren(host);
@@ -36,6 +37,7 @@ function mount({
     isCut: vi.fn((_relPath: string) => false),
     onExpandArchive: vi.fn(async (_relPath: string): Promise<string[]> => []),
     onExpandFolder: vi.fn(async (_relDir: string): Promise<FolderEntry[]> => []),
+    onFolderMetadata,
     onTreeError: vi.fn(async () => {}),
     onSearch,
     onCancel: vi.fn(),
@@ -44,14 +46,28 @@ function mount({
     onReplace: vi.fn(),
     onDropEntries,
     onUndoLastDrop,
-    onCreateFolder: vi.fn(),
-    onCreateNote: vi.fn(),
     onOptionsChange: vi.fn(),
   } satisfies SidebarPorts;
   return { host, ports, sidebar: new Sidebar(host, ports, DEFAULT_SEARCH_OPTIONS) };
 }
 
 describe("Feature: Sidebar", () => {
+  // Scenario: サイズを表示する
+  // Given: 通常のファイルツリーが開いている
+  // When: サイズをチェックする
+  // Then: ファイル行にサイズが表示される
+  it("Scenario: サイズをチェックするとファイル行に表示する", async () => {
+    const onFolderMetadata = vi.fn(async () => [{ size: 42, modified: 0, incomplete: false, is_link: false }]);
+    const { host, sidebar } = mount({ onFolderMetadata });
+    sidebar.setEntries([{ name: "memo.txt", is_dir: false, is_archive: false }]);
+    const checkbox = host.querySelector<HTMLInputElement>('input[aria-label="サイズ"]');
+    expect(checkbox).not.toBeNull();
+    checkbox!.click();
+    expect(checkbox!.checked).toBe(true);
+    await vi.waitFor(() => expect(host.querySelector(".fv-metadata")?.textContent).toBe("42 B"));
+    expect(onFolderMetadata).toHaveBeenCalledWith(["memo.txt"]);
+    checkbox!.click();
+  });
   // Given: .git の実フォルダまたは実ファイルがツリーにある
   // When: 行をクリックする
   // Then: 文書を開かずGitプレビューを依頼し、フォルダの展開動作は維持する
@@ -157,35 +173,6 @@ describe("Feature: Sidebar", () => {
     expect(ports.onContextMenu).toHaveBeenCalledWith(30, 40, null, []);
   });
 
-  // Feature: ファイルツリー下部の新規作成ボタン
-  // Scenario: 選択中フォルダの配下へ新規フォルダを作成する
-  // Given: `docs`フォルダを含む通常ツリーを表示している
-  // When: `docs`を選択してツリー最下部の作成ボタンを押す
-  // Then: 新規フォルダの作成先として`docs`を渡す
-  it("Scenario: 通常ツリー下部の新規フォルダ作成先に選択フォルダを渡す", () => {
-    const { host, ports, sidebar } = mount();
-    sidebar.setEntries([
-      { name: "docs", is_dir: true, is_archive: false },
-      { name: "memo.txt", is_dir: false, is_archive: false },
-    ]);
-    host.querySelector<HTMLElement>(".fv-row")!.click();
-
-    host.querySelector<HTMLButtonElement>(".fv-create-folder")!.click();
-    host.querySelector<HTMLButtonElement>(".fv-create-note")!.click();
-
-    expect(ports.onCreateFolder).toHaveBeenCalledWith("docs");
-    expect(ports.onCreateNote).toHaveBeenCalledWith("docs");
-    expect(host.querySelector<HTMLButtonElement>(".fv-create-folder")?.textContent).toBe("フォルダ");
-    expect(host.querySelector<HTMLButtonElement>(".fv-create-folder")?.querySelector(`.${MENU_ICON.newFolder}`)).not.toBeNull();
-    expect(host.querySelector<HTMLButtonElement>(".fv-create-note")?.textContent).toBe("メモ");
-    expect(host.querySelector<HTMLButtonElement>(".fv-create-note")?.querySelector(`.${MENU_ICON.newMemo}`)).not.toBeNull();
-    const tree = host.querySelector<HTMLElement>(".fv-tree");
-    const actions = host.querySelector<HTMLElement>(".fv-create-actions");
-    expect(tree?.contains(actions)).toBe(false);
-    expect(actions?.parentElement).toBe(host);
-    expect(actions?.hidden).toBe(false);
-  });
-
   // Feature: ファイルツリーの表示範囲
   // Scenario: 下部の新規作成領域をファイルツリーのスクロール範囲から分離する
   // Given: ファイルツリーと下部の新規作成ボタンを表示している
@@ -204,59 +191,6 @@ describe("Feature: Sidebar", () => {
     expect(tree.contains(actions)).toBe(false);
     expect(actions.parentElement).toBe(host);
     expect(tree.nextElementSibling).toBe(actions);
-  });
-
-  // Feature: 選択項目に応じた新規フォルダ作成先
-  // Scenario: ファイル選択時はその親フォルダへ作成する
-  // Given: `docs/memo.txt`を選択している
-  // When: `＋フォルダ`を押す
-  // Then: `docs`を作成先として渡す
-  it("Scenario: ファイル選択時は親フォルダを新規フォルダ作成先にする", async () => {
-    const { host, ports, sidebar } = mount();
-    ports.onExpandFolder.mockResolvedValueOnce([
-      { name: "memo.txt", is_dir: false, is_archive: false },
-    ]);
-    sidebar.setEntries([{ name: "docs", is_dir: true, is_archive: false }]);
-    host.querySelector<HTMLElement>(".fv-row")!.click();
-    await vi.waitFor(() => expect(host.querySelectorAll(".fv-row")).toHaveLength(2));
-    host.querySelectorAll<HTMLElement>(".fv-row")[1].click();
-
-    host.querySelector<HTMLButtonElement>(".fv-create-folder")!.click();
-
-    expect(ports.onCreateFolder).toHaveBeenCalledWith("docs");
-  });
-
-  // Feature: ファイルツリー下部の新規メモ作成先
-  // Scenario: ファイル選択時はその親フォルダへメモを作成する
-  // Given: `docs/memo.txt`を選択している
-  // When: `＋メモ`を押す
-  // Then: `docs`を作成先として渡す
-  it("Scenario: ファイル選択時は親フォルダを新規メモ作成先にする", async () => {
-    const { host, ports, sidebar } = mount();
-    ports.onExpandFolder.mockResolvedValueOnce([
-      { name: "memo.txt", is_dir: false, is_archive: false },
-    ]);
-    sidebar.setEntries([{ name: "docs", is_dir: true, is_archive: false }]);
-    host.querySelector<HTMLElement>(".fv-row")!.click();
-    await vi.waitFor(() => expect(host.querySelectorAll(".fv-row")).toHaveLength(2));
-    host.querySelectorAll<HTMLElement>(".fv-row")[1].click();
-
-    host.querySelector<HTMLButtonElement>(".fv-create-note")!.click();
-
-    expect(ports.onCreateNote).toHaveBeenCalledWith("docs");
-  });
-
-  // Scenario: 未選択時はワークスペースのルートへ作成する
-  // Given: ファイルツリーを表示しているが、どの行も選択していない
-  // When: `＋フォルダ`を押す
-  // Then: 空の相対パスを作成先として渡す
-  it("Scenario: 未選択時はルートを新規フォルダ作成先にする", () => {
-    const { host, ports, sidebar } = mount();
-    sidebar.setEntries([{ name: "memo.txt", is_dir: false, is_archive: false }]);
-
-    host.querySelector<HTMLButtonElement>(".fv-create-folder")!.click();
-
-    expect(ports.onCreateFolder).toHaveBeenCalledWith("");
   });
 
   // Scenario: フォルダ検索中は新規作成ボタンを隠す

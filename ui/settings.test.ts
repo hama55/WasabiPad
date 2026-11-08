@@ -20,6 +20,22 @@ import {
 } from "./settings";
 
 describe("Feature: settings", () => {
+  // Scenario: ファイルツリーの表示項目を保存して復元する
+  // Given: 初期状態は両方オフ
+  // When: 両項目をオンにして保存済み設定を読み直す
+  // Then: それぞれオンを復元する
+  it("Scenario: ファイルツリーの表示設定を復元する", async () => {
+    expect(parseSettings("{}").treeShowModified).toBe(false);
+    expect(parseSettings("{}").treeShowSize).toBe(false);
+    setSetting("treeShowModified", true);
+    setSetting("treeShowSize", true);
+    await flushSettings();
+    expect(updateSettingMock).toHaveBeenCalledWith("treeShowModified", "true");
+    expect(updateSettingMock).toHaveBeenCalledWith("treeShowSize", "true");
+    expect(parseSettings('{"treeShowModified":true,"treeShowSize":true}').treeShowSize).toBe(true);
+    setSetting("treeShowModified", false);
+    setSetting("treeShowSize", false);
+  });
   // Scenario: 旧起動パスを保存先へ流用しない
   // Given: 旧起動パスと、新しい保存先の有無が異なる設定
   // When: 設定を読み込む

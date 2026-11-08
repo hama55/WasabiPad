@@ -20,6 +20,8 @@ function makePorts(
   const values: Settings = {
     indentSize: 8,
     sidebarWidth: 220,
+    treeShowModified: false,
+    treeShowSize: false,
     fontFamily: 'Consolas, "MS Gothic", monospace',
     fontSize: 14,
     pastedImageWidthEnabled: true,

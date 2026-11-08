@@ -39,6 +39,7 @@ pub use doc::{
 };
 pub use fileio::{Encoding, EncodingId, Eol};
 pub use filename::{next_available_path, validate_windows_file_name};
+pub use folder::{tree_metadata, TreeMetadata};
 pub use git_preview::{resolve_git_worktree_file, read_git_worktree_files, read_git_worktree_diff, read_git_branches, read_git_history, read_git_files, read_git_diff, GitBranch, GitCommit, GitHistory, GitChangedFile, GitFileDiff};
 pub use preview_cache::PreviewCache;
 pub use protocol::{
