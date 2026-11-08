@@ -89,6 +89,7 @@ const ROW_GLYPHS: Record<RowKind, [string, string]> = {
 // WorkspaceSearchPanel のもので、ここはそのまま素通しする。
 export interface SidebarPorts extends Omit<WorkspaceSearchPorts, "onViewChange" | "onContextMenu"> {
   onSelect: (relPath: string, newTab: boolean) => void | Promise<boolean | void>;
+  onClearSelection?: () => boolean | Promise<boolean>;
   onGitPreview?: (relPath: string) => void | Promise<void>;
   onContextMenu: (x: number, y: number, target: ContextTarget | null, selected?: ContextTarget[]) => void;
   onFileCommand?: (command: SidebarFileCommand, selected: ContextTarget[]) => void | Promise<void>;
@@ -96,7 +97,7 @@ export interface SidebarPorts extends Omit<WorkspaceSearchPorts, "onViewChange" 
   isCut?: (relPath: string) => boolean;
   onExpandArchive: (relPath: string) => Promise<string[]>;
   onExpandFolder: (relDir: string) => Promise<FolderEntry[]>;
-  onFolderMetadata?: (paths: string[]) => Promise<TreeMetadata[]>;
+  onFolderMetadata?: (paths: string[], includeCounts: boolean) => Promise<TreeMetadata[]>;
   onAutoFitChange?: (enabled: boolean, width: number) => void;
   onDropEntries: (request: FileTreeDropRequest) => Promise<FileTreeDropResult>;
   onUndoLastDrop: () => Promise<boolean>;
@@ -184,6 +185,21 @@ export class Sidebar {
     this.tree.className = "fv-tree";
     this.tree.tabIndex = 0;
     this.tree.addEventListener("keydown", (event) => this.onTreeKeyDown(event));
+    this.tree.addEventListener("click", (event) => {
+      const target = event.target;
+      if (this.panel.showing || this.renamingRelPath || !(target instanceof Element)
+        || !(target === this.tree || target.matches(".fv-folder-rows, .fv-tree-bottom-padding"))) return;
+      const request = ++this.selectionRequest;
+      this.invalidateOpenRequests();
+      runAsyncBoundary(async () => {
+        if (ports.onClearSelection && !await ports.onClearSelection()) return;
+        if (request !== this.selectionRequest) return;
+        this.sel = null;
+        this.selected.clear();
+        this.selectionAnchor = null;
+        this.render();
+      }, (error) => this.reportTreeError(error));
+    });
     this.host.addEventListener("mousedown", (event) => this.onBackButton(event), true);
     this.host.addEventListener("auxclick", (event) => this.onBackButton(event), true);
     document.addEventListener("pointerdown", (event) => {
@@ -215,7 +231,7 @@ export class Sidebar {
         setSetting(key, input.checked);
         this.showModified = getSetting("treeShowModified");
         this.showSize = getSetting("treeShowSize");
-        this.refreshMetadata();
+        this.refreshMetadata(this.showSize);
         this.render();
       });
       wrapper.append(input, document.createTextNode(label));
@@ -512,7 +528,7 @@ export class Sidebar {
     const refreshAll = this.metadataRefreshAll;
     this.metadataRefreshAll = false;
     const sourceRows = refreshAll ? this.visible().map(i => this.rows[i]) : this.rows;
-    const candidates = sourceRows.filter(row => (row.kind === "file" || row.kind === "archive" || (row.kind === "dir" && this.showModified)) && (refreshAll || !this.metadata.has(row.relPath)));
+    const candidates = sourceRows.filter(row => (row.kind === "file" || row.kind === "archive" || (row.kind === "dir" && (this.showModified || this.showSize))) && (refreshAll || !this.metadata.has(row.relPath)));
     const pathsToLoad = candidates.map(row => row.relPath);
     const batches: string[][] = [];
     for (let i = 0; i < pathsToLoad.length; i += 64) batches.push(pathsToLoad.slice(i, i + 64));
@@ -521,12 +537,12 @@ export class Sidebar {
         if (generation !== this.metadataGeneration) break;
         let changed = false;
         try {
-          const values = await this.onFolderMetadata(paths);
+          const values = await this.onFolderMetadata(paths, this.showSize);
           if (generation !== this.metadataGeneration) break;
           paths.forEach((path, i) => {
             const value = values[i];
             const previous = this.metadata.get(path);
-            if (value && (!previous || value.size !== previous.size || value.modified !== previous.modified || value.incomplete !== previous.incomplete || value.is_link !== previous.is_link)) {
+            if (value && (!previous || value.size !== previous.size || value.modified !== previous.modified || value.incomplete !== previous.incomplete || value.is_link !== previous.is_link || value.child_count !== previous.child_count)) {
               this.metadata.set(path, value);
               changed = true;
             }
@@ -1239,11 +1255,14 @@ export class Sidebar {
               const date = new Date(metadata.modified);
               const datePart = document.createElement("span");
               datePart.className = "fv-modified-date";
-              datePart.textContent = date.toLocaleDateString();
+              datePart.textContent = date.toLocaleDateString("ja-JP", { year: "numeric", month: "2-digit", day: "2-digit" });
               const timePart = document.createElement("span");
               timePart.className = "fv-modified-time";
               timePart.textContent = date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-              modified.append(datePart, document.createTextNode(" "), timePart);
+              const value = document.createElement("span");
+              value.className = "fv-modified-value";
+              value.append(datePart, document.createTextNode(" "), timePart);
+              modified.append(value);
             }
             if (!status && metadata?.modified != null && group) {
               modified.style.setProperty("--bar-width", `${group.newest === group.oldest ? 100 : (group.newest - metadata.modified) / (group.newest - group.oldest) * 100}%`);
@@ -1253,7 +1272,9 @@ export class Sidebar {
           if (this.showSize) {
             const size = document.createElement("span");
             size.className = "fv-size";
-            size.textContent = r.kind === "dir" ? "—" : status ?? (metadata?.is_link ? "—" : formatFileSize(metadata!.size));
+            size.textContent = r.kind === "dir"
+              ? metadata?.child_count == null ? "—" : metadata.child_count >= 100 ? "100件以上" : `${metadata.child_count}件`
+              : status ?? (metadata?.is_link ? "—" : formatFileSize(metadata!.size));
             if (r.kind !== "dir" && !status && metadata && !metadata.is_link && group) {
               size.style.setProperty("--bar-width", `${group.maxSize ? metadata.size / group.maxSize * 100 : 0}%`);
             }

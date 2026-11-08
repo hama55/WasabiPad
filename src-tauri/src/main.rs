@@ -187,7 +187,7 @@ fn list_folder_entries(rel_dir: String, state: State) -> Result<Vec<FolderEntry>
 }
 
 #[tauri::command]
-async fn folder_metadata(paths: Vec<String>, state: State<'_>) -> Result<Vec<wasabipad_core::TreeMetadata>, String> {
+async fn folder_metadata(paths: Vec<String>, include_counts: bool, state: State<'_>) -> Result<Vec<wasabipad_core::TreeMetadata>, String> {
     let root = state::with_doc(&state, |doc| doc.workspace_root())?
         .ok_or_else(|| "no folder".to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
@@ -196,7 +196,7 @@ async fn folder_metadata(paths: Vec<String>, state: State<'_>) -> Result<Vec<was
             if relative.components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
                 return Err("invalid path".to_string());
             }
-            Ok(wasabipad_core::tree_metadata(&root.join(relative)))
+            Ok(wasabipad_core::tree_metadata(&root.join(relative), include_counts))
         }).collect()
     }).await.map_err(|e| e.to_string())?
 }

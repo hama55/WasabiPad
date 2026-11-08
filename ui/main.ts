@@ -56,7 +56,7 @@ import {
 } from "./settings-panel";
 import { searchResultGoto } from "./search-results";
 import { runAsyncBoundary, reportUnhandledRejection } from "./async-boundary";
-import { openPath as openPathInTabs } from "./path-opener";
+import { openPath as openPathInTabs, reopenFolderPreservingTree } from "./path-opener";
 import { promptRegisteredCommand, saveRegisteredCommand } from "./registered-command-menu";
 import type { CommandValueKind, RegisteredCommand } from "./registered-commands";
 import { promptExternalPreviewAdapter } from "./external-preview-adapter-dialog";
@@ -1308,6 +1308,13 @@ const workspaceHost = new WorkspaceHost(
       onSettings: openSettings,
     },
     sidebar: {
+      onClearSelection: () => {
+        const root = doc.current.folderRoot;
+        if (!root) return Promise.resolve(false);
+        const owner = tabs.state.activeId;
+        return reopenFolderPreservingTree(tabs, root, sidebar, () =>
+          tabs.state.activeId === owner && doc.current.folderRoot === root && !doc.current.selectedRelPath);
+      },
       onSelect: async (relPath, newTab) => {
         if (newTab) return openInNewTab(relPath);
         return navigateTreeEntry(relPath);
@@ -1320,7 +1327,7 @@ const workspaceHost = new WorkspaceHost(
       onExpandArchive: (relPath) =>
         withArchivePassword(relPath, () => api.listArchiveEntries(relPath)),
       onExpandFolder: (relDir) => api.listFolderEntries(relDir),
-      onFolderMetadata: (paths) => api.folderMetadata(paths),
+      onFolderMetadata: (paths, includeCounts) => api.folderMetadata(paths, includeCounts),
       onAutoFitChange: (enabled, width) => {
         if (!enabled) {
           sidebarEl.style.width = `${manualSidebarWidth}px`;

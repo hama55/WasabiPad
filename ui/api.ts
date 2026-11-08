@@ -118,7 +118,7 @@ export const setArchivePassword = (relPath: string, password: string) =>
 export const listFolderEntries = (relDir: string) =>
   invoke<FolderEntry[]>(IPC_COMMANDS.listFolderEntries, { relDir });
 export type { TreeMetadata } from "./generated/TreeMetadata";
-export const folderMetadata = (paths: string[]) => invoke<TreeMetadata[]>(IPC_COMMANDS.folderMetadata, { paths });
+export const folderMetadata = (paths: string[], includeCounts: boolean) => invoke<TreeMetadata[]>(IPC_COMMANDS.folderMetadata, { paths, includeCounts });
 
 // searchId は打ち切った検索の取りこぼしを次の検索から締め出すための世代番号
 export const workspaceSearch = (pat: string, options: WorkspaceSearchOptions, searchId: number) =>

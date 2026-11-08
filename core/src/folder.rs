@@ -25,10 +25,13 @@ pub struct TreeMetadata {
     pub modified: Option<u64>,
     pub incomplete: bool,
     pub is_link: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub child_count: Option<u8>,
 }
 
-pub fn tree_metadata(path: &Path) -> TreeMetadata {
-    let mut result = TreeMetadata { size: 0, modified: None, incomplete: false, is_link: false };
+pub fn tree_metadata(path: &Path, include_counts: bool) -> TreeMetadata {
+    let mut result = TreeMetadata { size: 0, modified: None, incomplete: false, is_link: false, child_count: None };
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(_) => { result.incomplete = true; return result; }
@@ -46,6 +49,16 @@ pub fn tree_metadata(path: &Path) -> TreeMetadata {
     }
     if is_link { result.is_link = true; return result; }
     if metadata.is_file() { result.size = metadata.len(); }
+    if include_counts && metadata.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(path) {
+            let mut count = 0;
+            for entry in entries.take(100) {
+                if entry.is_err() { return result; }
+                count += 1;
+            }
+            result.child_count = Some(count);
+        }
+    }
     result
 }
 
@@ -125,6 +138,37 @@ mod tests {
     use super::{list_children, natural_name_cmp};
     use std::cmp::Ordering;
 
+    // Feature: フォルダ直下の件数表示
+    // Scenario: 直下だけを最大100件まで数える
+    // Given: 隠しファイルと子フォルダ、その孫を含むフォルダ
+    // When: フォルダ情報を取得する
+    // Then: 直下が0〜99件なら実数、100件以上なら100を返す
+    #[test]
+    fn folder_metadata_counts_direct_children_up_to_one_hundred() {
+        let root = std::env::temp_dir().join(format!("wasabipad_metadata_count_{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        assert_eq!(super::tree_metadata(&root, true).child_count, Some(0));
+        std::fs::create_dir(root.join("sub")).unwrap();
+        std::fs::write(root.join("sub/nested"), "nested").unwrap();
+        std::fs::write(root.join(".hidden"), "hidden").unwrap();
+        assert_eq!(super::tree_metadata(&root, true).child_count, Some(2));
+        assert_eq!(super::tree_metadata(&root, false).child_count, None);
+        for index in 2..9 { std::fs::write(root.join(format!("file{index}")), "").unwrap(); }
+        assert_eq!(super::tree_metadata(&root, true).child_count, Some(9));
+        std::fs::write(root.join("file9"), "").unwrap();
+        assert_eq!(super::tree_metadata(&root, true).child_count, Some(10));
+        std::fs::write(root.join("file10"), "").unwrap();
+        assert_eq!(super::tree_metadata(&root, true).child_count, Some(11));
+        for index in 11..99 { std::fs::write(root.join(format!("file{index}")), "").unwrap(); }
+        assert_eq!(super::tree_metadata(&root, true).child_count, Some(99));
+        std::fs::write(root.join("file99"), "").unwrap();
+        assert_eq!(super::tree_metadata(&root, true).child_count, Some(100));
+        std::fs::write(root.join("file100"), "").unwrap();
+        assert_eq!(super::tree_metadata(&root, true).child_count, Some(100));
+        assert_eq!(super::tree_metadata(&root.join("file9"), true).child_count, None);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     // Feature: フォルダの情報表示
     // Scenario: フォルダの配下を集計しない
     // Given: フォルダに 3 バイトのファイルと子フォルダ内に 5 バイトの隠しファイルがある
@@ -136,7 +180,7 @@ mod tests {
         std::fs::create_dir_all(root.join("sub")).unwrap();
         std::fs::write(root.join("a.txt"), "abc").unwrap();
         std::fs::write(root.join("sub/.hidden"), "12345").unwrap();
-        let metadata = super::tree_metadata(&root);
+        let metadata = super::tree_metadata(&root, false);
         assert_eq!(metadata.size, 0);
         assert!(metadata.modified.is_some());
         assert!(!metadata.incomplete);
@@ -150,7 +194,7 @@ mod tests {
     #[test]
     fn missing_metadata_is_incomplete() {
         let path = std::env::temp_dir().join(format!("wasabipad_missing_metadata_{}", std::process::id()));
-        assert!(super::tree_metadata(&path).incomplete);
+        assert!(super::tree_metadata(&path, false).incomplete);
     }
 
     // Scenario: 子ファイルの更新日時がフォルダ自身より新しい
@@ -165,7 +209,7 @@ mod tests {
         let time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(4_000_000_000);
         file.set_times(std::fs::FileTimes::new().set_modified(time)).unwrap();
         let own_time = std::fs::metadata(&root).unwrap().modified().unwrap().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
-        assert_eq!(super::tree_metadata(&root).modified, Some(own_time));
+        assert_eq!(super::tree_metadata(&root, false).modified, Some(own_time));
         std::fs::remove_dir_all(root).unwrap();
     }
 
