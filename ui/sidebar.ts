@@ -63,6 +63,17 @@ const DRAG_SCROLL_EDGE = 40;
 const DRAG_SCROLL_STEP = 12;
 const DRAG_SCROLL_INTERVAL = 16;
 
+function formatFileSize(bytes: number): string {
+  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit++;
+  }
+  return `${value.toLocaleString(undefined, { maximumFractionDigits: unit === 0 ? 0 : 1 })} ${units[unit]}`;
+}
+
 // 行頭の記号 [閉じているとき, 開いているとき]。種別を足したらここも足りなくなる
 // (Record なので、足し忘れは型が落とす)。
 const ROW_GLYPHS: Record<RowKind, [string, string]> = {
@@ -207,7 +218,7 @@ export class Sidebar {
     this.host.append(toolbar, this.panel.bar, this.tree, this.createActions);
     this.host.addEventListener("contextmenu", (e) => {
       if (e.target !== this.host && e.target !== this.tree
-        && !(e.target instanceof Element && e.target.closest(".fv-tree-bottom-padding"))) return;
+        && !(e.target instanceof Element && (e.target.closest(".fv-tree-bottom-padding") || e.target.matches(".fv-folder-rows")))) return;
       e.preventDefault();
       this.onContextMenu(e.clientX, e.clientY, null, []);
     });
@@ -1078,6 +1089,8 @@ export class Sidebar {
   // ---- フォルダ/アーカイブのツリー ----
   private folderTree(): DocumentFragment {
     const frag = document.createDocumentFragment();
+    const rows = document.createElement("div");
+    rows.className = "fv-folder-rows";
     for (const i of this.visible()) {
       const r = this.rows[i];
       const div = document.createElement("div");
@@ -1129,10 +1142,19 @@ export class Sidebar {
           const metadata = this.metadata.get(r.relPath);
           const details = document.createElement("span");
           details.className = "fv-metadata";
-          details.textContent = !metadata ? "集計中…" : metadata.incomplete ? "一部取得不可" : [
-            this.showModified && metadata.modified !== null ? new Date(metadata.modified).toLocaleString() : "",
-            this.showSize ? metadata.is_link ? "—" : `${metadata.size.toLocaleString()} B` : "",
-          ].filter(Boolean).join("  ");
+          const status = !metadata ? "集計中…" : metadata.incomplete ? "一部取得不可" : null;
+          if (this.showModified) {
+            const modified = document.createElement("span");
+            modified.className = "fv-modified";
+            modified.textContent = status ?? (metadata?.modified != null ? new Date(metadata.modified).toLocaleString() : "");
+            details.append(modified);
+          }
+          if (this.showSize) {
+            const size = document.createElement("span");
+            size.className = "fv-size";
+            size.textContent = status ?? (metadata?.is_link ? "—" : formatFileSize(metadata!.size));
+            details.append(size);
+          }
           div.appendChild(details);
         }
       }
@@ -1201,8 +1223,9 @@ export class Sidebar {
           );
         });
       }
-      frag.appendChild(div);
+      rows.appendChild(div);
     }
+    frag.appendChild(rows);
     const bottomPadding = document.createElement("div");
     bottomPadding.className = "fv-tree-bottom-padding";
     bottomPadding.setAttribute("aria-hidden", "true");

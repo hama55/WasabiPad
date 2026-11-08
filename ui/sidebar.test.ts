@@ -52,6 +52,62 @@ function mount({
 }
 
 describe("Feature: Sidebar", () => {
+  // Scenario: 日時とサイズを別々の列に表示する
+  // Given: 名前の長さが異なるファイルがある
+  // When: 両方の表示をオンにする
+  // Then: 各行に日時列とサイズ列がある
+  it("Scenario: 更新日時とサイズを別の列に表示する", async () => {
+    const onFolderMetadata = vi.fn(async () => [
+      { size: 1024, modified: 0, incomplete: false, is_link: false },
+      { size: 2048, modified: null, incomplete: false, is_link: false },
+    ]);
+    const { host, sidebar } = mount({ onFolderMetadata });
+    sidebar.setEntries([{ name: "a", is_dir: false, is_archive: false }, { name: "long-name", is_dir: false, is_archive: false }]);
+    const modified = host.querySelector<HTMLInputElement>('input[aria-label="更新日時"]')!;
+    const size = host.querySelector<HTMLInputElement>('input[aria-label="サイズ"]')!;
+    modified.click(); size.click();
+    await vi.waitFor(() => expect(host.querySelectorAll(".fv-modified")).toHaveLength(2));
+    expect([...host.querySelectorAll(".fv-size")].map(x => x.textContent)).toEqual(["1 KB", "2 KB"]);
+    expect(host.querySelectorAll(".fv-folder-rows > .fv-row")).toHaveLength(2);
+    modified.click(); size.click();
+  });
+  // Scenario: サイズに応じて単位を切り替える
+  // Given: 様々なサイズのファイルがある
+  // When: サイズ表示をオンにする
+  // Then: 1024倍ごとの単位と小数点以下最大1桁で表示する
+  it("Scenario: ファイルサイズを読みやすい単位で表示する", async () => {
+    const sizes = [0, 1023, 1024, 1536, 1310720, 2 * 1024 ** 3, 1024 ** 4, 1024 ** 5];
+    const onFolderMetadata = vi.fn(async () => sizes.map(size => ({ size, modified: 0, incomplete: false, is_link: false })));
+    const { host, sidebar } = mount({ onFolderMetadata });
+    sidebar.setEntries(sizes.map((_, i) => ({ name: `file${i}`, is_dir: false, is_archive: false })));
+    const checkbox = host.querySelector<HTMLInputElement>('input[aria-label="サイズ"]')!;
+    checkbox.click();
+    await vi.waitFor(() => expect([...host.querySelectorAll(".fv-metadata")].map(x => x.textContent))
+      .toEqual(["0 B", "1,023 B", "1 KB", "1.5 KB", "1.3 MB", "2 GB", "1 TB", "1 PB"]));
+    checkbox.click();
+  });
+  // Scenario: 集計中や取得できない項目を各列に表示する
+  // Given: 情報の取得中で、取得不能とリンクの項目がある
+  // When: 日時とサイズの表示をオンにして取得が完了する
+  // Then: 状態とリンクのサイズを各列に表示する
+  it("Scenario: 集計状態とリンクを各列に表示する", async () => {
+    let resolve!: (value: { size: number; modified: number | null; incomplete: boolean; is_link: boolean }[]) => void;
+    const onFolderMetadata = vi.fn(() => new Promise<{ size: number; modified: number | null; incomplete: boolean; is_link: boolean }[]>(r => { resolve = r; }));
+    const { host, sidebar } = mount({ onFolderMetadata });
+    sidebar.setEntries([{ name: "missing", is_dir: false, is_archive: false }, { name: "link", is_dir: false, is_archive: false }]);
+    const modified = host.querySelector<HTMLInputElement>('input[aria-label="更新日時"]')!;
+    const size = host.querySelector<HTMLInputElement>('input[aria-label="サイズ"]')!;
+    modified.click(); size.click();
+    expect(host.querySelector(".fv-modified")?.textContent).toBe("集計中…");
+    expect(host.querySelector(".fv-size")?.textContent).toBe("集計中…");
+    resolve([{ size: 0, modified: null, incomplete: true, is_link: false }, { size: 0, modified: 0, incomplete: false, is_link: true }]);
+    await vi.waitFor(() => expect([...host.querySelectorAll(".fv-size")].map(x => x.textContent)).toEqual(["一部取得不可", "—"]));
+    expect(host.querySelector(".fv-modified")?.textContent).toBe("一部取得不可");
+    modified.click();
+    expect(host.querySelector(".fv-modified")).toBeNull();
+    expect(host.querySelector(".fv-size")).not.toBeNull();
+    size.click();
+  });
   // Scenario: サイズを表示する
   // Given: 通常のファイルツリーが開いている
   // When: サイズをチェックする
