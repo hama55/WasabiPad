@@ -454,6 +454,8 @@ export class Sidebar {
     this.renamingRelPath = null;
     this.selectionRequest++;
     this.invalidateOpenRequests();
+    this.metadataGeneration++;
+    this.metadata.clear();
     this.managedDropUndo = false;
     this.rows = this.buildRows(names, 0, "", () => "archiveEntry");
     this.sel = null;
@@ -483,16 +485,22 @@ export class Sidebar {
     this.metadataRunning = this.metadataGeneration;
     this.metadataPending = false;
     const generation = this.metadataGeneration;
-    const paths = this.rows.filter((row) => row.kind === "dir" || row.kind === "file" || row.kind === "archive").map((row) => row.relPath);
+    const candidates = this.rows.filter(row => (row.kind === "dir" || row.kind === "file" || row.kind === "archive") && !this.metadata.has(row.relPath));
+    const files = candidates.filter(row => row.kind !== "dir").map(row => row.relPath);
+    const batches: string[][] = [];
+    for (let i = 0; i < files.length; i += 64) batches.push(files.slice(i, i + 64));
+    batches.push(...candidates.filter(row => row.kind === "dir").map(row => [row.relPath]));
     try {
-      const values = await this.onFolderMetadata(paths);
-      if (generation === this.metadataGeneration) {
-        paths.forEach((path, i) => { if (values[i]) this.metadata.set(path, values[i]); });
-        if (!this.renamingRelPath) this.render();
-      }
-    } catch {
-      if (generation === this.metadataGeneration) {
-        paths.forEach((path) => this.metadata.set(path, { size: 0, modified: null, incomplete: true, is_link: false }));
+      for (const paths of batches) {
+        if (generation !== this.metadataGeneration) break;
+        try {
+          const values = await this.onFolderMetadata(paths);
+          if (generation !== this.metadataGeneration) break;
+          paths.forEach((path, i) => { if (values[i]) this.metadata.set(path, values[i]); });
+        } catch {
+          if (generation !== this.metadataGeneration) break;
+          paths.forEach((path) => this.metadata.set(path, { size: 0, modified: null, incomplete: true, is_link: false }));
+        }
         if (!this.renamingRelPath) this.render();
       }
     } finally {
@@ -1124,6 +1132,21 @@ export class Sidebar {
             return;
           }
           event.stopPropagation();
+    const groups = new Map<string, { oldest: number; newest: number; maxSize: number }>();
+    for (const i of this.visible()) {
+      const row = this.rows[i];
+      const value = this.metadata.get(row.relPath);
+      if (!value || value.incomplete) continue;
+      const parent = row.relPath.replace(/[\\/][^\\/]*$/, "");
+      const key = parent === row.relPath ? "" : parent;
+      const group = groups.get(key) ?? { oldest: Infinity, newest: -Infinity, maxSize: 0 };
+      if (value.modified != null) {
+        group.oldest = Math.min(group.oldest, value.modified);
+        group.newest = Math.max(group.newest, value.modified);
+      }
+      if (!value.is_link) group.maxSize = Math.max(group.maxSize, value.size);
+      groups.set(key, group);
+    }
           if (event.key === "Enter") {
             event.preventDefault();
             this.finishRename(r.relPath, input.value, false);
@@ -1146,7 +1169,10 @@ export class Sidebar {
           if (this.showModified) {
             const modified = document.createElement("span");
             modified.className = "fv-modified";
-            modified.textContent = status ?? (metadata?.modified != null ? new Date(metadata.modified).toLocaleString() : "");
+            modified.textContent = status ?? (metadata?.modified != null ? new Date(metadata.modified).toLocaleString(undefined, { year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "");
+            if (!status && metadata?.modified != null && group) {
+              modified.style.setProperty("--bar-width", `${group.newest === group.oldest ? 100 : (group.newest - metadata.modified) / (group.newest - group.oldest) * 100}%`);
+            }
             details.append(modified);
           }
           if (this.showSize) {
@@ -1176,6 +1202,8 @@ export class Sidebar {
           if (isGitRow(r)) void this.requestSelection(r.relPath, false).catch((error) => this.reportTreeError(error));
         } else if (r.kind === "archive") {
           void this.expandArchiveRow(r).catch((error) => this.reportTreeError(error));
+          const parent = r.relPath.replace(/[\\/][^\\/]*$/, "");
+          const group = groups.get(parent === r.relPath ? "" : parent);
         } else if (r.kind === "archiveDir") {
           r.expanded = !r.expanded;
           this.render();
@@ -1186,6 +1214,9 @@ export class Sidebar {
       div.addEventListener("click", (e) => {
         if (this.suppressRowClick) return;
         this.focusTree();
+            if (!status && metadata && !metadata.is_link && group) {
+              size.style.setProperty("--bar-width", `${group.maxSize ? metadata.size / group.maxSize * 100 : 0}%`);
+            }
         if (e.ctrlKey || e.shiftKey) {
           this.selectWithModifier(r, e.shiftKey, e.ctrlKey);
           return;

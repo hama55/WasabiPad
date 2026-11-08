@@ -52,6 +52,79 @@ function mount({
 }
 
 describe("Feature: Sidebar", () => {
+  // Scenario: 展開したフォルダの子の情報を取得する
+  // Given: 集計済みの閉じたフォルダがある
+  // When: フォルダを展開する
+  // Then: 子ファイルのサイズを表示する
+  it("Scenario: 展開した子のサイズを表示する", async () => {
+    const onFolderMetadata = vi.fn(async (paths: string[]) => paths.map(() => ({ size: 42, modified: 0, incomplete: false, is_link: false })));
+    const { host, sidebar, ports } = mount({ onFolderMetadata });
+    ports.onExpandFolder.mockResolvedValue([{ name: "child", is_dir: false, is_archive: false }]);
+    sidebar.setEntries([{ name: "dir", is_dir: true, is_archive: false }]);
+    const checkbox = host.querySelector<HTMLInputElement>('input[aria-label="サイズ"]')!;
+    checkbox.click();
+    await vi.waitFor(() => expect(host.querySelector('[data-rel-path="dir"] .fv-size')?.textContent).toBe("42 B"));
+    host.querySelector<HTMLElement>('[data-rel-path="dir"]')!.click();
+    await vi.waitFor(() => expect(host.querySelector('[data-rel-path="dir/child"] .fv-size')?.textContent).toBe("42 B"));
+    checkbox.click();
+  });
+  // Scenario: 同値と取得不能の項目を表示する
+  // Given: 同じ日時でサイズが 0 の項目と取得不能な項目がある
+  // When: 日時とサイズを表示する
+  // Then: 日時は最長、サイズは 0%、取得不能の項目はバーなしにする
+  it("Scenario: 同値と取得不能のバーを表示する", async () => {
+    const values = [
+      { size: 0, modified: 0, incomplete: false, is_link: false },
+      { size: 0, modified: 0, incomplete: false, is_link: false },
+      { size: 100, modified: 100, incomplete: true, is_link: false },
+    ];
+    const { host, sidebar } = mount({ onFolderMetadata: vi.fn(async () => values) });
+    sidebar.setEntries(["a", "b", "c"].map(name => ({ name, is_dir: false, is_archive: false })));
+    const modified = host.querySelector<HTMLInputElement>('input[aria-label="更新日時"]')!;
+    const size = host.querySelector<HTMLInputElement>('input[aria-label="サイズ"]')!;
+    modified.click(); size.click();
+    await vi.waitFor(() => expect(host.querySelectorAll(".fv-size")[2]?.textContent).toBe("一部取得不可"));
+    expect([...host.querySelectorAll<HTMLElement>(".fv-modified")].map(x => x.style.getPropertyValue("--bar-width"))).toEqual(["100%", "100%", ""]);
+    expect([...host.querySelectorAll<HTMLElement>(".fv-size")].map(x => x.style.getPropertyValue("--bar-width"))).toEqual(["0%", "0%", ""]);
+    modified.click(); size.click();
+  });
+  // Scenario: フォルダの集計を待たずにファイルの情報を表示する
+  // Given: ファイルと集計に時間のかかるフォルダがある
+  // When: サイズ表示をオンにする
+  // Then: ファイルを先に表示し、フォルダは集計中とする
+  it("Scenario: ファイルを先に表示してフォルダを段階集計する", async () => {
+    const onFolderMetadata = vi.fn((paths: string[]) => paths.includes("dir")
+      ? new Promise<never>(() => {})
+      : Promise.resolve(paths.map(() => ({ size: 42, modified: 0, incomplete: false, is_link: false }))));
+    const { host, sidebar } = mount({ onFolderMetadata });
+    sidebar.setEntries([{ name: "dir", is_dir: true, is_archive: false }, { name: "file", is_dir: false, is_archive: false }]);
+    const checkbox = host.querySelector<HTMLInputElement>('input[aria-label="サイズ"]')!;
+    checkbox.click();
+    await vi.waitFor(() => expect(host.querySelector('[data-rel-path="file"] .fv-size')?.textContent).toBe("42 B"));
+    expect(host.querySelector('[data-rel-path="dir"] .fv-size')?.textContent).toBe("集計中…");
+    checkbox.click();
+  });
+  // Scenario: 兄弟項目の更新日時とサイズを比較する
+  // Given: 大きさと更新日時の異なる3ファイルがある
+  // When: 両列を表示する
+  // Then: 古い日時と大きいサイズほど背景バーが長く、秒を表示しない
+  it("Scenario: 兄弟項目を背景バーで比較する", async () => {
+    const values = [
+      { size: 1, modified: 0, incomplete: false, is_link: false },
+      { size: 10, modified: 60000, incomplete: false, is_link: false },
+      { size: 100, modified: 120000, incomplete: false, is_link: false },
+    ];
+    const { host, sidebar } = mount({ onFolderMetadata: vi.fn(async () => values) });
+    sidebar.setEntries(["a", "b", "c"].map(name => ({ name, is_dir: false, is_archive: false })));
+    const modified = host.querySelector<HTMLInputElement>('input[aria-label="更新日時"]')!;
+    const size = host.querySelector<HTMLInputElement>('input[aria-label="サイズ"]')!;
+    modified.click(); size.click();
+    await vi.waitFor(() => expect(host.querySelectorAll(".fv-size")[2]?.textContent).toBe("100 B"));
+    expect([...host.querySelectorAll<HTMLElement>(".fv-size")].map(x => x.style.getPropertyValue("--bar-width"))).toEqual(["1%", "10%", "100%"]);
+    expect([...host.querySelectorAll<HTMLElement>(".fv-modified")].map(x => x.style.getPropertyValue("--bar-width"))).toEqual(["100%", "50%", "0%"]);
+    expect(host.querySelector(".fv-modified")?.textContent).toBe(new Date(0).toLocaleString(undefined, { year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }));
+    modified.click(); size.click();
+  });
   // Scenario: 日時とサイズを別々の列に表示する
   // Given: 名前の長さが異なるファイルがある
   // When: 両方の表示をオンにする
