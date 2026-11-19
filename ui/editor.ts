@@ -615,6 +615,28 @@ export class VirtualEditor {
     return true;
   }
 
+  async editCsvCell(row: string, line: number, startOffset: number, endOffset: number, text: string, isCurrent: () => boolean) {
+    const generation = this.documentGeneration;
+    const revision = this.contentRevision;
+    const current = () => generation === this.documentGeneration && revision === this.contentRevision
+      && !this.readOnly && !this.busy && isCurrent();
+    if (!current()) return false;
+    const position = (offset: number) => {
+      const prefix = row.slice(0, offset).replace(/\r\n|\r/g, "\n");
+      const relative = sourcePositionAtOffset(prefix, prefix.length)!;
+      return this.liveViewers.positionInDocument({ line: line + relative.line, col: relative.col });
+    };
+    const start = position(startOffset);
+    const end = position(endOffset);
+    const expected = row.replace(/\r\n|\r/g, "\n");
+    if (await this.lineCache.textInRange(position(0), position(row.length)) !== expected || !current()) return false;
+    const result = await this.doc.edit(start, end, this.sel.caret, text, false);
+    if (generation !== this.documentGeneration) return false;
+    this.applyResult(result, start.line, [{ start, end, text }]);
+    await this.renderAfterEdit();
+    return true;
+  }
+
   setWrap(on: boolean) {
     if (this.wrap === on) return;
     const topLine = this.wrap || this.metrics.scaleMode ? this.topLineF : this.pxToLine(this.scroll.scrollTop);

@@ -464,6 +464,16 @@ const inlinePreviewPorts = {
     { sqliteMismatch: "keep", keepPreviewRange: true, errorTitle: "ビューを切り替えられませんでした" },
   ),
   onDelimiterChange: (delimiter) => inlinePreview.setDelimiter(delimiter),
+  canEditCsv: () => !doc.current.readOnly && previewDocument?.format === "csv"
+    && isCurrentPreviewDocument(previewDocument, tabs?.state.activeId ?? null, documentPathOf(doc.current)),
+  onCsvEdit: async (row, line, start, end, text) => {
+    const target = previewDocument;
+    if (!await editor.editCsvCell(row, line, start, end, text, () => target === previewDocument
+      && isCurrentPreviewDocument(target, tabs?.state.activeId ?? null, documentPathOf(doc.current)))) {
+      throw new Error("元の文書が変更されました。セルを選び直してください。");
+    }
+  },
+  onCsvSave: () => runBackground("保存できませんでした", () => saveCurrentDocument()),
   onFontFamilyChange: (family) => editor.setFont(family, getSetting("fontSize"), "family"),
   onSelectionChange: (selection) =>
     runBackground("エディタの位置を同期できませんでした", () => editor.goToPreview(selection)),
@@ -821,6 +831,7 @@ function openPreviewFormat(
         ? { kind: "external", busy: false, message: displayedExternalPreviewSource }
         : null);
       editingStatusbar.setPreviewFormat(resolvedFormat);
+      inlinePreview.syncCsvEditState();
       if (fragment !== null && resolvedFormat === "markdown") inlinePreview.setMarkdownFragment(fragment);
     } catch (error) {
       if (requestId && externalPreviewRequestId === requestId) cancelPendingExternalPreviewRequest();
@@ -975,7 +986,7 @@ const editingStatusbarPorts = {
   onFontSize: (size) => editor.setFont(getSetting("fontFamily"), size, "size"),
   onPreviewFontFamily: (family) => previewEditorFont(family, getSetting("fontSize"), "family"),
   onPreviewFontSize: (size) => previewEditorFont(getSetting("fontFamily"), size, "size"),
-  onPreviewDelimiter: (delimiter) => inlinePreview.setDelimiter(delimiter),
+  onPreviewDelimiter: () => inlinePreview.openDelimiter(),
   onWrap: (on) => editor.setWrap(on),
   onIndent: (size) => {
     setSetting("indentSize", size);
@@ -1156,6 +1167,7 @@ const editorPorts = {
       && ownerTabId === (tabs?.state.activeId ?? null) && path === documentPathOf(doc.current)) {
       previewDocument = { ownerTabId, path, format };
     }
+    inlinePreview.syncCsvEditState();
     return label;
   },
   updateViewer: (label, text, selection) => inlinePreview.update(label, text, selection),
@@ -1333,8 +1345,8 @@ const workspaceHost = new WorkspaceHost(
   {
     addressbar: {
       onOpen: (path, newTab) => runBackground("開けませんでした", () => openPathInTabs(tabs, path, newTab)),
-      onSave: () => runBackground("保存できませんでした", () => doc.save()),
-      onSaveAs: () => runBackground("名前を付けて保存できませんでした", () => doc.saveAs()),
+      onSave: () => runBackground("保存できませんでした", () => saveCurrentDocument()),
+      onSaveAs: () => runBackground("名前を付けて保存できませんでした", () => saveCurrentDocument(true)),
       onNew: () => runBackground("新規ウィンドウを開けませんでした", launchNewWindow),
       onFind: () => editor.openSearch(),
       onPick: () => runBackground("ファイルを開けませんでした", () => pickAndOpen(false)),
@@ -1618,12 +1630,20 @@ async function pickAndOpen(directory: boolean) {
   }
 }
 
+async function saveCurrentDocument(saveAs = false) {
+  const session = doc.current;
+  const owner = tabs.state.activeId;
+  try { await inlinePreview.waitForCsvEdit(); } catch { return false; }
+  if (session !== doc.current || owner !== tabs.state.activeId) return false;
+  return saveAs ? doc.saveAs() : doc.save();
+}
+
 const commands = createCommandRegistry({
   newFile: () => tabs.newBlank(),
   openFile: () => { void pickAndOpen(false); },
   openFolder: () => { void pickAndOpen(true); },
-  save: () => doc.save(),
-  saveAs: () => doc.saveAs(),
+  save: () => saveCurrentDocument(),
+  saveAs: () => saveCurrentDocument(true),
   refresh: () => externalWatch.refresh(),
   quit: () => win.close(),
   find: () => editor.openSearch(),

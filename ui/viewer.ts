@@ -29,6 +29,10 @@ import { getSetting, initSettings, isValidMarkdownLineHeight, setSetting } from 
 import { clampFontSize, promptFontFamily, promptFontSize as promptFontSizeDialog } from "./font-controls";
 import {
   csvColumnAt,
+  csvCellBoundsForColumn,
+  CSV_LINE_NUMBER_WIDTH,
+  encodeCsvCell,
+  fitCsvColumnWidths,
   csvSourceOffsetAtPosition,
   csvSourcePositionAtOffset,
 } from "./csv-viewer";
@@ -121,6 +125,16 @@ await initSettings((error) => showError("設定を読み込めませんでした
 const isInlineViewer = new URLSearchParams(window.location.search).get("inline") === "1";
 const win = isInlineViewer ? null : getCurrentWindow();
 const content = document.getElementById("viewer-content")!;
+const csvCellEditor = document.createElement("textarea");
+csvCellEditor.id = "viewer-csv-cell-editor";
+csvCellEditor.rows = 1;
+csvCellEditor.wrap = "off";
+csvCellEditor.hidden = true;
+csvCellEditor.disabled = true;
+csvCellEditor.readOnly = true;
+csvCellEditor.setAttribute("aria-label", "セル編集欄");
+csvCellEditor.placeholder = "セルを選択";
+content.before(csvCellEditor);
 const viewerMain = content.parentElement as HTMLElement;
 const title = document.getElementById("viewer-title-text")!;
 const formatButtons = document.getElementById("viewer-format")!;
@@ -202,6 +216,19 @@ let previewVisible = true;
 const archiveAssetTracker = new ViewerAssetTracker(revokeImageUrl);
 const archiveAssetSession = createArchiveAssetSession();
 let csvColumnWidths: number[] = [];
+let editableCsv = false;
+let csvEditToken: number | undefined;
+let selectedCsvCell: HTMLTableCellElement | null = null;
+
+function selectCsvCell(cell: HTMLTableCellElement | null) {
+  selectedCsvCell?.classList.remove("viewer-csv-cell-active");
+  selectedCsvCell = cell;
+  cell?.classList.add("viewer-csv-cell-active");
+  const value = (cell?.textContent ?? "").replace(/\r\n|\r/g, "\n");
+  if (csvCellEditor.defaultValue !== value || !cell) csvCellEditor.value = value;
+  csvCellEditor.defaultValue = value;
+  csvCellEditor.disabled = !cell;
+}
 let fontFamily = getSetting("fontFamily");
 let fontSize = getSetting("previewFontSize");
 let markdownSoftBreaks = getSetting("markdownSoftBreaks");
@@ -280,6 +307,8 @@ function publishViewerRenderState(state: ViewerRenderState, nextImageZoom: numbe
   syncViewerFormatButtons(formatButtons, state.format, classificationSource, state.archivePath !== null || state.archiveEntry !== null);
   syncHtmlModeButton();
   syncViewerActionButtons(actionButtons, state.format);
+  csvCellEditor.hidden = state.format !== "csv" || !!state.externalOutputPath;
+  if (csvCellEditor.hidden) selectCsvCell(null);
   const formatSpec = viewerFormatSpec(state.format);
   title.textContent = formatSpec.title;
   document.title = title.textContent;
@@ -389,10 +418,11 @@ function startCsvColumnResize(
     startX,
     update: (width) => {
       table.style.tableLayout = "fixed";
-      table.style.width = "max-content";
       if (!columns[columnIndex]) return;
       columns[columnIndex].style.width = width + "px";
       csvColumnWidths[columnIndex] = width;
+      table.style.minWidth = "0";
+      table.style.width = CSV_LINE_NUMBER_WIDTH + csvColumnWidths.slice(0, columns.length).reduce((sum, value) => sum + value, 0) + "px";
     },
     setResizing: (active) => {
       document.body.classList.toggle("viewer-resizing", active);
@@ -592,7 +622,32 @@ const delimiterActionButton = createViewerDelimiterMenuItem(() => {
 const chartActionButton = createViewerChartMenuItem(() => {
   runViewerOperation("グラフ設定を開けませんでした", () => chartController.openDialog());
 });
-actionButtons.replaceChildren(delimiterActionButton, chartActionButton);
+const autoWidthButton = document.createElement("button");
+autoWidthButton.type = "button";
+autoWidthButton.dataset.viewerAction = "auto-width";
+autoWidthButton.textContent = "幅を自動調整";
+autoWidthButton.addEventListener("click", () => {
+  runViewerOperation("CSV列幅を調整できませんでした", () => {
+    const table = content.querySelector<HTMLTableElement>(".viewer-grid");
+    const cells = table?.rows[0]?.cells;
+    const canvas = document.createElement("canvas").getContext("2d");
+    if (!table || !cells || !canvas) return;
+    const style = getComputedStyle(table);
+    canvas.font = style.fontSize + " " + style.fontFamily;
+    const natural = Array<number>(table.querySelectorAll("col").length - 1).fill(32);
+    for (const row of currentRows.slice(0, MAX_TABLE_ROWS)) {
+      row.slice(0, natural.length).forEach((value, index) => {
+        if (natural[index] >= 520) return;
+        for (const line of value.split(/\r\n|\r|\n/)) {
+          natural[index] = Math.min(520, Math.max(natural[index], Math.ceil(canvas.measureText(line).width) + 20));
+        }
+      });
+    }
+    csvColumnWidths = fitCsvColumnWidths(natural, content.clientWidth);
+    return renderCurrentViewer();
+  });
+});
+actionButtons.replaceChildren(delimiterActionButton, autoWidthButton, chartActionButton);
 
 function bindViewerControls() {
   document.addEventListener("keydown", (event) => {
@@ -635,6 +690,44 @@ function bindViewerControls() {
   content.addEventListener("mouseup", notifySelection, { signal: viewerDomListeners.signal });
   content.addEventListener("keyup", notifySelection, { signal: viewerDomListeners.signal });
   content.addEventListener("click", notifyMarkdownLink, { signal: viewerDomListeners.signal });
+  content.addEventListener("click", (event) => {
+    if (currentFormat !== "csv" || !(event.target instanceof Element)
+      || event.target.closest(".viewer-column-resizer")) return;
+    selectCsvCell(event.target.closest<HTMLTableCellElement>(".viewer-grid [data-source-column]"));
+    if (selectedCsvCell) csvCellEditor.value = csvCellEditor.defaultValue;
+  }, { signal: viewerDomListeners.signal });
+  csvCellEditor.addEventListener("keydown", (event) => {
+    if (event.isComposing) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      csvCellEditor.value = csvCellEditor.defaultValue;
+      csvCellEditor.setCustomValidity("");
+      return;
+    }
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s" && editableCsv) {
+      event.preventDefault();
+      postToParent({ type: INLINE_PREVIEW_MESSAGES.CSV_SAVE_MESSAGE, token: csvEditToken });
+      return;
+    }
+    if (event.key !== "Enter" || event.shiftKey) return;
+    event.preventDefault();
+    const cell = selectedCsvCell;
+    const row = cell?.parentElement;
+    const raw = row?.dataset.sourceCsv;
+    if (!editableCsv || !cell || raw === undefined || csvCellEditor.value === csvCellEditor.defaultValue) return;
+    if (!delimiter && csvCellEditor.value.includes("\n")) {
+      csvCellEditor.setCustomValidity("区切り文字を指定していない場合、セルに改行を入力できません");
+      csvCellEditor.reportValidity();
+      return;
+    }
+    const { start, end } = csvCellBoundsForColumn(raw, Number(cell.dataset.sourceColumn), delimiter);
+    postToParent({
+      type: INLINE_PREVIEW_MESSAGES.CSV_EDIT_MESSAGE,
+      token: csvEditToken, row: raw, line: Number(row?.dataset.sourceLine), start, end,
+      text: encodeCsvCell(csvCellEditor.value, delimiter, raw.slice(start, end)),
+    });
+  }, { signal: viewerDomListeners.signal });
+  csvCellEditor.addEventListener("input", () => csvCellEditor.setCustomValidity(""), { signal: viewerDomListeners.signal });
 }
 
 function renderTable(text: string, state: ViewerRenderState = currentViewerRenderState()): boolean {
@@ -657,7 +750,11 @@ function renderTable(text: string, state: ViewerRenderState = currentViewerRende
     });
     currentRows = rendered.values;
     chartController.setRows(currentRows);
+    const line = sameSource ? selectedCsvCell?.parentElement?.dataset.sourceLine : undefined;
+    const column = selectedCsvCell?.dataset.sourceColumn;
     content.replaceChildren(rendered.table);
+    const selectedRow = line === undefined ? undefined : rendered.rows.find((row) => row.dataset.sourceLine === line);
+    selectCsvCell(selectedRow?.cells[Number(column) + 1] ?? null);
     previousDisposeImagePan?.();
     disposeImagePan = null;
     revokeArchiveAssetUrls();
@@ -1384,6 +1481,9 @@ function openDelimiterDialog() {
 }
 
 function applyDelimiter(value: string) {
+  if (value === delimiter) return;
+  selectCsvCell(null);
+  csvColumnWidths = [];
   delimiter = value;
   if (isInlineViewer) {
     postToParent({
@@ -1526,6 +1626,7 @@ async function start() {
         }
         if (event.data?.type === INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE) {
           if (!isViewerPayload(event.data.payload)) return;
+          csvEditToken = typeof event.data.csv_edit_token === "number" ? event.data.csv_edit_token : undefined;
           const renderId = event.data.render_id;
           if (typeof renderId === "string") {
             runViewerOperation("ビューを更新できませんでした", async () => {
@@ -1566,6 +1667,11 @@ async function start() {
           disposeImagePan = null;
           chartController.clear();
           currentRows = [];
+          selectCsvCell(null);
+          csvCellEditor.hidden = true;
+          csvCellEditor.readOnly = true;
+          csvEditToken = undefined;
+          editableCsv = false;
           content.replaceChildren();
           previewRefreshButton.hidden = true;
           summary.classList.remove("warning");
@@ -1616,10 +1722,21 @@ async function start() {
           return;
         }
         if (event.data?.type === INLINE_PREVIEW_MESSAGES.DELIMITER_MESSAGE) {
-          if (typeof event.data.delimiter !== "string") return;
+          if (typeof event.data.delimiter !== "string" || delimiter === event.data.delimiter) return;
+          selectCsvCell(null);
+          csvColumnWidths = [];
           delimiter = event.data.delimiter;
-          if (!delimiter || !viewerFormatSpec(currentFormat).supportsDelimiter) return;
+          if (!viewerFormatSpec(currentFormat).supportsDelimiter) return;
           runViewerOperation("ビューを再描画できませんでした", renderCurrentViewer);
+          return;
+        }
+        if (event.data?.type === INLINE_PREVIEW_MESSAGES.OPEN_DELIMITER_MESSAGE) {
+          if (currentFormat === "csv") openDelimiterDialog();
+          return;
+        }
+        if (event.data?.type === INLINE_PREVIEW_MESSAGES.CSV_EDIT_STATE_MESSAGE) {
+          editableCsv = event.data.editable === true;
+          csvCellEditor.readOnly = !editableCsv;
           return;
         }
         if (event.data?.type === INLINE_PREVIEW_MESSAGES.FONT_MESSAGE) {

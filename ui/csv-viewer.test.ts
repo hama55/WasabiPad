@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { encodeCsvDelimiters } from "./viewer-delimiter";
 import {
   csvCellBounds,
   csvCellBoundsForColumns,
@@ -95,4 +96,13 @@ describe("Feature: CSV viewer helpers", () => {
   it("Scenario: 行番号列の幅をCSVとTSVで共通化する", () => {
     expect(CSV_LINE_NUMBER_WIDTH).toBe(64);
   });
+});
+it("Scenario: 複数の区切り文字と全解除で列を切り替える", () => {
+  // Given: カンマとタブが混在したCSV
+  const source = '東京,\t"新,宿"';
+  // When: 両方を指定する
+  const selected = encodeCsvDelimiters([",", "\\t"]);
+  // Then: 空欄と引用符内のカンマを保持し、全解除では1列になる
+  expect(parseCsvSource(source, selected).rows[0].values).toEqual(["東京", "", "新,宿"]);
+  expect(parseCsvSource(source, "").rows[0].values).toEqual([source]);
 });

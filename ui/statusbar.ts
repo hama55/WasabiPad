@@ -31,7 +31,7 @@ export interface StatusBarPorts {
   onPreviewFontSize?: (size: number) => void | Promise<void>;
   onWrap: (on: boolean) => void;
   onIndent: (size: number) => void;
-  onPreviewDelimiter?: (delimiter: string) => void;
+  onPreviewDelimiter?: () => void;
   // 再読込を受け入れたら true。false なら選択を元へ戻す (成否の判断は呼び出し側に残す)
   onReadEncoding: (encoding: ReadEncoding) => Promise<boolean>;
   onError?: (title: string, error: unknown) => void | Promise<void>;
@@ -92,11 +92,8 @@ export class EditingStatusBar {
     this.sourceEncodingSelect.replaceChildren(
       ...READ_ENCODINGS.map((encoding) => option(encoding, ENCODING_LABELS[encoding])),
     );
-    this.previewDelimiterInput.addEventListener("input", () => {
-      this.run("CSV区切り文字を変更できませんでした", () => {
-        if (!this.previewDelimiterInput.value) return;
-        return this.ports.onPreviewDelimiter?.(this.previewDelimiterInput.value);
-      });
+    this.previewDelimiter.addEventListener("click", () => {
+      this.run("CSV区切り文字を変更できませんでした", () => this.ports.onPreviewDelimiter?.());
     });
     // input は候補移動中のエディタだけのプレビュー。設定保存を行う既存ポートは change だけで呼ぶ。
     this.fontFamilySelect.addEventListener("input", () => this.previewFontFamily(this.fontFamilySelect.value));
@@ -181,10 +178,6 @@ export class EditingStatusBar {
 
   private get previewDelimiter() {
     return this.pick<HTMLElement>("st-delimiter");
-  }
-
-  private get previewDelimiterInput() {
-    return this.pick<HTMLInputElement>("st-delimiter-input");
   }
 
   // 選択肢に無いインデント幅は既定の8へ丸め、丸めた結果を返す

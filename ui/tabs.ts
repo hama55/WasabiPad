@@ -34,7 +34,7 @@ export interface TabDocumentPort {
   selectEntry: (relPath: string, openAs?: OpenAs, signal?: AbortSignal) => Promise<boolean>;
   openTabPath?: (path: string, openAs: OpenAs | undefined, signal: AbortSignal) => Promise<boolean>;
   selectTabEntry?: (relPath: string, openAs: OpenAs | undefined, signal: AbortSignal) => Promise<boolean>;
-  showMissingDocument?: () => void;
+  showMissingDocument?: (path: string) => void;
   newFile: (confirm?: boolean, draftDirectory?: string | null, draftSavePath?: string | null) => Promise<void>;
   goTo: (position: Pos) => void;
   captureViewState: () => EditorViewState;
@@ -225,7 +225,7 @@ export class TabManager {
     if (!tab) return;
     this.missingTabId = tab.id;
     this.missingSession = this.doc.current;
-    this.doc.showMissingDocument?.();
+    this.doc.showMissingDocument?.(path);
     this.ports.onMissingDocument?.(path);
   }
 

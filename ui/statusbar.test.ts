@@ -11,7 +11,7 @@ function mount(overrides: Partial<StatusBarPorts> = {}) {
     <div id="editing-statusbar">
       <span id="st-mode"></span>
       <span id="st-binary" hidden></span>
-      <label id="st-delimiter" hidden>区切り <input id="st-delimiter-input" value="," /></label>
+      <button id="st-delimiter" hidden>区切り文字</button>
       <button id="st-pos"></button><button id="st-lines"></button>
       <select id="st-font"></select><select id="st-font-size"></select>
       <select id="st-indent"></select><button id="st-wrap"></button>
@@ -299,14 +299,12 @@ describe("Feature: statusbar preview controls", () => {
   // Then: CSV時だけ入力欄を表示し、入力値をプレビュー更新ポートへ渡す
   it("Scenario: shows and forwards the CSV delimiter only for CSV preview", () => {
     const { host, ports, statusbar } = mount();
-    const delimiter = host.querySelector<HTMLElement>("#st-delimiter")!;
-    const input = host.querySelector<HTMLInputElement>("#st-delimiter-input")!;
+    const delimiter = host.querySelector<HTMLButtonElement>("#st-delimiter")!;
 
     statusbar.setPreviewFormat("csv");
     expect(delimiter.hidden).toBe(false);
-    input.value = "\\t";
-    input.dispatchEvent(new Event("input"));
-    expect(ports.onPreviewDelimiter).toHaveBeenCalledWith("\\t");
+    delimiter.click();
+    expect(ports.onPreviewDelimiter).toHaveBeenCalledOnce();
 
     statusbar.setPreviewFormat("markdown");
     expect(delimiter.hidden).toBe(true);
@@ -318,10 +316,7 @@ describe("Feature: statusbar preview controls", () => {
   it("Scenario: reports delimiter update failures through the error boundary", async () => {
     const { host, ports } = mount();
     ports.onPreviewDelimiter = vi.fn(async () => { throw new Error("preview failed"); });
-    const input = host.querySelector<HTMLInputElement>("#st-delimiter-input")!;
-
-    input.value = ";";
-    input.dispatchEvent(new Event("input"));
+    host.querySelector<HTMLButtonElement>("#st-delimiter")!.click();
 
     await vi.waitFor(() => expect(ports.onError).toHaveBeenCalledWith(
       "CSV区切り文字を変更できませんでした",

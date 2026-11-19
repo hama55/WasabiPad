@@ -46,6 +46,9 @@ export interface InlinePreviewPorts {
   onFormatChange?: (format: ViewerFormat) => void;
   onHtmlModeChange?: (dynamic: boolean) => void;
   onDelimiterChange?: (delimiter: string) => void;
+  canEditCsv?: () => boolean;
+  onCsvEdit?: (row: string, line: number, start: number, end: number, text: string) => Promise<void>;
+  onCsvSave?: () => void | Promise<void>;
   onFontFamilyChange?: (family: string) => void;
   onFullscreenChange?: () => void | Promise<void>;
   onClose?: (returnFocus: boolean) => void | Promise<void>;
@@ -84,6 +87,10 @@ export class InlinePreview {
   private externalOutputPath: string | null = null;
   private outputFolderAvailable = false;
   private delimiter = DEFAULT_CSV_DELIMITER;
+  private pendingCsvEdit: Promise<void> | null = null;
+  private editedCsvPayload: ViewerPayload | null = null;
+  private csvEditToken = 0;
+  private csvTokenPayload: ViewerPayload | null = null;
   private fontFamily: string | null = null;
   private fontSize: number | null = null;
   private markdownSoftBreaks = true;
@@ -198,8 +205,36 @@ export class InlinePreview {
         return;
       }
       if (event.data?.type === INLINE_PREVIEW_MESSAGES.DELIMITER_CHANGE_MESSAGE) {
-        if (typeof event.data.delimiter === "string" && event.data.delimiter) {
+        if (typeof event.data.delimiter === "string") {
           this.notifyPort(() => this.ports.onDelimiterChange?.(event.data.delimiter));
+        }
+        return;
+      }
+      if (event.data?.type === INLINE_PREVIEW_MESSAGES.CSV_EDIT_MESSAGE) {
+        const { token, row, line, start, end, text } = event.data;
+        const payload = this.payload;
+        if (!this.clearing && !this.pendingCsvEdit && payload?.format === "csv" && !payload.external_output_path
+          && payload === this.csvTokenPayload && token === this.csvEditToken
+          && this.editedCsvPayload !== payload && this.ports.onCsvEdit
+          && this.ports.canEditCsv?.()
+          && typeof row === "string" && typeof text === "string"
+          && [line, start, end].every((value) => Number.isSafeInteger(value) && value >= 0)
+          && start <= end && end <= row.length) {
+          const edit = this.ports.onCsvEdit(row, line, start, end, text).then(() => {
+            this.editedCsvPayload = payload;
+          }).finally(() => {
+            this.pendingCsvEdit = null;
+          });
+          this.pendingCsvEdit = edit;
+          this.notifyPort(() => edit);
+        }
+        return;
+      }
+      if (event.data?.type === INLINE_PREVIEW_MESSAGES.CSV_SAVE_MESSAGE) {
+        if (!this.clearing && this.payload?.format === "csv" && this.payload === this.csvTokenPayload
+          && event.data.token === this.csvEditToken
+          && !this.payload.external_output_path && this.ports.canEditCsv?.()) {
+          this.notifyPort(() => this.ports.onCsvSave?.());
         }
         return;
       }
@@ -325,6 +360,24 @@ export class InlinePreview {
   setDelimiter(delimiter: string) {
     this.delimiter = delimiter;
     this.send();
+  }
+
+  openDelimiter() {
+    if (this.ready) this.frame.contentWindow?.postMessage(
+      { type: INLINE_PREVIEW_MESSAGES.OPEN_DELIMITER_MESSAGE }, window.location.origin,
+    );
+  }
+
+  waitForCsvEdit() {
+    return this.pendingCsvEdit;
+  }
+
+  syncCsvEditState() {
+    if (!this.ready || this.payload?.format !== "csv") return;
+    this.frame.contentWindow?.postMessage({
+      type: INLINE_PREVIEW_MESSAGES.CSV_EDIT_STATE_MESSAGE,
+      editable: !this.payload.external_output_path && this.ports.canEditCsv?.() === true,
+    }, window.location.origin);
   }
 
   setFontFamily(family: string) {
@@ -551,12 +604,19 @@ export class InlinePreview {
       type: DELIMITER_MESSAGE,
       delimiter: this.delimiter,
     }, window.location.origin);
+    const editablePayload = payload === this.payload && payload.format === "csv" && !payload.external_output_path;
+    if (editablePayload && this.csvTokenPayload !== payload) {
+      this.csvTokenPayload = payload;
+      this.csvEditToken++;
+    }
     this.frame.contentWindow?.postMessage({
       type: PAYLOAD_MESSAGE,
       payload,
+      ...(editablePayload ? { csv_edit_token: this.csvEditToken } : {}),
       ...(this.dynamicHtml && payload.format === "html" && !payload.external_output_path ? { dynamic_html: true } : {}),
       ...(renderId ? { render_id: renderId } : {}),
     }, window.location.origin);
+    if (payload === this.payload) this.syncCsvEditState();
     if (this.pendingMarkdownFragment !== null) {
       this.frame.contentWindow?.postMessage({
         type: MARKDOWN_FRAGMENT_MESSAGE,

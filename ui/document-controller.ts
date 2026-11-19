@@ -387,8 +387,9 @@ export class DocumentController {
     this.updateTitle(!documentChangeNotified);
   }
 
-  showMissingDocument() {
+  showMissingDocument(path: string) {
     this.session.readOnly = true;
+    this.view.addressbar.render(path, null);
     this.view.editor.open(1, true);
   }
 

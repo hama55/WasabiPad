@@ -134,7 +134,8 @@ function createCsvColumnGroup(
   table.appendChild(group);
   if (columns.length && columnWidths.length >= columns.length) {
     table.style.tableLayout = "fixed";
-    table.style.width = "max-content";
+    table.style.width = CSV_LINE_NUMBER_WIDTH + columnWidths.slice(0, columns.length).reduce((sum, width) => sum + width, 0) + "px";
+    table.style.minWidth = "0";
   }
   return columns;
 }

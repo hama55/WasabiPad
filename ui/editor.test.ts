@@ -389,6 +389,19 @@ describe("Feature: VirtualEditor", () => {
     expect(doc.text()).toBe("before wasabi after");
   });
 
+  it("Scenario: プレビューから空欄と改行を含むセルを編集できる", async () => {
+    // Given: 絵文字、空欄、複数行セルを含む文書
+    const raw = '😀,,"before\nlast"';
+    const { editor, doc } = mount(raw);
+    editor.open(2, false);
+    await settle();
+    // When: 複数行セルを置き換え、空欄に入力する
+    await expect(editor.editCsvCell(raw, 0, 4, raw.length, '"after"', () => true)).resolves.toBe(true);
+    await expect(editor.editCsvCell('😀,,"after"', 0, 3, 3, "added", () => true)).resolves.toBe(true);
+    // Then: 隣のセルや列を保持する
+    expect(doc.text()).toBe('😀,added,"after"');
+  });
+
   // Given: 文書をエディタで表示している
   // When: エディタ上で Ctrl+ホイールを操作する
   // Then: フォントサイズ変更として通知し、フォントファミリー変更とは通知しない

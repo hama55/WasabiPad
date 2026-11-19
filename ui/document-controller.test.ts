@@ -89,6 +89,16 @@ function fakeView() {
   return { view, controller: new DocumentController(view, services()) };
 }
 
+it("Scenario: 参照切れの元のパスをアドレスバーに表示する", () => {
+  // Given: 参照切れの文書を表示する
+  const { view, controller } = fakeView();
+  // When: 元のパスを渡す
+  const path = "C:\\work\\missing.csv";
+  controller.showMissingDocument(path);
+  // Then: アドレスバーに元のパスが出る
+  expect(view.addressbar.render).toHaveBeenCalledWith(path, null);
+});
+
 describe("Feature: DocumentController", () => {
   // Feature: デフォルト保存先の失効
   // Scenario: 保存先が使えなくても本文と仮名を保持して保存先を選び直せる

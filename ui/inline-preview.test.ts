@@ -38,6 +38,45 @@ function mount(
 }
 
 describe("Feature: inline preview", () => {
+  it("Scenario: セル編集の連打を抑え、保存は確定を待つ", async () => {
+    // Given: 編集できるCSVプレビュー
+    const host = document.createElement("div");
+    const frame = host.appendChild(document.createElement("iframe"));
+    document.body.append(host);
+    let finishEdit!: () => void;
+    const commit = new Promise<void>((resolve) => { finishEdit = resolve; });
+    const onCsvEdit = vi.fn(() => commit);
+    const saved = vi.fn();
+    const preview = new InlinePreview(host, {
+      onAvailabilityChange: vi.fn(),
+      canEditCsv: () => true,
+      onCsvEdit,
+      onCsvSave: async () => {
+        await preview.waitForCsvEdit();
+        saved();
+      },
+    });
+    const post = vi.spyOn(frame.contentWindow!, "postMessage");
+    const send = (data: Record<string, unknown>) => window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow, origin: window.location.origin, data,
+    }));
+    send({ type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE });
+    await preview.open("csv", "a,", null);
+    const token = post.mock.calls.map(([message]) => message)
+      .filter((message) => message.type === INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE).at(-1).csv_edit_token;
+    const edit = { type: INLINE_PREVIEW_MESSAGES.CSV_EDIT_MESSAGE, token, row: "a,", line: 0, start: 2, end: 2, text: "b" };
+    // When: Enterを連打し、確定が終わる前に保存する
+    send(edit);
+    send(edit);
+    send({ type: INLINE_PREVIEW_MESSAGES.CSV_SAVE_MESSAGE, token });
+    // Then: 編集は1回だけ処理され、確定後に保存される
+    expect(onCsvEdit).toHaveBeenCalledOnce();
+    expect(saved).not.toHaveBeenCalled();
+    finishEdit();
+    await vi.waitFor(() => expect(saved).toHaveBeenCalledOnce());
+    host.remove();
+  });
+
   // Feature: プレビュー再開時の消去
   // Given: 同じ文書のプレビューを閉じて再開する
   // When: 消去付きで表示データを再送する

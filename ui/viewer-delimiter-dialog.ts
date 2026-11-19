@@ -1,7 +1,9 @@
 import {
   CSV_DELIMITER_OPTIONS,
   CUSTOM_DELIMITER_VALUE,
+  csvDelimiterOptions,
   delimiterPresetFor,
+  encodeCsvDelimiters,
 } from "./viewer-delimiter";
 
 export interface ViewerDelimiterDialogOptions {
@@ -17,32 +19,35 @@ export function openViewerDelimiterDialog(options: ViewerDelimiterDialogOptions)
   const heading = document.createElement("h2");
   heading.textContent = "区切り文字を変更";
 
-  const presetLabel = document.createElement("label");
-  presetLabel.textContent = "プリセット";
-  const preset = document.createElement("select");
-  CSV_DELIMITER_OPTIONS.forEach((option) => {
-    const item = document.createElement("option");
-    item.value = option.value;
-    item.textContent = option.label;
-    preset.appendChild(item);
+  const selected = csvDelimiterOptions(options.value);
+  const presets = selected.map(delimiterPresetFor);
+  const choices = document.createElement("fieldset");
+  choices.className = "viewer-delimiter-choices";
+  const legend = document.createElement("legend");
+  legend.textContent = "区切り文字";
+  choices.append(legend);
+  const checkboxes = [...CSV_DELIMITER_OPTIONS, { value: CUSTOM_DELIMITER_VALUE, label: "その他" }].map((option) => {
+    const label = document.createElement("label");
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.value = option.value;
+    input.checked = presets.includes(option.value);
+    label.append(input, option.label);
+    choices.append(label);
+    return input;
   });
-  const customOption = document.createElement("option");
-  customOption.value = CUSTOM_DELIMITER_VALUE;
-  customOption.textContent = "その他";
-  preset.appendChild(customOption);
-  preset.value = delimiterPresetFor(options.value);
-  presetLabel.appendChild(preset);
+  const customOption = checkboxes[checkboxes.length - 1];
 
   const customLabel = document.createElement("label");
   customLabel.textContent = "その他の区切り文字";
   const customInput = document.createElement("input");
-  customInput.value = options.value;
+  customInput.value = selected.find((value) => delimiterPresetFor(value) === CUSTOM_DELIMITER_VALUE) ?? "";
   customInput.setAttribute("aria-label", "その他の区切り文字");
   customLabel.appendChild(customInput);
   const syncCustomVisibility = () => {
-    customLabel.hidden = preset.value !== CUSTOM_DELIMITER_VALUE;
+    customLabel.hidden = !customOption.checked;
   };
-  preset.addEventListener("change", syncCustomVisibility);
+  customOption.addEventListener("change", syncCustomVisibility);
   syncCustomVisibility();
 
   const error = document.createElement("div");
@@ -55,9 +60,10 @@ export function openViewerDelimiterDialog(options: ViewerDelimiterDialogOptions)
   apply.className = "primary";
   apply.textContent = "適用";
   buttons.append(cancel, apply);
-  dialog.append(heading, presetLabel, customLabel, error, buttons);
+  dialog.append(heading, choices, customLabel, error, buttons);
   overlay.appendChild(dialog);
   document.body.appendChild(overlay);
+  checkboxes[0].focus();
 
   let closed = false;
   const onKey = (event: KeyboardEvent) => {
@@ -77,12 +83,17 @@ export function openViewerDelimiterDialog(options: ViewerDelimiterDialogOptions)
   });
   window.addEventListener("keydown", onKey, true);
   apply.addEventListener("click", () => {
-    const value = preset.value === CUSTOM_DELIMITER_VALUE ? customInput.value : preset.value;
-    if (!value) {
+    if (customOption.checked && !customInput.value) {
       error.textContent = "区切り文字を入力してください";
       return;
     }
+    if (customOption.checked && /[\r\n"]/.test(customInput.value)) {
+      error.textContent = "改行と引用符は区切り文字に使えません";
+      return;
+    }
+    const values = checkboxes.filter((input) => input.checked)
+      .map((input) => input === customOption ? customInput.value : input.value);
     finish();
-    options.onApply(value);
+    options.onApply(encodeCsvDelimiters([...new Set(values)]));
   });
 }

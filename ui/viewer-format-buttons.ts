@@ -63,6 +63,7 @@ export function syncViewerActionButtons(host: HTMLElement, current: ViewerFormat
   const spec = viewerFormatSpec(current);
   const available = {
     delimiter: spec.supportsDelimiter,
+    "auto-width": current === "csv",
     chart: spec.supportsChart,
   };
   host.querySelectorAll<HTMLButtonElement>("[data-viewer-action]").forEach((button) => {

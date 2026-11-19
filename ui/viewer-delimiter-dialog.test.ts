@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openViewerDelimiterDialog } from "./viewer-delimiter-dialog";
+import { csvDelimiterOptions } from "./viewer-delimiter";
 import viewerHtml from "../viewer.html?raw";
 
 describe("Feature: CSV区切り文字ダイアログ", () => {
@@ -18,18 +19,29 @@ describe("Feature: CSV区切り文字ダイアログ", () => {
   });
 
   // Given: 現在の区切り文字がカンマ
-  // When: プリセットでTSVを選択して適用する
-  // Then: タブ表現をコールバックへ渡す
-  it("Scenario: TSVプリセットを適用する", () => {
+  // When: タブもチェックして適用する
+  // Then: カンマとタブの両方が適用される
+  it("Scenario: カンマとタブを併用する", () => {
     const onApply = vi.fn();
     openViewerDelimiterDialog({ value: ",", onApply });
-    const preset = document.querySelector<HTMLSelectElement>("select")!;
-    preset.value = "\\t";
-    preset.dispatchEvent(new Event("change"));
+    const tab = [...document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')]
+      .find((input) => input.value === "\\t")!;
+    tab.click();
     document.querySelector<HTMLButtonElement>("button.primary")!.click();
 
-    expect(onApply).toHaveBeenCalledWith("\\t");
+    expect(csvDelimiterOptions(onApply.mock.calls[0][0])).toEqual([",", "\\t"]);
     expect(document.querySelector(".viewer-dialog-overlay")).toBeNull();
+  });
+
+  it("Scenario: 区切り文字のチェックをすべて外して適用する", () => {
+    // Given: カンマだけがオン
+    const onApply = vi.fn();
+    openViewerDelimiterDialog({ value: ",", onApply });
+    // When: チェックを外して適用する
+    document.querySelector<HTMLInputElement>('input[type="checkbox"]:checked')!.click();
+    document.querySelector<HTMLButtonElement>("button.primary")!.click();
+    // Then: 区切り文字が空になる
+    expect(onApply).toHaveBeenCalledWith("");
   });
 
   // Feature: CSV区切り文字ダイアログのキャンセル
@@ -53,10 +65,7 @@ describe("Feature: CSV区切り文字ダイアログ", () => {
   it("Scenario: 空のカスタム区切り文字を拒否する", () => {
     const onApply = vi.fn();
     openViewerDelimiterDialog({ value: ",", onApply });
-    const preset = document.querySelector<HTMLSelectElement>("select")!;
-    preset.value = "__custom__";
-    preset.dispatchEvent(new Event("change"));
-    document.querySelector<HTMLInputElement>("input")!.value = "";
+    document.querySelector<HTMLInputElement>('input[value="__custom__"]')!.click();
     document.querySelector<HTMLButtonElement>("button.primary")!.click();
 
     expect(onApply).not.toHaveBeenCalled();
