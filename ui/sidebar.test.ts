@@ -410,8 +410,10 @@ describe("Feature: Sidebar", () => {
     const size = host.querySelector<HTMLInputElement>('input[aria-label="サイズ"]')!;
     modified.click(); size.click();
     await vi.waitFor(() => expect(host.querySelectorAll(".fv-size")[2]?.textContent).toBe("100 B"));
-    expect([...host.querySelectorAll<HTMLElement>(".fv-size")].map(x => x.style.getPropertyValue("--bar-width"))).toEqual(["1%", "10%", "100%"]);
-    expect([...host.querySelectorAll<HTMLElement>(".fv-modified")].map(x => x.style.getPropertyValue("--bar-width"))).toEqual(["100%", "50%", "0%"]);
+    expect([...host.querySelectorAll<HTMLElement>(".fv-size")]
+      .map(x => Math.round(parseFloat(x.style.getPropertyValue("--bar-width"))))).toEqual([15, 52, 100]);
+    expect([...host.querySelectorAll<HTMLElement>(".fv-modified")]
+      .map(x => Math.round(parseFloat(x.style.getPropertyValue("--bar-width"))))).toEqual([100, 50, 0]);
     expect(host.querySelector(".fv-modified")?.textContent).toBe(`${new Date(0).toLocaleDateString("ja-JP", { year: "numeric", month: "2-digit", day: "2-digit" })} ${new Date(0).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`);
     modified.click(); size.click();
   });
@@ -452,6 +454,28 @@ describe("Feature: Sidebar", () => {
     expect(host.querySelectorAll(".fv-folder-rows > .fv-row")).toHaveLength(2);
     modified.click(); size.click();
   });
+  // Scenario: 極端に古いファイルがあっても最近の更新日の差が見える
+  // Given: 同じフォルダに、更新日が今日・昨日・10年前のファイルがある
+  // When: 更新日時を表示する
+  // Then: 最新は0%、最古は100%で、昨日のバーは判別できる長さになる
+  it("Scenario: 最近の更新日の差を対数で表示する", async () => {
+    const day = 86_400_000;
+    const onFolderMetadata = async () => [3650 * day, 3649 * day, 0].map(modified => ({
+      modified, size: 0, incomplete: false, is_link: false,
+    }));
+    const { host, sidebar } = mount({ onFolderMetadata });
+    sidebar.setEntries(["today", "yesterday", "old"].map(name => ({ name, is_dir: false, is_archive: false })));
+    const checkbox = host.querySelector<HTMLInputElement>('input[aria-label="更新日時"]')!;
+    checkbox.click();
+    await vi.waitFor(() => {
+      const widths = [...host.querySelectorAll<HTMLElement>(".fv-modified")]
+        .map(cell => parseFloat(cell.style.getPropertyValue("--bar-width")));
+      expect(widths).toEqual([0, expect.any(Number), 100]);
+      expect(widths[1]).toBeGreaterThan(8);
+    });
+    checkbox.click();
+  });
+
   // Scenario: サイズに応じて単位を切り替える
   // Given: 様々なサイズのファイルがある
   // When: サイズ表示をオンにする
@@ -465,6 +489,14 @@ describe("Feature: Sidebar", () => {
     checkbox.click();
     await vi.waitFor(() => expect([...host.querySelectorAll(".fv-metadata")].map(x => x.textContent))
       .toEqual(["0 B", "1,023 B", "1 KB", "1.5 KB", "1.3 MB", "2 GB", "1 TB", "1 PB"]));
+    // Given: 1 PB と 1 KB が同じフォルダにある
+    // When: サイズの背景バーを表示する
+    // Then: 1 KB にも見分けられる長さがあり、最大のファイルは列幅いっぱいになる
+    const widths = [...host.querySelectorAll<HTMLElement>(".fv-size")]
+      .map(cell => parseFloat(cell.style.getPropertyValue("--bar-width")));
+    expect(widths[0]).toBe(0);
+    expect(widths[2]).toBeGreaterThan(10);
+    expect(widths.at(-1)).toBe(100);
     checkbox.click();
   });
   // Scenario: 集計中や取得できない項目を各列に表示する

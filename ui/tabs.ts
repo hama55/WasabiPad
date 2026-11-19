@@ -1,5 +1,6 @@
 import type { OpenAs, Pos, WindowRequest } from "./api";
 import type { DocumentSession } from "./session";
+import { DOCUMENT_NOT_FOUND } from "./document-controller";
 import { isArchiveFormat } from "./generated/Protocol";
 import { cloneEditorViewState, type EditorViewState } from "./editor-view-state";
 import {
@@ -29,8 +30,11 @@ import { DEFAULT_MEMO_STEM, DEFAULT_MEMO_EXTENSION, fileNameOf } from "./memo-na
 export interface TabDocumentPort {
   readonly current: Readonly<DocumentSession>;
   confirmDiscard: (onProceed?: () => void | Promise<void>) => Promise<boolean>;
-  openPath: (path: string, confirm?: boolean, openAs?: OpenAs) => Promise<boolean>;
-  selectEntry: (relPath: string, openAs?: OpenAs) => Promise<boolean>;
+  openPath: (path: string, confirm?: boolean, openAs?: OpenAs, signal?: AbortSignal) => Promise<boolean>;
+  selectEntry: (relPath: string, openAs?: OpenAs, signal?: AbortSignal) => Promise<boolean>;
+  openTabPath?: (path: string, openAs: OpenAs | undefined, signal: AbortSignal) => Promise<boolean>;
+  selectTabEntry?: (relPath: string, openAs: OpenAs | undefined, signal: AbortSignal) => Promise<boolean>;
+  showMissingDocument?: () => void;
   newFile: (confirm?: boolean, draftDirectory?: string | null, draftSavePath?: string | null) => Promise<void>;
   goTo: (position: Pos) => void;
   captureViewState: () => EditorViewState;
@@ -53,6 +57,8 @@ export interface TabFindHighlightPort {
 
 interface TabPorts {
   onChange: (state: StoredTabs) => void;
+  onMissingDocument?: (path: string) => void;
+  cancelDocumentOpen?: () => Promise<void>;
   workspace?: TabWorkspaceStatePort;
   findHighlight?: TabFindHighlightPort;
   onError?: (error: unknown, message?: string) => void | Promise<void>;
@@ -94,6 +100,14 @@ export class TabManager {
   private findHighlightStates = new Map<string, { path: string | null; query: SearchHighlightQuery | null }>();
   private transitionTarget: string | null = null;
   private loadingActive = false;
+  private missingTabId: string | null = null;
+  private missingSession: Readonly<DocumentSession> | null = null;
+  private interruptedTabId: string | null = null;
+  private pendingTabOpen: AbortController | null = null;
+  private activeSwitch: Promise<boolean> | null = null;
+  private activeNavigation: Promise<boolean> | null = null;
+  private cancellingOpen: Promise<void> | null = null;
+  private activationRequest = 0;
   private navigationInProgress = false;
   private navigationBusy = false;
   private navigationHistory = new Map<string, NavigationHistory>();
@@ -174,6 +188,7 @@ export class TabManager {
     this.activeId = incoming?.id ?? (stored.activeId && this.tabs.some((tab) => tab.id === stored.activeId)
       ? stored.activeId
       : this.tabs[0].id);
+    this.render();
     await this.loadActive(true, false);
     const currentWorkspace = this.ports.workspace?.capture();
     if (this.active()?.fileTreeWidth !== undefined && currentWorkspace && currentWorkspace.kind !== null) {
@@ -184,7 +199,12 @@ export class TabManager {
 
   syncActive(session: Readonly<DocumentSession>) {
     const tab = this.active();
-    if (!tab) return;
+    if (!tab || tab.id === this.interruptedTabId) return;
+    if (tab.id === this.missingTabId) {
+      if (session === this.missingSession || (!session.folderRoot && !session.displayPath)) return;
+      this.missingTabId = null;
+      this.missingSession = null;
+    }
     tab.path = session.folderRoot ?? session.savePath ?? (session.readOnly ? session.displayPath : null);
     tab.kind = session.folderRoot ? "folder" : tab.path ? "file" : "blank";
     tab.label = tab.kind === "blank" ? "無題" : basename(tab.path!);
@@ -198,6 +218,15 @@ export class TabManager {
     // 選択元のクリック処理がまだ継続中なのに操作対象だけが差し替わる。
     if (this.transitionTarget || this.navigationInProgress) return;
     this.renderAndPersist();
+  }
+
+  showMissingDocument(path: string) {
+    const tab = this.active();
+    if (!tab) return;
+    this.missingTabId = tab.id;
+    this.missingSession = this.doc.current;
+    this.doc.showMissingDocument?.();
+    this.ports.onMissingDocument?.(path);
   }
 
   rebasePaths({ oldAbsolute, newAbsolute, oldRelPath, newRelPath }: PathRebase) {
@@ -409,8 +438,49 @@ export class TabManager {
   }
 
   async activate(id: string): Promise<boolean> {
+    const request = ++this.activationRequest;
+    if (this.cancellingOpen || id !== this.activeId) await this.interruptTabOpen();
+    if (request !== this.activationRequest) return false;
     if (this.navigationBusy || this.transitionTarget) return false;
-    if (id === this.activeId) return true;
+    if (id === this.activeId && id !== this.interruptedTabId) return true;
+    const activation = this.activateTab(id);
+    this.activeSwitch = activation;
+    try {
+      return await activation;
+    } finally {
+      if (this.activeSwitch === activation) this.activeSwitch = null;
+    }
+  }
+
+  private async interruptTabOpen() {
+    if (this.cancellingOpen) return this.cancellingOpen;
+    const pending = this.pendingTabOpen;
+    if (!pending || !this.ports.cancelDocumentOpen) return;
+    const operation = this.activeSwitch ?? this.activeNavigation;
+    if (this.loadingActive) this.interruptedTabId = this.activeId;
+    this.pendingTabOpen = null;
+    const cancel = this.ports.cancelDocumentOpen();
+    pending.abort();
+    const cancellation = Promise.all([cancel, operation]).then(() => {});
+    this.cancellingOpen = cancellation;
+    try {
+      await cancellation;
+    } finally {
+      this.cancellingOpen = null;
+    }
+  }
+
+  private async pendingDocumentLoad(load: (signal: AbortSignal) => Promise<boolean>): Promise<boolean> {
+    const pending = new AbortController();
+    this.pendingTabOpen = pending;
+    try {
+      return await load(pending.signal);
+    } finally {
+      if (this.pendingTabOpen === pending) this.pendingTabOpen = null;
+    }
+  }
+
+  private async activateTab(id: string): Promise<boolean> {
     this.transitionTarget = id;
     let proceeded: boolean;
     try {
@@ -432,7 +502,9 @@ export class TabManager {
   navigatePath(path: string): Promise<boolean> {
     return this.runNavigationCommand(() =>
       this.navigateCurrent(async () => {
-        const succeeded = await this.doc.openPath(path, false);
+        const succeeded = this.ports.cancelDocumentOpen
+          ? await this.pendingDocumentLoad(signal => this.doc.openPath(path, false, undefined, signal))
+          : await this.doc.openPath(path, false);
         if (succeeded) this.openAsStates.delete(this.activeId);
         return succeeded;
       })
@@ -467,9 +539,11 @@ export class TabManager {
     }
     return this.runNavigationCommand(() =>
       this.navigateCurrent(async () => {
-        const succeeded = (await (selectionOpenAs
-          ? this.doc.selectEntry(relPath, selectionOpenAs)
-          : this.doc.selectEntry(relPath))) === true;
+        const succeeded = this.ports.cancelDocumentOpen
+          ? await this.pendingDocumentLoad(signal => this.doc.selectEntry(relPath, selectionOpenAs, signal))
+          : (await (selectionOpenAs
+            ? this.doc.selectEntry(relPath, selectionOpenAs)
+            : this.doc.selectEntry(relPath))) === true;
         if (!succeeded) return false;
         if (requestedOpenAs) {
           this.openAsStates.set(this.activeId, {
@@ -505,9 +579,12 @@ export class TabManager {
   private runNavigationCommand(operation: () => Promise<boolean>): Promise<boolean> {
     if (this.navigationBusy) return Promise.resolve(false);
     this.navigationBusy = true;
-    return operation().finally(() => {
+    const navigation = operation().finally(() => {
       this.navigationBusy = false;
+      this.activeNavigation = null;
     });
+    this.activeNavigation = navigation;
+    return navigation;
   }
 
   private async switchTo(id: string) {
@@ -646,6 +723,7 @@ export class TabManager {
   }
 
   async close(id: string) {
+    if (id === this.activeId) await this.interruptTabOpen();
     if (this.tabs.length === 1) {
       if (id !== this.activeId) return;
       this.rememberActiveView();
@@ -808,6 +886,9 @@ export class TabManager {
 
   private async loadActive(fallbackToBlank = true, restoreWorkspace = true): Promise<boolean> {
     this.loadingActive = true;
+    this.missingTabId = null;
+    this.missingSession = null;
+    this.interruptedTabId = null;
     try {
       const tab = this.active()!;
       const rememberedRelPath = tab.selectedRelPath;
@@ -831,9 +912,26 @@ export class TabManager {
           : tab.kind === "file"
             ? openAs
             : undefined;
-        const opened = pathOpenAs !== undefined
-          ? await this.doc.openPath(tab.path, false, pathOpenAs)
-          : await this.doc.openPath(tab.path, false);
+        let opened: boolean;
+        const pending = new AbortController();
+        this.pendingTabOpen = pending;
+        try {
+          opened = this.doc.openTabPath
+            ? await this.doc.openTabPath(tab.path, pathOpenAs, pending.signal)
+            : pathOpenAs !== undefined
+              ? await this.doc.openPath(tab.path, false, pathOpenAs)
+              : await this.doc.openPath(tab.path, false);
+        } catch (error) {
+          if (pending.signal.aborted) return true;
+          if (error !== DOCUMENT_NOT_FOUND) throw error;
+          this.missingTabId = tab.id;
+          await this.doc.newFile(false, null, null);
+          this.showMissingDocument(tab.path!);
+          return true;
+        } finally {
+          if (this.pendingTabOpen === pending) this.pendingTabOpen = null;
+        }
+        if (pending.signal.aborted) return true;
         if (!opened) {
           if (!fallbackToBlank) return false;
           tab.path = null;
@@ -854,11 +952,27 @@ export class TabManager {
               }
             }
             if (archiveReady) {
-              selectionRestored = (await (openAs
-                ? this.doc.selectEntry(rememberedRelPath, openAs)
-                : this.doc.selectEntry(rememberedRelPath))) === true;
+              let cancelled = false;
+              selectionRestored = (await (this.doc.selectTabEntry
+                ? this.pendingDocumentLoad(async signal => {
+                  const selected = await this.doc.selectTabEntry!(rememberedRelPath, openAs, signal);
+                  cancelled = signal.aborted;
+                  return selected;
+                })
+                : openAs
+                  ? this.doc.selectEntry(rememberedRelPath, openAs)
+                  : this.doc.selectEntry(rememberedRelPath))) === true;
+              if (cancelled) {
+                tab.selectedRelPath = rememberedRelPath;
+                return true;
+              }
             }
           } catch (error) {
+            if (error === DOCUMENT_NOT_FOUND) {
+              tab.selectedRelPath = rememberedRelPath;
+              this.showMissingDocument(joinWindowsRoot(tab.path!, rememberedRelPath));
+              return true;
+            }
             // 一時的なIPC失敗で復元情報を消すと、次回タブ切替でも再試行できない。
             await this.reportError(error);
           }
@@ -912,7 +1026,7 @@ export class TabManager {
   private rememberActiveView() {
     this.syncActive(this.doc.current);
     const tab = this.active();
-    if (!tab) return;
+    if (!tab || tab.id === this.missingTabId || tab.id === this.interruptedTabId) return;
     const view = this.doc.captureViewState();
     if (tab.kind === "folder") {
       if (tab.selectedRelPath) {

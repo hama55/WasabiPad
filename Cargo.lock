@@ -4182,6 +4182,7 @@ name = "wasabipad"
 version = "1.9.2"
 dependencies = [
  "libc",
+ "percent-encoding",
  "serde",
  "serde_json",
  "tauri",

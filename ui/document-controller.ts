@@ -36,6 +36,19 @@ export interface MemoCreationSpec {
 }
 
 const DEFAULT_MEMO_FORMAT: SaveFormat = { encoding: "utf8", eol: "crlf" };
+export const DOCUMENT_NOT_FOUND = "document_not_found";
+const DOCUMENT_OPEN_CANCELLED = "document_open_cancelled";
+
+function awaitDocumentLoad(pending: Promise<api.DocInfo>, signal?: AbortSignal): Promise<api.DocInfo | null> {
+  if (!signal) return pending;
+  return Promise.race([
+    pending,
+    new Promise<null>(resolve => {
+      if (signal.aborted) resolve(null);
+      else signal.addEventListener("abort", () => resolve(null), { once: true });
+    }),
+  ]);
+}
 
 export type DocumentControllerApi = Pick<
   typeof api,
@@ -250,24 +263,40 @@ export class DocumentController {
     this.updateTitle();
   }
 
-  async openPath(path: string, confirm = true, openAs?: api.OpenAs): Promise<boolean> {
+  openTabPath(path: string, openAs: api.OpenAs | undefined, signal: AbortSignal): Promise<boolean> {
+    return this.openPath(path, false, openAs, signal, true);
+  }
+
+  selectTabEntry(relPath: string, openAs: api.OpenAs | undefined, signal: AbortSignal): Promise<boolean> {
+    return this.selectEntry(relPath, openAs, signal, true);
+  }
+
+  async openPath(path: string, confirm = true, openAs?: api.OpenAs, signal?: AbortSignal, restoreTab = false): Promise<boolean> {
     if (confirm && !(await this.confirmDiscard())) return false;
     const request = ++this.loadRequest;
+    const started = performance.now();
     try {
       this.setLoading(true, request);
-      const info = openAs === undefined
-        ? await this.services.api.openPath(path)
-        : await this.services.api.openPath(path, openAs);
+      const pending = openAs === undefined
+        ? this.services.api.openPath(path)
+        : this.services.api.openPath(path, openAs);
+      const info = await awaitDocumentLoad(pending, signal);
+      if (!info || signal?.aborted) return false;
       if (request !== this.loadRequest) return false;
       this.session.selectedRelPath = "";
       this.showTree(info);
       this.applyDocInfo(info);
       return true;
     } catch (e) {
-      if (request === this.loadRequest) await this.reportError("開けませんでした", e);
+      if (signal?.aborted || e === DOCUMENT_OPEN_CANCELLED) return false;
+      if (restoreTab && request === this.loadRequest && e === DOCUMENT_NOT_FOUND) throw e;
+      if (request === this.loadRequest) {
+        await this.reportError("開けませんでした", e === DOCUMENT_NOT_FOUND ? `ファイルが見つかりません: ${path}` : e);
+      }
       return false;
     } finally {
       this.setLoading(false, request);
+      performance.measure("wasabipad: open document", { start: started, end: performance.now() });
     }
   }
 
@@ -294,15 +323,18 @@ export class DocumentController {
     }
   }
 
-  async selectEntry(relPath: string, openAs?: api.OpenAs): Promise<boolean> {
+  async selectEntry(relPath: string, openAs?: api.OpenAs, signal?: AbortSignal, restoreTab = false): Promise<boolean> {
     const request = ++this.loadRequest;
+    const started = performance.now();
     try {
       this.setLoading(true, request);
-      const info = await this.services.withArchivePassword(
+      const info = await awaitDocumentLoad(this.services.withArchivePassword(
         archiveRelOf(relPath),
-        () => this.services.api.selectEntry(relPath, openAs),
-      );
-      if (request !== this.loadRequest) return false;
+        () => signal?.aborted
+          ? Promise.reject(DOCUMENT_OPEN_CANCELLED)
+          : this.services.api.selectEntry(relPath, openAs),
+      ), signal);
+      if (!info || signal?.aborted || request !== this.loadRequest) return false;
       this.session.selectedRelPath = relPath;
       this.applyDocInfo(info, false, openAs !== undefined);
       // 選択した行を一覧側にも戻す。深い階層は必要ならここで展開する。
@@ -315,12 +347,16 @@ export class DocumentController {
       if (request !== this.loadRequest) return false;
       return true;
     } catch (error) {
+      if (signal?.aborted || error === DOCUMENT_OPEN_CANCELLED) return false;
+      if (restoreTab && request === this.loadRequest && error === DOCUMENT_NOT_FOUND) throw error;
       if (request === this.loadRequest && !this.services.isPasswordCancelled(error)) {
-        await this.reportError("開けませんでした", error);
+        await this.reportError("開けませんでした",
+          error === DOCUMENT_NOT_FOUND ? `ファイルが見つかりません: ${relPath}` : error);
       }
       return false;
     } finally {
       this.setLoading(false, request);
+      performance.measure("wasabipad: select folder entry", { start: started, end: performance.now() });
     }
   }
 
@@ -349,6 +385,11 @@ export class DocumentController {
     this.view.editor.focus();
     const documentChangeNotified = this.notifyDocumentChange(false);
     this.updateTitle(!documentChangeNotified);
+  }
+
+  showMissingDocument() {
+    this.session.readOnly = true;
+    this.view.editor.open(1, true);
   }
 
   async reloadWithEncoding(encoding: api.ReadEncoding): Promise<boolean> {

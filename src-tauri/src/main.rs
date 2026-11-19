@@ -4,6 +4,7 @@
 
 mod commands;
 mod external_preview_runner;
+mod html_preview;
 mod instance;
 mod state;
 mod viewer;
@@ -14,7 +15,7 @@ use instance::{
     launch_new_instance as spawn_new_instance, parse_window_request,
     take_pending_window_requests as drain_pending_window_requests, InstanceServer,
 };
-use state::{DocState, State};
+use state::{DocState, DocumentOpenGeneration, State};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -118,33 +119,53 @@ struct ViewerSelection {
 }
 
 #[tauri::command]
-fn open_path(
+async fn open_path(
     path: String,
     open_as: Option<OpenAs>,
-    state: State,
     app: AppHandle,
 ) -> Result<DocInfo, String> {
-    document::open_path(path, open_as, state, app)
+    let generation = app.state::<DocumentOpenGeneration>().advance();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<DocState>>();
+        document::open_path(path, open_as, state, &app, generation)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn new_doc(state: State) -> Result<(), String> {
+fn cancel_document_open(generation: tauri::State<'_, DocumentOpenGeneration>) {
+    generation.advance();
+}
+
+#[tauri::command]
+fn new_doc(state: State, generation: tauri::State<'_, DocumentOpenGeneration>) -> Result<(), String> {
+    generation.advance();
     document::new_doc(state)
 }
 
 #[tauri::command]
-fn close_doc(state: State) -> Result<(), String> {
+fn close_doc(state: State, generation: tauri::State<'_, DocumentOpenGeneration>) -> Result<(), String> {
+    generation.advance();
     document::close_doc(state)
 }
 
 #[tauri::command]
-fn lines(start: usize, count: usize, state: State) -> Result<Vec<String>, String> {
-    document::lines(start, count, state)
+async fn lines(start: usize, count: usize, app: AppHandle) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        document::lines(start, count, app.state::<Mutex<DocState>>())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn line_char_len(line: usize, state: State) -> Result<usize, String> {
-    document::line_char_len(line, state)
+async fn line_char_len(line: usize, app: AppHandle) -> Result<usize, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        document::line_char_len(line, app.state::<Mutex<DocState>>())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -154,9 +175,10 @@ async fn select_entry(
     cache_directory: Option<String>,
     app: AppHandle,
 ) -> Result<DocInfo, String> {
+    let generation = app.state::<DocumentOpenGeneration>().advance();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Mutex<DocState>>();
-        document::select_entry(rel_path, open_as, cache_directory, state)
+        document::select_entry(rel_path, open_as, cache_directory, state, &app.state(), generation)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -370,6 +392,38 @@ fn open_external_url(url: String) -> Result<(), String> {
 #[tauri::command]
 fn run_external_command(command: String, path: String) -> Result<(), String> {
     system::run_external_command(command, path)
+}
+
+#[tauri::command]
+async fn register_html_preview(
+    id: String,
+    html: String,
+    source_path: Option<String>,
+    app: AppHandle,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<html_preview::HtmlPreviews>().register(id, html, source_path)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+fn release_html_preview(id: String, state: tauri::State<'_, html_preview::HtmlPreviews>) -> Result<(), String> {
+    state.remove(&id)
+}
+
+#[tauri::command]
+async fn external_preview_existing(
+    input_path: String,
+    output_format: external_preview_runner::ExternalPreviewFormat,
+) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        external_preview_runner::existing_output(std::path::Path::new(&input_path), output_format)
+            .map(|path| path.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -908,8 +962,16 @@ fn main() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(Mutex::new(DocState(Doc::empty())))
+        .manage(DocumentOpenGeneration::default())
         .manage(ViewerStore(Mutex::new(HashMap::new())))
         .manage(external_preview_runner::ExternalPreviewOperations::default())
+        .manage(html_preview::HtmlPreviews::default())
+        .register_asynchronous_uri_scheme_protocol("wasabi-html", |context, request, responder| {
+            let app = context.app_handle().clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                responder.respond(app.state::<html_preview::HtmlPreviews>().serve(request));
+            });
+        })
         .manage(FindShortcutGuard::default())
         .manage(search::SearchCancel(Mutex::new(None)))
         .manage(instance_server)
@@ -925,6 +987,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             open_path,
+            cancel_document_open,
             new_doc,
             close_doc,
             lines,
@@ -961,6 +1024,9 @@ fn main() {
             open_in_default_browser,
             open_external_url,
             run_external_command,
+            register_html_preview,
+            release_html_preview,
+            external_preview_existing,
             external_preview_generate,
             external_preview_cancel,
             external_preview_cleanup,

@@ -18,6 +18,7 @@ export interface HtmlPreviewOptions {
   name: string;
   html: string;
   baseUrl: string | null;
+  dynamicUrl?: string;
   onContextMenu: (x: number, y: number) => void;
 }
 
@@ -91,10 +92,14 @@ export function createHtmlPreview(options: HtmlPreviewOptions): { wrapper: HTMLE
   const frame = document.createElement("iframe");
   frame.className = "viewer-html";
   frame.title = options.name;
-  frame.setAttribute("sandbox", "allow-same-origin");
+  frame.setAttribute("sandbox", options.dynamicUrl ? "allow-scripts" : "allow-same-origin");
   frame.referrerPolicy = "no-referrer";
-  frame.srcdoc = staticHtmlDocument(options.html, options.baseUrl);
-  frame.addEventListener("load", () => bindStaticDocument(frame, options.onContextMenu));
+  if (options.dynamicUrl) {
+    frame.src = options.dynamicUrl;
+  } else {
+    frame.srcdoc = staticHtmlDocument(options.html, options.baseUrl);
+    frame.addEventListener("load", () => bindStaticDocument(frame, options.onContextMenu));
+  }
   frame.addEventListener("contextmenu", (event) => {
     event.preventDefault();
     options.onContextMenu(event.clientX, event.clientY);

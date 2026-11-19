@@ -15,6 +15,7 @@ export interface ExternalWatchPorts {
   isDirty: () => boolean;
   // 再読込後の文書を反映する (キャレット位置の復元も呼び出し側の責務)
   onReload: (info: api.DocInfo) => void;
+  onMissing?: (path: string) => void;
   onNotice: (text: string) => void;
   onError: (title: string, error: unknown) => Promise<void>;
   onIgnore: (info: api.DocInfo) => void;
@@ -125,7 +126,9 @@ export class ExternalWatch {
       if (check.kind === "reloaded") {
         this.ports.onReload(check.info);
         this.ports.onNotice("外部の変更を再読込しました");
-      } else if (check.kind === "conflict") {
+      } else if (check.kind === "missing" && !this.ports.isDirty()) {
+        this.ports.onMissing?.(check.path);
+      } else if (check.kind === "conflict" || check.kind === "missing") {
         if (!this.ports.onConflict) {
           this.banner.hidden = false;
         } else {

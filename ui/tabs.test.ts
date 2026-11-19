@@ -109,6 +109,52 @@ function dragOnto(from: HTMLElement, to: HTMLElement, ratio: number) {
 }
 
 describe("Feature: TabManager", () => {
+  // Given: セッションに参照切れのファイルタブが保存されている
+  // When: セッションを復元する
+  // Then: 元の名前とパスを保持して通知し、タブを閉じられる
+  it("Scenario: 参照切れのファイルタブを閉じるまで元の名前を保つ", async () => {
+    const { doc, host } = fixture();
+    const onMissingDocument = vi.fn();
+    const manager = new TabManager(host, {
+      ...doc,
+      openTabPath: async (path) => {
+        if (path === stored.tabs[0].path) throw "document_not_found";
+        return doc.openPath(path);
+      },
+    }, { onChange: () => {}, onMissingDocument }, registeredCommandPorts);
+    await manager.init(stored, null);
+    expect(onMissingDocument).toHaveBeenCalledExactlyOnceWith(stored.tabs[0].path);
+    expect(manager.state.tabs[0]).toMatchObject({ label: "a.txt", path: stored.tabs[0].path });
+    await manager.close("a");
+    expect(manager.state.activeId).toBe("b");
+    expect(manager.state.tabs.map(tab => tab.id)).toEqual(["b"]);
+  });
+
+  // Given: タブBの文書を読み込み中で、元のタブAが残っている
+  // When: 読み込みが終わる前にタブAを選ぶ
+  // Then: タブAに戻り、タブBのパスも維持する
+  it("Scenario: 読み込み完了を待たず別タブへ切り替える", async () => {
+    const { doc, host } = fixture();
+    const cancelDocumentOpen = vi.fn(async () => {});
+    const startSlowOpen = vi.fn();
+    const manager = new TabManager(host, {
+      ...doc,
+      openTabPath: async (path, _format, signal) => {
+        if (path === stored.tabs[0].path) return doc.openPath(path);
+        startSlowOpen();
+        return new Promise<boolean>(resolve =>
+          signal.addEventListener("abort", () => resolve(false), { once: true }));
+      },
+    }, { onChange: () => {}, cancelDocumentOpen }, registeredCommandPorts);
+    await manager.init(stored, null);
+    const slow = manager.activate("b");
+    await vi.waitFor(() => expect(startSlowOpen).toHaveBeenCalledOnce());
+    expect(await manager.activate("a")).toBe(true);
+    await slow;
+    expect(cancelDocumentOpen).toHaveBeenCalledOnce();
+    expect(manager.state.activeId).toBe("a");
+    expect(manager.state.tabs[1].path).toBe(stored.tabs[1].path);
+  });
   // Feature: 仮名割り当ての非同期競合
   // Scenario: ＋の候補取得中に閉じた＋タブを復活する
   // Given: 閉じたmemo.txtのタブと、未完了の候補取得

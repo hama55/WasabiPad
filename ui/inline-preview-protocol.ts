@@ -8,6 +8,7 @@ export const INLINE_PREVIEW_MESSAGES = {
   CLEAR_MESSAGE: "wasabipad-viewer-clear",
   CLEARED_MESSAGE: "wasabipad-viewer-cleared",
   FORMAT_CHANGE_MESSAGE: "wasabipad-viewer-format-change",
+  HTML_MODE_CHANGE_MESSAGE: "wasabipad-viewer-html-mode-change",
   DELIMITER_MESSAGE: "wasabipad-viewer-delimiter",
   DELIMITER_CHANGE_MESSAGE: "wasabipad-viewer-delimiter-change",
   FONT_MESSAGE: "wasabipad-viewer-font",

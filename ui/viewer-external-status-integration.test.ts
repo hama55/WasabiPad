@@ -28,6 +28,24 @@ describe("Feature: 外部プレビューの待機と失敗表示", () => {
     vi.restoreAllMocks();
   });
 
+  // Given: 通常表示のプレビューがある
+  // When: プレビューを全画面表示する
+  // Then: 復元ボタンに縮小アイコンと操作名が表示される
+  it("Scenario: 全画面の復元操作に縮小アイコンを表示する", () => {
+    window.dispatchEvent(new MessageEvent("message", {
+      source: window.parent, origin: window.location.origin,
+      data: { type: messages.FULLSCREEN_STATE_MESSAGE, fullscreen: true },
+    }));
+    const button = document.querySelector<HTMLButtonElement>("#viewer-fullscreen")!;
+    expect(button.getAttribute("aria-label")).toBe("元の表示に戻す");
+    expect(button.querySelector("svg")).not.toBeNull();
+    window.dispatchEvent(new MessageEvent("message", {
+      source: window.parent, origin: window.location.origin,
+      data: { type: messages.FULLSCREEN_STATE_MESSAGE, fullscreen: false },
+    }));
+    expect(button.querySelector("svg")).toBeNull();
+  });
+
   // Feature: 新しいプレビューの読み込み前の消去
   // Given: 以前の本文が表示されている
   // When: 本文を消去してから新しい読み込み状態を通知する

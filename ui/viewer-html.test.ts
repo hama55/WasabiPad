@@ -4,6 +4,18 @@ import { describe, expect, it } from "vitest";
 import { createHtmlPreview, staticHtmlDocument } from "./viewer-html";
 
 describe("Feature: static HTML preview", () => {
+  // Given: 利用者が動的表示を選択した
+  // When: 専用 URL で HTML を表示する
+  // Then: スクリプトだけを許可し、親画面とは別オリジンにする
+  it("Scenario: 動的HTMLを隔離されたiframeで表示する", () => {
+    const dynamicUrl = "http://wasabi-html.localhost/id/__wasabipad_document__.html";
+    const { frame } = createHtmlPreview({
+      name: "index.html", html: "", baseUrl: null, dynamicUrl, onContextMenu: () => undefined,
+    });
+    expect(frame.src).toBe(dynamicUrl);
+    expect(frame.hasAttribute("srcdoc")).toBe(false);
+    expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
+  });
   // Given: ローカルHTML本文とローカル資産の基準URL
   // When: 静的HTML文書を組み立てる
   // Then: JavaScriptと外部通信を禁止し、資産の基準URLだけを埋め込む

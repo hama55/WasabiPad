@@ -162,6 +162,13 @@ body {
   color: var(--fg); font-size: 14px;
 }
 #loading[hidden] { display: none; }
+#missing-document {
+  position: absolute; inset: 0; z-index: 19;
+  display: grid; place-content: center;
+  padding: 24px; text-align: center; white-space: pre-line; overflow-wrap: anywhere;
+  background: var(--bg-editor); color: var(--fg);
+}
+#missing-document[hidden] { display: none; }
 .loading-spinner {
   width: 16px; height: 16px; border: 2px solid var(--fg-dim);
   border-top-color: var(--fg); border-radius: 50%;

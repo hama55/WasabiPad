@@ -38,6 +38,16 @@ impl ExternalPreviewFormat {
     }
 }
 
+pub(crate) fn existing_output(input_path: &Path, format: ExternalPreviewFormat) -> Option<PathBuf> {
+    let output = input_path.with_extension(format.extension());
+    if !output.is_file() {
+        return None;
+    }
+    let input = input_path.canonicalize().ok()?;
+    let canonical_output = output.canonicalize().ok()?;
+    (input != canonical_output).then_some(output)
+}
+
 #[derive(Debug, serde::Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]

@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use wasabipad_core::{
     Doc, DocInfo, EditManyItem, EditManyResult, EditResult, EncodingId, Eol, ExternalCheck,
@@ -10,6 +10,14 @@ use wasabipad_core::{
 use crate::state::{with_doc, State};
 
 const EXTERNAL_MERGE_RETRY_CODE: &str = "external_merge_retry";
+
+fn load_error(error: std::io::Error) -> String {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        "document_not_found".into()
+    } else {
+        error.to_string()
+    }
+}
 
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -23,9 +31,14 @@ pub(crate) fn open_path(
     path: String,
     open_as: Option<OpenAs>,
     state: State,
-    app: AppHandle,
+    app: &AppHandle,
+    generation: u64,
 ) -> Result<DocInfo, String> {
+    let latest = app.state::<crate::state::DocumentOpenGeneration>();
     let mut report = |loaded: u64, total: u64| {
+        if !latest.is_current(generation) {
+            return;
+        }
         let percent = if total == 0 {
             100
         } else {
@@ -39,7 +52,7 @@ pub(crate) fn open_path(
         }
     };
     let mut d = Doc::open_with_progress_as(&PathBuf::from(&path), open_as, Some(&mut report))
-        .map_err(|e| e.to_string())?;
+        .map_err(load_error)?;
     // フォルダを開いた場合 d.path は先頭の実ファイルを指す (フォルダ自体は保存先を持たない)
     let info_path = d
         .path()
@@ -47,9 +60,13 @@ pub(crate) fn open_path(
         .unwrap_or(path);
     let info = d.info(info_path).map_err(|error| error.to_string())?;
     with_doc(&state, |doc| {
+        if !latest.is_current(generation) {
+            return Err("document_open_cancelled".to_owned());
+        }
         d.take_deleted_entries_from(doc);
         *doc = d;
-    })?;
+        Ok(())
+    })??;
     Ok(info)
 }
 
@@ -74,15 +91,31 @@ pub(crate) fn select_entry(
     open_as: Option<OpenAs>,
     cache_directory: Option<String>,
     state: State,
+    latest: &crate::state::DocumentOpenGeneration,
+    generation: u64,
 ) -> Result<DocInfo, String> {
     let cache = preview_cache(cache_directory);
-    let result = with_doc(&state, |doc| match open_as {
+    let select = |doc: &mut Doc| match open_as {
         Some(open_as) => doc.select_entry_as_with_cache(&rel_path, open_as, cache.as_ref()),
         None => doc.select_entry_with_cache(&rel_path, cache.as_ref()),
-    })?;
-    result
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "no entry".into())
+    };
+    let require_current = || latest.is_current(generation).then_some(())
+        .ok_or_else(|| "document_open_cancelled".to_owned());
+    let selection = with_doc(&state, |doc| doc.folder_file_selection(&rel_path, open_as))?;
+    if let Some(mut selection) = selection {
+        let info = select(&mut selection).map_err(load_error)?.ok_or_else(|| "no entry".to_owned())?;
+        with_doc(&state, |doc| {
+            require_current()?;
+            selection.take_deleted_entries_from(doc);
+            *doc = selection;
+            Ok::<_, String>(())
+        })??;
+        return Ok(info);
+    }
+    with_doc(&state, |doc| {
+        require_current()?;
+        select(doc).map_err(load_error)?.ok_or_else(|| "no entry".to_owned())
+    })?
 }
 
 pub(crate) fn list_archive_entries(rel_path: String, state: State) -> Result<Vec<String>, String> {

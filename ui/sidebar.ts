@@ -1276,7 +1276,10 @@ export class Sidebar {
               modified.append(value);
             }
             if (!status && metadata?.modified != null && group) {
-              modified.style.setProperty("--bar-width", `${group.newest === group.oldest ? 100 : (group.newest - metadata.modified) / (group.newest - group.oldest) * 100}%`);
+              const millisecondsPerDay = 86_400_000;
+              const range = Math.log1p((group.newest - group.oldest) / millisecondsPerDay);
+              const age = Math.log1p((group.newest - metadata.modified) / millisecondsPerDay);
+              modified.style.setProperty("--bar-width", `${range === 0 ? 100 : age / range * 100}%`);
             }
             details.append(modified);
           }
@@ -1287,7 +1290,7 @@ export class Sidebar {
               ? metadata?.child_count == null ? "—" : metadata.child_count >= 100 ? "100件以上" : `${metadata.child_count}件`
               : status ?? (metadata?.is_link ? "—" : formatFileSize(metadata!.size));
             if (r.kind !== "dir" && !status && metadata && !metadata.is_link && group) {
-              size.style.setProperty("--bar-width", `${group.maxSize ? metadata.size / group.maxSize * 100 : 0}%`);
+              size.style.setProperty("--bar-width", `${group.maxSize ? Math.log1p(metadata.size) / Math.log1p(group.maxSize) * 100 : 0}%`);
             }
             details.append(size);
           }

@@ -1,6 +1,7 @@
 // This file was generated from src-tauri/src/main.rs by scripts/sync-ipc.mjs.
 export const IPC_COMMANDS = {
   openPath: "open_path",
+  cancelDocumentOpen: "cancel_document_open",
   newDoc: "new_doc",
   closeDoc: "close_doc",
   lines: "lines",
@@ -33,6 +34,9 @@ export const IPC_COMMANDS = {
   openInDefaultBrowser: "open_in_default_browser",
   openExternalUrl: "open_external_url",
   runExternalCommand: "run_external_command",
+  registerHtmlPreview: "register_html_preview",
+  releaseHtmlPreview: "release_html_preview",
+  externalPreviewExisting: "external_preview_existing",
   externalPreviewGenerate: "external_preview_generate",
   externalPreviewCancel: "external_preview_cancel",
   externalPreviewCleanup: "external_preview_cleanup",

@@ -1,4 +1,4 @@
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{atomic::{AtomicU64, Ordering}, Mutex, MutexGuard};
 use wasabipad_core::Doc;
 
 pub(crate) struct DocState(pub(crate) Doc);
@@ -8,6 +8,19 @@ pub(crate) struct DocState(pub(crate) Doc);
 unsafe impl Send for DocState {}
 
 pub(crate) type State<'a> = tauri::State<'a, Mutex<DocState>>;
+
+#[derive(Default)]
+pub(crate) struct DocumentOpenGeneration(AtomicU64);
+
+impl DocumentOpenGeneration {
+    pub(crate) fn advance(&self) -> u64 {
+        self.0.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    pub(crate) fn is_current(&self, generation: u64) -> bool {
+        self.0.load(Ordering::SeqCst) == generation
+    }
+}
 
 fn lock_doc(state: &Mutex<DocState>) -> Result<MutexGuard<'_, DocState>, String> {
     state

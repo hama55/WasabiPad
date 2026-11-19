@@ -44,6 +44,7 @@ interface PendingExternalOpen {
 export interface InlinePreviewPorts {
   onAvailabilityChange?: (available: boolean, label: string) => void;
   onFormatChange?: (format: ViewerFormat) => void;
+  onHtmlModeChange?: (dynamic: boolean) => void;
   onDelimiterChange?: (delimiter: string) => void;
   onFontFamilyChange?: (family: string) => void;
   onFullscreenChange?: () => void | Promise<void>;
@@ -60,6 +61,7 @@ export interface InlinePreviewPorts {
 
 export class InlinePreview {
   private readonly frame: HTMLIFrameElement;
+  private dynamicHtml = false;
   private payload: ViewerPayload | null = null;
   private label = "";
   private nextLabel = 0;
@@ -221,6 +223,14 @@ export class InlinePreview {
         this.notifyPort(() => this.ports.onRefresh?.());
         return;
       }
+      if (event.data?.type === INLINE_PREVIEW_MESSAGES.HTML_MODE_CHANGE_MESSAGE) {
+        if (!this.clearing && this.payload?.format === "html" && !this.payload.external_output_path
+          && typeof event.data.dynamic === "boolean") {
+          this.dynamicHtml = event.data.dynamic;
+          this.ports.onHtmlModeChange?.(this.dynamicHtml);
+        }
+        return;
+      }
       if (event.data?.type === INLINE_PREVIEW_MESSAGES.REVEAL_OUTPUT_MESSAGE) {
         if (this.outputFolderAvailable && !this.clearing && this.previewStatus?.kind !== "standard") {
           this.notifyPort(() => this.ports.onRevealExternalOutput?.());
@@ -245,6 +255,10 @@ export class InlinePreview {
       if (previous !== this.payload?.external_output_path) this.externalSourceNavigators.delete(previous);
     }
     this.externalSourceNavigators.set(path, navigate);
+  }
+
+  setHtmlMode(dynamic: boolean) {
+    this.dynamicHtml = dynamic;
   }
 
   setSourcePath(
@@ -540,6 +554,7 @@ export class InlinePreview {
     this.frame.contentWindow?.postMessage({
       type: PAYLOAD_MESSAGE,
       payload,
+      ...(this.dynamicHtml && payload.format === "html" && !payload.external_output_path ? { dynamic_html: true } : {}),
       ...(renderId ? { render_id: renderId } : {}),
     }, window.location.origin);
     if (this.pendingMarkdownFragment !== null) {

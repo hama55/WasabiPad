@@ -156,6 +156,7 @@ pub enum FindOutcome {
 pub enum ExternalCheck {
     Unchanged,
     Reloaded { info: DocInfo },
+    Missing { path: String },
     Conflict,
 }
 

@@ -2,7 +2,7 @@
 mod external_preview_runner;
 
 use external_preview_runner::{
-    cleanup_job, cleanup_stale_jobs, run_external_preview, ExternalPreviewFormat,
+    cleanup_job, cleanup_stale_jobs, existing_output, run_external_preview, ExternalPreviewFormat,
     ExternalPreviewOperations,
 };
 use std::fs;
@@ -44,6 +44,22 @@ impl Drop for TestDirectory {
 }
 
 const OWNER_WORK_ROOT_ENV: &str = "WASABIPAD_TEST_EXTERNAL_PREVIEW_OWNER_ROOT";
+
+// Given: 元文書と、同じフォルダの同名HTMLがある
+// When: 外部プレビューの表示候補を探す
+// Then: HTMLを返し、元文書自身やフォルダは候補にしない
+#[test]
+fn finds_only_the_sibling_file_with_the_output_extension() {
+    let directory = TestDirectory::new();
+    let input = directory.path().join("score.abc");
+    let html = input.with_extension("html");
+    fs::write(&input, "X:1").unwrap();
+    fs::write(&html, "<p>score</p>").unwrap();
+    fs::create_dir(input.with_extension("svg")).unwrap();
+    assert_eq!(existing_output(&input, ExternalPreviewFormat::Html), Some(html.clone()));
+    assert_eq!(existing_output(&input, ExternalPreviewFormat::Svg), None);
+    assert_eq!(existing_output(&html, ExternalPreviewFormat::Html), None);
+}
 const OWNER_INPUT_PATH_ENV: &str = "WASABIPAD_TEST_EXTERNAL_PREVIEW_OWNER_INPUT";
 const OWNER_READY_PATH_ENV: &str = "WASABIPAD_TEST_EXTERNAL_PREVIEW_OWNER_READY";
 const OWNER_RELEASE_PATH_ENV: &str = "WASABIPAD_TEST_EXTERNAL_PREVIEW_OWNER_RELEASE";

@@ -92,6 +92,7 @@ export interface PreviewCacheInfo {
 
 export const openPath = (path: string, openAs?: OpenAs) =>
   invoke<DocInfo>(IPC_COMMANDS.openPath, { path, openAs });
+export const cancelDocumentOpen = () => invoke<void>(IPC_COMMANDS.cancelDocumentOpen);
 export const newDoc = () => invoke<void>(IPC_COMMANDS.newDoc);
 export const closeDoc = () => invoke<void>(IPC_COMMANDS.closeDoc);
 
@@ -370,6 +371,12 @@ export const readSqlitePreview = (
   querySql: querySql ?? null,
 });
 
+export const registerHtmlPreview = (id: string, html: string, sourcePath: string | null) =>
+  invoke<void>(IPC_COMMANDS.registerHtmlPreview, { id, html, sourcePath });
+export const releaseHtmlPreview = (id: string) =>
+  invoke<void>(IPC_COMMANDS.releaseHtmlPreview, { id });
+export const externalPreviewExisting = (inputPath: string, outputFormat: ExternalPreviewRequest["outputFormat"]) =>
+  invoke<string | null>(IPC_COMMANDS.externalPreviewExisting, { inputPath, outputFormat });
 export const externalPreviewGenerate = (request: ExternalPreviewRequest) =>
   invoke<string>(IPC_COMMANDS.externalPreviewGenerate, { request });
 export const externalPreviewCancel = (requestId: string) =>

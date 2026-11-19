@@ -898,6 +898,26 @@ impl Doc {
         self.source.folder_root().map(Path::to_path_buf)
     }
 
+    /// Prepare a separate document for a folder file so its I/O can run
+    /// without holding the active document lock.
+    pub fn folder_file_selection(
+        &self,
+        rel_path: &str,
+        open_as: Option<OpenAs>,
+    ) -> Option<Self> {
+        let root = self.workspace_root()?;
+        if crate::folder::split_archive_entry_path(rel_path).is_some()
+            || (self.source.path() == Some(join_relative(&root, rel_path).as_path())
+                && self.open_as == open_as)
+        {
+            return None;
+        }
+        let mut selection = Self::empty_with_archive_port(Arc::clone(&self.archive_port));
+        selection.source.root = Some(root);
+        selection.sevenz_passwords = self.sevenz_passwords.clone();
+        Some(selection)
+    }
+
     // zip/xlsx/xls は拡張子で判定し、中身は読まないまま「未展開」状態で開く。
     // ツリーの展開ボタン (list_archive_entries) が押されて初めてエントリ名を、
     // エントリ選択 (select_entry) で初めてその1エントリの本文を読む。
@@ -1060,7 +1080,11 @@ impl Doc {
         match fileio::stamp(&path) {
             Ok(stamp) if stamp == stored => return ExternalCheck::Unchanged,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                return ExternalCheck::Conflict
+                return if dirty {
+                    ExternalCheck::Conflict
+                } else {
+                    ExternalCheck::Missing { path: path.to_string_lossy().into_owned() }
+                };
             }
             _ => {}
         }
@@ -4452,7 +4476,7 @@ mod tests {
     }
 
     #[test]
-    fn poll_external_reports_deleted_doc_as_conflict() {
+    fn poll_external_preserves_dirty_doc_and_reports_clean_missing_path() {
         let path =
             std::env::temp_dir().join(format!("wasabipad_poll_deleted_{}.txt", std::process::id()));
         std::fs::write(&path, "before").unwrap();
@@ -4460,8 +4484,9 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         // Given: 開いているファイルが外部から削除されている
         // When: 外部変更をポーリングする
-        // Then: 削除を変更競合として通知する
-        assert!(matches!(d.poll_external(false), ExternalCheck::Conflict));
+        // Then: 未編集なら参照切れのパスを返し、編集中なら競合として扱う
+        assert!(matches!(d.poll_external(false), ExternalCheck::Missing { path: missing }
+            if missing == path.to_string_lossy()));
         assert!(matches!(d.poll_external(true), ExternalCheck::Conflict));
     }
 

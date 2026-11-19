@@ -1,4 +1,5 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
   EVENT_NAMES,
@@ -14,6 +15,8 @@ import {
   takeViewerPayload,
   readDiagramAsset,
   readArchiveAsset,
+  registerHtmlPreview,
+  releaseHtmlPreview,
   type ViewerFormat,
   type ViewerPayload,
   type ViewerSelection,
@@ -125,12 +128,33 @@ const actionButtons = document.getElementById("viewer-csv-actions")!;
 const fullscreenButton = document.getElementById("viewer-fullscreen") as HTMLButtonElement;
 const previewCloseButton = document.getElementById("viewer-close") as HTMLButtonElement;
 const previewRefreshButton = document.getElementById("viewer-refresh") as HTMLButtonElement;
+const htmlModeButton = document.getElementById("viewer-html-mode") as HTMLButtonElement | null;
+let dynamicHtml = false;
+
+function syncHtmlModeButton() {
+  if (!htmlModeButton) return;
+  htmlModeButton.hidden = currentFormat !== "html" || currentExternalOutputPath !== null;
+  htmlModeButton.textContent = dynamicHtml ? "静的表示に戻す" : "動的表示";
+  htmlModeButton.setAttribute("aria-pressed", String(dynamicHtml));
+  if (!htmlModeButton.hidden) {
+    const trigger = formatButtons.querySelector(".viewer-format-trigger");
+    if (trigger) trigger.textContent = `${dynamicHtml ? "html(動的)" : viewerFormatSpec("html").title} ▾`;
+  }
+}
+
+htmlModeButton?.addEventListener("click", () => {
+  dynamicHtml = !dynamicHtml;
+  syncHtmlModeButton();
+  if (isInlineViewer) postToParent({ type: INLINE_PREVIEW_MESSAGES.HTML_MODE_CHANGE_MESSAGE, dynamic: dynamicHtml });
+  runViewerOperation("HTML の表示を切り替えられませんでした", renderCurrentViewer);
+});
 const outputFolderButton = document.getElementById("viewer-output-folder") as HTMLButtonElement;
 let outputFolderAvailable = false;
 const previewStatusBanner = document.getElementById("viewer-external-status")!;
 let previewStatus: PreviewStatus | null = null;
 
 function syncPreviewStatus() {
+  syncHtmlModeButton();
   const external = previewStatus ? previewStatus.kind !== "standard" : !!currentExternalOutputPath;
   const kind = document.getElementById("viewer-preview-kind");
   if (kind) kind.textContent = external ? "外部プレビュー" : "標準プレビュー";
@@ -254,6 +278,7 @@ function publishViewerRenderState(state: ViewerRenderState, nextImageZoom: numbe
     ? `${state.archiveEntry ?? state.sourcePath ?? "source"}.${state.effectiveExtension}`
     : state.archiveEntry ?? state.sourcePath;
   syncViewerFormatButtons(formatButtons, state.format, classificationSource, state.archivePath !== null || state.archiveEntry !== null);
+  syncHtmlModeButton();
   syncViewerActionButtons(actionButtons, state.format);
   const formatSpec = viewerFormatSpec(state.format);
   title.textContent = formatSpec.title;
@@ -414,7 +439,21 @@ function applyFont(family: string, size: number, persist = true) {
 }
 
 function setFullscreenButton(fullscreen: boolean) {
-  fullscreenButton.textContent = fullscreen ? "↙" : "⛶";
+  fullscreenButton.textContent = fullscreen ? "" : "⛶";
+  if (fullscreen) {
+    const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    icon.setAttribute("viewBox", "0 0 16 16");
+    icon.setAttribute("width", "16");
+    icon.setAttribute("height", "16");
+    icon.setAttribute("aria-hidden", "true");
+    const corners = document.createElementNS(icon.namespaceURI, "path");
+    corners.setAttribute("d", "M2 5h3V2m9 3h-3V2M2 11h3v3m9-3h-3v3");
+    corners.setAttribute("fill", "none");
+    corners.setAttribute("stroke", "currentColor");
+    corners.setAttribute("stroke-width", "1.5");
+    icon.append(corners);
+    fullscreenButton.append(icon);
+  }
   const label = fullscreen ? "元の表示に戻す" : "プレビューを全画面表示";
   fullscreenButton.title = label;
   fullscreenButton.setAttribute("aria-label", label);
@@ -981,14 +1020,30 @@ async function renderHtml(
   state: ViewerRenderState = currentViewerRenderState(),
 ): Promise<boolean> {
   const generation = beginRender();
+  const signal = renderAbortController.signal;
   const previousDisposeImagePan = disposeImagePan;
   try {
     const sourcePath = state.sourcePath;
     const name = basename(sourcePath ?? state.archiveEntry ?? "document.html");
+    let dynamicUrl: string | undefined;
+    if (dynamicHtml) {
+      const id = window.crypto.randomUUID();
+      await registerHtmlPreview(id, text, state.archivePath ? null : sourcePath);
+      const release = () => {
+        void releaseHtmlPreview(id).catch((error) => console.warn("HTML プレビューを解放できませんでした", error));
+      };
+      if (signal.aborted) {
+        release();
+        return false;
+      }
+      signal.addEventListener("abort", release, { once: true });
+      dynamicUrl = `${convertFileSrc(id, "wasabi-html")}/__wasabipad_document__.html`;
+    }
     const { wrapper } = createHtmlPreview({
       name,
       html: text,
       baseUrl: htmlBaseUrl(sourcePath),
+      dynamicUrl,
       onContextMenu: (x, y) => {
         if (generation !== renderGeneration || !sourcePath) return;
         runViewerOperation("既定のブラウザで開けませんでした", () => showContextMenu(x, y));
@@ -1293,7 +1348,7 @@ function renderCurrentViewer(): Promise<boolean> {
   return renderViewerState(state, imageZoom);
 }
 
-async function renderPayload(payload: ViewerPayload, requireLoadedOutput = false, renderId?: string): Promise<boolean> {
+async function renderPayload(payload: ViewerPayload, requireLoadedOutput = false, renderId?: string, inlineHtmlMode?: boolean): Promise<boolean> {
   if (!isViewerPayload(payload)) throw new Error("ビューのデータが不正です");
   const previousState = currentViewerRenderState();
   const nextState = viewerRenderStateOf(payload, renderId);
@@ -1303,6 +1358,8 @@ async function renderPayload(payload: ViewerPayload, requireLoadedOutput = false
     || nextState.archiveEntry !== previousState.archiveEntry
     || nextState.externalOutputPath !== previousState.externalOutputPath;
   const formatChanged = nextState.format !== previousState.format;
+  if (inlineHtmlMode !== undefined) dynamicHtml = inlineHtmlMode;
+  else if (sourceChanged) dynamicHtml = false;
   if (nextState.format !== "git") { gitPreview?.dispose(); gitPreview = null; }
   const nextImageZoom = sourceChanged ? DEFAULT_IMAGE_ZOOM : imageZoom;
   if (sourceChanged) archiveAssetSession.clearCachedAssets();
@@ -1473,7 +1530,7 @@ async function start() {
           if (typeof renderId === "string") {
             runViewerOperation("ビューを更新できませんでした", async () => {
               try {
-                const rendered = await renderPayload(event.data.payload, true, renderId);
+                const rendered = await renderPayload(event.data.payload, true, renderId, event.data.dynamic_html === true);
                 postToParent({
                   type: rendered
                     ? INLINE_PREVIEW_MESSAGES.DISPLAY_COMMITTED_MESSAGE
@@ -1490,7 +1547,8 @@ async function start() {
             });
             return;
           }
-          runViewerOperation("ビューを更新できませんでした", () => renderPayload(event.data.payload));
+          runViewerOperation("ビューを更新できませんでした", () =>
+            renderPayload(event.data.payload, false, undefined, event.data.dynamic_html === true));
           return;
         }
         if (event.data?.type === INLINE_PREVIEW_MESSAGES.CLEAR_MESSAGE) {
