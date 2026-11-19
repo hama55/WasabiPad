@@ -4179,7 +4179,7 @@ dependencies = [
 
 [[package]]
 name = "wasabipad"
-version = "1.9.2"
+version = "1.9.3"
 dependencies = [
  "libc",
  "percent-encoding",
@@ -4197,7 +4197,7 @@ dependencies = [
 
 [[package]]
 name = "wasabipad-core"
-version = "1.9.2"
+version = "1.9.3"
 dependencies = [
  "encoding_rs",
  "grep-matcher",
