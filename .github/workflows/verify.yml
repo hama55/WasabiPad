@@ -31,5 +31,5 @@ jobs:
       - run: npm run check:generated
       - run: npm run build
       - run: cargo test --workspace --locked
-      - run: cargo clippy --workspace --all-targets --locked
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo check --workspace --locked

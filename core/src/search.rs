@@ -55,6 +55,7 @@ fn line_match(buf: &TextBuffer, matcher: &RegexMatcher, line: usize, col_from: u
         .map(|(s, e)| (Pos { line, col: s }, Pos { line, col: e }))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn find_all_in_range(
     buf: &TextBuffer,
     pat: &str,
@@ -227,6 +228,7 @@ pub(crate) enum ChunkStep {
     NotFound,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn find_chunk(
     buf: &TextBuffer,
     pat: &str,

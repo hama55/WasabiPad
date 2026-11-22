@@ -79,6 +79,7 @@ fn next_viewer_payload(
     next
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn open_viewer(
     format: ViewerFormat,
     text: String,

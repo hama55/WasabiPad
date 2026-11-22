@@ -1745,6 +1745,8 @@ async function start() {
           externalSourceNavigationController?.abort();
           externalSourceNavigationController = null;
           replaceActiveScopedPreviews(null, null);
+          revokeArchiveAssetUrls();
+          archiveAssetSession.clearCachedAssets();
           gitPreview?.dispose();
           gitPreview = null;
           disposeSqlitePreview?.();

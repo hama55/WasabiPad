@@ -67,4 +67,31 @@ describe("Feature: openModal", () => {
     const modal = openModal({ onCancel: () => {} }, "ss-box");
     expect(modal.box.className).toBe("pf-box ss-box");
   });
+
+  // Given: 親モーダルと子モーダルを2段重ねて開き、子モーダル内に textarea がある
+  // When: textarea 上で Enter を押し、続けて Escape を1回押す
+  // Then: textarea の Enter は onAccept に奪われず、Escape は最前面の子モーダルだけをキャンセルし親モーダルは残る
+  it("Scenario: 重ねたモーダルでは最前面だけがキーを処理し textarea の Enter は素通しする (M-5)", () => {
+    const events: string[] = [];
+    openModal({
+      onCancel: () => events.push("parent-cancel"),
+      onAccept: () => events.push("parent-accept"),
+    });
+    const child = openModal({
+      onCancel: () => {
+        events.push("child-cancel");
+        child.close();
+      },
+      onAccept: () => events.push("child-accept"),
+    });
+    const textarea = document.createElement("textarea");
+    child.box.append(textarea);
+    textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    expect(events).toEqual([]);
+
+    press("Escape");
+    expect(events).toEqual(["child-cancel"]);
+    press("Escape");
+    expect(events).toEqual(["child-cancel", "parent-cancel"]);
+  });
 });

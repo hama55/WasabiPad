@@ -10,7 +10,7 @@ tauri-build = { version = "2", features = [] }
 wasabipad-core = { path = "../core" }
 # protocol-asset: Markdown ビューが画像を file から読むための asset プロトコル
 # 権限は capabilities/ の静的定義を使う。未使用の dynamic-acl だけを外し、他の既定 feature は維持する。
-tauri = { version = "2", default-features = false, features = ["wry", "compression", "common-controls-v6", "x11", "dbus", "protocol-asset"] }
+tauri = { version = "2", default-features = false, features = ["wry", "compression", "common-controls-v6", "protocol-asset"] }
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -26,5 +26,5 @@ libc = "0.2"
 [dev-dependencies]
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse"] }
+windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse"] }
 webview2-com = "0.38"

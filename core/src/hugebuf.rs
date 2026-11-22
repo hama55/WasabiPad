@@ -287,7 +287,7 @@ impl HugeBuf {
                 }
             }
         }
-        if let Some(report) = progress.as_deref_mut() {
+        if let Some(report) = progress {
             report(offset, offset);
         }
         drop(buf);

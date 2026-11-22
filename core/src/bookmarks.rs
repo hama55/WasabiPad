@@ -28,16 +28,28 @@ fn legacy_store_path() -> PathBuf {
         .join(STORE_FILE)
 }
 
+fn sanitize_bookmark_field(value: &str) -> String {
+    value.replace(['\t', '\r', '\n'], " ")
+}
+
 fn serialize_into(nodes: &[Node], depth: usize, out: &mut String) {
     for n in nodes {
         for _ in 0..depth {
             out.push('\t');
         }
         match n {
-            Node::File { name, path } => out.push_str(&format!("f\t{}\t{}\n", name, path)),
-            Node::Directory { name, path } => out.push_str(&format!("d\t{}\t{}\n", name, path)),
+            Node::File { name, path } => out.push_str(&format!(
+                "f\t{}\t{}\n",
+                sanitize_bookmark_field(name),
+                sanitize_bookmark_field(path)
+            )),
+            Node::Directory { name, path } => out.push_str(&format!(
+                "d\t{}\t{}\n",
+                sanitize_bookmark_field(name),
+                sanitize_bookmark_field(path)
+            )),
             Node::Group { name, children } => {
-                out.push_str(&format!("g\t{}\n", name));
+                out.push_str(&format!("g\t{}\n", sanitize_bookmark_field(name)));
                 serialize_into(children, depth + 1, out);
             }
         }
@@ -194,5 +206,25 @@ mod tests {
     fn malformed_hierarchy_is_reported_instead_of_panicking() {
         assert!(parse("f\troot\tC:\\root.txt\n\tf\tmemo\tC:\\memo.txt\n").is_err());
         assert!(parse("unknown\tmemo\tC:\\memo.txt\n").is_err());
+    }
+
+    // Feature: お気に入り名に含まれるタブや改行の無害化 (M-6)
+    // Scenario: タブ文字や改行を含むブックマーク名をシリアライズして再パースする
+    // Given: 名前とパスに \t や \n が混入した Node
+    // When: serialize_into と parse を通す
+    // Then: フォーマットが壊れず空白に置換された状態で正常に復元される
+    #[test]
+    fn control_chars_in_bookmark_names_are_sanitized_before_serialization() {
+        let nodes = vec![Node::File {
+            name: "my\tnote\n1".to_string(),
+            path: "C:\\work\\memo.txt".to_string(),
+        }];
+        let mut text = String::new();
+        serialize_into(&nodes, 0, &mut text);
+        let parsed = parse(&text).unwrap();
+        assert!(matches!(
+            parsed.as_slice(),
+            [Node::File { name, path }] if name == "my note 1" && path == "C:\\work\\memo.txt"
+        ));
     }
 }

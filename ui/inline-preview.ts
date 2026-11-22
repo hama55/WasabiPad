@@ -441,6 +441,12 @@ export class InlinePreview {
     const label = `inline-preview-${++this.nextLabel}`;
     const payload = this.createPayload(format, text, selection, externalOutputPath);
     if (payload.external_output_path !== null || (this.payload?.external_output_path ?? null) !== null) {
+      if (this.pendingExternalOpen) {
+        const superseded = this.pendingExternalOpen;
+        this.pendingExternalOpen = null;
+        superseded.resolve(null);
+        this.releasePendingExternalOutput(superseded);
+      }
       return new Promise((resolve) => {
         const pending: PendingExternalOpen = {
           renderId: `inline-preview-render-${++this.nextRenderId}`,

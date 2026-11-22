@@ -296,7 +296,7 @@ fn shell_execute_open(target: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "既定のブラウザで開けませんでした (HRESULT: 0x{result:08X})"
+            "既定のブラウザで開けませんでした (SE_ERR: {result})"
         ))
     }
 }

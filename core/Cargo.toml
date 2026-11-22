@@ -25,7 +25,7 @@ grep-regex = "0.1"
 grep-searcher = "0.1"
 ignore = "0.4"
 
-[dependencies.windows-sys]
+[target.'cfg(windows)'.dependencies.windows-sys]
 version = "0.60"
 features = [
     "Win32_Foundation",

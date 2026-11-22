@@ -18,17 +18,56 @@ const MAX_LCS_CELLS: usize = 2_000_000;
 const DIFF_CONTEXT_LINES: usize = 3;
 
 fn diff_changes(base: &[String], variant: &[String]) -> Vec<Change> {
-    let Some(cells) = (base.len() + 1).checked_mul(variant.len() + 1) else {
-        return vec![whole_change(base, variant)];
-    };
-    if cells > MAX_LCS_CELLS {
-        return vec![whole_change(base, variant)];
+    let mut prefix = 0;
+    let min_len = base.len().min(variant.len());
+    while prefix < min_len && base[prefix] == variant[prefix] {
+        prefix += 1;
+    }
+    let mut base_end = base.len();
+    let mut variant_end = variant.len();
+    while base_end > prefix && variant_end > prefix && base[base_end - 1] == variant[variant_end - 1] {
+        base_end -= 1;
+        variant_end -= 1;
+    }
+    if prefix == base_end && prefix == variant_end {
+        return Vec::new();
+    }
+    if prefix == base_end {
+        return vec![Change {
+            start: prefix,
+            end: prefix,
+            replacement: variant[prefix..variant_end].to_vec(),
+        }];
+    }
+    if prefix == variant_end {
+        return vec![Change {
+            start: prefix,
+            end: base_end,
+            replacement: Vec::new(),
+        }];
     }
 
-    let mut lcs = vec![vec![0usize; variant.len() + 1]; base.len() + 1];
-    for i in (0..base.len()).rev() {
-        for j in (0..variant.len()).rev() {
-            lcs[i][j] = if base[i] == variant[j] {
+    let base_mid = &base[prefix..base_end];
+    let variant_mid = &variant[prefix..variant_end];
+    let Some(cells) = (base_mid.len() + 1).checked_mul(variant_mid.len() + 1) else {
+        return vec![Change {
+            start: prefix,
+            end: base_end,
+            replacement: variant_mid.to_vec(),
+        }];
+    };
+    if cells > MAX_LCS_CELLS {
+        return vec![Change {
+            start: prefix,
+            end: base_end,
+            replacement: variant_mid.to_vec(),
+        }];
+    }
+
+    let mut lcs = vec![vec![0usize; variant_mid.len() + 1]; base_mid.len() + 1];
+    for i in (0..base_mid.len()).rev() {
+        for j in (0..variant_mid.len()).rev() {
+            lcs[i][j] = if base_mid[i] == variant_mid[j] {
                 lcs[i + 1][j + 1] + 1
             } else {
                 lcs[i + 1][j].max(lcs[i][j + 1])
@@ -40,30 +79,30 @@ fn diff_changes(base: &[String], variant: &[String]) -> Vec<Change> {
     let mut active: Option<Change> = None;
     let mut i = 0;
     let mut j = 0;
-    while i < base.len() || j < variant.len() {
-        if i < base.len() && j < variant.len() && base[i] == variant[j] {
+    while i < base_mid.len() || j < variant_mid.len() {
+        if i < base_mid.len() && j < variant_mid.len() && base_mid[i] == variant_mid[j] {
             if let Some(change) = active.take() {
                 changes.push(change);
             }
             i += 1;
             j += 1;
-        } else if j == variant.len()
-            || (i < base.len() && lcs[i + 1][j] >= lcs[i][j + 1])
+        } else if j == variant_mid.len()
+            || (i < base_mid.len() && lcs[i + 1][j] >= lcs[i][j + 1])
         {
             let change = active.get_or_insert_with(|| Change {
-                start: i,
-                end: i,
+                start: prefix + i,
+                end: prefix + i,
                 replacement: Vec::new(),
             });
-            change.end = i + 1;
+            change.end = prefix + i + 1;
             i += 1;
         } else {
             let change = active.get_or_insert_with(|| Change {
-                start: i,
-                end: i,
+                start: prefix + i,
+                end: prefix + i,
                 replacement: Vec::new(),
             });
-            change.replacement.push(variant[j].clone());
+            change.replacement.push(variant_mid[j].clone());
             j += 1;
         }
     }
@@ -71,14 +110,6 @@ fn diff_changes(base: &[String], variant: &[String]) -> Vec<Change> {
         changes.push(change);
     }
     changes
-}
-
-fn whole_change(base: &[String], variant: &[String]) -> Change {
-    Change {
-        start: 0,
-        end: base.len(),
-        replacement: variant.to_vec(),
-    }
 }
 
 fn changes_overlap(a: &Change, b: &Change) -> bool {
@@ -128,7 +159,7 @@ fn append_base(merged: &mut Vec<String>, base: &[String], from: usize, to: usize
     }
 }
 
-fn variant_start_line(changes: &[Change], base_pos: usize) -> usize {
+fn variant_line_at(changes: &[Change], base_pos: usize, include_insertion_at_pos: bool) -> usize {
     let mut base_cursor = 0;
     let mut variant_cursor = 0;
     for change in changes {
@@ -140,6 +171,9 @@ fn variant_start_line(changes: &[Change], base_pos: usize) -> usize {
             base_cursor = change.start;
         }
         if change.start == base_pos && change.start == change.end {
+            if include_insertion_at_pos {
+                variant_cursor += change.replacement.len();
+            }
             break;
         }
         if change.end > base_pos {
@@ -150,6 +184,14 @@ fn variant_start_line(changes: &[Change], base_pos: usize) -> usize {
     }
     variant_cursor += base_pos.saturating_sub(base_cursor);
     variant_cursor + 1
+}
+
+fn variant_start_line(changes: &[Change], base_pos: usize) -> usize {
+    variant_line_at(changes, base_pos, false)
+}
+
+fn variant_context_line(changes: &[Change], base_pos: usize) -> usize {
+    variant_line_at(changes, base_pos, true)
 }
 
 fn context_bounds(
@@ -201,8 +243,8 @@ fn context_lines(
     (from..to)
         .map(|index| ExternalMergeContextLine {
             text: base[index].clone(),
-            mine_line: variant_start_line(mine_changes, index),
-            theirs_line: variant_start_line(theirs_changes, index),
+            mine_line: variant_context_line(mine_changes, index),
+            theirs_line: variant_context_line(theirs_changes, index),
         })
         .collect()
 }
@@ -220,7 +262,7 @@ fn after_context_lines(
         .filter(|change| !(change.start == start && change.end == end) && change.start >= end)
         .map(|change| change.start)
         .min();
-    if next_start.map_or(false, |next| {
+    if next_start.is_some_and(|next| {
         next.saturating_sub(end) <= DIFF_CONTEXT_LINES * 2
     }) {
         return Vec::new();
@@ -236,6 +278,7 @@ fn after_context_lines(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn add_preview(
     preview: &mut ExternalMergePreview,
     base: &[String],
@@ -573,5 +616,31 @@ mod tests {
 
         assert_eq!(result.merged, lines("a\n私のc"));
         assert_eq!(result.preview.conflict_count, 0);
+    }
+
+    // Feature: 大きな文書での3-wayマージと挿入後コンテキスト行番号 (M-3)
+    // Scenario: 2,000行超の文書で先頭・末尾変更をマージし、純粋挿入後の after 行番号を確認する
+    // Given: 2,000行の基準本文と、先頭付近の自分側変更・末尾付近の外部側挿入
+    // When: three_way を実行する
+    // Then: MAX_LCS_CELLS 超過の全体競合に陥らず両方の変更をマージし、挿入直後の after コンテキスト行番号も挿入行数を反映する
+    #[test]
+    fn merges_large_document_via_prefix_suffix_trimming_and_tracks_after_insertion_line_numbers() {
+        let mut base: Vec<String> = (1..=2000).map(|i| format!("line-{i}")).collect();
+        let mut mine = base.clone();
+        let mut theirs = base.clone();
+        mine[2] = "mine-3".to_string();
+        theirs.insert(1998, "theirs-inserted".to_string());
+
+        let result = three_way(&base, &mine, &theirs);
+        assert_eq!(result.preview.conflict_count, 0);
+        assert_eq!(result.merged.len(), 2001);
+        assert_eq!(result.merged[2], "mine-3");
+        assert_eq!(result.merged[1998], "theirs-inserted");
+        let change = &result.preview.changes[0];
+        assert_eq!(change.theirs_start_line, 1999);
+        assert_eq!(change.after[0].text, "line-1999");
+        assert_eq!(change.after[0].mine_line, 1999);
+        assert_eq!(change.after[0].theirs_line, 2000);
+        base.clear();
     }
 }

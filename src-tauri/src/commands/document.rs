@@ -273,6 +273,7 @@ pub(crate) fn read_diagram_asset(path: String, source_path: String, state: State
     })?.map_err(|error| error.to_string())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_diagram_edit(start: PosC, end: PosC, caret_before: PosC, text: String, expected: String, expected_line: String, source_path: String, archive_entry: Option<String>, state: State) -> Result<EditResult, String> {
     with_doc(&state, |doc| {
         doc.check_diagram_source(&PathBuf::from(source_path), archive_entry.as_deref())?;
@@ -327,6 +328,7 @@ pub(crate) fn find(
     with_doc(&state, |doc| doc.find_with_options(&pat, from, forward, match_case, use_regex, whole_word))?
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn find_all_in_range(
     pat: String,
     first_line: usize,
@@ -342,6 +344,7 @@ pub(crate) fn find_all_in_range(
     })?
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn find_step(
     pat: String,
     from: PosC,

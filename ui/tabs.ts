@@ -316,7 +316,8 @@ export class TabManager {
       const first = await this.ports.nextMemoPath(directory, DEFAULT_MEMO_STEM, DEFAULT_MEMO_EXTENSION);
       if (!reserved.has(comparablePath(first))) return first;
       const firstNumber = Number(basename(first).slice(DEFAULT_MEMO_STEM.length, -DEFAULT_MEMO_EXTENSION.length - 1));
-      for (let number = firstNumber + 1; ; number++) {
+      const startNumber = Number.isFinite(firstNumber) && firstNumber >= 0 ? firstNumber + 1 : 1;
+      for (let number = startNumber, attempts = 0; attempts < 100; number++, attempts++) {
         const stem = `${DEFAULT_MEMO_STEM}${number}`;
         const candidate = joinWindowsRoot(directory.replace(/[\\/]+$/, ""), fileNameOf({ stem, extension: DEFAULT_MEMO_EXTENSION }));
         if (reserved.has(comparablePath(candidate))) continue;
@@ -324,6 +325,7 @@ export class TabManager {
         const available = await this.ports.nextMemoPath(directory, stem, DEFAULT_MEMO_EXTENSION);
         if (comparablePath(available) === comparablePath(candidate)) return candidate;
       }
+      return null;
     } catch {
       return null;
     }

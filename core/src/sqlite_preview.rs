@@ -1,7 +1,9 @@
-use rusqlite::{params, types::ValueRef, Connection, OpenFlags, OptionalExtension};
+use rusqlite::{config::DbConfig, params, types::ValueRef, Connection, OpenFlags, OptionalExtension};
 use std::{fs::File, io::Read, path::Path};
 
 const MAX_TEXT_CHARS: usize = 4096;
+const MAX_PREVIEW_LIMIT: usize = 10_000;
+const MAX_QUERY_SQL_BYTES: usize = 64 * 1024;
 const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
 const TEMPORARY_VIEW_NAME: &str = "__wasabipad_temporary_view__";
 
@@ -49,19 +51,24 @@ pub fn read_sqlite_preview(
     if !is_sqlite_preview_eligible(path) {
         return Err("SQLiteプレビューの対象ファイルではありません".to_string());
     }
-    if limit == 0 {
-        return Err("表示行数は1以上で指定してください".to_string());
+    if limit == 0 || limit > MAX_PREVIEW_LIMIT {
+        return Err(format!("表示行数は1〜{MAX_PREVIEW_LIMIT}の範囲で指定してください"));
+    }
+    if query_sql.is_some_and(|sql| sql.len() > MAX_QUERY_SQL_BYTES) {
+        return Err("SQLが長すぎます".to_string());
     }
     let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|error| error.to_string())?;
+    let _ = connection.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true);
+    let _ = connection.set_db_config(DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA, false);
+    connection
+        .execute_batch("PRAGMA temp_store=MEMORY; PRAGMA trusted_schema=OFF;")
         .map_err(|error| error.to_string())?;
     let mut objects = sqlite_objects(&connection).map_err(|error| error.to_string())?;
     let temporary_view_name = if let Some(query_sql) = query_sql {
         if !starts_with_select(query_sql) {
             return Err("入力はSELECTで始まるSQLにしてください".to_string());
         }
-        connection
-            .execute_batch("PRAGMA temp_store=MEMORY;")
-            .map_err(|error| error.to_string())?;
         let mut name = TEMPORARY_VIEW_NAME.to_string();
         let mut suffix = 0usize;
         while objects.iter().any(|object| object.name == name) {
@@ -85,6 +92,9 @@ pub fn read_sqlite_preview(
     } else {
         None
     };
+    connection
+        .execute_batch("PRAGMA query_only=ON;")
+        .map_err(|error| error.to_string())?;
     let selected_name = if let Some(name) = temporary_view_name {
         Some(name)
     } else {
@@ -282,10 +292,22 @@ fn value_from_ref(value: rusqlite::Result<ValueRef<'_>>) -> Result<SqliteCell, S
             value: value.to_string(),
         },
         ValueRef::Text(value) => {
-            let value = String::from_utf8_lossy(value).into_owned();
-            let truncated = value.chars().count() > MAX_TEXT_CHARS;
+            let max_scan_bytes = MAX_TEXT_CHARS.saturating_mul(4).saturating_add(4);
+            let slice_len = if value.len() > max_scan_bytes {
+                let mut end = max_scan_bytes;
+                while end > 0 && (value[end] & 0b1100_0000) == 0b1000_0000 {
+                    end -= 1;
+                }
+                end
+            } else {
+                value.len()
+            };
+            let decoded = String::from_utf8_lossy(&value[..slice_len]);
+            let mut chars = decoded.chars();
+            let prefix: String = chars.by_ref().take(MAX_TEXT_CHARS).collect();
+            let truncated = slice_len < value.len() || chars.next().is_some();
             SqliteCell::Text {
-                value: value.chars().take(MAX_TEXT_CHARS).collect(),
+                value: prefix,
                 truncated,
             }
         }

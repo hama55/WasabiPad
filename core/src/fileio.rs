@@ -272,7 +272,7 @@ pub fn open_buffer_with_progress(
 fn open_buffer_impl_with_progress(
     path: &Path,
     threshold: u64,
-    mut progress: Option<&mut LoadProgress<'_>>,
+    progress: Option<&mut LoadProgress<'_>>,
 ) -> io::Result<Opened> {
     // 全共有で開いて小ファイルかどうかを判定。小ファイルはこのハンドルのまま読み切る
     let probe = File::open(path)?;
@@ -317,7 +317,7 @@ fn open_buffer_impl_with_progress(
     // UTF-16LE (行分割が byte 単位不可) と空ファイルは None/スキップして通常読込へ
     // フォールバック (排他は維持する)。
     if len > 0 {
-        let huge = if let Some(progress) = progress.as_deref_mut() {
+        let huge = if let Some(progress) = progress {
             HugeBuf::open_with_progress(source_file.try_clone()?, Some(progress))?
         } else {
             HugeBuf::open(source_file.try_clone()?)?
@@ -460,7 +460,7 @@ fn open_buffer_as_impl_with_progress(
     path: &Path,
     requested: Encoding,
     threshold: u64,
-    mut progress: Option<&mut LoadProgress<'_>>,
+    progress: Option<&mut LoadProgress<'_>>,
 ) -> io::Result<Opened> {
     let probe = File::open(path)?;
     if let Some(opened) = open_video_metadata(path, &probe)? {
@@ -484,7 +484,7 @@ fn open_buffer_as_impl_with_progress(
     }
     drop(probe);
     let source_file = open_exclusive(path)?;
-    let huge = if let Some(progress) = progress.as_deref_mut() {
+    let huge = if let Some(progress) = progress {
         HugeBuf::open_with_encoding(source_file.try_clone()?, Some(requested), Some(progress))?
     } else {
         HugeBuf::open_as(source_file.try_clone()?, requested)?

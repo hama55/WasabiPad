@@ -460,6 +460,8 @@ fn is_pdf_classified_path(path: &Path, open_as: Option<OpenAs>) -> bool {
         .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
 }
 
+type DecodedArchiveEntry = (String, Option<(Encoding, Eol)>, bool, Option<OpenAs>);
+
 const IMAGE_DETECTION_HEADER_LIMIT: u64 = 1024 * 1024;
 const FILE_ASSET_MAX_BYTES: u64 = crate::ziptext::MAX_ENTRY as u64;
 
@@ -593,9 +595,9 @@ fn detect_image_open_as_bytes(bytes: &[u8]) -> io::Result<OpenAs> {
         Some(OpenAs::Bmp)
     } else if bytes.starts_with(&[0, 0, 1, 0]) {
         Some(OpenAs::Ico)
-    } else if detected_avif(&bytes) {
+    } else if detected_avif(bytes) {
         Some(OpenAs::Avif)
-    } else if detected_svg(&bytes) {
+    } else if detected_svg(bytes) {
         Some(OpenAs::Svg)
     } else {
         None
@@ -953,7 +955,7 @@ impl Doc {
     pub fn open_with_progress_as(
         path: &Path,
         open_as: Option<OpenAs>,
-        mut progress: Option<&mut fileio::LoadProgress<'_>>,
+        progress: Option<&mut fileio::LoadProgress<'_>>,
     ) -> io::Result<Doc> {
         let archive_port = archive_port::system();
         if path.is_dir() {
@@ -967,7 +969,7 @@ impl Doc {
             };
             return Ok(doc);
         }
-        Doc::open_file_with_progress(path, archive_port, open_as, progress.as_deref_mut())
+        Doc::open_file_with_progress(path, archive_port, open_as, progress)
     }
 
     // 指定ディレクトリ (rel_dir が空文字ならルート) の直下だけを列挙する。
@@ -1028,7 +1030,7 @@ impl Doc {
         path: &Path,
         archive_port: Arc<dyn ArchivePort>,
         mut open_as: Option<OpenAs>,
-        mut progress: Option<&mut fileio::LoadProgress<'_>>,
+        progress: Option<&mut fileio::LoadProgress<'_>>,
     ) -> io::Result<Doc> {
         if open_as == Some(OpenAs::ImageAuto) {
             open_as = Some(detect_image_open_as(path)?);
@@ -1075,7 +1077,7 @@ impl Doc {
             }
         }
 
-        let o = if let Some(progress) = progress.as_deref_mut() {
+        let o = if let Some(progress) = progress {
             fileio::open_buffer_with_progress(path, progress)?
         } else {
             fileio::open_buffer(path)?
@@ -1248,7 +1250,7 @@ impl Doc {
         let Some(stamp) = opened.stamp else {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "この文書はマージできません"));
         };
-        if opened.entries.is_some() {
+        if opened.entries.is_some() || opened_is_binary(&opened, path, self.open_as) {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "この文書はマージできません"));
         }
         Ok(PendingExternalMerge {
@@ -1605,7 +1607,7 @@ impl Doc {
         archive_open_as: Option<OpenAs>,
         entry_open_as: Option<OpenAs>,
         cache: Option<&PreviewCache>,
-    ) -> io::Result<(String, Option<(Encoding, Eol)>, bool, Option<OpenAs>)> {
+    ) -> io::Result<DecodedArchiveEntry> {
         let cache_allowed = cache.is_some()
             && !is_confidential_archive(self.sevenz_password(archive));
         let cache_key = cache_allowed.then(|| preview_cache_archive_key(archive, entry));
@@ -3009,6 +3011,7 @@ impl Doc {
         }))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn find_all_in_range(
         &self,
         pat: &str,
@@ -3052,6 +3055,7 @@ impl Doc {
             .unwrap_or(FindOutcome::NotFound)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn find_step_with_options(
         &self, pat: &str, from: PosC, match_case: bool,
         use_regex: bool, whole_word: bool, cursor: Option<FindCursor>, budget: usize,

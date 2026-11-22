@@ -44,38 +44,6 @@ function csvCellPositions(sourceRow: CsvSourceRow, columnIndex: number, delimite
   };
 }
 
-function csvCellSelected(
-  sourceRow: CsvSourceRow,
-  columnIndex: number,
-  selection: ViewerSelection | null,
-  delimiter: string,
-) {
-  if (!selection || isCollapsedViewerSelection(selection)) return false;
-  const cell = csvCellPositions(sourceRow, columnIndex, delimiter);
-  return comparePos(selection.start, cell.end) < 0
-    && comparePos(selection.end, cell.start) > 0;
-}
-
-function csvRowSelected(
-  sourceRow: CsvSourceRow,
-  selection: ViewerSelection | null,
-  delimiter: string,
-) {
-  if (!selection || isCollapsedViewerSelection(selection)) return false;
-  const rowStart = { line: sourceRow.line, col: 0 };
-  const rowEnd = csvSourcePositionAtOffset(sourceRow.text, sourceRow.line, sourceRow.text.length);
-  if (comparePos(selection.start, rowEnd) >= 0 || comparePos(selection.end, rowStart) <= 0) return false;
-
-  const selectedCells = sourceRow.values
-    .slice(0, MAX_TABLE_COLUMNS)
-    .map((_, index) => csvCellPositions(sourceRow, index, delimiter))
-    .filter((cell) => comparePos(selection.start, cell.end) < 0
-      && comparePos(selection.end, cell.start) > 0);
-  return selectedCells.length !== 1
-    || comparePos(selection.start, selectedCells[0].start) < 0
-    || comparePos(selection.end, selectedCells[0].end) > 0;
-}
-
 function appendCsvCaret(
   cell: HTMLElement,
   value: string,
@@ -167,14 +135,26 @@ export function renderCsvTable(options: CsvTableRenderOptions): CsvTableRenderRe
       ?? (selection && isCollapsedViewerSelection(selection) ? selection.start.line : null);
     lineNumber.classList.toggle("viewer-caret-line-number", sourceRow.line === caretLine);
     tr.appendChild(lineNumber);
+    const hasRangeSelection = !!selection && !isCollapsedViewerSelection(selection);
+    const rowStart = { line: sourceRow.line, col: 0 };
+    const rowEnd = hasRangeSelection
+      ? csvSourcePositionAtOffset(sourceRow.text, sourceRow.line, sourceRow.text.length)
+      : rowStart;
+    const rowOverlapsSelection = hasRangeSelection
+      && comparePos(selection!.start, rowEnd) < 0
+      && comparePos(selection!.end, rowStart) > 0;
+    const rowCellPositions = rowOverlapsSelection
+      ? row.slice(0, MAX_TABLE_COLUMNS).map((_, index) => csvCellPositions(sourceRow, index, options.delimiter))
+      : null;
     row.slice(0, MAX_TABLE_COLUMNS).forEach((value, columnIndex) => {
       const cell = document.createElement(rowIndex === 0 ? "th" : "td");
       cell.dataset.sourceColumn = String(columnIndex);
       appendCsvCaret(cell, value, sourceRow, columnIndex, options.selection, options.delimiter);
-      cell.classList.toggle(
-        "viewer-source-selected",
-        csvCellSelected(sourceRow, columnIndex, options.selection, options.delimiter),
-      );
+      const cellPos = rowCellPositions?.[columnIndex];
+      const cellSelected = !!cellPos
+        && comparePos(selection!.start, cellPos.end) < 0
+        && comparePos(selection!.end, cellPos.start) > 0;
+      cell.classList.toggle("viewer-source-selected", cellSelected);
       tr.appendChild(cell);
       if (rowIndex === 0 && columns[columnIndex]) {
         const handle = document.createElement("span");
@@ -185,7 +165,16 @@ export function renderCsvTable(options: CsvTableRenderOptions): CsvTableRenderRe
         cell.appendChild(handle);
       }
     });
-    tr.classList.toggle("viewer-source-selected", csvRowSelected(sourceRow, options.selection, options.delimiter));
+    if (rowCellPositions && selection) {
+      const selectedCells = rowCellPositions.filter((cellPos) =>
+        comparePos(selection.start, cellPos.end) < 0 && comparePos(selection.end, cellPos.start) > 0);
+      const rowSelected = selectedCells.length !== 1
+        || comparePos(selection.start, selectedCells[0].start) < 0
+        || comparePos(selection.end, selectedCells[0].end) > 0;
+      tr.classList.toggle("viewer-source-selected", rowSelected);
+    } else {
+      tr.classList.toggle("viewer-source-selected", false);
+    }
     rows.push(tr);
     fragment.appendChild(tr);
   });

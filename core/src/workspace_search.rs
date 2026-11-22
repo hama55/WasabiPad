@@ -472,7 +472,7 @@ fn name_hit(
         None => {
             let found = match_path(pattern, relative, match_case)?;
             let filename_pattern = pattern
-                .rsplit(|character| character == '/' || character == '\\')
+                .rsplit(['/', '\\'])
                 .next()
                 .unwrap_or(pattern);
             let filename = relative.rsplit('/').next().unwrap_or(relative);

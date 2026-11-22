@@ -30,11 +30,16 @@ export function openModal(ports: ModalPorts, boxClass = ""): Modal {
   };
   const onKey = (e: KeyboardEvent) => {
     if (e.isComposing || e.keyCode === 229) return;
+    const overlays = document.body.querySelectorAll(".pf-overlay");
+    if (overlays[overlays.length - 1] !== overlay) return;
     if (e.key === "Escape") {
       e.preventDefault();
+      e.stopImmediatePropagation();
       ports.onCancel(e);
     } else if (e.key === "Enter" && ports.onAccept) {
+      if (e.target instanceof HTMLTextAreaElement) return;
       e.preventDefault();
+      e.stopImmediatePropagation();
       ports.onAccept();
     }
   };

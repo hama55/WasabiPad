@@ -46,6 +46,12 @@ tauri = replaceOnce(
   `$1ipc: http://ipc.localhost ${devOrigin} ${devWebSocketOrigin}$2`,
   "Tauri devCsp connect-src",
 );
+tauri = replaceOnce(
+  tauri,
+  /("devCsp"\s*:\s*\{[\s\S]*?"media-src"\s*:\s*")[^"]*(")/,
+  `$1'self' ${devOrigin} asset: http://asset.localhost$2`,
+  "Tauri devCsp media-src",
+);
 writeIfChanged("src-tauri/tauri.conf.json", tauri);
 
 let index = read("index.html");

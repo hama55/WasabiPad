@@ -76,6 +76,7 @@ const sourceMapSanitizeSchema = {
       "dataSourceOffsetEnd",
     ],
     a: [...(defaultSchema.attributes?.a ?? []), "target", "rel"],
+    img: [...(defaultSchema.attributes?.img ?? []), MARKDOWN_IMAGE_SOURCE_ATTRIBUTE, "dataWasabipadMarkdownSrc"],
     input: [...(defaultSchema.attributes?.input ?? []), "ariaLabel", "className"],
   },
 };
@@ -248,6 +249,14 @@ function markdownSourceMapNode(node: HastNode, source: string, parentTag?: strin
   if (node.type !== "element") {
     if (node.children) node.children = node.children.flatMap((child) => markdownSourceMapNode(child, source));
     return [node];
+  }
+
+  if (node.tagName === "img" && node.properties && typeof node.properties.src === "string") {
+    node.properties = {
+      ...node.properties,
+      [MARKDOWN_IMAGE_SOURCE_ATTRIBUTE]: node.properties.src,
+    };
+    delete node.properties.src;
   }
 
   if ((node.tagName === "br" || node.tagName === "img") && node.position?.start?.offset !== undefined && node.position.end?.offset !== undefined) {

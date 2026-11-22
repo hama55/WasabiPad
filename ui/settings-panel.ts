@@ -543,7 +543,9 @@ function externalPreviewAdaptersField(ports: SettingsPanelPorts): HTMLElement {
   group.append(title, summary);
 
   const render = () => {
-    group.querySelectorAll<HTMLElement>("[data-external-preview-row], [data-external-preview-selection]")
+    group.querySelectorAll<HTMLElement>(
+      "[data-external-preview-row], [data-external-preview-selection], .settings-empty, [data-action='add-external-preview-adapter']",
+    )
       .forEach((row) => row.remove());
     const adapters = ports.getSetting("externalPreviewAdapters");
     adapters.forEach((adapter) => {
@@ -829,6 +831,7 @@ function previewCacheField(ports: SettingsPanelPorts): HTMLElement {
     const request = Promise.resolve(getInfo());
     previewCacheInfoRequest = request;
     void request.then((info) => {
+      if (request !== previewCacheInfoRequest) return;
       if (!info) {
         size.textContent = "使用量: 確認できません";
         return;
@@ -840,6 +843,7 @@ function previewCacheField(ports: SettingsPanelPorts): HTMLElement {
       location.title = info.directory;
       size.textContent = `使用量: ${formatByteSize(info.bytes)}`;
     }).catch(() => {
+      if (request !== previewCacheInfoRequest) return;
       size.textContent = "使用量: 確認できません";
     });
   };

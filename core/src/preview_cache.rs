@@ -33,7 +33,7 @@ impl PreviewCache {
 
     pub fn load(&self, key: &str, fingerprint: &str) -> io::Result<Option<Vec<u8>>> {
         let path = self.cache_path(key);
-        let mut file = match File::open(path) {
+        let file = match File::open(path) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error),
@@ -42,7 +42,11 @@ impl PreviewCache {
             return Ok(None);
         }
         let mut encoded = Vec::new();
-        file.read_to_end(&mut encoded)?;
+        file.take(MAX_CACHE_FILE_BYTES.saturating_add(1))
+            .read_to_end(&mut encoded)?;
+        if encoded.len() as u64 > MAX_CACHE_FILE_BYTES {
+            return Ok(None);
+        }
         let Some(payload) = decode_cache(&encoded, fingerprint) else {
             return Ok(None);
         };

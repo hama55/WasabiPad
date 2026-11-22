@@ -76,6 +76,7 @@ pub(crate) fn find(
     find_backward(buf, pat, from, match_case, use_regex, whole_word, true)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn find_step(
     buf: &TextBuffer,
     pat: &str,
@@ -106,6 +107,7 @@ pub(crate) struct ReplaceResult {
     pub caret: Pos,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn replace_all_chunk(
     buf: &mut TextBuffer,
     undo: &mut UndoStack,

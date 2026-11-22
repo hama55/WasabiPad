@@ -47,7 +47,7 @@ function camelCase(value) {
 
 function syncCommandNames(targetDirectory) {
   const backend = readFileSync(join(root, "src-tauri", "src", "main.rs"), "utf8");
-  const commands = [...backend.matchAll(/#\[tauri::command\]\s*\r?\n(?:async\s+)?fn\s+(\w+)/g)]
+  const commands = [...backend.matchAll(/#\[tauri::command\](?:\s*#\[[^\]]*\])*\s*\r?\n(?:async\s+)?fn\s+(\w+)/g)]
     .map((match) => match[1]);
   const keys = new Set();
   const entries = commands.map((command) => {
@@ -71,7 +71,7 @@ function syncCommandNames(targetDirectory) {
 function exportPackage(packageName, exportDirectory) {
   const result = spawnSync(
     "cargo",
-    ["test", "-p", packageName, "export_bindings_", "--", "--test-threads=1"],
+    ["test", "--locked", "-p", packageName, "export_bindings_", "--", "--test-threads=1"],
     {
       cwd: root,
       env: {

@@ -249,13 +249,18 @@ fn set_archive_password(
 
 // フォルダの展開時に、その直下だけを取得する。
 #[tauri::command]
-fn list_folder_entries(
+async fn list_folder_entries(
     rel_dir: String,
     window: tauri::WebviewWindow,
-    state: State,
+    app: AppHandle,
 ) -> Result<Vec<FolderEntry>, String> {
     access::require_main_window(&window)?;
-    document::list_folder_entries(rel_dir, state)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<DocState>>();
+        document::list_folder_entries(rel_dir, state)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -304,164 +309,229 @@ fn workspace_search_cancel(
 }
 
 #[tauri::command]
-fn create_note(
+async fn create_note(
     dir: Option<String>,
     name: String,
     enc: EncodingId,
     eol: Eol,
     window: tauri::WebviewWindow,
-    state: State,
+    app: AppHandle,
 ) -> Result<DocInfo, String> {
     access::require_main_window(&window)?;
-    document::create_note(dir, name, enc, eol, state)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<DocState>>();
+        document::create_note(dir, name, enc, eol, state)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn create_folder(
+async fn create_folder(
     rel_dir: String,
     name: String,
     window: tauri::WebviewWindow,
-    state: State,
+    app: AppHandle,
 ) -> Result<String, String> {
     access::require_main_window(&window)?;
-    document::create_folder(rel_dir, name, state)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<DocState>>();
+        document::create_folder(rel_dir, name, state)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn rename_entry(
+async fn rename_entry(
     rel_path: String,
     new_name: String,
     window: tauri::WebviewWindow,
-    state: State,
+    app: AppHandle,
 ) -> Result<DocInfo, String> {
     access::require_main_window(&window)?;
-    document::rename_entry(rel_path, new_name, state)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<DocState>>();
+        document::rename_entry(rel_path, new_name, state)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn move_entry(
+async fn move_entry(
     source_rel_path: String,
     target_rel_dir: String,
     window: tauri::WebviewWindow,
-    state: State,
+    app: AppHandle,
 ) -> Result<DocInfo, String> {
     access::require_main_window(&window)?;
-    document::move_entry(source_rel_path, target_rel_dir, state)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<DocState>>();
+        document::move_entry(source_rel_path, target_rel_dir, state)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn copy_entry(
+async fn copy_entry(
     source_rel_path: String,
     target_rel_dir: String,
     window: tauri::WebviewWindow,
-    state: State,
+    app: AppHandle,
 ) -> Result<DocInfo, String> {
     access::require_main_window(&window)?;
-    document::copy_entry(source_rel_path, target_rel_dir, state)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<DocState>>();
+        document::copy_entry(source_rel_path, target_rel_dir, state)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn copy_entry_as(
-    source_rel_path: String,
-    target_rel_dir: String,
-    target_name: String,
-    overwrite: bool,
-    window: tauri::WebviewWindow,
-    state: State,
-) -> Result<DocInfo, String> {
-    access::require_main_window(&window)?;
-    document::copy_entry_as(
-        source_rel_path,
-        target_rel_dir,
-        target_name,
-        overwrite,
-        state,
-    )
-}
-
-#[tauri::command]
-fn move_entry_as(
+async fn copy_entry_as(
     source_rel_path: String,
     target_rel_dir: String,
     target_name: String,
     overwrite: bool,
     window: tauri::WebviewWindow,
-    state: State,
+    app: AppHandle,
 ) -> Result<DocInfo, String> {
     access::require_main_window(&window)?;
-    document::move_entry_as(
-        source_rel_path,
-        target_rel_dir,
-        target_name,
-        overwrite,
-        state,
-    )
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<DocState>>();
+        document::copy_entry_as(
+            source_rel_path,
+            target_rel_dir,
+            target_name,
+            overwrite,
+            state,
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn delete_entry(
+async fn move_entry_as(
+    source_rel_path: String,
+    target_rel_dir: String,
+    target_name: String,
+    overwrite: bool,
+    window: tauri::WebviewWindow,
+    app: AppHandle,
+) -> Result<DocInfo, String> {
+    access::require_main_window(&window)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<DocState>>();
+        document::move_entry_as(
+            source_rel_path,
+            target_rel_dir,
+            target_name,
+            overwrite,
+            state,
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn delete_entry(
     rel_path: String,
     window: tauri::WebviewWindow,
-    state: State,
+    app: AppHandle,
 ) -> Result<DocInfo, String> {
     access::require_main_window(&window)?;
-    document::delete_entry(rel_path, state)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<DocState>>();
+        document::delete_entry(rel_path, state)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn delete_entry_without_backup(
+async fn delete_entry_without_backup(
     rel_path: String,
     window: tauri::WebviewWindow,
-    state: State,
+    app: AppHandle,
 ) -> Result<DocInfo, String> {
     access::require_main_window(&window)?;
-    document::delete_entry_without_backup(rel_path, state)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<DocState>>();
+        document::delete_entry_without_backup(rel_path, state)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn restore_deleted_entry(
+async fn restore_deleted_entry(
     rel_path: String,
     window: tauri::WebviewWindow,
-    state: State,
+    app: AppHandle,
 ) -> Result<DocInfo, String> {
     access::require_main_window(&window)?;
-    document::restore_deleted_entry(rel_path, state)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<DocState>>();
+        document::restore_deleted_entry(rel_path, state)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn save_pasted_image(
+async fn save_pasted_image(
     bytes: Vec<u8>,
     mime_type: String,
     window: tauri::WebviewWindow,
-    state: State,
+    app: AppHandle,
 ) -> Result<String, String> {
     access::require_main_window(&window)?;
-    document::save_pasted_image(bytes, mime_type, state)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<DocState>>();
+        document::save_pasted_image(bytes, mime_type, state)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn save_diagram_image(
+async fn save_diagram_image(
     bytes: Vec<u8>,
     mime_type: String,
     shared: bool,
     source_path: String,
     archive_entry: Option<String>,
     window: tauri::WebviewWindow,
-    state: State,
+    app: AppHandle,
 ) -> Result<String, String> {
     access::require_main_window(&window)?;
-    document::save_diagram_image(bytes, mime_type, shared, source_path, archive_entry, state)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<DocState>>();
+        document::save_diagram_image(bytes, mime_type, shared, source_path, archive_entry, state)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn finish_diagram_assets(
+async fn finish_diagram_assets(
     source_path: String,
     archive_entry: Option<String>,
     window: tauri::WebviewWindow,
-    state: State,
+    app: AppHandle,
 ) -> Result<(), String> {
     access::require_main_window(&window)?;
-    document::finish_diagram_assets(source_path, archive_entry, state)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<DocState>>();
+        document::finish_diagram_assets(source_path, archive_entry, state)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -480,7 +550,8 @@ async fn read_diagram_asset(
 }
 
 #[tauri::command]
-fn apply_diagram_edit(
+#[allow(clippy::too_many_arguments)]
+async fn apply_diagram_edit(
     start: PosC,
     end: PosC,
     caret_before: PosC,
@@ -490,20 +561,30 @@ fn apply_diagram_edit(
     source_path: String,
     archive_entry: Option<String>,
     window: tauri::WebviewWindow,
-    state: State,
+    app: AppHandle,
 ) -> Result<EditResult, String> {
     access::require_main_window(&window)?;
-    document::apply_diagram_edit(start, end, caret_before, text, expected, expected_line, source_path, archive_entry, state)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<DocState>>();
+        document::apply_diagram_edit(start, end, caret_before, text, expected, expected_line, source_path, archive_entry, state)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn cleanup_unused_images(
+async fn cleanup_unused_images(
     path: String,
     window: tauri::WebviewWindow,
-    state: State,
+    app: AppHandle,
 ) -> Result<(), String> {
     access::require_main_window(&window)?;
-    document::cleanup_unused_images(path, state)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<DocState>>();
+        document::cleanup_unused_images(path, state)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 // サイドバーの「エクスプローラで開く」用。状態を持たないので Doc へは委譲しない。
@@ -745,31 +826,41 @@ fn external_preview_cancel(
 }
 
 #[tauri::command]
-fn external_preview_cleanup(
+async fn external_preview_cleanup(
     output_path: String,
     window: tauri::WebviewWindow,
-    operations: tauri::State<'_, external_preview_runner::ExternalPreviewOperations>,
+    app: AppHandle,
 ) -> Result<(), String> {
     access::require_main_window(&window)?;
-    let output_path = PathBuf::from(output_path);
-    operations.cleanup_output(&output_path)
+    tauri::async_runtime::spawn_blocking(move || {
+        let operations = app.state::<external_preview_runner::ExternalPreviewOperations>();
+        let output_path = PathBuf::from(output_path);
+        operations.cleanup_output(&output_path)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn external_preview_cleanup_stale(
+async fn external_preview_cleanup_stale(
     work_roots: Vec<String>,
     window: tauri::WebviewWindow,
-    operations: tauri::State<'_, external_preview_runner::ExternalPreviewOperations>,
+    app: AppHandle,
 ) -> Result<(), String> {
     access::require_main_window(&window)?;
-    let mut roots = vec![external_preview_runner::default_work_root()];
-    roots.extend(
-        work_roots
-            .into_iter()
-            .filter(|root| !root.trim().is_empty())
-            .map(PathBuf::from),
-    );
-    operations.cleanup_stale_roots(&roots)
+    tauri::async_runtime::spawn_blocking(move || {
+        let operations = app.state::<external_preview_runner::ExternalPreviewOperations>();
+        let mut roots = vec![external_preview_runner::default_work_root()];
+        roots.extend(
+            work_roots
+                .into_iter()
+                .filter(|root| !root.trim().is_empty())
+                .map(PathBuf::from),
+        );
+        operations.cleanup_stale_roots(&roots)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -811,7 +902,8 @@ fn redo(window: tauri::WebviewWindow, state: State) -> Result<Option<EditResult>
 }
 
 #[tauri::command]
-fn find(
+#[allow(clippy::too_many_arguments)]
+async fn find(
     pat: String,
     from: PosC,
     forward: bool,
@@ -819,14 +911,20 @@ fn find(
     use_regex: bool,
     whole_word: bool,
     window: tauri::WebviewWindow,
-    state: State,
+    app: AppHandle,
 ) -> Result<Option<FindResult>, String> {
     access::require_main_window(&window)?;
-    document::find(pat, from, forward, match_case, use_regex, whole_word, state)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<DocState>>();
+        document::find(pat, from, forward, match_case, use_regex, whole_word, state)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn find_all_in_range(
+#[allow(clippy::too_many_arguments)]
+async fn find_all_in_range(
     pat: String,
     first_line: usize,
     last_line: usize,
@@ -835,23 +933,29 @@ fn find_all_in_range(
     whole_word: bool,
     max_matches: usize,
     window: tauri::WebviewWindow,
-    state: State,
+    app: AppHandle,
 ) -> Result<Vec<FindResult>, String> {
     access::require_main_window(&window)?;
-    document::find_all_in_range(
-        pat,
-        first_line,
-        last_line,
-        match_case,
-        use_regex,
-        whole_word,
-        max_matches,
-        state,
-    )
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<DocState>>();
+        document::find_all_in_range(
+            pat,
+            first_line,
+            last_line,
+            match_case,
+            use_regex,
+            whole_word,
+            max_matches,
+            state,
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn find_step(
+#[allow(clippy::too_many_arguments)]
+async fn find_step(
     pat: String,
     from: PosC,
     match_case: bool,
@@ -860,14 +964,20 @@ fn find_step(
     use_regex: bool,
     whole_word: bool,
     window: tauri::WebviewWindow,
-    state: State,
+    app: AppHandle,
 ) -> Result<FindOutcome, String> {
     access::require_main_window(&window)?;
-    document::find_step(pat, from, match_case, cursor, budget, use_regex, whole_word, state)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<DocState>>();
+        document::find_step(pat, from, match_case, cursor, budget, use_regex, whole_word, state)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn replace_all_chunk(
+#[allow(clippy::too_many_arguments)]
+async fn replace_all_chunk(
     pat: String,
     rep: String,
     match_case: bool,
@@ -875,67 +985,107 @@ fn replace_all_chunk(
     use_regex: bool,
     whole_word: bool,
     window: tauri::WebviewWindow,
-    state: State,
+    app: AppHandle,
 ) -> Result<ReplaceChunkResult, String> {
     access::require_main_window(&window)?;
-    document::replace_all_chunk(pat, rep, match_case, budget, use_regex, whole_word, state)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<DocState>>();
+        document::replace_all_chunk(pat, rep, match_case, budget, use_regex, whole_word, state)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn replace_all_cancel(window: tauri::WebviewWindow, state: State) -> Result<EditResult, String> {
+async fn replace_all_cancel(window: tauri::WebviewWindow, app: AppHandle) -> Result<EditResult, String> {
     access::require_main_window(&window)?;
-    document::replace_all_cancel(state)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<DocState>>();
+        document::replace_all_cancel(state)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn save_file(
+async fn save_file(
     path: String,
     enc: EncodingId,
     eol: Eol,
     window: tauri::WebviewWindow,
-    state: State,
+    app: AppHandle,
 ) -> Result<SaveOutcome, String> {
     access::require_main_window(&window)?;
-    document::save_file(path, enc, eol, state)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<DocState>>();
+        document::save_file(path, enc, eol, state)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 // 外部変更ポーリング (フロントの定期タイマーから呼ぶ)。dirty はフロントが管理する
 // 未保存フラグ。小/巨大ファイルの区別も含め、判定はすべて core 側が持つ。
 #[tauri::command]
-fn poll_external(
+async fn poll_external(
     dirty: bool,
     window: tauri::WebviewWindow,
-    state: State,
+    app: AppHandle,
 ) -> Result<ExternalCheck, String> {
     access::require_main_window(&window)?;
-    document::poll_external(dirty, state)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<DocState>>();
+        document::poll_external(dirty, state)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn reload_from_disk(window: tauri::WebviewWindow, state: State) -> Result<DocInfo, String> {
+async fn reload_from_disk(window: tauri::WebviewWindow, app: AppHandle) -> Result<DocInfo, String> {
     access::require_main_window(&window)?;
-    document::reload_from_disk(state)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<DocState>>();
+        document::reload_from_disk(state)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn ack_external(window: tauri::WebviewWindow, state: State) -> Result<DocInfo, String> {
+async fn ack_external(window: tauri::WebviewWindow, app: AppHandle) -> Result<DocInfo, String> {
     access::require_main_window(&window)?;
-    document::ack_external(state)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<DocState>>();
+        document::ack_external(state)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn external_merge_preview(
+async fn external_merge_preview(
     window: tauri::WebviewWindow,
-    state: State,
+    app: AppHandle,
 ) -> Result<ExternalMergePreview, String> {
     access::require_main_window(&window)?;
-    document::external_merge_preview(state)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<DocState>>();
+        document::external_merge_preview(state)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn merge_external(window: tauri::WebviewWindow, state: State) -> Result<DocInfo, String> {
+async fn merge_external(window: tauri::WebviewWindow, app: AppHandle) -> Result<DocInfo, String> {
     access::require_main_window(&window)?;
-    document::merge_external(state)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<DocState>>();
+        document::merge_external(state)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -995,13 +1145,18 @@ fn path_is_directory(path: String, window: tauri::WebviewWindow) -> bool {
 }
 
 #[tauri::command]
-fn reload_with_encoding(
+async fn reload_with_encoding(
     enc: EncodingId,
     window: tauri::WebviewWindow,
-    state: State,
+    app: AppHandle,
 ) -> Result<DocInfo, String> {
     access::require_main_window(&window)?;
-    document::reload_with_encoding(enc, state)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<DocState>>();
+        document::reload_with_encoding(enc, state)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -1085,23 +1240,29 @@ fn preview_cache_info_impl(cache_directory: Option<String>) -> Result<PreviewCac
 }
 
 #[tauri::command]
-fn preview_cache_info(
+async fn preview_cache_info(
     cache_directory: Option<String>,
     window: tauri::WebviewWindow,
 ) -> Result<PreviewCacheInfo, String> {
     access::require_main_window(&window)?;
-    preview_cache_info_impl(cache_directory)
+    tauri::async_runtime::spawn_blocking(move || preview_cache_info_impl(cache_directory))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn clear_preview_cache(
+async fn clear_preview_cache(
     cache_directory: Option<String>,
     window: tauri::WebviewWindow,
 ) -> Result<(), String> {
     access::require_main_window(&window)?;
-    preview_cache_from_directory(cache_directory)?
-        .clear()
-        .map_err(|error| error.to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        preview_cache_from_directory(cache_directory)?
+            .clear()
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -1168,6 +1329,7 @@ mod window_request_tests {
 
 // Windowsでは同期command中のWebView生成がイベントループを塞ぐためasyncで実行する。
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn open_viewer(
     format: ViewerFormat,
     text: String,

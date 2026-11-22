@@ -132,14 +132,22 @@ export class ExternalWatch {
         if (!this.ports.onConflict) {
           this.banner.hidden = false;
         } else {
-          const preview = await this.api.externalMergePreview();
+          let preview: api.ExternalMergePreview;
+          try {
+            preview = await this.api.externalMergePreview();
+          } catch (error) {
+            if (generation === this.generation) {
+              this.banner.hidden = false;
+              await this.reportPollError(error);
+            }
+            return;
+          }
           if (!(await this.resolveConflict(preview, generation))) return;
         }
       }
       this.pollErrorReported = false;
     } catch (error) {
       if (generation === this.generation) {
-        this.banner.hidden = false;
         await this.reportPollError(error);
       }
     } finally {

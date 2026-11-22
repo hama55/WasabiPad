@@ -345,7 +345,7 @@ pub fn read_git_worktree_files(path: &str) -> Result<Vec<GitChangedFile>, String
                 "-M",
                 "--no-ext-diff",
                 "--no-textconv",
-                &head,
+                head,
                 "--",
             ],
             MAX_OUTPUT,
@@ -533,6 +533,13 @@ pub fn read_git_worktree_diff(path: &str, file: &str) -> Result<GitFileDiff, Str
                 text: "比較元のファイルが大きいため差分を省略しました".into(),
                 truncated: true,
             });
+        }
+        if meta.file_type().is_symlink() {
+            return Err("作業フォルダ外のファイルは表示できません".into());
+        }
+        let real = target.canonicalize().map_err(|e| e.to_string())?;
+        if !real.starts_with(root.canonicalize().map_err(|e| e.to_string())?) {
+            return Err("作業フォルダ外のファイルは表示できません".into());
         }
         return saved_file_diff(path, file, &previous, &target);
     }
@@ -838,7 +845,7 @@ fn run_command(
     let stderr = error_reader.join().unwrap_or_default();
     let truncated = bytes.len() > limit;
     bytes.truncate(limit);
-    if !status.success() && !(diff_exit && status.code() == Some(1)) && !truncated {
+    if !(status.success() || truncated || (diff_exit && status.code() == Some(1))) {
         return Err(String::from_utf8_lossy(&stderr).trim().into());
     }
     Ok((bytes, truncated))

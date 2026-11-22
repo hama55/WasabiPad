@@ -171,7 +171,7 @@ function camelCase(value) {
   return value.replace(/_([a-z])/g, (_match, letter) => letter.toUpperCase());
 }
 
-const commands = names(/#\[tauri::command\]\s*\r?\n(?:async\s+)?fn\s+(\w+)/g, backend);
+const commands = names(/#\[tauri::command\](?:\s*#\[[^\]]*\])*\s*\r?\n(?:async\s+)?fn\s+(\w+)/g, backend);
 const handlerBlock = backend.match(/tauri::generate_handler!\[([\s\S]*?)\]\)/)?.[1];
 if (!handlerBlock) fail("cannot find tauri command handler registration");
 const handler = handlerBlock

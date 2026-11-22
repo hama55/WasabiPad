@@ -316,7 +316,10 @@ export async function flushSettings(): Promise<void> {
     if (current === pendingSave) break;
   }
   const firstError = saveErrors.values().next();
-  if (!firstError.done) throw firstError.value;
+  if (!firstError.done) {
+    saveErrors.clear();
+    throw firstError.value;
+  }
 }
 
 // 検索条件は手で編集されうるファイルに載るので、既定値で埋めてから丸める

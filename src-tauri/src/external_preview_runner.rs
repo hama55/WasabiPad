@@ -48,6 +48,7 @@ pub(crate) fn existing_output(input_path: &Path, format: ExternalPreviewFormat) 
     (input != canonical_output).then_some(output)
 }
 
+#[allow(dead_code)]
 #[derive(Debug, serde::Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
@@ -438,6 +439,7 @@ impl Drop for ActiveJobGuard {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn default_work_root() -> PathBuf {
     std::env::temp_dir()
         .join("WasabiPad")
@@ -701,7 +703,7 @@ fn validate_executable(executable: &Path) -> Result<(), String> {
     if executable.is_absolute()
         || executable
             .components()
-            .eq([Component::Normal(executable.as_os_str())].into_iter())
+            .eq([Component::Normal(executable.as_os_str())])
     {
         Ok(())
     } else {

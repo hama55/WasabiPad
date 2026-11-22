@@ -224,7 +224,21 @@ export function createGitPreviewController(host: HTMLElement, summary: HTMLEleme
       const shownBranch = selectedBranch?.name ?? first.branch;
       const branchChanged = branchSwitch || disappeared || refresh && (shownBranch !== saved.branch || shownBranch === null && first.head !== saved.head);
       const wanted = branchChanged ? 100 : saved.count;
-      while (history.hasMore && (history.commits.length < wanted || refresh && !branchChanged && saved.commit !== null && saved.commit !== "worktree" && !history.commits.some(commit => commit.oid === saved.commit))) {
+      const maxRefreshSearch = Math.max(wanted, 500);
+      while (
+        history.hasMore
+        && (
+          history.commits.length < wanted
+          || (
+            refresh
+            && !branchChanged
+            && saved.commit !== null
+            && saved.commit !== "worktree"
+            && history.commits.length < maxRefreshSearch
+            && !history.commits.some(commit => commit.oid === saved.commit)
+          )
+        )
+      ) {
         const page = await ports.history(path, history.head, history.commits.length);
         if (disposed || request !== generation) return false;
         history.commits.push(...page.commits);
