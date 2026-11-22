@@ -32,6 +32,7 @@ import type { GitHistory } from "./generated/GitHistory";
 import type { GitBranch } from "./generated/GitBranch";
 import type { GitChangedFile } from "./generated/GitChangedFile";
 import type { GitFileDiff } from "./generated/GitFileDiff";
+import type { ExternalCommandRequest } from "./generated/ExternalCommandRequest";
 import type { ExternalPreviewFormat } from "./generated/ExternalPreviewFormat";
 import type { ExternalPreviewRequest } from "./generated/ExternalPreviewRequest";
 import type { WorkspaceSearchBatch } from "./generated/WorkspaceSearchBatch";
@@ -70,6 +71,7 @@ export type {
   GitBranch,
   GitChangedFile,
   GitFileDiff,
+  ExternalCommandRequest,
   ExternalPreviewFormat,
   ExternalPreviewRequest,
   WorkspaceSearchBatch,
@@ -195,8 +197,8 @@ export const openInDefaultBrowser = (path: string, effectiveExtension: string | 
   invoke<void>(IPC_COMMANDS.openInDefaultBrowser, { path, effectiveExtension });
 export const openExternalUrl = (url: string) =>
   invoke<void>(IPC_COMMANDS.openExternalUrl, { url });
-export const runExternalCommand = (command: string, path: string) =>
-  invoke<void>(IPC_COMMANDS.runExternalCommand, { command, path });
+export const runExternalCommand = (request: ExternalCommandRequest) =>
+  invoke<void>(IPC_COMMANDS.runExternalCommand, { request });
 
 // 範囲[start,end)を削除して text を挿入する統一プリミティブ
 // Tauri は Rust の snake_case 引数名を camelCase に変換して受け取るため、
@@ -375,6 +377,14 @@ export const registerHtmlPreview = (id: string, html: string, sourcePath: string
   invoke<void>(IPC_COMMANDS.registerHtmlPreview, { id, html, sourcePath });
 export const releaseHtmlPreview = (id: string) =>
   invoke<void>(IPC_COMMANDS.releaseHtmlPreview, { id });
+export const registerExternalHtmlPreview = (id: string, entryPath: string) =>
+  invoke<void>(IPC_COMMANDS.registerExternalHtmlPreview, { id, entryPath });
+export const releaseExternalHtmlPreview = (id: string) =>
+  invoke<void>(IPC_COMMANDS.releaseExternalHtmlPreview, { id });
+export const registerPdfPreview = (id: string, path: string) =>
+  invoke<void>(IPC_COMMANDS.registerPdfPreview, { id, path });
+export const releasePdfPreview = (id: string) =>
+  invoke<void>(IPC_COMMANDS.releasePdfPreview, { id });
 export const externalPreviewExisting = (inputPath: string, outputFormat: ExternalPreviewRequest["outputFormat"]) =>
   invoke<string | null>(IPC_COMMANDS.externalPreviewExisting, { inputPath, outputFormat });
 export const externalPreviewGenerate = (request: ExternalPreviewRequest) =>

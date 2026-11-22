@@ -731,10 +731,13 @@ describe("Feature: FolderActions", () => {
       .toEqual(["⚙", "×"]);
     commandItem.click();
 
-    await vi.waitFor(() => expect(api.runExternalCommand).toHaveBeenCalledWith(
-      "cmd.exe /D /C chrome C:\\work\\index.html",
-      "C:\\work\\index.html",
-    ));
+    await vi.waitFor(() => expect(api.runExternalCommand).toHaveBeenCalledWith({
+      prefix: "cmd.exe /D /C",
+      command: "chrome {file}",
+      value: "C:\\work\\index.html",
+      valueKind: "file",
+      path: "C:\\work\\index.html",
+    }));
   });
 
   // Given: 共通コマンド実行が`command failed`でreject
@@ -1181,5 +1184,71 @@ describe("Feature: FolderActions", () => {
 
     expect(doc.applyRenamed).toHaveBeenCalledWith(info, "renamed.zip::Sheet1");
     expect(ports.sidebar.selectByRelPath).toHaveBeenCalledWith("renamed.zip::Sheet1");
+  });
+
+  // Feature: フォルダ操作のルート検証とUndo/Redo再入防止
+  // Scenario: 削除確認中に別フォルダへ切り替わったら削除を実行しない
+  // Given: C:\workAでdelete確認ダイアログが保留中である
+  // When: 待機中にfolderRootがC:\workBへ切り替わり、その後確認がtrueで返る
+  // Then: api.deleteEntryは一切呼ばれずworkBを破壊しない
+  it("Scenario: aborts deleteEntries if folderRoot changes during confirmation", async () => {
+    let resolveConfirm!: (value: boolean) => void;
+    vi.mocked(confirmMessage).mockClear();
+    vi.mocked(confirmMessage).mockImplementationOnce(() => new Promise<boolean>((resolve) => { resolveConfirm = resolve; }));
+    const deleteEntrySpy = vi.spyOn(api, "deleteEntry");
+    deleteEntrySpy.mockClear();
+    const { actions, doc } = fixture();
+
+    actions.executeCommand("delete", [{ relPath: "important.txt", isDir: false }]);
+    await vi.waitFor(() => expect(confirmMessage).toHaveBeenCalledTimes(1));
+    doc.current.folderRoot = "C:\\other-workspace";
+    resolveConfirm(true);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(deleteEntrySpy).not.toHaveBeenCalled();
+  });
+
+  // Feature: フォルダ操作履歴の同時再生防止
+  // Scenario: Undo実行中に連打されたUndo/Redoは再入しない
+  // Given: 2件の作成履歴があり、1件目のUndoのdeleteEntryWithoutBackupが保留中である
+  // When: 保留中にもう一度undoコマンドを送る
+  // Then: 2件目のUndoは同時起動せず、1件目だけ実行される
+  it("Scenario: prevents concurrent re-entry of undoFileOperation", async () => {
+    const docInfo = {
+      kind: "text",
+      line_count: 1,
+      enc: "utf8",
+      eol: "crlf",
+      path: "C:\\work\\a.txt",
+      entries: null,
+      folder_entries: [],
+      folder_root: "C:\\work",
+      view_only: false,
+      is_binary: false,
+      byte_len: 0,
+      is_huge: false,
+      modified_at: null,
+      effective_extension: null,
+    } satisfies api.DocInfo;
+    vi.spyOn(api, "createFolder").mockResolvedValueOnce("dir1").mockResolvedValueOnce("dir2");
+    let resolveDelete!: () => void;
+    const deleteSpy = vi.spyOn(api, "deleteEntryWithoutBackup").mockImplementation(
+      () => new Promise<api.DocInfo>((resolve) => { resolveDelete = () => resolve(docInfo); }),
+    );
+    vi.mocked(promptFields).mockResolvedValueOnce(["dir1"]).mockResolvedValueOnce(["dir2"]);
+    const { actions } = fixture();
+
+    await actions.createFolder("");
+    await actions.createFolder("");
+
+    actions.executeCommand("undo", []);
+    await vi.waitFor(() => expect(deleteSpy).toHaveBeenCalledTimes(1));
+    actions.executeCommand("undo", []);
+    await Promise.resolve();
+    expect(deleteSpy).toHaveBeenCalledTimes(1);
+
+    resolveDelete();
+    await Promise.resolve();
   });
 });

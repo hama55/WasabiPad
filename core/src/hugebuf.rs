@@ -2,13 +2,13 @@
 // ファイル本体は RAM に載せず、表示行をオンデマンドでデコードする。
 use crate::buffer::Pos;
 use crate::fileio::{Encoding, Eol};
-use encoding_rs::{SHIFT_JIS, UTF_8};
+use encoding_rs::{CoderResult, SHIFT_JIS, UTF_8};
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::os::windows::io::AsRawHandle;
-use std::rc::Rc;
+use std::sync::Arc;
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
 use windows_sys::Win32::System::Memory::{
     CreateFileMappingW, MapViewOfFile, UnmapViewOfFile, FILE_MAP_READ,
@@ -23,21 +23,50 @@ struct Mapping {
     ptr: *const u8,
     len: usize,
 }
+
+// SAFETY: Mapping exclusively owns `_file`, `hmap`, and the immutable read-only
+// mapped view `ptr` (`PAGE_READONLY` / `FILE_MAP_READ`). Neither the handle nor
+// the mapped bytes are mutated, so transferring ownership between threads is safe.
+unsafe impl Send for Mapping {}
+
 impl Mapping {
-    fn open(file: std::fs::File, len: u64) -> io::Result<Mapping> {
+    fn open(file: std::fs::File, expected_len: u64) -> io::Result<Mapping> {
+        let actual_len = file.metadata()?.len();
+        if actual_len != expected_len || actual_len == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "読込中にファイルサイズが変更されました",
+            ));
+        }
+        let map_len = usize::try_from(actual_len).map_err(|_| {
+            io::Error::new(io::ErrorKind::FileTooLarge, "ファイルが大きすぎます")
+        })?;
+        let max_high = (actual_len >> 32) as u32;
+        let max_low = actual_len as u32;
         unsafe {
             let hf = file.as_raw_handle() as HANDLE;
-            let hmap =
-                CreateFileMappingW(hf, std::ptr::null(), PAGE_READONLY, 0, 0, std::ptr::null());
+            let hmap = CreateFileMappingW(
+                hf,
+                std::ptr::null(),
+                PAGE_READONLY,
+                max_high,
+                max_low,
+                std::ptr::null(),
+            );
             if hmap.is_null() {
                 return Err(io::Error::last_os_error());
             }
-            let view = MapViewOfFile(hmap, FILE_MAP_READ, 0, 0, 0);
+            let view = MapViewOfFile(hmap, FILE_MAP_READ, 0, 0, map_len);
             if view.Value.is_null() {
                 CloseHandle(hmap);
                 return Err(io::Error::last_os_error());
             }
-            Ok(Mapping { _file: file, hmap, ptr: view.Value as *const u8, len: len as usize })
+            Ok(Mapping {
+                _file: file,
+                hmap,
+                ptr: view.Value as *const u8,
+                len: map_len,
+            })
         }
     }
 
@@ -66,7 +95,7 @@ pub struct HugeBuf {
     overlay: BTreeMap<usize, Vec<String>>, // 編集済み chunk のみ実体化
     prefix: RefCell<Vec<u64>>, // prefix[c] = chunk c の先頭グローバル行番号
     prefix_valid: Cell<bool>,
-    cache: RefCell<Vec<(usize, Rc<Vec<String>>)>>, // 未編集 chunk のデコードキャッシュ (LRU 4件)
+    cache: RefCell<Vec<(usize, Arc<Vec<String>>)>>, // 未編集 chunk のデコードキャッシュ (LRU 4件)
     total: usize,
     image_tag_lines: std::collections::BTreeSet<usize>,
 }
@@ -78,6 +107,74 @@ fn decode_bytes(enc: Encoding, mut b: &[u8]) -> String {
     match enc {
         Encoding::ShiftJis => SHIFT_JIS.decode(b).0.into_owned(),
         _ => String::from_utf8_lossy(b).into_owned(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scan_decoded_chunk(
+    decoder: &mut encoding_rs::Decoder,
+    input: &[u8],
+    last: bool,
+    decoded: &mut String,
+    binary: &mut bool,
+    image_line: &mut usize,
+    image_tail: &mut String,
+    image_tag_lines: &mut std::collections::BTreeSet<usize>,
+) {
+    let mut consumed = 0usize;
+    loop {
+        let (result, read, had_errors) = decoder.decode_to_string(&input[consumed..], decoded, last);
+        consumed += read;
+        *binary |= had_errors;
+        if !decoded.is_empty() {
+            for (index, segment) in decoded.split('\n').enumerate() {
+                if index > 0 {
+                    *image_line += 1;
+                }
+                let crosses_chunk = index == 0
+                    && crate::buffer::TextBuffer::has_image_tag(&format!(
+                        "{image_tail}{}",
+                        segment.chars().take(3).collect::<String>()
+                    ));
+                if crosses_chunk || crate::buffer::TextBuffer::has_image_tag(segment) {
+                    image_tag_lines.insert(*image_line);
+                }
+            }
+            if decoded.contains('\n') {
+                *image_tail = decoded
+                    .rsplit('\n')
+                    .next()
+                    .unwrap_or_default()
+                    .chars()
+                    .rev()
+                    .take(3)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect();
+            } else {
+                let mut combined = String::with_capacity(image_tail.len() + decoded.len());
+                combined.push_str(image_tail);
+                combined.push_str(decoded);
+                *image_tail = combined
+                    .chars()
+                    .rev()
+                    .take(3)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect();
+            }
+            decoded.clear();
+        }
+        match result {
+            CoderResult::InputEmpty => break,
+            CoderResult::OutputFull => {
+                if decoded.capacity() < 16 {
+                    decoded.reserve(16);
+                }
+            }
+        }
     }
 }
 
@@ -148,22 +245,31 @@ impl HugeBuf {
             let n = file.read(&mut buf)?;
             if n == 0 {
                 if let Some(decoder) = decoder.as_mut() {
-                    let (_, _, had_errors) = decoder.decode_to_string(&[], &mut decoded, true);
-                    binary |= had_errors;
+                    scan_decoded_chunk(
+                        decoder,
+                        &[],
+                        true,
+                        &mut decoded,
+                        &mut binary,
+                        &mut image_line,
+                        &mut image_tail,
+                        &mut image_tag_lines,
+                    );
                 }
                 break;
             }
             binary |= buf[..n].contains(&0);
             if let Some(decoder) = decoder.as_mut() {
-                let (_, _, had_errors) = decoder.decode_to_string(&buf[..n], &mut decoded, false);
-                binary |= had_errors;
-                for (index, segment) in decoded.split('\n').enumerate() {
-                    if index > 0 { image_line += 1; }
-                    let crosses_chunk = index == 0 && crate::buffer::TextBuffer::has_image_tag(&format!("{image_tail}{}", segment.chars().take(3).collect::<String>()));
-                    if crosses_chunk || crate::buffer::TextBuffer::has_image_tag(segment) { image_tag_lines.insert(image_line); }
-                }
-                image_tail = decoded.rsplit('\n').next().unwrap_or_default().chars().rev().take(3).collect::<Vec<_>>().into_iter().rev().collect();
-                decoded.clear();
+                scan_decoded_chunk(
+                    decoder,
+                    &buf[..n],
+                    false,
+                    &mut decoded,
+                    &mut binary,
+                    &mut image_line,
+                    &mut image_tail,
+                    &mut image_tag_lines,
+                );
             }
             for p in memchr::memchr_iter(b'\n', &buf[..n]) {
                 if nlines.is_multiple_of(CHUNK) {
@@ -173,7 +279,7 @@ impl HugeBuf {
             }
             offset += n as u64;
             if let Some(report) = progress.as_deref_mut() {
-                let percent = ((offset.saturating_mul(100) / len).min(99)) as u8;
+                let percent = ((offset.saturating_mul(100) / len.max(1)).min(99)) as u8;
                 if percent > last_percent {
                     last_percent = percent;
                     report(offset, len);
@@ -181,7 +287,7 @@ impl HugeBuf {
             }
         }
         if let Some(report) = progress.as_deref_mut() {
-            report(len, len);
+            report(offset, offset);
         }
         drop(buf);
         let total = nlines;
@@ -189,7 +295,7 @@ impl HugeBuf {
         let mut orig_counts = vec![CHUNK as u32; nchunks];
         orig_counts[nchunks - 1] = (total - (nchunks - 1) * CHUNK) as u32;
 
-        let map = Mapping::open(file, len)?;
+        let map = Mapping::open(file, offset)?;
         Ok(Some((
             HugeBuf {
                 map,
@@ -257,14 +363,14 @@ impl HugeBuf {
         self.overlay.get(&c)
     }
 
-    pub fn decode_chunk(&self, c: usize) -> Rc<Vec<String>> {
+    pub fn decode_chunk(&self, c: usize) -> Arc<Vec<String>> {
         {
             let mut cache = self.cache.borrow_mut();
             if let Some(i) = cache.iter().position(|(k, _)| *k == c) {
                 let e = cache.remove(i);
-                let rc = e.1.clone();
+                let arc = e.1.clone();
                 cache.insert(0, e);
-                return rc;
+                return arc;
             }
         }
         let raw = self.chunk_raw(c);
@@ -287,11 +393,11 @@ impl HugeBuf {
                 .map(crate::fileio::sanitize_binary_text)
                 .collect();
         }
-        let rc = Rc::new(lines);
+        let arc = Arc::new(lines);
         let mut cache = self.cache.borrow_mut();
-        cache.insert(0, (c, rc.clone()));
+        cache.insert(0, (c, arc.clone()));
         cache.truncate(4);
-        rc
+        arc
     }
 
     fn ensure_prefix(&self) {
@@ -435,5 +541,62 @@ impl HugeBuf {
             }
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Feature: 巨大ファイルのデコード走査
+    // Scenario: 出力バッファが OutputFull に達する入力を走査する
+    // Given: 小さな出力バッファと改行・<img タグを含む不正UTF-8混在バイト列
+    // When: scan_decoded_chunk でチャンクと EOF を走査する
+    // Then: OutputFull で途中打ち切りせず全行の <img 位置を正確に記録する
+    #[test]
+    fn scan_decoded_chunk_handles_output_full_without_losing_line_alignment() {
+        let mut decoder = UTF_8.new_decoder();
+        let mut decoded = String::with_capacity(8);
+        let mut binary = false;
+        let mut image_line = 0usize;
+        let mut image_tail = String::new();
+        let mut image_tag_lines = std::collections::BTreeSet::new();
+        // 3 バイト置換文字へ展開される不正バイトの連続の後に <img タグがある行
+        let input = b"\xFF\xFF\xFF\xFF\xFF\nline1\n<img src=\"a.png\">\n";
+        scan_decoded_chunk(
+            &mut decoder,
+            input,
+            false,
+            &mut decoded,
+            &mut binary,
+            &mut image_line,
+            &mut image_tail,
+            &mut image_tag_lines,
+        );
+        scan_decoded_chunk(
+            &mut decoder,
+            &[],
+            true,
+            &mut decoded,
+            &mut binary,
+            &mut image_line,
+            &mut image_tail,
+            &mut image_tag_lines,
+        );
+
+        assert!(binary);
+        assert_eq!(image_line, 3);
+        assert!(image_tag_lines.contains(&2));
+    }
+
+    // Feature: HugeBuf のスレッド安全性
+    // Scenario: HugeBuf 単体が Send を満たす
+    // Given: Mapping のみに Send を閉じ込めた HugeBuf
+    // When: コンパイル時境界を確認する
+    // Then: 外部の unsafe impl Send に頼らず Send である
+    #[test]
+    fn huge_buf_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<HugeBuf>();
     }
 }

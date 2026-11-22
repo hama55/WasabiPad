@@ -174,6 +174,7 @@ let previewAvailable = false;
 let previewCollapsed = false;
 let previewFullscreen = false;
 let previewFullscreenTabId: string | null = null;
+const confirmedExistingPreviewHtmlPaths = new Set<string>();
 let previewPlacement = resolvePreviewPlacement(getSetting("previewOpenPlacement"), getSetting("previewLastPlacement"));
 let previewRightRatio = getSetting("previewRightRatio");
 let previewVerticalRatio = getSetting("previewVerticalRatio");
@@ -680,6 +681,22 @@ function openPreviewFormat(
           : await api.externalPreviewExisting(inputPath, externalAdapter.outputFormat);
         if (!isCurrentRequest()) return;
         if (existingOutputPath) {
+          if (externalAdapter.outputFormat === "html") {
+            const existingKey = existingOutputPath.replaceAll("/", "\\").toLowerCase();
+            if (!confirmedExistingPreviewHtmlPaths.has(existingKey)) {
+              const approved = await confirmMessage(
+                "既存の外部HTMLプレビューの表示確認",
+                "同じフォルダにある既存のHTMLファイルを外部プレビューとして表示します。このHTML内のスクリプトが実行されます。信頼できるファイルの場合だけ続行してください。\n\n"
+                  + "ファイル: " + existingOutputPath,
+                "信頼して表示",
+              );
+              if (!approved || !isCurrentRequest()) {
+                restoreAfterDecline();
+                return;
+              }
+              confirmedExistingPreviewHtmlPaths.add(existingKey);
+            }
+          }
           generatedOutputPath = existingOutputPath;
         } else {
           if (!getSetting("trustedExternalPreviewAdapterIds").includes(externalAdapter.id)) {
@@ -729,6 +746,7 @@ function openPreviewFormat(
             document.ownerTabId === (tabs?.state.activeId ?? null) && document.path === documentPathOf(doc.current));
           if (!isCurrentRequest()) return;
           generatedOutputPath = await api.externalPreviewGenerate({
+            adapterId: externalAdapter.id,
             inputPath,
             executable: externalAdapter.command,
             args: parseExternalPreviewArguments(externalAdapter.args),
@@ -1010,6 +1028,7 @@ window.addEventListener("storage", (event) => {
 
 const registeredCommandPorts = {
   promptFields,
+  confirmMessage,
   runExternalCommand: api.runExternalCommand,
   writeClipboardText,
 };
@@ -1602,6 +1621,7 @@ const folderActions = new FolderActions(doc, {
   confirmMessage,
   promptFields,
   registeredCommandPorts: {
+    confirmMessage,
     runExternalCommand: api.runExternalCommand,
     writeClipboardText,
   },
@@ -1872,7 +1892,8 @@ void getCurrentWebview().onDragDropEvent((ev) => {
 // フォルダビューは他アプリによる増減を拾うため定期的に取り直す
 let folderRefreshRunning = false;
 let folderRefreshErrorReported = false;
-window.setInterval(async () => {
+async function refreshFolderPeriodically() {
+  if (document.hidden) return;
   fileStatusbar.refreshModifiedAt();
   if (!doc.current.folderRoot || folderRefreshRunning) return;
   folderRefreshRunning = true;
@@ -1888,7 +1909,13 @@ window.setInterval(async () => {
   } finally {
     folderRefreshRunning = false;
   }
+}
+window.setInterval(() => {
+  void refreshFolderPeriodically();
 }, 3000);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) void refreshFolderPeriodically();
+});
 
 // ---- 起動 ----
 try {

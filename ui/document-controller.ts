@@ -370,6 +370,7 @@ export class DocumentController {
       return;
     }
     if (request !== this.loadRequest) return;
+    this.view.hideExternalBanner();
     this.session = initialSession();
     if (draftSavePath !== undefined) this.session.draftSavePath = draftSavePath;
     this.draftDirectory = draftDirectory;
@@ -388,6 +389,7 @@ export class DocumentController {
   }
 
   showMissingDocument(path: string) {
+    this.view.hideExternalBanner();
     this.session.readOnly = true;
     this.view.addressbar.render(path, null);
     this.view.editor.open(1, true);
@@ -409,6 +411,10 @@ export class DocumentController {
     }
   }
 
+  private isSameDocument(request: number, targetSession: DocumentSession): boolean {
+    return request === this.loadRequest && this.session === targetSession;
+  }
+
   save(): Promise<boolean> {
     if (this.session.readOnly) return Promise.resolve(false);
     if (!this.session.savePath) return this.saveAs();
@@ -416,9 +422,11 @@ export class DocumentController {
   }
 
   async saveAs(): Promise<boolean> {
+    const request = this.loadRequest;
+    const targetSession = this.session;
     try {
       if (this.session.folderRoot && !this.session.savePath && !this.session.selectedRelPath) {
-        return await this.saveFolderDraft();
+        return await this.saveFolderDraft(request, targetSession);
       }
       let defaultPath = this.session.savePath ?? "";
       let newMemoFormat: SaveFormat | undefined;
@@ -431,21 +439,26 @@ export class DocumentController {
         } catch {
           // 保存先を調べられなくても、本文を保持して別の保存先を選べる。
         }
+        if (!this.isSameDocument(request, targetSession)) return false;
         if (!directoryAvailable) {
           await this.reportError("デフォルトの保存フォルダを使用できません", "保存ダイアログで別の保存先を選んでください。");
+          if (!this.isSameDocument(request, targetSession)) return false;
           defaultPath = basename(defaultPath);
         }
       } else if (!defaultPath) {
         const spec = await this.promptNewMemoSave();
-        if (!spec) return false;
+        if (!spec || !this.isSameDocument(request, targetSession)) return false;
         defaultPath = fileNameOf(spec.memo);
         if (this.draftDirectory) defaultPath = joinWindowsRoot(this.draftDirectory, defaultPath);
         newMemoFormat = spec.format;
       }
       const path = await this.view.pickSavePath(defaultPath);
-      return path ? this.saveAsTo(path, null, newMemoFormat) : false;
+      if (!path || !this.isSameDocument(request, targetSession)) return false;
+      return this.saveAsTo(path, null, newMemoFormat, request, targetSession);
     } catch (error) {
-      await this.reportError("名前を付けて保存できませんでした", error);
+      if (this.isSameDocument(request, targetSession)) {
+        await this.reportError("名前を付けて保存できませんでした", error);
+      }
       return false;
     }
   }
@@ -455,28 +468,38 @@ export class DocumentController {
     path: string,
     folderDraftRoot: string | null = null,
     format?: SaveFormat,
+    request = this.loadRequest,
+    targetSession = this.session,
   ): Promise<boolean> {
+    if (!this.isSameDocument(request, targetSession)) return false;
     try {
       const chosen = format ?? await this.services.promptSaveFormat(this.session);
-      if (!chosen) return false;
-      return await this.saveTo(path, folderDraftRoot, chosen);
+      if (!chosen || !this.isSameDocument(request, targetSession)) return false;
+      return await this.saveTo(path, folderDraftRoot, chosen, request, targetSession);
     } catch (error) {
-      await this.reportError("保存形式を決められませんでした", error);
+      if (this.isSameDocument(request, targetSession)) {
+        await this.reportError("保存形式を決められませんでした", error);
+      }
       return false;
     }
   }
 
   // フォルダを開いた状態の無題文書は、保存先ダイアログではなくフォルダ直下へ置く
-  private async saveFolderDraft(): Promise<boolean> {
+  private async saveFolderDraft(
+    request = this.loadRequest,
+    targetSession = this.session,
+  ): Promise<boolean> {
     const root = this.session.folderRoot;
     if (!root) return false;
     try {
       const spec = await this.promptNewMemoSave(root);
-      if (!spec) return false;
+      if (!spec || !this.isSameDocument(request, targetSession)) return false;
       const path = joinWindowsRoot(root, fileNameOf(spec.memo));
-      return this.saveAsTo(path, root, spec.format);
+      return this.saveAsTo(path, root, spec.format, request, targetSession);
     } catch (e) {
-      await this.reportError("ファイル名を決められませんでした", e);
+      if (this.isSameDocument(request, targetSession)) {
+        await this.reportError("ファイル名を決められませんでした", e);
+      }
       return false;
     }
   }
@@ -485,7 +508,10 @@ export class DocumentController {
     path: string,
     folderDraftRoot: string | null = null,
     format: SaveFormat = this.session,
+    request = this.loadRequest,
+    targetSession = this.session,
   ): Promise<boolean> {
+    if (!this.isSameDocument(request, targetSession)) return false;
     const savingSelectedEntryInPlace = (this.session.folderRoot !== null || this.session.archivePath !== null)
       && this.session.selectedRelPath !== ""
       && this.session.savePath === path;
@@ -496,9 +522,12 @@ export class DocumentController {
         this.services.api.saveFile(path, format.encoding, format.eol)
       );
     } catch (e) {
-      if (!this.services.isPasswordCancelled(e)) await this.reportError("保存できませんでした", e);
+      if (this.isSameDocument(request, targetSession) && !this.services.isPasswordCancelled(e)) {
+        await this.reportError("保存できませんでした", e);
+      }
       return false;
     }
+    if (!this.isSameDocument(request, targetSession)) return false;
     if (outcome.kind === "conflict") {
       // 本体は上書きされていない。dirty のまま残し、バナーで再読込/無視を選ばせる
       await this.reportError(
@@ -531,25 +560,37 @@ export class DocumentController {
     } catch (error) {
       await this.reportError("保存後の画面更新に失敗しました", error);
     }
-    if (saveWarning) {
+    if (saveWarning && this.isSameDocument(request, targetSession)) {
       await this.reportError("保存後の再読込に失敗しました", saveWarning);
     }
-    if (folderDraftRoot) await this.revealSavedDraft(folderDraftRoot, path);
+    if (folderDraftRoot && this.isSameDocument(request, targetSession)) {
+      await this.revealSavedDraft(folderDraftRoot, path, request, targetSession);
+    }
     return true;
   }
 
-  private async revealSavedDraft(folderDraftRoot: string, path: string) {
+  private async revealSavedDraft(
+    folderDraftRoot: string,
+    path: string,
+    request: number,
+    targetSession: DocumentSession,
+  ) {
     const rel = relativePathWithinRoot(folderDraftRoot, path);
     if (rel === null) return;
     const previous = this.session.selectedRelPath;
     try {
-      this.view.sidebar.setEntries(await this.services.api.listFolderEntries(""));
+      const entries = await this.services.api.listFolderEntries("");
+      if (!this.isSameDocument(request, targetSession)) return;
+      this.view.sidebar.setEntries(entries);
       await this.view.sidebar.selectByRelPath(rel);
+      if (!this.isSameDocument(request, targetSession)) return;
       this.session.selectedRelPath = rel;
     } catch (error) {
-      this.session.selectedRelPath = previous;
-      // 保存自体は成功しているため、一覧更新の失敗でdirtyへ戻さない。
-      await this.reportError("保存後に一覧を更新できませんでした", error);
+      if (this.isSameDocument(request, targetSession)) {
+        this.session.selectedRelPath = previous;
+        // 保存自体は成功しているため、一覧更新の失敗でdirtyへ戻さない。
+        await this.reportError("保存後に一覧を更新できませんでした", error);
+      }
     }
   }
 
@@ -558,10 +599,13 @@ export class DocumentController {
       await onProceed?.();
       return true;
     }
+    const request = this.loadRequest;
+    const targetSession = this.session;
     const choice = await this.services.confirmSaveDiscard();
+    if (!this.isSameDocument(request, targetSession)) return false;
     if (choice === "discard") {
       await onProceed?.();
-      this.session.dirty = false;
+      if (this.isSameDocument(request, targetSession)) this.session.dirty = false;
       return true;
     }
     if (choice !== "save") return false;

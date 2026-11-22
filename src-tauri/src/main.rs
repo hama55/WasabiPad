@@ -2,10 +2,13 @@
 // 文書本体は core::Doc が所有し、フロントへは可視スライスだけを渡す (全文は渡さない)。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod access;
 mod commands;
+mod external_html_preview;
 mod external_preview_runner;
 mod html_preview;
 mod instance;
+mod pdf_preview;
 mod state;
 mod viewer;
 
@@ -122,8 +125,10 @@ struct ViewerSelection {
 async fn open_path(
     path: String,
     open_as: Option<OpenAs>,
+    window: tauri::WebviewWindow,
     app: AppHandle,
 ) -> Result<DocInfo, String> {
+    access::require_main_window(&window)?;
     let generation = app.state::<DocumentOpenGeneration>().advance();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Mutex<DocState>>();
@@ -134,24 +139,46 @@ async fn open_path(
 }
 
 #[tauri::command]
-fn cancel_document_open(generation: tauri::State<'_, DocumentOpenGeneration>) {
+fn cancel_document_open(
+    window: tauri::WebviewWindow,
+    generation: tauri::State<'_, DocumentOpenGeneration>,
+) {
+    if access::require_main_window(&window).is_err() {
+        return;
+    }
     generation.advance();
 }
 
 #[tauri::command]
-fn new_doc(state: State, generation: tauri::State<'_, DocumentOpenGeneration>) -> Result<(), String> {
+fn new_doc(
+    window: tauri::WebviewWindow,
+    state: State,
+    generation: tauri::State<'_, DocumentOpenGeneration>,
+) -> Result<(), String> {
+    access::require_main_window(&window)?;
     generation.advance();
     document::new_doc(state)
 }
 
 #[tauri::command]
-fn close_doc(state: State, generation: tauri::State<'_, DocumentOpenGeneration>) -> Result<(), String> {
+fn close_doc(
+    window: tauri::WebviewWindow,
+    state: State,
+    generation: tauri::State<'_, DocumentOpenGeneration>,
+) -> Result<(), String> {
+    access::require_main_window(&window)?;
     generation.advance();
     document::close_doc(state)
 }
 
 #[tauri::command]
-async fn lines(start: usize, count: usize, app: AppHandle) -> Result<Vec<String>, String> {
+async fn lines(
+    start: usize,
+    count: usize,
+    window: tauri::WebviewWindow,
+    app: AppHandle,
+) -> Result<Vec<String>, String> {
+    access::require_main_window(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
         document::lines(start, count, app.state::<Mutex<DocState>>())
     })
@@ -160,7 +187,12 @@ async fn lines(start: usize, count: usize, app: AppHandle) -> Result<Vec<String>
 }
 
 #[tauri::command]
-async fn line_char_len(line: usize, app: AppHandle) -> Result<usize, String> {
+async fn line_char_len(
+    line: usize,
+    window: tauri::WebviewWindow,
+    app: AppHandle,
+) -> Result<usize, String> {
+    access::require_main_window(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
         document::line_char_len(line, app.state::<Mutex<DocState>>())
     })
@@ -173,8 +205,10 @@ async fn select_entry(
     rel_path: String,
     open_as: Option<OpenAs>,
     cache_directory: Option<String>,
+    window: tauri::WebviewWindow,
     app: AppHandle,
 ) -> Result<DocInfo, String> {
+    access::require_main_window(&window)?;
     let generation = app.state::<DocumentOpenGeneration>().advance();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Mutex<DocState>>();
@@ -187,7 +221,12 @@ async fn select_entry(
 // ツリーの展開ボタン用。アーカイブの中身一覧だけを安価に取得する (本文は読まない)。
 // rel_path が空文字なら直接開いているアーカイブ自身、それ以外はフォルダ内の相対パス。
 #[tauri::command]
-async fn list_archive_entries(rel_path: String, app: AppHandle) -> Result<Vec<String>, String> {
+async fn list_archive_entries(
+    rel_path: String,
+    window: tauri::WebviewWindow,
+    app: AppHandle,
+) -> Result<Vec<String>, String> {
+    access::require_main_window(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Mutex<DocState>>();
         document::list_archive_entries(rel_path, state)
@@ -198,18 +237,35 @@ async fn list_archive_entries(rel_path: String, app: AppHandle) -> Result<Vec<St
 
 // パスワード付き 7z/zip 用。入力されたパスワードを記憶させ、UI が失敗した操作を再試行する。
 #[tauri::command]
-fn set_archive_password(rel_path: String, password: String, state: State) -> Result<(), String> {
+fn set_archive_password(
+    rel_path: String,
+    password: String,
+    window: tauri::WebviewWindow,
+    state: State,
+) -> Result<(), String> {
+    access::require_main_window(&window)?;
     document::set_archive_password(rel_path, password, state)
 }
 
 // フォルダの展開時に、その直下だけを取得する。
 #[tauri::command]
-fn list_folder_entries(rel_dir: String, state: State) -> Result<Vec<FolderEntry>, String> {
+fn list_folder_entries(
+    rel_dir: String,
+    window: tauri::WebviewWindow,
+    state: State,
+) -> Result<Vec<FolderEntry>, String> {
+    access::require_main_window(&window)?;
     document::list_folder_entries(rel_dir, state)
 }
 
 #[tauri::command]
-async fn folder_metadata(paths: Vec<String>, include_counts: bool, state: State<'_>) -> Result<Vec<wasabipad_core::TreeMetadata>, String> {
+async fn folder_metadata(
+    paths: Vec<String>,
+    include_counts: bool,
+    window: tauri::WebviewWindow,
+    state: State<'_>,
+) -> Result<Vec<wasabipad_core::TreeMetadata>, String> {
+    access::require_main_window(&window)?;
     let root = state::with_doc(&state, |doc| doc.workspace_root())?
         .ok_or_else(|| "no folder".to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
@@ -228,18 +284,22 @@ async fn workspace_search(
     pat: String,
     options: SearchOptions,
     search_id: u32,
+    window: tauri::WebviewWindow,
     app: AppHandle,
     state: State<'_>,
     cancel: tauri::State<'_, search::SearchCancel>,
 ) -> Result<WorkspaceSearchOutcome, String> {
+    access::require_main_window(&window)?;
     search::workspace_search(pat, options, search_id, app, state, cancel).await
 }
 
 #[tauri::command]
 fn workspace_search_cancel(
     search_id: u32,
+    window: tauri::WebviewWindow,
     cancel: tauri::State<'_, search::SearchCancel>,
 ) -> Result<(), String> {
+    access::require_main_window(&window)?;
     search::workspace_search_cancel(search_id, cancel)
 }
 
@@ -249,18 +309,32 @@ fn create_note(
     name: String,
     enc: EncodingId,
     eol: Eol,
+    window: tauri::WebviewWindow,
     state: State,
 ) -> Result<DocInfo, String> {
+    access::require_main_window(&window)?;
     document::create_note(dir, name, enc, eol, state)
 }
 
 #[tauri::command]
-fn create_folder(rel_dir: String, name: String, state: State) -> Result<String, String> {
+fn create_folder(
+    rel_dir: String,
+    name: String,
+    window: tauri::WebviewWindow,
+    state: State,
+) -> Result<String, String> {
+    access::require_main_window(&window)?;
     document::create_folder(rel_dir, name, state)
 }
 
 #[tauri::command]
-fn rename_entry(rel_path: String, new_name: String, state: State) -> Result<DocInfo, String> {
+fn rename_entry(
+    rel_path: String,
+    new_name: String,
+    window: tauri::WebviewWindow,
+    state: State,
+) -> Result<DocInfo, String> {
+    access::require_main_window(&window)?;
     document::rename_entry(rel_path, new_name, state)
 }
 
@@ -268,8 +342,10 @@ fn rename_entry(rel_path: String, new_name: String, state: State) -> Result<DocI
 fn move_entry(
     source_rel_path: String,
     target_rel_dir: String,
+    window: tauri::WebviewWindow,
     state: State,
 ) -> Result<DocInfo, String> {
+    access::require_main_window(&window)?;
     document::move_entry(source_rel_path, target_rel_dir, state)
 }
 
@@ -277,8 +353,10 @@ fn move_entry(
 fn copy_entry(
     source_rel_path: String,
     target_rel_dir: String,
+    window: tauri::WebviewWindow,
     state: State,
 ) -> Result<DocInfo, String> {
+    access::require_main_window(&window)?;
     document::copy_entry(source_rel_path, target_rel_dir, state)
 }
 
@@ -288,8 +366,10 @@ fn copy_entry_as(
     target_rel_dir: String,
     target_name: String,
     overwrite: bool,
+    window: tauri::WebviewWindow,
     state: State,
 ) -> Result<DocInfo, String> {
+    access::require_main_window(&window)?;
     document::copy_entry_as(
         source_rel_path,
         target_rel_dir,
@@ -305,8 +385,10 @@ fn move_entry_as(
     target_rel_dir: String,
     target_name: String,
     overwrite: bool,
+    window: tauri::WebviewWindow,
     state: State,
 ) -> Result<DocInfo, String> {
+    access::require_main_window(&window)?;
     document::move_entry_as(
         source_rel_path,
         target_rel_dir,
@@ -317,37 +399,79 @@ fn move_entry_as(
 }
 
 #[tauri::command]
-fn delete_entry(rel_path: String, state: State) -> Result<DocInfo, String> {
+fn delete_entry(
+    rel_path: String,
+    window: tauri::WebviewWindow,
+    state: State,
+) -> Result<DocInfo, String> {
+    access::require_main_window(&window)?;
     document::delete_entry(rel_path, state)
 }
 
 #[tauri::command]
-fn delete_entry_without_backup(rel_path: String, state: State) -> Result<DocInfo, String> {
+fn delete_entry_without_backup(
+    rel_path: String,
+    window: tauri::WebviewWindow,
+    state: State,
+) -> Result<DocInfo, String> {
+    access::require_main_window(&window)?;
     document::delete_entry_without_backup(rel_path, state)
 }
 
 #[tauri::command]
-fn restore_deleted_entry(rel_path: String, state: State) -> Result<DocInfo, String> {
+fn restore_deleted_entry(
+    rel_path: String,
+    window: tauri::WebviewWindow,
+    state: State,
+) -> Result<DocInfo, String> {
+    access::require_main_window(&window)?;
     document::restore_deleted_entry(rel_path, state)
 }
 
 #[tauri::command]
-fn save_pasted_image(bytes: Vec<u8>, mime_type: String, state: State) -> Result<String, String> {
+fn save_pasted_image(
+    bytes: Vec<u8>,
+    mime_type: String,
+    window: tauri::WebviewWindow,
+    state: State,
+) -> Result<String, String> {
+    access::require_main_window(&window)?;
     document::save_pasted_image(bytes, mime_type, state)
 }
 
 #[tauri::command]
-fn save_diagram_image(bytes: Vec<u8>, mime_type: String, shared: bool, source_path: String, archive_entry: Option<String>, state: State) -> Result<String, String> {
+fn save_diagram_image(
+    bytes: Vec<u8>,
+    mime_type: String,
+    shared: bool,
+    source_path: String,
+    archive_entry: Option<String>,
+    window: tauri::WebviewWindow,
+    state: State,
+) -> Result<String, String> {
+    access::require_main_window(&window)?;
     document::save_diagram_image(bytes, mime_type, shared, source_path, archive_entry, state)
 }
 
 #[tauri::command]
-fn finish_diagram_assets(source_path: String, archive_entry: Option<String>, state: State) -> Result<(), String> {
+fn finish_diagram_assets(
+    source_path: String,
+    archive_entry: Option<String>,
+    window: tauri::WebviewWindow,
+    state: State,
+) -> Result<(), String> {
+    access::require_main_window(&window)?;
     document::finish_diagram_assets(source_path, archive_entry, state)
 }
 
 #[tauri::command]
-async fn read_diagram_asset(path: String, source_path: String, app: AppHandle) -> Result<tauri::ipc::Response, String> {
+async fn read_diagram_asset(
+    path: String,
+    source_path: String,
+    window: tauri::WebviewWindow,
+    app: AppHandle,
+) -> Result<tauri::ipc::Response, String> {
+    access::require_viewer_or_main(&window)?;
     let bytes = tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Mutex<DocState>>();
         document::read_diagram_asset(path, source_path, state)
@@ -356,23 +480,46 @@ async fn read_diagram_asset(path: String, source_path: String, app: AppHandle) -
 }
 
 #[tauri::command]
-fn apply_diagram_edit(start: PosC, end: PosC, caret_before: PosC, text: String, expected: String, expected_line: String, source_path: String, archive_entry: Option<String>, state: State) -> Result<EditResult, String> {
+fn apply_diagram_edit(
+    start: PosC,
+    end: PosC,
+    caret_before: PosC,
+    text: String,
+    expected: String,
+    expected_line: String,
+    source_path: String,
+    archive_entry: Option<String>,
+    window: tauri::WebviewWindow,
+    state: State,
+) -> Result<EditResult, String> {
+    access::require_main_window(&window)?;
     document::apply_diagram_edit(start, end, caret_before, text, expected, expected_line, source_path, archive_entry, state)
 }
 
 #[tauri::command]
-fn cleanup_unused_images(path: String, state: State) -> Result<(), String> {
+fn cleanup_unused_images(
+    path: String,
+    window: tauri::WebviewWindow,
+    state: State,
+) -> Result<(), String> {
+    access::require_main_window(&window)?;
     document::cleanup_unused_images(path, state)
 }
 
 // サイドバーの「エクスプローラで開く」用。状態を持たないので Doc へは委譲しない。
 #[tauri::command]
-fn reveal_in_explorer(path: String, is_dir: bool) -> Result<(), String> {
+fn reveal_in_explorer(
+    path: String,
+    is_dir: bool,
+    window: tauri::WebviewWindow,
+) -> Result<(), String> {
+    access::require_main_window(&window)?;
     system::reveal_in_explorer(path, is_dir)
 }
 
 #[tauri::command]
-fn open_in_other_app(path: String) -> Result<(), String> {
+fn open_in_other_app(path: String, window: tauri::WebviewWindow) -> Result<(), String> {
+    access::require_main_window(&window)?;
     system::open_in_other_app(path)
 }
 
@@ -380,18 +527,25 @@ fn open_in_other_app(path: String) -> Result<(), String> {
 fn open_in_default_browser(
     path: String,
     effective_extension: Option<String>,
+    window: tauri::WebviewWindow,
 ) -> Result<(), String> {
+    access::require_viewer_or_main(&window)?;
     system::open_in_default_browser(path, effective_extension)
 }
 
 #[tauri::command]
-fn open_external_url(url: String) -> Result<(), String> {
+fn open_external_url(url: String, window: tauri::WebviewWindow) -> Result<(), String> {
+    access::require_viewer_or_main(&window)?;
     system::open_external_url(url)
 }
 
 #[tauri::command]
-fn run_external_command(command: String, path: String) -> Result<(), String> {
-    system::run_external_command(command, path)
+fn run_external_command(
+    request: system::ExternalCommandRequest,
+    window: tauri::WebviewWindow,
+) -> Result<(), String> {
+    access::require_main_window(&window)?;
+    system::run_external_command(request)
 }
 
 #[tauri::command]
@@ -399,8 +553,10 @@ async fn register_html_preview(
     id: String,
     html: String,
     source_path: Option<String>,
+    window: tauri::WebviewWindow,
     app: AppHandle,
 ) -> Result<(), String> {
+    access::require_viewer_or_main(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<html_preview::HtmlPreviews>().register(id, html, source_path)
     })
@@ -409,7 +565,109 @@ async fn register_html_preview(
 }
 
 #[tauri::command]
-fn release_html_preview(id: String, state: tauri::State<'_, html_preview::HtmlPreviews>) -> Result<(), String> {
+fn release_html_preview(
+    id: String,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, html_preview::HtmlPreviews>,
+) -> Result<(), String> {
+    access::require_viewer_or_main(&window)?;
+    state.remove(&id)
+}
+
+#[tauri::command]
+async fn register_external_html_preview(
+    id: String,
+    entry_path: String,
+    window: tauri::WebviewWindow,
+    app: AppHandle,
+) -> Result<(), String> {
+    access::require_viewer_or_main(&window)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let candidate = PathBuf::from(&entry_path);
+        let canonical = candidate
+            .canonicalize()
+            .map_err(|error| format!("External HTML preview path could not be resolved: {error}"))?;
+        let operations = app.state::<external_preview_runner::ExternalPreviewOperations>();
+        let allowed = operations.is_managed_output(&canonical) || {
+            let doc_state = app.state::<Mutex<DocState>>();
+            let current_doc_path = state::with_doc(&doc_state, |doc| doc.path().map(PathBuf::from))?;
+            current_doc_path.is_some_and(|doc_path| {
+                external_preview_runner::existing_output(
+                    &doc_path,
+                    external_preview_runner::ExternalPreviewFormat::Html,
+                )
+                .and_then(|existing| existing.canonicalize().ok())
+                .is_some_and(|existing| existing == canonical)
+            })
+        };
+        if !allowed {
+            return Err("External HTML preview path is not authorized.".to_owned());
+        }
+        app.state::<external_html_preview::ExternalHtmlPreviews>()
+            .register(id, canonical)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+fn release_external_html_preview(
+    id: String,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, external_html_preview::ExternalHtmlPreviews>,
+) -> Result<(), String> {
+    access::require_viewer_or_main(&window)?;
+    state.remove(&id)
+}
+
+#[tauri::command]
+async fn register_pdf_preview(
+    id: String,
+    path: String,
+    window: tauri::WebviewWindow,
+    app: AppHandle,
+) -> Result<(), String> {
+    access::require_viewer_or_main(&window)?;
+    let label = window.label().to_owned();
+    tauri::async_runtime::spawn_blocking(move || {
+        let canonical = PathBuf::from(&path)
+            .canonicalize()
+            .map_err(|error| format!("PDF preview path could not be resolved: {error}"))?;
+        let allowed = if label == "main" {
+            let doc_state = app.state::<Mutex<DocState>>();
+            let current_doc_path = state::with_doc(&doc_state, |doc| doc.path().map(PathBuf::from))?;
+            current_doc_path
+                .and_then(|doc_path| doc_path.canonicalize().ok())
+                .is_some_and(|active| active == canonical)
+        } else {
+            let viewer_store = app.state::<ViewerStore>();
+            let viewer_path = viewer_store
+                .0
+                .lock()
+                .map_err(|_| "ビュー状態の参照に失敗しました".to_owned())?
+                .get(&label)
+                .and_then(|payload| payload.source_path.clone());
+            viewer_path
+                .and_then(|source_path| PathBuf::from(source_path).canonicalize().ok())
+                .is_some_and(|active| active == canonical)
+        };
+        if !allowed {
+            return Err("PDF preview path is not the active document.".to_owned());
+        }
+        app.state::<pdf_preview::PdfPreviews>()
+            .register(id, canonical)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+fn release_pdf_preview(
+    id: String,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, pdf_preview::PdfPreviews>,
+) -> Result<(), String> {
+    access::require_viewer_or_main(&window)?;
     state.remove(&id)
 }
 
@@ -417,7 +675,9 @@ fn release_html_preview(id: String, state: tauri::State<'_, html_preview::HtmlPr
 async fn external_preview_existing(
     input_path: String,
     output_format: external_preview_runner::ExternalPreviewFormat,
+    window: tauri::WebviewWindow,
 ) -> Result<Option<String>, String> {
+    access::require_main_window(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
         external_preview_runner::existing_output(std::path::Path::new(&input_path), output_format)
             .map(|path| path.to_string_lossy().into_owned())
@@ -429,8 +689,10 @@ async fn external_preview_existing(
 #[tauri::command]
 async fn external_preview_generate(
     request: external_preview_runner::ExternalPreviewRequest,
+    window: tauri::WebviewWindow,
     operations: tauri::State<'_, external_preview_runner::ExternalPreviewOperations>,
 ) -> Result<String, String> {
+    access::require_main_window(&window)?;
     if request
         .work_root
         .as_deref()
@@ -438,6 +700,8 @@ async fn external_preview_generate(
     {
         return Err("External preview work root cannot be empty.".to_owned());
     }
+    let settings = wasabipad_core::load_settings().map_err(|error| error.to_string())?;
+    access::validate_external_preview_request_against_settings(&settings, &request)?;
     let operations = operations.inner().clone();
     let request_id = request.request_id.clone();
     let input_path = PathBuf::from(&request.input_path);
@@ -473,16 +737,20 @@ async fn external_preview_generate(
 #[tauri::command]
 fn external_preview_cancel(
     request_id: String,
+    window: tauri::WebviewWindow,
     operations: tauri::State<'_, external_preview_runner::ExternalPreviewOperations>,
 ) -> Result<(), String> {
+    access::require_main_window(&window)?;
     operations.cancel(&request_id)
 }
 
 #[tauri::command]
 fn external_preview_cleanup(
     output_path: String,
+    window: tauri::WebviewWindow,
     operations: tauri::State<'_, external_preview_runner::ExternalPreviewOperations>,
 ) -> Result<(), String> {
+    access::require_main_window(&window)?;
     let output_path = PathBuf::from(output_path);
     operations.cleanup_output(&output_path)
 }
@@ -490,8 +758,10 @@ fn external_preview_cleanup(
 #[tauri::command]
 fn external_preview_cleanup_stale(
     work_roots: Vec<String>,
+    window: tauri::WebviewWindow,
     operations: tauri::State<'_, external_preview_runner::ExternalPreviewOperations>,
 ) -> Result<(), String> {
+    access::require_main_window(&window)?;
     let mut roots = vec![external_preview_runner::default_work_root()];
     roots.extend(
         work_roots
@@ -509,8 +779,10 @@ fn edit(
     caret_before: PosC,
     text: String,
     coalesce: bool,
+    window: tauri::WebviewWindow,
     state: State,
 ) -> Result<EditResult, String> {
+    access::require_main_window(&window)?;
     document::edit(start, end, caret_before, text, coalesce, state)
 }
 
@@ -519,18 +791,22 @@ fn edit_many(
     edits: Vec<EditManyItem>,
     caret_before: PosC,
     primary_index: usize,
+    window: tauri::WebviewWindow,
     state: State,
 ) -> Result<EditManyResult, String> {
+    access::require_main_window(&window)?;
     document::edit_many(edits, caret_before, primary_index, state)
 }
 
 #[tauri::command]
-fn undo(state: State) -> Result<Option<EditResult>, String> {
+fn undo(window: tauri::WebviewWindow, state: State) -> Result<Option<EditResult>, String> {
+    access::require_main_window(&window)?;
     document::undo(state)
 }
 
 #[tauri::command]
-fn redo(state: State) -> Result<Option<EditResult>, String> {
+fn redo(window: tauri::WebviewWindow, state: State) -> Result<Option<EditResult>, String> {
+    access::require_main_window(&window)?;
     document::redo(state)
 }
 
@@ -542,8 +818,10 @@ fn find(
     match_case: bool,
     use_regex: bool,
     whole_word: bool,
+    window: tauri::WebviewWindow,
     state: State,
 ) -> Result<Option<FindResult>, String> {
+    access::require_main_window(&window)?;
     document::find(pat, from, forward, match_case, use_regex, whole_word, state)
 }
 
@@ -556,8 +834,10 @@ fn find_all_in_range(
     use_regex: bool,
     whole_word: bool,
     max_matches: usize,
+    window: tauri::WebviewWindow,
     state: State,
 ) -> Result<Vec<FindResult>, String> {
+    access::require_main_window(&window)?;
     document::find_all_in_range(
         pat,
         first_line,
@@ -579,8 +859,10 @@ fn find_step(
     budget: usize,
     use_regex: bool,
     whole_word: bool,
+    window: tauri::WebviewWindow,
     state: State,
 ) -> Result<FindOutcome, String> {
+    access::require_main_window(&window)?;
     document::find_step(pat, from, match_case, cursor, budget, use_regex, whole_word, state)
 }
 
@@ -592,101 +874,159 @@ fn replace_all_chunk(
     budget: usize,
     use_regex: bool,
     whole_word: bool,
+    window: tauri::WebviewWindow,
     state: State,
 ) -> Result<ReplaceChunkResult, String> {
+    access::require_main_window(&window)?;
     document::replace_all_chunk(pat, rep, match_case, budget, use_regex, whole_word, state)
 }
 
 #[tauri::command]
-fn replace_all_cancel(state: State) -> Result<EditResult, String> {
+fn replace_all_cancel(window: tauri::WebviewWindow, state: State) -> Result<EditResult, String> {
+    access::require_main_window(&window)?;
     document::replace_all_cancel(state)
 }
 
 #[tauri::command]
-fn save_file(path: String, enc: EncodingId, eol: Eol, state: State) -> Result<SaveOutcome, String> {
+fn save_file(
+    path: String,
+    enc: EncodingId,
+    eol: Eol,
+    window: tauri::WebviewWindow,
+    state: State,
+) -> Result<SaveOutcome, String> {
+    access::require_main_window(&window)?;
     document::save_file(path, enc, eol, state)
 }
 
 // 外部変更ポーリング (フロントの定期タイマーから呼ぶ)。dirty はフロントが管理する
 // 未保存フラグ。小/巨大ファイルの区別も含め、判定はすべて core 側が持つ。
 #[tauri::command]
-fn poll_external(dirty: bool, state: State) -> Result<ExternalCheck, String> {
+fn poll_external(
+    dirty: bool,
+    window: tauri::WebviewWindow,
+    state: State,
+) -> Result<ExternalCheck, String> {
+    access::require_main_window(&window)?;
     document::poll_external(dirty, state)
 }
 
 #[tauri::command]
-fn reload_from_disk(state: State) -> Result<DocInfo, String> {
+fn reload_from_disk(window: tauri::WebviewWindow, state: State) -> Result<DocInfo, String> {
+    access::require_main_window(&window)?;
     document::reload_from_disk(state)
 }
 
 #[tauri::command]
-fn ack_external(state: State) -> Result<DocInfo, String> {
+fn ack_external(window: tauri::WebviewWindow, state: State) -> Result<DocInfo, String> {
+    access::require_main_window(&window)?;
     document::ack_external(state)
 }
 
 #[tauri::command]
-fn external_merge_preview(state: State) -> Result<ExternalMergePreview, String> {
+fn external_merge_preview(
+    window: tauri::WebviewWindow,
+    state: State,
+) -> Result<ExternalMergePreview, String> {
+    access::require_main_window(&window)?;
     document::external_merge_preview(state)
 }
 
 #[tauri::command]
-fn merge_external(state: State) -> Result<DocInfo, String> {
+fn merge_external(window: tauri::WebviewWindow, state: State) -> Result<DocInfo, String> {
+    access::require_main_window(&window)?;
     document::merge_external(state)
 }
 
 #[tauri::command]
-fn set_encoding(enc: EncodingId, state: State) -> Result<(), String> {
+fn set_encoding(
+    enc: EncodingId,
+    window: tauri::WebviewWindow,
+    state: State,
+) -> Result<(), String> {
+    access::require_main_window(&window)?;
     document::set_encoding(enc, state)
 }
 
 #[tauri::command]
-fn set_eol(eol: Eol, state: State) -> Result<(), String> {
+fn set_eol(eol: Eol, window: tauri::WebviewWindow, state: State) -> Result<(), String> {
+    access::require_main_window(&window)?;
     document::set_eol(eol, state)
 }
 
 #[tauri::command]
-fn load_bookmarks() -> Result<Vec<BookmarkNode>, String> {
+fn load_bookmarks(window: tauri::WebviewWindow) -> Result<Vec<BookmarkNode>, String> {
+    access::require_main_window(&window)?;
     system::load_bookmarks()
 }
 
 #[tauri::command]
-fn save_bookmarks(nodes: Vec<BookmarkNode>) -> Result<(), String> {
+fn save_bookmarks(
+    nodes: Vec<BookmarkNode>,
+    window: tauri::WebviewWindow,
+) -> Result<(), String> {
+    access::require_main_window(&window)?;
     system::save_bookmarks(nodes)
 }
 
 // 設定値はJSONとして扱い、キー単位で更新して別プロセスの変更を巻き戻さない。
 #[tauri::command]
-fn load_settings() -> Result<String, String> {
+fn load_settings(window: tauri::WebviewWindow) -> Result<String, String> {
+    access::require_viewer_or_main(&window)?;
     system::load_settings()
 }
 
 #[tauri::command]
-fn update_setting(key: String, value_json: String) -> Result<(), String> {
+fn update_setting(
+    key: String,
+    value_json: String,
+    window: tauri::WebviewWindow,
+) -> Result<(), String> {
+    access::require_setting_update_allowed(&window, &key)?;
     system::update_setting(key, value_json)
 }
 
 #[tauri::command]
-fn path_is_directory(path: String) -> bool {
+fn path_is_directory(path: String, window: tauri::WebviewWindow) -> bool {
+    if access::require_main_window(&window).is_err() {
+        return false;
+    }
     system::path_is_directory(path)
 }
 
 #[tauri::command]
-fn reload_with_encoding(enc: EncodingId, state: State) -> Result<DocInfo, String> {
+fn reload_with_encoding(
+    enc: EncodingId,
+    window: tauri::WebviewWindow,
+    state: State,
+) -> Result<DocInfo, String> {
+    access::require_main_window(&window)?;
     document::reload_with_encoding(enc, state)
 }
 
 #[tauri::command]
-fn next_memo_path(directory: String, stem: String, extension: String) -> Result<String, String> {
+fn next_memo_path(
+    directory: String,
+    stem: String,
+    extension: String,
+    window: tauri::WebviewWindow,
+) -> Result<String, String> {
+    access::require_main_window(&window)?;
     system::next_memo_path(directory, stem, extension)
 }
 
 #[tauri::command]
-fn launch_new_instance(request: WindowRequest) -> Result<(), String> {
+fn launch_new_instance(
+    request: WindowRequest,
+    window: tauri::WebviewWindow,
+) -> Result<(), String> {
+    access::require_main_window(&window)?;
     spawn_new_instance(request)
 }
 
 #[tauri::command]
-fn initial_window_request() -> Result<WindowRequest, String> {
+fn initial_window_request(window: tauri::WebviewWindow) -> Result<WindowRequest, String> {
+    access::require_main_window(&window)?;
     read_initial_window_request()
 }
 
@@ -695,8 +1035,10 @@ async fn read_archive_asset(
     archive_path: String,
     entry: String,
     cache_directory: Option<String>,
+    window: tauri::WebviewWindow,
     app: AppHandle,
 ) -> Result<tauri::ipc::Response, String> {
+    access::require_viewer_or_main(&window)?;
     let bytes = tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Mutex<DocState>>();
         document::read_archive_asset(archive_path, entry, cache_directory, state)
@@ -710,8 +1052,10 @@ async fn read_archive_asset(
 async fn read_file_asset(
     path: String,
     cache_directory: Option<String>,
+    window: tauri::WebviewWindow,
     app: AppHandle,
 ) -> Result<tauri::ipc::Response, String> {
+    access::require_viewer_or_main(&window)?;
     let bytes = tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Mutex<DocState>>();
         document::read_file_asset(path, cache_directory, state)
@@ -730,8 +1074,7 @@ fn preview_cache_from_directory(cache_directory: Option<String>) -> Result<Previ
     Ok(PreviewCache::new(root))
 }
 
-#[tauri::command]
-fn preview_cache_info(cache_directory: Option<String>) -> Result<PreviewCacheInfo, String> {
+fn preview_cache_info_impl(cache_directory: Option<String>) -> Result<PreviewCacheInfo, String> {
     let cache = preview_cache_from_directory(cache_directory)?;
     std::fs::create_dir_all(cache.directory()).map_err(|error| error.to_string())?;
     let bytes = cache.total_bytes().map_err(|error| error.to_string())?;
@@ -742,20 +1085,39 @@ fn preview_cache_info(cache_directory: Option<String>) -> Result<PreviewCacheInf
 }
 
 #[tauri::command]
-fn clear_preview_cache(cache_directory: Option<String>) -> Result<(), String> {
+fn preview_cache_info(
+    cache_directory: Option<String>,
+    window: tauri::WebviewWindow,
+) -> Result<PreviewCacheInfo, String> {
+    access::require_main_window(&window)?;
+    preview_cache_info_impl(cache_directory)
+}
+
+#[tauri::command]
+fn clear_preview_cache(
+    cache_directory: Option<String>,
+    window: tauri::WebviewWindow,
+) -> Result<(), String> {
+    access::require_main_window(&window)?;
     preview_cache_from_directory(cache_directory)?
         .clear()
         .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-fn take_pending_window_requests(state: tauri::State<'_, InstanceServer>) -> Vec<WindowRequest> {
+fn take_pending_window_requests(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, InstanceServer>,
+) -> Vec<WindowRequest> {
+    if access::require_main_window(&window).is_err() {
+        return Vec::new();
+    }
     drain_pending_window_requests(&state)
 }
 
 #[cfg(test)]
 mod window_request_tests {
-    use super::{parse_window_request, preview_cache_info};
+    use super::{parse_window_request, preview_cache_info_impl};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -797,7 +1159,7 @@ mod window_request_tests {
                 .unwrap()
                 .as_nanos(),
         ));
-        let info = preview_cache_info(Some(root.to_string_lossy().into_owned())).unwrap();
+        let info = preview_cache_info_impl(Some(root.to_string_lossy().into_owned())).unwrap();
 
         assert!(std::path::Path::new(&info.directory).is_dir());
         let _ = std::fs::remove_dir_all(root);
@@ -812,10 +1174,12 @@ async fn open_viewer(
     selection: Option<ViewerSelection>,
     source_path: Option<String>,
     effective_extension: Option<String>,
+    window: tauri::WebviewWindow,
     app: AppHandle,
     doc_state: State<'_>,
     state: tauri::State<'_, ViewerStore>,
 ) -> Result<String, String> {
+    access::require_main_window(&window)?;
     viewer::open_viewer(
         format,
         text,
@@ -830,15 +1194,24 @@ async fn open_viewer(
 }
 
 #[tauri::command]
-fn set_inline_preview_focus(focused: bool, state: tauri::State<'_, FindShortcutGuard>) {
+fn set_inline_preview_focus(
+    focused: bool,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, FindShortcutGuard>,
+) {
+    if access::require_main_window(&window).is_err() {
+        return;
+    }
     state.set(focused);
 }
 
 #[tauri::command]
 fn take_viewer_payload(
     label: String,
+    window: tauri::WebviewWindow,
     state: tauri::State<'_, ViewerStore>,
 ) -> Result<ViewerPayload, String> {
+    access::require_matching_viewer_label(&window, &label)?;
     viewer::take_viewer_payload(label, state)
 }
 
@@ -847,23 +1220,31 @@ fn update_viewer(
     label: String,
     text: String,
     selection: Option<ViewerSelection>,
+    window: tauri::WebviewWindow,
     app: AppHandle,
     state: tauri::State<'_, ViewerStore>,
 ) -> Result<bool, String> {
+    access::require_main_window(&window)?;
     viewer::update_viewer(label, text, selection, app, state)
 }
 
 #[tauri::command]
 fn close_viewer(
     label: String,
+    window: tauri::WebviewWindow,
     app: AppHandle,
     state: tauri::State<'_, ViewerStore>,
 ) -> Result<(), String> {
+    access::require_main_window(&window)?;
     viewer::close_viewer(label, app, state)
 }
 
 #[tauri::command]
-async fn probe_sqlite_preview(path: String) -> Result<bool, String> {
+async fn probe_sqlite_preview(
+    path: String,
+    window: tauri::WebviewWindow,
+) -> Result<bool, String> {
+    access::require_viewer_or_main(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
         wasabipad_core::is_sqlite_preview_eligible(std::path::Path::new(&path))
     })
@@ -879,7 +1260,9 @@ async fn read_sqlite_preview(
     limit: usize,
     include_metadata: bool,
     query_sql: Option<String>,
+    window: tauri::WebviewWindow,
 ) -> Result<SqlitePreview, String> {
+    access::require_viewer_or_main(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
         read_sqlite_preview_core(
             std::path::Path::new(&path),
@@ -895,43 +1278,79 @@ async fn read_sqlite_preview(
 }
 
 #[tauri::command]
-async fn read_git_history(path: String, head: Option<String>, offset: usize) -> Result<wasabipad_core::GitHistory, String> {
+async fn read_git_history(
+    path: String,
+    head: Option<String>,
+    offset: usize,
+    window: tauri::WebviewWindow,
+) -> Result<wasabipad_core::GitHistory, String> {
+    access::require_viewer_or_main(&window)?;
     tauri::async_runtime::spawn_blocking(move || wasabipad_core::read_git_history(&path, head.as_deref(), offset))
         .await.map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-async fn read_git_branches(path: String) -> Result<Vec<wasabipad_core::GitBranch>, String> {
+async fn read_git_branches(
+    path: String,
+    window: tauri::WebviewWindow,
+) -> Result<Vec<wasabipad_core::GitBranch>, String> {
+    access::require_viewer_or_main(&window)?;
     tauri::async_runtime::spawn_blocking(move || wasabipad_core::read_git_branches(&path))
         .await.map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-async fn resolve_git_worktree_file(path: String, commit: String, file: String) -> Result<String, String> {
+async fn resolve_git_worktree_file(
+    path: String,
+    commit: String,
+    file: String,
+    window: tauri::WebviewWindow,
+) -> Result<String, String> {
+    access::require_main_window(&window)?;
     tauri::async_runtime::spawn_blocking(move || wasabipad_core::resolve_git_worktree_file(&path, &commit, &file))
         .await.map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-async fn read_git_worktree_files(path: String) -> Result<Vec<wasabipad_core::GitChangedFile>, String> {
+async fn read_git_worktree_files(
+    path: String,
+    window: tauri::WebviewWindow,
+) -> Result<Vec<wasabipad_core::GitChangedFile>, String> {
+    access::require_viewer_or_main(&window)?;
     tauri::async_runtime::spawn_blocking(move || wasabipad_core::read_git_worktree_files(&path))
         .await.map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-async fn read_git_worktree_diff(path: String, file: String) -> Result<wasabipad_core::GitFileDiff, String> {
+async fn read_git_worktree_diff(
+    path: String,
+    file: String,
+    window: tauri::WebviewWindow,
+) -> Result<wasabipad_core::GitFileDiff, String> {
+    access::require_viewer_or_main(&window)?;
     tauri::async_runtime::spawn_blocking(move || wasabipad_core::read_git_worktree_diff(&path, &file))
         .await.map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-async fn read_git_files(path: String, commit: String) -> Result<Vec<wasabipad_core::GitChangedFile>, String> {
+async fn read_git_files(
+    path: String,
+    commit: String,
+    window: tauri::WebviewWindow,
+) -> Result<Vec<wasabipad_core::GitChangedFile>, String> {
+    access::require_viewer_or_main(&window)?;
     tauri::async_runtime::spawn_blocking(move || wasabipad_core::read_git_files(&path, &commit))
         .await.map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-async fn read_git_diff(path: String, commit: String, file: String) -> Result<wasabipad_core::GitFileDiff, String> {
+async fn read_git_diff(
+    path: String,
+    commit: String,
+    file: String,
+    window: tauri::WebviewWindow,
+) -> Result<wasabipad_core::GitFileDiff, String> {
+    access::require_viewer_or_main(&window)?;
     tauri::async_runtime::spawn_blocking(move || wasabipad_core::read_git_diff(&path, &commit, &file))
         .await.map_err(|error| error.to_string())?
 }
@@ -954,8 +1373,8 @@ fn main() {
     let instance_server = match InstanceServer::new() {
         Ok(server) => server,
         Err(error) => {
-            eprintln!("WasabiPadのインスタンス受付を初期化できません: {error}");
-            return;
+            eprintln!("WasabiPadのインスタンス受付を初期化できないため転送無効で起動します: {error}");
+            InstanceServer::disabled()
         }
     };
     let app = match tauri::Builder::default()
@@ -966,10 +1385,27 @@ fn main() {
         .manage(ViewerStore(Mutex::new(HashMap::new())))
         .manage(external_preview_runner::ExternalPreviewOperations::default())
         .manage(html_preview::HtmlPreviews::default())
+        .manage(external_html_preview::ExternalHtmlPreviews::default())
+        .manage(pdf_preview::PdfPreviews::default())
         .register_asynchronous_uri_scheme_protocol("wasabi-html", |context, request, responder| {
             let app = context.app_handle().clone();
             tauri::async_runtime::spawn_blocking(move || {
                 responder.respond(app.state::<html_preview::HtmlPreviews>().serve(request));
+            });
+        })
+        .register_asynchronous_uri_scheme_protocol("wasabi-ext", |context, request, responder| {
+            let app = context.app_handle().clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                responder.respond(
+                    app.state::<external_html_preview::ExternalHtmlPreviews>()
+                        .serve(request),
+                );
+            });
+        })
+        .register_asynchronous_uri_scheme_protocol("wasabi-pdf", |context, request, responder| {
+            let app = context.app_handle().clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                responder.respond(app.state::<pdf_preview::PdfPreviews>().serve(request));
             });
         })
         .manage(FindShortcutGuard::default())
@@ -1026,6 +1462,10 @@ fn main() {
             run_external_command,
             register_html_preview,
             release_html_preview,
+            register_external_html_preview,
+            release_external_html_preview,
+            register_pdf_preview,
+            release_pdf_preview,
             external_preview_existing,
             external_preview_generate,
             external_preview_cancel,

@@ -953,6 +953,51 @@ describe("Feature: DocumentController", () => {
     expect(showError).toHaveBeenCalledWith("開けませんでした", expect.any(Error));
     expect(view.setLoading).toHaveBeenLastCalledWith(false);
   });
+
+  // Feature: 保存中の文書切替ガードと外部変更バナー消去
+  // Scenario: saveAsのダイアログ待機中に別文書へ切り替わった場合は保存を実行せず新文書を汚さない
+  // Given: a.txtを開いた状態でsaveAs()の保存先選択が保留中である
+  // When: 待機中にb.txtへ切り替え、その後ダイアログがC:\stale.txtで解決する
+  // Then: saveFileは呼ばれず、b.txtのsavePath/dirty状態は変わらない
+  it("Scenario: aborts stale saveAs when another document is loaded during dialog wait", async () => {
+    const { view, controller } = fakeView();
+    controller.applyDocInfo(info({ path: "C:\\a.txt" }));
+    controller.onEdit(10);
+    let resolvePick!: (path: string | null) => void;
+    view.pickSavePath.mockImplementationOnce(() => new Promise<string | null>((resolve) => { resolvePick = resolve; }));
+    const saveFileSpy = vi.spyOn(api, "saveFile");
+    saveFileSpy.mockClear();
+
+    const saving = controller.saveAs();
+    await vi.waitFor(() => expect(view.pickSavePath).toHaveBeenCalledTimes(1));
+
+    vi.spyOn(api, "openPath").mockResolvedValueOnce(info({ path: "C:\\b.txt" }));
+    await controller.openPath("C:\\b.txt", false);
+    controller.onEdit(20);
+
+    resolvePick("C:\\stale.txt");
+    await expect(saving).resolves.toBe(false);
+    expect(saveFileSpy).not.toHaveBeenCalled();
+    expect(controller.current.savePath).toBe("C:\\b.txt");
+    expect(controller.current.dirty).toBe(true);
+  });
+
+  // Feature: 新規文書・欠損文書遷移時の外部変更バナー消去
+  // Scenario: newFileとshowMissingDocumentで旧文書の外部変更バナーを必ず閉じる
+  // Given: 旧文書で外部変更バナーが表示されている可能性がある
+  // When: newFile() と showMissingDocument() を呼ぶ
+  // Then: どちらでも hideExternalBanner() が呼ばれる
+  it("Scenario: hides external banner on newFile and showMissingDocument", async () => {
+    const { view, controller } = fakeView();
+    vi.spyOn(api, "newDoc").mockResolvedValueOnce(undefined);
+    view.hideExternalBanner.mockClear();
+
+    await controller.newFile(false);
+    expect(view.hideExternalBanner).toHaveBeenCalledTimes(1);
+
+    controller.showMissingDocument("C:\\missing.txt");
+    expect(view.hideExternalBanner).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("Feature: fileNameOf", () => {

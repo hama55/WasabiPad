@@ -9,11 +9,13 @@ function setup(initial: string, readOnly = false) {
   const selection = new Selection();
   const lineCache = new LineCache(document.client);
   const results: { caret: { line: number; col: number }; line_count: number }[] = [];
+  let generation = 1;
   const controller = new EditorMutationController({
     doc: document.client,
     selection,
     lineCache,
     lineCount: () => document.text().split("\n").length,
+    getGeneration: () => generation,
     isReadOnly: () => readOnly,
     isMarkdown: () => true,
     applyResult: (result) => {
@@ -23,7 +25,14 @@ function setup(initial: string, readOnly = false) {
     },
     renderAfterEdit: async () => {},
   });
-  return { document, selection, lineCache, controller, results };
+  return {
+    document,
+    selection,
+    lineCache,
+    controller,
+    results,
+    bumpGeneration: () => { generation += 1; },
+  };
 }
 
 describe("Feature: EditorMutationController", () => {
@@ -143,5 +152,28 @@ describe("Feature: EditorMutationController", () => {
 
     expect(document.text()).toBe("abcd\nEFGH");
     expect(document.calls).not.toContain("editMany(2)");
+  });
+
+  // Feature: 文書切替時の進行中編集破棄
+  // Scenario: 行取得の待機中に文書世代が変わった編集は新しい文書へ適用しない
+  // Given: 編集キュー内のinsertTextがlineCache.lineを待機している
+  // When: 待機中に別文書へ切り替わり世代が進む
+  // Then: doc.editもapplyResultも呼ばれず新文書を汚さない
+  it("Scenario: drops stale queued edits when document generation changes mid-flight", async () => {
+    const { document, lineCache, controller, results, bumpGeneration } = setup("hello");
+    let releaseLine!: (value: string) => void;
+    const originalLine = lineCache.line.bind(lineCache);
+    lineCache.line = () => new Promise<string>((resolve) => { releaseLine = resolve; });
+
+    const pending = controller.insertText("X");
+    await Promise.resolve();
+    bumpGeneration();
+    lineCache.line = originalLine;
+    releaseLine("hello");
+    await pending;
+
+    expect(document.text()).toBe("hello");
+    expect(document.calls.filter((call) => call.startsWith("edit("))).toHaveLength(0);
+    expect(results).toHaveLength(0);
   });
 });

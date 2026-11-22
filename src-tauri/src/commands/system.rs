@@ -257,31 +257,241 @@ fn spawn_command_line(command: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn run_external_command(command: String, path: String) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    {
-        let command = validated_external_command(command, path)?;
-        // {file}の置換とプレフィックスの連結はUI側で済ませ、確認欄と同じ文字列をそのまま実行する。
-        // コンソールを隠さず起動するが、アプリ側は子プロセスの終了を待たずに戻る。
-        spawn_command_line(&command)
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = (command, path);
-        Err("この機能はWindowsでのみ使用できます".to_string())
-    }
+#[derive(Debug, serde::Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ExternalCommandRequest {
+    pub prefix: String,
+    pub command: String,
+    pub value: String,
+    pub value_kind: String,
+    pub path: String,
 }
 
-#[cfg(target_os = "windows")]
-fn validated_external_command(command: String, path: String) -> Result<String, String> {
-    if !PathBuf::from(path).is_file() {
+fn encode_uri_component_js(value: &str) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(value.len());
+    for byte in value.as_bytes() {
+        if byte.is_ascii_alphanumeric()
+            || matches!(
+                byte,
+                b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')'
+            )
+        {
+            out.push(*byte as char);
+        } else {
+            let _ = write!(&mut out, "%{byte:02X}");
+        }
+    }
+    out
+}
+
+fn one_line_value(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut chars = value.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\r' {
+            if chars.peek() == Some(&'\n') {
+                chars.next();
+            }
+            out.push(' ');
+        } else if ch == '\n' {
+            out.push(' ');
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+pub(crate) fn expand_registered_template(template: &str, value: &str, value_kind: &str) -> String {
+    let mut result = String::with_capacity(template.len());
+    let mut rest = template;
+    while !rest.is_empty() {
+        if value_kind == "string" {
+            if let Some(after) = rest.strip_prefix("{string_in_url}") {
+                result.push_str(&encode_uri_component_js(value));
+                rest = after;
+                continue;
+            }
+            if let Some(after) = rest.strip_prefix("{string_one_line}") {
+                result.push_str(&one_line_value(value));
+                rest = after;
+                continue;
+            }
+            if let Some(after) = rest.strip_prefix("{copy_string_clipboard}") {
+                rest = after;
+                continue;
+            }
+            if let Some(after) = rest.strip_prefix("{string}") {
+                result.push_str(value);
+                rest = after;
+                continue;
+            }
+        } else if let Some(after) = rest.strip_prefix("{file}") {
+            result.push_str(value);
+            rest = after;
+            continue;
+        }
+        let step = rest.chars().next().map(char::len_utf8).unwrap_or(1);
+        let next_brace = rest[step..].find('{').map(|offset| offset + step);
+        let split_at = next_brace.unwrap_or(rest.len());
+        result.push_str(&rest[..split_at]);
+        rest = &rest[split_at..];
+    }
+    result
+}
+
+fn split_template_tokens(template: &str) -> Option<Vec<String>> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    let mut started = false;
+    let chars: Vec<char> = template.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let ch = chars[i];
+        if in_quotes {
+            if ch == '"' {
+                if chars.get(i + 1) == Some(&'"') {
+                    current.push('"');
+                    i += 2;
+                    continue;
+                }
+                in_quotes = false;
+            } else {
+                current.push(ch);
+            }
+            started = true;
+            i += 1;
+            continue;
+        }
+        if ch == '"' {
+            in_quotes = true;
+            started = true;
+        } else if ch.is_whitespace() {
+            if started {
+                tokens.push(std::mem::take(&mut current));
+                started = false;
+            }
+        } else {
+            current.push(ch);
+            started = true;
+        }
+        i += 1;
+    }
+    if in_quotes {
+        return None;
+    }
+    if started {
+        tokens.push(current);
+    }
+    Some(tokens)
+}
+
+fn is_shell_executable(executable: &str) -> bool {
+    let normalized = executable.trim().trim_matches('"');
+    let file_name = std::path::Path::new(normalized)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(normalized)
+        .to_ascii_lowercase();
+    matches!(
+        file_name.as_str(),
+        "cmd" | "cmd.exe" | "powershell" | "powershell.exe" | "pwsh" | "pwsh.exe"
+    ) || file_name.ends_with(".bat")
+        || file_name.ends_with(".cmd")
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum PreparedExternalCommand {
+    Direct { executable: String, args: Vec<String> },
+    ShellCommandLine(String),
+}
+
+fn prepare_external_command(request: &ExternalCommandRequest) -> Result<PreparedExternalCommand, String> {
+    if request.path.contains('\0') || request.value.contains('\0') {
+        return Err("不正な文字が含まれています".to_string());
+    }
+    if !PathBuf::from(&request.path).is_file() {
         return Err("対象ファイルが見つかりません".to_string());
     }
-    let command = command.trim();
+    let effective_value = if request.value_kind == "file" {
+        request.path.as_str()
+    } else {
+        request.value.as_str()
+    };
+    let prefix = request.prefix.trim();
+    let command = request.command.trim();
     if command.is_empty() {
         return Err("コマンドが空です".to_string());
     }
-    Ok(command.to_string())
+    let combined_template = if prefix.is_empty() {
+        command.to_string()
+    } else {
+        format!("{prefix} {command}")
+    };
+    if let Some(tokens) = split_template_tokens(&combined_template) {
+        if let Some((first, rest)) = tokens.split_first() {
+            let executable = expand_registered_template(first, effective_value, &request.value_kind);
+            if !executable.trim().is_empty() && !is_shell_executable(&executable) {
+                let mut args = Vec::with_capacity(rest.len());
+                for token in rest {
+                    if request.value_kind == "string" && token == "{copy_string_clipboard}" {
+                        continue;
+                    }
+                    args.push(expand_registered_template(
+                        token,
+                        effective_value,
+                        &request.value_kind,
+                    ));
+                }
+                return Ok(PreparedExternalCommand::Direct { executable, args });
+            }
+        }
+    }
+    let expanded_command = expand_registered_template(command, effective_value, &request.value_kind);
+    let full = if prefix.is_empty() {
+        expanded_command
+    } else {
+        format!("{prefix} {expanded_command}")
+    };
+    let trimmed = full.trim();
+    if trimmed.is_empty() {
+        return Err("コマンドが空です".to_string());
+    }
+    Ok(PreparedExternalCommand::ShellCommandLine(trimmed.to_string()))
+}
+
+pub(crate) fn run_external_command(request: ExternalCommandRequest) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let settings = wasabipad_core::load_settings().map_err(|error| error.to_string())?;
+        crate::access::validate_registered_command_against_settings(
+            &settings,
+            &request.prefix,
+            &request.command,
+            &request.value_kind,
+        )?;
+        match prepare_external_command(&request)? {
+            PreparedExternalCommand::Direct { executable, args } => {
+                std::process::Command::new(executable)
+                    .args(args)
+                    .spawn()
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            }
+            PreparedExternalCommand::ShellCommandLine(command_line) => {
+                spawn_command_line(&command_line)
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = request;
+        Err("この機能はWindowsでのみ使用できます".to_string())
+    }
 }
 
 #[cfg(all(test, target_os = "windows"))]
@@ -437,6 +647,44 @@ mod tests {
         let path = std::path::Path::new(r"C:\work\index.html");
 
         assert_eq!(super::browser_target(path, None), r"C:\work\index.html");
+    }
+
+    // Feature: 登録コマンドの安全な引数展開と二重置換防止
+    // Scenario: 非シェル実行ファイルへ空白と引用符を含むパスを渡す・二重置換候補を含む文字列を渡す
+    // Given: 実在ファイルと非シェルコマンド・文字列コマンド
+    // When: prepare_external_command / expand_registered_template を呼ぶ
+    // Then: 非シェルは実行ファイルと引数配列へ安全分離し、文字列プレースホルダは単一パスで展開する
+    #[test]
+    fn prepares_direct_args_safely_and_avoids_double_expansion() {
+        let root = std::env::temp_dir().join(format!("wasabipad_extcmd_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("note with space & test.txt");
+        fs::write(&file, "hello").unwrap();
+
+        let prepared = super::prepare_external_command(&super::ExternalCommandRequest {
+            prefix: String::new(),
+            command: r#""C:\Program Files\App\tool.exe" --open {file}"#.into(),
+            value: file.to_string_lossy().into_owned(),
+            value_kind: "file".into(),
+            path: file.to_string_lossy().into_owned(),
+        })
+        .unwrap();
+        assert_eq!(
+            prepared,
+            super::PreparedExternalCommand::Direct {
+                executable: r"C:\Program Files\App\tool.exe".into(),
+                args: vec!["--open".into(), file.to_string_lossy().into_owned()],
+            }
+        );
+
+        let expanded = super::expand_registered_template(
+            "open {string_one_line} {string}",
+            "a\n{string}",
+            "string",
+        );
+        assert_eq!(expanded, "open a {string} a\n{string}");
+        let _ = fs::remove_dir_all(&root);
     }
 }
 

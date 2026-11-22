@@ -15,18 +15,21 @@ beforeEach(() => mockConvertFileSrc("windows"));
 
 describe("Feature: trusted external preview output", () => {
   // Feature: 外部プレビュー生成物のURL変換
-  // Scenario: Windows絶対パスをTauri asset URLへ変換する
-  // Given: 空白と`#`を含むHTMLのWindows絶対パスがある
+  // Scenario: HTML出力を登録済み wasabi-ext: スコープURLへ変換する
+  // Given: 空白と`#`を含むHTMLのWindows絶対パスと登録済みプレビューIDがある
   // When: 外部出力のsource情報を解決する
-  // Then: Tauri asset URLへ変換し、相対資産用の階層を保ってHTML形式として返す
-  it("Scenario: resolves an HTML output path to a Tauri asset URL", () => {
-    expect(resolveExternalOutputSource("C:\\work\\score #1.HTML")).toEqual({
+  // Then: wasabi-ext: の専用URLへ変換し、相対資産用の階層を保ってHTML形式として返す
+  it("Scenario: resolves an HTML output path to a scoped wasabi-ext URL", () => {
+    const id = "835b41d8-d3a4-40af-979c-e9feb50e9ee2";
+    expect(resolveExternalOutputSource("C:\\work\\score #1.HTML", id)).toEqual({
       format: "html",
       mimeType: "text/html",
-      url: "http://asset.localhost/C%3A%2Fwork/score%20%231.HTML",
+      url: `http://wasabi-ext.localhost/${id}/score%20%231.HTML`,
     });
-    expect(new URL("assets/theme.css", resolveExternalOutputSource("C:\\work\\index.html").url).href)
-      .toBe("http://asset.localhost/C%3A%2Fwork/assets/theme.css");
+    expect(new URL("assets/theme.css", resolveExternalOutputSource("C:\\work\\index.html", id).url).href)
+      .toBe(`http://wasabi-ext.localhost/${id}/assets/theme.css`);
+    expect(() => resolveExternalOutputSource("C:\\work\\index.html"))
+      .toThrow("外部HTMLプレビューIDが空です");
   });
 
   // Given: UNC上のSVG出力の絶対パスがある
@@ -42,15 +45,16 @@ describe("Feature: trusted external preview output", () => {
 
   // Feature: 外部プレビュー生成物の形式検証
   // Scenario: HTMLだけをtrusted HTML iframeへ渡す
-  // Given: HTML出力の絶対パスがある
+  // Given: HTML出力の絶対パスと登録済みプレビューIDがある
   // When: trusted HTMLプレビューを生成する
-  // Then: iframeはTauri asset URLを参照し、同一オリジン許可を付けない
-  it("Scenario: creates an asset-backed iframe without same-origin permission", () => {
-    const { wrapper, frame } = createTrustedExternalHtmlPreview("C:\\work\\score.html");
+  // Then: iframeはwasabi-ext:専用URLを参照し、同一オリジン許可を付けない
+  it("Scenario: creates a scoped wasabi-ext iframe without same-origin permission", () => {
+    const id = "835b41d8-d3a4-40af-979c-e9feb50e9ee2";
+    const { wrapper, frame } = createTrustedExternalHtmlPreview("C:\\work\\score.html", id);
 
     expect(wrapper.className).toBe("viewer-html-wrap");
     expect(frame.className).toBe("viewer-html");
-    expect(frame.src).toBe("http://asset.localhost/C%3A%2Fwork/score.html");
+    expect(frame.src).toBe(`http://wasabi-ext.localhost/${id}/score.html`);
     expect(frame.hasAttribute("srcdoc")).toBe(false);
     expect(frame.getAttribute("sandbox")).toContain("allow-scripts");
     expect(frame.getAttribute("sandbox")).not.toContain("allow-same-origin");
@@ -62,7 +66,7 @@ describe("Feature: trusted external preview output", () => {
   // When: trusted HTMLプレビューを生成する
   // Then: HTML専用経路として診断する
   it("Scenario: rejects SVG output in the HTML DOM helper", () => {
-    expect(() => createTrustedExternalHtmlPreview("C:\\work\\score.svg"))
+    expect(() => createTrustedExternalHtmlPreview("C:\\work\\score.svg", "835b41d8-d3a4-40af-979c-e9feb50e9ee2"))
       .toThrow("HTML出力ではありません");
   });
 

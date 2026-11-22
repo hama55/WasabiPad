@@ -111,16 +111,19 @@ describe("Feature: shared registered-command context menu", () => {
       .every((item) => item.querySelector(".menu-icon, .fav-icon"))).toBe(true);
     dropdown.querySelector<HTMLElement>(".dd-submenu .dd-item")!.click();
 
-    await vi.waitFor(() => expect(runExternalCommand).toHaveBeenCalledWith(
-      "open line%201%20%26%20line%202%0Anext",
-      target.path,
-    ));
+    await vi.waitFor(() => expect(runExternalCommand).toHaveBeenCalledWith({
+      prefix: "",
+      command: "open {string_in_url}",
+      value: selected,
+      valueKind: "string",
+      path: target.path,
+    }));
     expect(promptFields).toHaveBeenCalledOnce();
   });
 
   // Given: 複数行の選択文字列と`{copy_string_clipboard}`を含む登録コマンド
   // When: 登録コマンドを実行する
-  // Then: 実行前に元の文字列をOSクリップボードへコピーし、placeholderを空文字にしたcommandを渡す
+  // Then: 実行前に元の文字列をOSクリップボードへコピーし、登録済みテンプレートと値をバックエンドへ渡す
   it("Scenario: 登録コマンドが選択文字列をクリップボード経由で渡す", async () => {
     const selected = "line 1\nline 2";
     const promptFields = vi.fn(async () => ["Filter", "filter {copy_string_clipboard}"]);
@@ -146,6 +149,51 @@ describe("Feature: shared registered-command context menu", () => {
     dropdown.querySelector<HTMLElement>(".dd-submenu .dd-item")!.click();
 
     await vi.waitFor(() => expect(writeClipboardText).toHaveBeenCalledWith(selected));
-    await vi.waitFor(() => expect(runExternalCommand).toHaveBeenCalledWith("filter ", target.path));
+    await vi.waitFor(() => expect(runExternalCommand).toHaveBeenCalledWith({
+      prefix: "",
+      command: "filter {copy_string_clipboard}",
+      value: selected,
+      valueKind: "string",
+      path: target.path,
+    }));
+  });
+
+  // Given: シェル経由の登録コマンドと `&` を含むファイル名
+  // When: 登録コマンドをクリックして確認ダイアログでキャンセル/承認する
+  // Then: キャンセル時は実行せず、承認時のみ実行する
+  it("Scenario: シェルメタ文字を含む対象ファイルでは実行前に確認モーダルを挟む", async () => {
+    await saveRegisteredCommand("file", { label: "Shell", prefix: "cmd.exe /D /C", command: "echo {file}" });
+    const confirmMessage = vi.fn(async () => false);
+    const runExternalCommand = vi.fn(async () => {});
+    const run = vi.fn<RegisteredCommandMenuServices["run"]>((_title, operation) => {
+      void operation();
+    });
+    const services = {
+      promptFields: vi.fn(async () => null),
+      confirmMessage,
+      runExternalCommand,
+      run,
+    } satisfies RegisteredCommandMenuServices;
+    const dropdown = document.getElementById("dropdown")!;
+
+    showMenu(0, 0, [createRegisteredCommandMenu("C:\\work\\a & calc.txt", services)]);
+    dropdown.querySelector<HTMLElement>(".dd-item")!.click();
+    dropdown.querySelector<HTMLElement>(".dd-submenu .dd-item")!.click();
+
+    await vi.waitFor(() => expect(confirmMessage).toHaveBeenCalledOnce());
+    expect(runExternalCommand).not.toHaveBeenCalled();
+
+    confirmMessage.mockResolvedValueOnce(true);
+    showMenu(0, 0, [createRegisteredCommandMenu("C:\\work\\a & calc.txt", services)]);
+    dropdown.querySelector<HTMLElement>(".dd-item")!.click();
+    dropdown.querySelector<HTMLElement>(".dd-submenu .dd-item")!.click();
+
+    await vi.waitFor(() => expect(runExternalCommand).toHaveBeenCalledWith({
+      prefix: "cmd.exe /D /C",
+      command: "echo {file}",
+      value: "C:\\work\\a & calc.txt",
+      valueKind: "file",
+      path: "C:\\work\\a & calc.txt",
+    }));
   });
 });

@@ -71,4 +71,57 @@ describe("Feature: static HTML preview", () => {
 
     expect(event.defaultPrevented).toBe(true);
   });
+
+  // Feature: 静的HTMLプレビューのDOMベース無害化
+  // Scenario: HTMLコメント内の偽headタグ・文字参照refresh・既存baseタグによるCSP回避を無効化する
+  // Given: 偽の<head>コメント・文字参照のmeta refresh・外部baseタグを含むHTML
+  // When: 静的HTML文書を組み立てる
+  // Then: 本物のhead先頭へCSPと安全なbaseを挿入し、refreshと外部baseを除去する
+  it("Scenario: defeats comment-head, entity-encoded refresh, and injected base bypasses", () => {
+    const documentText = staticHtmlDocument(
+      '<!-- <head> --><html><head><base href="https://evil.example/" target="_top"><meta http-equiv="&#114;efresh" content="0;url=https://evil.example/"></head><body><p>safe</p></body></html>',
+      "http://asset.localhost/C%3A%2Fsite/",
+    );
+    const parsed = new DOMParser().parseFromString(documentText, "text/html");
+    const metas = [...parsed.head.querySelectorAll("meta[http-equiv]")];
+    expect(metas).toHaveLength(1);
+    expect(metas[0].getAttribute("http-equiv")).toBe("Content-Security-Policy");
+    expect(metas[0].getAttribute("content")).toContain("script-src 'none'");
+    expect(parsed.head.firstElementChild).toBe(metas[0]);
+
+    const bases = [...parsed.querySelectorAll("base")];
+    expect(bases).toHaveLength(1);
+    expect(bases[0].getAttribute("href")).toBe("http://asset.localhost/C%3A%2Fsite/");
+    expect(bases[0].getAttribute("target")).toBeNull();
+  });
+
+  // Feature: 静的HTMLプレビューのナビゲーション制限
+  // Scenario: 文書内フラグメント以外のリンク遷移を遮断する
+  // Given: 静的HTMLプレビュー内にasset URLリンクと文書内#リンクがある
+  // When: それぞれのリンクをクリックする
+  // Then: asset URLリンクの遷移は遮断し、文書内#リンクだけ許可する
+  it("Scenario: blocks asset.localhost navigation while allowing in-document fragment links", () => {
+    const { frame } = createHtmlPreview({
+      name: "index.html",
+      html: "<p>hello</p>",
+      baseUrl: null,
+      onContextMenu: () => undefined,
+    });
+    const child = document.implementation.createHTMLDocument("preview");
+    const assetLink = child.createElement("a");
+    assetLink.setAttribute("href", "http://asset.localhost/C%3A%2Fother.html");
+    const fragmentLink = child.createElement("a");
+    fragmentLink.setAttribute("href", "#section-1");
+    child.body.append(assetLink, fragmentLink);
+    Object.defineProperty(frame, "contentDocument", { configurable: true, value: child });
+    frame.dispatchEvent(new Event("load"));
+
+    const assetClick = new MouseEvent("click", { bubbles: true, cancelable: true });
+    assetLink.dispatchEvent(assetClick);
+    expect(assetClick.defaultPrevented).toBe(true);
+
+    const fragmentClick = new MouseEvent("click", { bubbles: true, cancelable: true });
+    fragmentLink.dispatchEvent(fragmentClick);
+    expect(fragmentClick.defaultPrevented).toBe(false);
+  });
 });

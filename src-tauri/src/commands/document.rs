@@ -302,10 +302,9 @@ pub(crate) fn edit_many(
     state: State,
 ) -> Result<EditManyResult, String> {
     with_doc(&state, |doc| {
-        doc.edit_many(edits, caret_before, primary_index)
-    })
-    ?
-    .ok_or_else(|| "閲覧専用の文書は編集できません".to_string())
+        doc.try_edit_many(edits, caret_before, primary_index)
+    })?
+    .map_err(|message| message.to_string())
 }
 
 pub(crate) fn undo(state: State) -> Result<Option<EditResult>, String> {

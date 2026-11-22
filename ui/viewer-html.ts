@@ -1,18 +1,20 @@
 import { isFindShortcut } from "./commands";
 
-const STATIC_HTML_CSP = [
-  "default-src 'none'",
-  "base-uri asset: http://asset.localhost",
-  "connect-src 'none'",
-  "font-src asset: http://asset.localhost data:",
-  "form-action 'none'",
-  "frame-src 'none'",
-  "img-src asset: http://asset.localhost data: blob:",
-  "media-src asset: http://asset.localhost blob:",
-  "object-src 'none'",
-  "script-src 'none'",
-  "style-src asset: http://asset.localhost 'unsafe-inline'",
-].join("; ");
+function staticHtmlCsp(baseUrl: string | null): string {
+  return [
+    "default-src 'none'",
+    `base-uri ${baseUrl ? "asset: http://asset.localhost" : "'none'"}`,
+    "connect-src 'none'",
+    "font-src asset: http://asset.localhost data:",
+    "form-action 'none'",
+    "frame-src 'none'",
+    "img-src asset: http://asset.localhost data: blob:",
+    "media-src asset: http://asset.localhost blob:",
+    "object-src 'none'",
+    "script-src 'none'",
+    "style-src asset: http://asset.localhost 'unsafe-inline'",
+  ].join("; ");
+}
 
 export interface HtmlPreviewOptions {
   name: string;
@@ -22,41 +24,28 @@ export interface HtmlPreviewOptions {
   onContextMenu: (x: number, y: number) => void;
 }
 
-function escapeAttribute(value: string): string {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("\"", "&quot;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
-}
-
-function staticHead(baseUrl: string | null): string {
-  const base = baseUrl ? `<base href="${escapeAttribute(baseUrl)}">` : "";
-  return `<meta http-equiv="Content-Security-Policy" content="${escapeAttribute(STATIC_HTML_CSP)}">${base}`;
-}
-
 export function staticHtmlDocument(html: string, baseUrl: string | null): string {
-  const safeHtml = html.replace(
-    /<meta\b(?=[^>]*\bhttp-equiv\s*=\s*(?:"refresh"|'refresh'|refresh))[^>]*>/gi,
-    "",
-  );
-  const head = staticHead(baseUrl);
-  const existingHead = /<head\b[^>]*>/i;
-  if (existingHead.test(safeHtml)) {
-    return safeHtml.replace(existingHead, (tag) => `${tag}${head}`);
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  for (const meta of [...doc.querySelectorAll("meta[http-equiv]")]) {
+    if ((meta.getAttribute("http-equiv") ?? "").trim().toLowerCase() === "refresh") {
+      meta.remove();
+    }
   }
-  const existingHtml = /<html\b[^>]*>/i;
-  if (existingHtml.test(safeHtml)) {
-    return safeHtml.replace(existingHtml, (tag) => `${tag}<head>${head}</head>`);
+  for (const base of [...doc.querySelectorAll("base")]) {
+    base.remove();
   }
-  return `<!doctype html><html><head>${head}</head><body>${safeHtml}</body></html>`;
-}
-
-function isLocalUrl(url: URL): boolean {
-  return url.protocol === "asset:"
-    || (url.protocol === "http:" && url.hostname === "asset.localhost")
-    || url.protocol === "blob:"
-    || url.protocol === "data:";
+  const head = doc.head ?? doc.documentElement.insertBefore(doc.createElement("head"), doc.documentElement.firstChild);
+  const cspMeta = doc.createElement("meta");
+  cspMeta.setAttribute("http-equiv", "Content-Security-Policy");
+  cspMeta.setAttribute("content", staticHtmlCsp(baseUrl));
+  if (baseUrl) {
+    const base = doc.createElement("base");
+    base.setAttribute("href", baseUrl);
+    head.prepend(cspMeta, base);
+  } else {
+    head.prepend(cspMeta);
+  }
+  return `<!doctype html>\n${doc.documentElement.outerHTML}`;
 }
 
 function bindStaticDocument(frame: HTMLIFrameElement, onContextMenu: HtmlPreviewOptions["onContextMenu"]) {
@@ -75,15 +64,14 @@ function bindStaticDocument(frame: HTMLIFrameElement, onContextMenu: HtmlPreview
     const target = event.target as Element | null;
     const anchor = target?.closest?.("a, area");
     const href = anchor?.getAttribute("href");
-    if (!href || href.startsWith("#")) return;
-    try {
-      if (isLocalUrl(new URL(href, child.baseURI))) return;
-    } catch {
-      // Invalid or unsupported URLs stay inside the static preview.
-    }
+    if (href === null || href === undefined || href.startsWith("#")) return;
     event.preventDefault();
     event.stopPropagation();
-  });
+  }, true);
+  child.addEventListener("submit", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+  }, true);
 }
 
 export function createHtmlPreview(options: HtmlPreviewOptions): { wrapper: HTMLElement; frame: HTMLIFrameElement } {

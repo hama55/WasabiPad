@@ -28,9 +28,9 @@ describe("Feature: 検索と置換入力欄の同幅配置", () => {
 
 describe("Feature: trusted external preview CSP", () => {
   // Given: production/devのTauri CSP設定を読み込む
-  // When: file-backed外部HTML用frame-srcと本体側の実行・通信権限を検査する
-  // Then: file frameだけを許可し、本体UIのscript-src/connect-srcは現行境界を保つ
-  it("Scenario: file-backed external frames do not widen parent script or IPC access", () => {
+  // When: 専用プロトコル(wasabi-ext:/wasabi-pdf:)用frame-srcと本体側の実行・通信権限を検査する
+  // Then: スコープ限定プロトコルだけを許可し、file:/asset:をframe-srcから除外してscript-src/connect-srcの境界を保つ
+  it("Scenario: scoped preview frames do not allow file: or asset: or widen parent script/IPC access", () => {
     const policies = [
       {
         csp: tauriConfig.app.security.csp,
@@ -45,7 +45,14 @@ describe("Feature: trusted external preview CSP", () => {
     ];
 
     for (const { csp, script, connect } of policies) {
-      expect(csp["frame-src"].split(/\s+/)).toContain("file:");
+      const frameSources = csp["frame-src"].split(/\s+/);
+      expect(frameSources).toContain("wasabi-ext:");
+      expect(frameSources).toContain("http://wasabi-ext.localhost");
+      expect(frameSources).toContain("wasabi-pdf:");
+      expect(frameSources).toContain("http://wasabi-pdf.localhost");
+      expect(frameSources).not.toContain("file:");
+      expect(frameSources).not.toContain("asset:");
+      expect(frameSources).not.toContain("http://asset.localhost");
       expect(csp["script-src"]).toBe(script);
       expect(csp["connect-src"]).toBe(connect);
     }

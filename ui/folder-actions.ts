@@ -370,10 +370,12 @@ export class FolderActions {
 
   private async paste(target: ContextTarget | null) {
     this.syncOperationRoot();
-    if (!this.clipboard || (target && !target.isDir)) return;
+    const root = this.root;
+    if (!root || !this.clipboard || (target && !target.isDir)) return;
     const clipboard = this.clipboard;
     const targetRelDir = target?.relPath ?? "";
-    const result = await this.pasteEntries(clipboard.mode, clipboard.entries, targetRelDir);
+    const result = await this.pasteEntries(clipboard.mode, clipboard.entries, targetRelDir, root);
+    if (!sameWindowsPath(this.root, root)) return;
     this.recordOperations(result.operations);
     if (clipboard.mode === "cut" && result.completedSources.size) {
       clipboard.entries = clipboard.entries.filter((entry) => !result.completedSources.has(entry.relPath));
@@ -387,6 +389,7 @@ export class FolderActions {
     mode: "copy" | "cut",
     entries: FileEntryRef[],
     targetRelDir: string,
+    expectedRoot: string,
   ): Promise<{
     operations: FileOperation[];
     completedSources: Set<string>;
@@ -396,11 +399,14 @@ export class FolderActions {
     const completedSources = new Set<string>();
     const operations: FileOperation[] = [];
     for (const entry of entries) {
+      if (!sameWindowsPath(this.root, expectedRoot)) break;
       try {
-        const operation = await this.performPaste(mode, entry, targetRelDir);
+        const operation = await this.performPaste(mode, entry, targetRelDir, expectedRoot);
+        if (!sameWindowsPath(this.root, expectedRoot)) break;
         operations.push(operation);
         completedSources.add(entry.relPath);
       } catch (error) {
+        if (!sameWindowsPath(this.root, expectedRoot)) break;
         if (!isAlreadyExistsError(error)) {
           await this.reportError("貼り付けできませんでした", error);
           continue;
@@ -427,6 +433,7 @@ export class FolderActions {
               ],
             },
           ]);
+          if (!sameWindowsPath(this.root, expectedRoot)) break;
           action = isPasteConflictAction(choice?.[0]) ? choice[0] : "cancel";
           applyToAll = choice?.[1] === "all";
           conflictAction = action;
@@ -437,17 +444,22 @@ export class FolderActions {
           const name = action === "rename"
             ? await this.nextAvailableName(entry.relPath, targetRelDir)
             : basename(entry.relPath);
+          if (!sameWindowsPath(this.root, expectedRoot)) break;
           const operation = await this.performPaste(
             mode,
             entry,
             targetRelDir,
+            expectedRoot,
             name,
             action === "replace",
           );
+          if (!sameWindowsPath(this.root, expectedRoot)) break;
           operations.push(operation);
           completedSources.add(entry.relPath);
         } catch (retryError) {
-          await this.reportError("貼り付けできませんでした", retryError);
+          if (sameWindowsPath(this.root, expectedRoot)) {
+            await this.reportError("貼り付けできませんでした", retryError);
+          }
         }
       }
     }
@@ -462,15 +474,19 @@ export class FolderActions {
 
   async dropEntries(request: FileTreeDropRequest): Promise<FileTreeDropResult> {
     this.syncOperationRoot();
-    if (!this.root) return { undoable: false };
+    const root = this.root;
+    if (!root) return { undoable: false };
     const entries = request.sourceRelPaths.map((relPath) => ({ relPath }));
     const result = await this.pasteEntries(
       request.mode === "copy" ? "copy" : "cut",
       entries,
       request.targetRelDir,
+      root,
     );
+    if (!sameWindowsPath(this.root, root)) return { undoable: false };
     this.recordOperations(result.operations, true);
     await this.ports.sidebar.refreshFolderEntries();
+    if (!sameWindowsPath(this.root, root)) return { undoable: false };
     const selectedRelPath = [...result.operations]
       .reverse()
       .find((operation): operation is Extract<FileOperation, { kind: "copy" | "move" }> =>
@@ -480,7 +496,7 @@ export class FolderActions {
   }
 
   async undoLastDrop(): Promise<boolean> {
-    if (!this.history.lastDropUndo()) return false;
+    if (this.replayingHistory || !this.history.lastDropUndo()) return false;
     await this.undoFileOperation();
     return true;
   }
@@ -489,6 +505,7 @@ export class FolderActions {
     mode: "copy" | "cut",
     entry: FileEntryRef,
     targetRelDir: string,
+    expectedRoot: string,
     targetName?: string,
     overwrite = false,
   ): Promise<FileOperation> {
@@ -506,6 +523,16 @@ export class FolderActions {
       info = await this.services.api.copyEntry(entry.relPath, targetRelDir);
     } else {
       info = await this.services.api.moveEntry(entry.relPath, targetRelDir);
+    }
+    if (!sameWindowsPath(this.root, expectedRoot)) {
+      return {
+        kind: mode === "cut" ? "move" : "copy",
+        sourceRelPath: entry.relPath,
+        targetRelPath,
+        targetRelDir,
+        targetName: name,
+        overwrite,
+      };
     }
     if (mode === "cut") {
       const selectedAfter = movedRelativePath(selectedBefore, entry.relPath, targetRelDir, name);
@@ -554,19 +581,28 @@ export class FolderActions {
   }
 
   private async undoFileOperation() {
+    if (this.replayingHistory) return;
+    const root = this.root;
+    if (!root) return;
     const operations = this.history.takeUndo();
     if (!operations) return;
     this.replayingHistory = true;
     try {
-      for (const operation of [...operations].reverse()) await this.replayOperation(operation, "undo");
+      for (const operation of [...operations].reverse()) {
+        if (!sameWindowsPath(this.root, root)) return;
+        await this.replayOperation(operation, "undo", root);
+      }
+      if (!sameWindowsPath(this.root, root)) return;
       this.history.completeUndo(operations);
     } catch (error) {
-      this.history.restoreUndo(operations);
+      if (sameWindowsPath(this.root, root)) this.history.restoreUndo(operations);
       throw error;
     } finally {
       this.replayingHistory = false;
     }
+    if (!sameWindowsPath(this.root, root)) return;
     await this.ports.sidebar.refreshFolderEntries();
+    if (!sameWindowsPath(this.root, root)) return;
     const restored = [...operations]
       .reverse()
       .find((operation): operation is Extract<FileOperation, { kind: "delete" }> =>
@@ -575,34 +611,46 @@ export class FolderActions {
   }
 
   private async redoFileOperation() {
+    if (this.replayingHistory) return;
+    const root = this.root;
+    if (!root) return;
     const operations = this.history.takeRedo();
     if (!operations) return;
     this.replayingHistory = true;
     try {
-      for (const operation of operations) await this.replayOperation(operation, "redo");
+      for (const operation of operations) {
+        if (!sameWindowsPath(this.root, root)) return;
+        await this.replayOperation(operation, "redo", root);
+      }
+      if (!sameWindowsPath(this.root, root)) return;
       this.history.completeRedo(operations);
     } catch (error) {
-      this.history.restoreRedo(operations);
+      if (sameWindowsPath(this.root, root)) this.history.restoreRedo(operations);
       throw error;
     } finally {
       this.replayingHistory = false;
     }
+    if (!sameWindowsPath(this.root, root)) return;
     await this.ports.sidebar.refreshFolderEntries();
   }
 
-  private async replayOperation(operation: FileOperation, direction: "undo" | "redo") {
+  private async replayOperation(operation: FileOperation, direction: "undo" | "redo", expectedRoot: string) {
     const undo = direction === "undo";
+    if (!sameWindowsPath(this.root, expectedRoot)) return;
     if (operation.kind === "delete") {
       if (undo) {
         await this.services.api.restoreDeletedEntry(operation.relPath);
+        if (!sameWindowsPath(this.root, expectedRoot)) return;
         if (operation.restoreRelPath && !this.doc.current.selectedRelPath) {
           this.doc.setSelectedRelPath(operation.restoreRelPath);
           const info = await this.services.api.selectEntry(operation.restoreRelPath);
+          if (!sameWindowsPath(this.root, expectedRoot)) return;
           this.doc.applyDocInfo(info);
         }
       } else {
         const selected = this.doc.current.selectedRelPath;
         await this.services.api.deleteEntry(operation.relPath);
+        if (!sameWindowsPath(this.root, expectedRoot)) return;
         if (operation.restoreRelPath && this.pathContains(selected, operation.restoreRelPath)) {
           this.doc.markDeleted();
         }
@@ -613,7 +661,9 @@ export class FolderActions {
       if (undo) {
         const selectedBefore = this.doc.current.selectedRelPath;
         await this.services.api.deleteEntryWithoutBackup(operation.targetRelPath);
+        if (!sameWindowsPath(this.root, expectedRoot)) return;
         if (operation.overwrite) await this.services.api.restoreDeletedEntry(operation.targetRelPath);
+        if (!sameWindowsPath(this.root, expectedRoot)) return;
         if (operation.overwrite && this.pathContains(selectedBefore, operation.targetRelPath)) {
           await this.reloadSelectedEntry(selectedBefore, operation.targetRelPath);
         }
@@ -625,6 +675,7 @@ export class FolderActions {
           operation.targetName,
           operation.overwrite,
         );
+        if (!sameWindowsPath(this.root, expectedRoot)) return;
         if (operation.overwrite && this.pathContains(selectedBefore, operation.targetRelPath)) {
           await this.reloadSelectedEntry(selectedBefore, operation.targetRelPath);
         }
@@ -640,12 +691,14 @@ export class FolderActions {
           sourceRelDir,
           basename(operation.sourceRelPath),
         );
+        if (!sameWindowsPath(this.root, expectedRoot)) return;
         this.rebaseTabs(operation.targetRelPath, operation.sourceRelPath);
         this.doc.applyMoved(
           info,
           movedRelativePath(selectedBefore, operation.targetRelPath, sourceRelDir, basename(operation.sourceRelPath)),
         );
         if (operation.overwrite) await this.services.api.restoreDeletedEntry(operation.targetRelPath);
+        if (!sameWindowsPath(this.root, expectedRoot)) return;
         if (operation.overwrite && this.pathContains(selectedBefore, operation.targetRelPath)) {
           await this.reloadSelectedEntry(selectedBefore, operation.targetRelPath);
         }
@@ -657,6 +710,7 @@ export class FolderActions {
           operation.targetName,
           operation.overwrite,
         );
+        if (!sameWindowsPath(this.root, expectedRoot)) return;
         this.rebaseTabs(operation.sourceRelPath, operation.targetRelPath);
         this.doc.applyMoved(
           info,
@@ -672,6 +726,7 @@ export class FolderActions {
       if (undo) {
         const selectedBefore = this.doc.current.selectedRelPath;
         await this.services.api.deleteEntryWithoutBackup(operation.relPath);
+        if (!sameWindowsPath(this.root, expectedRoot)) return;
         if (this.pathContains(selectedBefore, operation.relPath)) {
           this.doc.setSelectedRelPath("");
           this.doc.markDeleted();
@@ -685,6 +740,7 @@ export class FolderActions {
           operation.encoding,
           operation.eol,
         );
+        if (!sameWindowsPath(this.root, expectedRoot)) return;
         const root = this.root;
         const actualRelPath = info.path && root
           ? relativePathFromRoot(root, info.path)
@@ -698,6 +754,7 @@ export class FolderActions {
     await this.renameEntryForHistory(
       undo ? operation.targetRelPath : operation.sourceRelPath,
       undo ? basename(operation.sourceRelPath) : basename(operation.targetRelPath),
+      expectedRoot,
     );
   }
 
@@ -705,6 +762,7 @@ export class FolderActions {
     const path = this.toAbsolute(relPath);
     return createRegisteredCommandMenu(path, {
       promptFields: this.services.promptFields,
+      confirmMessage: this.services.confirmMessage,
       ...this.services.registeredCommandPorts,
       run: (title, operation) => this.run(title, operation),
     });
@@ -724,15 +782,16 @@ export class FolderActions {
       await this.reportError("新規メモを作成できませんでした", e);
       return;
     }
-    if (!spec) return;
+    if (!spec || !sameWindowsPath(this.root, root)) return;
     const requestedName = fileNameOf(spec.memo);
     let info: api.DocInfo;
     try {
       info = await this.services.api.createNote(relDir, requestedName, spec.format.encoding, spec.format.eol);
     } catch (e) {
-      await this.reportError("新規メモを作成できませんでした", e);
+      if (sameWindowsPath(this.root, root)) await this.reportError("新規メモを作成できませんでした", e);
       return;
     }
+    if (!sameWindowsPath(this.root, root)) return;
     const relPath = info.path && root
       ? relativePathFromRoot(root, info.path)
       : relDir ? `${relDir}/${requestedName}` : requestedName;
@@ -752,14 +811,18 @@ export class FolderActions {
     }
     try {
       await this.ports.sidebar.refreshFolderEntries();
+      if (!sameWindowsPath(this.root, root)) return;
       await this.ports.sidebar.selectByRelPath(relPath);
     } catch (e) {
-      await this.reportError("メモは作成されましたが一覧を更新できませんでした", e);
+      if (sameWindowsPath(this.root, root)) {
+        await this.reportError("メモは作成されましたが一覧を更新できませんでした", e);
+      }
     }
   }
 
   async createFolder(relDir = "") {
-    if (!this.root) {
+    const root = this.root;
+    if (!root) {
       await this.reportError("新規フォルダを作成できませんでした", new Error("フォルダを開いていません"));
       return;
     }
@@ -771,18 +834,19 @@ export class FolderActions {
         validate: (value) => value.trim() ? null : "名前を入力してください",
       }]);
     } catch (error) {
-      await this.reportError("新規フォルダを作成できませんでした", error);
+      if (sameWindowsPath(this.root, root)) await this.reportError("新規フォルダを作成できませんでした", error);
       return;
     }
     const name = result?.[0].trim();
-    if (!name) return;
+    if (!name || !sameWindowsPath(this.root, root)) return;
     let actualName: string;
     try {
       actualName = (await this.services.api.createFolder(relDir, name)) || name;
     } catch (error) {
-      await this.reportError("新規フォルダを作成できませんでした", error);
+      if (sameWindowsPath(this.root, root)) await this.reportError("新規フォルダを作成できませんでした", error);
       return;
     }
+    if (!sameWindowsPath(this.root, root)) return;
     const actualRelPath = relDir ? `${relDir}/${actualName}` : actualName;
     this.recordOperations([{
       kind: "create",
@@ -792,11 +856,15 @@ export class FolderActions {
     try {
       await this.ports.sidebar.refreshFolderEntries();
     } catch (error) {
-      await this.reportError("フォルダは作成されましたが一覧を更新できませんでした", error);
+      if (sameWindowsPath(this.root, root)) {
+        await this.reportError("フォルダは作成されましたが一覧を更新できませんでした", error);
+      }
     }
   }
 
   private async rename(relPath: string) {
+    const root = this.root;
+    if (!root) return;
     const current = basename(relPath);
     const result = await this.services.promptFields("名前を変更", [{
       label: "新しい名前",
@@ -804,13 +872,14 @@ export class FolderActions {
       validate: (value) => value.trim() ? null : "名前を入力してください",
     }]);
     const newName = result?.[0].trim();
-    if (!newName || newName === current) return;
+    if (!newName || newName === current || !sameWindowsPath(this.root, root)) return;
     await this.renameEntry(relPath, newName);
   }
 
   async renameEntry(relPath: string, newName: string) {
     this.syncOperationRoot();
-    if (!this.root) return;
+    const root = this.root;
+    if (!root) return;
     const current = basename(relPath);
     if (!newName.trim() || newName.trim() === current) return;
     newName = newName.trim();
@@ -826,9 +895,10 @@ export class FolderActions {
     try {
       info = await this.services.api.renameEntry(relPath, newName);
     } catch (e) {
-      await this.reportError("名前を変更できませんでした", e);
+      if (sameWindowsPath(this.root, root)) await this.reportError("名前を変更できませんでした", e);
       return;
     }
+    if (!sameWindowsPath(this.root, root)) return;
     if (!this.replayingHistory) {
       this.recordOperations([{
         kind: "rename",
@@ -840,11 +910,13 @@ export class FolderActions {
     try {
       await this.applyRenameInfo(info, rebase);
     } catch (e) {
-      await this.reportError("名前は変更されましたが画面を更新できませんでした", e);
+      if (sameWindowsPath(this.root, root)) {
+        await this.reportError("名前は変更されましたが画面を更新できませんでした", e);
+      }
     }
   }
 
-  private async renameEntryForHistory(relPath: string, newName: string) {
+  private async renameEntryForHistory(relPath: string, newName: string, expectedRoot: string) {
     const separator = relPath.lastIndexOf("/");
     const newRelPath = separator < 0 ? newName : `${relPath.slice(0, separator + 1)}${newName}`;
     const rebase: PathRebase = {
@@ -854,6 +926,7 @@ export class FolderActions {
       newRelPath,
     };
     const info = await this.services.api.renameEntry(relPath, newName);
+    if (!sameWindowsPath(this.root, expectedRoot)) return;
     this.rebaseTabs(relPath, newRelPath);
     await this.applyRenameInfo(info, rebase);
   }
@@ -892,7 +965,8 @@ export class FolderActions {
 
   private async deleteEntries(targets: ContextTarget[]) {
     this.syncOperationRoot();
-    if (!this.root) return;
+    const root = this.root;
+    if (!root) return;
     if (!targets.length) return;
     const message = targets.length === 1
       ? `「${basename(targets[0].relPath)}」${targets[0].isDir ? "フォルダと中身" : "ファイル"}をごみ箱へ移動します。元に戻せます。`
@@ -904,15 +978,18 @@ export class FolderActions {
       ? `${message}\n未保存の編集内容も失われます。`
       : message;
     if (!await this.services.confirmMessage("削除", confirmation, "削除")) return;
+    if (!sameWindowsPath(this.root, root)) return;
     let changed = false;
     const operations: FileOperation[] = [];
     for (const target of targets) {
+      if (!sameWindowsPath(this.root, root)) break;
       try {
         await this.services.api.deleteEntry(target.relPath);
       } catch (error) {
-        await this.reportError("削除できませんでした", error);
+        if (sameWindowsPath(this.root, root)) await this.reportError("削除できませんでした", error);
         continue;
       }
+      if (!sameWindowsPath(this.root, root)) return;
       changed = true;
       try {
         const selected = this.doc.current.selectedRelPath;
@@ -930,12 +1007,14 @@ export class FolderActions {
         await this.reportError("削除は完了しましたが画面を更新できませんでした", error);
       }
     }
-    if (!changed) return;
+    if (!changed || !sameWindowsPath(this.root, root)) return;
     this.recordOperations(operations);
     try {
       await this.ports.sidebar.refreshFolderEntries();
     } catch (error) {
-      await this.reportError("削除は完了しましたが一覧を更新できませんでした", error);
+      if (sameWindowsPath(this.root, root)) {
+        await this.reportError("削除は完了しましたが一覧を更新できませんでした", error);
+      }
     }
   }
 }

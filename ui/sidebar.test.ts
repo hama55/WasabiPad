@@ -1962,4 +1962,58 @@ describe("Feature: Sidebar", () => {
 
     expect(host.querySelector(".fv-row.sel")?.textContent).toContain("a.txt");
   });
+
+  // Feature: フォルダ定期更新の非破壊性
+  // Scenario: 定期更新が進行中のファイル開く失敗時の選択復帰やフォルダ一括展開を潰さない
+  // Given: a.txt選択中にb.txtを開く操作が遅延中で、同時にフォルダ展開も行われる
+  // When: 遅延中にrefreshFolderEntries()が走る
+  // Then: b.txtオープンがfalseで返った時にa.txtへ選択復帰でき、進行中のexpandAllFolderも完走する
+  it("Scenario: refreshFolderEntries does not cancel slow file open recovery or expandAllFolder", async () => {
+    let resolveOpen!: (value: boolean) => void;
+    let resolveSubDir!: (entries: FolderEntry[]) => void;
+    const { host, ports, sidebar } = mount();
+    ports.onSelect.mockImplementation((relPath: string) => {
+      if (relPath === "b.txt") {
+        return new Promise<boolean>((resolve) => { resolveOpen = resolve; });
+      }
+      return true;
+    });
+    ports.onExpandFolder.mockImplementation(async (relDir: string) => {
+      if (relDir === "") {
+        return [
+          { name: "dir", is_dir: true, is_archive: false },
+          { name: "a.txt", is_dir: false, is_archive: false },
+          { name: "b.txt", is_dir: false, is_archive: false },
+        ];
+      }
+      if (relDir === "dir") {
+        return new Promise<FolderEntry[]>((resolve) => { resolveSubDir = resolve; });
+      }
+      return [];
+    });
+    sidebar.setEntries([
+      { name: "dir", is_dir: true, is_archive: false },
+      { name: "a.txt", is_dir: false, is_archive: false },
+      { name: "b.txt", is_dir: false, is_archive: false },
+    ]);
+    sidebar.select("a.txt");
+
+    // 1. Slow file open is NOT invalidated by refreshFolderEntries
+    const rows = [...host.querySelectorAll<HTMLElement>(".fv-row")];
+    rows.find((row) => row.textContent?.includes("b.txt"))!.click();
+    expect(host.querySelector(".fv-row.sel")?.textContent).toContain("b.txt");
+
+    await sidebar.refreshFolderEntries();
+    resolveOpen(false);
+    await vi.waitFor(() => expect(host.querySelector(".fv-row.sel")?.textContent).toContain("a.txt"));
+
+    // 2. Slow expandAllFolder is NOT cancelled by refreshFolderEntries
+    const expanding = sidebar.expandAllFolder("");
+    await vi.waitFor(() => expect(ports.onExpandFolder).toHaveBeenCalledWith("dir"));
+    await sidebar.refreshFolderEntries();
+    resolveSubDir([{ name: "child.txt", is_dir: false, is_archive: false }]);
+    await expanding;
+
+    expect(host.textContent).toContain("child.txt");
+  });
 });

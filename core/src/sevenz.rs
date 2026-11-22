@@ -1,11 +1,12 @@
 // インストール済み 7z.exe を子プロセスとして呼び、.7z の一覧・展開・書き戻しを行う。
 // 自前実装しないのは、7z (LZMA2/AES-256/solid) の再実装が割に合わないため。
 // パスワードは常に -p で渡す (省略すると 7z が対話プロンプトで待ち続けてハングする)。
-use std::io::{self, Read};
-use std::path::{Path, PathBuf};
+use std::ffi::OsString;
+use std::io::{self, Read, Write};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicBool, Ordering},
     Arc, Condvar, Mutex, OnceLock,
 };
 use std::thread;
@@ -110,7 +111,128 @@ fn read_password_arg(password: &str) -> String {
     format!("-p{}", if password.is_empty() { "?" } else { password })
 }
 
-fn base_command() -> io::Result<Command> {
+fn resolve_archive_arg(archive: &Path) -> io::Result<PathBuf> {
+    let raw = archive.to_string_lossy();
+    if raw.is_empty() || raw.chars().any(char::is_control) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "アーカイブのパスが不正です",
+        ));
+    }
+    let resolved = std::path::absolute(archive)?;
+    let resolved_str = resolved.to_string_lossy();
+    if resolved_str.starts_with('-') || resolved_str.starts_with('@') {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "アーカイブのパスが不正です",
+        ));
+    }
+    Ok(resolved)
+}
+
+fn validate_entry_arg(entry: &str) -> io::Result<String> {
+    if entry.is_empty()
+        || entry.chars().any(char::is_control)
+        || entry.starts_with('-')
+        || entry.starts_with('@')
+        || entry.contains('*')
+        || entry.contains('?')
+        || entry.contains(':')
+        || entry.starts_with('/')
+        || entry.starts_with('\\')
+        || entry.ends_with('/')
+        || entry.ends_with('\\')
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "アーカイブ内エントリ名が不正です",
+        ));
+    }
+    let normalized = entry.replace('\\', "/");
+    if !Path::new(&normalized)
+        .components()
+        .all(|component| matches!(component, Component::Normal(_)))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "アーカイブ内エントリ名が不正です",
+        ));
+    }
+    Ok(normalized.replace('/', "\\"))
+}
+
+fn build_list_args(archive: &Path, password: &str) -> io::Result<Vec<OsString>> {
+    let archive = resolve_archive_arg(archive)?;
+    Ok(vec![
+        OsString::from(read_password_arg(password)),
+        OsString::from("l"),
+        OsString::from("-slt"),
+        OsString::from("-ba"),
+        OsString::from("--"),
+        archive.into_os_string(),
+    ])
+}
+
+fn build_extract_args(archive: &Path, entry: &str, password: &str) -> io::Result<Vec<OsString>> {
+    let archive = resolve_archive_arg(archive)?;
+    let entry = validate_entry_arg(entry)?;
+    Ok(vec![
+        OsString::from(read_password_arg(password)),
+        OsString::from("e"),
+        OsString::from("-so"),
+        OsString::from("--"),
+        archive.into_os_string(),
+        OsString::from(entry),
+    ])
+}
+
+fn build_update_stdin_args(
+    archive: &Path,
+    entry: &str,
+    password: &str,
+    header_encrypted: bool,
+) -> io::Result<Vec<OsString>> {
+    let archive = resolve_archive_arg(archive)?;
+    let entry = validate_entry_arg(entry)?;
+    let mut args = Vec::new();
+    // 書き込み系で空パスワードに -p を付けると空文字で暗号化されてしまうため省略する
+    if !password.is_empty() {
+        args.push(OsString::from(format!("-p{password}")));
+    }
+    args.push(OsString::from("u"));
+    if header_encrypted {
+        args.push(OsString::from("-mhe=on"));
+    }
+    args.push(OsString::from(format!("-si{entry}")));
+    args.push(OsString::from("--"));
+    args.push(archive.into_os_string());
+    Ok(args)
+}
+
+fn build_delete_args(
+    archive: &Path,
+    entries: &[String],
+    password: &str,
+) -> io::Result<Vec<OsString>> {
+    let archive = resolve_archive_arg(archive)?;
+    let mut validated = Vec::with_capacity(entries.len());
+    for entry in entries {
+        validated.push(validate_entry_arg(entry)?);
+    }
+    let mut args = Vec::new();
+    if !password.is_empty() {
+        args.push(OsString::from(format!("-p{password}")));
+    }
+    args.push(OsString::from("d"));
+    args.push(OsString::from("--"));
+    args.push(archive.into_os_string());
+    for entry in validated {
+        args.push(OsString::from(entry));
+    }
+    Ok(args)
+}
+
+fn base_command(piped_stdin: bool) -> io::Result<Command> {
     let mut cmd = Command::new(exe()?);
     #[cfg(windows)]
     {
@@ -118,7 +240,11 @@ fn base_command() -> io::Result<Command> {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    cmd.stdin(std::process::Stdio::null());
+    cmd.stdin(if piped_stdin {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    });
     // -scc: 非ASCIIエントリ名がコードページ依存で化けないよう出力を UTF-8 に固定
     cmd.arg("-sccUTF-8").arg("-y");
     Ok(cmd)
@@ -149,11 +275,36 @@ fn output_too_large_error() -> io::Error {
 }
 
 fn run(cmd: Command) -> io::Result<Vec<u8>> {
-    run_with_stdout_limit(cmd, None)
+    run_with_io(cmd, None, None)
 }
 
-fn run_with_stdout_limit(mut cmd: Command, stdout_limit: Option<usize>) -> io::Result<Vec<u8>> {
+fn run_with_stdout_limit(cmd: Command, stdout_limit: Option<usize>) -> io::Result<Vec<u8>> {
+    run_with_io(cmd, None, stdout_limit)
+}
+
+fn run_with_io(
+    mut cmd: Command,
+    stdin_bytes: Option<Vec<u8>>,
+    stdout_limit: Option<usize>,
+) -> io::Result<Vec<u8>> {
     let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let stdin_writer = if let Some(input) = stdin_bytes {
+        let mut stdin = match child.stdin.take() {
+            Some(stdin) => stdin,
+            None => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(io::Error::other("7z の標準入力を取得できません"));
+            }
+        };
+        Some(thread::spawn(move || -> io::Result<()> {
+            let result = stdin.write_all(&input);
+            drop(stdin);
+            result
+        }))
+    } else {
+        None
+    };
     let stdout = child
         .stdout
         .take()
@@ -163,6 +314,9 @@ fn run_with_stdout_limit(mut cmd: Command, stdout_limit: Option<usize>) -> io::R
         Err(error) => {
             let _ = child.kill();
             let _ = child.wait();
+            if let Some(writer) = stdin_writer {
+                let _ = writer.join();
+            }
             return Err(error);
         }
     };
@@ -175,6 +329,9 @@ fn run_with_stdout_limit(mut cmd: Command, stdout_limit: Option<usize>) -> io::R
         Err(error) => {
             let _ = child.kill();
             let _ = child.wait();
+            if let Some(writer) = stdin_writer {
+                let _ = writer.join();
+            }
             return Err(error);
         }
     };
@@ -201,6 +358,9 @@ fn run_with_stdout_limit(mut cmd: Command, stdout_limit: Option<usize>) -> io::R
         if limit_exceeded.load(Ordering::Acquire) {
             let _ = child.kill();
             let _ = child.wait();
+            if let Some(writer) = stdin_writer {
+                let _ = writer.join();
+            }
             let _ = join_output(stdout_reader, stderr_reader);
             return Err(output_too_large_error());
         }
@@ -209,6 +369,9 @@ fn run_with_stdout_limit(mut cmd: Command, stdout_limit: Option<usize>) -> io::R
             Ok(None) if Instant::now() >= deadline => {
                 let _ = child.kill();
                 let _ = child.wait();
+                if let Some(writer) = stdin_writer {
+                    let _ = writer.join();
+                }
                 let _ = join_output(stdout_reader, stderr_reader);
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
@@ -219,16 +382,30 @@ fn run_with_stdout_limit(mut cmd: Command, stdout_limit: Option<usize>) -> io::R
             Err(error) => {
                 let _ = child.kill();
                 let _ = child.wait();
+                if let Some(writer) = stdin_writer {
+                    let _ = writer.join();
+                }
                 let _ = join_output(stdout_reader, stderr_reader);
                 return Err(error);
             }
         }
+    };
+    let stdin_result = match stdin_writer {
+        Some(writer) => Some(
+            writer
+                .join()
+                .map_err(|_| io::Error::other("7z の標準入力書込が異常終了しました"))?,
+        ),
+        None => None,
     };
     let (stdout, stderr) = join_output(stdout_reader, stderr_reader)?;
     if stdout_limit.is_some_and(|limit| stdout.len() > limit) {
         return Err(output_too_large_error());
     }
     if status.success() {
+        if let Some(Err(error)) = stdin_result {
+            return Err(error);
+        }
         return Ok(stdout);
     }
     let stderr = String::from_utf8_lossy(&stderr).into_owned();
@@ -252,12 +429,8 @@ fn run_with_stdout_limit(mut cmd: Command, stdout_limit: Option<usize>) -> io::R
 
 // エントリ名一覧 (ディレクトリ除く)。ヘッダ暗号化書庫はパスワードが合うまで失敗する。
 pub fn list(archive: &Path, password: &str) -> io::Result<Vec<String>> {
-    let mut cmd = base_command()?;
-    cmd.arg(read_password_arg(password))
-        .arg("l")
-        .arg("-slt")
-        .arg("-ba")
-        .arg(archive);
+    let mut cmd = base_command(false)?;
+    cmd.args(build_list_args(archive, password)?);
     let stdout = run(cmd)?;
     let text = String::from_utf8_lossy(&stdout);
     let mut names = Vec::new();
@@ -296,12 +469,8 @@ fn extract_with_limit(
     password: &str,
     max_size: usize,
 ) -> io::Result<Vec<u8>> {
-    let mut cmd = base_command()?;
-    cmd.arg(read_password_arg(password))
-        .arg("e")
-        .arg("-so")
-        .arg(archive)
-        .arg(entry.replace('/', "\\"));
+    let mut cmd = base_command(false)?;
+    cmd.args(build_extract_args(archive, entry, password)?);
     let out = run_with_stdout_limit(cmd, Some(max_size))?;
     if out.is_empty() {
         // 7z e は該当なしでも成功終了するため、空出力は一覧と突き合わせて実在確認する
@@ -333,55 +502,6 @@ pub fn is_header_encrypted(archive: &Path) -> io::Result<bool> {
 pub(crate) const WORKSPACE_PREFIX: &str = "WasabiPad-archive-temp-";
 const WORKSPACE_MARKER: &str = ".wasabipad-workspace";
 const STALE_WORKSPACE_AGE: Duration = Duration::from_secs(24 * 60 * 60);
-static WORKSPACE_SEQ: AtomicUsize = AtomicUsize::new(0);
-
-// アーカイブ更新用の作業領域。ユーザーがアーカイブと同じフォルダで確認できる位置に置き、
-// Drop で必ず消す。プロセス異常終了時の残骸は、次回同じフォルダを使うときに回収する。
-pub struct ArchiveWorkspace {
-    path: PathBuf,
-}
-
-impl ArchiveWorkspace {
-    pub fn new(archive: &Path) -> io::Result<Self> {
-        let parent = archive
-            .parent()
-            .filter(|path| !path.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-        cleanup_stale_workspaces(parent)?;
-        for _ in 0..100 {
-            let seq = WORKSPACE_SEQ.fetch_add(1, Ordering::Relaxed);
-            let path = parent.join(format!("{WORKSPACE_PREFIX}{}-{seq}", std::process::id()));
-            match std::fs::create_dir(&path) {
-                Ok(()) => {
-                    if let Err(error) = std::fs::write(
-                        path.join(WORKSPACE_MARKER),
-                        b"WasabiPad archive workspace\n",
-                    ) {
-                        let _ = std::fs::remove_dir_all(&path);
-                        return Err(error);
-                    }
-                    return Ok(Self { path });
-                }
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(error),
-            }
-        }
-        Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "アーカイブ用の一時フォルダを作れません",
-        ))
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for ArchiveWorkspace {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
 
 pub fn cleanup_stale_workspaces(parent: &Path) -> io::Result<()> {
     let now = SystemTime::now();
@@ -412,29 +532,23 @@ pub fn cleanup_stale_workspaces(parent: &Path) -> io::Result<()> {
     Ok(())
 }
 
-// 編集済みエントリ1件を書き戻す。data_root はエントリの相対パス構造を再現した
-// 一時ディレクトリ (7z u は cwd からの相対パスでエントリ名を決める)。
+// 編集済みエントリ1件を標準入力 (-si<entry>) 経由で書き戻す (平文の一時ファイルをディスクへ出さない)。
 // 呼び出し側は書庫の排他ハンドルを解放してから呼ぶこと (7z が書庫を差し替えるため)。
-pub fn update(
+pub fn update_bytes(
     archive: &Path,
     entry: &str,
-    data_root: &Path,
+    bytes: &[u8],
     password: &str,
     header_encrypted: bool,
 ) -> io::Result<()> {
-    let mut cmd = base_command()?;
-    // 書き込み系で空パスワードに -p を付けると空文字で暗号化されてしまうため省略する
-    if !password.is_empty() {
-        cmd.arg(format!("-p{password}"));
-    }
-    cmd.arg("u");
-    if header_encrypted {
-        cmd.arg("-mhe=on");
-    }
-    cmd.arg(archive)
-        .arg(entry.replace('/', "\\"))
-        .current_dir(data_root);
-    run(cmd)?;
+    let mut cmd = base_command(true)?;
+    cmd.args(build_update_stdin_args(
+        archive,
+        entry,
+        password,
+        header_encrypted,
+    )?);
+    run_with_io(cmd, Some(bytes.to_vec()), None)?;
     Ok(())
 }
 
@@ -442,14 +556,8 @@ pub fn delete(archive: &Path, entries: &[String], password: &str) -> io::Result<
     if entries.is_empty() {
         return Ok(());
     }
-    let mut cmd = base_command()?;
-    if !password.is_empty() {
-        cmd.arg(format!("-p{password}"));
-    }
-    cmd.arg("d").arg(archive);
-    for entry in entries {
-        cmd.arg(entry.replace('/', "\\"));
-    }
+    let mut cmd = base_command(false)?;
+    cmd.args(build_delete_args(archive, entries, password)?);
     run(cmd)?;
     Ok(())
 }
@@ -468,7 +576,8 @@ pub(crate) fn create_archive_for_test(
     password: &str,
     header: bool,
 ) -> io::Result<()> {
-    let mut cmd = base_command()?;
+    let archive = resolve_archive_arg(archive)?;
+    let mut cmd = base_command(false)?;
     if !password.is_empty() {
         cmd.arg(format!("-p{password}"));
     }
@@ -476,13 +585,14 @@ pub(crate) fn create_archive_for_test(
     if header {
         cmd.arg("-mhe=on");
     }
-    cmd.arg(archive).arg("*").current_dir(src_root);
+    cmd.arg("--").arg(archive).arg("*").current_dir(src_root);
     run(cmd).map(|_| ())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
 
     // 7z.exe が無い環境ではスキップ (CI 想定)。このマシンでは実行される。
     fn have_7z() -> bool {
@@ -559,10 +669,7 @@ mod tests {
         assert_eq!(extract(&archive, "sub/b.txt", "").unwrap(), b"world\n");
         assert!(!is_header_encrypted(&archive).unwrap());
 
-        let edit_root = root.join("edit");
-        std::fs::create_dir_all(edit_root.join("sub")).unwrap();
-        std::fs::write(edit_root.join("sub").join("b.txt"), "updated\n").unwrap();
-        update(&archive, "sub/b.txt", &edit_root, "", false).unwrap();
+        update_bytes(&archive, "sub/b.txt", b"updated\n", "", false).unwrap();
         assert_eq!(extract(&archive, "sub/b.txt", "").unwrap(), b"updated\n");
         assert_eq!(
             extract(&archive, "a.txt", "").unwrap(),
@@ -589,17 +696,63 @@ mod tests {
         assert_eq!(list(&archive, "secret").unwrap().len(), 2);
         assert_eq!(extract(&archive, "a.txt", "secret").unwrap(), b"hello\n");
 
-        // 書き戻し後もヘッダ暗号化ごと維持される
-        let edit_root = root.join("edit");
-        std::fs::create_dir_all(&edit_root).unwrap();
-        std::fs::write(edit_root.join("a.txt"), "reworked\n").unwrap();
-        update(&archive, "a.txt", &edit_root, "secret", true).unwrap();
+        // 書き戻し後もヘッダ暗号化ごと維持され、平文の一時フォルダを作らない
+        update_bytes(&archive, "a.txt", b"reworked\n", "secret", true).unwrap();
+        assert!(!std::fs::read_dir(&root)
+            .unwrap()
+            .flatten()
+            .any(|entry| entry.file_name().to_string_lossy().starts_with(WORKSPACE_PREFIX)));
         assert!(
             is_header_encrypted(&archive).unwrap(),
             "保存後もヘッダ暗号化のまま"
         );
         assert_eq!(extract(&archive, "a.txt", "secret").unwrap(), b"reworked\n");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Feature: 7zコマンドライン引数インジェクション防御
+    // Scenario: スイッチ終端 `--` を配置し、危険なエントリ名を拒否する
+    // Given: `-`・`@` で始まるエントリ名、ワイルドカード、パストラバーサル、ドライブ文字を含むエントリ名
+    // When: 引数ビルダーを呼ぶ
+    // Then: 正常な呼び出しはアーカイブ・エントリの前に `--` を置き、不正なエントリ名は InvalidInput で拒否する
+    #[test]
+    fn argument_builders_terminate_switches_and_reject_dangerous_entries() {
+        let archive = Path::new(r"C:\work\archive.7z");
+        let list_args = build_list_args(archive, "").unwrap();
+        let sep = list_args.iter().position(|a| a == "--").unwrap();
+        assert_eq!(list_args[sep + 1], archive.as_os_str());
+
+        let extract_args = build_extract_args(archive, "sub/a.txt", "pw").unwrap();
+        let sep = extract_args.iter().position(|a| a == "--").unwrap();
+        assert_eq!(extract_args[sep + 1], archive.as_os_str());
+        assert_eq!(extract_args[sep + 2], OsString::from(r"sub\a.txt"));
+
+        let update_args = build_update_stdin_args(archive, "sub/a.txt", "pw", true).unwrap();
+        let sep = update_args.iter().position(|a| a == "--").unwrap();
+        assert!(update_args[..sep].contains(&OsString::from(r"-sisub\a.txt")));
+        assert_eq!(update_args[sep + 1], archive.as_os_str());
+
+        let delete_args = build_delete_args(archive, &["sub/a.txt".to_string()], "").unwrap();
+        let sep = delete_args.iter().position(|a| a == "--").unwrap();
+        assert_eq!(delete_args[sep + 1], archive.as_os_str());
+        assert_eq!(delete_args[sep + 2], OsString::from(r"sub\a.txt"));
+
+        for bad in [
+            "-oC:\\evil",
+            "@listfile.txt",
+            "sub/*.txt",
+            "sub/?.txt",
+            "../escape.txt",
+            "C:/abs.txt",
+            "a\0b.txt",
+            "",
+        ] {
+            assert_eq!(
+                validate_entry_arg(bad).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput,
+                "rejected entry: {bad:?}"
+            );
+        }
     }
 
     #[test]

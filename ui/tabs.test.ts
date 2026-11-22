@@ -2517,10 +2517,13 @@ describe("Feature: TabManager", () => {
       .find((item) => item.textContent === "登録コマンド ▸")!.click();
     document.querySelector<HTMLElement>("#dropdown .dd-submenu .dd-item")!.click();
 
-    await vi.waitFor(() => expect(registeredCommandPorts.runExternalCommand).toHaveBeenCalledWith(
-      "notepad C:\\work\\memo.txt",
-      "C:\\work\\memo.txt",
-    ));
+    await vi.waitFor(() => expect(registeredCommandPorts.runExternalCommand).toHaveBeenCalledWith({
+      prefix: "",
+      command: "notepad {file}",
+      value: "C:\\work\\memo.txt",
+      valueKind: "file",
+      path: "C:\\work\\memo.txt",
+    }));
   });
 
   // Given: 共通の登録コマンドを追加し、実行処理が Error("command failed") を返す
@@ -2693,5 +2696,53 @@ describe("Feature: TabManager", () => {
         .find((element) => element.textContent === label);
       expect(menuItem?.querySelector(`.${icon}`), label).not.toBeNull();
     }
+  });
+
+  // Feature: タブ遷移の排他制御とawait後のインデックス再解決
+  // Scenario: close/detach/openInNewTabの同時実行でも別タブを誤削除したりロックを破壊しない
+  // Given: 3つのタブ(a, b, c)があり、aの切替・分離確認が保留中である
+  // When: 確認待ち中に別タブ追加・閉じる・分離を重ねて呼ぶ
+  // Then: 重複遷移は拒否され、元の操作完了後もタブ配列とアクティブ状態が壊れない
+  it("Scenario: prevents overlapping tab transitions and stale index removal on close/detach", async () => {
+    const { doc, host } = fixture();
+    let resolveConfirm!: (value: boolean) => void;
+    doc.confirmDiscard = vi.fn(() => new Promise<boolean>((resolve) => { resolveConfirm = resolve; }));
+    let resolveDetach!: (value: boolean) => void;
+    const onDetach = vi.fn(() => new Promise<boolean>((resolve) => { resolveDetach = resolve; }));
+
+    const manager = new TabManager(host, doc, { onChange: () => {}, onDetach }, registeredCommandPorts);
+    await manager.init({
+      tabs: [
+        { id: "a", path: "C:\\a.txt", kind: "file", label: "a.txt" },
+        { id: "b", path: "C:\\b.txt", kind: "file", label: "b.txt" },
+        { id: "c", path: "C:\\c.txt", kind: "file", label: "c.txt" },
+      ],
+      activeId: "a",
+    }, null);
+
+    // 1. Overlapping openInNewTab and close while close("a") awaits confirmDiscard
+    const closing = manager.close("a");
+    await vi.waitFor(() => expect(doc.confirmDiscard).toHaveBeenCalledTimes(1));
+    await expect(manager.openInNewTab("C:\\d.txt")).resolves.toBe(false);
+    await manager.close("b");
+    expect(manager.state.tabs.map((tab) => tab.id)).toEqual(["a", "b", "c"]);
+
+    resolveConfirm(true);
+    await closing;
+    expect(manager.state.tabs.map((tab) => tab.id)).toEqual(["b", "c"]);
+    expect(manager.state.activeId).toBe("b");
+
+    // 2. Concurrent detachTab is guarded so it cannot splice(-1, 1) and remove unrelated last tab
+    doc.confirmDiscard = vi.fn(async (onProceed) => { await onProceed?.(); return true; });
+    const detachPrivate = manager as unknown as { detachTab: (id: string) => Promise<void> };
+    const firstDetach = detachPrivate.detachTab("b");
+    await vi.waitFor(() => expect(onDetach).toHaveBeenCalledTimes(1));
+    await detachPrivate.detachTab("b");
+    expect(onDetach).toHaveBeenCalledTimes(1);
+
+    resolveDetach(true);
+    await firstDetach;
+    expect(manager.state.tabs.map((tab) => tab.id)).toEqual(["c"]);
+    expect(manager.state.activeId).toBe("c");
   });
 });

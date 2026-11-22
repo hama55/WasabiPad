@@ -68,20 +68,33 @@ pub(crate) fn apply_edit_many(
     items: Vec<ByteEdit>,
     caret_before: Pos,
     primary_index: usize,
-) -> EditManyResult {
+) -> Option<EditManyResult> {
     if items.is_empty() {
-        return EditManyResult {
+        return Some(EditManyResult {
             carets: Vec::new(),
             line_count: buf.line_count(),
-        };
+        });
     }
     let mut indexed = items;
+    if indexed.iter().any(|item| item.start > item.end) {
+        return None;
+    }
     indexed.sort_by(|a, b| {
         b.start
             .line
             .cmp(&a.start.line)
             .then_with(|| b.start.col.cmp(&a.start.col))
+            .then_with(|| b.end.line.cmp(&a.end.line))
+            .then_with(|| b.end.col.cmp(&a.end.col))
     });
+    // 降順ソート済みなので、直前要素 (later) の開始位置より後ろへ現在要素 (earlier) の終端が伸びていれば重複。
+    for pair in indexed.windows(2) {
+        let later = &pair[0];
+        let earlier = &pair[1];
+        if earlier.end > later.start {
+            return None;
+        }
+    }
     let mut edits = Vec::new();
     let mut image_references = std::collections::HashSet::new();
     let mut carets: Vec<Option<Pos>> = vec![None; indexed.len()];
@@ -133,10 +146,10 @@ pub(crate) fn apply_edit_many(
             false,
         );
     }
-    EditManyResult {
+    Some(EditManyResult {
         carets,
         line_count: buf.line_count(),
-    }
+    })
 }
 
 pub(crate) fn undo(buf: &mut TextBuffer, stack: &mut UndoStack) -> Option<Pos> {
@@ -199,7 +212,8 @@ mod tests {
             ],
             Pos { line: 0, col: 6 },
             1,
-        );
+        )
+        .unwrap();
 
         assert_eq!(buf.line(0).as_ref(), "DEFabcghi");
         assert_eq!(result.carets.len(), 2);
@@ -208,5 +222,53 @@ mod tests {
         assert!(undo(&mut buf, &mut stack).is_none());
         assert_eq!(redo(&mut buf, &mut stack), Some(Pos { line: 0, col: 3 }));
         assert_eq!(buf.line(0).as_ref(), "DEFabcghi");
+    }
+
+    // Feature: 複数編集の範囲検証
+    // Scenario: 重複レンジや逆順レンジが渡される
+    // Given: "abcdef" のバッファ
+    // When: 重複レンジ [0..4] と [2..6]、または start > end の編集を渡す
+    // Then: パニックせず None を返しバッファを変更しない
+    #[test]
+    fn multiple_edits_rejects_overlapping_and_reversed_ranges() {
+        let mut buf = TextBuffer::from_text("abcdef");
+        let mut stack = UndoStack::new();
+        let overlap = apply_edit_many(
+            &mut buf,
+            &mut stack,
+            vec![
+                ByteEdit {
+                    index: 0,
+                    start: Pos { line: 0, col: 0 },
+                    end: Pos { line: 0, col: 4 },
+                    text: "X".into(),
+                },
+                ByteEdit {
+                    index: 1,
+                    start: Pos { line: 0, col: 2 },
+                    end: Pos { line: 0, col: 6 },
+                    text: "Y".into(),
+                },
+            ],
+            Pos::default(),
+            0,
+        );
+        assert!(overlap.is_none());
+        assert_eq!(buf.line(0).as_ref(), "abcdef");
+
+        let reversed = apply_edit_many(
+            &mut buf,
+            &mut stack,
+            vec![ByteEdit {
+                index: 0,
+                start: Pos { line: 0, col: 4 },
+                end: Pos { line: 0, col: 2 },
+                text: "X".into(),
+            }],
+            Pos::default(),
+            0,
+        );
+        assert!(reversed.is_none());
+        assert_eq!(buf.line(0).as_ref(), "abcdef");
     }
 }

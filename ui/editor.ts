@@ -220,6 +220,7 @@ export class VirtualEditor {
       selection: this.sel,
       lineCache: this.lineCache,
       lineCount: () => this.lineCount,
+      getGeneration: () => this.documentGeneration,
       isReadOnly: () => this.readOnly,
       isMarkdown: () => this.markdown,
       applyResult: (result, fromLine, edits) => this.applyResult(result, fromLine, edits),
@@ -598,43 +599,47 @@ export class VirtualEditor {
   // 古い結果を次の置換へ持ち越さない。
   async replaceRange(line: number, startCol: number, endCol: number, text: string): Promise<boolean> {
     if (this.readOnly || this.busy) return false;
-    const targetLine = Math.max(0, Math.min(this.lineCount - 1, line));
-    const generation = this.documentGeneration;
-    const lineText = await this.lineCache.line(targetLine);
-    if (generation !== this.documentGeneration) return false;
-    const start = Math.max(0, Math.min(charLen(lineText), startCol));
-    const end = Math.max(start, Math.min(charLen(lineText), endCol));
-    if (start === end) return false;
-    const startPos = { line: targetLine, col: start };
-    const endPos = { line: targetLine, col: end };
-    const result = await this.doc.edit(startPos, endPos, startPos, text, false);
-    if (generation !== this.documentGeneration) return false;
-    this.applyResult(result, targetLine, [{ start: startPos, end: endPos, text }]);
-    await this.renderAfterEdit();
-    this.focus();
-    return true;
+    return this.mutation.enqueue(async (isCurrent) => {
+      if (!isCurrent() || this.readOnly || this.busy) return false;
+      const targetLine = Math.max(0, Math.min(this.lineCount - 1, line));
+      const lineText = await this.lineCache.line(targetLine);
+      if (!isCurrent() || this.readOnly || this.busy) return false;
+      const start = Math.max(0, Math.min(charLen(lineText), startCol));
+      const end = Math.max(start, Math.min(charLen(lineText), endCol));
+      if (start === end) return false;
+      const startPos = { line: targetLine, col: start };
+      const endPos = { line: targetLine, col: end };
+      const result = await this.doc.edit(startPos, endPos, startPos, text, false);
+      if (!isCurrent()) return false;
+      this.applyResult(result, targetLine, [{ start: startPos, end: endPos, text }]);
+      await this.renderAfterEdit();
+      if (!isCurrent()) return false;
+      this.focus();
+      return true;
+    }, false);
   }
 
   async editCsvCell(row: string, line: number, startOffset: number, endOffset: number, text: string, isCurrent: () => boolean) {
-    const generation = this.documentGeneration;
     const revision = this.contentRevision;
-    const current = () => generation === this.documentGeneration && revision === this.contentRevision
-      && !this.readOnly && !this.busy && isCurrent();
-    if (!current()) return false;
-    const position = (offset: number) => {
-      const prefix = row.slice(0, offset).replace(/\r\n|\r/g, "\n");
-      const relative = sourcePositionAtOffset(prefix, prefix.length)!;
-      return this.liveViewers.positionInDocument({ line: line + relative.line, col: relative.col });
-    };
-    const start = position(startOffset);
-    const end = position(endOffset);
-    const expected = row.replace(/\r\n|\r/g, "\n");
-    if (await this.lineCache.textInRange(position(0), position(row.length)) !== expected || !current()) return false;
-    const result = await this.doc.edit(start, end, this.sel.caret, text, false);
-    if (generation !== this.documentGeneration) return false;
-    this.applyResult(result, start.line, [{ start, end, text }]);
-    await this.renderAfterEdit();
-    return true;
+    return this.mutation.enqueue(async (isSameGeneration) => {
+      const current = () => isSameGeneration() && revision === this.contentRevision
+        && !this.readOnly && !this.busy && isCurrent();
+      if (!current()) return false;
+      const position = (offset: number) => {
+        const prefix = row.slice(0, offset).replace(/\r\n|\r/g, "\n");
+        const relative = sourcePositionAtOffset(prefix, prefix.length)!;
+        return this.liveViewers.positionInDocument({ line: line + relative.line, col: relative.col });
+      };
+      const start = position(startOffset);
+      const end = position(endOffset);
+      const expected = row.replace(/\r\n|\r/g, "\n");
+      if (await this.lineCache.textInRange(position(0), position(row.length)) !== expected || !current()) return false;
+      const result = await this.doc.edit(start, end, this.sel.caret, text, false);
+      if (!isSameGeneration()) return false;
+      this.applyResult(result, start.line, [{ start, end, text }]);
+      await this.renderAfterEdit();
+      return true;
+    }, false);
   }
 
   setWrap(on: boolean) {
@@ -1545,6 +1550,7 @@ export class VirtualEditor {
 
 
   private async horiz(dir: -1 | 1, extend: boolean) {
+    const generation = this.documentGeneration;
     const c = this.sel.caret;
     if (!extend && cmp(this.sel.anchor, c) !== 0) {
       // 選択解除は端へ
@@ -1556,23 +1562,28 @@ export class VirtualEditor {
       if (c.col > 0) this.moveTo({ line: c.line, col: c.col - 1 }, extend);
       else if (c.line > 0) {
         const len = await this.lineCache.lineLength(c.line - 1);
+        if (generation !== this.documentGeneration) return;
         this.moveTo({ line: c.line - 1, col: len }, extend);
       }
     } else {
       const len = await this.lineCache.lineLength(c.line);
+      if (generation !== this.documentGeneration) return;
       if (c.col < len) this.moveTo({ line: c.line, col: c.col + 1 }, extend);
       else if (c.line + 1 < this.lineCount) this.moveTo({ line: c.line + 1, col: 0 }, extend);
     }
   }
 
   private async wordMove(dir: -1 | 1, extend: boolean) {
+    const generation = this.documentGeneration;
     const c = this.sel.caret;
     const s = await this.lineCache.line(c.line);
+    if (generation !== this.documentGeneration) return;
     const chars = [...s];
     if (dir < 0) {
       if (c.col === 0) {
         if (c.line > 0) {
           const len = await this.lineCache.lineLength(c.line - 1);
+          if (generation !== this.documentGeneration) return;
           this.moveTo({ line: c.line - 1, col: len }, extend);
         }
         return;
@@ -1596,6 +1607,7 @@ export class VirtualEditor {
   }
 
   private async vert(delta: number, extend: boolean) {
+    const generation = this.documentGeneration;
     const c = this.sel.caret;
     const targetLine = Math.max(0, Math.min(this.lineCount - 1, c.line + delta));
     if (targetLine === c.line) return;
@@ -1606,11 +1618,12 @@ export class VirtualEditor {
     }
     // 目標 x に最も近い列へ (行が描画済みでなければ列を長さで近似)
     await this.lineCache.line(targetLine);
+    if (generation !== this.documentGeneration) return;
     this.render();
     const s = this.lineCache.peek(targetLine) ?? "";
     const lineEl = this.lineElem(targetLine);
     let col = charLen(s);
-    if (lineEl) col = this.xToCol(lineEl, s, this.paddingLeft + this.sel.goalX);
+    if (lineEl) col = this.xToCol(lineEl, s, this.paddingLeft + (this.sel.goalX ?? 0));
     this.moveTo({ line: targetLine, col }, extend, true);
   }
 
@@ -1643,8 +1656,11 @@ export class VirtualEditor {
     this.moveTo({ line: this.sel.caret.line, col: 0 }, extend);
   }
   private async end(extend: boolean) {
-    const len = await this.lineCache.lineLength(this.sel.caret.line);
-    this.moveTo({ line: this.sel.caret.line, col: len }, extend);
+    const generation = this.documentGeneration;
+    const line = this.sel.caret.line;
+    const len = await this.lineCache.lineLength(line);
+    if (generation !== this.documentGeneration) return;
+    this.moveTo({ line, col: len }, extend);
   }
 
   // ---- 選択 ----
@@ -1671,8 +1687,10 @@ export class VirtualEditor {
   }
 
   private async selectAll() {
+    const generation = this.documentGeneration;
     const last = this.lineCount - 1;
     const len = await this.lineCache.lineLength(last);
+    if (generation !== this.documentGeneration) return;
     this.sel.anchor = { line: 0, col: 0 };
     this.moveTo({ line: last, col: len }, true, false, false, true, false);
   }
@@ -1897,14 +1915,14 @@ export class VirtualEditor {
   }
 
   private async insertImageBlob(blob: Blob) {
-    await this.insertImage(
-      Array.from(new Uint8Array(await blob.arrayBuffer())),
-      blob.type,
-    );
+    const generation = this.documentGeneration;
+    const bytes = Array.from(new Uint8Array(await blob.arrayBuffer()));
+    if (generation !== this.documentGeneration || this.readOnly) return;
+    await this.insertImage(bytes, blob.type, generation);
   }
 
-  private async insertImage(bytes: number[], mimeType: string) {
-    if (!this.onPasteImage) return;
+  private async insertImage(bytes: number[], mimeType: string, generation = this.documentGeneration) {
+    if (!this.onPasteImage || this.readOnly || generation !== this.documentGeneration) return;
     let widthAttribute = "";
     if (getSetting("pastedImageWidthEnabled")) {
       const maximumWidth = getSetting("pastedImageWidth");
@@ -1919,8 +1937,11 @@ export class VirtualEditor {
         // 寸法を取得できない画像は、拡大を避けるため幅を指定せず貼り付ける。
       }
     }
+    if (generation !== this.documentGeneration || this.readOnly) return;
     const src = await this.onPasteImage(bytes, mimeType);
+    if (generation !== this.documentGeneration || this.readOnly) return;
     await this.insertText(`<img src="${src}" alt="貼り付け画像"${widthAttribute}>\n`);
+    if (generation !== this.documentGeneration) return;
     if (!this.liveViewers.has("markdown")) await this.openTextViewer("markdown");
   }
 
@@ -2725,22 +2746,35 @@ export class VirtualEditor {
     if (this.readOnly) return this.doFind(pat, true, matchCase, useRegex, wholeWord);
     const p = useRegex ? pat : unescapePattern(pat);
     if (!p) return false;
+    const generation = this.documentGeneration;
     const m = this.lastFindMatch;
     if (
       m && m.pat === p && m.matchCase === matchCase && m.useRegex === useRegex && m.wholeWord === wholeWord &&
       cmp(this.sel.anchor, m.start) === 0 && cmp(this.sel.caret, m.end) === 0
     ) {
       const r = unescapePattern(rep);
-      const res = await this.doc.edit(m.start, m.end, this.sel.caret, r, false);
-      this.lastFindMatch = null;
-      this.applyResult(res, m.start.line, [{ start: m.start, end: m.end, text: r }]);
-      if (cmp(m.start, m.end) === 0) {
-        this.lastFindMatch = { ...m, start: { ...this.sel.caret }, end: { ...this.sel.caret } };
-      }
-      this.ensureVisible();
-      this.render();
-      this.notifyCursor();
+      const replaced = await this.mutation.enqueue(async (isCurrent) => {
+        if (!isCurrent() || this.readOnly || this.busy) return false;
+        if (
+          this.lastFindMatch !== m
+          || cmp(this.sel.anchor, m.start) !== 0
+          || cmp(this.sel.caret, m.end) !== 0
+        ) return false;
+        const res = await this.doc.edit(m.start, m.end, this.sel.caret, r, false);
+        if (!isCurrent()) return false;
+        this.lastFindMatch = null;
+        this.applyResult(res, m.start.line, [{ start: m.start, end: m.end, text: r }]);
+        if (cmp(m.start, m.end) === 0) {
+          this.lastFindMatch = { ...m, start: { ...this.sel.caret }, end: { ...this.sel.caret } };
+        }
+        this.ensureVisible();
+        this.render();
+        this.notifyCursor();
+        return true;
+      }, false);
+      if (!replaced || generation !== this.documentGeneration) return false;
     }
+    if (generation !== this.documentGeneration) return false;
     return this.doFind(pat, true, matchCase, useRegex, wholeWord);
   }
 
@@ -2749,31 +2783,34 @@ export class VirtualEditor {
     const p = useRegex ? pat : unescapePattern(pat);
     if (!p) return 0;
     const r = unescapePattern(rep);
-    const generation = this.documentGeneration;
-    const { start, end, backwards } = this.replacementSelection;
+    const selection = this.replacementSelection;
 
-    this.busy = true;
-    try {
-      const matches = await this.doc.findAllInRange(p, start.line, end.line + 1, matchCase, useRegex, wholeWord, 0);
-      if (generation !== this.documentGeneration) return 0;
-      const edits = matches
-        .filter(match => cmp(match.start, start) >= 0 && cmp(match.end, end) <= 0)
-        .map(({ start, end }) => ({ start, end, text: r }));
-      if (edits.length === 0) return 0;
-      const primaryIndex = edits.length - 1;
-      const result = await this.doc.editMany(edits, this.sel.caret, primaryIndex);
-      if (generation !== this.documentGeneration) return 0;
-      const updated = transformTrackedRange({ start, end }, edits);
-      this.applyResult({ caret: result.carets[primaryIndex] ?? this.sel.caret, line_count: result.line_count }, start.line, edits);
-      this.sel.anchor = backwards ? updated.end : updated.start;
-      this.sel.caret = backwards ? updated.start : updated.end;
-      this.ensureVisible();
-      this.render();
-      this.notifyCursor();
-      return edits.length;
-    } finally {
-      this.busy = false;
-    }
+    return this.mutation.enqueue(async (isCurrent) => {
+      if (!isCurrent() || this.readOnly || this.busy) return 0;
+      const { start, end, backwards } = selection;
+      this.busy = true;
+      try {
+        const matches = await this.doc.findAllInRange(p, start.line, end.line + 1, matchCase, useRegex, wholeWord, 0);
+        if (!isCurrent()) return 0;
+        const edits = matches
+          .filter(match => cmp(match.start, start) >= 0 && cmp(match.end, end) <= 0)
+          .map(({ start, end }) => ({ start, end, text: r }));
+        if (edits.length === 0) return 0;
+        const primaryIndex = edits.length - 1;
+        const result = await this.doc.editMany(edits, this.sel.caret, primaryIndex);
+        if (!isCurrent()) return 0;
+        const updated = transformTrackedRange({ start, end }, edits);
+        this.applyResult({ caret: result.carets[primaryIndex] ?? this.sel.caret, line_count: result.line_count }, start.line, edits);
+        this.sel.anchor = backwards ? updated.end : updated.start;
+        this.sel.caret = backwards ? updated.start : updated.end;
+        this.ensureVisible();
+        this.render();
+        this.notifyCursor();
+        return edits.length;
+      } finally {
+        this.busy = false;
+      }
+    }, 0);
   }
 
   private async doReplaceAll(pat: string, rep: string, matchCase: boolean, useRegex = false, wholeWord = false): Promise<number> {
@@ -2781,36 +2818,43 @@ export class VirtualEditor {
     const p = useRegex ? pat : unescapePattern(pat);
     if (!p) return 0;
     const r = unescapePattern(rep);
-    this.busy = true;
-    try {
-      let warned = false;
-      for (;;) {
-        const res = await this.doc.replaceAllChunk(p, r, matchCase, VirtualEditor.REPLACE_BUDGET, useRegex, wholeWord);
-        if (!warned && !res.done && res.count >= VirtualEditor.REPLACE_WARN_THRESHOLD) {
-          warned = true;
-          const cont = window.confirm(`既に${res.count}件置換しています。続行しますか?`);
-          if (!cont) {
-            const fin = await this.doc.replaceAllCancel();
-            this.applyResult(fin, 0);
-            this.ensureVisible();
-            this.render();
-            this.notifyCursor();
+    return this.mutation.enqueue(async (isCurrent) => {
+      if (!isCurrent() || this.readOnly || this.busy) return 0;
+      this.busy = true;
+      try {
+        let warned = false;
+        for (;;) {
+          if (!isCurrent()) return 0;
+          const res = await this.doc.replaceAllChunk(p, r, matchCase, VirtualEditor.REPLACE_BUDGET, useRegex, wholeWord);
+          if (!isCurrent()) return 0;
+          if (!warned && !res.done && res.count >= VirtualEditor.REPLACE_WARN_THRESHOLD) {
+            warned = true;
+            const cont = window.confirm(`既に${res.count}件置換しています。続行しますか?`);
+            if (!isCurrent()) return 0;
+            if (!cont) {
+              const fin = await this.doc.replaceAllCancel();
+              if (!isCurrent()) return 0;
+              this.applyResult(fin, 0);
+              this.ensureVisible();
+              this.render();
+              this.notifyCursor();
+              return res.count;
+            }
+          }
+          if (res.done) {
+            if (res.count > 0) {
+              this.applyResult({ caret: res.caret, line_count: res.line_count }, 0);
+              this.ensureVisible();
+              this.render();
+              this.notifyCursor();
+            }
             return res.count;
           }
         }
-        if (res.done) {
-          if (res.count > 0) {
-            this.applyResult({ caret: res.caret, line_count: res.line_count }, 0);
-            this.ensureVisible();
-            this.render();
-            this.notifyCursor();
-          }
-          return res.count;
-        }
+      } finally {
+        this.busy = false;
       }
-    } finally {
-      this.busy = false;
-    }
+    }, 0);
   }
 }
 

@@ -33,6 +33,7 @@ use crate::search_replace::{self, FindStep};
 use crate::undo::UndoStack;
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Read, Seek, SeekFrom, Write};
+use zeroize::Zeroizing;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -94,7 +95,19 @@ struct MarkdownAssetMove {
 }
 
 fn equivalent_existing_path(left: &Path, right: &Path) -> bool {
-    left == right || std::fs::canonicalize(left).ok() == std::fs::canonicalize(right).ok()
+    left == right
+        || matches!(
+            (std::fs::canonicalize(left), std::fs::canonicalize(right)),
+            (Ok(a), Ok(b)) if a == b
+        )
+}
+
+fn normalize_newlines(text: &str) -> std::borrow::Cow<'_, str> {
+    if text.contains('\r') {
+        std::borrow::Cow::Owned(text.replace("\r\n", "\n").replace('\r', "\n"))
+    } else {
+        std::borrow::Cow::Borrowed(text)
+    }
 }
 
 fn markdown_asset_move_plan(source: &Path, destination: &Path) -> io::Result<Option<MarkdownAssetMovePlan>> {
@@ -348,8 +361,8 @@ fn is_7z_classified_path(path: &Path, open_as: Option<OpenAs>) -> bool {
     crate::sevenz::is_7z_path(&classification_path(path, open_as))
 }
 
-fn is_confidential_archive(is_7z: bool, password: &str) -> bool {
-    is_7z && !password.is_empty()
+fn is_confidential_archive(password: &str) -> bool {
+    !password.is_empty()
 }
 
 fn is_pdf_classified_path(path: &Path, open_as: Option<OpenAs>) -> bool {
@@ -539,9 +552,8 @@ struct CachedArchiveAsset {
 pub struct ArchiveAssetReadPlan {
     archive: PathBuf,
     entry: String,
-    password: String,
+    password: Zeroizing<String>,
     archive_port: Arc<dyn ArchivePort>,
-    archive_is_7z: bool,
     asset_is_pdf: bool,
     prepared_bytes: Option<Vec<u8>>,
 }
@@ -554,7 +566,7 @@ impl ArchiveAssetReadPlan {
     pub fn read_with_cache(self, cache: Option<&PreviewCache>) -> io::Result<Vec<u8>> {
         let cache_allowed = cache.is_some()
             && !self.asset_is_pdf
-            && !is_confidential_archive(self.archive_is_7z, &self.password);
+            && !is_confidential_archive(&self.password);
         let cache_key = cache_allowed.then(|| preview_cache_archive_key(&self.archive, &self.entry));
         let fingerprint = cache_allowed
             .then(|| preview_cache_fingerprint(&self.archive))
@@ -631,9 +643,9 @@ pub struct Doc {
     pending_merge: Option<PendingExternalMerge>,
     // 選択時に展開した画像をプレビューへ所有権移譲し、二重展開とテキスト化を避ける。
     archive_asset: Option<CachedArchiveAsset>,
-    // 7z のパスワードをアーカイブ絶対パス単位でメモリ保持する (ディスクへは残さない)。
+    // 7z/zip のパスワードをアーカイブ絶対パス単位でメモリ保持する (ディスクへは残さず Drop 時にゼロ化)。
     // 同じフォルダ内の複数の 7z を行き来しても都度入力し直さずに済む。
-    sevenz_passwords: HashMap<PathBuf, String>,
+    sevenz_passwords: HashMap<PathBuf, Zeroizing<String>>,
     deleted_entries: Vec<DeletedEntry>,
     archive_port: Arc<dyn ArchivePort>,
 }
@@ -726,9 +738,8 @@ impl Doc {
         Ok(ArchiveAssetReadPlan {
             archive: archive.to_path_buf(),
             entry: entry.to_string(),
-            password: self.sevenz_password(archive).to_string(),
+            password: Zeroizing::new(self.sevenz_password(archive).to_string()),
             archive_port: Arc::clone(&self.archive_port),
-            archive_is_7z: self.archive_is_7z(archive),
             asset_is_pdf: is_pdf_classified_path(Path::new(entry), self.entry_open_as),
             prepared_bytes,
         })
@@ -1129,6 +1140,7 @@ impl Doc {
         let result = merge::three_way(&pending.base, &pending.mine, &pending.theirs);
         self.buf = TextBuffer::from_text(&result.merged.join("\n"));
         self.undo.clear();
+        self.replace_progress = None;
         self.byte_len = pending.byte_len;
         self.merge_base = Some(pending.theirs);
         self.source.set_stamp(Some(pending.stamp));
@@ -1251,7 +1263,10 @@ impl Doc {
 
     // 可視範囲の行テキスト (char列そのまま)。全文は渡さない。
     pub fn lines(&self, start: usize, count: usize) -> Vec<String> {
-        let end = (start + count).min(self.buf.line_count());
+        let end = start.saturating_add(count).min(self.buf.line_count());
+        if start >= end {
+            return Vec::new();
+        }
         (start..end)
             .map(|i| self.buf.line(i).into_owned())
             .collect()
@@ -1328,7 +1343,11 @@ impl Doc {
                             cache,
                         )?
                     } else {
-                        let bytes = fileio::read_locked(&source_file)?;
+                        let bytes = fileio::read_locked_limit(
+                            &source_file,
+                            fileio::MAX_ARCHIVE_BYTES,
+                            "256MBを超えるアーカイブは直接展開できません",
+                        )?;
                         let entry = crate::archive::decode_one_entry(&bytes, entry_name)
                             .ok_or_else(|| {
                                 io::Error::new(
@@ -1347,6 +1366,7 @@ impl Doc {
                 self.buf = TextBuffer::from_text(&text);
                 self.merge_base = None;
                 self.pending_merge = None;
+                self.replace_progress = None;
                 self.undo.clear();
                 self.open_as = archive_open_as;
                 self.entry_open_as = resolved_entry_open_as;
@@ -1428,7 +1448,11 @@ impl Doc {
                             "アーカイブを読み込めません。再度開いてください",
                         ));
                     };
-                    let bytes = fileio::read_locked(source_file)?;
+                    let bytes = fileio::read_locked_limit(
+                        source_file,
+                        fileio::MAX_ARCHIVE_BYTES,
+                        "256MBを超えるアーカイブは直接展開できません",
+                    )?;
                     let entry = crate::archive::decode_one_entry(&bytes, rel_path).ok_or_else(|| {
                         io::Error::new(
                             io::ErrorKind::InvalidData,
@@ -1459,6 +1483,7 @@ impl Doc {
         self.buf = TextBuffer::from_text(&text);
         self.merge_base = None;
         self.pending_merge = None;
+        self.replace_progress = None;
         self.undo.clear();
         self.open_as = archive_open_as;
         self.entry_open_as = entry_open_as;
@@ -1482,10 +1507,7 @@ impl Doc {
         cache: Option<&PreviewCache>,
     ) -> io::Result<(String, Option<(Encoding, Eol)>, bool, Option<OpenAs>)> {
         let cache_allowed = cache.is_some()
-            && !is_confidential_archive(
-                is_7z_classified_path(archive, archive_open_as),
-                self.sevenz_password(archive),
-            );
+            && !is_confidential_archive(self.sevenz_password(archive));
         let cache_key = cache_allowed.then(|| preview_cache_archive_key(archive, entry));
         let fingerprint = cache_allowed
             .then(|| preview_cache_fingerprint(archive))
@@ -1555,7 +1577,7 @@ impl Doc {
                     entry_open_as,
                 ));
             }
-            Err(error) => return Err(self.annotate_sevenz_error(archive, error)),
+            Err(error) => return Err(self.annotate_and_prune_sevenz_error(archive, error)),
         };
         let entry_open_as = match entry_open_as {
             Some(OpenAs::ImageAuto) => Some(detect_image_open_as_bytes(&bytes)?),
@@ -1600,7 +1622,7 @@ impl Doc {
     fn sevenz_password(&self, archive: &Path) -> &str {
         self.sevenz_passwords
             .get(archive)
-            .map(String::as_str)
+            .map(|value| value.as_str())
             .unwrap_or("")
     }
 
@@ -1623,6 +1645,19 @@ impl Doc {
         error
     }
 
+    // 誤ったパスワードで失敗した場合はメモリ上に残さず即時削除 (Zeroizing によりゼロ化) する。
+    fn annotate_and_prune_sevenz_error(&mut self, archive: &Path, error: io::Error) -> io::Error {
+        let annotated = self.annotate_sevenz_error(archive, error);
+        if annotated.kind() == io::ErrorKind::PermissionDenied
+            && annotated
+                .to_string()
+                .contains(&format!("{}:wrong", crate::archive_port::PASSWORD_ERROR_MARKER))
+        {
+            self.sevenz_passwords.remove(archive);
+        }
+        annotated
+    }
+
     // パスワード入力ダイアログの結果を保持する。rel_path はパスワードを要求した対象:
     // "" = 直接開いている書庫、それ以外 = フォルダルートからの相対パス。
     pub fn set_archive_password(&mut self, rel_path: &str, password: &str) -> io::Result<()> {
@@ -1642,7 +1677,12 @@ impl Doc {
             })?;
             join_relative(root, rel_path)
         };
-        self.sevenz_passwords.insert(path, password.to_string());
+        if password.is_empty() {
+            self.sevenz_passwords.remove(&path);
+        } else {
+            self.sevenz_passwords
+                .insert(path, Zeroizing::new(password.to_string()));
+        }
         Ok(())
     }
 
@@ -1681,12 +1721,21 @@ impl Doc {
                     "アーカイブを読み込めません。再度開いてください",
                 ));
             };
-            fileio::read_locked(source_file)?
+            fileio::read_locked_limit(
+                source_file,
+                fileio::MAX_ARCHIVE_BYTES,
+                "256MBを超えるアーカイブは直接展開できません",
+            )?
         } else {
             let Some(root) = self.source.folder_root() else {
                 return Ok(None);
             };
-            std::fs::read(join_relative(root, rel_path))?
+            let file = std::fs::File::open(join_relative(root, rel_path))?;
+            fileio::read_locked_limit(
+                &file,
+                fileio::MAX_ARCHIVE_BYTES,
+                "256MBを超えるアーカイブは直接展開できません",
+            )?
         };
         crate::archive::list(&bytes)
             .map(Some)
@@ -2151,8 +2200,7 @@ impl Doc {
         let Some(previous_root) = previous.source.folder_root() else {
             return;
         };
-        let same_root = root == previous_root
-            || root.canonicalize().ok() == previous_root.canonicalize().ok();
+        let same_root = equivalent_existing_path(root, previous_root);
         if same_root {
             self.deleted_entries = std::mem::take(&mut previous.deleted_entries);
         }
@@ -2395,11 +2443,11 @@ impl Doc {
     }
 
     fn save_archive_image_with_stem(&mut self, archive: &Path, memo_entry: &str, bytes: &[u8], extension: &str, stem: &str) -> io::Result<String> {
-        let password = self.sevenz_password(archive).to_string();
+        let password = Zeroizing::new(self.sevenz_password(archive).to_string());
         let existing = self
             .archive_port
             .list(archive, &password)
-            .map_err(|error| self.annotate_sevenz_error(archive, error))?;
+            .map_err(|error| self.annotate_and_prune_sevenz_error(archive, error))?;
         let memo_name = archive_entry_stem(memo_entry).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -2425,24 +2473,17 @@ impl Doc {
             } else { format!("{stem}.{extension}") };
         let relative_src = markdown_image_relative_path(memo_name, &image_name);
         let entry = archive_join(parent, &relative_src);
-        let workspace = self.archive_port.new_workspace(archive)?;
-        let staged = workspace
-            .path()
-            .join(entry.replace('/', std::path::MAIN_SEPARATOR_STR));
-        if let Some(parent) = staged.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&staged, bytes)?;
         let is_7z = self.archive_is_7z(archive);
         let header_encrypted = self
             .archive_port
             .preserves_header_encryption(archive, &password, is_7z)?;
         let archive_port = Arc::clone(&self.archive_port);
+        let payload = bytes.to_vec();
         let archive_result = self.run_archive_command(archive, move || {
-            archive_port.update(
+            archive_port.update_bytes(
                 archive,
                 &entry,
-                workspace.path(),
+                &payload,
                 &password,
                 header_encrypted,
             )
@@ -2506,11 +2547,11 @@ impl Doc {
     }
 
     fn cleanup_archive_images(&mut self, archive: &Path, memo_entry: &str) -> io::Result<()> {
-        let password = self.sevenz_password(archive).to_string();
+        let password = Zeroizing::new(self.sevenz_password(archive).to_string());
         let entries = self
             .archive_port
             .list(archive, &password)
-            .map_err(|error| self.annotate_sevenz_error(archive, error))?;
+            .map_err(|error| self.annotate_and_prune_sevenz_error(archive, error))?;
         let memo_name = archive_entry_stem(memo_entry).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -2592,7 +2633,7 @@ impl Doc {
         }
         drop(source_file);
         let command_result =
-            operation().map_err(|error| self.annotate_sevenz_error(archive, error));
+            operation().map_err(|error| self.annotate_and_prune_sevenz_error(archive, error));
         let reopened = fileio::open_exclusive(&path);
         match reopened {
             Ok(source_file) => {
@@ -2619,6 +2660,12 @@ impl Doc {
         }
     }
 
+    fn clear_replace_progress(&mut self) {
+        if self.replace_progress.is_some() {
+            let _ = search_replace::replace_all_cancel(&mut self.undo, &mut self.replace_progress);
+        }
+    }
+
     // 範囲[start,end)を削除して text を挿入する統一プリミティブ。
     // 挿入=start==end, 削除=text空, 置換=両方。位置は char 単位。
     pub fn edit(
@@ -2633,32 +2680,38 @@ impl Doc {
         if self.is_view_only() {
             return None;
         }
-        let s = self.to_byte(start);
-        let e = self.to_byte(end);
+        self.clear_replace_progress();
+        let (s, e) = {
+            let a = self.to_byte(start);
+            let b = self.to_byte(end);
+            if a <= b { (a, b) } else { (b, a) }
+        };
         let cb = self.to_byte(caret_before);
+        let text = normalize_newlines(text);
         self.pending_merge = None;
-        let after = editing::apply_edit(&mut self.buf, &mut self.undo, s, e, cb, text, coalesce);
+        let after = editing::apply_edit(&mut self.buf, &mut self.undo, s, e, cb, &text, coalesce);
         Some(EditResult {
             caret: self.to_char(after),
             line_count: self.buf.line_count(),
         })
     }
 
-    pub fn edit_many(
+    pub fn try_edit_many(
         &mut self,
         items: Vec<EditManyItem>,
         caret_before: PosC,
         primary_index: usize,
-    ) -> Option<EditManyResult> {
+    ) -> Result<EditManyResult, &'static str> {
         if self.is_view_only() {
-            return None;
+            return Err("閲覧専用の文書は編集できません");
         }
         if items.is_empty() {
-            return Some(EditManyResult {
+            return Ok(EditManyResult {
                 carets: Vec::new(),
                 line_count: self.buf.line_count(),
             });
         }
+        self.clear_replace_progress();
         self.pending_merge = None;
         let cb = self.to_byte(caret_before);
         let byte_items = items
@@ -2668,11 +2721,12 @@ impl Doc {
                 index,
                 start: self.to_byte(item.start),
                 end: self.to_byte(item.end),
-                text: item.text,
+                text: normalize_newlines(&item.text).into_owned(),
             })
             .collect();
-        let result = editing::apply_edit_many(&mut self.buf, &mut self.undo, byte_items, cb, primary_index);
-        Some(EditManyResult {
+        let result = editing::apply_edit_many(&mut self.buf, &mut self.undo, byte_items, cb, primary_index)
+            .ok_or("編集範囲が不正または重複しています")?;
+        Ok(EditManyResult {
             carets: result
                 .carets
                 .into_iter()
@@ -2682,7 +2736,17 @@ impl Doc {
         })
     }
 
+    pub fn edit_many(
+        &mut self,
+        items: Vec<EditManyItem>,
+        caret_before: PosC,
+        primary_index: usize,
+    ) -> Option<EditManyResult> {
+        self.try_edit_many(items, caret_before, primary_index).ok()
+    }
+
     pub fn undo(&mut self) -> Option<EditResult> {
+        self.clear_replace_progress();
         let caret = editing::undo(&mut self.buf, &mut self.undo)?;
         self.pending_merge = None;
         Some(EditResult {
@@ -2692,6 +2756,7 @@ impl Doc {
     }
 
     pub fn redo(&mut self) -> Option<EditResult> {
+        self.clear_replace_progress();
         let caret = editing::redo(&mut self.buf, &mut self.undo)?;
         self.pending_merge = None;
         Some(EditResult {
@@ -2810,12 +2875,13 @@ impl Doc {
                 line_count: self.buf.line_count(),
             });
         }
+        let rep = normalize_newlines(rep);
         let result = search_replace::replace_all_chunk(
             &mut self.buf,
             &mut self.undo,
             &mut self.replace_progress,
             pat,
-            rep,
+            &rep,
             match_case,
             use_regex,
             whole_word,
@@ -2849,6 +2915,7 @@ impl Doc {
     // 保存。tempへ全量書出し後、排他とmmapを短時間だけ解放して差し替え、即座に再取得する。
     // 保存先が外部で変更されていた場合は本体を上書きせず、退避ファイルへ保存して知らせる。
     pub fn save(&mut self, path: &Path, enc: Encoding, eol: Eol) -> io::Result<SaveOutcome> {
+        self.clear_replace_progress();
         // 7z のエントリ表示中に書庫自身のパスへ保存 = エントリの書き戻し。
         // 別パスへの保存 (名前を付けて保存) は通常ファイルとして下へ流す。
         if let Target::Archive {
@@ -2970,8 +3037,8 @@ impl Doc {
         Ok(SaveOutcome::Saved { modified_at })
     }
 
-    // 7z/zip エントリの書き戻し。アーカイブと同じフォルダの作業領域へ構造を再現して
-    // 7z u で更新する。7z.exe が書庫本体を差し替えるため、排他ハンドルは実行中だけ手放す。
+    // 7z/zip エントリの書き戻し。平文の一時ファイルを作らず標準入力経由で
+    // 7z u -si により更新する。7z.exe が書庫本体を差し替えるため、排他ハンドルは実行中だけ手放す。
     fn save_archive_entry(
         &mut self,
         archive: &Path,
@@ -2979,29 +3046,19 @@ impl Doc {
         enc: Encoding,
         eol: Eol,
     ) -> io::Result<SaveOutcome> {
-        let password = self.sevenz_password(archive).to_string();
+        let password = Zeroizing::new(self.sevenz_password(archive).to_string());
         // ヘッダ暗号化 (-mhe=on) は更新時に指定し直さないと失われるため事前に検出する
         let is_7z = self.archive_is_7z(archive);
         let header_encrypted = self
             .archive_port
             .preserves_header_encryption(archive, &password, is_7z)?;
-        let workspace = self.archive_port.new_workspace(archive)?;
-        let entry_file = workspace
-            .path()
-            .join(entry.replace('/', std::path::MAIN_SEPARATOR_STR));
-        if let Some(parent) = entry_file.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let transaction = fileio::begin_save(&entry_file, &self.buf, enc, eol)?;
-        transaction
-            .commit(&entry_file)
-            .map_err(fileio::SaveCommitError::into_error)?;
+        let encoded = Zeroizing::new(fileio::encode_buffer_to_bytes(&self.buf, enc, eol)?);
         let archive_port = Arc::clone(&self.archive_port);
         let archive_result = self.run_archive_command(archive, move || {
-            archive_port.update(
+            archive_port.update_bytes(
                 archive,
                 entry,
-                workspace.path(),
+                &encoded,
                 &password,
                 header_encrypted,
             )
@@ -3011,6 +3068,7 @@ impl Doc {
         self.undo.break_coalescing();
         let modified_at = fileio::modified_at(archive);
         self.pending_merge = None;
+        self.replace_progress = None;
         match archive_result {
             ArchiveCommandOutcome::Reopened => Ok(SaveOutcome::Saved { modified_at }),
             ArchiveCommandOutcome::ReopenFailed(error) => Ok(SaveOutcome::SavedWithWarning {
@@ -3073,24 +3131,6 @@ mod tests {
     use std::fs::File;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
-
-    static NEXT_FAKE_WORKSPACE: AtomicUsize = AtomicUsize::new(0);
-
-    struct FakeArchiveWorkspace {
-        path: PathBuf,
-    }
-
-    impl crate::archive_port::ArchiveWorkspacePort for FakeArchiveWorkspace {
-        fn path(&self) -> &Path {
-            &self.path
-        }
-    }
-
-    impl Drop for FakeArchiveWorkspace {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.path);
-        }
-    }
 
     // Feature: 貼り付け画像の形式判定
     // Scenario: UIが扱う画像MIMEを文書保存側でも拡張子へ変換する
@@ -3156,21 +3196,14 @@ mod tests {
             Ok(())
         }
 
-        fn new_workspace(
+        fn update_bytes(
             &self,
-            _: &Path,
-        ) -> io::Result<Box<dyn crate::archive_port::ArchiveWorkspacePort>> {
-            let id = NEXT_FAKE_WORKSPACE.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!(
-                "wasabipad_fake_archive_workspace_{}_{id}",
-                std::process::id()
-            ));
-            let _ = std::fs::remove_dir_all(&path);
-            std::fs::create_dir_all(&path)?;
-            Ok(Box::new(FakeArchiveWorkspace { path }))
-        }
-
-        fn update(&self, archive: &Path, _: &str, _: &Path, _: &str, _: bool) -> io::Result<()> {
+            archive: &Path,
+            _: &str,
+            _: &[u8],
+            _: &str,
+            _: bool,
+        ) -> io::Result<()> {
             self.updated_archives.lock().unwrap().push(archive.to_path_buf());
             Ok(())
         }
@@ -6188,5 +6221,135 @@ mod tests {
                 FindOutcome::NotFound => panic!("見つかるはずの一致が見つからなかった"),
             }
         }
+    }
+
+    // Feature: チャンク全置換状態の整合性
+    // Scenario: 正規表現全置換の途中で編集してから全置換を再実行する
+    // Given: 複数一致を含む文書で1件だけ全置換チャンクを進めた状態
+    // When: 本文を削除編集した後に再度 replace_all_chunk_with_options を呼ぶ
+    // Then: 陳腐化した旧オフセットでパニックせず最新本文に対して置換を完了する
+    #[test]
+    fn replace_all_progress_is_cleared_on_intervening_edit() {
+        let mut d = doc("foo 1\nfoo 2\nfoo 3");
+        let first = d
+            .replace_all_chunk_with_options("foo", "bar", true, true, false, 1)
+            .unwrap();
+        assert!(!first.done);
+        // バッファ全体を短くして旧オフセットを無効化する
+        d.edit(p(0, 0), p(2, 5), p(0, 0), "foo", false).unwrap();
+        let next = d
+            .replace_all_chunk_with_options("foo", "bar", true, true, false, 10)
+            .unwrap();
+        assert!(next.done);
+        assert_eq!(d.lines(0, 10), vec!["bar".to_string()]);
+    }
+
+    // Feature: 編集テキストの改行正規化と範囲安全性
+    // Scenario: CRLF テキストの編集・重複レンジ edit_many・巨大 count の lines を呼ぶ
+    // Given: 空の文書
+    // When: \r\n を含む文字列を挿入し、CRLF 保存・重複 edit_many・usize::MAX 行取得を試す
+    // Then: 内部に \r を残さず、重複 edit_many は None を返し、lines はオーバーフローしない
+    #[test]
+    fn edit_normalizes_cr_and_guards_bounds() {
+        let mut d = doc("");
+        d.edit(p(0, 0), p(0, 0), p(0, 0), "a\r\nb\rc", false)
+            .unwrap();
+        assert_eq!(d.lines(0, 10), vec!["a", "b", "c"]);
+        assert_eq!(d.lines(usize::MAX, 10), Vec::<String>::new());
+        assert_eq!(d.lines(0, usize::MAX), vec!["a", "b", "c"]);
+
+        let overlap = d.try_edit_many(
+            vec![
+                EditManyItem {
+                    start: p(0, 0),
+                    end: p(1, 1),
+                    text: "X".into(),
+                },
+                EditManyItem {
+                    start: p(1, 0),
+                    end: p(2, 1),
+                    text: "Y".into(),
+                },
+            ],
+            p(0, 0),
+            0,
+        );
+        assert!(overlap.is_err());
+    }
+
+    // Feature: 存在しないパスの同一性判定
+    // Scenario: 存在しない2つの異なるパスを比較する
+    // Given: 実在しないパスAとパスB
+    // When: equivalent_existing_path で比較する
+    // Then: None == None を誤って true とせず false を返す
+    #[test]
+    fn equivalent_existing_path_does_not_equate_two_missing_paths() {
+        let a = std::env::temp_dir().join("wasabipad_missing_path_a_922c");
+        let b = std::env::temp_dir().join("wasabipad_missing_path_b_922c");
+        assert!(!equivalent_existing_path(&a, &b));
+        assert!(equivalent_existing_path(&a, &a));
+    }
+
+    // Feature: パスワード付きZIPの機密アーカイブ保護
+    // Scenario: パスワード保護されたZIP内の画像を外部キャッシュ付きで読み込む
+    // Given: パスワード付きのZIPアーカイブと外部 PreviewCache
+    // When: 画像エントリを選択し read_archive_asset_with_cache で取得する
+    // Then: 復号済み画像はメモリ経由で返されるが、外部キャッシュには一切保存されない
+    #[test]
+    fn password_protected_zip_assets_are_never_written_to_external_cache() {
+        if !crate::sevenz::available() {
+            return;
+        }
+        let root = sevenz_root("confidential-zip-cache");
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let png = b"\x89PNG\r\n\x1a\nfake-secret-image";
+        std::fs::write(src.join("secret.png"), png).unwrap();
+        let archive = root.join("secret.zip");
+        crate::sevenz::create_archive_for_test(&archive, &src, "topsecret", false).unwrap();
+
+        let cache_dir = root.join("cache");
+        let cache = PreviewCache::new(cache_dir.clone());
+        let mut d = Doc::open(&archive).unwrap();
+        d.set_archive_password("", "topsecret").unwrap();
+        d.select_entry_with_cache("secret.png", Some(&cache))
+            .unwrap()
+            .unwrap();
+        let bytes = d
+            .read_archive_asset_with_cache(&archive, "secret.png", Some(&cache))
+            .unwrap();
+        assert_eq!(bytes, png);
+        assert_eq!(cache.total_bytes().unwrap(), 0);
+        assert!(!cache.directory().exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Feature: 誤パスワードの即時破棄
+    // Scenario: 誤ったパスワードを設定した後に展開に失敗する
+    // Given: パスワード付き7zアーカイブと誤ったパスワード
+    // When: select_entry が失敗する
+    // Then: 保持していた誤パスワードがメモリマップから削除される
+    #[test]
+    fn wrong_archive_password_is_pruned_on_failure() {
+        if !crate::sevenz::available() {
+            return;
+        }
+        let root = sevenz_root("prune-wrong-pw");
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("a.txt"), "secret\n").unwrap();
+        let archive = root.join("t.7z");
+        crate::sevenz::create_archive_for_test(&archive, &src, "rightpw", false).unwrap();
+
+        let mut d = Doc::open(&archive).unwrap();
+        d.set_archive_password("", "wrongpw").unwrap();
+        assert_eq!(d.sevenz_password(&archive), "wrongpw");
+        let err = match d.select_entry("a.txt") {
+            Err(err) => err,
+            Ok(_) => panic!("誤パスワードは失敗するはず"),
+        };
+        assert!(err.to_string().contains(":wrong"));
+        assert!(d.sevenz_password(&archive).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

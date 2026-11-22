@@ -17,6 +17,10 @@ import {
   readArchiveAsset,
   registerHtmlPreview,
   releaseHtmlPreview,
+  registerExternalHtmlPreview,
+  releaseExternalHtmlPreview,
+  registerPdfPreview,
+  releasePdfPreview,
   type ViewerFormat,
   type ViewerPayload,
   type ViewerSelection,
@@ -97,6 +101,7 @@ import {
   bindExternalPreviewPreferences,
   commitTrustedExternalHtmlPreview,
   createTrustedExternalHtmlPreview,
+  externalOutputFormatOf,
   resolveExternalOutputSource,
 } from "./viewer-external-output";
 import { createSqlitePreviewController, type SqlitePreviewController } from "./viewer-sqlite";
@@ -210,6 +215,8 @@ let renderAbortController = new AbortController();
 let imageZoom = DEFAULT_IMAGE_ZOOM;
 let disposeImagePan: (() => void) | null = null;
 let disposeSqlitePreview: (() => void) | null = null;
+let releaseActiveExternalHtmlPreview: (() => void) | null = null;
+let releaseActivePdfPreview: (() => void) | null = null;
 let gitPreview: ReturnType<typeof createGitPreviewController> | null = null;
 let videoPreview: ReturnType<typeof createVideoPreview> | null = null;
 let previewVisible = true;
@@ -490,6 +497,18 @@ function setFullscreenButton(fullscreen: boolean) {
   fullscreenButton.setAttribute("aria-pressed", String(fullscreen));
 }
 
+function replaceActiveScopedPreviews(
+  nextExternalHtml: (() => void) | null = null,
+  nextPdf: (() => void) | null = null,
+) {
+  const previousExternalHtml = releaseActiveExternalHtmlPreview;
+  const previousPdf = releaseActivePdfPreview;
+  releaseActiveExternalHtmlPreview = nextExternalHtml;
+  releaseActivePdfPreview = nextPdf;
+  if (previousExternalHtml && previousExternalHtml !== nextExternalHtml) previousExternalHtml();
+  if (previousPdf && previousPdf !== nextPdf) previousPdf();
+}
+
 function disposeViewer() {
   gitPreview?.dispose();
   gitPreview = null;
@@ -497,6 +516,7 @@ function disposeViewer() {
   viewerDisposed = true;
   externalSourceNavigationController?.abort();
   externalSourceNavigationController = null;
+  replaceActiveScopedPreviews(null, null);
   renderAbortController.abort();
   renderGeneration += 1;
   disposeImagePan?.();
@@ -757,6 +777,7 @@ function renderTable(text: string, state: ViewerRenderState = currentViewerRende
     selectCsvCell(selectedRow?.cells[Number(column) + 1] ?? null);
     previousDisposeImagePan?.();
     disposeImagePan = null;
+    replaceActiveScopedPreviews(null, null);
     revokeArchiveAssetUrls();
     scrollCsvRows(rendered.rows, state.selection);
 
@@ -935,6 +956,7 @@ async function renderAssetPreview(
   cacheBustFile = false,
   state: ViewerRenderState = currentViewerRenderState(),
   nextImageZoom = imageZoom,
+  prepareLocalUrl?: (sourcePath: string, generation: number) => Promise<{ url: string; release: () => void } | null>,
 ): Promise<boolean> {
   const generation = beginRender();
   const previousDisposeImagePan = disposeImagePan;
@@ -944,6 +966,8 @@ async function renderAssetPreview(
   let target: AssetPreviewTarget | null = null;
   let assetUrl: string | null = null;
   let keepAssetUrl = false;
+  let pendingScopedRelease: (() => void) | null = null;
+  let adoptedScopedRelease = false;
   let committed = false;
   try {
     target = createTarget();
@@ -963,6 +987,8 @@ async function renderAssetPreview(
       disposeImagePan = null;
       if (activate) target.activate?.();
       else target.dispose?.();
+      replaceActiveScopedPreviews(null, activate ? pendingScopedRelease : null);
+      if (activate && pendingScopedRelease) adoptedScopedRelease = true;
       archiveAssetTracker.revokeStale(generation);
       summary.classList.remove("warning");
       summary.title = "";
@@ -998,9 +1024,20 @@ async function renderAssetPreview(
       }
       target.setSource(assetUrl);
     } else if (sourcePath && generation === renderGeneration) {
-      target.setSource(cacheBustFile
-        ? imageUrlFromPathWithCacheBust(sourcePath, generation)
-        : imageUrlFromPath(sourcePath));
+      if (prepareLocalUrl) {
+        const prepared = await prepareLocalUrl(sourcePath, generation);
+        if (!prepared || generation !== renderGeneration) {
+          prepared?.release();
+          discardTarget();
+          return false;
+        }
+        pendingScopedRelease = prepared.release;
+        target.setSource(prepared.url);
+      } else {
+        target.setSource(cacheBustFile
+          ? imageUrlFromPathWithCacheBust(sourcePath, generation)
+          : imageUrlFromPath(sourcePath));
+      }
     } else {
       target.markFailure();
       if (generation === renderGeneration) commitTarget(false);
@@ -1031,6 +1068,7 @@ async function renderAssetPreview(
     currentRows = [];
     chartController.clear();
     target.dispose?.();
+    replaceActiveScopedPreviews(null, null);
     archiveAssetTracker.revokeStale(generation);
     summary.classList.remove("warning");
     summary.title = "";
@@ -1038,6 +1076,9 @@ async function renderAssetPreview(
     committed = true;
     return true;
   } finally {
+    if (pendingScopedRelease && (!adoptedScopedRelease || generation !== renderGeneration)) {
+      pendingScopedRelease();
+    }
     if (assetUrl && (!keepAssetUrl || generation !== renderGeneration)) {
       releaseAssetUrl(assetUrl);
     }
@@ -1100,7 +1141,21 @@ async function renderPdf(
       },
       dispose: () => frame.remove(),
     };
-  }, undefined, false, state);
+  }, undefined, false, state, imageZoom, async (sourcePath, generation) => {
+    const id = window.crypto.randomUUID();
+    await registerPdfPreview(id, sourcePath);
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      void releasePdfPreview(id).catch((error) => console.warn("PDFプレビューを解放できませんでした", error));
+    };
+    if (generation !== renderGeneration) {
+      release();
+      return null;
+    }
+    return { url: `${convertFileSrc(id, "wasabi-pdf")}/document.pdf`, release };
+  });
 }
 
 function htmlBaseUrl(sourcePath: string | null): string | null {
@@ -1161,6 +1216,7 @@ async function renderHtml(
     disposeImagePan = null;
     currentRows = [];
     chartController.clear();
+    replaceActiveScopedPreviews(null, null);
     revokeArchiveAssetUrls();
     summary.classList.remove("warning");
     summary.title = "";
@@ -1182,10 +1238,25 @@ async function renderExternalOutput(
   const previousDisposeImagePan = disposeImagePan;
   let wrapper: HTMLElement | null = null;
   let dispose: (() => void) | undefined;
+  let pendingExternalHtmlRelease: (() => void) | null = null;
+  let adoptedExternalHtmlRelease = false;
   try {
-    const source = resolveExternalOutputSource(outputPath);
-    if (source.format === "html") {
-      const preview = createTrustedExternalHtmlPreview(outputPath);
+    const format = externalOutputFormatOf(outputPath);
+    if (format === "html") {
+      const id = window.crypto.randomUUID();
+      await registerExternalHtmlPreview(id, outputPath);
+      let released = false;
+      const release = () => {
+        if (released) return;
+        released = true;
+        void releaseExternalHtmlPreview(id).catch((error) =>
+          console.warn("外部HTMLプレビューを解放できませんでした", error));
+      };
+      pendingExternalHtmlRelease = release;
+      if (generation !== renderGeneration || renderSignal.aborted) {
+        return false;
+      }
+      const preview = createTrustedExternalHtmlPreview(outputPath, id);
       wrapper = preview.wrapper;
       if (!await commitTrustedExternalHtmlPreview(
         content,
@@ -1194,6 +1265,8 @@ async function renderExternalOutput(
         () => generation === renderGeneration,
         renderSignal,
       )) return false;
+      replaceActiveScopedPreviews(release, null);
+      adoptedExternalHtmlRelease = true;
       externalSourceNavigationController?.abort();
       externalSourceNavigationController = new AbortController();
       if (isInlineViewer && state.renderId) {
@@ -1203,6 +1276,7 @@ async function renderExternalOutput(
           postToParent, externalSourceNavigationController.signal);
       }
     } else {
+      const source = resolveExternalOutputSource(outputPath);
       const preview = createImagePreview(basename(outputPath));
       wrapper = preview.wrapper;
       dispose = bindImagePan(preview.image, content);
@@ -1223,12 +1297,13 @@ async function renderExternalOutput(
       }
       wrapper.classList.remove("viewer-pending");
       content.replaceChildren(wrapper);
+      replaceActiveScopedPreviews(null, null);
       disposeImagePan = dispose;
     }
     currentRows = [];
     chartController.clear();
     previousDisposeImagePan?.();
-    if (source.format === "html") disposeImagePan = null;
+    if (format === "html") disposeImagePan = null;
     revokeArchiveAssetUrls();
     summary.classList.remove("warning");
     summary.title = "";
@@ -1251,12 +1326,16 @@ async function renderExternalOutput(
       content.replaceChildren(wrapper);
       previousDisposeImagePan?.();
       disposeImagePan = null;
+      replaceActiveScopedPreviews(null, null);
       summary.classList.add("warning");
       summary.textContent = String(error);
       return true;
     }
     throw error;
   } finally {
+    if (pendingExternalHtmlRelease && !adoptedExternalHtmlRelease) {
+      pendingExternalHtmlRelease();
+    }
     finishRender(generation);
   }
 }
@@ -1293,6 +1372,7 @@ async function renderMarkdown(
     disposeImagePan = null;
     currentRows = [];
     chartController.clear();
+    replaceActiveScopedPreviews(null, null);
     archiveAssetTracker.revokeStale(generation);
     summary.classList.remove("warning");
     summary.title = "";
@@ -1332,6 +1412,7 @@ async function renderSqlite(
   disposeImagePan = null;
   currentRows = [];
   chartController.clear();
+  replaceActiveScopedPreviews(null, null);
   revokeArchiveAssetUrls();
   let controller: SqlitePreviewController | null = null;
   try {
@@ -1359,6 +1440,7 @@ function renderVideo(_text: string, state: ViewerRenderState): boolean {
   disposeImagePan = null;
   currentRows = [];
   chartController.clear();
+  replaceActiveScopedPreviews(null, null);
   revokeArchiveAssetUrls();
   try {
     if (!state.sourcePath || state.archivePath !== null || state.archiveEntry !== null) {
@@ -1385,6 +1467,7 @@ async function renderGit(text: string, state: ViewerRenderState): Promise<boolea
   disposeImagePan = null;
   chartController.clear();
   currentRows = [];
+  replaceActiveScopedPreviews(null, null);
   revokeArchiveAssetUrls();
   let controller: ReturnType<typeof createGitPreviewController> | null = null;
   try {
@@ -1657,6 +1740,7 @@ async function start() {
           const generation = beginRender();
           externalSourceNavigationController?.abort();
           externalSourceNavigationController = null;
+          replaceActiveScopedPreviews(null, null);
           gitPreview?.dispose();
           gitPreview = null;
           disposeSqlitePreview?.();

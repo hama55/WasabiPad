@@ -11,7 +11,10 @@ export interface ExternalOutputSource {
   url: string;
 }
 
-function assetUrlFromAbsolutePath(path: string): string {
+function assertAbsoluteExternalOutputPath(path: string): string {
+  if (typeof path !== "string" || !path) {
+    throw new Error("外部プレビュー生成物の絶対パスが空です");
+  }
   const normalized = path.replaceAll("\\", "/");
   if (normalized.startsWith("//")) {
     const [host, ...segments] = normalized.slice(2).split("/");
@@ -19,12 +22,27 @@ function assetUrlFromAbsolutePath(path: string): string {
   } else if (!/^[A-Za-z]:\//.test(normalized) && !normalized.startsWith("/")) {
     throw new Error("外部プレビュー生成物の絶対パスではありません");
   }
+  return normalized;
+}
+
+function assetUrlFromAbsolutePath(path: string): string {
+  const normalized = assertAbsoluteExternalOutputPath(path);
   const separatorIndex = normalized.lastIndexOf("/");
   let directory = normalized.slice(0, separatorIndex);
   if (!directory) directory = "/";
   else if (/^[A-Za-z]:$/.test(directory)) directory += "/";
   // Keep the filename as its own URL segment so relative assets resolve beside it.
   return `${convertFileSrc(directory)}/${encodeURIComponent(normalized.slice(separatorIndex + 1))}`;
+}
+
+function externalHtmlUrlFromPreviewId(previewId: string, path: string): string {
+  const normalized = assertAbsoluteExternalOutputPath(path);
+  if (!previewId) throw new Error("外部HTMLプレビューIDが空です");
+  const separatorIndex = normalized.lastIndexOf("/");
+  const fileName = normalized.slice(separatorIndex + 1);
+  if (!fileName) throw new Error("外部プレビュー生成物のファイル名が空です");
+  // Keep the filename as its own URL segment under the scoped wasabi-ext: preview id.
+  return `${convertFileSrc(previewId, "wasabi-ext")}/${encodeURIComponent(fileName)}`;
 }
 
 function outputFormatOf(path: string): ExternalOutputFormat {
@@ -34,12 +52,20 @@ function outputFormatOf(path: string): ExternalOutputFormat {
   throw new Error("外部プレビュー生成物はHTMLまたはSVGではありません");
 }
 
-export function resolveExternalOutputSource(absolutePath: string): ExternalOutputSource {
-  if (typeof absolutePath !== "string" || !absolutePath) {
-    throw new Error("外部プレビュー生成物の絶対パスが空です");
-  }
-  const url = assetUrlFromAbsolutePath(absolutePath);
+export function externalOutputFormatOf(absolutePath: string): ExternalOutputFormat {
+  assertAbsoluteExternalOutputPath(absolutePath);
+  return outputFormatOf(absolutePath);
+}
+
+export function resolveExternalOutputSource(
+  absolutePath: string,
+  previewId?: string,
+): ExternalOutputSource {
+  assertAbsoluteExternalOutputPath(absolutePath);
   const format = outputFormatOf(absolutePath);
+  const url = format === "html"
+    ? externalHtmlUrlFromPreviewId(previewId ?? "", absolutePath)
+    : assetUrlFromAbsolutePath(absolutePath);
   return {
     format,
     mimeType: format === "html" ? "text/html" : "image/svg+xml",
@@ -53,9 +79,11 @@ function fileNameOf(path: string): string {
 
 export function createTrustedExternalHtmlPreview(
   absolutePath: string,
+  previewId: string,
 ): { wrapper: HTMLDivElement; frame: HTMLIFrameElement } {
-  const source = resolveExternalOutputSource(absolutePath);
-  if (source.format !== "html") throw new Error("外部プレビュー生成物はHTML出力ではありません");
+  const format = externalOutputFormatOf(absolutePath);
+  if (format !== "html") throw new Error("外部プレビュー生成物はHTML出力ではありません");
+  const source = resolveExternalOutputSource(absolutePath, previewId);
 
   const wrapper = document.createElement("div");
   wrapper.className = "viewer-html-wrap";

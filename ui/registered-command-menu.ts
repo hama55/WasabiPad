@@ -3,12 +3,12 @@ import type * as api from "./api";
 import { basename } from "./path";
 import type { MenuItem } from "./menu";
 import { MENU_ICON } from "./menu-icons";
-import type { promptFields } from "./prompt";
+import type { confirmMessage, promptFields } from "./prompt";
 import {
   addRegisteredCommand,
   COMMAND_VALUE_TARGETS,
-  commandLineForValueWithClipboard,
   commandLineForValue,
+  commandRequiresShellConfirmation,
   commandsForKind,
   COPY_STRING_CLIPBOARD_PLACEHOLDER,
   removeRegisteredCommand,
@@ -23,6 +23,7 @@ import { flushSettings } from "./settings";
 
 export interface RegisteredCommandMenuPorts {
   promptFields: typeof promptFields;
+  confirmMessage?: typeof confirmMessage;
   runExternalCommand: typeof api.runExternalCommand;
   writeClipboardText?: (text: string) => Promise<void>;
 }
@@ -164,16 +165,32 @@ export function createRegisteredCommandMenu(
         iconClass: MENU_ICON.command,
         action: () => services.run(
           "登録コマンドを実行できませんでした",
-          async () => services.runExternalCommand(
-            await commandLineForValueWithClipboard(
-              command.prefix,
-              command.command,
-              await valueOf(target),
-              commandValueKind(target),
-              services.writeClipboardText,
-            ),
-            target.path,
-          ),
+          async () => {
+            const kind = commandValueKind(target);
+            const resolvedValue = await valueOf(target);
+            if (commandRequiresShellConfirmation(command.prefix, command.command, resolvedValue, kind)) {
+              const preview = commandLineForValue(command.prefix, command.command, resolvedValue, kind);
+              const confirm = services.confirmMessage;
+              if (!confirm) return;
+              const approved = await confirm(
+                "登録コマンドの実行確認",
+                `シェル特殊文字を含むため、実行内容を確認してください。\n\n${preview}`,
+                "実行",
+              );
+              if (!approved) return;
+            }
+            if (kind === "string" && command.command.includes(COPY_STRING_CLIPBOARD_PLACEHOLDER)) {
+              if (!services.writeClipboardText) throw new Error("クリップボードへコピーできません");
+              await services.writeClipboardText(resolvedValue);
+            }
+            await services.runExternalCommand({
+              prefix: command.prefix,
+              command: command.command,
+              value: resolvedValue,
+              valueKind: kind,
+              path: target.path,
+            });
+          },
         ),
         trailing: [
           {

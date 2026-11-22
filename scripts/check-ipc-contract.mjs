@@ -19,6 +19,7 @@ const generatedDocKind = read("ui/generated/DocKind.ts");
 const generatedViewerFormat = read("ui/generated/ViewerFormat.ts");
 const generatedIpcCommands = read("ui/generated/IpcCommands.ts");
 const capabilities = JSON.parse(read("src-tauri/capabilities/default.json"));
+const viewerCapabilities = JSON.parse(read("src-tauri/capabilities/viewer.json"));
 
 function fail(message) {
   throw new Error(`IPC contract mismatch: ${message}`);
@@ -279,8 +280,17 @@ if (unsupportedReadEncodings.length) {
 // 権限を失ったまま静かに開いてしまう
 const viewerLabelPrefix = backend.match(/format!\("([\w-]+)-\{\}"/)?.[1];
 if (!viewerLabelPrefix) fail("cannot find viewer window label prefix");
-if (!capabilities.windows.includes(`${viewerLabelPrefix}-*`)) {
-  fail(`viewer window capability; label prefix=${viewerLabelPrefix}-, windows=[${capabilities.windows.join(", ")}]`);
+if (!capabilities.windows.includes("main") || capabilities.windows.includes(`${viewerLabelPrefix}-*`)) {
+  fail(`main window capability must target only main; windows=[${capabilities.windows.join(", ")}]`);
+}
+if (!viewerCapabilities.windows.includes(`${viewerLabelPrefix}-*`) || viewerCapabilities.windows.includes("main")) {
+  fail(`viewer window capability; label prefix=${viewerLabelPrefix}-, windows=[${viewerCapabilities.windows.join(", ")}]`);
+}
+const forbiddenViewerPermissions = viewerCapabilities.permissions.filter((permission) =>
+  /^(?:dialog:|clipboard-manager:|core:path:)/.test(permission)
+);
+if (forbiddenViewerPermissions.length) {
+  fail(`viewer capability grants forbidden permissions: [${forbiddenViewerPermissions.join(", ")}]`);
 }
 
 console.log(`IPC contract OK: ${commands.length} commands, wire enums, and structs match.`);

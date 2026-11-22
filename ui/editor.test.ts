@@ -2152,10 +2152,13 @@ describe("Feature: VirtualEditor", () => {
     [...dropdown.querySelectorAll<HTMLElement>(".dd-submenu .dd-item")]
       .find((item) => item.textContent?.startsWith("VS Code"))!.click();
 
-    await vi.waitFor(() => expect(runExternalCommand).toHaveBeenCalledWith(
-      'code "C:\\work\\memo.md"',
-      "C:\\work\\memo.md",
-    ));
+    await vi.waitFor(() => expect(runExternalCommand).toHaveBeenCalledWith({
+      prefix: "",
+      command: 'code "{file}"',
+      value: "C:\\work\\memo.md",
+      valueKind: "file",
+      path: "C:\\work\\memo.md",
+    }));
   });
 
   // Feature: エディタの登録文字列
@@ -2296,10 +2299,13 @@ describe("Feature: VirtualEditor", () => {
     const commandItem = dropdown.querySelector<HTMLElement>(".dd-submenu .dd-item");
     commandItem?.click();
 
-    await vi.waitFor(() => expect(runExternalCommand).toHaveBeenCalledWith(
-      "open https%3A%2F%2Fexample.com",
-      "C:\\work\\memo.txt",
-    ));
+    await vi.waitFor(() => expect(runExternalCommand).toHaveBeenCalledWith({
+      prefix: "",
+      command: "open {string_in_url}",
+      value: "https://example.com",
+      valueKind: "string",
+      path: "C:\\work\\memo.txt",
+    }));
 
     runExternalCommand.mockRejectedValueOnce(new Error("command failed"));
     showContextMenu();
@@ -3707,4 +3713,46 @@ it("Scenario: source highlighting preserves the explicit replace-selection scope
     // Then: 明示した元範囲だけを置換し、表示用の音符は変更しない
     expect(doc.text()).toBe('needle hit hit needle');host.remove();
   } finally {vi.unstubAllGlobals();}
+});
+
+// Feature: 非同期置換と画像貼付の世代分離
+// Scenario: replaceAllや画像保存の待機中に別文書が開かれた場合は新文書へ結果を反映しない
+// Given: 進行中のreplaceAllChunkとsaveImageがある
+// When: 待機中にeditor.open()で新しい文書へ切り替わる
+// Then: onDocChangeやinsertTextが新文書に対して発火しない
+it("Scenario: drops stale replaceAll and image paste results after switching documents", async () => {
+  let resolveReplaceChunk!: (res: { count: number; done: boolean; caret: { line: number; col: number }; line_count: number }) => void;
+  let resolveSaveImage!: (src: string) => void;
+  const { editor, doc, events, host } = mount(
+    "alpha\nalpha",
+    () => new Promise<string>((resolve) => { resolveSaveImage = resolve; }),
+  );
+  try {
+    doc.client.replaceAllChunk = () => new Promise((resolve) => { resolveReplaceChunk = resolve; });
+    editor.open(2, false);
+    await settle();
+
+    // 1. Stale replaceAllChunk completion after open() must not touch the new document
+    const priv = editor as unknown as {
+      doReplaceAll: (pat: string, rep: string, mc: boolean) => Promise<number>;
+      insertImage: (bytes: number[], mimeType: string) => Promise<void>;
+    };
+    const replacing = priv.doReplaceAll("alpha", "beta", false);
+    await vi.waitFor(() => expect(resolveReplaceChunk).toBeDefined());
+    editor.open(1, false);
+    resolveReplaceChunk({ count: 2, done: true, caret: { line: 0, col: 4 }, line_count: 2 });
+    await expect(replacing).resolves.toBe(0);
+    expect(events.lineCount).toBe(0);
+
+    // 2. Stale saveImage completion after open() must not insert <img> into the new document
+    const pasting = priv.insertImage([137, 80, 78, 71], "image/png");
+    await vi.waitFor(() => expect(resolveSaveImage).toBeDefined());
+    editor.open(1, false);
+    resolveSaveImage("assets/pasted.png");
+    await pasting;
+    expect(doc.calls.filter((call) => call.startsWith("edit("))).toHaveLength(0);
+    expect(events.lineCount).toBe(0);
+  } finally {
+    host.remove();
+  }
 });

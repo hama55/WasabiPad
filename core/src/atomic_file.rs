@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 pub fn atomic_write(path: &Path, chunks: &[&[u8]]) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
+    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent)?;
     }
     let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
@@ -14,7 +14,9 @@ pub fn atomic_write(path: &Path, chunks: &[&[u8]]) -> io::Result<()> {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let temp = path.with_extension(format!("tmp-{}-{timestamp}-{id}", std::process::id()));
+    let mut temp_os = path.as_os_str().to_os_string();
+    temp_os.push(format!(".tmp-{}-{timestamp}-{id}", std::process::id()));
+    let temp = std::path::PathBuf::from(temp_os);
     let result = (|| {
         let mut file = OpenOptions::new()
             .create_new(true)
@@ -24,6 +26,7 @@ pub fn atomic_write(path: &Path, chunks: &[&[u8]]) -> io::Result<()> {
             file.write_all(chunk)?;
         }
         file.sync_all()?;
+        drop(file);
         replace_file(&temp, path)
     })();
     if result.is_err() {
@@ -88,5 +91,28 @@ mod tests {
 
         assert_eq!(std::fs::read(&path).unwrap(), b"new content");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    // Feature: 原子的な内部ファイル保存
+    // Scenario: 親ディレクトリを含まない相対ファイル名単体へ保存する
+    // Given: カレントディレクトリ基準の単一ファイル名パス
+    // When: atomic_write を呼ぶ
+    // Then: create_dir_all("") で失敗せず保存を完了する
+    #[test]
+    fn atomic_write_handles_bare_relative_filename() {
+        let unique = format!(
+            "wasabipad_bare_atomic_{}_{}.tmp",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let path = std::path::Path::new(&unique);
+        let result = atomic_write(path, &[b"ok"]);
+        let content = std::fs::read(path).ok();
+        let _ = std::fs::remove_file(path);
+        result.unwrap();
+        assert_eq!(content.as_deref(), Some(&b"ok"[..]));
     }
 }

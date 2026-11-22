@@ -12,6 +12,11 @@ pub(crate) enum FindStep {
 
 #[derive(Default)]
 pub(crate) struct ReplaceProgress {
+    pat: String,
+    rep: String,
+    match_case: bool,
+    use_regex: bool,
+    whole_word: bool,
     edits: Vec<Edit>,
     pos: Pos,
     find_cursor: Option<FindCursor>,
@@ -20,6 +25,34 @@ pub(crate) struct ReplaceProgress {
     collected_lines: usize,
     collected: bool,
     pub(crate) image_references: std::collections::HashSet<String>,
+}
+
+impl ReplaceProgress {
+    fn new(pat: &str, rep: &str, match_case: bool, use_regex: bool, whole_word: bool) -> Self {
+        Self {
+            pat: pat.to_string(),
+            rep: rep.to_string(),
+            match_case,
+            use_regex,
+            whole_word,
+            ..Self::default()
+        }
+    }
+
+    fn matches_query(
+        &self,
+        pat: &str,
+        rep: &str,
+        match_case: bool,
+        use_regex: bool,
+        whole_word: bool,
+    ) -> bool {
+        self.pat == pat
+            && self.rep == rep
+            && self.match_case == match_case
+            && self.use_regex == use_regex
+            && self.whole_word == whole_word
+    }
 }
 
 pub(crate) fn find(
@@ -85,7 +118,26 @@ pub(crate) fn replace_all_chunk(
     budget: usize,
 ) -> ReplaceResult {
     const SCAN_BUDGET: usize = 20_000;
-    let mut state = progress.take().unwrap_or_default();
+    let mut state = match progress.take() {
+        Some(existing) if existing.matches_query(pat, rep, match_case, use_regex, whole_word) => {
+            existing
+        }
+        Some(stale) => {
+            if stale.count > 0 {
+                undo.push(
+                    UndoEntry {
+                        edits: stale.edits,
+                        caret_before: Pos::default(),
+                        caret_after: stale.pos,
+                        image_references: stale.image_references,
+                    },
+                    false,
+                );
+            }
+            ReplaceProgress::new(pat, rep, match_case, use_regex, whole_word)
+        }
+        None => ReplaceProgress::new(pat, rep, match_case, use_regex, whole_word),
+    };
     if (use_regex || whole_word) && !state.collected {
         // Fix the matches before editing; reverse order preserves positions and zero-width matches.
         let last = (state.collected_lines + SCAN_BUDGET).min(buf.line_count());

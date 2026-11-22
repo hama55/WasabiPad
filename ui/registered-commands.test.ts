@@ -9,6 +9,7 @@ import { initSettings } from "./settings";
 import {
   addRegisteredCommand,
   commandLineForValue,
+  commandRequiresShellConfirmation,
   commandsForKind,
   removeRegisteredCommand,
   updateRegisteredCommands,
@@ -165,5 +166,25 @@ describe("Feature: registered commands", () => {
     expect(updateRegisteredCommands(commands, commands[0], {
       label: "Notepad", prefix: "", command: "code {file}",
     })).toBeNull();
+  });
+
+  // Given: 対象文字列に `{string}` や `{string_one_line}` リテラルが含まれる
+  // When: 複数プレースホルダを持つテンプレートへ単一パス置換する
+  // Then: 置換後の文字列が別プレースホルダとして二重置換されない
+  it("Scenario: 置換値に含まれるプレースホルダ文字列を二重展開しない", () => {
+    expect(commandLineForValue("", "open {string_one_line} {string}", "a\n{string}", "string"))
+      .toBe("open a {string} a\n{string}");
+    expect(commandLineForValue("", "open {string_in_url} {string_one_line}", "{string_one_line}", "string"))
+      .toBe("open %7Bstring_one_line%7D {string_one_line}");
+  });
+
+  // Given: シェル経由コマンドと直接実行コマンド、およびメタ文字を含む値
+  // When: commandRequiresShellConfirmation を判定する
+  // Then: シェルコマンドかつメタ文字含む生値置換時のみ確認を要求する
+  it("Scenario: シェルコマンドへのメタ文字置換のみ確認を要求する", () => {
+    expect(commandRequiresShellConfirmation("cmd.exe /D /C", "echo {file}", "C:\\work\\a & calc.txt", "file")).toBe(true);
+    expect(commandRequiresShellConfirmation("cmd.exe /D /C", "echo {file}", "C:\\work\\memo.txt", "file")).toBe(false);
+    expect(commandRequiresShellConfirmation("", "notepad.exe {file}", "C:\\work\\a & calc.txt", "file")).toBe(false);
+    expect(commandRequiresShellConfirmation("cmd.exe /D /C", 'start "" https://example.com/?q={string_in_url}', "a & b", "string")).toBe(false);
   });
 });

@@ -45,4 +45,16 @@ if (viewerTitle !== expectedViewerTitle) {
   throw new Error(`Viewer title mismatch: expected ${expectedViewerTitle}, received ${viewerTitle ?? "<not found>"}`);
 }
 
+for (const [name, csp] of [
+  ["csp", tauri.app.security.csp],
+  ["devCsp", tauri.app.security.devCsp],
+]) {
+  const frameSrc = String(csp?.["frame-src"] ?? "");
+  for (const forbidden of ["file:", "asset:", "asset.localhost"]) {
+    if (frameSrc.includes(forbidden)) {
+      throw new Error(`Security ${name}.frame-src must not allow ${forbidden}.`);
+    }
+  }
+}
+
 console.log(`Config OK: ${appName} version ${versions.package}, development port ${devPort}.`);

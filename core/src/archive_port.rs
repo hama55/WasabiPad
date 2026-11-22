@@ -4,16 +4,6 @@ use std::sync::Arc;
 
 pub(crate) const PASSWORD_ERROR_MARKER: &str = crate::protocol::PASSWORD_ERROR_MARKER;
 
-pub(crate) trait ArchiveWorkspacePort: Send {
-    fn path(&self) -> &Path;
-}
-
-impl ArchiveWorkspacePort for crate::sevenz::ArchiveWorkspace {
-    fn path(&self) -> &Path {
-        self.path()
-    }
-}
-
 // Doc が特定のアーカイバ実装へ直接依存しないための境界。
 // 実運用では7zを使うが、文書状態のテストや別アーカイバの追加では差し替えられる。
 pub(crate) trait ArchivePort: Send + Sync {
@@ -29,12 +19,11 @@ pub(crate) trait ArchivePort: Send + Sync {
     ) -> io::Result<bool>;
     fn is_password_error(&self, error: &io::Error) -> bool;
     fn cleanup_stale_workspaces(&self, parent: &Path) -> io::Result<()>;
-    fn new_workspace(&self, archive: &Path) -> io::Result<Box<dyn ArchiveWorkspacePort>>;
-    fn update(
+    fn update_bytes(
         &self,
         archive: &Path,
         entry: &str,
-        data_root: &Path,
+        bytes: &[u8],
         password: &str,
         header_encrypted: bool,
     ) -> io::Result<()>;
@@ -81,19 +70,15 @@ impl ArchivePort for SevenZipArchivePort {
         crate::sevenz::cleanup_stale_workspaces(parent)
     }
 
-    fn new_workspace(&self, archive: &Path) -> io::Result<Box<dyn ArchiveWorkspacePort>> {
-        Ok(Box::new(crate::sevenz::ArchiveWorkspace::new(archive)?))
-    }
-
-    fn update(
+    fn update_bytes(
         &self,
         archive: &Path,
         entry: &str,
-        data_root: &Path,
+        bytes: &[u8],
         password: &str,
         header_encrypted: bool,
     ) -> io::Result<()> {
-        crate::sevenz::update(archive, entry, data_root, password, header_encrypted)
+        crate::sevenz::update_bytes(archive, entry, bytes, password, header_encrypted)
     }
 
     fn delete(&self, archive: &Path, entries: &[String], password: &str) -> io::Result<()> {

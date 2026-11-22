@@ -35,7 +35,7 @@
         "worker-src": "'self'",
         "media-src": "'self' customprotocol: asset: http://asset.localhost",
         "img-src": "'self' asset: http://asset.localhost blob: data:",
-        "frame-src": "'self' asset: http://asset.localhost wasabi-html: http://wasabi-html.localhost blob: file:",
+        "frame-src": "'self' wasabi-html: http://wasabi-html.localhost wasabi-ext: http://wasabi-ext.localhost wasabi-pdf: http://wasabi-pdf.localhost blob:",
         "style-src": "'self' 'unsafe-inline'"
       },
       "devCsp": {
@@ -45,7 +45,7 @@
         "worker-src": "'self'",
         "media-src": "'self' http://localhost:5173 asset: http://asset.localhost",
         "img-src": "'self' asset: http://asset.localhost blob: data:",
-        "frame-src": "'self' asset: http://asset.localhost wasabi-html: http://wasabi-html.localhost blob: file:",
+        "frame-src": "'self' wasabi-html: http://wasabi-html.localhost wasabi-ext: http://wasabi-ext.localhost wasabi-pdf: http://wasabi-pdf.localhost blob:",
         "style-src": "'self' 'unsafe-inline'"
       }
     }

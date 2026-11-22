@@ -53,6 +53,7 @@ pub(crate) fn existing_output(input_path: &Path, format: ExternalPreviewFormat) 
 #[ts(rename_all = "camelCase")]
 #[ts(export)]
 pub struct ExternalPreviewRequest {
+    pub adapter_id: String,
     pub input_path: String,
     pub executable: String,
     pub args: Vec<String>,
@@ -341,6 +342,21 @@ impl ExternalPreviewOperations {
                 }
             }
         }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn is_managed_output(&self, output_path: &Path) -> bool {
+        let Ok(canonical_target) = fs::canonicalize(output_path) else {
+            return false;
+        };
+        let Ok(jobs) = self.jobs.lock() else {
+            return false;
+        };
+        jobs.completed.values().any(|completed| {
+            completed.output_path == output_path
+                || fs::canonicalize(&completed.output_path)
+                    .is_ok_and(|canonical| canonical == canonical_target)
+        })
     }
 
     pub(crate) fn guard(&self, request_id: String, cancelled: Arc<AtomicBool>) -> ActiveJobGuard {
@@ -694,9 +710,26 @@ fn validate_executable(executable: &Path) -> Result<(), String> {
 }
 
 fn replace_template(template: &str, input_path: &Path, output_path: &Path) -> String {
-    template
-        .replace("{file}", &input_path.to_string_lossy())
-        .replace("{output}", &output_path.to_string_lossy())
+    let input = input_path.to_string_lossy();
+    let output = output_path.to_string_lossy();
+    let mut result = String::with_capacity(template.len());
+    let mut rest = template;
+    while !rest.is_empty() {
+        if let Some(after) = rest.strip_prefix("{file}") {
+            result.push_str(&input);
+            rest = after;
+        } else if let Some(after) = rest.strip_prefix("{output}") {
+            result.push_str(&output);
+            rest = after;
+        } else {
+            let step = rest.chars().next().map(char::len_utf8).unwrap_or(1);
+            let next_brace = rest[step..].find('{').map(|offset| offset + step);
+            let split_at = next_brace.unwrap_or(rest.len());
+            result.push_str(&rest[..split_at]);
+            rest = &rest[split_at..];
+        }
+    }
+    result
 }
 
 struct JobDirectory {
@@ -889,4 +922,26 @@ fn validate_request_id(request_id: &str) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod template_tests {
+    use super::replace_template;
+    use std::path::Path;
+
+    // Feature: 外部プレビュー引数の単一パス置換
+    // Scenario: 入力ファイル名に `{output}` を含むパスを置換する
+    // Given: `{file}` に `{output}` リテラルを含む入力パスと日本語を含む引数テンプレート
+    // When: replace_template で置換する
+    // Then: 入力パス内の `{output}` は二重置換されず、マルチバイト文字も安全に保たれる
+    #[test]
+    fn replaces_placeholders_in_a_single_pass_without_double_expansion() {
+        let input = Path::new(r"C:\work\{output}\曲.abc");
+        let output = Path::new(r"C:\temp\job\index.html");
+        let resolved = replace_template("入力={file} -> 出力={output}", input, output);
+        assert_eq!(
+            resolved,
+            r"入力=C:\work\{output}\曲.abc -> 出力=C:\temp\job\index.html"
+        );
+    }
 }

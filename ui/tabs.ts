@@ -577,7 +577,7 @@ export class TabManager {
   }
 
   private runNavigationCommand(operation: () => Promise<boolean>): Promise<boolean> {
-    if (this.navigationBusy) return Promise.resolve(false);
+    if (this.navigationBusy || this.transitionTarget) return Promise.resolve(false);
     this.navigationBusy = true;
     const navigation = operation().finally(() => {
       this.navigationBusy = false;
@@ -724,44 +724,61 @@ export class TabManager {
 
   async close(id: string) {
     if (id === this.activeId) await this.interruptTabOpen();
+    if (this.navigationBusy || this.transitionTarget) return;
     if (this.tabs.length === 1) {
       if (id !== this.activeId) return;
-      this.rememberActiveView();
-      if (id === this.activeId && !(await this.doc.confirmDiscard())) return;
-      this.syncActive(this.doc.current);
-      const closed = { tab: this.state.tabs[0], index: 0 };
-      const replacement = await this.blankTab(null);
-      this.workspaceStates.delete(id);
-      this.findHighlightStates.delete(id);
-      await this.commitTransition(async () => {
-        this.tabs = [replacement];
-        this.activeId = this.tabs[0].id;
-        await this.doc.newFile(false, replacement.draftDirectory ?? null);
-        this.ports.findHighlight?.restore(null);
-      });
-      this.closedTabs.push({ ...closed, replacementId: replacement.id });
+      this.transitionTarget = id;
+      try {
+        this.rememberActiveView();
+        if (id === this.activeId && !(await this.doc.confirmDiscard())) return;
+        if (this.tabs.length !== 1 || this.tabs[0].id !== id) return;
+        this.syncActive(this.doc.current);
+        const closed = { tab: this.state.tabs[0], index: 0 };
+        const replacement = await this.blankTab(null);
+        if (this.tabs.length !== 1 || this.tabs[0].id !== id) return;
+        this.workspaceStates.delete(id);
+        this.findHighlightStates.delete(id);
+        await this.commitTransition(async () => {
+          this.tabs = [replacement];
+          this.activeId = this.tabs[0].id;
+          await this.doc.newFile(false, replacement.draftDirectory ?? null);
+          this.ports.findHighlight?.restore(null);
+        });
+        this.closedTabs.push({ ...closed, replacementId: replacement.id });
+      } finally {
+        if (this.transitionTarget === id) this.transitionTarget = null;
+      }
       return;
     }
-    const index = this.tabs.findIndex((tab) => tab.id === id);
-    if (index < 0) return;
+    const initialIndex = this.tabs.findIndex((tab) => tab.id === id);
+    if (initialIndex < 0) return;
     if (id === this.activeId) {
-      this.rememberActiveView();
-      if (!(await this.doc.confirmDiscard())) return;
-      this.syncActive(this.doc.current);
-      const closed = { tab: this.state.tabs[index], index };
-      this.workspaceStates.delete(id);
-      this.findHighlightStates.delete(id);
-      await this.commitTransition(async () => {
-        this.tabs.splice(index, 1);
-        this.activateTabAfterRemoval(index);
-        await this.loadActive();
-      });
-      this.closedTabs.push(closed);
+      this.transitionTarget = id;
+      try {
+        this.rememberActiveView();
+        if (!(await this.doc.confirmDiscard())) return;
+        const currentIndex = this.tabs.findIndex((tab) => tab.id === id);
+        if (currentIndex < 0) return;
+        this.syncActive(this.doc.current);
+        const closed = { tab: this.state.tabs[currentIndex], index: currentIndex };
+        this.workspaceStates.delete(id);
+        this.findHighlightStates.delete(id);
+        await this.commitTransition(async () => {
+          const removeIndex = this.tabs.findIndex((tab) => tab.id === id);
+          if (removeIndex < 0) return false;
+          this.tabs.splice(removeIndex, 1);
+          this.activateTabAfterRemoval(removeIndex);
+          await this.loadActive();
+        });
+        this.closedTabs.push(closed);
+      } finally {
+        if (this.transitionTarget === id) this.transitionTarget = null;
+      }
     } else {
-      const closed = { tab: this.state.tabs[index], index };
+      const closed = { tab: this.state.tabs[initialIndex], index: initialIndex };
       this.workspaceStates.delete(id);
       this.findHighlightStates.delete(id);
-      this.tabs.splice(index, 1);
+      this.tabs.splice(initialIndex, 1);
       this.renderAndPersist();
       this.closedTabs.push(closed);
     }
@@ -801,7 +818,7 @@ export class TabManager {
       if (reopened) this.closedTabs.pop();
       return reopened;
     } finally {
-      this.transitionTarget = null;
+      if (this.transitionTarget === closed.tab.id) this.transitionTarget = null;
     }
   }
 
@@ -835,6 +852,8 @@ export class TabManager {
     tab: StoredTab,
     insert: (tabs: StoredTab[]) => boolean,
   ): Promise<boolean> {
+    if (this.cancellingOpen || this.pendingTabOpen) await this.interruptTabOpen();
+    if (this.navigationBusy || this.transitionTarget) return false;
     this.transitionTarget = tab.id;
     let activated = false;
     try {
@@ -848,7 +867,7 @@ export class TabManager {
       });
       return proceeded && activated;
     } finally {
-      this.transitionTarget = null;
+      if (this.transitionTarget === tab.id) this.transitionTarget = null;
     }
   }
 
@@ -1129,18 +1148,28 @@ export class TabManager {
   }
 
   private async keepOnly(id: string) {
+    if (!this.tabs.some((tab) => tab.id === id)) return;
     if (!await this.activate(id)) return;
+    if (this.navigationBusy || this.transitionTarget) return;
+    if (this.activeId !== id || !this.tabs.some((tab) => tab.id === id)) return;
     this.closeMatchingTabs((tab) => tab.id !== id);
   }
 
   private async closeRight(id: string) {
-    const index = this.tabs.findIndex((tab) => tab.id === id);
+    const initialIndex = this.tabs.findIndex((tab) => tab.id === id);
+    if (initialIndex < 0) return;
     const activeIndex = this.tabs.findIndex((tab) => tab.id === this.activeId);
-    if (activeIndex > index && !await this.activate(id)) return;
-    this.closeMatchingTabs((_tab, candidateIndex) => candidateIndex > index);
+    if (activeIndex > initialIndex && !await this.activate(id)) return;
+    if (this.navigationBusy || this.transitionTarget) return;
+    const currentIndex = this.tabs.findIndex((tab) => tab.id === id);
+    if (currentIndex < 0) return;
+    const currentActiveIndex = this.tabs.findIndex((tab) => tab.id === this.activeId);
+    if (currentActiveIndex > currentIndex) return;
+    this.closeMatchingTabs((_tab, candidateIndex) => candidateIndex > currentIndex);
   }
 
   private async closeSaved(keepId: string) {
+    if (this.navigationBusy || this.transitionTarget) return;
     this.closeMatchingTabs((tab) => tab.id !== keepId && tab.id !== this.activeId && tab.kind !== "blank");
   }
 
@@ -1166,6 +1195,7 @@ export class TabManager {
   }
 
   private moveTab(sourceId: string, spot: TabDropSpot | null) {
+    if (this.navigationBusy || this.transitionTarget) return;
     if (!spot || spot.targetId === sourceId) return;
     const source = this.tabs.findIndex((tab) => tab.id === sourceId);
     if (source < 0) return;
@@ -1186,39 +1216,48 @@ export class TabManager {
   }
 
   private async detachTab(id: string) {
-    const index = this.tabs.findIndex((tab) => tab.id === id);
-    if (index < 0) return;
-    const wasActive = id === this.activeId;
-    if (wasActive && !(await this.doc.confirmDiscard())) return;
-    if (wasActive) {
-      this.rememberActiveView();
-    }
-    const tab = this.tabs.find((item) => item.id === id);
-    if (!tab || !this.ports.onDetach || !await this.ports.onDetach({
-      secondary: true,
-      path: tab.path,
-      goto: tab.viewState ? null : tab.goto ?? null,
-      selectedRelPath: tab.selectedRelPath ?? null,
-      viewState: tab.viewState ?? null,
-    })) return;
-    this.workspaceStates.delete(id);
-    this.findHighlightStates.delete(id);
-    this.tabs.splice(this.tabs.indexOf(tab), 1);
-    if (!wasActive) {
+    if (id === this.activeId) await this.interruptTabOpen();
+    if (this.navigationBusy || this.transitionTarget) return;
+    if (!this.tabs.some((tab) => tab.id === id)) return;
+    this.transitionTarget = id;
+    try {
+      const wasActive = id === this.activeId;
+      if (wasActive && !(await this.doc.confirmDiscard())) return;
+      if (wasActive) {
+        this.rememberActiveView();
+      }
+      const tab = this.tabs.find((item) => item.id === id);
+      if (!tab || !this.ports.onDetach || !await this.ports.onDetach({
+        secondary: true,
+        path: tab.path,
+        goto: tab.viewState ? null : tab.goto ?? null,
+        selectedRelPath: tab.selectedRelPath ?? null,
+        viewState: tab.viewState ?? null,
+      })) return;
+      const removeIndex = this.tabs.findIndex((item) => item.id === id);
+      if (removeIndex < 0) return;
+      const stillActive = id === this.activeId;
+      this.workspaceStates.delete(id);
+      this.findHighlightStates.delete(id);
+      this.tabs.splice(removeIndex, 1);
+      if (!stillActive) {
+        this.renderAndPersist();
+        return;
+      }
+      if (this.tabs.length === 0) {
+        const blank = this.link(null);
+        this.tabs = [blank];
+        this.activeId = blank.id;
+        await this.doc.newFile(false);
+        this.ports.findHighlight?.restore(null);
+      } else {
+        this.activateTabAfterRemoval(removeIndex);
+        await this.loadActive();
+      }
       this.renderAndPersist();
-      return;
+    } finally {
+      if (this.transitionTarget === id) this.transitionTarget = null;
     }
-    if (this.tabs.length === 0) {
-      const blank = this.link(null);
-      this.tabs = [blank];
-      this.activeId = blank.id;
-      await this.doc.newFile(false);
-      this.ports.findHighlight?.restore(null);
-    } else {
-      this.activateTabAfterRemoval(index);
-      await this.loadActive();
-    }
-    this.renderAndPersist();
   }
 
   private activateTabAfterRemoval(index: number) {

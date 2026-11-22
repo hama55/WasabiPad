@@ -3,9 +3,10 @@ use wasabipad_core::Doc;
 
 pub(crate) struct DocState(pub(crate) Doc);
 
-// SAFETY: Doc is owned exclusively here and every access goes through the
-// Mutex-backed Tauri State. HugeBuf pointers never escape a locked operation.
-unsafe impl Send for DocState {}
+const _: fn() = || {
+    fn assert_send<T: Send>() {}
+    assert_send::<DocState>();
+};
 
 pub(crate) type State<'a> = tauri::State<'a, Mutex<DocState>>;
 

@@ -116,6 +116,9 @@ export class Sidebar {
   private selectionAnchor: string | null = null;
   private selectionRequest = 0;
   private openRequest = 0;
+  private refreshRequest = 0;
+  private treeStructureGeneration = 0;
+  private activeTreeOps = 0;
   private keyboardFocusLock = false;
   private keyboardFocusRequests = new Set<number>();
   private onSelect: (relPath: string, newTab: boolean) => void | Promise<boolean | void>;
@@ -257,6 +260,8 @@ export class Sidebar {
 
   setWorkspaceSearch(folderRoot: string | null) {
     this.selectionRequest++;
+    this.refreshRequest++;
+    this.treeStructureGeneration++;
     this.invalidateOpenRequests();
     if (folderRoot !== this.workspaceRoot) {
       this.managedDropUndo = false;
@@ -291,6 +296,8 @@ export class Sidebar {
 
   resetViewState() {
     this.selectionRequest++;
+    this.refreshRequest++;
+    this.treeStructureGeneration++;
     this.invalidateOpenRequests();
     this.panel.resetViewState(this.defaultSearchOptions);
     this.workspaceRoot = null;
@@ -306,21 +313,29 @@ export class Sidebar {
     if (!state || state.kind === null || state.kind !== this.viewKind) return;
     const request = ++this.selectionRequest;
     const paths = [...state.expandedRelPaths].sort((a, b) => pathDepth(a) - pathDepth(b));
-    for (const relPath of paths) {
-      if (request !== this.selectionRequest) return;
-      const row = this.rows.find((candidate) => candidate.relPath === relPath);
-      if (!row || !isExpandable(row)) continue;
-      const revision = this.expansionRevision.get(row) ?? 0;
-      if (!await this.ensureChildrenLoaded(row, request)) return;
-      if (request !== this.selectionRequest) return;
-      if ((this.expansionRevision.get(row) ?? 0) === revision) row.expanded = true;
+    this.activeTreeOps++;
+    try {
+      for (const relPath of paths) {
+        if (request !== this.selectionRequest) return;
+        const row = this.rows.find((candidate) => candidate.relPath === relPath);
+        if (!row || !isExpandable(row)) continue;
+        const revision = this.expansionRevision.get(row) ?? 0;
+        if (!await this.ensureChildrenLoaded(row, request)) return;
+        if (request !== this.selectionRequest) return;
+        if ((this.expansionRevision.get(row) ?? 0) === revision && !row.expanded) {
+          row.expanded = true;
+          this.treeStructureGeneration++;
+        }
+      }
+      if (state.kind === "folder" && state.search) {
+        const search = await this.filterSearchViewState(state.search, request);
+        if (request !== this.selectionRequest || !search) return;
+        this.panel.restoreViewState(search);
+      }
+      if (request === this.selectionRequest) this.render();
+    } finally {
+      this.activeTreeOps--;
     }
-    if (state.kind === "folder" && state.search) {
-      const search = await this.filterSearchViewState(state.search, request);
-      if (request !== this.selectionRequest || !search) return;
-      this.panel.restoreViewState(search);
-    }
-    if (request === this.selectionRequest) this.render();
   }
 
   private async filterSearchViewState(
@@ -427,6 +442,8 @@ export class Sidebar {
     this.viewKind = "folder";
     this.renamingRelPath = null;
     this.selectionRequest++;
+    this.refreshRequest++;
+    this.treeStructureGeneration++;
     this.invalidateOpenRequests();
     this.metadataGeneration++;
     this.metadata.clear();
@@ -439,9 +456,9 @@ export class Sidebar {
   }
 
   async refreshFolderEntries() {
-    if (this.renamingRelPath) return;
-    const request = ++this.selectionRequest;
-    this.invalidateOpenRequests();
+    if (this.renamingRelPath || this.activeTreeOps > 0 || this.viewKind !== "folder") return;
+    const request = ++this.refreshRequest;
+    const structureGen = this.treeStructureGeneration;
     const oldRows = [...this.rows];
     const oldTreeState = oldRows.map(row => ({ expanded: row.expanded, childrenLoaded: row.childrenLoaded }));
     const oldByPath = new Map(oldRows.map((row) => [row.relPath, row]));
@@ -472,7 +489,15 @@ export class Sidebar {
     };
 
     const rows = await rebuild(await this.onExpandFolder(""), 0, "");
-    if (request !== this.selectionRequest || this.renamingRelPath || this.rows.length !== oldRows.length || oldRows.some((row, i) => this.rows[i] !== row || row.expanded !== oldTreeState[i].expanded || row.childrenLoaded !== oldTreeState[i].childrenLoaded)) return;
+    if (
+      request !== this.refreshRequest
+      || structureGen !== this.treeStructureGeneration
+      || this.activeTreeOps > 0
+      || this.viewKind !== "folder"
+      || this.renamingRelPath
+      || this.rows.length !== oldRows.length
+      || oldRows.some((row, i) => this.rows[i] !== row || row.expanded !== oldTreeState[i].expanded || row.childrenLoaded !== oldTreeState[i].childrenLoaded)
+    ) return;
     const changed = rows.length !== oldRows.length || rows.some((row, i) => {
       const old = oldRows[i];
       return !old || row.relPath !== old.relPath || row.kind !== old.kind || row.depth !== old.depth || row.label !== old.label || row.expanded !== old.expanded || row.childrenLoaded !== old.childrenLoaded;
@@ -494,6 +519,8 @@ export class Sidebar {
     this.viewKind = "archive";
     this.renamingRelPath = null;
     this.selectionRequest++;
+    this.refreshRequest++;
+    this.treeStructureGeneration++;
     this.invalidateOpenRequests();
     this.metadataGeneration++;
     this.metadata.clear();
@@ -571,6 +598,8 @@ export class Sidebar {
     this.viewKind = "archive";
     this.renamingRelPath = null;
     this.selectionRequest++;
+    this.refreshRequest++;
+    this.treeStructureGeneration++;
     this.invalidateOpenRequests();
     this.managedDropUndo = false;
     this.rows = [{ label: displayName, relPath: "", depth: 0, kind: "archive", expanded: false, childrenLoaded: false }];
@@ -599,6 +628,7 @@ export class Sidebar {
     if (relDir && !row) return;
     const request = ++this.selectionRequest;
     const start = row ? this.rows.indexOf(row) : 0;
+    this.activeTreeOps++;
     try {
       for (let i = start; i < this.rows.length; i++) {
         const current = this.rows[i];
@@ -606,12 +636,17 @@ export class Sidebar {
         if (!isExpandable(current)) continue;
         if (!await this.ensureChildrenLoaded(current, request)) return;
         if (request !== this.selectionRequest) return;
-        current.expanded = true;
+        if (!current.expanded) {
+          current.expanded = true;
+          this.treeStructureGeneration++;
+        }
       }
       if (request === this.selectionRequest) this.render();
     } catch (error) {
       if (request === this.selectionRequest) this.render();
       throw error;
+    } finally {
+      this.activeTreeOps--;
     }
   }
 
@@ -626,47 +661,65 @@ export class Sidebar {
       this.selectionAnchor = relPath;
       return;
     }
-    const parts = relPath.split("/");
-    for (let depth = 1; depth < parts.length; depth++) {
-      if (request !== this.selectionRequest) return;
-      const parent = parts.slice(0, depth).join("/");
-      const row = this.rows.find((candidate) => candidate.kind === "dir" && candidate.relPath === parent);
-      if (!row) return;
-      if (!row.childrenLoaded) await this.expandFolderRow(row, request);
-      else if (!row.expanded) {
+    this.activeTreeOps++;
+    try {
+      const parts = relPath.split("/");
+      for (let depth = 1; depth < parts.length; depth++) {
         if (request !== this.selectionRequest) return;
-        row.expanded = true;
-        this.render();
+        const parent = parts.slice(0, depth).join("/");
+        const row = this.rows.find((candidate) => candidate.kind === "dir" && candidate.relPath === parent);
+        if (!row) return;
+        if (!row.childrenLoaded) await this.expandFolderRow(row, request);
+        else if (!row.expanded) {
+          if (request !== this.selectionRequest) return;
+          row.expanded = true;
+          this.treeStructureGeneration++;
+          this.render();
+        }
       }
+      if (request !== this.selectionRequest) return;
+      const row = this.rows.find((candidate) => candidate.kind !== "dir" && candidate.relPath === relPath);
+      if (!row) return;
+      this.sel = row.relPath;
+      this.selected = new Set([row.relPath]);
+      this.selectionAnchor = row.relPath;
+      this.render();
+    } finally {
+      this.activeTreeOps--;
     }
-    if (request !== this.selectionRequest) return;
-    const row = this.rows.find((candidate) => candidate.kind !== "dir" && candidate.relPath === relPath);
-    if (!row) return;
-    this.sel = row.relPath;
-    this.selected = new Set([row.relPath]);
-    this.selectionAnchor = row.relPath;
-    this.render();
   }
 
   private async expandArchiveRow(r: Row) {
     const request = this.selectionRequest;
     const revision = this.expansionRevision.get(r) ?? 0;
     const expanded = !r.expanded;
-    if (expanded && !await this.ensureChildrenLoaded(r, request)) return;
-    if (request !== this.selectionRequest) return;
-    if ((this.expansionRevision.get(r) ?? 0) !== revision) return;
-    r.expanded = expanded;
-    this.render();
+    this.activeTreeOps++;
+    try {
+      if (expanded && !await this.ensureChildrenLoaded(r, request)) return;
+      if (request !== this.selectionRequest) return;
+      if ((this.expansionRevision.get(r) ?? 0) !== revision) return;
+      r.expanded = expanded;
+      this.treeStructureGeneration++;
+      this.render();
+    } finally {
+      this.activeTreeOps--;
+    }
   }
 
   private async expandFolderRow(r: Row, request = this.selectionRequest) {
     const revision = this.expansionRevision.get(r) ?? 0;
     const expanded = !r.expanded;
-    if (expanded && !await this.ensureChildrenLoaded(r, request)) return;
-    if (request !== this.selectionRequest) return;
-    if ((this.expansionRevision.get(r) ?? 0) !== revision) return;
-    r.expanded = expanded;
-    this.render();
+    this.activeTreeOps++;
+    try {
+      if (expanded && !await this.ensureChildrenLoaded(r, request)) return;
+      if (request !== this.selectionRequest) return;
+      if ((this.expansionRevision.get(r) ?? 0) !== revision) return;
+      r.expanded = expanded;
+      this.treeStructureGeneration++;
+      this.render();
+    } finally {
+      this.activeTreeOps--;
+    }
   }
 
   private async ensureChildrenLoaded(r: Row, request: number): Promise<boolean> {
@@ -682,6 +735,7 @@ export class Sidebar {
     if (r.childrenLoaded) return true;
     this.rows.splice(index + 1, 0, ...children);
     r.childrenLoaded = true;
+    this.treeStructureGeneration++;
     if (r.kind === "dir") this.refreshMetadata();
     return true;
   }
@@ -693,6 +747,7 @@ export class Sidebar {
     }
     const previousSelection = this.sel;
     this.selectionRequest++;
+    this.treeStructureGeneration++;
     this.rows.forEach((row) => {
       if (isExpandable(row)) row.expanded = false;
     });

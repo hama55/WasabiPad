@@ -161,12 +161,13 @@ pub(crate) fn image_references_in_lines(buf: &TextBuffer, first: usize, last: us
     // The buffer index avoids scanning ordinary documents on each keystroke.
     if let Some(opening) = buf.preceding_image_tag_line(first) {
         let mut prefix = buf.line(opening).into_owned();
-        let start = prefix.to_ascii_lowercase().rfind("<img").unwrap();
-        let mut end_line = opening;
-        while end_line < first && image_tag_end(&prefix[start..]).is_none() {
-            end_line += 1; prefix.push('\n'); prefix.push_str(&buf.line(end_line));
+        if let Some(start) = prefix.to_ascii_lowercase().rfind("<img") {
+            let mut end_line = opening;
+            while end_line < first && image_tag_end(&prefix[start..]).is_none() {
+                end_line += 1; prefix.push('\n'); prefix.push_str(&buf.line(end_line));
+            }
+            if end_line == first { first = opening; }
         }
-        if end_line == first { first = opening; }
     }
     let mut block = (first..=last).map(|line| buf.line(line)).collect::<Vec<_>>().join("\n");
     if let Some(start) = block.to_ascii_lowercase().rfind("<img") {

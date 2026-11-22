@@ -92,6 +92,8 @@ impl Eol {
 }
 
 pub const MMAP_THRESHOLD: u64 = 100 * 1024 * 1024;
+pub const MAX_ARCHIVE_BYTES: u64 = 256 * 1024 * 1024;
+pub const MAX_UTF16_BYTES: u64 = 256 * 1024 * 1024;
 pub type LoadProgress<'a> = dyn FnMut(u64, u64) + 'a;
 
 // 外部変更検知用のスナップショット。ハンドルを保持しない文書は開いた時点で記録し、
@@ -165,6 +167,33 @@ pub(crate) fn is_binary_bytes(bytes: &[u8]) -> bool {
     had_errors
 }
 
+pub(crate) fn is_binary_for_encoding(bytes: &[u8], enc: Encoding) -> bool {
+    match enc {
+        Encoding::Utf16Le => {
+            let body = bytes.strip_prefix(&[0xFF, 0xFE]).unwrap_or(bytes);
+            if !body.len().is_multiple_of(2) {
+                return true;
+            }
+            if body.chunks_exact(2).any(|unit| unit == [0x00, 0x00]) {
+                return true;
+            }
+            let (_, _, had_errors) = encoding_rs::UTF_16LE.decode(body);
+            had_errors
+        }
+        Encoding::Utf8 { .. } => {
+            let body = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
+            body.contains(&0) || std::str::from_utf8(body).is_err()
+        }
+        Encoding::ShiftJis => {
+            if bytes.contains(&0) {
+                return true;
+            }
+            let (_, _, had_errors) = SHIFT_JIS.decode(bytes);
+            had_errors
+        }
+    }
+}
+
 fn opened_from_entries(entries: Vec<crate::ziptext::Entry>, source_file: File) -> Opened {
     let byte_len = entries[0].text.len() as u64;
     Opened {
@@ -191,6 +220,21 @@ pub fn read_locked(file: &File) -> io::Result<Vec<u8>> {
     f.seek(SeekFrom::Start(0))?;
     let mut bytes = Vec::new();
     f.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+pub fn read_locked_limit(file: &File, max_bytes: u64, message: &str) -> io::Result<Vec<u8>> {
+    let mut f = file.try_clone()?;
+    if f.metadata()?.len() > max_bytes {
+        return Err(io::Error::new(io::ErrorKind::FileTooLarge, message));
+    }
+    f.seek(SeekFrom::Start(0))?;
+    let mut bytes = Vec::new();
+    f.take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(io::Error::new(io::ErrorKind::FileTooLarge, message));
+    }
     Ok(bytes)
 }
 
@@ -237,7 +281,7 @@ fn open_buffer_impl_with_progress(
         return Ok(opened);
     }
     if !is_archive_handle(&probe) && (len == 0 || len < threshold) {
-        return read_released(probe, len, |b| Ok(decode(b)));
+        return read_released(probe, len, None, |b| Ok(decode(b)));
     }
     drop(probe);
 
@@ -246,12 +290,17 @@ fn open_buffer_impl_with_progress(
     let len = source_file.metadata()?.len();
     if is_archive_handle(&source_file) {
         // ZIP (xlsx/docx/zip) と CFB (.xls) はフォルダビューで開く
-        let bytes = read_locked(&source_file)?;
+        let bytes = read_locked_limit(
+            &source_file,
+            MAX_ARCHIVE_BYTES,
+            "256MBを超えるアーカイブは直接展開できません",
+        )?;
         if let Some(v) = crate::archive::parse(&bytes) {
             return Ok(opened_from_entries(v, source_file));
         }
         // シグネチャはあるが解析不能 → 通常テキストとして扱う
-        let (text, enc, is_binary) = decode_with_binary_state(&bytes, |bytes| Ok(decode(bytes)))?;
+        let (text, enc, is_binary) =
+            decode_with_binary_state(&bytes, None, |bytes| Ok(decode(bytes)))?;
         let eol = detect_eol(&text);
         return Ok(Opened {
             buf: TextBuffer::from_text(&text),
@@ -287,8 +336,13 @@ fn open_buffer_impl_with_progress(
             });
         }
     }
-    let bytes = read_locked(&source_file)?;
-    let (text, enc, is_binary) = decode_with_binary_state(&bytes, |bytes| Ok(decode(bytes)))?;
+    let bytes = read_locked_limit(
+        &source_file,
+        MAX_UTF16_BYTES,
+        "256MBを超えるUTF-16LEファイルは読み込めません",
+    )?;
+    let (text, enc, is_binary) =
+        decode_with_binary_state(&bytes, None, |bytes| Ok(decode(bytes)))?;
     let eol = detect_eol(&text);
     Ok(Opened {
         buf: TextBuffer::from_text(&text),
@@ -307,12 +361,13 @@ fn open_buffer_impl_with_progress(
 fn read_released(
     probe: File,
     len: u64,
+    forced_encoding: Option<Encoding>,
     decode_fn: impl FnOnce(&[u8]) -> io::Result<(String, Encoding)>,
 ) -> io::Result<Opened> {
     let stamp = stamp_of(&probe)?;
     let bytes = read_locked(&probe)?;
     drop(probe);
-    let (text, enc, is_binary) = decode_with_binary_state(&bytes, decode_fn)?;
+    let (text, enc, is_binary) = decode_with_binary_state(&bytes, forced_encoding, decode_fn)?;
     let eol = detect_eol(&text);
     Ok(Opened {
         buf: TextBuffer::from_text(&text),
@@ -360,9 +415,13 @@ pub(crate) fn sanitize_binary_text(text: String) -> String {
 
 fn decode_with_binary_state(
     bytes: &[u8],
+    forced_encoding: Option<Encoding>,
     decode_fn: impl FnOnce(&[u8]) -> io::Result<(String, Encoding)>,
 ) -> io::Result<(String, Encoding, bool)> {
-    let is_binary = is_binary_bytes(bytes);
+    let is_binary = match forced_encoding {
+        Some(enc) => is_binary_for_encoding(bytes, enc),
+        None => is_binary_bytes(bytes),
+    };
     let (text, enc) = decode_fn(bytes)?;
     let text = if is_binary { sanitize_binary_text(text) } else { text };
     Ok((text, enc, is_binary))
@@ -403,7 +462,6 @@ fn open_buffer_as_impl_with_progress(
     threshold: u64,
     mut progress: Option<&mut LoadProgress<'_>>,
 ) -> io::Result<Opened> {
-    const MAX_UTF16_BYTES: u64 = 256 * 1024 * 1024;
     let probe = File::open(path)?;
     if let Some(opened) = open_video_metadata(path, &probe)? {
         return Ok(opened);
@@ -422,7 +480,7 @@ fn open_buffer_as_impl_with_progress(
         ));
     }
     if len == 0 || len < threshold {
-        return read_released(probe, len, |b| decode_as(b, requested));
+        return read_released(probe, len, Some(requested), |b| decode_as(b, requested));
     }
     drop(probe);
     let source_file = open_exclusive(path)?;
@@ -444,9 +502,13 @@ fn open_buffer_as_impl_with_progress(
             stamp: None,
         });
     }
-    let bytes = read_locked(&source_file)?;
+    let bytes = read_locked_limit(
+        &source_file,
+        MAX_UTF16_BYTES,
+        "256MBを超えるUTF-16LEファイルは指定再読込できません",
+    )?;
     let (text, enc, is_binary) =
-        decode_with_binary_state(&bytes, |bytes| decode_as(bytes, requested))?;
+        decode_with_binary_state(&bytes, Some(requested), |bytes| decode_as(bytes, requested))?;
     let eol = detect_eol(&text);
     Ok(Opened {
         buf: TextBuffer::from_text(&text),
@@ -666,6 +728,16 @@ pub fn begin_save(
         return Err(error);
     }
     Ok(SaveTransaction { temp: Some(tmp) })
+}
+
+pub fn encode_buffer_to_bytes(
+    buf: &TextBuffer,
+    enc: Encoding,
+    eol: Eol,
+) -> io::Result<Vec<u8>> {
+    let mut out = Vec::new();
+    write_stream(&mut out, buf, enc, eol)?;
+    Ok(out)
 }
 
 fn write_stream<W: Write>(w: &mut W, buf: &TextBuffer, enc: Encoding, eol: Eol) -> io::Result<()> {
@@ -1023,5 +1095,45 @@ mod tests {
         drop(buf);
         drop(source_file);
         std::fs::remove_file(path).unwrap();
+    }
+
+    // Feature: BOMなしUTF-16LEの指定再読込
+    // Scenario: BOMなしのUTF-16LEテキストをUTF-16LE指定で開く
+    // Given: ASCII文字の上位バイトに 0x00 を含むBOMなしUTF-16LEファイル
+    // When: open_buffer_as(..., Encoding::Utf16Le) で読み込む
+    // Then: バイナリ扱いせず編集可能なテキストとして読み込める
+    #[test]
+    fn open_buffer_as_utf16le_without_bom_is_not_binary() {
+        let path = unique_temp_path("utf16le_no_bom");
+        let bytes: Vec<u8> = "hello\n日本語"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        std::fs::write(&path, bytes).unwrap();
+
+        let opened = open_buffer_as(&path, Encoding::Utf16Le).unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        assert!(!opened.is_binary);
+        assert_eq!(opened.enc, Encoding::Utf16Le);
+        assert_eq!(opened.buf.line(0), "hello");
+        assert_eq!(opened.buf.line(1), "日本語");
+    }
+
+    // Feature: ファイル読込サイズ上限
+    // Scenario: 上限を超えるファイルを read_locked_limit で読む
+    // Given: 上限より大きいファイル
+    // When: read_locked_limit を呼ぶ
+    // Then: FileTooLarge エラーを返す
+    #[test]
+    fn read_locked_limit_rejects_oversized_files() {
+        let path = unique_temp_path("read_limit");
+        std::fs::write(&path, b"0123456789").unwrap();
+        let file = File::open(&path).unwrap();
+        let err = read_locked_limit(&file, 4, "too large").unwrap_err();
+        drop(file);
+        std::fs::remove_file(&path).unwrap();
+
+        assert_eq!(err.kind(), io::ErrorKind::FileTooLarge);
     }
 }

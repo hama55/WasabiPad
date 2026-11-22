@@ -167,18 +167,24 @@ fn central_dir(bytes: &[u8]) -> Option<Vec<CdEntry>> {
 
 // 1エントリぶんの本文を展開してテキスト化する
 fn decode_cd_entry(bytes: &[u8], e: &CdEntry) -> Option<(String, bool)> {
-    let nl = u16le(bytes, e.loff + 26)? as usize;
-    let xl = u16le(bytes, e.loff + 28)? as usize;
-    let data_at = e.loff + 30 + nl + xl;
-    let data = bytes.get(data_at..data_at + e.comp)?;
+    let nl = u16le(bytes, e.loff.checked_add(26)?)? as usize;
+    let xl = u16le(bytes, e.loff.checked_add(28)?)? as usize;
+    let data_at = e
+        .loff
+        .checked_add(30)?
+        .checked_add(nl)?
+        .checked_add(xl)?;
+    let data_end = data_at.checked_add(e.comp)?;
+    let data = bytes.get(data_at..data_end)?;
 
     Some(if e.flags & 1 != 0 {
         ("(暗号化エントリ)".to_string(), false)
-    } else if e.uncomp > MAX_ENTRY {
+    } else if e.uncomp > MAX_ENTRY || (e.method == 0 && e.comp > MAX_ENTRY) {
+        let reported = if e.method == 0 { e.comp.max(e.uncomp) } else { e.uncomp };
         (
             format!(
                 "(サイズ超過のためスキップ: {})",
-                crate::protocol::format_byte_size(e.uncomp as u64)
+                crate::protocol::format_byte_size(reported as u64)
             ),
             false,
         )
@@ -345,5 +351,31 @@ mod tests {
     fn non_zip_returns_none() {
         assert!(parse(b"plain text").is_none());
         assert!(parse(b"PK\x03\x04broken").is_none());
+    }
+
+    // Feature: 無圧縮ZIPエントリのサイズ上限検査
+    // Scenario: method=0 で uncomp を小さく偽装し comp が MAX_ENTRY を超える
+    // Given: uncomp=1, comp=MAX_ENTRY+1 を持つ細工済み CdEntry
+    // When: decode_cd_entry を呼ぶ
+    // Then: データをコピーせずサイズ超過としてスキップする
+    #[test]
+    fn stored_entry_rejects_oversized_compressed_length() {
+        let header_len = 30usize;
+        let payload_len = MAX_ENTRY + 1;
+        let mut bytes = vec![0u8; header_len + payload_len];
+        bytes[0..4].copy_from_slice(&0x0403_4B50u32.to_le_bytes());
+        let entry = CdEntry {
+            name: "big.txt".to_string(),
+            method: 0,
+            flags: 0,
+            comp: payload_len,
+            uncomp: 1,
+            loff: 0,
+        };
+
+        let (text, is_binary) = decode_cd_entry(&bytes, &entry).unwrap();
+
+        assert!(!is_binary);
+        assert!(text.starts_with("(サイズ超過のためスキップ:"));
     }
 }
