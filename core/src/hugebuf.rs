@@ -85,7 +85,8 @@ impl Drop for Mapping {
 }
 
 pub struct HugeBuf {
-    map: Mapping,
+    map: Option<Mapping>,
+    mapped_len: usize,
     pub enc: Encoding,
     pub orig_eol: Eol,
     binary: bool,
@@ -296,9 +297,11 @@ impl HugeBuf {
         orig_counts[nchunks - 1] = (total - (nchunks - 1) * CHUNK) as u32;
 
         let map = Mapping::open(file, offset)?;
+        let mapped_len = map.len;
         Ok(Some((
             HugeBuf {
-                map,
+                map: Some(map),
+                mapped_len,
                 enc,
                 orig_eol: eol,
                 binary,
@@ -335,14 +338,28 @@ impl HugeBuf {
         self.binary
     }
 
+    pub(crate) fn release_mapping(&mut self) -> bool {
+        self.map.take().is_some()
+    }
+
+    pub(crate) fn restore_mapping(&mut self, file: File) -> io::Result<()> {
+        if self.map.is_none() {
+            self.map = Some(Mapping::open(file, self.mapped_len as u64)?);
+        }
+        Ok(())
+    }
+
     fn chunk_raw(&self, c: usize) -> &[u8] {
+        let Some(map) = self.map.as_ref() else {
+            return &[];
+        };
         let start = self.checkpoints[c] as usize;
         let end = if c + 1 < self.checkpoints.len() {
             self.checkpoints[c + 1] as usize
         } else {
-            self.map.len
+            map.len
         };
-        &self.map.bytes()[start..end]
+        &map.bytes()[start..end]
     }
 
     // 保存用: 生バイト (末尾チャンク以外は終端改行を除去)

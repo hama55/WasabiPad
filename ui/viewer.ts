@@ -861,8 +861,12 @@ async function loadArchiveImages(
           markImageLoadFailure(image);
         }
       } else if (src && generation === renderGeneration) {
-        // data:/http(s): など、ローカル解決の対象外だったURLは既存のMarkdown挙動を保つ。
-        image.src = src;
+        if (/^(?:https?:|data:|blob:)/i.test(src)) {
+          // data:/http(s): など、ローカル解決の対象外だったURLは既存のMarkdown挙動を保つ。
+          image.src = src;
+        } else {
+          markImageLoadFailure(image);
+        }
       }
     } catch {
       if (generation !== renderGeneration) return;

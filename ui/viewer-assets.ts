@@ -3,7 +3,19 @@
 // 解決できないもの (http:, data:, 元ファイル不明) は null を返し、呼び出し側は src を触らない。
 
 const SCHEME = /^[a-z][a-z0-9+.-]*:/i;
-const ABSOLUTE = /^(?:[a-z]:[\\/]|[\\/])/i;
+const ABSOLUTE = /^[a-z]:[\\/]/i;
+
+function isUncOrRootedPath(value: string): boolean {
+  const decoded = decodeSrc(value);
+  return value.startsWith("//")
+    || value.startsWith("\\\\")
+    || value.startsWith("/")
+    || value.startsWith("\\")
+    || decoded.startsWith("//")
+    || decoded.startsWith("\\\\")
+    || decoded.startsWith("/")
+    || decoded.startsWith("\\");
+}
 
 export function isExternalMarkdownLink(href: string): boolean {
   try {
@@ -35,7 +47,9 @@ export function markdownLinkTargetOf(href: string): MarkdownLinkTarget {
 
 export function isLocalMarkdownLinkCandidate(href: string): boolean {
   const { path } = markdownLinkTargetOf(href);
-  return !!path && !path.startsWith("//") && (!SCHEME.test(path) || ABSOLUTE.test(path));
+  if (!path || isUncOrRootedPath(path)) return false;
+  const decoded = decodeSrc(path).replace(/\//g, "\\");
+  return !SCHEME.test(path) || ABSOLUTE.test(decoded);
 }
 
 export function markdownFragmentOf(href: string): string | null {
@@ -43,11 +57,11 @@ export function markdownFragmentOf(href: string): string | null {
 }
 
 export function resolveAssetPath(sourcePath: string | null, src: string): string | null {
-  if (!src) return null;
+  if (!src || isUncOrRootedPath(src)) return null;
   const decoded = decodeSrc(src).replace(/\//g, "\\");
   // ドライブレター (D:\) はスキーム判定より先に見る
-  if (ABSOLUTE.test(decoded)) return decoded;
-  if (SCHEME.test(src) || src.startsWith("//")) return null;
+  if (ABSOLUTE.test(decoded)) return normalize(decoded);
+  if (SCHEME.test(src) || SCHEME.test(decoded)) return null;
   if (!sourcePath) return null;
   const dir = sourcePath.replace(/\//g, "\\").replace(/\\[^\\]*$/, "");
   return normalize(`${dir}\\${decoded}`);
@@ -55,8 +69,9 @@ export function resolveAssetPath(sourcePath: string | null, src: string): string
 
 export function resolveMarkdownLinkPath(sourcePath: string | null, href: string): string | null {
   const { path } = markdownLinkTargetOf(href);
-  if (!path) return null;
-  if (path.startsWith("//") || (SCHEME.test(path) && !ABSOLUTE.test(path))) return null;
+  if (!path || isUncOrRootedPath(path)) return null;
+  const decoded = decodeSrc(path).replace(/\//g, "\\");
+  if (SCHEME.test(path) && !ABSOLUTE.test(decoded)) return null;
   return resolveAssetPath(sourcePath, path);
 }
 
@@ -100,8 +115,11 @@ function normalize(path: string): string {
   const segments: string[] = [];
   for (const segment of path.split("\\")) {
     if (segment === "." || (segment === "" && segments.length)) continue;
-    if (segment === ".." && segments.length > 1) segments.pop();
-    else segments.push(segment);
+    if (segment === "..") {
+      if (segments.length > 1) segments.pop();
+      continue;
+    }
+    segments.push(segment);
   }
   return segments.join("\\");
 }

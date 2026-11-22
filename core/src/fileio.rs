@@ -258,7 +258,7 @@ pub fn open_buffer(path: &Path) -> io::Result<Opened> {
 }
 
 // threshold はテスト用に注入可能 (0 で非空ファイルを強制 mmap)。
-fn open_buffer_impl(path: &Path, threshold: u64) -> io::Result<Opened> {
+pub(crate) fn open_buffer_impl(path: &Path, threshold: u64) -> io::Result<Opened> {
     open_buffer_impl_with_progress(path, threshold, None)
 }
 

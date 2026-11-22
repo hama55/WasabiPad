@@ -65,6 +65,20 @@ impl TextBuffer {
         matches!(self.store, Store::Huge(_))
     }
 
+    pub(crate) fn release_mapping(&mut self) -> bool {
+        match &mut self.store {
+            Store::Small(_) => false,
+            Store::Huge(h) => h.release_mapping(),
+        }
+    }
+
+    pub(crate) fn restore_mapping(&mut self, file: std::fs::File) -> std::io::Result<()> {
+        match &mut self.store {
+            Store::Small(_) => Ok(()),
+            Store::Huge(h) => h.restore_mapping(file),
+        }
+    }
+
     pub fn line_count(&self) -> usize {
         match &self.store {
             Store::Small(lines) => lines.len(),

@@ -72,10 +72,57 @@ pub fn join_relative(root: &Path, relative: &str) -> PathBuf {
     root.join(relative.replace('/', std::path::MAIN_SEPARATOR_STR))
 }
 
+fn validate_relative_child_path(relative: &str) -> std::io::Result<String> {
+    if relative.is_empty() {
+        return Ok(String::new());
+    }
+    let normalized = relative.replace('\\', "/");
+    let path = Path::new(&normalized);
+    if path.is_absolute()
+        || path.components().any(|component| {
+            !matches!(component, std::path::Component::Normal(_))
+        })
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "不正な相対パスです",
+        ));
+    }
+    Ok(normalized)
+}
+
 // 指定ディレクトリ (rel_dir が空文字ならルート) の直下だけを列挙する。
 // サブフォルダの中身は再帰しない (ツリーの展開ボタンで都度呼ばれる想定)。
 pub fn list_children(root: &Path, rel_dir: &str) -> std::io::Result<Vec<FolderEntry>> {
-    let dir = if rel_dir.is_empty() { root.to_path_buf() } else { join_relative(root, rel_dir) };
+    let rel_dir = validate_relative_child_path(rel_dir)?;
+    let dir = if rel_dir.is_empty() {
+        root.to_path_buf()
+    } else {
+        let candidate = join_relative(root, &rel_dir);
+        let metadata = std::fs::symlink_metadata(&candidate)?;
+        #[cfg(windows)]
+        let is_link = {
+            use std::os::windows::fs::MetadataExt;
+            metadata.file_type().is_symlink() || (metadata.file_attributes() & 0x400 != 0)
+        };
+        #[cfg(not(windows))]
+        let is_link = metadata.file_type().is_symlink();
+        if is_link {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "シンボリックリンクは展開できません",
+            ));
+        }
+        let canonical_root = root.canonicalize()?;
+        let canonical_dir = candidate.canonicalize()?;
+        if !canonical_dir.starts_with(&canonical_root) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "フォルダの外は参照できません",
+            ));
+        }
+        candidate
+    };
     let mut items = Vec::new();
     for entry in std::fs::read_dir(&dir)? {
         let entry = entry?;

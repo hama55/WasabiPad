@@ -550,6 +550,9 @@ impl Sink for Collector<'_> {
             if hits.len() >= max_results {
                 return false;
             }
+            if !text.is_char_boundary(at.start()) || !text.is_char_boundary(at.end()) {
+                return true;
+            }
             let (preview, preview_col) = preview_around(text, at.start());
             let matched_chars = text[at.start()..at.end()].chars().count();
             let shown = matched_chars.min(preview.chars().count().saturating_sub(preview_col));

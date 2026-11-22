@@ -38,6 +38,28 @@ describe("Feature: resolveAssetPath", () => {
     expect(resolveAssetPath(null, "assets/shot.png")).toBeNull();
     expect(resolveAssetPath(null, "D:/pic/shot.png")).toBe("D:\\pic\\shot.png");
   });
+
+  // Given: UNCパス (`\\attacker\share\img.png`, `//attacker/share/img.png`, `%5C%5Cattacker...`)、ドライブルート相対パス (`/etc/passwd`), ルートを越える `..`
+  // When: `resolveAssetPath`, `resolveMarkdownLinkPath`, `isLocalMarkdownLinkCandidate` を呼ぶ
+  // Then: UNCパスやドライブルート相対パスはすべて拒否(`null`/`false`)され、過剰な `..` はドライブルートでクランプされる
+  it("Scenario: UNCパスとルート相対パスを拒否しドライブルート越えを防止する (C-7)", () => {
+    expect(resolveAssetPath(SOURCE, "\\\\attacker\\share\\img.png")).toBeNull();
+    expect(resolveAssetPath(SOURCE, "//attacker/share/img.png")).toBeNull();
+    expect(resolveAssetPath(SOURCE, "%5C%5Cattacker%5Cshare%5Cimg.png")).toBeNull();
+    expect(resolveAssetPath(SOURCE, "%2F%2Fattacker/share/img.png")).toBeNull();
+    expect(resolveAssetPath(SOURCE, "/rooted/img.png")).toBeNull();
+    expect(resolveAssetPath(SOURCE, "\\rooted\\img.png")).toBeNull();
+    expect(resolveAssetPath(SOURCE, "../../../../../outside.png")).toBe("C:\\outside.png");
+
+    expect(resolveMarkdownLinkPath(SOURCE, "\\\\attacker\\share\\doc.md")).toBeNull();
+    expect(resolveMarkdownLinkPath(SOURCE, "//attacker/share/doc.md")).toBeNull();
+    expect(resolveMarkdownLinkPath(SOURCE, "%5C%5Cattacker/share/doc.md")).toBeNull();
+    expect(resolveMarkdownLinkPath(SOURCE, "/rooted/doc.md")).toBeNull();
+    expect(isLocalMarkdownLinkCandidate("\\\\attacker\\share\\doc.md")).toBe(false);
+    expect(isLocalMarkdownLinkCandidate("//attacker/share/doc.md")).toBe(false);
+    expect(isLocalMarkdownLinkCandidate("%5C%5Cattacker/share/doc.md")).toBe(false);
+    expect(isLocalMarkdownLinkCandidate("/rooted/doc.md")).toBe(false);
+  });
 });
 
 describe("Feature: resolveArchiveAssetEntry", () => {

@@ -29,10 +29,16 @@ pub(crate) fn archive_join(parent: &str, child: &str) -> String {
 }
 
 pub(crate) fn valid_archive_entry_path(entry: &str) -> bool {
-    !entry.is_empty()
-        && !entry.starts_with('/')
-        && !entry.starts_with('\\')
-        && !entry.split(['/', '\\']).any(|part| part == "..")
+    if entry.is_empty()
+        || entry.starts_with('/')
+        || entry.starts_with('\\')
+        || entry.contains(':')
+        || entry.chars().any(char::is_control)
+    {
+        return false;
+    }
+    let parts: Vec<&str> = entry.split(['/', '\\']).collect();
+    !parts.is_empty() && parts.iter().all(|part| valid_image_path_part(part))
 }
 
 pub(crate) fn markdown_asset_dir(path: &Path) -> Option<PathBuf> {
@@ -346,13 +352,35 @@ fn valid_image_path_part(value: &str) -> bool {
     !value.is_empty() && value != "." && value != ".."
 }
 
+fn is_symlink_or_reparse_point(metadata: &std::fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        metadata.file_attributes() & 0x400 != 0
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
 pub(crate) fn cleanup_image_dir(dir: &Path, prefix: &str, referenced: &HashSet<String>) -> io::Result<()> {
-    if !dir.is_dir() {
+    let Ok(metadata) = std::fs::symlink_metadata(dir) else {
+        return Ok(());
+    };
+    if !metadata.is_dir() || is_symlink_or_reparse_point(&metadata) {
         return Ok(());
     }
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
-        if !entry.file_type()?.is_file() {
+        let Ok(entry_meta) = entry.metadata() else {
+            continue;
+        };
+        let file_type = entry.file_type()?;
+        if !file_type.is_file() || file_type.is_symlink() || is_symlink_or_reparse_point(&entry_meta) {
             continue;
         }
         let file_name = entry.file_name();
@@ -366,7 +394,10 @@ pub(crate) fn cleanup_image_dir(dir: &Path, prefix: &str, referenced: &HashSet<S
 }
 
 pub(crate) fn remove_empty_dir(dir: &Path) -> io::Result<()> {
-    if !dir.is_dir() {
+    let Ok(metadata) = std::fs::symlink_metadata(dir) else {
+        return Ok(());
+    };
+    if !metadata.is_dir() || is_symlink_or_reparse_point(&metadata) {
         return Ok(());
     }
     if std::fs::read_dir(dir)?.next().is_none() {
@@ -392,6 +423,9 @@ mod tests {
         assert!(valid_archive_entry_path("notes/image.png"));
         assert!(!valid_archive_entry_path("../image.png"));
         assert!(!valid_archive_entry_path("/image.png"));
+        assert!(!valid_archive_entry_path("C:/image.png"));
+        assert!(!valid_archive_entry_path("notes//image.png"));
+        assert!(!valid_archive_entry_path("notes/./image.png"));
     }
 
     #[test]

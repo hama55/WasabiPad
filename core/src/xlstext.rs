@@ -5,6 +5,9 @@ use crate::ziptext::Entry;
 use std::collections::BTreeMap;
 
 const ENDOFCHAIN: u32 = 0xFFFF_FFFE;
+const MAX_STREAM_BYTES: usize = 64 * 1024 * 1024;
+const MAX_CELL_TAB_GAP: u32 = 256;
+const MAX_SHEET_TEXT_BYTES: usize = 32 * 1024 * 1024;
 
 fn u16le(b: &[u8], p: usize) -> Option<u16> {
     Some(u16::from_le_bytes([*b.get(p)?, *b.get(p + 1)?]))
@@ -33,18 +36,25 @@ struct Cfb<'a> {
 
 impl<'a> Cfb<'a> {
     fn sector(&self, sect: u32) -> Option<&'a [u8]> {
-        let off = (sect as usize + 1) * self.sec_size;
-        self.data.get(off..off + self.sec_size)
+        let off = (sect as usize).checked_add(1)?.checked_mul(self.sec_size)?;
+        self.data.get(off..off.checked_add(self.sec_size)?)
     }
 
     fn read_chain(&self, start: u32, size: usize, fat: &[u32], mini: bool) -> Option<Vec<u8>> {
-        let mut out = Vec::with_capacity(size);
+        if size > MAX_STREAM_BYTES {
+            return None;
+        }
+        let max_avail = if mini { self.mini_stream.len() } else { self.data.len() };
+        if size > max_avail {
+            return None;
+        }
+        let mut out = Vec::with_capacity(size.min(64 * 1024));
         let mut sect = start;
         let mut guard = 0;
         while sect != ENDOFCHAIN && sect < 0xFFFF_FFFA {
             let chunk: &[u8] = if mini {
-                let off = sect as usize * 64;
-                self.mini_stream.get(off..off + 64)?
+                let off = (sect as usize).checked_mul(64)?;
+                self.mini_stream.get(off..off.checked_add(64)?)?
             } else {
                 self.sector(sect)?
             };
@@ -75,16 +85,18 @@ fn parse_cfb(data: &[u8]) -> Option<Cfb<'_>> {
     if !data.starts_with(&[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]) {
         return None;
     }
-    let sec_size = 1usize << u16le(data, 30)?;
-    if sec_size != 512 && sec_size != 4096 {
-        return None;
-    }
+    let sec_size = match u16le(data, 30)? {
+        9 => 512usize,
+        12 => 4096usize,
+        _ => return None,
+    };
+    let max_sectors = data.len() / sec_size;
     let first_dir = u32le(data, 48)?;
     let mini_cutoff = u32le(data, 56)? as usize;
     let first_minifat = u32le(data, 60)?;
-    let n_minifat = u32le(data, 64)? as usize;
+    let n_minifat = (u32le(data, 64)? as usize).min(max_sectors);
     let first_difat = u32le(data, 68)?;
-    let n_difat = u32le(data, 72)? as usize;
+    let n_difat = (u32le(data, 72)? as usize).min(max_sectors);
 
     // DIFAT → FAT セクタ一覧
     let mut fat_sects = Vec::new();
@@ -100,8 +112,8 @@ fn parse_cfb(data: &[u8]) -> Option<Cfb<'_>> {
         if dsect >= 0xFFFF_FFFA {
             break;
         }
-        let off = (dsect as usize + 1) * sec_size;
-        let sec = data.get(off..off + sec_size)?;
+        let off = (dsect as usize).checked_add(1)?.checked_mul(sec_size)?;
+        let sec = data.get(off..off.checked_add(sec_size)?)?;
         for i in 0..per {
             let v = u32le(sec, i * 4)?;
             if v < 0xFFFF_FFFA {
@@ -229,33 +241,48 @@ impl<'a> Cursor<'a> {
         let crun = if flags & 0x08 != 0 { self.u16()? as usize } else { 0 };
         let cbext = if flags & 0x04 != 0 { self.u32()? as usize } else { 0 };
         let mut high = flags & 0x01 != 0;
-        let mut units: Vec<u16> = Vec::with_capacity(cch);
+        let mut units: Vec<u16> = Vec::with_capacity(cch.min(4096));
         let mut remaining = cch;
+        let mut crossed_continue = false;
         while remaining > 0 {
-            if !self.advance_seg() {
+            if crossed_continue {
+                if !self.advance_seg() {
+                    return None;
+                }
+                let raw_flag = self.segs[self.si][self.off];
+                self.off += 1;
+                high = raw_flag & 0x01 != 0;
+                crossed_continue = false;
+            }
+            if self.si >= self.segs.len() {
                 return None;
             }
             let bpc = if high { 2 } else { 1 };
             let avail = self.remaining_in_seg() / bpc;
             if avail == 0 {
-                // 文字データ途中の CONTINUE 境界: 新しい flags バイトで幅が変わりうる
+                // 文字データ途中の CONTINUE 境界: 次セグメントの先頭1バイトは新しい flags バイト
                 self.si += 1;
                 self.off = 0;
-                high = self.u8()? & 0x01 != 0;
+                crossed_continue = true;
                 continue;
             }
             let take = avail.min(remaining);
             for _ in 0..take {
                 let u = if high {
-                    self.u16()?
+                    let lo = self.segs[self.si][self.off];
+                    let hi = self.segs[self.si][self.off + 1];
+                    self.off += 2;
+                    u16::from_le_bytes([lo, hi])
                 } else {
-                    self.u8()? as u16
+                    let b = self.segs[self.si][self.off];
+                    self.off += 1;
+                    b as u16
                 };
                 units.push(u);
             }
             remaining -= take;
         }
-        self.skip(crun * 4)?;
+        self.skip(crun.checked_mul(4)?)?;
         self.skip(cbext)?;
         Some(String::from_utf16_lossy(&units))
     }
@@ -427,7 +454,7 @@ fn collect_sheet_cells(
             0x0204 => {
                 // LABEL (インライン文字列)
                 let (r, c) = (u16le(d, 0)? as u32, u16le(d, 2)? as u32);
-                if let Some(s) = read_simple_string(&d[6..]) {
+                if let Some(s) = d.get(6..).and_then(read_simple_string) {
                     cells.insert((r, c), clean(s));
                 }
             }
@@ -446,7 +473,7 @@ fn collect_sheet_cells(
                 // MULRK
                 let r = u16le(d, 0)? as u32;
                 let c0 = u16le(d, 2)? as u32;
-                let n = (clen - 6) / 6;
+                let n = clen.checked_sub(6)? / 6;
                 for k in 0..n {
                     let rk = u32le(d, 4 + k * 6 + 2)?;
                     cells.insert((r, c0 + k as u32), fmt_f64(rk_value(rk)));
@@ -509,6 +536,9 @@ fn cells_to_text(cells: &BTreeMap<(u32, u32), String>) -> String {
     let mut cur_row: Option<u32> = None;
     let mut prev_col: Option<u32> = None;
     for (&(r, c), v) in cells {
+        if text.len() >= MAX_SHEET_TEXT_BYTES {
+            break;
+        }
         if cur_row.is_some() && cur_row != Some(r) {
             text.push('\n');
         }
@@ -516,8 +546,9 @@ fn cells_to_text(cells: &BTreeMap<(u32, u32), String>) -> String {
             cur_row = Some(r);
             prev_col = None;
         }
-        // タブ区切り: 空セル分もタブで埋めて列位置を保つ
-        for _ in 0..(c - prev_col.unwrap_or(0)) {
+        // タブ区切り: 空セル分もタブで埋めて列位置を保つ (異常な列番号による巨大確保は上限で防ぐ)
+        let gap = c.saturating_sub(prev_col.unwrap_or(0)).min(MAX_CELL_TAB_GAP);
+        for _ in 0..gap {
             text.push('\t');
         }
         text.push_str(v);
@@ -759,5 +790,46 @@ mod tests {
     fn dump_sample_for_manual_check() {
         let p = std::env::temp_dir().join("mp_synth.xls");
         let _ = std::fs::write(p, build_xls());
+    }
+
+    // Feature: 破損・悪意ある CFB/BIFF8 データの安全性と CONTINUE 文字列継続 (C-8)
+    // Scenario: 異常な sector shift / 4字节の LABEL・MULRK / CONTINUE レコード境界の SST 文字列を読む
+    // Given: 異常シフト値の CFB ヘッダ、4バイトに切れた LABEL と MULRK、CONTINUE 境界で圧縮から UTF-16LE に切り替わる SST 文字列
+    // When: parse_cfb, collect_sheet_cells, Cursor::read_string を実行する
+    // Then: パニックや過剰確保を起こさず、CONTINUE 境界の flags バイトも仕様通り解釈される
+    #[test]
+    fn malformed_records_and_sst_continue_boundary_are_handled_safely() {
+        // 1. 異常な sector shift (64) でシフトオーバーフローしない
+        let mut bad_cfb = build_xls();
+        bad_cfb[30..32].copy_from_slice(&64u16.to_le_bytes());
+        assert!(parse(&bad_cfb).is_none());
+
+        // 2. CONTINUE 境界で 1バイト/文字 (flags=0) から 2バイト/文字 (flags=1) へ切り替わる文字列
+        // cch=4: セグメント1に "AB" (2文字でちょうど終端)、セグメント2先頭に flags=1 と "あい"
+        let mut seg1 = vec![4, 0, 0]; // cch=4, flags=0 (compressed)
+        seg1.extend_from_slice(b"AB");
+        let mut seg2 = vec![1]; // CONTINUE grbit: high=1 (UTF-16LE)
+        for u in "あい".encode_utf16() {
+            seg2.extend_from_slice(&u.to_le_bytes());
+        }
+        let mut cur = Cursor {
+            segs: vec![&seg1, &seg2],
+            si: 0,
+            off: 0,
+        };
+        assert_eq!(cur.read_string().as_deref(), Some("ABあい"));
+
+        // 3. 4バイトの短い LABEL (0x0204) / MULRK (0x00BD) でスライスパニックや減算アンダーフローしない
+        let mut wb = Vec::new();
+        let mut bof = 0x0600u16.to_le_bytes().to_vec();
+        bof.extend_from_slice(&0x0010u16.to_le_bytes());
+        bof.extend_from_slice(&[0u8; 12]);
+        wb.extend(rec(0x0809, &bof));
+        wb.extend(rec(0x0204, &[0, 0, 0, 0])); // 4-byte LABEL (< 6)
+        wb.extend(rec(0x00BD, &[0, 0, 0, 0])); // 4-byte MULRK (< 6)
+        wb.extend(rec(0x000A, &[]));
+        let recs = enumerate_records(&wb).unwrap();
+        // 短すぎる MULRK は Option::None で安全に棄却され、パニックしない
+        assert!(collect_sheet_cells(&wb, &recs, 0, &[]).is_none());
     }
 }

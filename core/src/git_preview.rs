@@ -298,6 +298,36 @@ fn worktree_command(path: &str) -> Result<Command, String> {
         }
         cmd.args(["-c", &format!("{key}={value}")]);
     }
+    // Neutralize any repository-local filter or diff driver commands in .git/config
+    // so read-only status/diff/hash-object cannot execute untrusted commands.
+    let mut local_filters = command(&dir);
+    local_filters.args([
+        "config",
+        "--local",
+        "--null",
+        "--name-only",
+        "--get-regexp",
+        "^(filter|diff)\\..*\\.(clean|smudge|process|required|command|textconv)$",
+    ]);
+    let (filter_keys, filter_truncated) = run_command(&mut local_filters, 65536, true)?;
+    if filter_truncated {
+        return Err("Gitのフィルタ設定が大きすぎます".into());
+    }
+    for key in filter_keys
+        .split(|byte| *byte == 0)
+        .filter(|item| !item.is_empty())
+    {
+        let key = std::str::from_utf8(key).map_err(|_| "Gitのフィルタ設定が不正です")?;
+        let key = key.trim();
+        if key.is_empty() || key.contains(['=', '\n', '\r']) {
+            return Err("Gitのフィルタ設定が不正です".into());
+        }
+        if key.ends_with(".required") {
+            cmd.args(["-c", &format!("{key}=false")]);
+        } else {
+            cmd.args(["-c", &format!("{key}=")]);
+        }
+    }
     cmd.current_dir(root).args(["--work-tree", root]);
     Ok(cmd)
 }
@@ -614,17 +644,27 @@ fn saved_file_diff(
     Ok(GitFileDiff { text, ..result })
 }
 
+fn is_unc_like_path(value: &str) -> bool {
+    value.starts_with(r"\\?\UNC\")
+        || (value.starts_with(r"\\") && !value.starts_with(r"\\?\"))
+        || value.starts_with("//")
+}
+
 fn git_dir(path: &str) -> Result<PathBuf, String> {
     let path = Path::new(path);
     if path.file_name().and_then(|name| name.to_str()) != Some(".git") {
         return Err("Git履歴には .git 項目を選択してください".into());
     }
+    let source_is_unc = is_unc_like_path(&path.to_string_lossy());
     let target = if path.is_file() {
         let content = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
         let value = content
             .trim()
             .strip_prefix("gitdir: ")
             .ok_or(".git ファイルの参照先が不正です")?;
+        if !source_is_unc && is_unc_like_path(value) {
+            return Err("ネットワーク共有上の gitdir 参照は許可されていません".into());
+        }
         path.parent()
             .ok_or(".git の親フォルダがありません")?
             .join(value)
@@ -634,6 +674,9 @@ fn git_dir(path: &str) -> Result<PathBuf, String> {
     let target = target
         .canonicalize()
         .map_err(|error| format!(".git を読み込めません: {error}"))?;
+    if !source_is_unc && is_unc_like_path(&target.to_string_lossy()) {
+        return Err("ネットワーク共有上の gitdir 参照は許可されていません".into());
+    }
     if !target.is_dir() {
         return Err(".git の参照先がフォルダではありません".into());
     }
@@ -688,6 +731,26 @@ fn command(dir: &Path) -> Command {
             "core.quotePath=false",
             "-c",
             "log.showSignature=false",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.hooksPath=",
+            "-c",
+            "core.sshCommand=",
+            "-c",
+            "core.gitProxy=",
+            "-c",
+            "core.askPass=",
+            "-c",
+            "core.editor=",
+            "-c",
+            "core.pager=",
+            "-c",
+            "diff.external=",
+            "-c",
+            "credential.helper=",
+            "-c",
+            "protocol.allow=never",
         ])
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_NO_LAZY_FETCH", "1")

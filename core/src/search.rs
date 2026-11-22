@@ -38,7 +38,12 @@ fn find_from(matcher: &RegexMatcher, line: &str, from: usize) -> Option<(usize, 
     }
     let mut result = None;
     let _ = matcher.find_iter(line.as_bytes(), |found| {
-        if found.start() < from { return true; }
+        if found.start() < from
+            || !line.is_char_boundary(found.start())
+            || !line.is_char_boundary(found.end())
+        {
+            return true;
+        }
         result = Some((found.start(), found.end()));
         false
     });
@@ -88,6 +93,9 @@ pub(crate) fn find_all_in_range(
     for line in first_line.min(last)..last {
         let text = buf.line(line);
         let _ = matcher.find_iter(text.as_bytes(), |found| {
+            if !text.is_char_boundary(found.start()) || !text.is_char_boundary(found.end()) {
+                return true;
+            }
             matches.push((
                 Pos { line, col: found.start() },
                 Pos { line, col: found.end() },
@@ -162,7 +170,9 @@ pub(crate) fn find_backward(
         let mut last = None;
         let _ = matcher.find_iter(text.as_bytes(), |found| {
             if found.end() > limit { return false; }
-            last = Some((found.start(), found.end()));
+            if text.is_char_boundary(found.start()) && text.is_char_boundary(found.end()) {
+                last = Some((found.start(), found.end()));
+            }
             true
         });
         last
@@ -278,6 +288,40 @@ pub(crate) fn find_chunk(
         find_chunk(buf, pat, start, match_case, use_regex, whole_word, FindCursor { wrapped: true, line: 0 }, budget, wrap_around)
     } else {
         ChunkStep::NotFound
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Feature: 正規表現検索のUTF-8文字境界安全性 (C-8)
+    // Scenario: `(?-u)` 付きバイト単位正規表現でマルチバイト文字の途中バイトに一致するパターンを検索する
+    // Given: 日本語マルチバイト文字 ("あいう") を含む TextBuffer
+    // When: `(?-u)\x81` で前方検索・範囲検索・後方検索を実行する
+    // Then: UTF-8 文字境界でないバイト一致はスキップされ、後続のスライスでパニックしない
+    #[test]
+    fn non_char_boundary_regex_matches_are_safely_skipped() {
+        let buf = TextBuffer::from_text("あいう");
+        let matcher = build_matcher(r"(?-u)\x81", true, true, false).unwrap();
+        assert_eq!(find_from(&matcher, "あいう", 0), None);
+        assert!(
+            find_all_in_range(&buf, r"(?-u)\x81", 0, 1, true, true, false, 10)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            find_backward(
+                &buf,
+                r"(?-u)\x81",
+                Pos { line: 0, col: 9 },
+                true,
+                true,
+                false,
+                true
+            ),
+            None
+        );
     }
 }
 

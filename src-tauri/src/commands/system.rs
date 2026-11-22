@@ -26,6 +26,20 @@ extern "system" {
     ) -> isize;
 }
 
+#[cfg(target_os = "windows")]
+#[link(name = "shlwapi")]
+extern "system" {
+    #[link_name = "AssocQueryStringW"]
+    fn assoc_query_string_w(
+        flags: u32,
+        str_kind: i32,
+        assoc: *const u16,
+        extra: *const u16,
+        out_str: *mut u16,
+        out_cch: *mut u32,
+    ) -> i32;
+}
+
 fn explorer_args(path: &str, is_dir: bool) -> Result<Vec<String>, String> {
     let target = PathBuf::from(path);
     if is_dir {
@@ -85,6 +99,39 @@ pub(crate) fn open_in_other_app(path: String) -> Result<(), String> {
     }
 }
 
+#[cfg(target_os = "windows")]
+#[derive(Debug, PartialEq, Eq)]
+enum BrowserLaunchPlan {
+    ShellOpen(String),
+    DirectBrowser { target_uri: String },
+}
+
+#[cfg(target_os = "windows")]
+fn prepare_browser_launch(
+    path: &std::path::Path,
+    effective_extension: Option<&str>,
+) -> Result<BrowserLaunchPlan, String> {
+    use std::os::windows::fs::MetadataExt;
+
+    let physical_extension = path.extension().and_then(|value| value.to_str());
+    let extension = effective_extension.or(physical_extension);
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return Err("HTMLファイルが見つかりません".to_string());
+    };
+    let is_reparse = metadata.file_type().is_symlink() || (metadata.file_attributes() & 0x400 != 0);
+    if !metadata.is_file() || is_reparse || !is_html_extension(extension) {
+        return Err("HTMLファイルが見つかりません".to_string());
+    }
+    let target_arg = browser_target(path, effective_extension);
+    if is_html_extension(physical_extension) {
+        Ok(BrowserLaunchPlan::ShellOpen(target_arg))
+    } else {
+        Ok(BrowserLaunchPlan::DirectBrowser {
+            target_uri: target_arg,
+        })
+    }
+}
+
 pub(crate) fn open_in_default_browser(
     path: String,
     effective_extension: Option<String>,
@@ -92,19 +139,72 @@ pub(crate) fn open_in_default_browser(
     #[cfg(target_os = "windows")]
     {
         let target = PathBuf::from(path);
-        let extension = effective_extension
-            .as_deref()
-            .or_else(|| target.extension().and_then(|value| value.to_str()));
-        if !target.is_file() || !is_html_extension(extension) {
-            return Err("HTMLファイルが見つかりません".to_string());
+        match prepare_browser_launch(&target, effective_extension.as_deref())? {
+            BrowserLaunchPlan::ShellOpen(target_arg) => shell_execute_open(&target_arg),
+            BrowserLaunchPlan::DirectBrowser { target_uri } => {
+                let browser_exe = resolve_default_browser_executable()?;
+                std::process::Command::new(browser_exe)
+                    .arg(&target_uri)
+                    .spawn()
+                    .map(|_| ())
+                    .map_err(|error| format!("既定のブラウザを起動できませんでした: {error}"))
+            }
         }
-        shell_execute_open(&browser_target(&target, effective_extension.as_deref()))
     }
     #[cfg(not(target_os = "windows"))]
     {
         let _ = (path, effective_extension);
         Err("この機能はWindowsでのみ使用できます".to_string())
     }
+}
+
+#[cfg(target_os = "windows")]
+fn query_associated_executable(assoc: &str) -> Option<PathBuf> {
+    const ASSOCF_NONE: u32 = 0;
+    const ASSOCSTR_EXECUTABLE: i32 = 2;
+
+    let assoc_wide: Vec<u16> = assoc.encode_utf16().chain(std::iter::once(0)).collect();
+    let open_wide: Vec<u16> = "open".encode_utf16().chain(std::iter::once(0)).collect();
+    let mut cch: u32 = 0;
+    let _ = unsafe {
+        assoc_query_string_w(
+            ASSOCF_NONE,
+            ASSOCSTR_EXECUTABLE,
+            assoc_wide.as_ptr(),
+            open_wide.as_ptr(),
+            std::ptr::null_mut(),
+            &mut cch,
+        )
+    };
+    if cch <= 1 || cch > 32768 {
+        return None;
+    }
+    let mut buf = vec![0u16; cch as usize];
+    let hr = unsafe {
+        assoc_query_string_w(
+            ASSOCF_NONE,
+            ASSOCSTR_EXECUTABLE,
+            assoc_wide.as_ptr(),
+            open_wide.as_ptr(),
+            buf.as_mut_ptr(),
+            &mut cch,
+        )
+    };
+    if hr < 0 {
+        return None;
+    }
+    let end = buf.iter().position(|&ch| ch == 0).unwrap_or(buf.len());
+    let path = PathBuf::from(String::from_utf16_lossy(&buf[..end]));
+    path.is_file().then_some(path)
+}
+
+#[cfg(target_os = "windows")]
+fn resolve_default_browser_executable() -> Result<PathBuf, String> {
+    query_associated_executable("https")
+        .or_else(|| query_associated_executable("http"))
+        .or_else(|| query_associated_executable(".htm"))
+        .or_else(|| query_associated_executable(".html"))
+        .ok_or_else(|| "既定のブラウザが見つかりません".to_string())
 }
 
 #[cfg(target_os = "windows")]
@@ -684,6 +784,37 @@ mod tests {
             "string",
         );
         assert_eq!(expanded, "open a {string} a\n{string}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // Feature: 非HTML実拡張子ファイルの既定ブラウザ起動計画 (C-5)
+    // Scenario: .bat ファイルを effective_extension="html" でブラウザ起動する
+    // Given: 実在する .bat ファイルと .html ファイル
+    // When: prepare_browser_launch を呼ぶ
+    // Then: .bat は ShellExecuteW ではなく DirectBrowser (ブラウザ実行ファイル直接起動) になり、effective_extension 無しでは拒否される
+    #[test]
+    fn non_html_physical_extension_uses_direct_browser_launch_instead_of_shell_open() {
+        let root = std::env::temp_dir().join(format!("wasabipad_browser_plan_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let bat = root.join("payload.bat");
+        let html = root.join("index.html");
+        fs::write(&bat, "@echo off\r\ncalc.exe\r\n").unwrap();
+        fs::write(&html, "<h1>hi</h1>").unwrap();
+
+        assert!(super::prepare_browser_launch(&bat, None).is_err());
+        let bat_plan = super::prepare_browser_launch(&bat, Some("html")).unwrap();
+        assert!(matches!(
+            bat_plan,
+            super::BrowserLaunchPlan::DirectBrowser { ref target_uri }
+                if target_uri.starts_with("file:///") && target_uri.ends_with("/payload.bat")
+        ));
+
+        let html_plan = super::prepare_browser_launch(&html, None).unwrap();
+        assert_eq!(
+            html_plan,
+            super::BrowserLaunchPlan::ShellOpen(html.to_string_lossy().into_owned())
+        );
         let _ = fs::remove_dir_all(&root);
     }
 }

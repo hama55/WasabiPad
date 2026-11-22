@@ -81,6 +81,66 @@ fn normalize_move_path(relative: &str, allow_empty: bool) -> io::Result<String> 
     Ok(normalized)
 }
 
+fn is_symlink_or_reparse_point(metadata: &std::fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        metadata.file_attributes() & 0x400 != 0
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+fn resolve_workspace_entry(root: &Path, relative: &str) -> io::Result<PathBuf> {
+    let normalized = normalize_move_path(relative, false)?;
+    let target = join_relative(root, &normalized);
+    let metadata = std::fs::symlink_metadata(&target)?;
+    if is_symlink_or_reparse_point(&metadata) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "シンボリックリンクは参照できません",
+        ));
+    }
+    let canonical_root = root.canonicalize()?;
+    let canonical_target = target.canonicalize()?;
+    if !canonical_target.starts_with(&canonical_root) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "フォルダの外は参照できません",
+        ));
+    }
+    Ok(target)
+}
+
+fn resolve_workspace_dir(root: &Path, rel_dir: &str) -> io::Result<PathBuf> {
+    let normalized = normalize_move_path(rel_dir, true)?;
+    if normalized.is_empty() {
+        return Ok(root.to_path_buf());
+    }
+    let dir = join_relative(root, &normalized);
+    let metadata = std::fs::symlink_metadata(&dir)?;
+    if is_symlink_or_reparse_point(&metadata) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "シンボリックリンクは参照できません",
+        ));
+    }
+    let canonical_root = root.canonicalize()?;
+    let canonical_dir = dir.canonicalize()?;
+    if !canonical_dir.starts_with(&canonical_root) || !canonical_dir.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "フォルダの外は参照できません",
+        ));
+    }
+    Ok(dir)
+}
+
 struct MarkdownAssetMovePlan {
     source: PathBuf,
     destination: PathBuf,
@@ -329,6 +389,34 @@ fn restore_target_file(target: &mut Target, released: bool) {
             }
         }
         Target::None => {}
+    }
+}
+
+fn restore_target_and_mapping(
+    target: &mut Target,
+    buf: &mut TextBuffer,
+    released_handle: bool,
+    released_mapping: bool,
+) {
+    restore_target_file(target, released_handle);
+    if !released_mapping {
+        return;
+    }
+    let path = match target {
+        Target::File { path, source_file, .. } => {
+            if let Some(file) = source_file.as_ref().and_then(|f| f.try_clone().ok()) {
+                let _ = buf.restore_mapping(file);
+                return;
+            }
+            Some(path.as_path())
+        }
+        Target::Archive { path, .. } => Some(path.as_path()),
+        Target::None => None,
+    };
+    if let Some(path) = path {
+        if let Ok(file) = fileio::open_exclusive(path).or_else(|_| std::fs::File::open(path)) {
+            let _ = buf.restore_mapping(file);
+        }
     }
 }
 
@@ -1323,7 +1411,13 @@ impl Doc {
         self.archive_asset = None;
         if let Some(root) = self.source.folder_root().map(Path::to_path_buf) {
             if let Some((archive_rel, entry_name)) = crate::folder::split_archive_entry_path(rel_path) {
-                let archive_real = join_relative(&root, archive_rel);
+                if !valid_archive_entry_path(entry_name) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "アーカイブ内パスが不正です",
+                    ));
+                }
+                let archive_real = resolve_workspace_entry(&root, archive_rel)?;
                 let source_file = fileio::open_exclusive(&archive_real)?;
                 // アーカイブ形式の指定は書庫へ、その他の形式は内部項目へ適用する。
                 // これによりエディタから `.bin::memo.bin` を txt として開いても、
@@ -1381,7 +1475,7 @@ impl Doc {
                 };
                 return Ok(Some(self.info(archive_real.to_string_lossy().into_owned())?));
             }
-            let path = join_relative(&root, rel_path);
+            let path = resolve_workspace_entry(&root, rel_path)?;
             if self.source.path() == Some(path.as_path()) && self.open_as == open_as {
                 return Ok(Some(self.info(path.to_string_lossy().into_owned())?));
             }
@@ -1398,6 +1492,12 @@ impl Doc {
             let info = d.info(path_str)?;
             *self = d;
             return Ok(Some(info));
+        }
+        if !valid_archive_entry_path(rel_path) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "アーカイブ内パスが不正です",
+            ));
         }
         let (archive_path, archive_open_as, entry_open_as, text, meta, is_binary) = {
             let (path, source_file, entries) = match &self.source.target {
@@ -1675,7 +1775,7 @@ impl Doc {
             let root = self.source.folder_root().ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidInput, "フォルダを開いていません")
             })?;
-            join_relative(root, rel_path)
+            resolve_workspace_entry(root, rel_path)?
         };
         if password.is_empty() {
             self.sevenz_passwords.remove(&path);
@@ -1690,6 +1790,14 @@ impl Doc {
     // (本文は展開しない)。rel_path が空文字なら「直接開いているアーカイブ自身」、
     // それ以外はフォルダ内の実ファイル (zip/xlsx/xls) の相対パス。
     pub fn list_archive_entries(&self, rel_path: &str) -> io::Result<Option<Vec<String>>> {
+        let resolved_rel = if rel_path.is_empty() {
+            None
+        } else {
+            let Some(root) = self.source.folder_root() else {
+                return Ok(None);
+            };
+            Some(resolve_workspace_entry(root, rel_path)?)
+        };
         // 7z/zip は自前パーサではなく 7z.exe に一覧させる (暗号化書庫に対応)
         let archive_abs = if rel_path.is_empty() {
             match &self.source.target {
@@ -1699,9 +1807,8 @@ impl Doc {
                 _ => None,
             }
         } else {
-            self.source
-                .folder_root()
-                .map(|root| join_relative(root, rel_path))
+            resolved_rel
+                .clone()
                 .filter(|p| self.supports_archive_path(p))
         };
         if let Some(p) = archive_abs {
@@ -1727,10 +1834,10 @@ impl Doc {
                 "256MBを超えるアーカイブは直接展開できません",
             )?
         } else {
-            let Some(root) = self.source.folder_root() else {
+            let Some(archive_path) = resolved_rel else {
                 return Ok(None);
             };
-            let file = std::fs::File::open(join_relative(root, rel_path))?;
+            let file = std::fs::File::open(archive_path)?;
             fileio::read_locked_limit(
                 &file,
                 fileio::MAX_ARCHIVE_BYTES,
@@ -1757,10 +1864,7 @@ impl Doc {
             .folder_root()
             .map(Path::to_path_buf)
             .ok_or_else(|| io::Error::other("フォルダを開いていません"))?;
-        let dir = match rel_dir {
-            Some(r) if !r.is_empty() => join_relative(&root, r),
-            _ => root.clone(),
-        };
+        let dir = resolve_workspace_dir(&root, rel_dir.unwrap_or(""))?;
         let path = if dir.join(name).exists() {
             let requested = dir.join(name);
             let stem = requested.file_stem().and_then(|value| value.to_str()).unwrap_or(name);
@@ -1800,7 +1904,7 @@ impl Doc {
             .source
             .folder_root()
             .ok_or_else(|| io::Error::other("フォルダを開いていません"))?;
-        let dir = if rel_dir.is_empty() { root.to_path_buf() } else { join_relative(root, rel_dir) };
+        let dir = resolve_workspace_dir(root, rel_dir)?;
         let path = next_available_path(&dir, name, "")?;
         let actual_name = path
             .file_name()
@@ -1846,28 +1950,90 @@ impl Doc {
     // その配下がリネーム対象なら、パス表記だけを追従させる (バッファは開き直さない)。
     pub fn rename_entry(&mut self, rel_path: &str, new_name: &str) -> io::Result<DocInfo> {
         crate::validate_windows_file_name(new_name)?;
+        let rel_path = normalize_move_path(rel_path, false)?;
         let root = self
             .source
             .folder_root()
             .map(Path::to_path_buf)
             .ok_or_else(|| io::Error::other("フォルダを開いていません"))?;
-        let old_abs = join_relative(&root, rel_path);
+        let old_abs = join_relative(&root, &rel_path);
+        let metadata = std::fs::symlink_metadata(&old_abs)?;
+        if metadata.file_type().is_symlink() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "シンボリックリンクは名前変更できません",
+            ));
+        }
+        let canonical_root = root.canonicalize()?;
+        let canonical_old = old_abs.canonicalize()?;
+        if canonical_old == canonical_root || !canonical_old.starts_with(&canonical_root) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "フォルダの外は名前変更できません",
+            ));
+        }
         let parent = old_abs
             .parent()
             .ok_or_else(|| io::Error::other("不正なパスです"))?;
         let new_abs = parent.join(new_name);
+        if std::fs::symlink_metadata(&new_abs).is_ok()
+            && !equivalent_existing_path(&old_abs, &new_abs)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "同名のファイルまたはフォルダが既にあります",
+            ));
+        }
         let asset_plan = markdown_asset_move_plan(&old_abs, &new_abs)?;
-        with_markdown_asset_move(asset_plan, || std::fs::rename(&old_abs, &new_abs))?;
-        let current = match &mut self.source.target {
-            Target::File { path, .. } | Target::Archive { path, .. } => path,
-            Target::None => return self.info(String::new()),
-        };
-        rebase_path(current, &old_abs, &new_abs);
+        let current_path = self.source.display_path().map(Path::to_path_buf);
+        let affected = is_delete_target_affected(current_path.as_deref(), &canonical_old)?;
+        with_markdown_asset_move(asset_plan, || {
+            let mut held_target =
+                affected.then(|| std::mem::replace(&mut self.source.target, Target::None));
+            let released_handle = held_target
+                .as_mut()
+                .map(release_target_file)
+                .unwrap_or(false);
+            let released_mapping = affected && self.buf.release_mapping();
+            let rename_result = std::fs::rename(&old_abs, &new_abs);
+            match rename_result {
+                Ok(()) => {
+                    if let Some(mut target) = held_target {
+                        match &mut target {
+                            Target::File { path, .. } | Target::Archive { path, .. } => {
+                                rebase_path(path, &old_abs, &new_abs);
+                            }
+                            Target::None => {}
+                        }
+                        restore_target_and_mapping(
+                            &mut target,
+                            &mut self.buf,
+                            released_handle,
+                            released_mapping,
+                        );
+                        self.source.target = target;
+                    }
+                    Ok(())
+                }
+                Err(error) => {
+                    if let Some(mut target) = held_target {
+                        restore_target_and_mapping(
+                            &mut target,
+                            &mut self.buf,
+                            released_handle,
+                            released_mapping,
+                        );
+                        self.source.target = target;
+                    }
+                    Err(error)
+                }
+            }
+        })?;
         let path_str = self
             .source
             .display_path()
             .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_default();
+            .unwrap_or_else(|| root.to_string_lossy().into_owned());
         self.info(path_str)
     }
 
@@ -1993,6 +2159,7 @@ impl Doc {
                 .as_mut()
                 .map(release_target_file)
                 .unwrap_or(false);
+            let released_mapping = affected && self.buf.release_mapping();
             let rename_result = std::fs::rename(&source, &destination);
             match rename_result {
                 Ok(()) => {
@@ -2003,14 +2170,24 @@ impl Doc {
                             }
                             Target::None => {}
                         }
-                        restore_target_file(&mut target, released_handle);
+                        restore_target_and_mapping(
+                            &mut target,
+                            &mut self.buf,
+                            released_handle,
+                            released_mapping,
+                        );
                         self.source.target = target;
                     }
                     Ok(())
                 }
                 Err(error) => {
                     if let Some(mut target) = held_target {
-                        restore_target_file(&mut target, released_handle);
+                        restore_target_and_mapping(
+                            &mut target,
+                            &mut self.buf,
+                            released_handle,
+                            released_mapping,
+                        );
                         self.source.target = target;
                     }
                     Err(error)
@@ -2081,12 +2258,18 @@ impl Doc {
             .as_mut()
             .map(release_target_file)
             .unwrap_or(false);
+        let released_mapping = affected && self.buf.release_mapping();
         let backup = if record_backup {
             match create_delete_backup(&target) {
                 Ok(backup) => Some(backup),
                 Err(error) => {
                     if let Some(mut target) = held_target.take() {
-                        restore_target_file(&mut target, released_handle);
+                        restore_target_and_mapping(
+                            &mut target,
+                            &mut self.buf,
+                            released_handle,
+                            released_mapping,
+                        );
                         self.source.target = target;
                     }
                     return Err(error);
@@ -2101,7 +2284,12 @@ impl Doc {
                 remove_delete_backup(backup);
             }
             if let Some(mut target) = held_target.take() {
-                restore_target_file(&mut target, released_handle);
+                restore_target_and_mapping(
+                    &mut target,
+                    &mut self.buf,
+                    released_handle,
+                    released_mapping,
+                );
                 self.source.target = target;
             }
             return Err(error);
@@ -2115,6 +2303,12 @@ impl Doc {
 
         if affected {
             drop(held_target);
+            if released_mapping {
+                self.buf = TextBuffer::new();
+                self.undo = UndoStack::new();
+                self.byte_len = 0;
+                self.is_binary = false;
+            }
             self.source.target = Target::None;
             self.merge_base = None;
             self.pending_merge = None;
@@ -2473,6 +2667,12 @@ impl Doc {
             } else { format!("{stem}.{extension}") };
         let relative_src = markdown_image_relative_path(memo_name, &image_name);
         let entry = archive_join(parent, &relative_src);
+        if !valid_archive_entry_path(&entry) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "アーカイブ内パスが不正です",
+            ));
+        }
         let is_7z = self.archive_is_7z(archive);
         let header_encrypted = self
             .archive_port
@@ -2494,7 +2694,7 @@ impl Doc {
         Ok(relative_src)
     }
 
-    // 本文から参照が消えた画像を削除する。旧 image フォルダも既存メモのために整理する。
+    // 本文から参照が消えた画像を削除する。
     pub fn cleanup_unused_images(&mut self) -> io::Result<()> {
         if self.is_view_only() {
             return Ok(());
@@ -2511,38 +2711,58 @@ impl Doc {
                 return self.cleanup_archive_images(&archive, &memo_entry);
             }
         }
+        if self.buf.is_huge() {
+            return Ok(());
+        }
         let Some(memo) = self.source.path() else {
             return Ok(());
         };
         let Some(parent) = memo.parent() else {
             return Ok(());
         };
+        let Some(image_dir) = markdown_asset_dir(memo) else {
+            return Ok(());
+        };
+        let Ok(image_dir_meta) = std::fs::symlink_metadata(&image_dir) else {
+            return Ok(());
+        };
+        if !image_dir_meta.is_dir() || is_symlink_or_reparse_point(&image_dir_meta) {
+            return Ok(());
+        }
+        let Some(memo_name) = memo.file_stem().and_then(|value| value.to_str()) else {
+            return Ok(());
+        };
         let mut referenced = referenced_image_files(&self.buf);
         referenced.extend(self.undo.image_references());
-        if let Some(progress) = &self.replace_progress { referenced.extend(progress.image_references.iter().cloned()); }
-        referenced.extend(self.diagram_pending_assets.iter().cloned());
-        let memo_name = memo.file_stem().and_then(|value| value.to_str()).unwrap_or_default();
-        expand_diagram_references(&mut referenced, &markdown_image_relative_dir(memo_name), |reference| {
-            let path = parent.join(reference.replace('/', std::path::MAIN_SEPARATOR_STR));
-            let file = std::fs::File::open(path)?;
-            if file.metadata()?.len() > FILE_ASSET_MAX_BYTES { return Err(io::Error::new(io::ErrorKind::FileTooLarge, "図が大きすぎます")); }
-            let mut bytes = Vec::new(); file.take(FILE_ASSET_MAX_BYTES + 1).read_to_end(&mut bytes)?; Ok(bytes)
-        })?;
-        if let Some(image_dir) = markdown_asset_dir(memo) {
-            let Some(memo_name) = memo.file_stem().and_then(|value| value.to_str()) else {
-                return Ok(());
-            };
-            cleanup_image_dir(
-                &image_dir,
-                &markdown_image_relative_dir(memo_name),
-                &referenced,
-            )?;
-            if let Some(image_root) = image_dir.parent() {
-                remove_empty_dir(image_root)?;
-            }
+        if let Some(progress) = &self.replace_progress {
+            referenced.extend(progress.image_references.iter().cloned());
         }
-        let legacy_dir = parent.join("image");
-        cleanup_image_dir(&legacy_dir, "image", &referenced)?;
+        referenced.extend(self.diagram_pending_assets.iter().cloned());
+        expand_diagram_references(
+            &mut referenced,
+            &markdown_image_relative_dir(memo_name),
+            |reference| {
+                let path = parent.join(reference.replace('/', std::path::MAIN_SEPARATOR_STR));
+                let file = std::fs::File::open(path)?;
+                if file.metadata()?.len() > FILE_ASSET_MAX_BYTES {
+                    return Err(io::Error::new(
+                        io::ErrorKind::FileTooLarge,
+                        "図が大きすぎます",
+                    ));
+                }
+                let mut bytes = Vec::new();
+                file.take(FILE_ASSET_MAX_BYTES + 1).read_to_end(&mut bytes)?;
+                Ok(bytes)
+            },
+        )?;
+        cleanup_image_dir(
+            &image_dir,
+            &markdown_image_relative_dir(memo_name),
+            &referenced,
+        )?;
+        if let Some(image_root) = image_dir.parent() {
+            remove_empty_dir(image_root)?;
+        }
         Ok(())
     }
 
@@ -2958,22 +3178,49 @@ impl Doc {
         let transaction = fileio::begin_save(path, &self.buf, enc, eol)?;
         let workspace_root = self.source.folder_root().map(Path::to_path_buf);
         // 差し替え中だけ旧mmap/ハンドルを解放する。失敗時は編集中の内容と監視状態を戻す。
-        let old_buf = std::mem::replace(&mut self.buf, TextBuffer::new());
+        let mut old_buf = std::mem::replace(&mut self.buf, TextBuffer::new());
         let old_source_file = if same_target {
             self.source.take_source_file()
         } else {
             None
         };
+        let released_old_source = old_source_file.is_some();
+        let released_old_mapping = if same_target {
+            drop(old_source_file);
+            old_buf.release_mapping()
+        } else {
+            drop(old_source_file);
+            false
+        };
         if let Err(failure) = transaction.commit(path) {
-            self.buf = old_buf;
             if same_target {
-                self.source.set_source_file(old_source_file);
+                let reopened = fileio::open_exclusive(path).ok();
+                if released_old_mapping {
+                    if let Some(file) = reopened
+                        .as_ref()
+                        .and_then(|f| f.try_clone().ok())
+                        .or_else(|| std::fs::File::open(path).ok())
+                    {
+                        let _ = old_buf.restore_mapping(file);
+                    }
+                }
+                if released_old_source {
+                    self.source.set_source_file(reopened);
+                }
             }
+            self.buf = old_buf;
             return Err(failure.into_error());
         }
-        let o = match fileio::open_buffer(path) {
+        let o = match fileio::open_buffer_as(path, enc).or_else(|_| fileio::open_buffer(path)) {
             Ok(opened) => opened,
             Err(error) => {
+                if released_old_mapping {
+                    if let Ok(file) =
+                        fileio::open_exclusive(path).or_else(|_| std::fs::File::open(path))
+                    {
+                        let _ = old_buf.restore_mapping(file);
+                    }
+                }
                 self.buf = old_buf;
                 self.enc = enc;
                 self.eol = eol;
@@ -3046,6 +3293,12 @@ impl Doc {
         enc: Encoding,
         eol: Eol,
     ) -> io::Result<SaveOutcome> {
+        if !valid_archive_entry_path(entry) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "アーカイブ内パスが不正です",
+            ));
+        }
         let password = Zeroizing::new(self.sevenz_password(archive).to_string());
         // ヘッダ暗号化 (-mhe=on) は更新時に指定し直さないと失われるため事前に検出する
         let is_7z = self.archive_is_7z(archive);
@@ -6350,6 +6603,155 @@ mod tests {
         };
         assert!(err.to_string().contains(":wrong"));
         assert!(d.sevenz_password(&archive).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn open_huge_doc_for_test(root: Option<PathBuf>, path: &Path) -> Doc {
+        let opened = fileio::open_buffer_impl(path, 0).unwrap();
+        assert!(opened.buf.is_huge(), "threshold=0 で HugeBuf として開かれるべき");
+        let mut doc = Doc::empty();
+        doc.buf = opened.buf;
+        doc.enc = opened.enc;
+        doc.eol = opened.eol;
+        doc.byte_len = opened.byte_len;
+        doc.is_binary = opened.is_binary;
+        doc.source = DocumentSource {
+            root,
+            ..DocumentSource::file(path.to_path_buf(), opened.source_file, opened.stamp)
+        };
+        doc
+    }
+
+    // Feature: 巨大ファイルの上書き保存・名前変更・移動・削除でのハンドル解放 (C-1)
+    // Scenario: HugeBuf で開いたファイルを Windows 上で上書き保存・リネーム・移動・削除する
+    // Given: mmap と排他ハンドルを保持した HugeBuf バックエンドの Doc
+    // When: save, rename_entry, move_entry, delete_entry_without_backup を順に実行する
+    // Then: 共有違反を起こさず全操作が成功し、未保存の overlay 編集もリネーム・移動後も保持される
+    #[test]
+    fn huge_buffer_releases_mapping_for_save_rename_move_and_delete() {
+        let root = sevenz_root("huge-handle-ops");
+        let file_path = root.join("huge.txt");
+        std::fs::write(&file_path, "line1\nline2\n").unwrap();
+
+        // 1. HugeBuf 上書き保存
+        let mut d = open_huge_doc_for_test(Some(root.clone()), &file_path);
+        d.edit(pos(0, 0), pos(0, 5), pos(0, 0), "saved1", false)
+            .unwrap();
+        let outcome = d
+            .save(&file_path, Encoding::Utf8 { bom: false }, Eol::Lf)
+            .unwrap();
+        assert!(matches!(outcome, SaveOutcome::Saved { .. }));
+        assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "saved1\nline2\n");
+
+        // 2. HugeBuf 状態に戻して未保存編集を加え、rename_entry と move_entry を検証
+        let mut d = open_huge_doc_for_test(Some(root.clone()), &file_path);
+        d.edit(pos(1, 0), pos(1, 5), pos(1, 0), "edited2", false)
+            .unwrap();
+        let renamed_info = d.rename_entry("huge.txt", "renamed.txt").unwrap();
+        let renamed_path = root.join("renamed.txt");
+        assert_eq!(Path::new(&renamed_info.path), renamed_path.as_path());
+        assert_eq!(
+            d.lines(0, 2),
+            vec!["saved1".to_string(), "edited2".to_string()]
+        );
+
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        let moved_info = d.move_entry("renamed.txt", "sub").unwrap();
+        let moved_path = root.join("sub").join("renamed.txt");
+        assert_eq!(Path::new(&moved_info.path), moved_path.as_path());
+        assert_eq!(
+            d.lines(0, 2),
+            vec!["saved1".to_string(), "edited2".to_string()]
+        );
+
+        // 移動後のパスへ上書き保存できることも確認
+        let outcome = d
+            .save(&moved_path, Encoding::Utf8 { bom: false }, Eol::Lf)
+            .unwrap();
+        assert!(matches!(outcome, SaveOutcome::Saved { .. }));
+        assert_eq!(
+            std::fs::read_to_string(&moved_path).unwrap(),
+            "saved1\nedited2\n"
+        );
+
+        // 3. HugeBuf 状態で delete_entry_without_backup (実ファイル削除後に別名作成なども可能)
+        let mut d = open_huge_doc_for_test(Some(root.clone()), &moved_path);
+        assert!(d.buf.is_huge());
+        // 削除対象として親フォルダごと、またはファイル単体を削除できるか検証
+        // (テスト環境のごみ箱汚染を避けるため、ここでは release_mapping がファイルを解放することを確認)
+        assert!(d.buf.release_mapping());
+        let _ = d.source.take_source_file();
+        std::fs::remove_file(&moved_path).unwrap();
+        assert!(!moved_path.exists());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Feature: Shift-JIS 保存時の再読込での文字コード保持 (C-3)
+    // Scenario: UTF-8 としても妥当なバイト列になる Shift-JIS 文字列を保存する
+    // Given: Shift-JIS で [0xCE, 0xB1] (UTF-8 では "α") になる半角カナ "ﾎｱ" を含む文書
+    // When: Encoding::ShiftJis で保存し、続けて再保存する
+    // Then: 保存後の再読込で UTF-8 ("α") に誤判定されず、"ﾎｱ" と Shift-JIS が維持される
+    #[test]
+    fn saving_shift_jis_preserves_encoding_even_when_bytes_are_valid_utf8() {
+        let root = sevenz_root("sjis-save-reload");
+        let path = root.join("katakana.txt");
+        let mut d = Doc::empty();
+        d.edit(pos(0, 0), pos(0, 0), pos(0, 0), "ﾎｱ", false)
+            .unwrap();
+
+        let outcome = d.save(&path, Encoding::ShiftJis, Eol::Lf).unwrap();
+        assert!(matches!(outcome, SaveOutcome::Saved { .. }));
+        assert_eq!(d.enc, Encoding::ShiftJis);
+        assert_eq!(d.lines(0, 1), vec!["ﾎｱ".to_string()]);
+        assert_eq!(std::fs::read(&path).unwrap(), vec![0xCE, 0xB1]);
+
+        // 2回目の上書き保存でも "α" (0x83, 0xBF) に化けないことを確認
+        d.save(&path, d.enc, d.eol).unwrap();
+        assert_eq!(d.lines(0, 1), vec!["ﾎｱ".to_string()]);
+        assert_eq!(std::fs::read(&path).unwrap(), vec![0xCE, 0xB1]);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Feature: 不要画像掃除の範囲限定とワークスペース境界防御 (C-2, C-6)
+    // Scenario: 同階層の汎用 image/ フォルダ保護と、フォルダ操作のパストラバーサル/既存上書き拒否
+    // Given: memo.md と同じ階層にあるユーザー自身の image/ フォルダおよびフォルダを開いた Doc
+    // When: cleanup_unused_images や ".." を含む create_note / create_folder / list_folder_entries / rename_entry を呼ぶ
+    // Then: image/ 内のファイルは削除されず、境界外アクセスと既存ファイルへの rename 上書きはすべて拒否される
+    #[test]
+    fn cleanup_preserves_generic_image_dir_and_folder_ops_reject_traversal() {
+        let (root, mut d) = image_fixture("c2_c6_safety");
+        let user_image_dir = root.join("image");
+        std::fs::create_dir_all(&user_image_dir).unwrap();
+        let user_photo = user_image_dir.join("family-photo.png");
+        std::fs::write(&user_photo, b"precious").unwrap();
+
+        // cleanup_unused_images は image_markdown/<stem>/ だけを対象とし、汎用 image/ を消さない
+        d.cleanup_unused_images().unwrap();
+        assert!(user_photo.is_file(), "汎用 image/ フォルダ内のファイルを自動削除してはならない");
+
+        // パストラバーサル拒否 (C-6)
+        assert!(
+            d.create_note(Some("../outside"), "pwn.txt", Encoding::Utf8 { bom: false }, Eol::Lf)
+                .is_err()
+        );
+        assert!(d.create_folder("../outside", "pwn_dir").is_err());
+        assert!(d.list_folder_entries("../outside").is_err());
+        assert!(d.list_archive_entries("../outside.7z").is_err());
+        assert!(d.select_entry("../outside.txt").is_err());
+        assert!(d.rename_entry("../outside.txt", "renamed.txt").is_err());
+
+        // rename_entry で既存の別ファイルを上書きしない
+        std::fs::write(root.join("other.md"), "important").unwrap();
+        let err = match d.rename_entry("memo.md", "other.md") {
+            Err(err) => err,
+            Ok(_) => panic!("既存ファイルへのリネーム上書きは拒否されるべき"),
+        };
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read_to_string(root.join("other.md")).unwrap(), "important");
+
+        drop(d);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

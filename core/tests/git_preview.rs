@@ -527,3 +527,37 @@ fn merge_first_parent_and_read_only() {
     assert!(diff.text.contains("+side value"));
     assert_eq!(snapshot(&repo.0.join(".git")), before);
 }
+
+// Feature: ローカル .git/config に仕込まれたコマンド実行の無害化 (C-4)
+// Scenario: core.fsmonitor と filter.*.clean が設定されたリポジトリの変更一覧と差分を読む
+// Given: 実行されるとマーカーファイルを作るコマンドが .git/config と .gitattributes に設定されたリポジトリ
+// When: read_git_history, read_git_worktree_files, read_git_worktree_diff を呼ぶ
+// Then: 外部フィルタや fsmonitor は一切実行されず、マーカーファイルも生成されない
+#[test]
+fn local_git_config_filters_and_fsmonitor_are_never_executed() {
+    let repo = Repo::new();
+    fs::write(repo.0.join(".gitattributes"), "*.txt filter=evil\n").unwrap();
+    repo.commit("base\n", "base");
+
+    let marker = repo.0.join("pwned-marker.txt");
+    let marker_str = marker.to_string_lossy().replace('\\', "/");
+    let command = format!("sh -c \"echo pwned > '{marker_str}'\"");
+
+    repo.git(&["config", "--local", "core.fsmonitor", &command]);
+    repo.git(&["config", "--local", "filter.evil.clean", &command]);
+    repo.git(&["config", "--local", "filter.evil.smudge", &command]);
+    repo.git(&["config", "--local", "filter.evil.process", &command]);
+    repo.git(&["config", "--local", "filter.evil.required", "true"]);
+
+    // index 削除を伴う worktree 検査 (hash-object --path 経路) も通す
+    fs::remove_file(repo.0.join(".git/index")).unwrap();
+    fs::write(repo.0.join("note.txt"), "changed\n").unwrap();
+
+    let history = read_git_history(&repo.path(), None, 0).unwrap();
+    assert_eq!(history.commits.len(), 1);
+    let files = read_git_worktree_files(&repo.path()).unwrap();
+    assert!(files.iter().any(|f| f.path == "note.txt"));
+    let diff = read_git_worktree_diff(&repo.path(), "note.txt").unwrap();
+    assert!(diff.text.contains("+changed"));
+    assert!(!marker.exists(), "ローカル .git/config のコマンドが実行されてはならない");
+}
