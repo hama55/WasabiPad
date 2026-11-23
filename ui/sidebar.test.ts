@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Sidebar, type SidebarPorts } from "./sidebar";
 import { reopenFolderPreservingTree } from "./path-opener";
+import { setSetting } from "./settings";
 import { DEFAULT_SEARCH_OPTIONS } from "./workspace-search-options";
 import type { FolderEntry, WorkspaceSearchResult } from "./api";
 
@@ -2015,5 +2016,168 @@ describe("Feature: Sidebar", () => {
     await expanding;
 
     expect(host.textContent).toContain("child.txt");
+  });
+
+  // Feature: ファイルツリー幅自動調整時の名前省略表示
+  // Scenario: 幅を自動調整のオン・オフに応じて省略表示クラスと横スクロール位置を切り替える
+  // Given: 横スクロールが発生しているファイルツリーを表示している
+  // When: 幅を自動調整をオンにし、その後オフにする
+  // Then: オンの間は .fv-tree に .fv-auto-fit が付いて scrollLeft が 0 になり、オフにすると .fv-auto-fit が外れる
+  it("Scenario: 幅を自動調整のオン・オフで省略表示クラスと横スクロール位置を切り替える", () => {
+    const { host, sidebar } = mount();
+    sidebar.setEntries([{ name: "very-long-file-name-that-overflows-sidebar-width.txt", is_dir: false, is_archive: false }]);
+    const tree = host.querySelector<HTMLElement>(".fv-tree")!;
+    const checkbox = host.querySelector<HTMLInputElement>('input[aria-label="幅を自動調整"]')!;
+    tree.scrollLeft = 120;
+    expect(tree.classList.contains("fv-auto-fit")).toBe(false);
+
+    checkbox.click();
+    expect(tree.classList.contains("fv-auto-fit")).toBe(true);
+    expect(tree.scrollLeft).toBe(0);
+
+    tree.scrollLeft = 80;
+    sidebar.setEntries([{ name: "another-very-long-file-name.txt", is_dir: false, is_archive: false }]);
+    expect(tree.scrollLeft).toBe(0);
+
+    checkbox.click();
+    expect(tree.classList.contains("fv-auto-fit")).toBe(false);
+  });
+
+  // Feature: ファイルツリー幅自動調整時の名前省略表示
+  // Scenario: 起動時設定が幅を自動調整オンなら初期状態から省略表示クラスを適用する
+  // Given: 設定 treeAutoFitWidth が true である
+  // When: サイドバーを生成してファイル一覧を設定する
+  // Then: チェックボックスがオンになり、.fv-tree に初期状態から .fv-auto-fit が付く
+  it("Scenario: 起動時設定が自動調整オンなら初期状態から省略表示クラスを適用する", () => {
+    setSetting("treeAutoFitWidth", true);
+    try {
+      const { host, sidebar } = mount();
+      const tree = host.querySelector<HTMLElement>(".fv-tree")!;
+      const checkbox = host.querySelector<HTMLInputElement>('input[aria-label="幅を自動調整"]')!;
+      expect(checkbox.checked).toBe(true);
+      expect(tree.classList.contains("fv-auto-fit")).toBe(true);
+      sidebar.setEntries([{ name: "long-file-name.txt", is_dir: false, is_archive: false }]);
+      expect(tree.classList.contains("fv-auto-fit")).toBe(true);
+    } finally {
+      setSetting("treeAutoFitWidth", false);
+    }
+  });
+
+  // Feature: ファイルツリー幅自動調整時の名前省略表示
+  // Scenario: 自然幅の計測中だけ省略表示クラスを外し計測後に元へ戻す
+  // Given: 幅を自動調整がオンの状態でファイル一覧を表示している
+  // When: fitWidth() で .fv-folder-rows.getBoundingClientRect() を計測する（正常終了と例外発生）
+  // Then: 計測呼び出し時点のみ .fv-auto-fit が外れて rows.style.minWidth が "0" となり、終了後は .fv-auto-fit と元の minWidth が復元される
+  it("Scenario: 自然幅の計測中だけ省略表示クラスを外し正常時・例外時ともに元へ戻す", () => {
+    const onAutoFitChange = vi.fn();
+    const { host, sidebar } = mount({ onAutoFitChange });
+    sidebar.setEntries([{ name: "very-long-file-name.txt", is_dir: false, is_archive: false }]);
+    const tree = host.querySelector<HTMLElement>(".fv-tree")!;
+    const rows = host.querySelector<HTMLElement>(".fv-folder-rows")!;
+    rows.style.minWidth = "120px";
+
+    const observed: Array<{ hasAutoFit: boolean; minWidth: string }> = [];
+    const rectSpy = vi.spyOn(rows, "getBoundingClientRect").mockImplementation(() => {
+      observed.push({ hasAutoFit: tree.classList.contains("fv-auto-fit"), minWidth: rows.style.minWidth });
+      return { width: 420 } as DOMRect;
+    });
+
+    try {
+      sidebar.setAutoFit(true);
+      expect(observed).toEqual([{ hasAutoFit: false, minWidth: "0px" }]);
+      expect(tree.classList.contains("fv-auto-fit")).toBe(true);
+      expect(rows.style.minWidth).toBe("120px");
+      expect(onAutoFitChange).toHaveBeenLastCalledWith(true, 438);
+
+      rectSpy.mockImplementationOnce(() => {
+        observed.push({ hasAutoFit: tree.classList.contains("fv-auto-fit"), minWidth: rows.style.minWidth });
+        throw new Error("rect failed");
+      });
+      expect(() => sidebar.fitWidth()).toThrow("rect failed");
+      expect(observed).toHaveLength(2);
+      expect(observed[1]).toEqual({ hasAutoFit: false, minWidth: "0px" });
+      expect(tree.classList.contains("fv-auto-fit")).toBe(true);
+      expect(rows.style.minWidth).toBe("120px");
+    } finally {
+      rectSpy.mockRestore();
+      sidebar.setAutoFit(false);
+    }
+  });
+
+  // Feature: ファイルツリー幅自動調整時の名前省略表示
+  // Scenario: 検索結果表示中に自動調整をオンにしても通常ツリー復帰時に適用される
+  // Given: フォルダ検索結果を表示している
+  // When: 幅を自動調整をオンにしてから検索を閉じ、通常ツリーへ戻る
+  // Then: 検索中は onAutoFitChange を呼ばず、通常ツリー復帰時に .fv-auto-fit が付いた状態で fitWidth() が通知される
+  it("Scenario: 検索結果表示中に自動調整をオンにしても通常ツリー復帰時に適用される", async () => {
+    const onAutoFitChange = vi.fn();
+    const onSearch = vi.fn(async () => ({
+      results: [{
+        rel_path: "long-file.txt",
+        line: 1,
+        col: 1,
+        preview: "needle",
+        highlights: [[0, 6]] as [number, number][],
+        is_filename: false,
+        score: 0,
+      }],
+      scanned_files: 1,
+      skipped_files: 0,
+      hit_file_limit: false,
+      hit_result_limit: false,
+      pattern_error: null,
+      file_name_match_mode: "strict" as const,
+    }));
+    const rectSpy = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ width: 350 } as DOMRect);
+    const { host, sidebar } = mount({ onAutoFitChange, onSearch });
+    try {
+      sidebar.setWorkspaceSearch("C:\\work");
+      sidebar.setEntries([{ name: "long-file.txt", is_dir: false, is_archive: false }]);
+      const searchInput = host.querySelector<HTMLInputElement>(".ws-search-row input")!;
+      searchInput.value = "needle";
+      searchInput.dispatchEvent(new Event("input"));
+      await vi.waitFor(() => expect(host.querySelector(".ws-group")).not.toBeNull());
+
+      sidebar.setAutoFit(true);
+      expect(onAutoFitChange).not.toHaveBeenCalled();
+      expect(host.querySelector(".fv-tree")!.classList.contains("fv-auto-fit")).toBe(true);
+
+      searchInput.value = "";
+      searchInput.dispatchEvent(new Event("input"));
+      await vi.waitFor(() => expect(host.querySelector(".fv-folder-rows")).not.toBeNull());
+      expect(host.querySelector(".fv-tree")!.classList.contains("fv-auto-fit")).toBe(true);
+      expect(onAutoFitChange).toHaveBeenLastCalledWith(true, 368);
+    } finally {
+      rectSpy.mockRestore();
+      sidebar.setAutoFit(false);
+    }
+  });
+
+  // Feature: ファイルツリー行のフル名確認
+  // Scenario: 通常行に元の名前のツールチップを付け、名前変更入力中は付けない
+  // Given: 長い名前のファイルとフォルダをツリーに表示している
+  // When: 通常表示とインライン名前変更表示を切り替える
+  // Then: 通常表示の .fv-row には完全な label が title 属性に設定され、名前変更中の .fv-row には title 属性が設定されない
+  it("Scenario: 通常行に完全な名前のツールチップを付け名前変更入力中は付けない", () => {
+    const longFile = "very-long-file-name-for-tooltip-verification.md";
+    const longDir = "very-long-directory-name-for-tooltip-verification";
+    const { host, sidebar } = mount({ onRenameEntry: vi.fn() });
+    sidebar.setWorkspaceSearch("C:\\work");
+    sidebar.setEntries([
+      { name: longDir, is_dir: true, is_archive: false },
+      { name: longFile, is_dir: false, is_archive: false },
+    ]);
+
+    const dirRow = host.querySelector<HTMLElement>(`[data-rel-path="${longDir}"]`)!;
+    const fileRow = host.querySelector<HTMLElement>(`[data-rel-path="${longFile}"]`)!;
+    expect(dirRow.title).toBe(longDir);
+    expect(fileRow.title).toBe(longFile);
+
+    fileRow.click();
+    host.querySelector<HTMLElement>(".fv-tree")!
+      .dispatchEvent(new KeyboardEvent("keydown", { key: "F2", bubbles: true, cancelable: true }));
+    const renamingRow = host.querySelector<HTMLElement>(`[data-rel-path="${longFile}"]`)!;
+    expect(renamingRow.querySelector(".fv-rename-input")).not.toBeNull();
+    expect(renamingRow.getAttribute("title")).toBeNull();
   });
 });

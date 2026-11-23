@@ -236,3 +236,19 @@ describe("Feature: file tree trailing padding", () => {
     expect(style).toMatch(/\.fv-tree-bottom-padding\s*\{[^}]*flex:\s*none;/s);
   });
 });
+
+describe("Feature: 自動調整時のファイル名省略と横スクロール抑止", () => {
+  // Scenario: 幅を自動調整オン時は横スクロールを出さずファイル名を省略表示する
+  // Given: style.css のファイルツリーと .fv-auto-fit 関連規則を読み込む
+  // When: 通常時と .fv-tree.fv-auto-fit 付与時の CSS 規則を検査する
+  // Then: 通常時は横スクロール可能な max-content を維持し、.fv-auto-fit 時は横スクロールを抑止して名前とリネーム欄を幅内へ収める
+  it("Scenario: 幅を自動調整オン時は横スクロールを出さずファイル名を省略表示する", () => {
+    expect(style).toMatch(/\.fv-folder-rows\s*\{[^}]*width:\s*max-content;/s);
+    expect(style).toMatch(/\.fv-name\s*\{[^}]*flex:\s*1 0 auto;/s);
+    expect(style).toMatch(/\.fv-tree\.fv-auto-fit\s*\{[^}]*overflow-x:\s*hidden;/s);
+    expect(style).toMatch(/\.fv-tree\.fv-auto-fit\s+\.fv-folder-rows\s*\{[^}]*width:\s*100%;[^}]*min-width:\s*0;/s);
+    expect(style).toMatch(/\.fv-tree\.fv-auto-fit\s+\.fv-folder-rows\s*>\s*\.fv-row\s*\{[^}]*width:\s*100%;[^}]*min-width:\s*0;/s);
+    expect(style).toMatch(/\.fv-tree\.fv-auto-fit\s+\.fv-name\s*\{[^}]*flex:\s*1 1 0;[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;/s);
+    expect(style).toMatch(/\.fv-tree\.fv-auto-fit\s+\.fv-rename-input\s*\{[^}]*flex:\s*1 1 0;[^}]*width:\s*auto;[^}]*max-width:\s*320px;/s);
+  });
+});

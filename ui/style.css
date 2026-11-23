@@ -409,6 +409,11 @@ body.preview-resizing iframe { pointer-events: none; }
 .fv-folder-rows { width: max-content; min-width: 100%; }
 .fv-folder-rows > .fv-row { width: auto; }
 .fv-name { flex: 1 0 auto; min-width: 0; }
+.fv-tree.fv-auto-fit { overflow-x: hidden; }
+.fv-tree.fv-auto-fit .fv-folder-rows { width: 100%; min-width: 0; }
+.fv-tree.fv-auto-fit .fv-folder-rows > .fv-row { width: 100%; min-width: 0; }
+.fv-tree.fv-auto-fit .fv-name { flex: 1 1 0; overflow: hidden; text-overflow: ellipsis; }
+.fv-tree.fv-auto-fit .fv-rename-input { flex: 1 1 0; width: auto; max-width: 320px; }
 .fv-metadata { display: flex; gap: 2px; flex: none; color: var(--fg-dim); font-size: 11px; margin-left: 6px; }
 .fv-modified { width: 16ch; flex: none; text-align: left; }
 .fv-modified-value { display: inline-flex; gap: 1ch; white-space: nowrap; }

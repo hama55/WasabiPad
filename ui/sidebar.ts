@@ -187,6 +187,7 @@ export class Sidebar {
     });
     this.tree = document.createElement("div");
     this.tree.className = "fv-tree";
+    this.syncAutoFitClass();
     this.tree.tabIndex = 0;
     this.tree.addEventListener("keydown", (event) => this.onTreeKeyDown(event));
     this.tree.addEventListener("click", (event) => {
@@ -800,16 +801,25 @@ export class Sidebar {
     this.createActions.hidden = this.panel.showing;
     this.tree.replaceChildren(this.panel.showing ? this.panel.renderTree() : this.folderTree());
     this.tree.scrollTop = scrollTop;
-    this.tree.scrollLeft = scrollLeft;
+    this.tree.scrollLeft = this.autoFit ? 0 : scrollLeft;
     if (this.autoFit) this.fitWidth();
+  }
+
+  private syncAutoFitClass() {
+    this.tree.classList.toggle("fv-auto-fit", this.autoFit);
   }
 
   setAutoFit(enabled: boolean) {
     this.autoFit = enabled;
     this.autoFitInput.checked = enabled;
     setSetting("treeAutoFitWidth", enabled);
-    if (enabled) this.fitWidth();
-    else this.onAutoFitChange?.(false, 0);
+    this.syncAutoFitClass();
+    if (enabled) {
+      this.tree.scrollLeft = 0;
+      this.fitWidth();
+    } else {
+      this.onAutoFitChange?.(false, 0);
+    }
   }
 
   fitWidth() {
@@ -817,9 +827,15 @@ export class Sidebar {
     const rows = this.tree.querySelector<HTMLElement>(".fv-folder-rows");
     if (!rows) return;
     const previous = rows.style.minWidth;
+    this.tree.classList.remove("fv-auto-fit");
     rows.style.minWidth = "0";
-    const width = Math.ceil(rows.getBoundingClientRect().width) + 18;
-    rows.style.minWidth = previous;
+    let width: number;
+    try {
+      width = Math.ceil(rows.getBoundingClientRect().width) + 18;
+    } finally {
+      rows.style.minWidth = previous;
+      this.syncAutoFitClass();
+    }
     this.onAutoFitChange?.(true, width);
   }
 
@@ -1302,6 +1318,7 @@ export class Sidebar {
         });
         div.appendChild(input);
       } else {
+        div.title = r.label;
         const name = document.createElement("span");
         name.className = "fv-name";
         name.textContent = r.label;
