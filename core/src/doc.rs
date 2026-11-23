@@ -392,6 +392,15 @@ fn restore_target_file(target: &mut Target, released: bool) {
     }
 }
 
+fn read_archive_file_with_limit(archive: &Path, limit: u64) -> io::Result<Vec<u8>> {
+    let file = std::fs::File::open(archive)?;
+    fileio::read_locked_limit(
+        &file,
+        limit,
+        "256MBを超えるアーカイブは直接展開できません",
+    )
+}
+
 fn restore_target_and_mapping(
     target: &mut Target,
     buf: &mut TextBuffer,
@@ -1704,6 +1713,17 @@ impl Doc {
             .extract(archive, entry, self.sevenz_password(archive))
         {
             Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::FileTooLarge => {
+                return Ok((
+                    format!(
+                        "(サイズ超過のためスキップ: {}超)",
+                        crate::protocol::format_byte_size(crate::ziptext::MAX_ENTRY as u64)
+                    ),
+                    None,
+                    false,
+                    entry_open_as,
+                ));
+            }
             Err(error)
                 if self.archive_port.supports_legacy_zip_fallback(&classification_path(
                     archive,
@@ -1713,7 +1733,7 @@ impl Doc {
             {
                 // テスト用の最小 ZIP や一部の古い ZIP は CRC 情報が厳密でないことがある。
                 // 7z で読めない場合だけ既存の軽量パーサへ戻し、通常の ZIP 互換性を保つ。
-                let raw = std::fs::read(archive)?;
+                let raw = read_archive_file_with_limit(archive, fileio::MAX_ARCHIVE_BYTES)?;
                 let decoded = crate::archive::decode_one_entry(&raw, entry).ok_or(error)?;
                 let text = decoded.text;
                 let is_binary = decoded.is_binary;
@@ -1725,17 +1745,6 @@ impl Doc {
                     text.clone(),
                     editable.then_some((Encoding::Utf8 { bom: false }, fileio::detect_eol(&text))),
                     is_binary,
-                    entry_open_as,
-                ));
-            }
-            Err(error) if error.kind() == io::ErrorKind::FileTooLarge => {
-                return Ok((
-                    format!(
-                        "(サイズ超過のためスキップ: {}超)",
-                        crate::protocol::format_byte_size(crate::ziptext::MAX_ENTRY as u64)
-                    ),
-                    None,
-                    false,
                     entry_open_as,
                 ));
             }
@@ -1946,7 +1955,6 @@ impl Doc {
         d.source.root = Some(root);
         d.enc = enc;
         d.eol = eol;
-        d.deleted_entries = std::mem::take(&mut self.deleted_entries);
         let path_str = path.to_string_lossy().into_owned();
         let info = match d.info(path_str) {
             Ok(info) => info,
@@ -1955,6 +1963,8 @@ impl Doc {
                 return Err(error);
             }
         };
+        d.sevenz_passwords = std::mem::take(&mut self.sevenz_passwords);
+        d.deleted_entries = std::mem::take(&mut self.deleted_entries);
         *self = d;
         Ok(info)
     }
@@ -6919,5 +6929,103 @@ mod tests {
         assert_eq!(buf.line(2).as_ref(), "");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Feature: レガシー ZIP フォールバックの読み込み上限
+    // Scenario: 上限を超えるアーカイブファイルを直接読み込み前に拒否する
+    // Given: サイズ上限を超えるアーカイブファイル
+    // When: read_archive_file_with_limit に小さい上限を渡す
+    // Then: FileTooLarge エラーで拒否される
+    #[test]
+    fn legacy_zip_fallback_enforces_archive_size_limit() {
+        let dir = std::env::temp_dir().join(format!("wasabipad_zip_limit_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let archive = dir.join("big.zip");
+        std::fs::write(&archive, vec![b'P'; 64]).unwrap();
+
+        let err = read_archive_file_with_limit(&archive, 16).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::FileTooLarge);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Feature: アーカイブ展開時の FileTooLarge 優先判定
+    // Scenario: .zip の extract が FileTooLarge を返したときレガシー ZIP フォールバックへ落ちない
+    // Given: extract が FileTooLarge を返し supports_legacy_zip_fallback が true の ArchivePort
+    // When: decode_archive_entry_with_open_as を呼び出す
+    // Then: アーカイブ本文を読み込まず、サイズ超過スキップの案内テキストを返す
+    #[test]
+    fn zip_extract_file_too_large_skips_legacy_fallback() {
+        struct TooLargeZipPort;
+        impl ArchivePort for TooLargeZipPort {
+            fn supports_path(&self, _: &Path) -> bool {
+                true
+            }
+            fn list(&self, _: &Path, _: &str) -> io::Result<Vec<String>> {
+                Ok(vec!["huge.txt".into()])
+            }
+            fn extract(&self, _: &Path, _: &str, _: &str) -> io::Result<Vec<u8>> {
+                Err(io::Error::new(io::ErrorKind::FileTooLarge, "too large"))
+            }
+            fn preserves_header_encryption(&self, _: &Path, _: &str, _: bool) -> io::Result<bool> {
+                Ok(false)
+            }
+            fn update_bytes(&self, _: &Path, _: &str, _: &[u8], _: &str, _: bool) -> io::Result<()> {
+                Ok(())
+            }
+            fn delete(&self, _: &Path, _: &[String], _: &str) -> io::Result<()> {
+                Ok(())
+            }
+            fn is_password_error(&self, _: &io::Error) -> bool {
+                false
+            }
+            fn cleanup_stale_workspaces(&self, _: &Path) -> io::Result<()> {
+                Ok(())
+            }
+            fn supports_legacy_zip_fallback(&self, _: &Path) -> bool {
+                true
+            }
+        }
+        let mut d = Doc::empty_with_archive_port(Arc::new(TooLargeZipPort));
+        // 存在しないパスを渡すことで、レガシーフォールバックのファイル読み込みが走らないことも同時に保証する
+        let (text, editable, is_binary, _) = d
+            .decode_archive_entry_with_open_as(
+                Path::new("nonexistent.zip"),
+                "huge.txt",
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(text.starts_with("(サイズ超過のためスキップ:"));
+        assert!(editable.is_none());
+        assert!(!is_binary);
+    }
+
+    // Feature: create_note のアーカイブパスワード保持
+    // Scenario: フォルダ内で新規ノートを作成しても既存のアーカイブパスワードキャッシュを失わない
+    // Given: フォルダを開き、アーカイブのパスワードをキャッシュしている Doc
+    // When: create_note で新しいメモを作成する
+    // Then: 作成後の Doc にも既存のアーカイブパスワードがそのまま引き継がれる
+    #[test]
+    fn create_note_preserves_cached_archive_passwords() {
+        let root = std::env::temp_dir().join(format!("wasabipad_create_note_pw_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let archive = root.join("secret.7z");
+        std::fs::write(&archive, b"placeholder").unwrap();
+
+        let mut d = Doc::open(&root).unwrap();
+        d.sevenz_passwords
+            .insert(archive.clone(), Zeroizing::new("top-secret".to_string()));
+        assert_eq!(d.sevenz_password(&archive), "top-secret");
+
+        d.create_note(None, "new_note.md", Encoding::Utf8 { bom: false }, Eol::Lf)
+            .unwrap();
+        assert_eq!(d.sevenz_password(&archive), "top-secret");
+
+        drop(d);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

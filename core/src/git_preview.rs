@@ -259,84 +259,122 @@ fn bounded_diff(bytes: &[u8], mut truncated: bool) -> GitFileDiff {
     }
 }
 
-fn worktree_run(path: &str, args: &[&str], limit: usize) -> Result<(Vec<u8>, bool), String> {
-    run_command(worktree_command(path)?.args(args), limit, false)
+struct WorktreeContext {
+    dir: PathBuf,
+    root: PathBuf,
+    root_str: String,
+    config_args: Vec<String>,
 }
 
-fn worktree_command(path: &str) -> Result<Command, String> {
-    let dir = git_dir(path)?;
-    let root = Path::new(path).parent().ok_or("作業フォルダがありません")?;
-    let root = root.to_str().ok_or("作業フォルダ名を読み込めません")?;
-    // Preserve Git's built-in line-ending rules without enabling global external filters.
-    let mut settings = command(&dir);
-    settings
-        .env_remove("GIT_CONFIG_NOSYSTEM")
-        .env_remove("GIT_CONFIG_GLOBAL")
-        .args([
+impl WorktreeContext {
+    fn new(path: &str) -> Result<Self, String> {
+        let dir = git_dir(path)?;
+        let root = Path::new(path)
+            .parent()
+            .ok_or("作業フォルダがありません")?
+            .to_path_buf();
+        let root_str = root
+            .to_str()
+            .ok_or("作業フォルダ名を読み込めません")?
+            .to_owned();
+        let mut config_args = Vec::new();
+        // Preserve Git's built-in line-ending rules without enabling global external filters.
+        let mut settings = command(&dir);
+        settings
+            .env_remove("GIT_CONFIG_NOSYSTEM")
+            .env_remove("GIT_CONFIG_GLOBAL")
+            .args([
+                "config",
+                "--null",
+                "--type=bool-or-str",
+                "--get-regexp",
+                "^core\\.(autocrlf|eol)$",
+            ]);
+        let (settings, truncated) = run_command(&mut settings, 65536, true)?;
+        if truncated {
+            return Err("Gitの改行設定が大きすぎます".into());
+        }
+        for setting in settings
+            .split(|byte| *byte == 0)
+            .filter(|item| !item.is_empty())
+        {
+            let setting = std::str::from_utf8(setting).map_err(|_| "Gitの改行設定が不正です")?;
+            let (key, value) = setting.split_once('\n').ok_or("Gitの改行設定が不正です")?;
+            if !matches!(
+                (key, value),
+                ("core.autocrlf", "true" | "false" | "input")
+                    | ("core.eol", "lf" | "crlf" | "native")
+            ) {
+                return Err("Gitの改行設定が不正です".into());
+            }
+            config_args.push("-c".into());
+            config_args.push(format!("{key}={value}"));
+        }
+        // Neutralize any repository-local filter or diff driver commands in .git/config
+        // so read-only status/diff/hash-object cannot execute untrusted commands.
+        let mut local_filters = command(&dir);
+        local_filters.args([
             "config",
+            "--local",
             "--null",
-            "--type=bool-or-str",
+            "--name-only",
             "--get-regexp",
-            "^core\\.(autocrlf|eol)$",
+            "^(filter|diff)\\..*\\.(clean|smudge|process|required|command|textconv)$",
         ]);
-    let (settings, truncated) = run_command(&mut settings, 65536, true)?;
-    if truncated {
-        return Err("Gitの改行設定が大きすぎます".into());
-    }
-    let mut cmd = command(&dir);
-    for setting in settings
-        .split(|byte| *byte == 0)
-        .filter(|item| !item.is_empty())
-    {
-        let setting = std::str::from_utf8(setting).map_err(|_| "Gitの改行設定が不正です")?;
-        let (key, value) = setting.split_once('\n').ok_or("Gitの改行設定が不正です")?;
-        if !matches!(
-            (key, value),
-            ("core.autocrlf", "true" | "false" | "input") | ("core.eol", "lf" | "crlf" | "native")
-        ) {
-            return Err("Gitの改行設定が不正です".into());
+        let (filter_keys, filter_truncated) = run_command(&mut local_filters, 65536, true)?;
+        if filter_truncated {
+            return Err("Gitのフィルタ設定が大きすぎます".into());
         }
-        cmd.args(["-c", &format!("{key}={value}")]);
-    }
-    // Neutralize any repository-local filter or diff driver commands in .git/config
-    // so read-only status/diff/hash-object cannot execute untrusted commands.
-    let mut local_filters = command(&dir);
-    local_filters.args([
-        "config",
-        "--local",
-        "--null",
-        "--name-only",
-        "--get-regexp",
-        "^(filter|diff)\\..*\\.(clean|smudge|process|required|command|textconv)$",
-    ]);
-    let (filter_keys, filter_truncated) = run_command(&mut local_filters, 65536, true)?;
-    if filter_truncated {
-        return Err("Gitのフィルタ設定が大きすぎます".into());
-    }
-    for key in filter_keys
-        .split(|byte| *byte == 0)
-        .filter(|item| !item.is_empty())
-    {
-        let key = std::str::from_utf8(key).map_err(|_| "Gitのフィルタ設定が不正です")?;
-        let key = key.trim();
-        if key.is_empty() || key.contains(['=', '\n', '\r']) {
-            return Err("Gitのフィルタ設定が不正です".into());
+        for key in filter_keys
+            .split(|byte| *byte == 0)
+            .filter(|item| !item.is_empty())
+        {
+            let key = std::str::from_utf8(key).map_err(|_| "Gitのフィルタ設定が不正です")?;
+            let key = key.trim();
+            if key.is_empty() || key.contains(['=', '\n', '\r']) {
+                return Err("Gitのフィルタ設定が不正です".into());
+            }
+            config_args.push("-c".into());
+            if key.ends_with(".required") {
+                config_args.push(format!("{key}=false"));
+            } else {
+                config_args.push(format!("{key}="));
+            }
         }
-        if key.ends_with(".required") {
-            cmd.args(["-c", &format!("{key}=false")]);
-        } else {
-            cmd.args(["-c", &format!("{key}=")]);
-        }
+        Ok(Self {
+            dir,
+            root,
+            root_str,
+            config_args,
+        })
     }
-    cmd.current_dir(root).args(["--work-tree", root]);
-    Ok(cmd)
+
+    fn command(&self) -> Command {
+        let mut cmd = command(&self.dir);
+        cmd.args(&self.config_args);
+        cmd.current_dir(&self.root)
+            .args(["--work-tree", &self.root_str]);
+        cmd
+    }
+
+    fn run(&self, args: &[&str], limit: usize) -> Result<(Vec<u8>, bool), String> {
+        run_command(self.command().args(args), limit, false)
+    }
 }
 
 pub fn read_git_worktree_files(path: &str) -> Result<Vec<GitChangedFile>, String> {
-    let head = read_git_history(path, None, 0)?.head;
-    let mut files = if let Some(head) = &head {
-        let (bytes, truncated) = worktree_run(
-            path,
+    let ctx = WorktreeContext::new(path)?;
+    let (head, _) = resolve_head_and_branch(&ctx.dir, None)?;
+    read_git_worktree_files_with_context(path, &ctx, head.as_deref())
+}
+
+fn read_git_worktree_files_with_context(
+    path: &str,
+    ctx: &WorktreeContext,
+    head: Option<&str>,
+) -> Result<Vec<GitChangedFile>, String> {
+    let mut files = if let Some(head) = head {
+        let (bytes, truncated) = ctx.run(
             &[
                 "diff",
                 "--name-status",
@@ -355,14 +393,13 @@ pub fn read_git_worktree_files(path: &str) -> Result<Vec<GitChangedFile>, String
         }
         parse_changed_files(&bytes)?
     } else {
-        let (bytes, truncated) = worktree_run(path, &["ls-files", "-z", "--cached"], MAX_OUTPUT)?;
+        let (bytes, truncated) = ctx.run(&["ls-files", "-z", "--cached"], MAX_OUTPUT)?;
         if truncated {
             return Err("変更ファイル一覧が大きすぎます".into());
         }
         paths_as_added(&bytes)?
     };
-    let (bytes, truncated) = worktree_run(
-        path,
+    let (bytes, truncated) = ctx.run(
         &["ls-files", "-z", "--others", "--exclude-standard"],
         MAX_OUTPUT,
     )?;
@@ -372,22 +409,26 @@ pub fn read_git_worktree_files(path: &str) -> Result<Vec<GitChangedFile>, String
     files.extend(paths_as_added(&bytes)?);
     files.sort_by(|a, b| a.path.cmp(&b.path));
     files.dedup_by(|a, b| a.path == b.path);
-    let root = Path::new(path).parent().ok_or("作業フォルダがありません")?;
-    if let Some(head) = &head {
+    if let Some(head) = head {
+        let mut canonical_root: Option<PathBuf> = None;
         let mut net = Vec::new();
         for mut file in files {
-            if root.join(&file.path).is_file() && (file.status == "D" || file.status == "A") {
+            if ctx.root.join(&file.path).is_file() && (file.status == "D" || file.status == "A") {
                 if let Some(previous) = head_blob(path, head, &file.path)? {
-                    let target = root
+                    let target = ctx
+                        .root
                         .join(&file.path)
                         .canonicalize()
                         .map_err(|e| e.to_string())?;
-                    if !target.starts_with(root.canonicalize().map_err(|e| e.to_string())?) {
+                    let canon_root = match &canonical_root {
+                        Some(r) => r,
+                        None => canonical_root.insert(ctx.root.canonicalize().map_err(|e| e.to_string())?),
+                    };
+                    if !target.starts_with(canon_root) {
                         return Err("作業フォルダ外のファイルは表示できません".into());
                     }
                     let target_arg = git_path(&target)?;
-                    let (current, _) = worktree_run(
-                        path,
+                    let (current, _) = ctx.run(
                         &["hash-object", "--path", &file.path, "--", &target_arg],
                         MAX_OUTPUT,
                     )?;
@@ -401,10 +442,9 @@ pub fn read_git_worktree_files(path: &str) -> Result<Vec<GitChangedFile>, String
         }
         files = net;
     } else {
-        files.retain(|f| root.join(&f.path).exists());
+        files.retain(|f| ctx.root.join(&f.path).exists());
     }
-    let (status, truncated) = worktree_run(
-        path,
+    let (status, truncated) = ctx.run(
         &[
             "-c",
             "core.fsmonitor=false",
@@ -430,7 +470,8 @@ pub fn read_git_worktree_files(path: &str) -> Result<Vec<GitChangedFile>, String
         if xy.contains(&b'R') || xy.contains(&b'C') {
             parts.next();
         }
-        if let Some(file) = files.iter_mut().find(|f| f.path == name) {
+        if let Ok(index) = files.binary_search_by(|f| f.path.as_str().cmp(name.as_str())) {
+            let file = &mut files[index];
             file.index_status =
                 (xy[0] != b' ' && xy[0] != b'?').then(|| char::from(xy[0]).to_string());
             file.worktree_status = (xy[1] != b' ').then(|| char::from(xy[1]).to_string());
@@ -482,22 +523,19 @@ fn paths_as_added(bytes: &[u8]) -> Result<Vec<GitChangedFile>, String> {
 }
 
 pub fn read_git_worktree_diff(path: &str, file: &str) -> Result<GitFileDiff, String> {
-    let files = read_git_worktree_files(path)?;
+    let ctx = WorktreeContext::new(path)?;
+    let (head, _) = resolve_head_and_branch(&ctx.dir, None)?;
+    let files = read_git_worktree_files_with_context(path, &ctx, head.as_deref())?;
     let selected = files
-        .iter()
-        .find(|f| f.path == file)
+        .binary_search_by(|f| f.path.as_str().cmp(file))
+        .ok()
+        .map(|index| &files[index])
         .ok_or("現在の未コミット変更に含まれません")?;
-    let head = read_git_history(path, None, 0)?.head;
-    let tracked = worktree_run(
-        path,
-        &["ls-files", "--error-unmatch", "--", file],
-        MAX_OUTPUT,
-    )
-    .is_ok();
+    let tracked = ctx
+        .run(&["ls-files", "--error-unmatch", "--", file], MAX_OUTPUT)
+        .is_ok();
     if let Some(head) = head.as_ref().filter(|_| {
-        tracked
-            || !Path::new(path).parent().unwrap().join(file).exists()
-            || selected.old_path.is_some()
+        tracked || !ctx.root.join(file).exists() || selected.old_path.is_some()
     }) {
         let mut args = vec![
             "diff",
@@ -508,18 +546,17 @@ pub fn read_git_worktree_diff(path: &str, file: &str) -> Result<GitFileDiff, Str
             "--no-color",
             "--no-relative",
             "--unified=3",
-            &head,
+            head.as_str(),
             "--",
             file,
         ];
         if let Some(old) = &selected.old_path {
             args.push(old);
         }
-        let (bytes, truncated) = worktree_run(path, &args, 1024 * 1024)?;
+        let (bytes, truncated) = ctx.run(&args, 1024 * 1024)?;
         return Ok(bounded_diff(&bytes, truncated));
     }
-    let root = Path::new(path).parent().ok_or("作業フォルダがありません")?;
-    let target = root.join(file);
+    let target = ctx.root.join(file);
     let meta = std::fs::symlink_metadata(&target).map_err(|e| e.to_string())?;
     if let Some((previous, truncated)) = head
         .as_ref()
@@ -538,10 +575,10 @@ pub fn read_git_worktree_diff(path: &str, file: &str) -> Result<GitFileDiff, Str
             return Err("作業フォルダ外のファイルは表示できません".into());
         }
         let real = target.canonicalize().map_err(|e| e.to_string())?;
-        if !real.starts_with(root.canonicalize().map_err(|e| e.to_string())?) {
+        if !real.starts_with(ctx.root.canonicalize().map_err(|e| e.to_string())?) {
             return Err("作業フォルダ外のファイルは表示できません".into());
         }
-        return saved_file_diff(path, file, &previous, &target);
+        return saved_file_diff(&ctx, file, &previous, &target);
     }
     let mut bytes = Vec::new();
     if meta.file_type().is_symlink() {
@@ -553,7 +590,7 @@ pub fn read_git_worktree_diff(path: &str, file: &str) -> Result<GitFileDiff, Str
         );
     } else {
         let real = target.canonicalize().map_err(|e| e.to_string())?;
-        if !real.starts_with(root.canonicalize().map_err(|e| e.to_string())?) {
+        if !real.starts_with(ctx.root.canonicalize().map_err(|e| e.to_string())?) {
             return Err("作業フォルダ外のファイルは表示できません".into());
         }
         std::fs::File::open(real)
@@ -580,7 +617,7 @@ pub fn read_git_worktree_diff(path: &str, file: &str) -> Result<GitFileDiff, Str
 }
 
 fn saved_file_diff(
-    path: &str,
+    ctx: &WorktreeContext,
     file: &str,
     previous: &[u8],
     target: &Path,
@@ -606,7 +643,7 @@ fn saved_file_diff(
     std::io::Write::write_all(&mut output, previous).map_err(|e| e.to_string())?;
     drop(output);
     let (bytes, truncated) = run_command(
-        worktree_command(path)?.args([
+        ctx.command().args([
             "diff",
             "--no-index",
             "--no-ext-diff",
@@ -851,29 +888,27 @@ fn run_command(
     Ok((bytes, truncated))
 }
 
-pub fn read_git_history(
-    path: &str,
-    head: Option<&str>,
-    offset: usize,
-) -> Result<GitHistory, String> {
-    let dir = git_dir(path)?;
-    run(&dir, &["rev-parse", "--is-bare-repository"], MAX_OUTPUT)?;
+fn resolve_head_and_branch(
+    dir: &Path,
+    requested_head: Option<&str>,
+) -> Result<(Option<String>, Option<String>), String> {
+    run(dir, &["rev-parse", "--is-bare-repository"], MAX_OUTPUT)?;
     let branch = run(
-        &dir,
+        dir,
         &["symbolic-ref", "--quiet", "--short", "HEAD"],
         MAX_OUTPUT,
     )
     .ok()
     .map(|(value, _)| String::from_utf8_lossy(&value).trim().to_owned());
-    let head = match head {
+    let head = match requested_head {
         Some(head) => Some(oid(head)?.to_owned()),
-        None => match run(&dir, &["rev-parse", "--verify", "HEAD"], MAX_OUTPUT) {
+        None => match run(dir, &["rev-parse", "--verify", "HEAD"], MAX_OUTPUT) {
             Ok((value, _)) => Some(oid(String::from_utf8_lossy(&value).trim())?.to_owned()),
             Err(error) => {
                 // Only a valid unborn symbolic HEAD represents an empty history.
                 if branch.is_some() && !dir.join("HEAD").is_dir() {
                     let reference = run(
-                        &dir,
+                        dir,
                         &[
                             "show-ref",
                             "--verify",
@@ -882,18 +917,31 @@ pub fn read_git_history(
                         MAX_OUTPUT,
                     );
                     if reference.is_err() {
-                        return Ok(GitHistory {
-                            head: None,
-                            branch,
-                            commits: vec![],
-                            has_more: false,
-                        });
+                        return Ok((None, branch));
                     }
                 }
                 return Err(error);
             }
         },
     };
+    Ok((head, branch))
+}
+
+pub fn read_git_history(
+    path: &str,
+    head: Option<&str>,
+    offset: usize,
+) -> Result<GitHistory, String> {
+    let dir = git_dir(path)?;
+    let (head, branch) = resolve_head_and_branch(&dir, head)?;
+    if head.is_none() {
+        return Ok(GitHistory {
+            head: None,
+            branch,
+            commits: vec![],
+            has_more: false,
+        });
+    }
     let (bytes, truncated) = run(
         &dir,
         &[

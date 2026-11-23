@@ -1,8 +1,9 @@
 use crate::buffer::{Pos, TextBuffer};
 use crate::document_types::FindCursor;
-use crate::search::{find_backward, find_chunk, ChunkStep};
+use crate::search::{build_matcher, find_backward, find_chunk, find_chunk_with_matcher, ChunkStep};
 use crate::undo::{Edit, UndoEntry, UndoStack};
 use crate::document_assets::image_references_in_lines;
+use grep_regex::RegexMatcher;
 
 pub(crate) enum FindStep {
     Found(Pos, Pos),
@@ -20,6 +21,7 @@ pub(crate) struct ReplaceProgress {
     edits: Vec<Edit>,
     pos: Pos,
     find_cursor: Option<FindCursor>,
+    matcher: Option<RegexMatcher>,
     count: usize,
     matches: Option<Vec<(Pos, Pos)>>,
     collected_lines: usize,
@@ -157,6 +159,9 @@ pub(crate) fn replace_all_chunk(
         }
         state.collected = true;
     }
+    if !use_regex && !whole_word && !pat.contains('\n') && state.matcher.is_none() {
+        state.matcher = build_matcher(pat, match_case, false, false).ok();
+    }
     let mut replaced = 0;
     loop {
         if replaced >= budget.max(1) {
@@ -175,7 +180,18 @@ pub(crate) fn replace_all_chunk(
         let step = if let Some(matches) = &mut state.matches {
             matches.pop().map(|(start, end)| ChunkStep::Found(start, end)).unwrap_or(ChunkStep::NotFound)
         } else {
-            find_chunk(buf, pat, state.pos, match_case, false, false, cursor, SCAN_BUDGET, false)
+            find_chunk_with_matcher(
+                buf,
+                pat,
+                state.pos,
+                match_case,
+                false,
+                false,
+                cursor,
+                SCAN_BUDGET,
+                false,
+                state.matcher.as_ref(),
+            )
         };
         match step {
             ChunkStep::Found(start, end) => {
@@ -309,5 +325,33 @@ mod tests {
         assert_eq!(buf.line(0), "bar bar");
         assert_eq!(undo.undo(&mut buf).map(|result| result.0), Some(p(0, 0)));
         assert_eq!(buf.line(0), "foo foo");
+    }
+
+    // Feature: リテラル全置換の正規表現マッチャ再利用
+    // Scenario: 複数チャンクのリテラル全置換でマッチャを再コンパイルせず再利用する
+    // Given: 大文字小文字無視の単一行リテラル置換を複数チャンクに分けて実行する
+    // When: budget=1 で replace_all_chunk を繰り返す
+    // Then: 進行中にコンパイル済み matcher が保持・再利用され、全置換と単一 Undo が正しく完了する
+    #[test]
+    fn literal_replace_all_reuses_compiled_matcher_across_chunks() {
+        let mut buf = TextBuffer::from_text("Foo foo FOO");
+        let mut undo = UndoStack::new();
+        let mut progress = None;
+
+        let first = replace_all_chunk(&mut buf, &mut undo, &mut progress, "foo", "bar", false, false, false, 1);
+        assert!(!first.done);
+        assert_eq!(first.count, 1);
+        assert!(progress.as_ref().and_then(|s| s.matcher.as_ref()).is_some());
+
+        let second = replace_all_chunk(&mut buf, &mut undo, &mut progress, "foo", "bar", false, false, false, 1);
+        assert!(!second.done);
+        assert_eq!(second.count, 2);
+
+        let third = replace_all_chunk(&mut buf, &mut undo, &mut progress, "foo", "bar", false, false, false, 2);
+        assert!(third.done);
+        assert_eq!(third.count, 3);
+        assert_eq!(buf.line(0), "bar bar bar");
+        assert!(undo.undo(&mut buf).is_some());
+        assert_eq!(buf.line(0), "Foo foo FOO");
     }
 }

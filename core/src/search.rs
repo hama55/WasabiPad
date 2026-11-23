@@ -240,13 +240,10 @@ pub(crate) fn find_chunk(
     budget: usize,
     wrap_around: bool,
 ) -> ChunkStep {
-    let n = buf.line_count();
-    if n == 0 {
+    let multiline = pat.contains('\n');
+    if multiline && (use_regex || whole_word) {
         return ChunkStep::NotFound;
     }
-    let multiline = pat.contains('\n');
-    if multiline && (use_regex || whole_word) { return ChunkStep::NotFound; }
-    let segs: Vec<&str> = if multiline { pat.split('\n').collect() } else { Vec::new() };
     // 通常検索のエスケープされた改行は、行をまたぐ固定文字列として扱う。
     let matcher = if multiline {
         None
@@ -256,11 +253,61 @@ pub(crate) fn find_chunk(
             Err(_) => return ChunkStep::NotFound,
         }
     };
+    find_chunk_with_matcher(
+        buf,
+        pat,
+        start,
+        match_case,
+        use_regex,
+        whole_word,
+        cur,
+        budget,
+        wrap_around,
+        matcher.as_ref(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn find_chunk_with_matcher(
+    buf: &TextBuffer,
+    pat: &str,
+    start: Pos,
+    match_case: bool,
+    use_regex: bool,
+    whole_word: bool,
+    cur: FindCursor,
+    budget: usize,
+    wrap_around: bool,
+    matcher: Option<&RegexMatcher>,
+) -> ChunkStep {
+    let n = buf.line_count();
+    if n == 0 {
+        return ChunkStep::NotFound;
+    }
+    let multiline = pat.contains('\n');
+    if multiline && (use_regex || whole_word) {
+        return ChunkStep::NotFound;
+    }
+    if !multiline && matcher.is_none() {
+        return ChunkStep::NotFound;
+    }
+    let segs: Vec<&str> = if multiline { pat.split('\n').collect() } else { Vec::new() };
 
     let hi = if !cur.wrapped { n } else { (start.line + 1).min(n) };
     if cur.line >= hi {
         return if !cur.wrapped && wrap_around {
-            find_chunk(buf, pat, start, match_case, use_regex, whole_word, FindCursor { wrapped: true, line: 0 }, budget, wrap_around)
+            find_chunk_with_matcher(
+                buf,
+                pat,
+                start,
+                match_case,
+                use_regex,
+                whole_word,
+                FindCursor { wrapped: true, line: 0 },
+                budget,
+                wrap_around,
+                matcher,
+            )
         } else {
             ChunkStep::NotFound
         };
@@ -268,7 +315,7 @@ pub(crate) fn find_chunk(
     let end_line = cur.line.saturating_add(budget.max(1)).min(hi);
 
     for line in cur.line..end_line {
-        let hit = match &matcher {
+        let hit = match matcher {
             Some(matcher) => {
                 let col_from = if !cur.wrapped && line == start.line { start.col } else { 0 };
                 line_match(buf, matcher, line, col_from)
@@ -287,7 +334,18 @@ pub(crate) fn find_chunk(
         return ChunkStep::More(FindCursor { wrapped: cur.wrapped, line: end_line });
     }
     if !cur.wrapped && wrap_around {
-        find_chunk(buf, pat, start, match_case, use_regex, whole_word, FindCursor { wrapped: true, line: 0 }, budget, wrap_around)
+        find_chunk_with_matcher(
+            buf,
+            pat,
+            start,
+            match_case,
+            use_regex,
+            whole_word,
+            FindCursor { wrapped: true, line: 0 },
+            budget,
+            wrap_around,
+            matcher,
+        )
     } else {
         ChunkStep::NotFound
     }

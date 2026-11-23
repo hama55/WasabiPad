@@ -17,6 +17,8 @@ use std::time::{Duration, Instant, SystemTime};
 pub const PASSWORD_ERROR_MARKER: &str = crate::protocol::PASSWORD_ERROR_MARKER;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_PARALLEL_EXTRACTS: usize = 3;
+const MAX_STDERR_BYTES: u64 = 64 * 1024;
+const MAX_LIST_OUTPUT: usize = 32 * 1024 * 1024;
 
 struct ExtractGate {
     active: Mutex<usize>,
@@ -275,7 +277,14 @@ fn output_too_large_error() -> io::Error {
 }
 
 fn run(cmd: Command) -> io::Result<Vec<u8>> {
-    run_with_io(cmd, None, None)
+    run_with_io(cmd, None, Some(MAX_LIST_OUTPUT))
+}
+
+fn read_bounded_stderr<R: Read>(mut reader: R, limit: u64) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    reader.by_ref().take(limit).read_to_end(&mut bytes)?;
+    let _ = io::copy(&mut reader, &mut io::sink());
+    Ok(bytes)
 }
 
 fn run_with_stdout_limit(cmd: Command, stdout_limit: Option<usize>) -> io::Result<Vec<u8>> {
@@ -349,10 +358,7 @@ fn run_with_io(
             bytes
         })
     });
-    let stderr_reader = thread::spawn(move || {
-        let mut bytes = Vec::new();
-        stderr.take(u64::MAX).read_to_end(&mut bytes).map(|_| bytes)
-    });
+    let stderr_reader = thread::spawn(move || read_bounded_stderr(stderr, MAX_STDERR_BYTES));
     let deadline = Instant::now() + COMMAND_TIMEOUT;
     let status = loop {
         if limit_exceeded.load(Ordering::Acquire) {
@@ -429,9 +435,13 @@ fn run_with_io(
 
 // エントリ名一覧 (ディレクトリ除く)。ヘッダ暗号化書庫はパスワードが合うまで失敗する。
 pub fn list(archive: &Path, password: &str) -> io::Result<Vec<String>> {
+    list_with_limit(archive, password, MAX_LIST_OUTPUT)
+}
+
+fn list_with_limit(archive: &Path, password: &str, max_size: usize) -> io::Result<Vec<String>> {
     let mut cmd = base_command(false)?;
     cmd.args(build_list_args(archive, password)?);
-    let stdout = run(cmd)?;
+    let stdout = run_with_stdout_limit(cmd, Some(max_size))?;
     let text = String::from_utf8_lossy(&stdout);
     let mut names = Vec::new();
     let mut path: Option<String> = None;
@@ -548,7 +558,7 @@ pub fn update_bytes(
         password,
         header_encrypted,
     )?);
-    run_with_io(cmd, Some(bytes.to_vec()), None)?;
+    run_with_io(cmd, Some(bytes.to_vec()), Some(MAX_LIST_OUTPUT))?;
     Ok(())
 }
 
@@ -781,6 +791,37 @@ mod tests {
 
         let error = extract_with_limit(&archive, "a.txt", "", 4).unwrap_err();
 
+        assert_eq!(error.kind(), io::ErrorKind::FileTooLarge);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Feature: 7z 子プロセス出力のメモリ上限
+    // Scenario: 上限を超える標準エラー出力を制限サイズ内で読み取り残りをドレインする
+    // Given: 上限 16 バイトを大きく超える 1024 バイトのストリーム
+    // When: read_bounded_stderr で読み取る
+    // Then: 返却されるバイト列は 16 バイト以内に収まり、入力ストリームは末尾まで消費される
+    #[test]
+    fn bounded_stderr_caps_memory_and_drains_remainder() {
+        let data = vec![b'E'; 1024];
+        let mut cursor = io::Cursor::new(data);
+        let captured = read_bounded_stderr(&mut cursor, 16).unwrap();
+        assert_eq!(captured.len(), 16);
+        assert_eq!(cursor.position(), 1024);
+    }
+
+    // Feature: 7z 一覧出力のメモリ上限
+    // Scenario: list_with_limit が上限を超える標準出力を FileTooLarge で打ち切る
+    // Given: エントリを含む .7z アーカイブ
+    // When: list_with_limit を極小上限 (4 バイト) で実行する
+    // Then: FileTooLarge エラーで打ち切られる
+    #[test]
+    fn list_stops_when_output_exceeds_limit() {
+        if !have_7z() {
+            return;
+        }
+        let root = temp_root("list-limit");
+        let archive = create_archive(&root, "t.7z", "", false);
+        let error = list_with_limit(&archive, "", 4).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::FileTooLarge);
         let _ = std::fs::remove_dir_all(&root);
     }
