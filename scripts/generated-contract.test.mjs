@@ -109,6 +109,7 @@ describe("Feature: generated contract verification", () => {
   it("Scenario: every shipping path rejects stale generated contracts", () => {
     const { scripts } = JSON.parse(read("package.json"));
     expect(scripts.build).toContain("npm run sync:protocol");
+    expect(scripts["check:generated"]).toContain("npm run check:config");
     expect(scripts["check:generated"]).toContain("node scripts/check-generated.mjs");
 
     for (const workflow of [read(".github/workflows/verify.yml"), read(".github/workflows/release.yml")]) {

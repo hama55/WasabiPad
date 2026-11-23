@@ -1,25 +1,9 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const root = resolve(import.meta.dirname, "..");
 const read = (path) => readFileSync(resolve(root, path), "utf8");
-const backend = read("src-tauri/src/main.rs");
-const documentTypes = read("core/src/document_types.rs");
-const fileio = read("core/src/fileio.rs");
-const frontend = read("ui/api.ts");
-const folder = read("core/src/folder.rs");
-const workspaceSearch = read("core/src/workspace_search.rs");
-const generatedSearchOptions = read("ui/generated/WorkspaceSearchOptions.ts");
-const generatedSearchOutcome = read("ui/generated/WorkspaceSearchOutcome.ts");
-const generatedSearchResult = read("ui/generated/WorkspaceSearchResult.ts");
-const generatedFileNameMatchMode = read("ui/generated/FileNameMatchMode.ts");
-const generatedEncoding = read("ui/generated/Encoding.ts");
-const generatedEol = read("ui/generated/Eol.ts");
-const generatedDocKind = read("ui/generated/DocKind.ts");
-const generatedViewerFormat = read("ui/generated/ViewerFormat.ts");
-const generatedIpcCommands = read("ui/generated/IpcCommands.ts");
-const capabilities = JSON.parse(read("src-tauri/capabilities/default.json"));
-const viewerCapabilities = JSON.parse(read("src-tauri/capabilities/viewer.json"));
 
 function fail(message) {
   throw new Error(`IPC contract mismatch: ${message}`);
@@ -37,6 +21,11 @@ function assertSameSet(label, expected, actual) {
   if (missing.length || extra.length) {
     fail(`${label}; missing=[${missing.join(", ")}], extra=[${extra.join(", ")}]`);
   }
+}
+
+export function assertProtocolLabelKeys(encodingValues, eolVariants, protocol) {
+  assertSameSet("Protocol encodingLabels keys", encodingValues, Object.keys(protocol?.encodingLabels ?? {}));
+  assertSameSet("Protocol eolLabels keys", eolVariants, Object.keys(protocol?.eolLabels ?? {}));
 }
 
 function blockAfter(source, marker) {
@@ -150,7 +139,7 @@ function invokeArgumentKeys(source, command) {
     .filter(Boolean);
 }
 
-function tsUnion(typeName, source = frontend) {
+function tsUnion(typeName, source) {
   const match = source.match(new RegExp(`export type ${typeName} = ([^;]+);`));
   if (!match) fail(`cannot find TypeScript union ${typeName}`);
   return names(/"([^"]+)"/g, match[1]);
@@ -171,126 +160,153 @@ function camelCase(value) {
   return value.replace(/_([a-z])/g, (_match, letter) => letter.toUpperCase());
 }
 
-const commands = names(/#\[tauri::command\](?:\s*#\[[^\]]*\])*\s*\r?\n(?:async\s+)?fn\s+(\w+)/g, backend);
-const handlerBlock = backend.match(/tauri::generate_handler!\[([\s\S]*?)\]\)/)?.[1];
-if (!handlerBlock) fail("cannot find tauri command handler registration");
-const handler = handlerBlock
-  .split(",")
-  .map((name) => name.trim())
-  .filter(Boolean);
-assertSameSet("Tauri command registration", commands, handler);
-if (!generatedIpcCommands.startsWith("// This file was generated from src-tauri/src/main.rs")) {
-  fail("IpcCommands.ts must be generated from Rust command definitions");
-}
-const generatedCommandNames = names(/^\s+\w+:\s+"([^"]+)",$/gm, generatedIpcCommands);
-const generatedCommandKeys = names(/^\s+(\w+):\s+"[^"]+",$/gm, generatedIpcCommands);
-assertSameSet("generated IPC command names", commands, generatedCommandNames);
-assertSameSet("generated IPC command keys", commands.map(camelCase), generatedCommandKeys);
-assertSameSet("TypeScript IPC command bindings", generatedCommandKeys, names(/IPC_COMMANDS\.(\w+)/g, frontend));
+export function checkIpcContract() {
+  const backend = read("src-tauri/src/main.rs");
+  const documentTypes = read("core/src/document_types.rs");
+  const fileio = read("core/src/fileio.rs");
+  const frontend = read("ui/api.ts");
+  const folder = read("core/src/folder.rs");
+  const workspaceSearch = read("core/src/workspace_search.rs");
+  const generatedSearchOptions = read("ui/generated/WorkspaceSearchOptions.ts");
+  const generatedSearchOutcome = read("ui/generated/WorkspaceSearchOutcome.ts");
+  const generatedSearchResult = read("ui/generated/WorkspaceSearchResult.ts");
+  const generatedFileNameMatchMode = read("ui/generated/FileNameMatchMode.ts");
+  const generatedEncoding = read("ui/generated/Encoding.ts");
+  const generatedEol = read("ui/generated/Eol.ts");
+  const generatedDocKind = read("ui/generated/DocKind.ts");
+  const generatedViewerFormat = read("ui/generated/ViewerFormat.ts");
+  const generatedIpcCommands = read("ui/generated/IpcCommands.ts");
+  const protocol = JSON.parse(read("shared/protocol.json"));
+  const capabilities = JSON.parse(read("src-tauri/capabilities/default.json"));
+  const viewerCapabilities = JSON.parse(read("src-tauri/capabilities/viewer.json"));
 
-// Tauri は Rust の引数名を camelCase のIPCキーとして受け取る。名前だけの集合を
-// 照合すると edit の caret_before/caretBefore のような実行時だけの破綻を見逃す。
-for (const command of commands) {
-  const expected = rustCommandParameters(backend, command)
-    .filter(({ type }) => !/\b(?:State|AppHandle|Window|WebviewWindow)\b/.test(type))
-    .map(({ name }) => camelCase(name));
-  assertSameSet(`${command} argument keys`, expected, invokeArgumentKeys(frontend, command));
-}
-
-const encodingBlock = blockAfter(fileio, "pub enum EncodingId");
-const encodingValues = names(/#\[serde\(rename = "([^"]+)"\)\]/g, encodingBlock);
-assertSameSet("Encoding wire values", encodingValues, tsUnion("Encoding", generatedEncoding));
-
-const eolVariants = names(/^\s*(\w+),\s*$/gm, blockAfter(fileio, "pub enum Eol"))
-  .map((name) => name.toLowerCase());
-assertSameSet("EOL wire values", eolVariants, tsUnion("Eol", generatedEol));
-
-const docKinds = names(/^\s*(\w+),\s*$/gm, blockAfter(documentTypes, "pub enum DocKind"))
-  .map((name) => name.toLowerCase());
-assertSameSet("document kind wire values", docKinds, tsUnion("DocKind", generatedDocKind));
-
-const viewerFormats = names(/#\[serde\(rename = "([^"]+)"\)\]/g, blockAfter(backend, "enum ViewerFormat"));
-assertSameSet("viewer format wire values", viewerFormats, tsUnion("ViewerFormat", generatedViewerFormat));
-
-const fileNameMatchModes = names(/^\s*(\w+),\s*$/gm, blockAfter(workspaceSearch, "pub enum FileNameMatchMode"))
-  .map((name) => name.toLowerCase());
-assertSameSet(
-  "file name match mode wire values",
-  fileNameMatchModes,
-  tsUnion("FileNameMatchMode", generatedFileNameMatchMode)
-);
-
-for (const [name, source] of [
-  ["WorkspaceSearchOptions", generatedSearchOptions],
-  ["WorkspaceSearchOutcome", generatedSearchOutcome],
-  ["WorkspaceSearchResult", generatedSearchResult],
-  ["FileNameMatchMode", generatedFileNameMatchMode],
-]) {
-  if (!source.startsWith("// This file was generated by")) {
-    fail(`${name} must be generated from Rust`);
+  const commands = names(/#\[tauri::command\](?:\s*#\[[^\]]*\])*\s*\r?\n(?:async\s+)?fn\s+(\w+)/g, backend);
+  const handlerBlock = backend.match(/tauri::generate_handler!\[([\s\S]*?)\]\)/)?.[1];
+  if (!handlerBlock) fail("cannot find tauri command handler registration");
+  const handler = handlerBlock
+    .split(",")
+    .map((name) => name.trim())
+    .filter(Boolean);
+  assertSameSet("Tauri command registration", commands, handler);
+  if (!generatedIpcCommands.startsWith("// This file was generated from src-tauri/src/main.rs")) {
+    fail("IpcCommands.ts must be generated from Rust command definitions");
   }
+  const generatedCommandNames = names(/^\s+\w+:\s+"([^"]+)",$/gm, generatedIpcCommands);
+  const generatedCommandKeys = names(/^\s+(\w+):\s+"[^"]+",$/gm, generatedIpcCommands);
+  assertSameSet("generated IPC command names", commands, generatedCommandNames);
+  assertSameSet("generated IPC command keys", commands.map(camelCase), generatedCommandKeys);
+  assertSameSet("TypeScript IPC command bindings", generatedCommandKeys, names(/IPC_COMMANDS\.(\w+)/g, frontend));
+
+  // Tauri は Rust の引数名を camelCase のIPCキーとして受け取る。名前だけの集合を
+  // 照合すると edit の caret_before/caretBefore のような実行時だけの破綻を見逃す。
+  for (const command of commands) {
+    const expected = rustCommandParameters(backend, command)
+      .filter(({ type }) => !/\b(?:State|AppHandle|Window|WebviewWindow)\b/.test(type))
+      .map(({ name }) => camelCase(name));
+    assertSameSet(`${command} argument keys`, expected, invokeArgumentKeys(frontend, command));
+  }
+
+  const encodingBlock = blockAfter(fileio, "pub enum EncodingId");
+  const encodingValues = names(/#\[serde\(rename = "([^"]+)"\)\]/g, encodingBlock);
+  assertSameSet("Encoding wire values", encodingValues, tsUnion("Encoding", generatedEncoding));
+
+  const eolVariants = names(/^\s*(\w+),\s*$/gm, blockAfter(fileio, "pub enum Eol"))
+    .map((name) => name.toLowerCase());
+  assertSameSet("EOL wire values", eolVariants, tsUnion("Eol", generatedEol));
+
+  assertProtocolLabelKeys(encodingValues, eolVariants, protocol);
+
+  const docKinds = names(/^\s*(\w+),\s*$/gm, blockAfter(documentTypes, "pub enum DocKind"))
+    .map((name) => name.toLowerCase());
+  assertSameSet("document kind wire values", docKinds, tsUnion("DocKind", generatedDocKind));
+
+  const viewerFormats = names(/#\[serde\(rename = "([^"]+)"\)\]/g, blockAfter(backend, "enum ViewerFormat"));
+  assertSameSet("viewer format wire values", viewerFormats, tsUnion("ViewerFormat", generatedViewerFormat));
+
+  const fileNameMatchModes = names(/^\s*(\w+),\s*$/gm, blockAfter(workspaceSearch, "pub enum FileNameMatchMode"))
+    .map((name) => name.toLowerCase());
+  assertSameSet(
+    "file name match mode wire values",
+    fileNameMatchModes,
+    tsUnion("FileNameMatchMode", generatedFileNameMatchMode)
+  );
+
+  for (const [name, source] of [
+    ["WorkspaceSearchOptions", generatedSearchOptions],
+    ["WorkspaceSearchOutcome", generatedSearchOutcome],
+    ["WorkspaceSearchResult", generatedSearchResult],
+    ["FileNameMatchMode", generatedFileNameMatchMode],
+  ]) {
+    if (!source.startsWith("// This file was generated by")) {
+      fail(`${name} must be generated from Rust`);
+    }
+  }
+
+  // 選択肢は ui/statusbar.ts が READ_ENCODINGS/INDENT_SIZES から生成する。
+  // HTML に複製を置かないことで、値の追加漏れを tsc と型から検出できるようにする。
+
+  // 検索途中経過の送出頻度は backend が単独で管理する。UI は届いた batch を描く。
+  // 送出上限だけは DOM 上限を超えないことを検証する。
+  const progressMax = Number(workspaceSearch.match(/PROGRESS_MAX: usize = ([\d_]+);/)?.[1]?.replace(/_/g, ""));
+  const maxRenderedRows = Number(read("ui/workspace-search-panel.ts").match(/MAX_RENDERED_ROWS = ([\d_]+);/)?.[1]?.replace(/_/g, ""));
+  if (!progressMax || !maxRenderedRows || progressMax > maxRenderedRows) {
+    fail(`search progress cap exceeds rendered rows; core=${progressMax}, ui=${maxRenderedRows}`);
+  }
+
+  // Rust DTO から生成した型のフィールド集合を確認する。生成物のヘッダだけを確認すると、
+  // 古い生成物を残したままでも通るため、追加・改名・削除の取りこぼしをここで止める。
+  const wireStructs = [
+    [documentTypes, "DocInfo", "DocInfo"],
+    [documentTypes, "PosC", "Pos"],
+    [documentTypes, "EditResult", "EditResult"],
+    [documentTypes, "EditManyItem", "EditManyItem"],
+    [documentTypes, "EditManyResult", "EditManyResult"],
+    [documentTypes, "FindResult", "FindResult"],
+    [documentTypes, "FindCursor", "FindCursor"],
+    [documentTypes, "WorkspaceSearchResult", "WorkspaceSearchResult"],
+    [documentTypes, "ReplaceChunkResult", "ReplaceChunkResult"],
+    [folder, "FolderEntry", "FolderEntry"],
+    [workspaceSearch, "SearchOptions", "WorkspaceSearchOptions"],
+    [workspaceSearch, "WorkspaceSearchOutcome", "WorkspaceSearchOutcome"],
+    [backend, "ViewerPayload", "ViewerPayload"],
+    [backend, "ViewerSelection", "ViewerSelection"],
+    [backend, "EditorViewState", "EditorViewState", true],
+    [backend, "WindowRequest", "WindowRequest", true],
+    [backend, "WorkspaceSearchBatch", "WorkspaceSearchBatch"],
+  ];
+  for (const [source, structName, typeName, renameAll] of wireStructs) {
+    const fields = rustStructFields(source, structName);
+    const wireFields = renameAll ? fields.map(camelCase) : fields;
+    assertSameSet(`${structName} generated wire fields`, wireFields, generatedStructFields(typeName));
+  }
+
+  const readEncodingBlock = frontend.match(/export const READ_ENCODINGS = \[([^\]]+)\]/)?.[1];
+  if (!readEncodingBlock) fail("cannot find READ_ENCODINGS");
+  const readEncodings = names(/"([^"]+)"/g, readEncodingBlock);
+  const unsupportedReadEncodings = readEncodings.filter((encoding) => !encodingValues.includes(encoding));
+  if (unsupportedReadEncodings.length) {
+    fail(`read encodings are not save encodings; unsupported=[${unsupportedReadEncodings.join(", ")}]`);
+  }
+  // ビューのウィンドウは動的生成のため、ラベル接頭辞が capability の許可パターンと外れると
+  // 権限を失ったまま静かに開いてしまう
+  const viewerLabelPrefix = backend.match(/format!\("([\w-]+)-\{\}"/)?.[1];
+  if (!viewerLabelPrefix) fail("cannot find viewer window label prefix");
+  if (!capabilities.windows.includes("main") || capabilities.windows.includes(`${viewerLabelPrefix}-*`)) {
+    fail(`main window capability must target only main; windows=[${capabilities.windows.join(", ")}]`);
+  }
+  if (!viewerCapabilities.windows.includes(`${viewerLabelPrefix}-*`) || viewerCapabilities.windows.includes("main")) {
+    fail(`viewer window capability; label prefix=${viewerLabelPrefix}-, windows=[${viewerCapabilities.windows.join(", ")}]`);
+  }
+  const forbiddenViewerPermissions = viewerCapabilities.permissions.filter((permission) =>
+    /^(?:dialog:|clipboard-manager:|core:path:)/.test(permission)
+  );
+  if (forbiddenViewerPermissions.length) {
+    fail(`viewer capability grants forbidden permissions: [${forbiddenViewerPermissions.join(", ")}]`);
+  }
+
+  console.log(`IPC contract OK: ${commands.length} commands, wire enums, and structs match.`);
 }
 
-// 選択肢は ui/statusbar.ts が READ_ENCODINGS/INDENT_SIZES から生成する。
-// HTML に複製を置かないことで、値の追加漏れを tsc と型から検出できるようにする。
-
-// 検索途中経過の送出頻度は backend が単独で管理する。UI は届いた batch を描く。
-// 送出上限だけは DOM 上限を超えないことを検証する。
-const progressMax = Number(workspaceSearch.match(/PROGRESS_MAX: usize = ([\d_]+);/)?.[1]?.replace(/_/g, ""));
-const maxRenderedRows = Number(read("ui/workspace-search-panel.ts").match(/MAX_RENDERED_ROWS = ([\d_]+);/)?.[1]?.replace(/_/g, ""));
-if (!progressMax || !maxRenderedRows || progressMax > maxRenderedRows) {
-  fail(`search progress cap exceeds rendered rows; core=${progressMax}, ui=${maxRenderedRows}`);
+if (resolve(process.argv[1] ?? "") === fileURLToPath(import.meta.url)) {
+  checkIpcContract();
 }
-
-// Rust DTO から生成した型のフィールド集合を確認する。生成物のヘッダだけを確認すると、
-// 古い生成物を残したままでも通るため、追加・改名・削除の取りこぼしをここで止める。
-const wireStructs = [
-  [documentTypes, "DocInfo", "DocInfo"],
-  [documentTypes, "PosC", "Pos"],
-  [documentTypes, "EditResult", "EditResult"],
-  [documentTypes, "EditManyItem", "EditManyItem"],
-  [documentTypes, "EditManyResult", "EditManyResult"],
-  [documentTypes, "FindResult", "FindResult"],
-  [documentTypes, "FindCursor", "FindCursor"],
-  [documentTypes, "WorkspaceSearchResult", "WorkspaceSearchResult"],
-  [documentTypes, "ReplaceChunkResult", "ReplaceChunkResult"],
-  [folder, "FolderEntry", "FolderEntry"],
-  [workspaceSearch, "SearchOptions", "WorkspaceSearchOptions"],
-  [workspaceSearch, "WorkspaceSearchOutcome", "WorkspaceSearchOutcome"],
-  [backend, "ViewerPayload", "ViewerPayload"],
-  [backend, "ViewerSelection", "ViewerSelection"],
-  [backend, "EditorViewState", "EditorViewState", true],
-  [backend, "WindowRequest", "WindowRequest", true],
-  [backend, "WorkspaceSearchBatch", "WorkspaceSearchBatch"],
-];
-for (const [source, structName, typeName, renameAll] of wireStructs) {
-  const fields = rustStructFields(source, structName);
-  const wireFields = renameAll ? fields.map(camelCase) : fields;
-  assertSameSet(`${structName} generated wire fields`, wireFields, generatedStructFields(typeName));
-}
-
-const readEncodingBlock = frontend.match(/export const READ_ENCODINGS = \[([^\]]+)\]/)?.[1];
-if (!readEncodingBlock) fail("cannot find READ_ENCODINGS");
-const readEncodings = names(/"([^"]+)"/g, readEncodingBlock);
-const unsupportedReadEncodings = readEncodings.filter((encoding) => !encodingValues.includes(encoding));
-if (unsupportedReadEncodings.length) {
-  fail(`read encodings are not save encodings; unsupported=[${unsupportedReadEncodings.join(", ")}]`);
-}
-// ビューのウィンドウは動的生成のため、ラベル接頭辞が capability の許可パターンと外れると
-// 権限を失ったまま静かに開いてしまう
-const viewerLabelPrefix = backend.match(/format!\("([\w-]+)-\{\}"/)?.[1];
-if (!viewerLabelPrefix) fail("cannot find viewer window label prefix");
-if (!capabilities.windows.includes("main") || capabilities.windows.includes(`${viewerLabelPrefix}-*`)) {
-  fail(`main window capability must target only main; windows=[${capabilities.windows.join(", ")}]`);
-}
-if (!viewerCapabilities.windows.includes(`${viewerLabelPrefix}-*`) || viewerCapabilities.windows.includes("main")) {
-  fail(`viewer window capability; label prefix=${viewerLabelPrefix}-, windows=[${viewerCapabilities.windows.join(", ")}]`);
-}
-const forbiddenViewerPermissions = viewerCapabilities.permissions.filter((permission) =>
-  /^(?:dialog:|clipboard-manager:|core:path:)/.test(permission)
-);
-if (forbiddenViewerPermissions.length) {
-  fail(`viewer capability grants forbidden permissions: [${forbiddenViewerPermissions.join(", ")}]`);
-}
-
-console.log(`IPC contract OK: ${commands.length} commands, wire enums, and structs match.`);
