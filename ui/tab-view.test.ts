@@ -279,4 +279,45 @@ describe("Feature: TabBarView", () => {
     const firstSeparator = dropdown.querySelector<HTMLElement>(".dd-sep");
     expect(firstSeparator?.previousElementSibling?.textContent).toBe("エクスプローラで開く");
   });
+
+  // Feature: タブドラッグの中断後始末
+  // Scenario: ドラッグ中に pointercancel または blur が起きてもゴーストとリスナーを確実に解除する
+  // Given: タブをドラッグ開始してゴースト要素が表示されている
+  // When: window に pointercancel または blur イベントが発生し、その後 pointerup が届く
+  // Then: ゴースト要素が除去され、移動や切り離しコールバックは呼ばれない
+  it.each(["pointercancel", "blur"] as const)(
+    "Scenario: タブドラッグ中に %s が起きるとゴーストとリスナーを後始末する",
+    (cancelEvent) => {
+      const host = document.createElement("div");
+      document.body.replaceChildren(host);
+      const ports = makePorts();
+      const view = new TabBarView(host, ports);
+      view.render({
+        tabs: [
+          { id: "a", path: "C:/a.txt", kind: "file", label: "a.txt" },
+          { id: "b", path: "C:/b.txt", kind: "file", label: "b.txt" },
+        ],
+        activeId: "a",
+        dirty: false,
+      });
+
+      const origElementFromPoint = document.elementFromPoint;
+      document.elementFromPoint = vi.fn(() => null);
+      try {
+        const tab = host.querySelector<HTMLElement>(".doc-tab")!;
+        tab.dispatchEvent(new MouseEvent("pointerdown", { button: 0, clientX: 10, clientY: 10, bubbles: true }));
+        window.dispatchEvent(new MouseEvent("pointermove", { clientX: 40, clientY: 10 }));
+        expect(document.querySelector(".doc-tab-ghost")).not.toBeNull();
+
+        window.dispatchEvent(new Event(cancelEvent));
+        expect(document.querySelector(".doc-tab-ghost")).toBeNull();
+
+        window.dispatchEvent(new MouseEvent("pointerup", { clientX: -10, clientY: -10 }));
+        expect(ports.onMove).not.toHaveBeenCalled();
+        expect(ports.onDetach).not.toHaveBeenCalled();
+      } finally {
+        document.elementFromPoint = origElementFromPoint;
+      }
+    },
+  );
 });

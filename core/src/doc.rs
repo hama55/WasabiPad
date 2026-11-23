@@ -397,27 +397,29 @@ fn restore_target_and_mapping(
     buf: &mut TextBuffer,
     released_handle: bool,
     released_mapping: bool,
-) {
+) -> io::Result<()> {
     restore_target_file(target, released_handle);
     if !released_mapping {
-        return;
+        return Ok(());
     }
     let path = match target {
         Target::File { path, source_file, .. } => {
             if let Some(file) = source_file.as_ref().and_then(|f| f.try_clone().ok()) {
-                let _ = buf.restore_mapping(file);
-                return;
+                return buf.restore_mapping(file);
             }
             Some(path.as_path())
         }
         Target::Archive { path, .. } => Some(path.as_path()),
         Target::None => None,
     };
-    if let Some(path) = path {
-        if let Ok(file) = fileio::open_exclusive(path).or_else(|_| std::fs::File::open(path)) {
-            let _ = buf.restore_mapping(file);
-        }
-    }
+    let Some(path) = path else {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "マッピング復元先のファイルパスが見つかりません",
+        ));
+    };
+    let file = fileio::open_exclusive(path).or_else(|_| std::fs::File::open(path))?;
+    buf.restore_mapping(file)
 }
 
 fn relative_entry_path(root: &Path, entry: &Path) -> io::Result<String> {
@@ -2065,19 +2067,20 @@ impl Doc {
                             }
                             Target::None => {}
                         }
-                        restore_target_and_mapping(
+                        let restore_result = restore_target_and_mapping(
                             &mut target,
                             &mut self.buf,
                             released_handle,
                             released_mapping,
                         );
                         self.source.target = target;
+                        restore_result?;
                     }
                     Ok(())
                 }
                 Err(error) => {
                     if let Some(mut target) = held_target {
-                        restore_target_and_mapping(
+                        let _ = restore_target_and_mapping(
                             &mut target,
                             &mut self.buf,
                             released_handle,
@@ -2230,19 +2233,20 @@ impl Doc {
                             }
                             Target::None => {}
                         }
-                        restore_target_and_mapping(
+                        let restore_result = restore_target_and_mapping(
                             &mut target,
                             &mut self.buf,
                             released_handle,
                             released_mapping,
                         );
                         self.source.target = target;
+                        restore_result?;
                     }
                     Ok(())
                 }
                 Err(error) => {
                     if let Some(mut target) = held_target {
-                        restore_target_and_mapping(
+                        let _ = restore_target_and_mapping(
                             &mut target,
                             &mut self.buf,
                             released_handle,
@@ -2324,7 +2328,7 @@ impl Doc {
                 Ok(backup) => Some(backup),
                 Err(error) => {
                     if let Some(mut target) = held_target.take() {
-                        restore_target_and_mapping(
+                        let _ = restore_target_and_mapping(
                             &mut target,
                             &mut self.buf,
                             released_handle,
@@ -2344,7 +2348,7 @@ impl Doc {
                 remove_delete_backup(backup);
             }
             if let Some(mut target) = held_target.take() {
-                restore_target_and_mapping(
+                let _ = restore_target_and_mapping(
                     &mut target,
                     &mut self.buf,
                     released_handle,
@@ -3287,10 +3291,12 @@ impl Doc {
             Ok(opened) => opened,
             Err(error) => {
                 if released_old_mapping {
-                    if let Ok(file) =
-                        fileio::open_exclusive(path).or_else(|_| std::fs::File::open(path))
-                    {
-                        let _ = old_buf.restore_mapping(file);
+                    let restored = fileio::open_exclusive(path)
+                        .or_else(|_| std::fs::File::open(path))
+                        .and_then(|file| old_buf.restore_mapping(file));
+                    if restored.is_err() {
+                        self.buf = old_buf;
+                        return Err(error);
                     }
                 }
                 self.buf = old_buf;
@@ -6880,5 +6886,38 @@ mod tests {
 
         drop(d);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Feature: マッピング復元のエラー伝播
+    // Scenario: 元ファイルが欠損している場合に restore_target_and_mapping が Err を返す
+    // Given: マッピング解放済みの HugeBuf と存在しないファイルを指す Target
+    // When: restore_target_and_mapping を呼び出す
+    // Then: エラーを握りつぶさず Err を返し、バッファは未マッピング状態でもパニックしない
+    #[test]
+    fn restore_target_and_mapping_returns_error_when_backing_file_is_missing() {
+        let dir = std::env::temp_dir().join(format!("wasabipad_restore_mapping_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file_path = dir.join("big.txt");
+        std::fs::write(&file_path, "a\nb\nc\n").unwrap();
+
+        let (huge, _, _) = crate::hugebuf::HugeBuf::open(std::fs::File::open(&file_path).unwrap())
+            .unwrap()
+            .unwrap();
+        let mut buf = TextBuffer::from_huge(huge);
+        assert!(buf.release_mapping());
+        std::fs::remove_file(&file_path).unwrap();
+
+        let mut target = Target::File {
+            path: file_path,
+            source_file: None,
+            stamp: None,
+        };
+        let err = restore_target_and_mapping(&mut target, &mut buf, false, true);
+        assert!(err.is_err());
+        assert!(!buf.has_mapping());
+        assert_eq!(buf.line(2).as_ref(), "");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

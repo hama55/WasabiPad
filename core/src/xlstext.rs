@@ -2,10 +2,11 @@
 // CFB (OLE2 複合ファイル) から Workbook ストリームを取り出し、
 // SST/セルレコードを読んでタブ区切りテキストに変換する。
 use crate::ziptext::Entry;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 const ENDOFCHAIN: u32 = 0xFFFF_FFFE;
 const MAX_STREAM_BYTES: usize = 64 * 1024 * 1024;
+const MAX_DIR_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CELL_TAB_GAP: u32 = 256;
 const MAX_SHEET_TEXT_BYTES: usize = 32 * 1024 * 1024;
 
@@ -50,8 +51,12 @@ impl<'a> Cfb<'a> {
         }
         let mut out = Vec::with_capacity(size.min(64 * 1024));
         let mut sect = start;
+        let mut visited = HashSet::new();
         let mut guard = 0;
         while sect != ENDOFCHAIN && sect < 0xFFFF_FFFA {
+            if !visited.insert(sect) {
+                return None;
+            }
             let chunk: &[u8] = if mini {
                 let off = (sect as usize).checked_mul(64)?;
                 self.mini_stream.get(off..off.checked_add(64)?)?
@@ -99,24 +104,35 @@ fn parse_cfb(data: &[u8]) -> Option<Cfb<'_>> {
     let n_difat = (u32le(data, 72)? as usize).min(max_sectors);
 
     // DIFAT → FAT セクタ一覧
+    let max_fat_sects = max_sectors.min(MAX_STREAM_BYTES / sec_size).max(1);
     let mut fat_sects = Vec::new();
     for i in 0..109 {
         let v = u32le(data, 76 + i * 4)?;
         if v < 0xFFFF_FFFA {
+            if fat_sects.len() >= max_fat_sects {
+                return None;
+            }
             fat_sects.push(v);
         }
     }
     let mut dsect = first_difat;
+    let mut visited_difat = HashSet::new();
     let per = sec_size / 4 - 1;
     for _ in 0..n_difat {
         if dsect >= 0xFFFF_FFFA {
             break;
+        }
+        if !visited_difat.insert(dsect) {
+            return None;
         }
         let off = (dsect as usize).checked_add(1)?.checked_mul(sec_size)?;
         let sec = data.get(off..off.checked_add(sec_size)?)?;
         for i in 0..per {
             let v = u32le(sec, i * 4)?;
             if v < 0xFFFF_FFFA {
+                if fat_sects.len() >= max_fat_sects {
+                    return None;
+                }
                 fat_sects.push(v);
             }
         }
@@ -140,10 +156,18 @@ fn parse_cfb(data: &[u8]) -> Option<Cfb<'_>> {
     }
 
     // ディレクトリ
+    let max_dir_bytes = data.len().min(MAX_DIR_BYTES);
     let mut dir_bytes = Vec::new();
     let mut sect = first_dir;
+    let mut visited_dir = HashSet::new();
     let mut guard = 0;
     while sect != ENDOFCHAIN && sect < 0xFFFF_FFFA {
+        if !visited_dir.insert(sect) {
+            return None;
+        }
+        if dir_bytes.len().saturating_add(sec_size) > max_dir_bytes {
+            return None;
+        }
         dir_bytes.extend_from_slice(cfb.sector(sect)?);
         sect = *cfb.fat.get(sect as usize)?;
         guard += 1;
@@ -175,8 +199,12 @@ fn parse_cfb(data: &[u8]) -> Option<Cfb<'_>> {
         .read_chain(root_start, root_size, &cfb.fat, false)
         .unwrap_or_default();
     let mut msect = first_minifat;
+    let mut visited_minifat = HashSet::new();
     let mut guard = 0;
     while msect != ENDOFCHAIN && msect < 0xFFFF_FFFA && guard < n_minifat + 4 {
+        if !visited_minifat.insert(msect) {
+            return None;
+        }
         let sec = cfb.sector(msect)?;
         for i in 0..sec_size / 4 {
             cfb.minifat.push(u32le(sec, i * 4)?);
@@ -831,5 +859,29 @@ mod tests {
         let recs = enumerate_records(&wb).unwrap();
         // 短すぎる MULRK は Option::None で安全に棄却され、パニックしない
         assert!(collect_sheet_cells(&wb, &recs, 0, &[]).is_none());
+    }
+
+    // Feature: CFB パーサの循環チェーン・肥大化防止
+    // Scenario: DIFAT やディレクトリ FAT に循環参照がある CFB を読む
+    // Given: 自己循環する DIFAT セクタや自己循環するディレクトリ FAT エントリを持つ CFB バイト列
+    // When: parse を実行する
+    // Then: OOM や無限ループを起こさず None を返す
+    #[test]
+    fn cyclic_difat_and_directory_fat_chains_return_none_safely() {
+        // 1. 自己循環するディレクトリ FAT チェーン (sector 1 -> sector 1)
+        let mut cyclic_dir = build_xls();
+        // sector 0 = FAT (offset 512..1024), entry[1] = dir sector 1 -> 1 (self-loop)
+        cyclic_dir[512 + 4..512 + 8].copy_from_slice(&1u32.to_le_bytes());
+        assert!(parse(&cyclic_dir).is_none());
+
+        // 2. 自己循環する DIFAT チェーン (first_difat=2, n_difat=100, sector 2 の次ポインタ=2)
+        let mut cyclic_difat = build_xls();
+        cyclic_difat[68..72].copy_from_slice(&2u32.to_le_bytes()); // first_difat = 2
+        cyclic_difat[72..76].copy_from_slice(&100u32.to_le_bytes()); // n_difat = 100
+        // sector 2 は offset = (2 + 1) * 512 = 1536, 末尾 4 バイト (per*4 = 508) を 2 に設定
+        let difat_off = 3 * 512;
+        assert!(cyclic_difat.len() >= difat_off + 512);
+        cyclic_difat[difat_off + 508..difat_off + 512].copy_from_slice(&2u32.to_le_bytes());
+        assert!(parse(&cyclic_difat).is_none());
     }
 }

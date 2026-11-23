@@ -65,6 +65,14 @@ impl TextBuffer {
         matches!(self.store, Store::Huge(_))
     }
 
+    #[cfg(test)]
+    pub(crate) fn has_mapping(&self) -> bool {
+        match &self.store {
+            Store::Small(_) => true,
+            Store::Huge(h) => h.has_mapping(),
+        }
+    }
+
     pub(crate) fn release_mapping(&mut self) -> bool {
         match &mut self.store {
             Store::Small(_) => false,

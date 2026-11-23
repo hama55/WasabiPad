@@ -459,6 +459,9 @@ fn name_hit(
         Some(matcher) => {
             let mut spans = Vec::new();
             let _ = matcher.find_iter(relative.as_bytes(), |at| {
+                if !relative.is_char_boundary(at.start()) || !relative.is_char_boundary(at.end()) {
+                    return true;
+                }
                 let start = relative[..at.start()].chars().count();
                 spans.push([
                     prefix + start,
@@ -1033,5 +1036,19 @@ mod tests {
         let name_hit = found.results.iter().find(|r| r.is_filename).unwrap();
         assert_eq!(name_hit.preview, "ファイル名: needle-file.txt");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    // Feature: ファイル名検索の UTF-8 境界安全性
+    // Scenario: 非ASCIIファイル名にバイト単位の正規表現が一致してもパニックしない
+    // Given: マルチバイト文字を含むファイル名を持つワークスペース
+    // When: ファイル名検索で byte-level regex (?-u:.) を実行する
+    // Then: UTF-8 文字境界外の一致でパニックせず安全に完了する
+    #[test]
+    fn non_ascii_filename_with_byte_level_regex_does_not_panic() {
+        let workspace = FilenameWorkspace::new("non_ascii_regex", &[("日本語.txt", "body")]);
+        let mut opts = filename_options();
+        opts.use_regex = true;
+        let found = run(workspace.path(), "(?-u:.)", &opts);
+        assert!(found.results.iter().any(|r| r.is_filename && r.rel_path == "日本語.txt"));
     }
 }

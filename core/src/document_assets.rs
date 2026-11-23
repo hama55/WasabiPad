@@ -160,25 +160,52 @@ pub(crate) fn image_sources(buf: &TextBuffer) -> HashSet<String> {
     referenced
 }
 
+const MAX_IMAGE_TAG_SCAN_LINES: usize = 64;
+const MAX_IMAGE_TAG_SCAN_BYTES: usize = 64 * 1024;
+
 pub(crate) fn image_references_in_lines(buf: &TextBuffer, first: usize, last: usize) -> HashSet<String> {
     let mut references = HashSet::new();
     let mut first = first.min(buf.line_count().saturating_sub(1));
     let mut last = last.min(buf.line_count().saturating_sub(1));
     // The buffer index avoids scanning ordinary documents on each keystroke.
     if let Some(opening) = buf.preceding_image_tag_line(first) {
-        let mut prefix = buf.line(opening).into_owned();
-        if let Some(start) = prefix.to_ascii_lowercase().rfind("<img") {
-            let mut end_line = opening;
-            while end_line < first && image_tag_end(&prefix[start..]).is_none() {
-                end_line += 1; prefix.push('\n'); prefix.push_str(&buf.line(end_line));
+        if first.saturating_sub(opening) <= MAX_IMAGE_TAG_SCAN_LINES {
+            let opening_line = buf.line(opening);
+            if let Some(start) = opening_line.to_ascii_lowercase().rfind("<img") {
+                let mut quote = None;
+                let mut scanned_bytes = opening_line.len() - start;
+                let mut closed = advance_image_tag_end(&opening_line[start..], &mut quote).is_some();
+                let mut end_line = opening;
+                while !closed && end_line < first && scanned_bytes < MAX_IMAGE_TAG_SCAN_BYTES {
+                    end_line += 1;
+                    let line = buf.line(end_line);
+                    scanned_bytes = scanned_bytes.saturating_add(line.len() + 1);
+                    closed = advance_image_tag_end(&line, &mut quote).is_some();
+                }
+                if end_line == first && scanned_bytes <= MAX_IMAGE_TAG_SCAN_BYTES {
+                    first = opening;
+                }
             }
-            if end_line == first { first = opening; }
         }
     }
     let mut block = (first..=last).map(|line| buf.line(line)).collect::<Vec<_>>().join("\n");
     if let Some(start) = block.to_ascii_lowercase().rfind("<img") {
-        while image_tag_end(&block[start..]).is_none() && last + 1 < buf.line_count() {
-            last += 1; block.push('\n'); block.push_str(&buf.line(last));
+        let mut quote = None;
+        let mut scanned_bytes = block.len() - start;
+        let mut scanned_lines = 0usize;
+        let mut closed = advance_image_tag_end(&block[start..], &mut quote).is_some();
+        while !closed
+            && last + 1 < buf.line_count()
+            && scanned_lines < MAX_IMAGE_TAG_SCAN_LINES
+            && scanned_bytes < MAX_IMAGE_TAG_SCAN_BYTES
+        {
+            last += 1;
+            scanned_lines += 1;
+            let next_line = buf.line(last);
+            scanned_bytes = scanned_bytes.saturating_add(next_line.len() + 1);
+            block.push('\n');
+            block.push_str(&next_line);
+            closed = advance_image_tag_end(&next_line, &mut quote).is_some();
         }
     }
     references.extend(referenced_image_files(&TextBuffer::from_text(&block)));
@@ -193,14 +220,21 @@ pub(crate) fn image_references_in_lines(buf: &TextBuffer, first: usize, last: us
     references
 }
 
-fn image_tag_end(text: &str) -> Option<usize> {
-    let mut quote = None;
+fn advance_image_tag_end(text: &str, quote: &mut Option<u8>) -> Option<usize> {
     for (index, byte) in text.bytes().enumerate() {
-        if let Some(delimiter) = quote { if byte == delimiter { quote = None; } }
-        else if byte == b'\'' || byte == b'"' { quote = Some(byte); }
-        else if byte == b'>' { return Some(index); }
+        if let Some(delimiter) = *quote {
+            if byte == delimiter { *quote = None; }
+        } else if byte == b'\'' || byte == b'"' {
+            *quote = Some(byte);
+        } else if byte == b'>' {
+            return Some(index);
+        }
     }
     None
+}
+
+fn image_tag_end(text: &str) -> Option<usize> {
+    advance_image_tag_end(text, &mut None)
 }
 
 fn decode_image_entities(text: &str) -> String {
@@ -513,5 +547,32 @@ mod tests {
             assert!(referenced_image_files(&buf).contains("image_markdown/memo/diagram-123.svg"));
             assert!(image_references_in_lines(&buf, 0, 0).contains("image_markdown/memo/diagram-123.svg"));
         }
+    }
+
+    // Feature: HTML 図参照の走査上限とクォート状態保持
+    // Scenario: 閉じられていない img タグの後に大量行が続いても走査上限で打ち切る
+    // Given: 先頭に未閉鎖の <img があり、その後に 10000 行と末尾の図参照が続く文書
+    // When: 先頭行と末尾行で image_references_in_lines を実行する
+    // Then: 走査窓の上限で打ち切られ、上限外の図参照を巻き込まず安全に完了する
+    #[test]
+    fn unclosed_img_tag_in_large_document_caps_scan_window() {
+        let mut text = String::from("<img alt=\"unfinished\n");
+        text.push_str(&"plain line\n".repeat(10_000));
+        text.push_str("<img src=\"image_markdown/memo/diagram-999.svg\">");
+        let buf = TextBuffer::from_text(&text);
+        assert!(image_references_in_lines(&buf, 0, 0).is_empty());
+        assert!(image_references_in_lines(&buf, 10_001, 10_001).contains("image_markdown/memo/diagram-999.svg"));
+    }
+
+    // Feature: HTML 図参照の走査上限とクォート状態保持
+    // Scenario: クォート内に > を含む複数行 img タグの参照を抽出する
+    // Given: 1行目の属性値クォート内に > を含み、2行目で src と閉じ > を持つ img タグ
+    // When: 1行目または2行目を対象に image_references_in_lines を実行する
+    // Then: クォート状態が引き継がれ、diagram-456.svg が抽出される
+    #[test]
+    fn multiline_img_tag_with_quoted_gt_preserves_quote_state() {
+        let buf = TextBuffer::from_text("<img alt=\"a > b\nc\"\nsrc=\"image_markdown/memo/diagram-456.svg\">");
+        assert!(image_references_in_lines(&buf, 0, 0).contains("image_markdown/memo/diagram-456.svg"));
+        assert!(image_references_in_lines(&buf, 2, 2).contains("image_markdown/memo/diagram-456.svg"));
     }
 }

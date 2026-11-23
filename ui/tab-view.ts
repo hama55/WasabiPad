@@ -149,6 +149,8 @@ export class TabBarView {
     tab.setPointerCapture?.(event.pointerId);
     window.addEventListener("pointermove", this.onPointerMove);
     window.addEventListener("pointerup", this.onPointerUp);
+    window.addEventListener("pointercancel", this.onDragAbort);
+    window.addEventListener("blur", this.onDragAbort);
     window.addEventListener("keydown", this.onDragKey);
   };
 
@@ -176,6 +178,10 @@ export class TabBarView {
   private outsideWindow(x: number, y: number): boolean {
     return x < 0 || y < 0 || x >= window.innerWidth || y >= window.innerHeight;
   }
+
+  private onDragAbort = () => {
+    this.endDrag();
+  };
 
   private onDragKey = (event: KeyboardEvent) => {
     if (event.key === "Escape") this.endDrag();
@@ -215,6 +221,8 @@ export class TabBarView {
   private endDrag() {
     window.removeEventListener("pointermove", this.onPointerMove);
     window.removeEventListener("pointerup", this.onPointerUp);
+    window.removeEventListener("pointercancel", this.onDragAbort);
+    window.removeEventListener("blur", this.onDragAbort);
     window.removeEventListener("keydown", this.onDragKey);
     this.pendingDrag = null;
     this.drag?.ghost.remove();

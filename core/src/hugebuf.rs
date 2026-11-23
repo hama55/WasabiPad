@@ -338,6 +338,10 @@ impl HugeBuf {
         self.binary
     }
 
+    pub(crate) fn has_mapping(&self) -> bool {
+        self.map.is_some()
+    }
+
     pub(crate) fn release_mapping(&mut self) -> bool {
         self.map.take().is_some()
     }
@@ -390,8 +394,11 @@ impl HugeBuf {
                 return arc;
             }
         }
-        let raw = self.chunk_raw(c);
         let want = self.orig_counts[c] as usize;
+        if self.map.is_none() {
+            return Arc::new(vec![String::new(); want]);
+        }
+        let raw = self.chunk_raw(c);
         let mut lines = Vec::with_capacity(want);
         let mut start = 0usize;
         for p in memchr::memchr_iter(b'\n', raw) {
@@ -444,9 +451,9 @@ impl HugeBuf {
     pub fn line(&self, i: usize) -> String {
         let (c, j) = self.locate(i);
         if let Some(lines) = self.overlay.get(&c) {
-            lines[j].clone()
+            lines.get(j).cloned().unwrap_or_default()
         } else {
-            self.decode_chunk(c)[j].clone()
+            self.decode_chunk(c).get(j).cloned().unwrap_or_default()
         }
     }
 
@@ -615,5 +622,40 @@ mod tests {
     fn huge_buf_is_send() {
         fn assert_send<T: Send>() {}
         assert_send::<HugeBuf>();
+    }
+
+    // Feature: HugeBuf のマッピング復元失敗時の安全性
+    // Scenario: restore_mapping が失敗しても行アクセスでパニックせず保存も拒否する
+    // Given: 複数行を持つ HugeBuf のマッピングを解放した状態
+    // When: サイズ不一致のファイルで restore_mapping に失敗した後、行読み取りと保存を行う
+    // Then: restore_mapping は Err を返し、line(0)/line(2) はパニックせず、write_buffer は Err で空上書きを防ぐ
+    #[test]
+    fn restore_mapping_failure_does_not_panic_and_blocks_unsound_save() {
+        let dir = std::env::temp_dir().join(format!("wasabipad_hugebuf_restore_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let orig = dir.join("orig.txt");
+        let wrong = dir.join("wrong.txt");
+        std::fs::write(&orig, "line0\nline1\nline2\n").unwrap();
+        std::fs::write(&wrong, "x").unwrap();
+
+        let (mut huge, _, _) = HugeBuf::open(File::open(&orig).unwrap()).unwrap().unwrap();
+        assert!(huge.release_mapping());
+        assert!(!huge.has_mapping());
+
+        let wrong_file = File::open(&wrong).unwrap();
+        assert!(huge.restore_mapping(wrong_file).is_err());
+        assert!(!huge.has_mapping());
+
+        assert_eq!(huge.line(0), "");
+        assert_eq!(huge.line(2), "");
+
+        let buf = crate::buffer::TextBuffer::from_huge(huge);
+        assert!(
+            crate::fileio::encode_buffer_to_bytes(&buf, Encoding::Utf8 { bom: false }, Eol::Lf)
+                .is_err()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

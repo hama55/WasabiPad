@@ -768,6 +768,10 @@ fn write_stream<W: Write>(w: &mut W, buf: &TextBuffer, enc: Encoding, eol: Eol) 
                         w.write_all(&encode_str(enc, l)?)?;
                         first = false;
                     }
+                } else if !h.has_mapping() {
+                    return Err(io::Error::other(
+                        "元ファイルのマッピングが失われたため保存できません",
+                    ));
                 } else if same {
                     // 未編集チャンク: 生バイトをそのままコピー (最速パス)
                     if !first {

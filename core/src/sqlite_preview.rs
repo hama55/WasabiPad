@@ -1,11 +1,35 @@
-use rusqlite::{config::DbConfig, params, types::ValueRef, Connection, OpenFlags, OptionalExtension};
-use std::{fs::File, io::Read, path::Path};
+use rusqlite::{
+    config::DbConfig, params, types::ValueRef, Connection, ErrorCode, OpenFlags, OptionalExtension,
+};
+use std::{
+    fs::File,
+    io::Read,
+    path::Path,
+    time::{Duration, Instant},
+};
 
 const MAX_TEXT_CHARS: usize = 4096;
 const MAX_PREVIEW_LIMIT: usize = 10_000;
 const MAX_QUERY_SQL_BYTES: usize = 64 * 1024;
+const QUERY_TIMEOUT: Duration = Duration::from_secs(5);
+const PROGRESS_HANDLER_STEPS: i32 = 10_000;
 const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
 const TEMPORARY_VIEW_NAME: &str = "__wasabipad_temporary_view__";
+
+fn is_interrupted(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(err, _) if err.code == ErrorCode::OperationInterrupted
+    )
+}
+
+fn map_sqlite_error(error: rusqlite::Error) -> String {
+    if is_interrupted(&error) {
+        "SQLiteクエリがタイムアウトしました".to_string()
+    } else {
+        error.to_string()
+    }
+}
 
 #[derive(Clone, serde::Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
@@ -48,6 +72,26 @@ pub fn read_sqlite_preview(
     include_metadata: bool,
     query_sql: Option<&str>,
 ) -> Result<SqlitePreview, String> {
+    read_sqlite_preview_with_timeout(
+        path,
+        selected_name,
+        offset,
+        limit,
+        include_metadata,
+        query_sql,
+        QUERY_TIMEOUT,
+    )
+}
+
+fn read_sqlite_preview_with_timeout(
+    path: &Path,
+    selected_name: Option<&str>,
+    offset: usize,
+    limit: usize,
+    include_metadata: bool,
+    query_sql: Option<&str>,
+    timeout: Duration,
+) -> Result<SqlitePreview, String> {
     if !is_sqlite_preview_eligible(path) {
         return Err("SQLiteプレビューの対象ファイルではありません".to_string());
     }
@@ -58,13 +102,20 @@ pub fn read_sqlite_preview(
         return Err("SQLが長すぎます".to_string());
     }
     let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|error| error.to_string())?;
+        .map_err(map_sqlite_error)?;
+    let deadline = Instant::now() + timeout;
+    connection
+        .progress_handler(
+            PROGRESS_HANDLER_STEPS,
+            Some(move || Instant::now() >= deadline),
+        )
+        .map_err(map_sqlite_error)?;
     let _ = connection.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true);
     let _ = connection.set_db_config(DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA, false);
     connection
         .execute_batch("PRAGMA temp_store=MEMORY; PRAGMA trusted_schema=OFF;")
-        .map_err(|error| error.to_string())?;
-    let mut objects = sqlite_objects(&connection).map_err(|error| error.to_string())?;
+        .map_err(map_sqlite_error)?;
+    let mut objects = sqlite_objects(&connection).map_err(map_sqlite_error)?;
     let temporary_view_name = if let Some(query_sql) = query_sql {
         if !starts_with_select(query_sql) {
             return Err("入力はSELECTで始まるSQLにしてください".to_string());
@@ -94,7 +145,7 @@ pub fn read_sqlite_preview(
     };
     connection
         .execute_batch("PRAGMA query_only=ON;")
-        .map_err(|error| error.to_string())?;
+        .map_err(map_sqlite_error)?;
     let selected_name = if let Some(name) = temporary_view_name {
         Some(name)
     } else {
@@ -128,6 +179,7 @@ pub fn read_sqlite_preview(
                     Ok(value) => (Some(value), None),
                     Err(_) => (None, Some("総行数を解釈できません".to_string())),
                 },
+                Err(error) if is_interrupted(&error) => return Err(map_sqlite_error(error)),
                 Err(error) => (None, Some(format!("総行数を取得できませんでした: {error}"))),
             };
         let (view_definition, definition_error) = if let Some(query_sql) = query_sql {
@@ -142,6 +194,7 @@ pub fn read_sqlite_preview(
                 .optional()
             {
                 Ok(definition) => (definition, None),
+                Err(error) if is_interrupted(&error) => return Err(map_sqlite_error(error)),
                 Err(error) => (
                     None,
                     Some(format!("ビュー定義を取得できませんでした: {error}")),
@@ -165,7 +218,7 @@ pub fn read_sqlite_preview(
     let offset = i64::try_from(offset).map_err(|_| "表示位置が大きすぎます".to_string())?;
     let mut statement = connection
         .prepare(&sql)
-        .map_err(|error| error.to_string())?;
+        .map_err(map_sqlite_error)?;
     let columns = statement
         .column_names()
         .into_iter()
@@ -174,8 +227,8 @@ pub fn read_sqlite_preview(
     let mut result_rows = Vec::new();
     let mut rows = statement
         .query(params![fetch_limit, offset])
-        .map_err(|error| error.to_string())?;
-    while let Some(row) = rows.next().map_err(|error| error.to_string())? {
+        .map_err(map_sqlite_error)?;
+    while let Some(row) = rows.next().map_err(map_sqlite_error)? {
         let values = (0..columns.len())
             .map(|index| value_from_ref(row.get_ref(index)))
             .collect::<Result<Vec<_>, _>>()?;
@@ -652,6 +705,37 @@ mod tests {
             );
             assert_eq!(std::fs::read(&path).unwrap(), before, "{query}");
         }
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    // Feature: SQLiteプレビューのクエリタイムアウト
+    // Scenario: 無限再帰CTEの一時クエリおよび悪意あるVIEWを時間制限で中断する
+    // Given: 無限再帰CTEを含むVIEWを持つSQLiteデータベース
+    // When: 短いタイムアウトで一時クエリまたはVIEWのプレビューを実行する
+    // Then: ハングせずタイムアウトエラーで終了する
+    #[test]
+    fn infinite_recursive_cte_query_and_view_time_out_safely() {
+        let path = test_path();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE VIEW endless AS WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt) SELECT x FROM cnt;",
+            )
+            .unwrap();
+        drop(connection);
+
+        let timeout = std::time::Duration::from_millis(50);
+        let view_err = super::read_sqlite_preview_with_timeout(&path, Some("endless"), 0, 10, true, None, timeout)
+            .err()
+            .expect("infinite view should time out");
+        assert!(view_err.contains("タイムアウト"), "unexpected error: {view_err}");
+
+        let query = "SELECT COUNT(*) FROM (WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt) SELECT x FROM cnt)";
+        let query_err = super::read_sqlite_preview_with_timeout(&path, None, 0, 10, false, Some(query), timeout)
+            .err()
+            .expect("infinite query should time out");
+        assert!(query_err.contains("タイムアウト"), "unexpected error: {query_err}");
 
         let _ = std::fs::remove_file(path);
     }
