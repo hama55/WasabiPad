@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import * as sharedVersion from "../version-policy.mjs";
 import { checkReleaseVersion } from "./check-release-version.mjs";
+import { syncVersions } from "./sync-version.mjs";
 import * as scriptVersion from "./version.mjs";
 import { root } from "./version.mjs";
 
@@ -12,6 +13,7 @@ function versionCopies(version) {
     lockRoot: version,
     tauri: version,
     cargo: version,
+    ...Object.fromEntries(scriptVersion.WORKSPACE_PACKAGES.map((name) => [`cargoLock:${name}`, version])),
   };
 }
 
@@ -52,7 +54,82 @@ describe("Feature: リリースタグとアプリバージョンの一致検査"
     versions.package = "1.5.7";
 
     expect(() => checkReleaseVersion({ actual: "v1.5.8", headTag: null, versions }))
-      .toThrow("Version mismatch: package=1.5.7, lock=1.5.8/1.5.8, tauri=1.5.8, cargo=1.5.8");
+      .toThrow("Version mismatch: package=1.5.7, lock=1.5.8/1.5.8, tauri=1.5.8, cargo=1.5.8, cargoLock=1.5.8/1.5.8");
+  });
+
+  // Scenario: Cargo.lockだけがworkspace versionからずれている
+  // Given: Cargo.lockのwasabipadが1.5.7で、他の版番号コピーは1.5.8である
+  // When: v1.5.8をリリースタグとして検査する
+  // Then: Cargo.lockの不一致を明確に拒否する
+  it("Scenario: Cargo.lockだけ異なる版番号コピーを拒否する", () => {
+    const versions = versionCopies("1.5.8");
+    versions[`cargoLock:${scriptVersion.WORKSPACE_PACKAGES[0]}`] = "1.5.7";
+
+    expect(() => checkReleaseVersion({ actual: "v1.5.8", headTag: null, versions }))
+      .toThrow("Version mismatch: package=1.5.8, lock=1.5.8/1.5.8, tauri=1.5.8, cargo=1.5.8, cargoLock=1.5.7/1.5.8");
+  });
+
+  // Scenario: Cargo.lockにワークスペースパッケージのエントリが欠落している
+  // Given: wasabipad-coreの[[package]]エントリが無いCargo.lock文字列
+  // When: readCargoLockVersionsを呼び出す
+  // Then: 欠落パッケージ名を含むエラーになる
+  it("Scenario: Cargo.lockのワークスペースパッケージ欠落を拒否する", () => {
+    const sample = '[[package]]\nname = "wasabipad"\nversion = "1.9.4"\n';
+
+    expect(() => scriptVersion.readCargoLockVersions(sample))
+      .toThrow('Cargo.lock is missing workspace package "wasabipad-core"');
+  });
+
+  // Scenario: Cargo.lockからワークスペースパッケージの版番号を読み取る
+  // Given: wasabipadとwasabipad-coreの[[package]]エントリを含むCargo.lock文字列
+  // When: readCargoLockVersionsを呼び出す
+  // Then: 両パッケージのversionが抽出される
+  it("Scenario: Cargo.lockからワークスペース各パッケージの版番号を読み取る", () => {
+    const sample = [
+      '[[package]]',
+      'name = "other"',
+      'version = "0.1.0"',
+      '',
+      '[[package]]',
+      'name = "wasabipad"',
+      'version = "1.9.4"',
+      '',
+      '[[package]]',
+      'name = "wasabipad-core"',
+      'version = "1.9.4"',
+      '',
+    ].join("\n");
+
+    expect(scriptVersion.readCargoLockVersions(sample)).toEqual({
+      wasabipad: "1.9.4",
+      "wasabipad-core": "1.9.4",
+    });
+  });
+
+  // Scenario: 版番号同期でJSONに加えてCargo.lockもオフライン更新する
+  // Given: workspace versionが1.9.4である
+  // When: syncVersionsを実行する
+  // Then: package.json・package-lock.json・tauri.conf.jsonの更新に加えてCargo.lockをオフライン更新する
+  it("Scenario: syncVersionsはCargo.lockのワークスペース版番号もオフライン同期する", () => {
+    const files = new Map([
+      ["package.json", JSON.stringify({ name: "wasabipad-ui", version: "1.9.3" })],
+      ["package-lock.json", JSON.stringify({ version: "1.9.3", packages: { "": { version: "1.9.3" } } })],
+      ["src-tauri/tauri.conf.json", JSON.stringify({ version: "1.9.3" })],
+    ]);
+    const written = new Map();
+    const runCargo = vi.fn();
+
+    syncVersions({
+      version: "1.9.4",
+      readFile: (path) => files.get(path),
+      writeFile: (path, text) => written.set(path, text),
+      runCargo,
+    });
+
+    expect(JSON.parse(written.get("package.json")).version).toBe("1.9.4");
+    expect(JSON.parse(written.get("package-lock.json")).packages[""].version).toBe("1.9.4");
+    expect(JSON.parse(written.get("src-tauri/tauri.conf.json")).version).toBe("1.9.4");
+    expect(runCargo).toHaveBeenCalledWith(["update", "-p", "wasabipad", "-p", "wasabipad-core", "--offline"]);
   });
 
   // Scenario: 開発中のHEADにリリースタグがない

@@ -465,6 +465,64 @@ type DecodedArchiveEntry = (String, Option<(Encoding, Eol)>, bool, Option<OpenAs
 const IMAGE_DETECTION_HEADER_LIMIT: u64 = 1024 * 1024;
 const FILE_ASSET_MAX_BYTES: u64 = crate::ziptext::MAX_ENTRY as u64;
 
+fn is_unc_path(path: &Path) -> bool {
+    if path.to_str().is_some_and(|text| text.starts_with(r"\\") || text.starts_with("//")) {
+        return true;
+    }
+    matches!(
+        path.components().next(),
+        Some(std::path::Component::Prefix(prefix))
+            if matches!(
+                prefix.kind(),
+                std::path::Prefix::UNC(..) | std::path::Prefix::VerbatimUNC(..)
+            )
+    )
+}
+
+fn safe_relative_asset_path(src: &str) -> Option<PathBuf> {
+    if src.is_empty() {
+        return None;
+    }
+    let normalized = src.replace('/', std::path::MAIN_SEPARATOR_STR);
+    let candidate = Path::new(&normalized);
+    if candidate.is_absolute() || is_unc_path(candidate) {
+        return None;
+    }
+    let mut relative = PathBuf::new();
+    let mut has_normal = false;
+    for component in candidate.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::Normal(part) => {
+                relative.push(part);
+                has_normal = true;
+            }
+            std::path::Component::Prefix(_)
+            | std::path::Component::RootDir
+            | std::path::Component::ParentDir => return None,
+        }
+    }
+    has_normal.then_some(relative)
+}
+
+fn read_file_bytes_limit(path: &Path, max_bytes: u64) -> io::Result<Vec<u8>> {
+    let file = std::fs::File::open(path)?;
+    if file.metadata()?.len() > max_bytes {
+        return Err(io::Error::new(io::ErrorKind::FileTooLarge, "画像サイズが大きすぎます"));
+    }
+    let mut bytes = Vec::new();
+    std::io::Read::take(file, max_bytes.saturating_add(1)).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(io::Error::new(io::ErrorKind::FileTooLarge, "画像サイズが大きすぎます"));
+    }
+    Ok(bytes)
+}
+
+fn read_utf8_file_limit(path: &Path, max_bytes: u64) -> io::Result<String> {
+    let bytes = read_file_bytes_limit(path, max_bytes)?;
+    String::from_utf8(bytes).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "UTF-8ではありません"))
+}
+
 fn preview_cache_fingerprint(path: &Path) -> Option<String> {
     let metadata = std::fs::metadata(path).ok()?;
     let modified = metadata
@@ -2454,43 +2512,53 @@ impl Doc {
     }
 
     pub fn read_diagram_asset(&self, requested: &Path) -> io::Result<Vec<u8>> {
+        if is_unc_path(requested) {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "文書の画像資産以外は読み込めません"));
+        }
         if !requested.extension().and_then(|e| e.to_str()).is_some_and(crate::protocol::is_image_extension) {
             return Err(io::Error::new(io::ErrorKind::PermissionDenied, "画像以外は読み込めません"));
         }
         let memo = self.source.path().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "文書の保存先がありません"))?;
         let parent = memo.parent().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "文書の保存先が不正です"))?;
         let asset_dir = markdown_asset_dir(memo).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "画像フォルダがありません"))?;
+        let canonical_parent = std::fs::canonicalize(parent)?;
         let mut path = requested.to_path_buf();
         if !path.exists() && requested.starts_with(parent.join("image_markdown")) {
             if let Some(name) = requested.file_name() { path = asset_dir.join(name); }
         }
         let canonical = std::fs::canonicalize(&path)?;
         let owns = std::fs::canonicalize(&asset_dir).ok().is_some_and(|dir| canonical.starts_with(dir));
-        let referenced = image_sources(&self.buf).iter().any(|src| {
-            let src = src.replace('/', std::path::MAIN_SEPARATOR_STR);
-            let source = Path::new(&src);
-            let candidate = if source.is_absolute() { source.to_path_buf() } else { parent.join(source) };
-            if std::fs::canonicalize(&candidate).ok().is_some_and(|candidate| candidate == canonical) { return true; }
-            if candidate.file_name().and_then(|name| name.to_str()).is_some_and(crate::document_assets::generated_diagram_name) {
-                if let Ok(svg) = std::fs::read_to_string(&candidate) {
+        let in_parent = canonical.starts_with(&canonical_parent);
+        if !owns && !in_parent {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "文書の画像資産以外は読み込めません"));
+        }
+        let referenced = in_parent && image_sources(&self.buf).iter().any(|src| {
+            let Some(relative) = safe_relative_asset_path(src) else { return false; };
+            let candidate = parent.join(relative);
+            let Ok(canonical_candidate) = std::fs::canonicalize(&candidate) else { return false; };
+            if !canonical_candidate.starts_with(&canonical_parent) { return false; }
+            if canonical_candidate == canonical { return true; }
+            if canonical_candidate.file_name().and_then(|name| name.to_str()).is_some_and(crate::document_assets::generated_diagram_name) {
+                if let Ok(svg) = read_utf8_file_limit(&canonical_candidate, FILE_ASSET_MAX_BYTES) {
                     if let Ok(Some(backgrounds)) = crate::document_assets::diagram_backgrounds(&svg) {
-                        return backgrounds.iter().any(|name| candidate.parent().and_then(|parent| std::fs::canonicalize(parent.join(name)).ok()).is_some_and(|background| background == canonical));
+                        return backgrounds.iter().any(|name| {
+                            canonical_candidate.parent()
+                                .and_then(|dir| std::fs::canonicalize(dir.join(name)).ok())
+                                .is_some_and(|background| background.starts_with(&canonical_parent) && background == canonical)
+                        });
                     }
                 }
             }
             false
         });
-        let current_svg_background = memo.file_name().and_then(|name| name.to_str()).is_some_and(crate::document_assets::generated_diagram_name)
+        let current_svg_background = in_parent
+            && memo.file_name().and_then(|name| name.to_str()).is_some_and(crate::document_assets::generated_diagram_name)
             && crate::document_assets::diagram_backgrounds(&(0..self.buf.line_count()).map(|line| self.buf.line(line).into_owned()).collect::<Vec<_>>().join("\n"))
                 .ok().flatten().is_some_and(|backgrounds| backgrounds.iter().any(|name| {
-                    parent.join(name).canonicalize().is_ok_and(|background| background == canonical)
+                    parent.join(name).canonicalize().is_ok_and(|background| background.starts_with(&canonical_parent) && background == canonical)
                 }));
         if !owns && !referenced && !current_svg_background { return Err(io::Error::new(io::ErrorKind::PermissionDenied, "文書の画像資産以外は読み込めません")); }
-        let file = std::fs::File::open(canonical)?;
-        if file.metadata()?.len() > FILE_ASSET_MAX_BYTES { return Err(io::Error::new(io::ErrorKind::FileTooLarge, "画像サイズが大きすぎます")); }
-        let mut bytes = Vec::new(); file.take(FILE_ASSET_MAX_BYTES + 1).read_to_end(&mut bytes)?;
-        if bytes.len() as u64 > FILE_ASSET_MAX_BYTES { return Err(io::Error::new(io::ErrorKind::FileTooLarge, "画像サイズが大きすぎます")); }
-        Ok(bytes)
+        read_file_bytes_limit(&canonical, FILE_ASSET_MAX_BYTES)
     }
 
     pub fn save_diagram_image(&mut self, bytes: &[u8], mime_type: &str, shared: bool) -> io::Result<String> {
@@ -5659,6 +5727,61 @@ mod tests {
         std::fs::write(external.join("photo space.png"), [8, 9]).unwrap();
         d.edit(pos(0, 0), pos(0, 0), pos(0, 0), "![背景](other/photo%20space.png)\n", false).unwrap();
         assert_eq!(d.read_diagram_asset(&external.join("photo space.png")).unwrap(), [8, 9]);
+        drop(d);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn diagram_asset_read_rejects_outside_document_scope_and_unc_paths() {
+        // Feature: 編集図アセット読込のスコープ制限
+        // Scenario: 本文に絶対パス・親遡り・UNCパスが書かれていても文書フォルダ外の画像は拒否する
+        // Given: サブフォルダ内の文書と、その親フォルダ外に置かれた画像
+        let root = std::env::temp_dir().join(format!("wasabipad_diagram_scope_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let doc_dir = root.join("notes");
+        std::fs::create_dir_all(&doc_dir).unwrap();
+        let outside = root.join("outside.png");
+        std::fs::write(&outside, [1, 2, 3]).unwrap();
+        let memo = doc_dir.join("memo.md");
+        let body = format!(
+            "![abs]({})\n![rel](../outside.png)\n![unc](//attacker.invalid/share/a.png)\n",
+            outside.to_string_lossy().replace('\\', "/"),
+        );
+        std::fs::write(&memo, body).unwrap();
+        let d = Doc::open(&memo).unwrap();
+        // When: 絶対パス参照・親遡り参照・UNCパスで read_diagram_asset を呼ぶ
+        // Then: いずれも PermissionDenied で拒否される
+        assert_eq!(d.read_diagram_asset(&outside).unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(d.read_diagram_asset(&doc_dir.join("../outside.png")).unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(d.read_diagram_asset(Path::new(r"\\attacker.invalid\share\a.png")).unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+        drop(d);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn diagram_asset_read_ignores_oversized_referenced_svg() {
+        // Feature: 編集図アセット読込のサイズ上限
+        // Scenario: 上限を超えるサイズの参照図 SVG からは背景依存を読み込まない
+        // Given: 文書配下に置かれた上限超過サイズの diagram-0001.svg と背景画像
+        let root = std::env::temp_dir().join(format!("wasabipad_diagram_svg_limit_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let other = root.join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        let bg = other.join("bg.png");
+        std::fs::write(&bg, [9, 8, 7]).unwrap();
+        let svg_path = other.join("diagram-0001.svg");
+        {
+            let mut file = std::fs::File::create(&svg_path).unwrap();
+            let header = br#"<svg><metadata id="wasabipad-diagram">{"width":10,"height":10,"elements":[{"kind":"image","src":"bg.png"}]}</metadata></svg>"#;
+            file.write_all(header).unwrap();
+            file.set_len(FILE_ASSET_MAX_BYTES + 1).unwrap();
+        }
+        let memo = root.join("memo.md");
+        std::fs::write(&memo, "<img src=\"other/diagram-0001.svg\">\n").unwrap();
+        let d = Doc::open(&memo).unwrap();
+        // When: その巨大 SVG が宣言する背景画像を read_diagram_asset で要求する
+        // Then: 巨大 SVG の解析はスキップされ PermissionDenied になる
+        assert_eq!(d.read_diagram_asset(&bg).unwrap_err().kind(), io::ErrorKind::PermissionDenied);
         drop(d);
         let _ = std::fs::remove_dir_all(&root);
     }
