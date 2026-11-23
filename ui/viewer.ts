@@ -42,10 +42,6 @@ import {
 } from "./csv-viewer";
 import { startCsvColumnResize as bindCsvColumnResize } from "./csv-column-resize";
 import {
-  isExternalMarkdownLink,
-  isLocalMarkdownLinkCandidate,
-  isSameDocumentMarkdownLink,
-  markdownFragmentOf,
   resolveArchiveAssetEntry,
   resolveAssetPath,
 } from "./viewer-assets";
@@ -57,6 +53,7 @@ import { imageExtensionOf, imageMimeType } from "./image-formats";
 import {
   applyMarkdownHeadingUnderlinesMessage,
   applyMarkdownHeadingUnderlinesToRoot,
+  handleMarkdownLinkClick,
   scrollMarkdownFragment,
   scrollMarkdownCaret,
 } from "./viewer-markdown";
@@ -373,32 +370,21 @@ function notifyParentOfSelection(target?: EventTarget | null) {
 
 function notifyMarkdownLink(event: MouseEvent) {
   if (currentFormat !== "markdown" || content.classList.contains("viewer-loading")) return;
-  const target = event.target instanceof Element ? event.target : null;
-  const link = target?.closest<HTMLAnchorElement>("a");
-  const href = link?.getAttribute("href") ?? "";
-  if (!href) return;
-  const fragment = markdownFragmentOf(href);
-  if (fragment !== null && isSameDocumentMarkdownLink(currentSourcePath, href)) {
-    event.preventDefault();
-    const article = content.querySelector<HTMLElement>("article");
-    if (article) scrollMarkdownFragment(article, fragment);
-    return;
-  }
-  if (!event.ctrlKey && !event.metaKey) return;
-  const external = isExternalMarkdownLink(href);
-  if (!isInlineViewer) {
-    if (!external) return;
-    event.preventDefault();
-    runViewerOperation("既定のブラウザで開けませんでした", () => openExternalUrl(href));
-    return;
-  }
-  if (currentArchivePath && !external) return;
-  if (!external && !isLocalMarkdownLinkCandidate(href)) return;
-  event.preventDefault();
-  postToParent({
-    type: INLINE_PREVIEW_MESSAGES.MARKDOWN_LINK_MESSAGE,
-    href,
-    newTab: true,
+  handleMarkdownLinkClick(event, {
+    content,
+    currentSourcePath,
+    currentArchivePath,
+    isInlineViewer,
+    onOpenExternal: (href) => {
+      runViewerOperation("既定のブラウザで開けませんでした", () => openExternalUrl(href));
+    },
+    onPostInlineLink: (href) => {
+      postToParent({
+        type: INLINE_PREVIEW_MESSAGES.MARKDOWN_LINK_MESSAGE,
+        href,
+        newTab: true,
+      });
+    },
   });
 }
 

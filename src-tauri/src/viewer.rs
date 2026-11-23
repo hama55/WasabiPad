@@ -93,6 +93,9 @@ pub(crate) async fn open_viewer(
     // 形式名入りのタイトルは payload 受信後にフロントが設定する。ここは生成時の暫定表示。
     let title = app.package_info().name.clone();
     let label = crate::viewer_label(VIEWER_ID.fetch_add(1, Ordering::Relaxed));
+    if let Some(path) = source_path.as_deref() {
+        crate::access::allow_asset_scope_for_path(&app, std::path::Path::new(path));
+    }
     let archive_source = with_doc(&doc_state, |doc| doc.viewer_source())?;
     state
         .0

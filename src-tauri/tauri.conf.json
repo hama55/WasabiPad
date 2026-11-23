@@ -24,9 +24,7 @@
     "security": {
       "assetProtocol": {
         "enable": true,
-        "scope": [
-          "**"
-        ]
+        "scope": []
       },
       "csp": {
         "default-src": "'self' customprotocol: asset:",

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { INLINE_PREVIEW_MESSAGES } from "./inline-preview-protocol";
 import {
   applyMarkdownHeadingUnderlinesMessage,
+  handleMarkdownLinkClick,
   markdownHeadingSlug,
   markdownBlockSelected,
   markdownHighlightTargets,
@@ -218,5 +219,88 @@ describe("Feature: Markdown viewer specifications", () => {
 
     expect(beforeScroll).not.toHaveBeenCalled();
     expect(afterScroll).toHaveBeenCalledWith({ block: "center", inline: "nearest" });
+  });
+
+  // Feature: Markdownリンククリック時のデフォルト遷移抑止
+  // Scenario: 通常クリックと非対応スキームのCtrl+クリックでもデフォルト遷移を抑止する
+  // Given: 外部リンクとmailtoリンクを含むMarkdownプレビューDOM
+  // When: CtrlなしクリックとmailtoのCtrl+クリックをそれぞれ発火する
+  // Then: いずれもdefaultPreventedになり、許可されていない遷移ハンドラは呼ばれない
+  it("Scenario: 通常クリックや非対応スキームでもデフォルト遷移を抑止する", () => {
+    const content = document.createElement("div");
+    const external = document.createElement("a");
+    external.href = "https://example.com";
+    const mailto = document.createElement("a");
+    mailto.href = "mailto:test@example.com";
+    const emptyHref = document.createElement("a");
+    emptyHref.setAttribute("href", "");
+    content.append(external, mailto, emptyHref);
+
+    const onOpenExternal = vi.fn();
+    const onPostInlineLink = vi.fn();
+    const bind = (anchor: HTMLAnchorElement, isInlineViewer: boolean) => {
+      anchor.addEventListener("click", (event) => {
+        handleMarkdownLinkClick(event, {
+          content,
+          currentSourcePath: "C:\\work\\memo.md",
+          currentArchivePath: null,
+          isInlineViewer,
+          onOpenExternal,
+          onPostInlineLink,
+        });
+      });
+    };
+
+    const plainClick = new MouseEvent("click", { bubbles: true, cancelable: true });
+    bind(external, true);
+    external.dispatchEvent(plainClick);
+    expect(plainClick.defaultPrevented).toBe(true);
+    expect(onOpenExternal).not.toHaveBeenCalled();
+    expect(onPostInlineLink).not.toHaveBeenCalled();
+
+    const mailtoCtrlClick = new MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: true });
+    bind(mailto, false);
+    mailto.dispatchEvent(mailtoCtrlClick);
+    expect(mailtoCtrlClick.defaultPrevented).toBe(true);
+    expect(onOpenExternal).not.toHaveBeenCalled();
+    expect(onPostInlineLink).not.toHaveBeenCalled();
+
+    const emptyClick = new MouseEvent("click", { bubbles: true, cancelable: true });
+    bind(emptyHref, true);
+    emptyHref.dispatchEvent(emptyClick);
+    expect(emptyClick.defaultPrevented).toBe(true);
+    expect(onOpenExternal).not.toHaveBeenCalled();
+    expect(onPostInlineLink).not.toHaveBeenCalled();
+  });
+
+  // Feature: Markdownリンククリック時の許可済み遷移
+  // Scenario: Ctrl+クリックした外部リンクは許可ハンドラへ委譲する
+  // Given: HTTPSリンクを含むMarkdownプレビューDOM
+  // When: 非インラインビューアでCtrl+クリックする
+  // Then: defaultPreventedになりonOpenExternalが呼ばれる
+  it("Scenario: Ctrl+クリックした外部リンクを許可ハンドラへ委譲する", () => {
+    const content = document.createElement("div");
+    const external = document.createElement("a");
+    external.href = "https://example.com/docs";
+    content.append(external);
+
+    const onOpenExternal = vi.fn();
+    const onPostInlineLink = vi.fn();
+    const ctrlClick = new MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: true });
+    external.addEventListener("click", (event) => {
+      handleMarkdownLinkClick(event, {
+        content,
+        currentSourcePath: "C:\\work\\memo.md",
+        currentArchivePath: null,
+        isInlineViewer: false,
+        onOpenExternal,
+        onPostInlineLink,
+      });
+    });
+    external.dispatchEvent(ctrlClick);
+
+    expect(ctrlClick.defaultPrevented).toBe(true);
+    expect(onOpenExternal).toHaveBeenCalledWith("https://example.com/docs");
+    expect(onPostInlineLink).not.toHaveBeenCalled();
   });
 });

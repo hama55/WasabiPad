@@ -95,15 +95,31 @@ impl ExternalHtmlPreviews {
                 buf
             };
             let mime = external_asset_type(&path);
-            Response::builder()
+            #[cfg(target_os = "windows")]
+            let local = format!("http://wasabi-ext.localhost/{id}/");
+            #[cfg(not(target_os = "windows"))]
+            let local = "wasabi-ext:".to_string();
+            let csp = format!(
+                "default-src 'none'; script-src {local} 'unsafe-inline' 'wasm-unsafe-eval'; style-src {local} 'unsafe-inline'; img-src {local} data: blob:; font-src {local} data: blob:; media-src {local} data: blob:; connect-src {local} data: blob:; worker-src {local} blob:; child-src {local} blob:; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+            );
+            let mut builder = Response::builder()
                 .status(200)
                 .header("Content-Type", mime)
                 .header("Content-Length", len.to_string())
-                .header("Access-Control-Allow-Origin", "*")
+                .header("Content-Security-Policy", csp)
                 .header("X-Content-Type-Options", "nosniff")
-                .header("Cache-Control", "no-store")
-                .body(bytes)
-                .ok()
+                .header("Cache-Control", "no-store");
+            if request
+                .headers()
+                .get("Origin")
+                .and_then(|value| value.to_str().ok())
+                == Some("null")
+            {
+                builder = builder
+                    .header("Access-Control-Allow-Origin", "null")
+                    .header("Vary", "Origin");
+            }
+            builder.body(bytes).ok()
         })();
         data.unwrap_or_else(|| Response::builder().status(404).body(Vec::new()).unwrap())
     }
@@ -217,11 +233,42 @@ mod tests {
             html.headers().get("Content-Type").unwrap(),
             "text/html; charset=utf-8"
         );
-        assert_eq!(
-            html.headers().get("Access-Control-Allow-Origin").unwrap(),
-            "*"
-        );
+        let csp = html
+            .headers()
+            .get("Content-Security-Policy")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(csp.contains("default-src 'none'"));
+        assert!(csp.contains("frame-src 'none'"));
+        assert!(csp.contains("base-uri 'none'"));
+        assert!(csp.contains("form-action 'none'"));
+        #[cfg(target_os = "windows")]
+        assert!(csp.contains(&format!("connect-src http://wasabi-ext.localhost/{id}/")));
+        assert!(html.headers().get("Access-Control-Allow-Origin").is_none());
         assert_eq!(html.body(), b"<!doctype html><p>score</p>");
+
+        let opaque_req = Request::builder()
+            .uri(format!("/{id}/assets/player.js"))
+            .header("Origin", "null")
+            .body(Vec::new())
+            .unwrap();
+        let opaque_js = previews.serve(opaque_req);
+        assert_eq!(opaque_js.status(), 200);
+        assert_eq!(
+            opaque_js.headers().get("Access-Control-Allow-Origin").unwrap(),
+            "null"
+        );
+        assert_eq!(opaque_js.headers().get("Vary").unwrap(), "Origin");
+
+        let cross_origin_req = Request::builder()
+            .uri(format!("/{id}/assets/player.js"))
+            .header("Origin", "http://tauri.localhost")
+            .body(Vec::new())
+            .unwrap();
+        let cross_origin_js = previews.serve(cross_origin_req);
+        assert_eq!(cross_origin_js.status(), 200);
+        assert!(cross_origin_js.headers().get("Access-Control-Allow-Origin").is_none());
 
         let js = previews.serve(req("assets/player.js"));
         assert_eq!(js.status(), 200);

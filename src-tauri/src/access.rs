@@ -1,4 +1,6 @@
+use std::path::{Path, PathBuf};
 use serde_json::Value;
+use tauri::Manager;
 
 use crate::external_preview_runner::{ExternalPreviewFormat, ExternalPreviewRequest};
 
@@ -83,6 +85,45 @@ pub(crate) fn require_setting_update_allowed_for_label(
         return Ok(());
     }
     Err("この設定はビューアウィンドウから変更できません".to_string())
+}
+
+pub(crate) fn authorize_scoped_path(
+    caller_label: &str,
+    requested_path: &str,
+    expected_path: Option<&Path>,
+    allow_any_for_main: bool,
+    denied_message: &str,
+) -> Result<PathBuf, String> {
+    require_viewer_or_main_label(caller_label)?;
+    if allow_any_for_main && is_main_window_label(caller_label) {
+        return Ok(PathBuf::from(requested_path));
+    }
+    let Some(expected) = expected_path.and_then(|path| path.canonicalize().ok()) else {
+        return Err(denied_message.to_owned());
+    };
+    let Some(canonical) = PathBuf::from(requested_path).canonicalize().ok() else {
+        return Err(denied_message.to_owned());
+    };
+    if canonical != expected {
+        return Err(denied_message.to_owned());
+    }
+    Ok(canonical)
+}
+
+pub(crate) fn allow_asset_scope_for_path(app: &tauri::AppHandle, path: &Path) {
+    if path.as_os_str().is_empty() {
+        return;
+    }
+    let scope = app.asset_protocol_scope();
+    let target = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    if target.is_dir() {
+        let _ = scope.allow_directory(&target, true);
+    } else {
+        let _ = scope.allow_file(&target);
+        if let Some(parent) = target.parent() {
+            let _ = scope.allow_directory(parent, true);
+        }
+    }
 }
 
 pub(crate) fn parse_external_preview_arguments(value: &str) -> Result<Vec<String>, String> {
@@ -405,4 +446,51 @@ mod tests {
                 .is_err()
         );
     }
+
+    // Feature: ビューア・メインのパス認可
+    // Scenario: viewer-* は自身の表示対象パスのみ許可し、他ファイルや未存在パスを同一エラーで拒否する
+    // Given: 実在する表示対象ファイルと別のファイル
+    // When: authorize_scoped_path を viewer-1 / main / 不正ラベルで呼び出す
+    // Then: 一致するパスのみ許可され、不一致・未存在・不正ラベルは拒否される
+    #[test]
+    fn authorizes_scoped_path_for_viewer_and_main() {
+        let dir = std::env::temp_dir().join(format!("wasabipad_access_scope_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let allowed = dir.join("allowed.db");
+        let other = dir.join("other.db");
+        let missing = dir.join("missing.db");
+        std::fs::write(&allowed, b"a").unwrap();
+        std::fs::write(&other, b"b").unwrap();
+
+        let allowed_str = allowed.to_string_lossy().into_owned();
+        let other_str = other.to_string_lossy().into_owned();
+        let missing_str = missing.to_string_lossy().into_owned();
+
+        assert!(authorize_scoped_path("viewer-1", &allowed_str, Some(&allowed), false, "denied").is_ok());
+        assert_eq!(
+            authorize_scoped_path("viewer-1", &other_str, Some(&allowed), false, "denied").unwrap_err(),
+            "denied"
+        );
+        assert_eq!(
+            authorize_scoped_path("viewer-1", &missing_str, Some(&allowed), false, "denied").unwrap_err(),
+            "denied"
+        );
+        assert!(authorize_scoped_path("main", &other_str, None, true, "denied").is_ok());
+        assert_eq!(
+            authorize_scoped_path("main", &other_str, Some(&allowed), false, "denied").unwrap_err(),
+            "denied"
+        );
+        assert!(authorize_scoped_path("evil", &allowed_str, Some(&allowed), true, "denied").is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Feature: assetProtocol の動的スコープ許可
+    // Scenario: 開いた文書・ビューア対象・外部プレビュー出力のファイルと親ディレクトリのみ assetProtocol へ許可する
+    // Given: assetProtocol.scope が空配列で起動した Tauri AppHandle
+    // When: allow_asset_scope_for_path に実在ファイルまたはディレクトリパスを渡す
+    // Then: ディレクトリなら再帰許可、ファイルなら当該ファイルと親ディレクトリのみ再帰許可する（AppHandle 実体が必要なため仕様記述のみ）
+    #[test]
+    fn allow_asset_scope_for_path_spec() {}
 }

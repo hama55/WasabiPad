@@ -57,4 +57,9 @@ for (const [name, csp] of [
   }
 }
 
+const assetScope = tauri.app.security.assetProtocol?.scope ?? [];
+if (assetScope.includes("**")) {
+  throw new Error('Security assetProtocol.scope must not allow wildcard "**".');
+}
+
 console.log(`Config OK: ${appName} version ${versions.package}, development port ${devPort}.`);

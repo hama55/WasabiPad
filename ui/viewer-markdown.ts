@@ -1,5 +1,11 @@
 import type { ViewerSelection } from "./api";
 import { INLINE_PREVIEW_MESSAGES } from "./inline-preview-protocol";
+import {
+  isExternalMarkdownLink,
+  isLocalMarkdownLinkCandidate,
+  isSameDocumentMarkdownLink,
+  markdownFragmentOf,
+} from "./viewer-assets";
 import { scrollViewerCaret } from "./viewer-scroll";
 import {
   MARKDOWN_SOURCE_OFFSET_END,
@@ -145,4 +151,38 @@ export function scrollMarkdownCaret(sourceElements: HTMLElement[], selection: Vi
     start: Number(element.dataset.sourceStart),
     end: Number(element.dataset.sourceEnd),
   }));
+}
+
+export interface MarkdownLinkClickContext {
+  content: HTMLElement;
+  currentSourcePath: string | null;
+  currentArchivePath: string | null;
+  isInlineViewer: boolean;
+  onOpenExternal: (href: string) => void;
+  onPostInlineLink: (href: string) => void;
+}
+
+export function handleMarkdownLinkClick(event: MouseEvent, context: MarkdownLinkClickContext) {
+  const target = event.target instanceof Element ? event.target : null;
+  const link = target?.closest<HTMLAnchorElement>("a");
+  const href = link?.getAttribute("href");
+  if (href === null || href === undefined) return;
+  event.preventDefault();
+  if (!href) return;
+  const fragment = markdownFragmentOf(href);
+  if (fragment !== null && isSameDocumentMarkdownLink(context.currentSourcePath, href)) {
+    const article = context.content.querySelector<HTMLElement>("article");
+    if (article) scrollMarkdownFragment(article, fragment);
+    return;
+  }
+  if (!event.ctrlKey && !event.metaKey) return;
+  const external = isExternalMarkdownLink(href);
+  if (!context.isInlineViewer) {
+    if (!external) return;
+    context.onOpenExternal(href);
+    return;
+  }
+  if (context.currentArchivePath && !external) return;
+  if (!external && !isLocalMarkdownLinkCandidate(href)) return;
+  context.onPostInlineLink(href);
 }

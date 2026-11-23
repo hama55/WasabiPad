@@ -132,7 +132,9 @@ async fn open_path(
     let generation = app.state::<DocumentOpenGeneration>().advance();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Mutex<DocState>>();
-        document::open_path(path, open_as, state, &app, generation)
+        let info = document::open_path(path, open_as, state, &app, generation)?;
+        access::allow_asset_scope_for_path(&app, std::path::Path::new(&info.path));
+        Ok(info)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -212,7 +214,9 @@ async fn select_entry(
     let generation = app.state::<DocumentOpenGeneration>().advance();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Mutex<DocState>>();
-        document::select_entry(rel_path, open_as, cache_directory, state, &app.state(), generation)
+        let info = document::select_entry(rel_path, open_as, cache_directory, state, &app.state(), generation)?;
+        access::allow_asset_scope_for_path(&app, std::path::Path::new(&info.path));
+        Ok(info)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -629,6 +633,39 @@ fn run_external_command(
     system::run_external_command(request)
 }
 
+fn resolve_authorized_source_path(
+    app: &AppHandle,
+    label: &str,
+    requested_path: &str,
+    allow_any_for_main: bool,
+    denied_message: &str,
+) -> Result<PathBuf, String> {
+    let expected = if access::is_main_window_label(label) {
+        if allow_any_for_main {
+            None
+        } else {
+            let doc_state = app.state::<Mutex<DocState>>();
+            state::with_doc(&doc_state, |doc| doc.path().map(PathBuf::from))?
+        }
+    } else {
+        let viewer_store = app.state::<ViewerStore>();
+        let path = viewer_store
+            .0
+            .lock()
+            .map_err(|_| "ビュー状態の参照に失敗しました".to_owned())?
+            .get(label)
+            .and_then(|payload| payload.source_path.as_deref().map(PathBuf::from));
+        path
+    };
+    access::authorize_scoped_path(
+        label,
+        requested_path,
+        expected.as_deref(),
+        allow_any_for_main,
+        denied_message,
+    )
+}
+
 #[tauri::command]
 async fn register_html_preview(
     id: String,
@@ -638,8 +675,24 @@ async fn register_html_preview(
     app: AppHandle,
 ) -> Result<(), String> {
     access::require_viewer_or_main(&window)?;
+    let label = window.label().to_owned();
     tauri::async_runtime::spawn_blocking(move || {
-        app.state::<html_preview::HtmlPreviews>().register(id, html, source_path)
+        let authorized_source = match source_path {
+            Some(path) => Some(
+                resolve_authorized_source_path(
+                    &app,
+                    &label,
+                    &path,
+                    false,
+                    "HTML preview path is not the active document.",
+                )?
+                .to_string_lossy()
+                .into_owned(),
+            ),
+            None => None,
+        };
+        app.state::<html_preview::HtmlPreviews>()
+            .register(id, html, authorized_source)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -711,30 +764,13 @@ async fn register_pdf_preview(
     access::require_viewer_or_main(&window)?;
     let label = window.label().to_owned();
     tauri::async_runtime::spawn_blocking(move || {
-        let canonical = PathBuf::from(&path)
-            .canonicalize()
-            .map_err(|error| format!("PDF preview path could not be resolved: {error}"))?;
-        let allowed = if label == "main" {
-            let doc_state = app.state::<Mutex<DocState>>();
-            let current_doc_path = state::with_doc(&doc_state, |doc| doc.path().map(PathBuf::from))?;
-            current_doc_path
-                .and_then(|doc_path| doc_path.canonicalize().ok())
-                .is_some_and(|active| active == canonical)
-        } else {
-            let viewer_store = app.state::<ViewerStore>();
-            let viewer_path = viewer_store
-                .0
-                .lock()
-                .map_err(|_| "ビュー状態の参照に失敗しました".to_owned())?
-                .get(&label)
-                .and_then(|payload| payload.source_path.clone());
-            viewer_path
-                .and_then(|source_path| PathBuf::from(source_path).canonicalize().ok())
-                .is_some_and(|active| active == canonical)
-        };
-        if !allowed {
-            return Err("PDF preview path is not the active document.".to_owned());
-        }
+        let canonical = resolve_authorized_source_path(
+            &app,
+            &label,
+            &path,
+            false,
+            "PDF preview path is not the active document.",
+        )?;
         app.state::<pdf_preview::PdfPreviews>()
             .register(id, canonical)
     })
@@ -757,11 +793,15 @@ async fn external_preview_existing(
     input_path: String,
     output_format: external_preview_runner::ExternalPreviewFormat,
     window: tauri::WebviewWindow,
+    app: AppHandle,
 ) -> Result<Option<String>, String> {
     access::require_main_window(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
         external_preview_runner::existing_output(std::path::Path::new(&input_path), output_format)
-            .map(|path| path.to_string_lossy().into_owned())
+            .map(|path| {
+                access::allow_asset_scope_for_path(&app, &path);
+                path.to_string_lossy().into_owned()
+            })
     })
     .await
     .map_err(|error| error.to_string())
@@ -771,6 +811,7 @@ async fn external_preview_existing(
 async fn external_preview_generate(
     request: external_preview_runner::ExternalPreviewRequest,
     window: tauri::WebviewWindow,
+    app: AppHandle,
     operations: tauri::State<'_, external_preview_runner::ExternalPreviewOperations>,
 ) -> Result<String, String> {
     access::require_main_window(&window)?;
@@ -809,6 +850,7 @@ async fn external_preview_generate(
             &result.output_path,
             &work_root,
         )?;
+        access::allow_asset_scope_for_path(&app, &result.output_path);
         Ok(result.output_path.to_string_lossy().into_owned())
     })
     .await
@@ -1406,7 +1448,7 @@ async fn probe_sqlite_preview(
     path: String,
     window: tauri::WebviewWindow,
 ) -> Result<bool, String> {
-    access::require_viewer_or_main(&window)?;
+    access::require_main_window(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
         wasabipad_core::is_sqlite_preview_eligible(std::path::Path::new(&path))
     })
@@ -1423,11 +1465,20 @@ async fn read_sqlite_preview(
     include_metadata: bool,
     query_sql: Option<String>,
     window: tauri::WebviewWindow,
+    app: AppHandle,
 ) -> Result<SqlitePreview, String> {
     access::require_viewer_or_main(&window)?;
+    let label = window.label().to_owned();
     tauri::async_runtime::spawn_blocking(move || {
+        let authorized = resolve_authorized_source_path(
+            &app,
+            &label,
+            &path,
+            false,
+            "SQLite preview path is not the active document.",
+        )?;
         read_sqlite_preview_core(
-            std::path::Path::new(&path),
+            &authorized,
             selected_name.as_deref(),
             offset,
             limit,
@@ -1439,26 +1490,53 @@ async fn read_sqlite_preview(
     .map_err(|error| error.to_string())?
 }
 
+async fn spawn_git_preview<T, F>(
+    path: String,
+    window: tauri::WebviewWindow,
+    app: AppHandle,
+    operation: F,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(&str) -> Result<T, String> + Send + 'static,
+{
+    access::require_viewer_or_main(&window)?;
+    let label = window.label().to_owned();
+    tauri::async_runtime::spawn_blocking(move || {
+        let authorized = resolve_authorized_source_path(
+            &app,
+            &label,
+            &path,
+            true,
+            "Git preview path is not authorized for this viewer.",
+        )?;
+        operation(&authorized.to_string_lossy())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 #[tauri::command]
 async fn read_git_history(
     path: String,
     head: Option<String>,
     offset: usize,
     window: tauri::WebviewWindow,
+    app: AppHandle,
 ) -> Result<wasabipad_core::GitHistory, String> {
-    access::require_viewer_or_main(&window)?;
-    tauri::async_runtime::spawn_blocking(move || wasabipad_core::read_git_history(&path, head.as_deref(), offset))
-        .await.map_err(|error| error.to_string())?
+    spawn_git_preview(path, window, app, move |authorized| {
+        wasabipad_core::read_git_history(authorized, head.as_deref(), offset)
+    })
+    .await
 }
 
 #[tauri::command]
 async fn read_git_branches(
     path: String,
     window: tauri::WebviewWindow,
+    app: AppHandle,
 ) -> Result<Vec<wasabipad_core::GitBranch>, String> {
-    access::require_viewer_or_main(&window)?;
-    tauri::async_runtime::spawn_blocking(move || wasabipad_core::read_git_branches(&path))
-        .await.map_err(|error| error.to_string())?
+    spawn_git_preview(path, window, app, wasabipad_core::read_git_branches).await
 }
 
 #[tauri::command]
@@ -1477,10 +1555,9 @@ async fn resolve_git_worktree_file(
 async fn read_git_worktree_files(
     path: String,
     window: tauri::WebviewWindow,
+    app: AppHandle,
 ) -> Result<Vec<wasabipad_core::GitChangedFile>, String> {
-    access::require_viewer_or_main(&window)?;
-    tauri::async_runtime::spawn_blocking(move || wasabipad_core::read_git_worktree_files(&path))
-        .await.map_err(|error| error.to_string())?
+    spawn_git_preview(path, window, app, wasabipad_core::read_git_worktree_files).await
 }
 
 #[tauri::command]
@@ -1488,10 +1565,12 @@ async fn read_git_worktree_diff(
     path: String,
     file: String,
     window: tauri::WebviewWindow,
+    app: AppHandle,
 ) -> Result<wasabipad_core::GitFileDiff, String> {
-    access::require_viewer_or_main(&window)?;
-    tauri::async_runtime::spawn_blocking(move || wasabipad_core::read_git_worktree_diff(&path, &file))
-        .await.map_err(|error| error.to_string())?
+    spawn_git_preview(path, window, app, move |authorized| {
+        wasabipad_core::read_git_worktree_diff(authorized, &file)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1499,10 +1578,12 @@ async fn read_git_files(
     path: String,
     commit: String,
     window: tauri::WebviewWindow,
+    app: AppHandle,
 ) -> Result<Vec<wasabipad_core::GitChangedFile>, String> {
-    access::require_viewer_or_main(&window)?;
-    tauri::async_runtime::spawn_blocking(move || wasabipad_core::read_git_files(&path, &commit))
-        .await.map_err(|error| error.to_string())?
+    spawn_git_preview(path, window, app, move |authorized| {
+        wasabipad_core::read_git_files(authorized, &commit)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1511,10 +1592,12 @@ async fn read_git_diff(
     commit: String,
     file: String,
     window: tauri::WebviewWindow,
+    app: AppHandle,
 ) -> Result<wasabipad_core::GitFileDiff, String> {
-    access::require_viewer_or_main(&window)?;
-    tauri::async_runtime::spawn_blocking(move || wasabipad_core::read_git_diff(&path, &commit, &file))
-        .await.map_err(|error| error.to_string())?
+    spawn_git_preview(path, window, app, move |authorized| {
+        wasabipad_core::read_git_diff(authorized, &commit, &file)
+    })
+    .await
 }
 
 fn main() {

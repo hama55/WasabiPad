@@ -504,6 +504,41 @@ fn is_shell_executable(executable: &str) -> bool {
         || file_name.ends_with(".cmd")
 }
 
+fn contains_shell_metachar(value: &str) -> bool {
+    value.chars().any(|ch| {
+        matches!(
+            ch,
+            '&' | '|' | '<' | '>' | '^' | '%' | '!' | '"' | '\'' | '`' | '$' | ';' | '\r' | '\n' | '\0'
+        )
+    })
+}
+
+fn validate_shell_template_value(
+    command: &str,
+    value_kind: &str,
+    effective_value: &str,
+) -> Result<(), String> {
+    if value_kind == "string" {
+        if command.contains("{string}") && contains_shell_metachar(effective_value) {
+            return Err("シェル実行コマンドには安全でない記号を含む文字列を渡せません".to_string());
+        }
+        if command.contains("{string_one_line}")
+            && contains_shell_metachar(&one_line_value(effective_value))
+        {
+            return Err("シェル実行コマンドには安全でない記号を含む文字列を渡せません".to_string());
+        }
+        if command.contains("{string_in_url}")
+            && (contains_shell_metachar(effective_value)
+                || effective_value.chars().any(|ch| matches!(ch, '(' | ')')))
+        {
+            return Err("シェル実行コマンドには安全でない記号を含むURL文字列を渡せません".to_string());
+        }
+    } else if command.contains("{file}") && contains_shell_metachar(effective_value) {
+        return Err("シェル実行コマンドには安全でない記号を含むファイルパスを渡せません".to_string());
+    }
+    Ok(())
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum PreparedExternalCommand {
     Direct { executable: String, args: Vec<String> },
@@ -532,25 +567,27 @@ fn prepare_external_command(request: &ExternalCommandRequest) -> Result<Prepared
     } else {
         format!("{prefix} {command}")
     };
-    if let Some(tokens) = split_template_tokens(&combined_template) {
-        if let Some((first, rest)) = tokens.split_first() {
-            let executable = expand_registered_template(first, effective_value, &request.value_kind);
-            if !executable.trim().is_empty() && !is_shell_executable(&executable) {
-                let mut args = Vec::with_capacity(rest.len());
-                for token in rest {
-                    if request.value_kind == "string" && token == "{copy_string_clipboard}" {
-                        continue;
-                    }
-                    args.push(expand_registered_template(
-                        token,
-                        effective_value,
-                        &request.value_kind,
-                    ));
+    let Some(tokens) = split_template_tokens(&combined_template) else {
+        return Err("コマンドテンプレートの引用符が閉じていません".to_string());
+    };
+    if let Some((first, rest)) = tokens.split_first() {
+        let executable = expand_registered_template(first, effective_value, &request.value_kind);
+        if !executable.trim().is_empty() && !is_shell_executable(&executable) {
+            let mut args = Vec::with_capacity(rest.len());
+            for token in rest {
+                if request.value_kind == "string" && token == "{copy_string_clipboard}" {
+                    continue;
                 }
-                return Ok(PreparedExternalCommand::Direct { executable, args });
+                args.push(expand_registered_template(
+                    token,
+                    effective_value,
+                    &request.value_kind,
+                ));
             }
+            return Ok(PreparedExternalCommand::Direct { executable, args });
         }
     }
+    validate_shell_template_value(command, &request.value_kind, effective_value)?;
     let expanded_command = expand_registered_template(command, effective_value, &request.value_kind);
     let full = if prefix.is_empty() {
         expanded_command
@@ -784,6 +821,90 @@ mod tests {
             "string",
         );
         assert_eq!(expanded, "open a {string} a\n{string}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // Feature: シェル経由の外部コマンド実行インジェクション防御
+    // Scenario: ShellCommandLine 経路でメタ文字を含むパス・文字列や未閉じ引用符を拒否する
+    // Given: cmd.exe を経由するコマンドテンプレートと、メタ文字を含むファイル名・文字列
+    // When: prepare_external_command を呼ぶ
+    // Then: 安全な入力のみ ShellCommandLine を返し、メタ文字や未閉じ引用符はエラーになる
+    #[test]
+    fn rejects_shell_metacharacters_in_shell_command_line_and_allows_safe_values() {
+        let root = std::env::temp_dir().join(format!("wasabipad_shell_guard_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let safe_file = root.join("safe-note.txt");
+        let unsafe_file = root.join("bad & calc.txt");
+        fs::write(&safe_file, "ok").unwrap();
+        fs::write(&unsafe_file, "bad").unwrap();
+
+        let safe_path = safe_file.to_string_lossy().into_owned();
+        let unsafe_path = unsafe_file.to_string_lossy().into_owned();
+
+        assert!(super::prepare_external_command(&super::ExternalCommandRequest {
+            prefix: "cmd.exe /D /C".into(),
+            command: "echo {file}".into(),
+            value: safe_path.clone(),
+            value_kind: "file".into(),
+            path: safe_path.clone(),
+        })
+        .is_ok());
+
+        assert!(super::prepare_external_command(&super::ExternalCommandRequest {
+            prefix: "cmd.exe /D /C".into(),
+            command: "echo {file}".into(),
+            value: unsafe_path.clone(),
+            value_kind: "file".into(),
+            path: unsafe_path,
+        })
+        .is_err());
+
+        assert!(super::prepare_external_command(&super::ExternalCommandRequest {
+            prefix: "cmd.exe /D /C".into(),
+            command: "echo {string}".into(),
+            value: "hello & calc.exe".into(),
+            value_kind: "string".into(),
+            path: safe_path.clone(),
+        })
+        .is_err());
+
+        assert!(super::prepare_external_command(&super::ExternalCommandRequest {
+            prefix: "cmd.exe /D /C".into(),
+            command: "echo {string_one_line}".into(),
+            value: "line1\nline2 | whoami".into(),
+            value_kind: "string".into(),
+            path: safe_path.clone(),
+        })
+        .is_err());
+
+        assert!(super::prepare_external_command(&super::ExternalCommandRequest {
+            prefix: "cmd.exe /D /C".into(),
+            command: "start \"\" https://example.com/?q={string_in_url}".into(),
+            value: "hello world".into(),
+            value_kind: "string".into(),
+            path: safe_path.clone(),
+        })
+        .is_ok());
+
+        assert!(super::prepare_external_command(&super::ExternalCommandRequest {
+            prefix: "cmd.exe /D /C".into(),
+            command: "start \"\" https://example.com/?q={string_in_url}".into(),
+            value: "hello & (calc)".into(),
+            value_kind: "string".into(),
+            path: safe_path.clone(),
+        })
+        .is_err());
+
+        assert!(super::prepare_external_command(&super::ExternalCommandRequest {
+            prefix: String::new(),
+            command: r#""unclosed {file}"#.into(),
+            value: safe_path.clone(),
+            value_kind: "file".into(),
+            path: safe_path,
+        })
+        .is_err());
+
         let _ = fs::remove_dir_all(&root);
     }
 
