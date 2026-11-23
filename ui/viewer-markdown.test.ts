@@ -303,4 +303,27 @@ describe("Feature: Markdown viewer specifications", () => {
     expect(onOpenExternal).toHaveBeenCalledWith("https://example.com/docs");
     expect(onPostInlineLink).not.toHaveBeenCalled();
   });
+
+  // Feature: DOM Clobbering 防止プレフィックス付きフラグメント遷移
+  // Scenario: user-content- プレフィックス付きの id / name 要素へフラグメント名でスクロールする
+  // Given: user-content-install と name="user-content-legacy" を持つ article
+  // When: scrollMarkdownFragment(article, "install") と "legacy" を呼ぶ
+  // Then: いずれも対応要素へ scrollIntoView して true を返す
+  it("Scenario: user-content- プレフィックス付きの id と name へフラグメント遷移する", () => {
+    const article = document.createElement("article");
+    const heading = document.createElement("h2");
+    heading.id = "user-content-install";
+    const headingScroll = vi.fn();
+    heading.scrollIntoView = headingScroll;
+    const anchor = document.createElement("a");
+    anchor.setAttribute("name", "user-content-legacy");
+    const anchorScroll = vi.fn();
+    anchor.scrollIntoView = anchorScroll;
+    article.append(heading, anchor);
+
+    expect(scrollMarkdownFragment(article, "install")).toBe(true);
+    expect(headingScroll).toHaveBeenCalledOnce();
+    expect(scrollMarkdownFragment(article, "legacy")).toBe(true);
+    expect(anchorScroll).toHaveBeenCalledOnce();
+  });
 });

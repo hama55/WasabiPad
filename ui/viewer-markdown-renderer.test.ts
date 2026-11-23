@@ -273,7 +273,7 @@ describe("Feature: Markdown viewer drawing boundary", () => {
       { sourcePath: "C:\\work\\readme.md" },
     );
 
-    expect(article.querySelector("h1")?.id).toBe("install-guide");
+    expect(article.querySelector("h1")?.id).toBe("user-content-install-guide");
     const links = [...article.querySelectorAll<HTMLAnchorElement>("a")];
     expect(links.map((link) => link.title)).toEqual([
       "クリックで同じ文書内を移動",
@@ -321,8 +321,28 @@ describe("Feature: Markdown viewer drawing boundary", () => {
       { sourcePath: "C:\\work\\readme.md" },
     );
 
-    expect(article.querySelector("a#legacy")).not.toBeNull();
-    expect(article.querySelector("h2")?.id).toBe("install");
+    expect(article.querySelector("a#user-content-legacy")).not.toBeNull();
+    expect(article.querySelector("h2")?.id).toBe("user-content-install");
+    expect(article.querySelector("#legacy")).toBeNull();
+  });
+
+  // Feature: Markdown 描画時の DOM Clobbering 防止
+  // Scenario: 既存 UI と衝突し得る id/name に user-content- プレフィックスを付与する
+  // Given: titlebar や statusbar と同名の生 HTML id/name および見出しを含む Markdown
+  // When: renderMarkdownDocument で描画する
+  // Then: 素の id/name は生成されず user-content- 付きに正規化される
+  it("Scenario: DOM Clobbering を防ぐため id/name に user-content- プレフィックスを付ける", () => {
+    const { article } = renderMarkdownDocument(
+      '<a id="titlebar"></a><a name="viewer-content"></a>\n\n# statusbar',
+      null,
+    );
+
+    expect(article.querySelector("#titlebar")).toBeNull();
+    expect(article.querySelector('[name="viewer-content"]')).toBeNull();
+    expect(article.querySelector("#statusbar")).toBeNull();
+    expect(article.querySelector("#user-content-titlebar")).not.toBeNull();
+    expect(article.querySelector('[name="user-content-viewer-content"]')).not.toBeNull();
+    expect(article.querySelector("h1#user-content-statusbar")).not.toBeNull();
   });
 
   // Given: 単一改行・末尾半角スペース2つ・`<br>`・空行と、未完了/完了のGFMタスクリスト

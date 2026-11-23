@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
-import { bindPreviewResize } from "./preview-resize";
+import { bindPreviewResize, bindSplitterDrag } from "./preview-resize";
 
 function pointerEvent(type: string, buttons: number, clientX = 0, pointerId = 1, button = 0): PointerEvent {
   const event = new MouseEvent(type, { bubbles: true, button, buttons, clientX });
@@ -134,5 +134,26 @@ describe("Feature: preview resize interaction", () => {
 
     expect(setWidth).not.toHaveBeenCalled();
     expect(onStart).not.toHaveBeenCalled();
+  });
+
+  // Feature: サイドバースプリッタのドラッグ後始末
+  // Scenario: bindSplitterDrag は blur や pointercancel でドラッグを終了し後続の移動を無視する
+  // Given: スプリッタ要素に bindSplitterDrag が設定されドラッグ中である
+  // When: window に blur が届き、その後に pointermove が届く
+  // Then: onStart / onStop が各1回呼ばれ、blur 後の移動は無視される
+  it("Scenario: bindSplitterDrag cleans up on blur and ignores subsequent moves", () => {
+    const splitter = document.createElement("div");
+    const onStart = vi.fn();
+    const onMove = vi.fn();
+    const onStop = vi.fn();
+    bindSplitterDrag(splitter, { onStart, onMove, onStop });
+
+    splitter.dispatchEvent(pointerEvent("pointerdown", 1));
+    window.dispatchEvent(new Event("blur"));
+    window.dispatchEvent(pointerEvent("pointermove", 1, 320));
+
+    expect(onStart).toHaveBeenCalledOnce();
+    expect(onStop).toHaveBeenCalledOnce();
+    expect(onMove).not.toHaveBeenCalled();
   });
 });

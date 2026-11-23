@@ -243,7 +243,8 @@ body.preview-resizing,
 body.preview-resizing * { cursor: ew-resize !important; user-select: none !important; }
 body.preview-resizing-vertical,
 body.preview-resizing-vertical * { cursor: ns-resize !important; }
-body.preview-resizing iframe { pointer-events: none; }
+body.preview-resizing iframe,
+body.diagram-dragging iframe { pointer-events: none; }
 /* ---- ファイルツリー共通操作 ---- */
 .fv-toolbar {
   position: sticky; top: -4px; z-index: 2;

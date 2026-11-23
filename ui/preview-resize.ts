@@ -8,7 +8,13 @@ export interface PreviewResizePorts {
   onStop?: () => void;
 }
 
-export function bindPreviewResize(splitter: HTMLElement, ports: PreviewResizePorts): () => void {
+export interface SplitterDragPorts {
+  onMove: (event: PointerEvent) => void;
+  onStart?: () => void;
+  onStop?: () => void;
+}
+
+export function bindSplitterDrag(splitter: HTMLElement, ports: SplitterDragPorts): () => void {
   let pointerId: number | null = null;
 
   function stop() {
@@ -34,13 +40,7 @@ export function bindPreviewResize(splitter: HTMLElement, ports: PreviewResizePor
       stop();
       return;
     }
-    const placement = ports.placement();
-    const bounds = ports.bounds();
-    const horizontal = placement === "right";
-    ports.setSize(previewSizeFromPointer(
-      placement, horizontal ? bounds.left : bounds.top, horizontal ? bounds.right : bounds.bottom,
-      horizontal ? event.clientX : event.clientY,
-    ));
+    ports.onMove(event);
   }
 
   function start(event: PointerEvent) {
@@ -60,4 +60,20 @@ export function bindPreviewResize(splitter: HTMLElement, ports: PreviewResizePor
     stop();
     splitter.removeEventListener("pointerdown", start);
   };
+}
+
+export function bindPreviewResize(splitter: HTMLElement, ports: PreviewResizePorts): () => void {
+  return bindSplitterDrag(splitter, {
+    onStart: ports.onStart,
+    onStop: ports.onStop,
+    onMove: (event) => {
+      const placement = ports.placement();
+      const bounds = ports.bounds();
+      const horizontal = placement === "right";
+      ports.setSize(previewSizeFromPointer(
+        placement, horizontal ? bounds.left : bounds.top, horizontal ? bounds.right : bounds.bottom,
+        horizontal ? event.clientX : event.clientY,
+      ));
+    },
+  });
 }

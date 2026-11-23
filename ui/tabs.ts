@@ -771,6 +771,7 @@ export class TabManager {
           this.tabs.splice(removeIndex, 1);
           this.activateTabAfterRemoval(removeIndex);
           await this.loadActive();
+          return true;
         });
         this.closedTabs.push(closed);
       } finally {

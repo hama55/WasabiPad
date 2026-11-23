@@ -75,11 +75,16 @@ export function markdownHeadingSlug(text: string): string {
     .replace(/\s+/gu, "-");
 }
 
+export const MARKDOWN_CLOBBER_PREFIX = "user-content-";
+
 export function scrollMarkdownFragment(article: HTMLElement, fragment: string): boolean {
-  const target = fragment
-    ? [...article.querySelectorAll<HTMLElement>("[id], [name]")]
-      .find((element) => element.id === fragment || element.getAttribute("name") === fragment)
-    : article;
+  let target: HTMLElement | undefined = article;
+  if (fragment) {
+    const candidates = [...article.querySelectorAll<HTMLElement>("[id], [name]")];
+    const prefixed = `${MARKDOWN_CLOBBER_PREFIX}${fragment}`;
+    target = candidates.find((element) => element.id === prefixed || element.getAttribute("name") === prefixed)
+      ?? candidates.find((element) => element.id === fragment || element.getAttribute("name") === fragment);
+  }
   if (!target) return false;
   target.scrollIntoView?.({ block: "start", inline: "nearest" });
   return true;

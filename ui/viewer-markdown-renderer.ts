@@ -7,6 +7,7 @@ import rehypeStringify from "rehype-stringify";
 import type { Plugin } from "unified";
 import type { ViewerSelection } from "./api";
 import {
+  MARKDOWN_CLOBBER_PREFIX,
   markdownBlockSelected,
   markdownHighlightTargets,
   markdownHeadingSlug,
@@ -64,8 +65,7 @@ type HastNode = {
 
 const sourceMapSanitizeSchema = {
   ...defaultSchema,
-  // Existing raw HTML anchors retain id/name in this script-disabled preview iframe.
-  clobberPrefix: "",
+  clobberPrefix: MARKDOWN_CLOBBER_PREFIX,
   attributes: {
     ...defaultSchema.attributes,
     "*": [
@@ -335,10 +335,10 @@ function assignMarkdownHeadingIds(article: HTMLElement) {
     const base = markdownHeadingSlug(heading.textContent ?? "");
     if (!base) return;
     let suffix = counts.get(base) ?? 0;
-    let id = suffix ? `${base}-${suffix}` : base;
+    let id = `${MARKDOWN_CLOBBER_PREFIX}${suffix ? `${base}-${suffix}` : base}`;
     while (used.has(id)) {
       suffix += 1;
-      id = `${base}-${suffix}`;
+      id = `${MARKDOWN_CLOBBER_PREFIX}${base}-${suffix}`;
     }
     counts.set(base, suffix + 1);
     heading.id = id;

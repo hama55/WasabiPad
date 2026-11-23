@@ -118,6 +118,7 @@ export function openDiagramEditor(options: DiagramEditorOptions): Promise<void> 
         event.preventDefault(); handle.focus();
         drag = { clientX: event.clientX, clientY: event.clientY, scaleX: Number(zoom.value) / 100,
           scaleY: Number(zoom.value) / 100, initial: model.value, element: null, mode: `canvas-${edge}`, id: -1, view: view() };
+        document.body.classList.add("diagram-dragging");
       });
       handle.addEventListener("keydown", (event) => {
         if (pending || confirming || drag || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
@@ -294,7 +295,8 @@ export function openDiagramEditor(options: DiagramEditorOptions): Promise<void> 
       let crop = { ...(e.crop ?? { x: 0, y: 0, width: 1, height: 1 }) };
       let cropDrag: { x: number; y: number; crop: DiagramBounds; handle: string } | null = null;
       const finishCrop = () => {
-        window.removeEventListener("pointermove", moveCrop); window.removeEventListener("pointerup", upCrop); window.removeEventListener("pointercancel", cancelCropDrag);
+        window.removeEventListener("pointermove", moveCrop); window.removeEventListener("pointerup", upCrop); window.removeEventListener("pointercancel", cancelCropDrag); window.removeEventListener("blur", cancelCropDrag);
+        document.body.classList.remove("diagram-dragging");
         closeCrop(); cropping = false; setPending(false); canvas.focus({ preventScroll: true });
       };
       const { box: cropBox, close: closeCrop } = openModal({ onCancel: () => { finishCrop(); } }, "diagram-crop");
@@ -327,14 +329,15 @@ export function openDiagramEditor(options: DiagramEditorOptions): Promise<void> 
         if (cropDrag.handle.includes("n")) top = Math.max(0, Math.min(bottom - .001, top + dy)); else bottom = Math.min(1, Math.max(top + .001, bottom + dy));
         crop = { x: left, y: top, width: right - left, height: bottom - top }; drawCrop();
       }
-      function upCrop(event: PointerEvent) { moveCrop(event); cropDrag = null; }
-      function cancelCropDrag() { if (cropDrag) { crop = cropDrag.crop; cropDrag = null; drawCrop(); } }
+      function upCrop(event: PointerEvent) { moveCrop(event); cropDrag = null; document.body.classList.remove("diagram-dragging"); }
+      function cancelCropDrag() { if (cropDrag) { crop = cropDrag.crop; cropDrag = null; document.body.classList.remove("diagram-dragging"); drawCrop(); } }
       area.addEventListener("pointerdown", (event) => {
         const handle = (event.target as Element).getAttribute("data-crop-handle");
         if (!handle || event.button !== 0) return;
         event.preventDefault(); cropDrag = { x: event.clientX, y: event.clientY, crop: { ...crop }, handle };
+        document.body.classList.add("diagram-dragging");
       });
-      window.addEventListener("pointermove", moveCrop); window.addEventListener("pointerup", upCrop); window.addEventListener("pointercancel", cancelCropDrag);
+      window.addEventListener("pointermove", moveCrop); window.addEventListener("pointerup", upCrop); window.addEventListener("pointercancel", cancelCropDrag); window.addEventListener("blur", cancelCropDrag);
       for (const [label, action] of [["トリムをキャンセル", finishCrop], ["トリムを適用", () => {
         try {
           for (const [key, field] of fields) {
@@ -423,6 +426,7 @@ export function openDiagramEditor(options: DiagramEditorOptions): Promise<void> 
         if (creationColors) Object.assign(element, creationColors);
         drag = { ...start, element, mode: "create", id }; selected = id;
       }
+      if (drag) document.body.classList.add("diagram-dragging");
       render();
     });
     const move = (event: PointerEvent) => {
@@ -474,7 +478,7 @@ export function openDiagramEditor(options: DiagramEditorOptions): Promise<void> 
         tool = "select";
       }
       const before = drag.view;
-      model.value = drag.initial; drag = null;
+      model.value = drag.initial; drag = null; document.body.classList.remove("diagram-dragging");
       try { change(changed, before); message.textContent = ""; }
       catch (error) { restoreView(before); message.textContent = String(error); }
       render();
@@ -496,8 +500,8 @@ export function openDiagramEditor(options: DiagramEditorOptions): Promise<void> 
         top: Math.max(0, Math.min(top + dy, workTop + model.value.height * drag.scaleY + workBottom - h)) };
       render(); move(pointer);
     }
-    const cancelDrag = () => { stopScroll(); if (drag) { model.value = drag.initial; restoreView(drag.view); drag = null; render(); } };
-    window.addEventListener("pointermove", move); window.addEventListener("pointerup", up); window.addEventListener("pointercancel", cancelDrag);
+    const cancelDrag = () => { stopScroll(); document.body.classList.remove("diagram-dragging"); if (drag) { model.value = drag.initial; restoreView(drag.view); drag = null; render(); } };
+    window.addEventListener("pointermove", move); window.addEventListener("pointerup", up); window.addEventListener("pointercancel", cancelDrag); window.addEventListener("blur", cancelDrag);
     const key = (event: KeyboardEvent) => {
       if (pending || confirming || !box.contains(document.activeElement)) return;
       const editing = document.activeElement instanceof HTMLInputElement || document.activeElement instanceof HTMLTextAreaElement;
@@ -580,8 +584,8 @@ export function openDiagramEditor(options: DiagramEditorOptions): Promise<void> 
     }
     function finish() {
       if (closed) return; closed = true;
-      stopScroll();
-      window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); window.removeEventListener("pointercancel", cancelDrag); close(); resolve();
+      stopScroll(); document.body.classList.remove("diagram-dragging");
+      window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); window.removeEventListener("pointercancel", cancelDrag); window.removeEventListener("blur", cancelDrag); close(); resolve();
     }
     function setPending(value: boolean) {
       pending = value;

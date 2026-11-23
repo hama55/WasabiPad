@@ -777,3 +777,22 @@ it.each([
   expect(save.mock.calls[0][0].width).toBeGreaterThanOrEqual(expectedWidth - 0.001);
   expect(save.mock.calls[0][0].height).toBeGreaterThanOrEqual(expectedHeight - 0.001);
 });
+
+// Feature: 図編集ダイアログのドラッグ中断後始末
+// Scenario: キャンバスリサイズ中に window blur が起きると元の寸法へ戻しドラッグ中クラスを解除する
+// Given: 図編集ダイアログを開き、右辺ハンドルをドラッグして幅を変更中である
+// When: window に blur イベントが発生し、その後に pointerup が届く
+// Then: body.diagram-dragging が解除され、幅は元の 800 に戻る
+it("Scenario: ドラッグ中に window blur が起きると元の状態に戻して後始末する", async () => {
+  const result = openDiagramEditor({ initial: { width: 800, height: 600, elements: [] }, sources: new Map(), save: async () => {} });
+  const handle = document.querySelector<HTMLElement>('[data-canvas-resize="e"]')!;
+  handle.dispatchEvent(new MouseEvent("pointerdown", { clientX: 0, clientY: 0, bubbles: true, button: 0 }));
+  expect(document.body.classList.contains("diagram-dragging")).toBe(true);
+  window.dispatchEvent(new MouseEvent("pointermove", { clientX: 80, clientY: 0 }));
+
+  window.dispatchEvent(new Event("blur"));
+  expect(document.body.classList.contains("diagram-dragging")).toBe(false);
+  window.dispatchEvent(new MouseEvent("pointerup", { clientX: 120, clientY: 0 }));
+  expect(document.querySelector<HTMLInputElement>('input[aria-label="図の幅"]')!.value).toBe("800");
+  button("OK").click(); await result;
+});

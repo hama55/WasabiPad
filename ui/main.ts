@@ -97,7 +97,7 @@ import {
   resolvePreviewPlacement,
   previewSplitSize,
 } from "./preview-layout";
-import { bindPreviewResize } from "./preview-resize";
+import { bindPreviewResize, bindSplitterDrag } from "./preview-resize";
 import {
   PREVIEW_TOGGLE_DEFAULT_WIDTH,
   isPreviewTogglePeekPoint,
@@ -416,6 +416,7 @@ const inlinePreviewPorts = {
     if (previewDocument?.format === "git") inlinePreview.refreshGit();
     else if (previewDocument?.format === "video") inlinePreview.resend();
     else return refreshExternalPreview();
+    return undefined;
   }),
   onGitOpenFile: (path, commit, file) => runBackground("現在の作業ファイルを開けませんでした", async () => {
     const target = gitPreviewTarget;
@@ -1812,21 +1813,20 @@ for (const button of previewOpenButtons) {
 document.addEventListener("contextmenu", (e) => e.preventDefault());
 
 // サイドバー幅のドラッグ変更
-splitter.addEventListener("mousedown", (e) => {
-  e.preventDefault();
-  if (getSetting("treeAutoFitWidth")) sidebar.setAutoFit(false);
-  const move = (ev: MouseEvent) => {
+bindSplitterDrag(splitter, {
+  onStart: () => {
+    if (getSetting("treeAutoFitWidth")) sidebar.setAutoFit(false);
+    document.body.classList.add("preview-resizing");
+  },
+  onMove: (ev) => {
     setSidebarWidth(ev.clientX);
     updateSidebarVisibility();
-  };
-  const up = () => {
-    window.removeEventListener("mousemove", move);
-    window.removeEventListener("mouseup", up);
+  },
+  onStop: () => {
+    document.body.classList.remove("preview-resizing");
     const width = Number.parseFloat(sidebarEl.style.width);
     if (Number.isFinite(width)) setSetting("sidebarWidth", clampSidebarWidth(width));
-  };
-  window.addEventListener("mousemove", move);
-  window.addEventListener("mouseup", up);
+  },
 });
 
 // プレビューの分割軸に沿ってドラッグし、右幅と上下共通の高さを別々に保存する。
