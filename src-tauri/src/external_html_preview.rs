@@ -13,6 +13,7 @@ pub(crate) struct ExternalHtmlPreviews(Mutex<HashMap<String, Arc<ExternalHtmlPre
 
 struct ExternalHtmlPreview {
     root: PathBuf,
+    owner_label: String,
 }
 
 fn validate_preview_id(id: &str) -> Result<(), String> {
@@ -27,7 +28,12 @@ fn validate_preview_id(id: &str) -> Result<(), String> {
 }
 
 impl ExternalHtmlPreviews {
-    pub(crate) fn register(&self, id: String, entry_path: PathBuf) -> Result<(), String> {
+    pub(crate) fn register(
+        &self,
+        id: String,
+        entry_path: PathBuf,
+        owner_label: String,
+    ) -> Result<(), String> {
         validate_preview_id(&id)?;
         if !entry_path.is_absolute() {
             return Err("External HTML preview entry path must be absolute".into());
@@ -56,13 +62,25 @@ impl ExternalHtmlPreviews {
         self.0
             .lock()
             .map_err(|error| error.to_string())?
-            .insert(id, Arc::new(ExternalHtmlPreview { root }));
+            .insert(id, Arc::new(ExternalHtmlPreview { root, owner_label }));
         Ok(())
     }
 
     pub(crate) fn remove(&self, id: &str) -> Result<(), String> {
         self.0.lock().map_err(|error| error.to_string())?.remove(id);
         Ok(())
+    }
+
+    pub(crate) fn remove_for_owner(&self, owner_label: &str) {
+        if let Ok(mut map) = self.0.lock() {
+            map.retain(|_, entry| entry.owner_label != owner_label);
+        }
+    }
+
+    pub(crate) fn clear(&self) {
+        if let Ok(mut map) = self.0.lock() {
+            map.clear();
+        }
     }
 
     pub(crate) fn serve(&self, request: Request<Vec<u8>>) -> Response<Vec<u8>> {
@@ -218,7 +236,7 @@ mod tests {
 
         let previews = ExternalHtmlPreviews::default();
         let id = "835b41d8-d3a4-40af-979c-e9feb50e9ee2";
-        previews.register(id.into(), entry).unwrap();
+        previews.register(id.into(), entry, "main".into()).unwrap();
 
         let req = |path: &str| {
             Request::builder()
@@ -301,10 +319,42 @@ mod tests {
         std::fs::write(&svg, "<svg></svg>").unwrap();
 
         let previews = ExternalHtmlPreviews::default();
-        assert!(previews.register("bad-id".into(), svg.clone()).is_err());
+        assert!(previews.register("bad-id".into(), svg.clone(), "main".into()).is_err());
         assert!(previews
-            .register("835b41d8-d3a4-40af-979c-e9feb50e9ee2".into(), svg)
+            .register("835b41d8-d3a4-40af-979c-e9feb50e9ee2".into(), svg, "main".into())
             .is_err());
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // Feature: 外部 HTML プレビュー登録のライフサイクル解放
+    // Scenario: ウィンドウ破棄とアプリ終了で所有プレビューのみ・または全プレビューを解放する
+    // Given: viewer-1 と viewer-2 がそれぞれ外部 HTML プレビューを登録している
+    // When: remove_for_owner("viewer-1") と clear() を順に呼ぶ
+    // Then: remove_for_owner 後は viewer-1 のみ 404・viewer-2 は 200 を維持し、clear 後は全件 404 になる
+    #[test]
+    fn cleans_up_registered_external_html_previews_by_owner_and_clear() {
+        let dir = unique_dir("owner");
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("index.html");
+        std::fs::write(&entry, "<!doctype html><p>ok</p>").unwrap();
+
+        let previews = ExternalHtmlPreviews::default();
+        let id1 = "835b41d8-d3a4-40af-979c-e9feb50e9ee1";
+        let id2 = "835b41d8-d3a4-40af-979c-e9feb50e9ee2";
+        previews.register(id1.into(), entry.clone(), "viewer-1".into()).unwrap();
+        previews.register(id2.into(), entry, "viewer-2".into()).unwrap();
+        let req = |id: &str| {
+            Request::builder()
+                .uri(format!("/{id}/index.html"))
+                .body(Vec::new())
+                .unwrap()
+        };
+        previews.remove_for_owner("viewer-1");
+        assert_eq!(previews.serve(req(id1)).status(), 404);
+        assert_eq!(previews.serve(req(id2)).status(), 200);
+        previews.clear();
+        assert_eq!(previews.serve(req(id2)).status(), 404);
 
         std::fs::remove_dir_all(dir).unwrap();
     }

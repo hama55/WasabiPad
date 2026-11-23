@@ -870,6 +870,7 @@ function previewCacheField(ports: SettingsPanelPorts): HTMLElement {
       if (typeof directory !== "string" || directory.trim().length === 0) return;
       currentDirectory = directory;
       ports.setSetting("previewCacheDirectory", directory);
+      await ports.flushSettings?.();
       location.textContent = directory;
       location.title = directory;
       refreshInfo();

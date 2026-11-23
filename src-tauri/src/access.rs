@@ -87,6 +87,32 @@ pub(crate) fn require_setting_update_allowed_for_label(
     Err("この設定はビューアウィンドウから変更できません".to_string())
 }
 
+fn is_unc_path_str(path: &str) -> bool {
+    if let Some(rest) = path
+        .strip_prefix(r"\\?\")
+        .or_else(|| path.strip_prefix(r"\\.\"))
+    {
+        return rest
+            .get(..4)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(r"UNC\"));
+    }
+    path.starts_with(r"\\") || path.starts_with("//")
+}
+
+pub(crate) fn strip_windows_verbatim_prefix(path: &Path) -> String {
+    let raw = path.to_string_lossy();
+    if let Some(rest) = raw.strip_prefix(r"\\?\") {
+        if rest
+            .get(..4)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(r"UNC\"))
+        {
+            return format!(r"\\{}", &rest[4..]);
+        }
+        return rest.to_owned();
+    }
+    raw.into_owned()
+}
+
 pub(crate) fn authorize_scoped_path(
     caller_label: &str,
     requested_path: &str,
@@ -98,7 +124,13 @@ pub(crate) fn authorize_scoped_path(
     if allow_any_for_main && is_main_window_label(caller_label) {
         return Ok(PathBuf::from(requested_path));
     }
-    let Some(expected) = expected_path.and_then(|path| path.canonicalize().ok()) else {
+    let Some(raw_expected) = expected_path else {
+        return Err(denied_message.to_owned());
+    };
+    if is_unc_path_str(requested_path) && !is_unc_path_str(&raw_expected.to_string_lossy()) {
+        return Err(denied_message.to_owned());
+    }
+    let Some(expected) = raw_expected.canonicalize().ok() else {
         return Err(denied_message.to_owned());
     };
     let Some(canonical) = PathBuf::from(requested_path).canonicalize().ok() else {
@@ -253,6 +285,75 @@ pub(crate) fn validate_external_preview_request_against_settings(
     }
 
     Ok(())
+}
+
+pub(crate) fn validate_external_preview_cleanup_roots_against_settings(
+    settings_json: &str,
+    work_roots: &[String],
+) -> Result<Vec<PathBuf>, String> {
+    let settings: Value = serde_json::from_str(settings_json)
+        .map_err(|error| format!("設定を読み込めませんでした: {error}"))?;
+    let object = settings
+        .as_object()
+        .ok_or_else(|| "設定形式が不正です".to_string())?;
+    let mut allowed = Vec::new();
+    if let Some(dir) = object
+        .get("externalPreviewTemporaryDirectory")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        allowed.push(dir.to_owned());
+    }
+    if let Some(dirs) = object
+        .get("externalPreviewTemporaryDirectories")
+        .and_then(Value::as_array)
+    {
+        for dir in dirs
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            if !allowed.iter().any(|existing| existing == dir) {
+                allowed.push(dir.to_owned());
+            }
+        }
+    }
+    let mut validated = Vec::new();
+    for root in work_roots {
+        let trimmed = root.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !allowed.iter().any(|candidate| candidate == trimmed) {
+            return Err("外部プレビューのクリーンアップ先が設定と一致しません".to_string());
+        }
+        validated.push(PathBuf::from(trimmed));
+    }
+    Ok(validated)
+}
+
+pub(crate) fn validate_preview_cache_directory_against_settings(
+    settings_json: &str,
+    cache_directory: Option<&str>,
+) -> Result<Option<PathBuf>, String> {
+    let requested = cache_directory.map(str::trim).filter(|value| !value.is_empty());
+    let Some(requested) = requested else {
+        return Ok(None);
+    };
+    let settings: Value = serde_json::from_str(settings_json)
+        .map_err(|error| format!("設定を読み込めませんでした: {error}"))?;
+    let configured = settings
+        .as_object()
+        .and_then(|object| object.get("previewCacheDirectory"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if configured != Some(requested) {
+        return Err("プレビューキャッシュ保存先が設定と一致しません".to_string());
+    }
+    Ok(Some(PathBuf::from(requested)))
 }
 
 pub(crate) fn validate_registered_command_against_settings(
@@ -493,4 +594,95 @@ mod tests {
     // Then: ディレクトリなら再帰許可、ファイルなら当該ファイルと親ディレクトリのみ再帰許可する（AppHandle 実体が必要なため仕様記述のみ）
     #[test]
     fn allow_asset_scope_for_path_spec() {}
+
+    // Feature: 未認可 UNC パスの事前拒否
+    // Scenario: ローカル文書に対する UNC パス要求を canonicalize 前に拒否する
+    // Given: ローカルファイルを expected_path とするビューアウィンドウ
+    // When: authorize_scoped_path に UNC パスを渡す
+    // Then: 拒否エラーを返す
+    #[test]
+    fn authorize_scoped_path_rejects_unc_when_expected_is_local() {
+        let dir = std::env::temp_dir().join(format!("wasabipad_access_unc_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let allowed = dir.join("allowed.html");
+        std::fs::write(&allowed, b"<p>ok</p>").unwrap();
+
+        let canonical_allowed = allowed.canonicalize().unwrap();
+        assert_eq!(
+            authorize_scoped_path("viewer-1", r"\\attacker\share\evil.html", Some(&allowed), false, "denied")
+                .unwrap_err(),
+            "denied"
+        );
+        assert_eq!(
+            authorize_scoped_path("viewer-1", r"\\attacker\share\evil.html", Some(&canonical_allowed), false, "denied")
+                .unwrap_err(),
+            "denied"
+        );
+        assert_eq!(
+            authorize_scoped_path("viewer-1", "//attacker/share/evil.html", Some(&allowed), false, "denied")
+                .unwrap_err(),
+            "denied"
+        );
+
+        assert_eq!(
+            strip_windows_verbatim_prefix(Path::new(r"\\?\C:\work\index.html")),
+            r"C:\work\index.html"
+        );
+        assert_eq!(
+            strip_windows_verbatim_prefix(Path::new(r"\\?\UNC\server\share\index.html")),
+            r"\\server\share\index.html"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Feature: 外部プレビュークリーンアップ先の設定照合
+    // Scenario: settings.json に登録された一時ディレクトリのみ許可し未登録パスを拒否する
+    // Given: externalPreviewTemporaryDirectory と externalPreviewTemporaryDirectories を持つ設定 JSON
+    // When: 登録済みパスと未登録パスを validate_external_preview_cleanup_roots_against_settings へ渡す
+    // Then: 登録済みパスのみ許可し未登録パスは拒否する
+    #[test]
+    fn validates_cleanup_roots_against_settings() {
+        let settings = r#"{
+            "externalPreviewTemporaryDirectory": "C:/temp/ext-current",
+            "externalPreviewTemporaryDirectories": ["C:/temp/ext-old", "C:/temp/ext-current"]
+        }"#;
+
+        let ok_roots = validate_external_preview_cleanup_roots_against_settings(
+            settings,
+            &["C:/temp/ext-old".to_string(), "  ".to_string()],
+        )
+        .unwrap();
+        assert_eq!(ok_roots, vec![PathBuf::from("C:/temp/ext-old")]);
+        assert!(validate_external_preview_cleanup_roots_against_settings(
+            settings,
+            &["C:/Users/victim".to_string()],
+        )
+        .is_err());
+    }
+
+    // Feature: プレビューキャッシュ保存先の設定照合
+    // Scenario: settings.json の previewCacheDirectory または None のみ許可し未登録パスを拒否する
+    // Given: previewCacheDirectory を持つ設定 JSON
+    // When: None、登録済みパス、未登録パスを validate_preview_cache_directory_against_settings へ渡す
+    // Then: None と登録済みパスは許可し未登録パスは拒否する
+    #[test]
+    fn validates_preview_cache_directory_against_settings() {
+        let settings = r#"{
+            "previewCacheDirectory": "C:/temp/cache"
+        }"#;
+
+        assert_eq!(
+            validate_preview_cache_directory_against_settings(settings, None).unwrap(),
+            None
+        );
+        assert_eq!(
+            validate_preview_cache_directory_against_settings(settings, Some("C:/temp/cache")).unwrap(),
+            Some(PathBuf::from("C:/temp/cache"))
+        );
+        assert!(
+            validate_preview_cache_directory_against_settings(settings, Some("C:/Windows")).is_err()
+        );
+    }
 }

@@ -783,6 +783,29 @@ struct DeletedEntry {
     backup: PathBuf,
 }
 
+pub struct FolderEntriesPlan {
+    root: PathBuf,
+    rel_dir: String,
+    archive_override: Option<PathBuf>,
+}
+
+impl FolderEntriesPlan {
+    pub fn read(self) -> io::Result<Vec<FolderEntry>> {
+        let mut entries = crate::folder::list_children(&self.root, &self.rel_dir)?;
+        if let Some(path) = self.archive_override {
+            let listed_dir = join_relative(&self.root, &self.rel_dir);
+            if path.parent() == Some(listed_dir.as_path()) {
+                if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+                    if let Some(entry) = entries.iter_mut().find(|entry| entry.name == name) {
+                        entry.is_archive = true;
+                    }
+                }
+            }
+        }
+        Ok(entries)
+    }
+}
+
 pub struct Doc {
     buf: TextBuffer,
     undo: UndoStack,
@@ -1044,24 +1067,28 @@ impl Doc {
     // 指定ディレクトリ (rel_dir が空文字ならルート) の直下だけを列挙する。
     // サブフォルダの中身は再帰しない (ツリーの展開ボタンで都度呼ばれる想定)。
     // ツリーの展開ボタン用の公開API。
+    pub fn prepare_folder_entries(&self, rel_dir: &str) -> Option<FolderEntriesPlan> {
+        let root = self.source.folder_root()?.to_path_buf();
+        let archive_override = if self.open_as.is_some_and(OpenAs::is_archive) {
+            match &self.source.target {
+                Target::Archive { path, .. } => Some(path.clone()),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        Some(FolderEntriesPlan {
+            root,
+            rel_dir: rel_dir.to_owned(),
+            archive_override,
+        })
+    }
+
     pub fn list_folder_entries(&self, rel_dir: &str) -> io::Result<Option<Vec<FolderEntry>>> {
-        let Some(root) = self.source.folder_root() else {
+        let Some(plan) = self.prepare_folder_entries(rel_dir) else {
             return Ok(None);
         };
-        let mut entries = crate::folder::list_children(root, rel_dir)?;
-        if self.open_as.is_some_and(OpenAs::is_archive) {
-            if let Target::Archive { path, .. } = &self.source.target {
-                let listed_dir = join_relative(root, rel_dir);
-                if path.parent() == Some(listed_dir.as_path()) {
-                    if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
-                        if let Some(entry) = entries.iter_mut().find(|entry| entry.name == name) {
-                            entry.is_archive = true;
-                        }
-                    }
-                }
-            }
-        }
-        Ok(Some(entries))
+        plan.read().map(Some)
     }
 
     pub fn workspace_root(&self) -> Option<PathBuf> {
@@ -7026,6 +7053,28 @@ mod tests {
         assert_eq!(d.sevenz_password(&archive), "top-secret");
 
         drop(d);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Feature: フォルダ一覧取得のロック外 I/O 化
+    // Scenario: prepare_folder_entries で取得したプランを Doc 解放後でも安全に実行できる
+    // Given: ファイルを含むフォルダを開いている Doc
+    // When: prepare_folder_entries でプランを作成し、Doc をドロップしてから plan.read() を実行する
+    // Then: フォルダ直下のエントリ一覧が正しく返る
+    #[test]
+    fn folder_entries_plan_reads_without_borrowing_doc() {
+        let root = std::env::temp_dir().join(format!("wasabipad_folder_plan_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("alpha.txt"), "hello").unwrap();
+
+        let d = Doc::open(&root).unwrap();
+        let plan = d.prepare_folder_entries("").expect("folder plan");
+        drop(d);
+
+        let entries = plan.read().unwrap();
+        assert!(entries.iter().any(|entry| entry.name == "alpha.txt"));
+
         let _ = std::fs::remove_dir_all(&root);
     }
 }

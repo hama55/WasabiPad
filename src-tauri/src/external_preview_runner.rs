@@ -898,9 +898,27 @@ fn stop_child(child: &mut Child, reason: String) -> String {
 }
 
 #[cfg(windows)]
+pub(crate) fn resolve_system_root_executable(
+    system_root: Option<&std::ffi::OsStr>,
+    relative: &str,
+) -> PathBuf {
+    let base = system_root
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+    base.join(relative)
+}
+
+#[cfg(windows)]
+pub(crate) fn system_root_executable(relative: &str) -> PathBuf {
+    resolve_system_root_executable(std::env::var_os("SystemRoot").as_deref(), relative)
+}
+
+#[cfg(windows)]
 fn terminate_child(child: &mut Child) {
     let id = child.id().to_string();
-    let mut taskkill = Command::new("taskkill");
+    let mut taskkill = Command::new(system_root_executable(r"System32\taskkill.exe"));
     use std::os::windows::process::CommandExt;
     taskkill.creation_flags(CREATE_NO_WINDOW);
     let _ = taskkill
@@ -944,6 +962,40 @@ mod template_tests {
         assert_eq!(
             resolved,
             r"入力=C:\work\{output}\曲.abc -> 出力=C:\temp\job\index.html"
+        );
+    }
+
+    // Feature: Windows システム実行ファイルの絶対パス解決
+    // Scenario: SystemRoot 環境変数が有効な絶対パスならそれを使い、未設定や相対パスなら C:\Windows へフォールバックする
+    // Given: 有効な SystemRoot、未設定、空文字、相対パス
+    // When: resolve_system_root_executable を呼ぶ
+    // Then: 常に絶対パス配下の実行ファイルパスを返す
+    #[cfg(windows)]
+    #[test]
+    fn resolves_system_root_executables_safely() {
+        use super::resolve_system_root_executable;
+        use std::ffi::OsStr;
+        use std::path::PathBuf;
+
+        assert_eq!(
+            resolve_system_root_executable(Some(OsStr::new(r"D:\Windows")), "explorer.exe"),
+            PathBuf::from(r"D:\Windows\explorer.exe")
+        );
+        assert_eq!(
+            resolve_system_root_executable(Some(OsStr::new(r"D:\Windows")), r"System32\taskkill.exe"),
+            PathBuf::from(r"D:\Windows\System32\taskkill.exe")
+        );
+        assert_eq!(
+            resolve_system_root_executable(None, "explorer.exe"),
+            PathBuf::from(r"C:\Windows\explorer.exe")
+        );
+        assert_eq!(
+            resolve_system_root_executable(Some(OsStr::new("")), "explorer.exe"),
+            PathBuf::from(r"C:\Windows\explorer.exe")
+        );
+        assert_eq!(
+            resolve_system_root_executable(Some(OsStr::new("relative")), r"System32\taskkill.exe"),
+            PathBuf::from(r"C:\Windows\System32\taskkill.exe")
         );
     }
 }

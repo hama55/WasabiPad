@@ -138,10 +138,9 @@ pub(crate) fn list_folder_entries(
     rel_dir: String,
     state: State,
 ) -> Result<Vec<FolderEntry>, String> {
-    let result = with_doc(&state, |doc| doc.list_folder_entries(&rel_dir))?;
-    result
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "no entries".into())
+    let plan = with_doc(&state, |doc| doc.prepare_folder_entries(&rel_dir))?
+        .ok_or_else(|| "no entries".to_owned())?;
+    plan.read().map_err(|error| error.to_string())
 }
 
 pub(crate) fn create_note(

@@ -56,7 +56,11 @@ fn explorer_args(path: &str, is_dir: bool) -> Result<Vec<String>, String> {
 
 pub(crate) fn reveal_in_explorer(path: String, is_dir: bool) -> Result<(), String> {
     let args = explorer_args(&path, is_dir)?;
-    let mut cmd = std::process::Command::new("explorer");
+    #[cfg(windows)]
+    let program = crate::external_preview_runner::system_root_executable("explorer.exe");
+    #[cfg(not(windows))]
+    let program = PathBuf::from("explorer");
+    let mut cmd = std::process::Command::new(program);
     cmd.args(args);
     // explorer は既存ウィンドウへ委譲した場合など正常時でも非0を返すことがあるため終了コードは見ない
     cmd.spawn().map_err(|e| e.to_string())?;

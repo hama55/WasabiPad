@@ -613,9 +613,20 @@ fn open_in_default_browser(
     path: String,
     effective_extension: Option<String>,
     window: tauri::WebviewWindow,
+    app: AppHandle,
 ) -> Result<(), String> {
     access::require_viewer_or_main(&window)?;
-    system::open_in_default_browser(path, effective_extension)
+    let authorized = resolve_authorized_source_path(
+        &app,
+        window.label(),
+        &path,
+        false,
+        "既定のブラウザで開く権限がありません",
+    )?;
+    system::open_in_default_browser(
+        access::strip_windows_verbatim_prefix(&authorized),
+        effective_extension,
+    )
 }
 
 #[tauri::command]
@@ -692,7 +703,7 @@ async fn register_html_preview(
             None => None,
         };
         app.state::<html_preview::HtmlPreviews>()
-            .register(id, html, authorized_source)
+            .register(id, html, authorized_source, label)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -716,6 +727,7 @@ async fn register_external_html_preview(
     app: AppHandle,
 ) -> Result<(), String> {
     access::require_viewer_or_main(&window)?;
+    let label = window.label().to_owned();
     tauri::async_runtime::spawn_blocking(move || {
         let candidate = PathBuf::from(&entry_path);
         let canonical = candidate
@@ -738,7 +750,7 @@ async fn register_external_html_preview(
             return Err("External HTML preview path is not authorized.".to_owned());
         }
         app.state::<external_html_preview::ExternalHtmlPreviews>()
-            .register(id, canonical)
+            .register(id, canonical, label)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -772,7 +784,7 @@ async fn register_pdf_preview(
             "PDF preview path is not the active document.",
         )?;
         app.state::<pdf_preview::PdfPreviews>()
-            .register(id, canonical)
+            .register(id, canonical, label)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -891,14 +903,14 @@ async fn external_preview_cleanup_stale(
 ) -> Result<(), String> {
     access::require_main_window(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
+        let settings_json = wasabipad_core::load_settings().map_err(|error| error.to_string())?;
+        let validated_roots = access::validate_external_preview_cleanup_roots_against_settings(
+            &settings_json,
+            &work_roots,
+        )?;
         let operations = app.state::<external_preview_runner::ExternalPreviewOperations>();
         let mut roots = vec![external_preview_runner::default_work_root()];
-        roots.extend(
-            work_roots
-                .into_iter()
-                .filter(|root| !root.trim().is_empty())
-                .map(PathBuf::from),
-        );
+        roots.extend(validated_roots);
         operations.cleanup_stale_roots(&roots)
     })
     .await
@@ -1281,15 +1293,35 @@ fn preview_cache_info_impl(cache_directory: Option<String>) -> Result<PreviewCac
     })
 }
 
+fn validated_preview_cache(cache_directory: Option<String>) -> Result<PreviewCache, String> {
+    let settings_json = wasabipad_core::load_settings().map_err(|error| error.to_string())?;
+    let validated = access::validate_preview_cache_directory_against_settings(
+        &settings_json,
+        cache_directory.as_deref(),
+    )?;
+    let root = validated
+        .or_else(|| PreviewCache::default_root().ok())
+        .ok_or_else(|| "プレビューキャッシュの既定保存場所を取得できません".to_string())?;
+    Ok(PreviewCache::new(root))
+}
+
 #[tauri::command]
 async fn preview_cache_info(
     cache_directory: Option<String>,
     window: tauri::WebviewWindow,
 ) -> Result<PreviewCacheInfo, String> {
     access::require_main_window(&window)?;
-    tauri::async_runtime::spawn_blocking(move || preview_cache_info_impl(cache_directory))
-        .await
-        .map_err(|error| error.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        let cache = validated_preview_cache(cache_directory)?;
+        std::fs::create_dir_all(cache.directory()).map_err(|error| error.to_string())?;
+        let bytes = cache.total_bytes().map_err(|error| error.to_string())?;
+        Ok(PreviewCacheInfo {
+            directory: cache.directory().to_string_lossy().into_owned(),
+            bytes,
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -1299,7 +1331,7 @@ async fn clear_preview_cache(
 ) -> Result<(), String> {
     access::require_main_window(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
-        preview_cache_from_directory(cache_directory)?
+        validated_preview_cache(cache_directory)?
             .clear()
             .map_err(|error| error.to_string())
     })
@@ -1656,6 +1688,16 @@ fn main() {
         .manage(FindShortcutGuard::default())
         .manage(search::SearchCancel(Mutex::new(None)))
         .manage(instance_server)
+        .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                let label = window.label();
+                let app = window.app_handle();
+                app.state::<html_preview::HtmlPreviews>().remove_for_owner(label);
+                app.state::<external_html_preview::ExternalHtmlPreviews>()
+                    .remove_for_owner(label);
+                app.state::<pdf_preview::PdfPreviews>().remove_for_owner(label);
+            }
+        })
         .setup(|app| {
             app.state::<InstanceServer>().start(app.handle());
             if let Some(window) = app.get_webview_window("main") {
@@ -1768,6 +1810,9 @@ fn main() {
     };
     app.run(|app, event| {
         if matches!(event, tauri::RunEvent::Exit) {
+            app.state::<html_preview::HtmlPreviews>().clear();
+            app.state::<external_html_preview::ExternalHtmlPreviews>().clear();
+            app.state::<pdf_preview::PdfPreviews>().clear();
             app.state::<InstanceServer>().remove_endpoint();
         }
     });

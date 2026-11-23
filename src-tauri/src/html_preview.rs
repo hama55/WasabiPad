@@ -12,6 +12,7 @@ pub(crate) struct HtmlPreviews(Mutex<HashMap<String, Arc<Preview>>>);
 struct Preview {
     html: String,
     root: Option<PathBuf>,
+    owner_label: String,
 }
 
 impl HtmlPreviews {
@@ -20,6 +21,7 @@ impl HtmlPreviews {
         id: String,
         html: String,
         source_path: Option<String>,
+        owner_label: String,
     ) -> Result<(), String> {
         if id.len() != 36
             || !id
@@ -36,13 +38,25 @@ impl HtmlPreviews {
         self.0
             .lock()
             .map_err(|error| error.to_string())?
-            .insert(id, Arc::new(Preview { html, root }));
+            .insert(id, Arc::new(Preview { html, root, owner_label }));
         Ok(())
     }
 
     pub(crate) fn remove(&self, id: &str) -> Result<(), String> {
         self.0.lock().map_err(|error| error.to_string())?.remove(id);
         Ok(())
+    }
+
+    pub(crate) fn remove_for_owner(&self, owner_label: &str) {
+        if let Ok(mut map) = self.0.lock() {
+            map.retain(|_, entry| entry.owner_label != owner_label);
+        }
+    }
+
+    pub(crate) fn clear(&self) {
+        if let Ok(mut map) = self.0.lock() {
+            map.clear();
+        }
     }
 
     pub(crate) fn serve(&self, request: Request<Vec<u8>>) -> Response<Vec<u8>> {
@@ -169,6 +183,7 @@ mod tests {
                 id.into(),
                 "<script src='site/app.js'></script>".into(),
                 Some(root.join("index.html").to_string_lossy().into_owned()),
+                "main".into(),
             )
             .unwrap();
         let request = |path: &str| {
@@ -197,5 +212,30 @@ mod tests {
         previews.remove(id).unwrap();
         assert_eq!(previews.serve(request("site/app.js")).status(), 404);
         std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    // Feature: HTML プレビュー登録のライフサイクル解放
+    // Scenario: ウィンドウ破棄とアプリ終了で所有プレビューのみ・または全プレビューを解放する
+    // Given: viewer-1 と viewer-2 がそれぞれ HTML プレビューを登録している
+    // When: remove_for_owner("viewer-1") と clear() を順に呼ぶ
+    // Then: remove_for_owner 後は viewer-1 のみ 404・viewer-2 は 200 を維持し、clear 後は全件 404 になる
+    #[test]
+    fn cleans_up_registered_html_previews_by_owner_and_clear() {
+        let previews = HtmlPreviews::default();
+        let id1 = "725b41d8-d3a4-40af-979c-e9feb50e9ee1";
+        let id2 = "725b41d8-d3a4-40af-979c-e9feb50e9ee2";
+        previews.register(id1.into(), "<p>1</p>".into(), None, "viewer-1".into()).unwrap();
+        previews.register(id2.into(), "<p>2</p>".into(), None, "viewer-2".into()).unwrap();
+        let req = |id: &str| {
+            Request::builder()
+                .uri(format!("/{id}/__wasabipad_document__.html"))
+                .body(Vec::new())
+                .unwrap()
+        };
+        previews.remove_for_owner("viewer-1");
+        assert_eq!(previews.serve(req(id1)).status(), 404);
+        assert_eq!(previews.serve(req(id2)).status(), 200);
+        previews.clear();
+        assert_eq!(previews.serve(req(id2)).status(), 404);
     }
 }

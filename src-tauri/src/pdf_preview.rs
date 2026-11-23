@@ -10,7 +10,12 @@ const MAX_PDF_RESPONSE_BYTES: u64 = 256 * 1024 * 1024;
 const PDF_DOCUMENT_SEGMENT: &str = "document.pdf";
 
 #[derive(Default)]
-pub(crate) struct PdfPreviews(Mutex<HashMap<String, Arc<PathBuf>>>);
+pub(crate) struct PdfPreviews(Mutex<HashMap<String, Arc<PdfPreviewEntry>>>);
+
+struct PdfPreviewEntry {
+    path: PathBuf,
+    owner_label: String,
+}
 
 fn validate_preview_id(id: &str) -> Result<(), String> {
     if id.len() != 36
@@ -24,7 +29,12 @@ fn validate_preview_id(id: &str) -> Result<(), String> {
 }
 
 impl PdfPreviews {
-    pub(crate) fn register(&self, id: String, path: PathBuf) -> Result<(), String> {
+    pub(crate) fn register(
+        &self,
+        id: String,
+        path: PathBuf,
+        owner_label: String,
+    ) -> Result<(), String> {
         validate_preview_id(&id)?;
         if !path.is_absolute() {
             return Err("PDF preview path must be absolute".into());
@@ -35,16 +45,31 @@ impl PdfPreviews {
         if !canonical.is_file() {
             return Err("PDF preview path is not a regular file".into());
         }
-        self.0
-            .lock()
-            .map_err(|error| error.to_string())?
-            .insert(id, Arc::new(canonical));
+        self.0.lock().map_err(|error| error.to_string())?.insert(
+            id,
+            Arc::new(PdfPreviewEntry {
+                path: canonical,
+                owner_label,
+            }),
+        );
         Ok(())
     }
 
     pub(crate) fn remove(&self, id: &str) -> Result<(), String> {
         self.0.lock().map_err(|error| error.to_string())?.remove(id);
         Ok(())
+    }
+
+    pub(crate) fn remove_for_owner(&self, owner_label: &str) {
+        if let Ok(mut map) = self.0.lock() {
+            map.retain(|_, entry| entry.owner_label != owner_label);
+        }
+    }
+
+    pub(crate) fn clear(&self) {
+        if let Ok(mut map) = self.0.lock() {
+            map.clear();
+        }
     }
 
     pub(crate) fn serve(&self, request: Request<Vec<u8>>) -> Response<Vec<u8>> {
@@ -63,10 +88,10 @@ impl PdfPreviews {
         if segment != PDF_DOCUMENT_SEGMENT {
             return not_found();
         }
-        let Some(path) = self.0.lock().ok().and_then(|map| map.get(id).cloned()) else {
+        let Some(entry) = self.0.lock().ok().and_then(|map| map.get(id).cloned()) else {
             return not_found();
         };
-        let Ok(mut file) = std::fs::File::open(path.as_ref()) else {
+        let Ok(mut file) = std::fs::File::open(&entry.path) else {
             return not_found();
         };
         let Ok(total_len) = file.metadata().map(|m| m.len()) else {
@@ -217,7 +242,7 @@ mod tests {
         let (dir, pdf) = unique_pdf("range");
         let previews = PdfPreviews::default();
         let id = "935b41d8-d3a4-40af-979c-e9feb50e9ee2";
-        previews.register(id.into(), pdf).unwrap();
+        previews.register(id.into(), pdf, "main".into()).unwrap();
 
         let full = previews.serve(
             Request::builder()
@@ -290,6 +315,33 @@ mod tests {
         );
         assert_eq!(after_remove.status(), 404);
 
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // Feature: PDF プレビュー登録のライフサイクル解放
+    // Scenario: ウィンドウ破棄とアプリ終了で所有プレビューのみ・または全プレビューを解放する
+    // Given: viewer-1 と viewer-2 がそれぞれ PDF プレビューを登録している
+    // When: remove_for_owner("viewer-1") と clear() を順に呼ぶ
+    // Then: remove_for_owner 後は viewer-1 のみ 404・viewer-2 は 200 を維持し、clear 後は全件 404 になる
+    #[test]
+    fn cleans_up_registered_pdf_previews_by_owner_and_clear() {
+        let (dir, pdf) = unique_pdf("owner");
+        let previews = PdfPreviews::default();
+        let id1 = "935b41d8-d3a4-40af-979c-e9feb50e9ee1";
+        let id2 = "935b41d8-d3a4-40af-979c-e9feb50e9ee2";
+        previews.register(id1.into(), pdf.clone(), "viewer-1".into()).unwrap();
+        previews.register(id2.into(), pdf, "viewer-2".into()).unwrap();
+        let req = |id: &str| {
+            Request::builder()
+                .uri(format!("/{id}/document.pdf"))
+                .body(Vec::new())
+                .unwrap()
+        };
+        previews.remove_for_owner("viewer-1");
+        assert_eq!(previews.serve(req(id1)).status(), 404);
+        assert_eq!(previews.serve(req(id2)).status(), 200);
+        previews.clear();
+        assert_eq!(previews.serve(req(id2)).status(), 404);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
