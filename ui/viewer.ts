@@ -68,7 +68,11 @@ import {
   DEFAULT_CSV_DELIMITER,
 } from "./viewer-delimiter";
 import { openViewerDelimiterDialog } from "./viewer-delimiter-dialog";
-import { INLINE_PREVIEW_MESSAGES, type PreviewStatus } from "./inline-preview-protocol";
+import {
+  INLINE_PREVIEW_MESSAGES,
+  type ExternalPreviewHeaderSourceKind,
+  type PreviewStatus,
+} from "./inline-preview-protocol";
 import { isViewerPayload } from "./viewer-payload";
 import {
   createArchiveAssetSession,
@@ -166,14 +170,33 @@ htmlModeButton?.addEventListener("click", () => {
 });
 const outputFolderButton = document.getElementById("viewer-output-folder") as HTMLButtonElement;
 let outputFolderAvailable = false;
+const externalSavedBadge = document.getElementById("viewer-external-saved-badge")!;
+const externalSaveButton = document.getElementById("viewer-external-save") as HTMLButtonElement;
+let externalSourceKind: ExternalPreviewHeaderSourceKind | null = null;
+let externalSaving = false;
 const previewStatusBanner = document.getElementById("viewer-external-status")!;
 let previewStatus: PreviewStatus | null = null;
+
+externalSaveButton.addEventListener("click", () => {
+  if (!isInlineViewer || externalSaveButton.hidden || externalSaveButton.disabled) return;
+  postToParent({ type: INLINE_PREVIEW_MESSAGES.SAVE_EXTERNAL_PREVIEW_MESSAGE });
+});
 
 function syncPreviewStatus() {
   syncHtmlModeButton();
   const external = previewStatus ? previewStatus.kind !== "standard" : !!currentExternalOutputPath;
+  const externalError = previewStatus?.error === true;
+  const externalBusy = previewStatus?.busy === true;
   const kind = document.getElementById("viewer-preview-kind");
   if (kind) kind.textContent = external ? "外部プレビュー" : "標準プレビュー";
+  externalSavedBadge.hidden = !isInlineViewer || !external || externalSourceKind !== "saved";
+  externalSaveButton.hidden = !isInlineViewer || !external;
+  externalSaveButton.disabled = !isInlineViewer
+    || !external
+    || externalSourceKind !== "temporary"
+    || externalBusy
+    || externalError
+    || externalSaving;
   previewStatusBanner.hidden = previewStatus === null;
   previewStatusBanner.textContent = previewStatus?.message ?? "";
   previewRefreshButton.disabled = previewStatus?.busy ?? false;
@@ -1678,10 +1701,20 @@ async function start() {
           syncPreviewStatus();
           return;
         }
+        if (event.data?.type === INLINE_PREVIEW_MESSAGES.EXTERNAL_SAVE_STATE_MESSAGE) {
+          const sourceKind = event.data.sourceKind;
+          if ((sourceKind !== null && sourceKind !== "temporary" && sourceKind !== "saved" && sourceKind !== "sibling")
+            || typeof event.data.saving !== "boolean") return;
+          externalSourceKind = sourceKind;
+          externalSaving = event.data.saving;
+          syncPreviewStatus();
+          return;
+        }
         if (event.data?.type === INLINE_PREVIEW_MESSAGES.PREVIEW_STATUS_MESSAGE) {
           const status = event.data.status;
           if (status !== null && (typeof status?.message !== "string" || typeof status?.busy !== "boolean"
-            || (status.kind !== undefined && status.kind !== "standard" && status.kind !== "external"))) return;
+            || (status.kind !== undefined && status.kind !== "standard" && status.kind !== "external")
+            || (status.error !== undefined && typeof status.error !== "boolean"))) return;
           previewStatus = status;
           syncPreviewStatus();
           return;
@@ -1750,6 +1783,11 @@ async function start() {
           editableCsv = false;
           content.replaceChildren();
           previewRefreshButton.hidden = true;
+          externalSourceKind = null;
+          externalSaving = false;
+          externalSavedBadge.hidden = true;
+          externalSaveButton.hidden = true;
+          externalSaveButton.disabled = true;
           summary.classList.remove("warning");
           summary.textContent = "";
           finishRender(generation);

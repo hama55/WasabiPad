@@ -738,12 +738,21 @@ async fn register_external_html_preview(
             let doc_state = app.state::<Mutex<DocState>>();
             let current_doc_path = state::with_doc(&doc_state, |doc| doc.path().map(PathBuf::from))?;
             current_doc_path.is_some_and(|doc_path| {
-                external_preview_runner::existing_output(
+                let matches_saved = external_preview_runner::saved_output(
+                    &doc_path,
+                    external_preview_runner::ExternalPreviewFormat::Html,
+                )
+                .ok()
+                .flatten()
+                .and_then(|saved| saved.canonicalize().ok())
+                .is_some_and(|saved| saved == canonical);
+                let matches_sibling = external_preview_runner::existing_output(
                     &doc_path,
                     external_preview_runner::ExternalPreviewFormat::Html,
                 )
                 .and_then(|existing| existing.canonicalize().ok())
-                .is_some_and(|existing| existing == canonical)
+                .is_some_and(|existing| existing == canonical);
+                matches_saved || matches_sibling
             })
         };
         if !allowed {
@@ -801,27 +810,43 @@ fn release_pdf_preview(
 }
 
 #[tauri::command]
-async fn external_preview_existing(
-    input_path: String,
-    output_format: external_preview_runner::ExternalPreviewFormat,
+async fn external_preview_resolve(
+    request: external_preview_runner::ExternalPreviewResolveRequest,
     window: tauri::WebviewWindow,
     app: AppHandle,
-) -> Result<Option<String>, String> {
+    operations: tauri::State<'_, external_preview_runner::ExternalPreviewOperations>,
+) -> Result<Option<external_preview_runner::ExternalPreviewResolved>, String> {
     access::require_main_window(&window)?;
+    let settings = wasabipad_core::load_settings().map_err(|error| error.to_string())?;
+    access::validate_external_preview_adapter_against_settings(
+        &settings,
+        &request.adapter_id,
+        &request.executable,
+        &request.args,
+        request.output_format,
+        false,
+    )?;
+    let operations = operations.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        external_preview_runner::existing_output(std::path::Path::new(&input_path), output_format)
-            .map(|path| {
-                access::allow_asset_scope_for_path(&app, &path);
-                path.to_string_lossy().into_owned()
-            })
+        let resolved = operations.resolve_reusable_output(
+            std::path::Path::new(&request.input_path),
+            &request.executable,
+            &request.args,
+            request.output_format,
+        )?;
+        if let Some(ref resolved) = resolved {
+            access::allow_asset_scope_for_path(&app, std::path::Path::new(&resolved.output_path));
+        }
+        Ok(resolved)
     })
     .await
-    .map_err(|error| error.to_string())
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
 async fn external_preview_generate(
     request: external_preview_runner::ExternalPreviewRequest,
+    displayed_output_path: Option<String>,
     window: tauri::WebviewWindow,
     app: AppHandle,
     operations: tauri::State<'_, external_preview_runner::ExternalPreviewOperations>,
@@ -847,7 +872,8 @@ async fn external_preview_generate(
     let guard = operations.guard(request_id, cancelled.clone());
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = guard;
-        let executable = PathBuf::from(request.executable);
+        let pre_sha256 = external_preview_runner::hash_input_file(&input_path)?;
+        let executable = PathBuf::from(&request.executable);
         let result = external_preview_runner::run_external_preview(
             &executable,
             &request.args,
@@ -856,17 +882,67 @@ async fn external_preview_generate(
             &work_root,
             &cancelled,
         )?;
-        operations.finish_success(
+        let post_sha256 = external_preview_runner::hash_input_file(&input_path).ok();
+        let session_record = (post_sha256 == Some(pre_sha256)).then(|| {
+            (
+                pre_sha256,
+                external_preview_runner::ExternalPreviewConfigKey::normalized(
+                    &request.executable,
+                    &request.args,
+                    request.output_format,
+                ),
+            )
+        });
+        operations.finish_session_success(
             &request.request_id,
             &cancelled,
             &result.output_path,
             &work_root,
+            session_record,
+            displayed_output_path.as_deref().map(std::path::Path::new),
         )?;
         access::allow_asset_scope_for_path(&app, &result.output_path);
-        Ok(result.output_path.to_string_lossy().into_owned())
+        Ok(access::strip_windows_verbatim_prefix(&result.output_path))
     })
     .await
     .map_err(|error| format!("External preview generation failed: {error}"))?
+}
+
+#[tauri::command]
+async fn external_preview_save(
+    input_path: String,
+    output_path: String,
+    output_format: external_preview_runner::ExternalPreviewFormat,
+    overwrite: bool,
+    window: tauri::WebviewWindow,
+    app: AppHandle,
+) -> Result<external_preview_runner::ExternalPreviewSaveOutcome, String> {
+    access::require_main_window(&window)?;
+    let label = window.label().to_owned();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _ = resolve_authorized_source_path(
+            &app,
+            &label,
+            &input_path,
+            false,
+            "保存対象の外部プレビューが現在開いている文書と一致しません。",
+        )?;
+        let operations = app.state::<external_preview_runner::ExternalPreviewOperations>();
+        let outcome = operations.save_external_preview(
+            std::path::Path::new(&input_path),
+            std::path::Path::new(&output_path),
+            output_format,
+            overwrite,
+        )?;
+        if let external_preview_runner::ExternalPreviewSaveOutcome::Saved { ref output_path } =
+            outcome
+        {
+            access::allow_asset_scope_for_path(&app, std::path::Path::new(output_path));
+        }
+        Ok(outcome)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -889,7 +965,37 @@ async fn external_preview_cleanup(
     tauri::async_runtime::spawn_blocking(move || {
         let operations = app.state::<external_preview_runner::ExternalPreviewOperations>();
         let output_path = PathBuf::from(output_path);
-        operations.cleanup_output(&output_path)
+        operations.cleanup_retired_output(&output_path)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn external_preview_discard(
+    output_path: String,
+    window: tauri::WebviewWindow,
+    app: AppHandle,
+) -> Result<(), String> {
+    access::require_main_window(&window)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let operations = app.state::<external_preview_runner::ExternalPreviewOperations>();
+        let output_path = PathBuf::from(output_path);
+        operations.discard_output(&output_path)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn external_preview_cleanup_all(
+    window: tauri::WebviewWindow,
+    app: AppHandle,
+) -> Result<(), String> {
+    access::require_main_window(&window)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let operations = app.state::<external_preview_runner::ExternalPreviewOperations>();
+        operations.cleanup_all()
     })
     .await
     .map_err(|error| error.to_string())?
@@ -1696,6 +1802,11 @@ fn main() {
                 app.state::<external_html_preview::ExternalHtmlPreviews>()
                     .remove_for_owner(label);
                 app.state::<pdf_preview::PdfPreviews>().remove_for_owner(label);
+                if access::is_main_window_label(label) {
+                    let _ = app
+                        .state::<external_preview_runner::ExternalPreviewOperations>()
+                        .cleanup_all();
+                }
             }
         })
         .setup(|app| {
@@ -1753,10 +1864,13 @@ fn main() {
             release_external_html_preview,
             register_pdf_preview,
             release_pdf_preview,
-            external_preview_existing,
+            external_preview_resolve,
             external_preview_generate,
+            external_preview_save,
             external_preview_cancel,
             external_preview_cleanup,
+            external_preview_discard,
+            external_preview_cleanup_all,
             external_preview_cleanup_stale,
             edit,
             edit_many,
@@ -1813,6 +1927,9 @@ fn main() {
             app.state::<html_preview::HtmlPreviews>().clear();
             app.state::<external_html_preview::ExternalHtmlPreviews>().clear();
             app.state::<pdf_preview::PdfPreviews>().clear();
+            let _ = app
+                .state::<external_preview_runner::ExternalPreviewOperations>()
+                .cleanup_all();
             app.state::<InstanceServer>().remove_endpoint();
         }
     });

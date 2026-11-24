@@ -152,4 +152,58 @@ describe("Feature: 外部プレビューの待機と失敗表示", () => {
     availability(false);
     send(null);
   });
+
+  // Feature: プレビューヘッダーの保存ボタンと保存済みバッジ
+  // Scenario: 表示種別・変換中・エラー状態に応じて保存ボタン有効状態と保存済みバッジを切り替える
+  // Given: インラインモードの viewer.ts
+  // When: temporary・saved・sibling・busy・error・saving・標準プレビューを順に通知する
+  // Then: 保存ボタンは temporary && !busy && !error && !saving のみ有効、保存済みバッジは saved 表示中のみ可視になる
+  it("Scenario: 保存ボタン有効状態と保存済みバッジを状態に応じて切り替える", () => {
+    const saveButton = document.querySelector<HTMLButtonElement>("#viewer-external-save")!;
+    const savedBadge = document.querySelector<HTMLElement>("#viewer-external-saved-badge")!;
+    const post = vi.spyOn(window.parent, "postMessage");
+    const setSaveState = (sourceKind: "temporary" | "saved" | "sibling" | null, saving = false) =>
+      window.dispatchEvent(new MessageEvent("message", {
+        source: window.parent,
+        origin: window.location.origin,
+        data: { type: messages.EXTERNAL_SAVE_STATE_MESSAGE, sourceKind, saving },
+      }));
+
+    // 層1 (temporary) 表示中
+    send({ message: "", busy: false, kind: "external" });
+    setSaveState("temporary", false);
+    expect(saveButton.hidden).toBe(false);
+    expect(saveButton.disabled).toBe(false);
+    expect(savedBadge.hidden).toBe(true);
+    saveButton.click();
+    expect(post).toHaveBeenCalledWith({ type: messages.SAVE_EXTERNAL_PREVIEW_MESSAGE }, window.location.origin);
+
+    // 保存中・変換中・エラー中は無効
+    setSaveState("temporary", true);
+    expect(saveButton.disabled).toBe(true);
+    setSaveState("temporary", false);
+    send({ message: "更新中…", busy: true, kind: "external" });
+    expect(saveButton.disabled).toBe(true);
+    send({ message: "変換失敗", busy: false, kind: "external", error: true } as never);
+    expect(saveButton.disabled).toBe(true);
+
+    // 保存済み (saved) 表示中はバッジ可視・保存ボタン無効
+    send({ message: "", busy: false, kind: "external" });
+    setSaveState("saved", false);
+    expect(savedBadge.hidden).toBe(false);
+    expect(saveButton.hidden).toBe(false);
+    expect(saveButton.disabled).toBe(true);
+
+    // 同フォルダ (sibling) 表示中はバッジ非表示・保存ボタン無効
+    setSaveState("sibling", false);
+    expect(savedBadge.hidden).toBe(true);
+    expect(saveButton.disabled).toBe(true);
+
+    // 標準プレビュー時はどちらも非表示
+    send({ message: "読み込み中…", busy: true, kind: "standard" });
+    expect(savedBadge.hidden).toBe(true);
+    expect(saveButton.hidden).toBe(true);
+    setSaveState(null, false);
+    send(null);
+  });
 });

@@ -1239,3 +1239,65 @@ it("Scenario: replacing an external output suppresses an old pending preference 
   expect(post.mock.calls.filter(([m]) => m.type === "wasabipad-external-preference-result")).toEqual([]);
   await preview.close(label!, true); host.remove();
 });
+
+// Feature: インラインプレビューの保存操作と昇格
+// Scenario: 層1表示中のみ保存通知を中継し、保存後はリロードせず参照とナビゲータを切り替える
+// Given: 一時生成物を表示し setExternalSourceNavigator 登録済みの InlinePreview
+// When: 保存通知送信 → promoteSavedExternalOutputPath → 保存済み状態で保存通知送信を行う
+// Then: 層1の非ビジー/非エラー時のみ onSaveExternalPreview が呼ばれ、昇格後は PAYLOAD_MESSAGE を再送せず保存済み状態では無視される
+it("Scenario: forwards save requests only for temporary outputs and promotes path without reloading", async () => {
+  const host = document.createElement("div");
+  host.append(document.createElement("iframe"));
+  document.body.append(host);
+  const onSaveExternalPreview = vi.fn();
+  const navigate = vi.fn(async () => null);
+  const preview = new InlinePreview(host, { onSaveExternalPreview });
+  const frame = host.querySelector("iframe")!;
+  const post = vi.spyOn(frame.contentWindow!, "postMessage");
+  const receive = (data: unknown) => window.dispatchEvent(new MessageEvent("message", {
+    source: frame.contentWindow,
+    origin: window.location.origin,
+    data,
+  }));
+  const payloadCount = () => post.mock.calls.filter(([m]) => m.type === INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE).length;
+  const latestRenderId = () => post.mock.calls
+    .filter(([m]) => m.type === INLINE_PREVIEW_MESSAGES.PAYLOAD_MESSAGE)
+    .at(-1)![0].render_id;
+
+  receive({ type: INLINE_PREVIEW_MESSAGES.READY_MESSAGE });
+  const tempPath = "C:/Temp/job-1/index.html";
+  const savedPath = "C:/Docs/song.abc.wasabi-preview/index.html";
+  preview.setExternalSourceNavigator(tempPath, navigate);
+  const opening = preview.open("html", "preview", null, tempPath);
+  const renderId = latestRenderId();
+  receive({ type: INLINE_PREVIEW_MESSAGES.DISPLAY_COMMITTED_MESSAGE, render_id: renderId });
+  const label = await opening;
+
+  // 層1状態では保存通知が中継される
+  preview.setExternalSaveState("temporary", false);
+  receive({ type: INLINE_PREVIEW_MESSAGES.SAVE_EXTERNAL_PREVIEW_MESSAGE });
+  expect(onSaveExternalPreview).toHaveBeenCalledTimes(1);
+
+  // 保存昇格後は PAYLOAD_MESSAGE を再送せず、新パスでナビゲータが使える
+  const beforePromotePayloads = payloadCount();
+  preview.promoteSavedExternalOutputPath(tempPath, savedPath);
+  expect(payloadCount()).toBe(beforePromotePayloads);
+  expect(preview.mayReferenceExternalOutputPath(savedPath)).toBe(true);
+
+  receive({
+    type: "wasabipad-external-source-navigation",
+    render_id: renderId,
+    request_id: 1,
+    source_hash: "a".repeat(64),
+    offset: 0,
+    end_offset: 3,
+  });
+  await vi.waitFor(() => expect(navigate).toHaveBeenCalledOnce());
+
+  // 保存済み状態では保存通知は無視される
+  receive({ type: INLINE_PREVIEW_MESSAGES.SAVE_EXTERNAL_PREVIEW_MESSAGE });
+  expect(onSaveExternalPreview).toHaveBeenCalledTimes(1);
+
+  await preview.close(label!, true);
+  host.remove();
+});

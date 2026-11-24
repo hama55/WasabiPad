@@ -35,6 +35,10 @@ import type { GitFileDiff } from "./generated/GitFileDiff";
 import type { ExternalCommandRequest } from "./generated/ExternalCommandRequest";
 import type { ExternalPreviewFormat } from "./generated/ExternalPreviewFormat";
 import type { ExternalPreviewRequest } from "./generated/ExternalPreviewRequest";
+import type { ExternalPreviewResolveRequest } from "./generated/ExternalPreviewResolveRequest";
+import type { ExternalPreviewResolved } from "./generated/ExternalPreviewResolved";
+import type { ExternalPreviewSaveOutcome } from "./generated/ExternalPreviewSaveOutcome";
+import type { ExternalPreviewSourceKind } from "./generated/ExternalPreviewSourceKind";
 import type { WorkspaceSearchBatch } from "./generated/WorkspaceSearchBatch";
 import type { WorkspaceSearchOptions } from "./generated/WorkspaceSearchOptions";
 import type { WorkspaceSearchOutcome } from "./generated/WorkspaceSearchOutcome";
@@ -74,6 +78,10 @@ export type {
   ExternalCommandRequest,
   ExternalPreviewFormat,
   ExternalPreviewRequest,
+  ExternalPreviewResolveRequest,
+  ExternalPreviewResolved,
+  ExternalPreviewSaveOutcome,
+  ExternalPreviewSourceKind,
   WorkspaceSearchBatch,
   WorkspaceSearchOptions,
   WorkspaceSearchOutcome,
@@ -385,13 +393,30 @@ export const registerPdfPreview = (id: string, path: string) =>
   invoke<void>(IPC_COMMANDS.registerPdfPreview, { id, path });
 export const releasePdfPreview = (id: string) =>
   invoke<void>(IPC_COMMANDS.releasePdfPreview, { id });
-export const externalPreviewExisting = (inputPath: string, outputFormat: ExternalPreviewRequest["outputFormat"]) =>
-  invoke<string | null>(IPC_COMMANDS.externalPreviewExisting, { inputPath, outputFormat });
-export const externalPreviewGenerate = (request: ExternalPreviewRequest) =>
-  invoke<string>(IPC_COMMANDS.externalPreviewGenerate, { request });
+export const externalPreviewResolve = (request: ExternalPreviewResolveRequest) =>
+  invoke<ExternalPreviewResolved | null>(IPC_COMMANDS.externalPreviewResolve, { request });
+export const externalPreviewGenerate = (
+  request: ExternalPreviewRequest,
+  displayedOutputPath: string | null = null,
+) => invoke<string>(IPC_COMMANDS.externalPreviewGenerate, { request, displayedOutputPath });
+export const externalPreviewSave = (
+  inputPath: string,
+  outputPath: string,
+  outputFormat: ExternalPreviewFormat,
+  overwrite = false,
+) => invoke<ExternalPreviewSaveOutcome>(IPC_COMMANDS.externalPreviewSave, {
+  inputPath,
+  outputPath,
+  outputFormat,
+  overwrite,
+});
 export const externalPreviewCancel = (requestId: string) =>
   invoke<void>(IPC_COMMANDS.externalPreviewCancel, { requestId });
 export const externalPreviewCleanup = (outputPath: string) =>
   invoke<void>(IPC_COMMANDS.externalPreviewCleanup, { outputPath });
+export const externalPreviewDiscard = (outputPath: string) =>
+  invoke<void>(IPC_COMMANDS.externalPreviewDiscard, { outputPath });
+export const externalPreviewCleanupAll = () =>
+  invoke<void>(IPC_COMMANDS.externalPreviewCleanupAll);
 export const externalPreviewCleanupStale = (workRoots: string[]) =>
   invoke<void>(IPC_COMMANDS.externalPreviewCleanupStale, { workRoots });

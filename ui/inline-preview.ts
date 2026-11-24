@@ -6,7 +6,7 @@ import { runAsyncBoundary } from "./async-boundary";
 import { isViewerFormat } from "./viewer-formats";
 import { isViewerSelection } from "./viewer-payload";
 import { INLINE_PREVIEW_MESSAGES } from "./inline-preview-protocol";
-import type { PreviewStatus } from "./inline-preview-protocol";
+import type { ExternalPreviewHeaderSourceKind, PreviewStatus } from "./inline-preview-protocol";
 import { DEFAULT_CSV_DELIMITER } from "./viewer-delimiter";
 
 const {
@@ -54,6 +54,7 @@ export interface InlinePreviewPorts {
   onClose?: (returnFocus: boolean) => void | Promise<void>;
   onRefresh?: () => void | Promise<void>;
   onRevealExternalOutput?: () => void | Promise<void>;
+  onSaveExternalPreview?: () => void | Promise<void>;
   onGitOpenFile?: (path: string, commit: string, file: string) => void | Promise<void>;
   onSelectionChange?: (selection: ViewerSelection) => void | Promise<void>;
   onMarkdownLink?: (href: string, newTab: boolean) => void | Promise<void>;
@@ -86,6 +87,8 @@ export class InlinePreview {
   private archiveEntry: string | null = null;
   private externalOutputPath: string | null = null;
   private outputFolderAvailable = false;
+  private externalSourceKind: ExternalPreviewHeaderSourceKind | null = null;
+  private externalSaving = false;
   private delimiter = DEFAULT_CSV_DELIMITER;
   private pendingCsvEdit: Promise<void> | null = null;
   private editedCsvPayload: ViewerPayload | null = null;
@@ -172,6 +175,7 @@ export class InlinePreview {
         else this.send();
         this.sendPreviewStatus();
         this.sendOutputFolderState();
+        this.sendExternalSaveState();
         if (this.pendingCloseFocus) this.focusCloseButton();
         return;
       }
@@ -272,6 +276,17 @@ export class InlinePreview {
         }
         return;
       }
+      if (event.data?.type === INLINE_PREVIEW_MESSAGES.SAVE_EXTERNAL_PREVIEW_MESSAGE) {
+        if (!this.clearing
+          && this.externalSourceKind === "temporary"
+          && !this.externalSaving
+          && !this.previewStatus?.busy
+          && !this.previewStatus?.error
+          && this.previewStatus?.kind !== "standard") {
+          this.notifyPort(() => this.ports.onSaveExternalPreview?.());
+        }
+        return;
+      }
       if (event.data?.type === INLINE_PREVIEW_MESSAGES.SELECTION_CHANGE_MESSAGE) {
         if (!isViewerSelection(event.data.selection)) return;
         this.notifyPort(() => this.ports.onSelectionChange?.(event.data.selection));
@@ -345,6 +360,34 @@ export class InlinePreview {
     this.frame.contentWindow?.postMessage({
       type: INLINE_PREVIEW_MESSAGES.OUTPUT_FOLDER_STATE_MESSAGE,
       available: this.outputFolderAvailable,
+    }, window.location.origin);
+  }
+
+  setExternalSaveState(sourceKind: ExternalPreviewHeaderSourceKind | null, saving = false) {
+    this.externalSourceKind = sourceKind;
+    this.externalSaving = saving;
+    this.sendExternalSaveState();
+  }
+
+  promoteSavedExternalOutputPath(oldTempPath: string, savedPath: string) {
+    this.externalOutputPath = savedPath;
+    if (this.payload?.external_output_path === oldTempPath) {
+      this.payload = { ...this.payload, external_output_path: savedPath };
+    }
+    const navigator = this.externalSourceNavigators.get(oldTempPath);
+    if (navigator) {
+      this.externalSourceNavigators.delete(oldTempPath);
+      this.externalSourceNavigators.set(savedPath, navigator);
+    }
+    this.setExternalSaveState("saved", false);
+  }
+
+  private sendExternalSaveState() {
+    if (!this.ready) return;
+    this.frame.contentWindow?.postMessage({
+      type: INLINE_PREVIEW_MESSAGES.EXTERNAL_SAVE_STATE_MESSAGE,
+      sourceKind: this.externalSourceKind,
+      saving: this.externalSaving,
     }, window.location.origin);
   }
 
@@ -506,6 +549,9 @@ export class InlinePreview {
     this.externalSourceNavigators.clear();
     this.outputFolderAvailable = false;
     this.sendOutputFolderState();
+    this.externalSourceKind = null;
+    this.externalSaving = false;
+    this.sendExternalSaveState();
     this.setPreviewStatus(null);
     this.label = "";
     this.pendingMarkdownFragment = null;

@@ -1,3 +1,4 @@
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, DirBuilder, File};
 use std::io::{self, Read, Seek, SeekFrom};
@@ -20,13 +21,54 @@ const STDERR_CAPTURE_FILE: &str = ".wasabipad-stderr.log";
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 static NEXT_JOB_ID: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Clone, Copy, Debug, serde::Deserialize, ts_rs::TS)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, ts_rs::TS)]
 #[serde(rename_all = "lowercase")]
 #[ts(rename_all = "lowercase")]
 #[ts(export)]
 pub enum ExternalPreviewFormat {
     Html,
     Svg,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExternalPreviewConfigKey {
+    pub executable: String,
+    pub args: Vec<String>,
+    pub output_format: ExternalPreviewFormat,
+}
+
+impl ExternalPreviewConfigKey {
+    pub fn normalized(
+        executable: &str,
+        args: &[String],
+        output_format: ExternalPreviewFormat,
+    ) -> Self {
+        Self {
+            executable: executable.trim().to_owned(),
+            args: args.to_vec(),
+            output_format,
+        }
+    }
+}
+
+pub fn hash_input_file(path: &Path) -> Result<[u8; 32], String> {
+    let mut file = File::open(path)
+        .map_err(|error| format!("Could not read external preview input for hashing: {error}"))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("Could not read external preview input for hashing: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let digest = hasher.finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
+    Ok(out)
 }
 
 impl ExternalPreviewFormat {
@@ -36,6 +78,115 @@ impl ExternalPreviewFormat {
             Self::Svg => "svg",
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, ts_rs::TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(rename_all = "lowercase")]
+#[ts(export)]
+pub enum ExternalPreviewSourceKind {
+    Saved,
+    Sibling,
+    Temporary,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, serde::Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ExternalPreviewResolveRequest {
+    pub adapter_id: String,
+    pub input_path: String,
+    pub executable: String,
+    pub args: Vec<String>,
+    pub output_format: ExternalPreviewFormat,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ExternalPreviewResolved {
+    pub kind: ExternalPreviewSourceKind,
+    pub output_path: String,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, ts_rs::TS)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+#[ts(export)]
+pub enum ExternalPreviewSaveOutcome {
+    Saved { output_path: String },
+    OverwriteRequired { directory_path: String },
+}
+
+#[allow(dead_code)]
+pub(crate) fn saved_preview_dir(input_path: &Path) -> Option<PathBuf> {
+    let parent = input_path.parent()?;
+    let file_name = input_path.file_name()?.to_str()?;
+    if file_name.is_empty() {
+        return None;
+    }
+    Some(parent.join(format!("{file_name}.wasabi-preview")))
+}
+
+#[allow(dead_code)]
+pub(crate) fn saved_output(
+    input_path: &Path,
+    format: ExternalPreviewFormat,
+) -> Result<Option<PathBuf>, String> {
+    let canonical_input = validate_input_path(input_path)?;
+    let Some(saved_dir) = saved_preview_dir(input_path) else {
+        return Ok(None);
+    };
+    let meta = match fs::symlink_metadata(&saved_dir) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "Could not inspect saved external preview directory: {error}"
+            ))
+        }
+    };
+    if is_symlink_or_reparse_point(&meta) {
+        return Err("保存済み外部プレビューのフォルダにシンボリックリンクは使用できません".to_owned());
+    }
+    if !meta.is_dir() {
+        return Ok(None);
+    }
+    let canonical_parent = canonical_input
+        .parent()
+        .ok_or_else(|| "External preview input has no parent directory".to_owned())?;
+    let canonical_saved_dir = canonical_directory(&saved_dir, "saved external preview directory")?;
+    if !canonical_saved_dir.starts_with(canonical_parent) {
+        return Err("保存済み外部プレビューのフォルダが親フォルダ外を参照しています".to_owned());
+    }
+    let entry_path = saved_dir.join(format!("index.{}", format.extension()));
+    let entry_meta = match fs::symlink_metadata(&entry_path) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "Could not inspect saved external preview entry: {error}"
+            ))
+        }
+    };
+    if is_symlink_or_reparse_point(&entry_meta) {
+        return Err("保存済み外部プレビューの入口ファイルにシンボリックリンクは使用できません".to_owned());
+    }
+    if !entry_meta.is_file() {
+        return Ok(None);
+    }
+    validate_output_tree_with_marker(
+        &saved_dir,
+        &canonical_saved_dir,
+        &AtomicBool::new(false),
+        false,
+    )?;
+    let _ = verify_output(&entry_path, &canonical_saved_dir)?;
+    Ok(Some(strip_windows_verbatim_prefix_local(&entry_path)))
 }
 
 pub(crate) fn existing_output(input_path: &Path, format: ExternalPreviewFormat) -> Option<PathBuf> {
@@ -229,22 +380,305 @@ impl ExternalPreviewOperations {
     }
 
     pub(crate) fn cleanup_output(&self, output_path: &Path) -> Result<(), String> {
-        let work_root = {
+        let target = {
+            let jobs = self
+                .jobs
+                .lock()
+                .map_err(|_| "External preview job registry is unavailable.".to_owned())?;
+            let canonical_target = fs::canonicalize(output_path).ok();
+            jobs.completed
+                .values()
+                .find(|completed| {
+                    completed.output_path == output_path
+                        || canonical_target
+                            .as_ref()
+                            .is_some_and(|c| &completed.canonical_output_path == c)
+                })
+                .map(|completed| (completed.output_path.clone(), completed.work_root.clone()))
+        };
+        let Some((managed_output, work_root)) = target else {
+            return Ok(());
+        };
+        cleanup_job(&managed_output, &work_root)?;
+        self.release_output(&managed_output);
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn cleanup_retired_output(&self, output_path: &Path) -> Result<(), String> {
+        let canonical_target = fs::canonicalize(output_path).ok();
+        let is_session_retained = {
+            let jobs = self
+                .jobs
+                .lock()
+                .map_err(|_| "External preview job registry is unavailable.".to_owned())?;
+            jobs.session_outputs.values().any(|session| {
+                session.output_path == output_path
+                    || canonical_target
+                        .as_ref()
+                        .is_some_and(|c| &session.canonical_output_path == c)
+            })
+        };
+        if is_session_retained {
+            return Ok(());
+        }
+        self.cleanup_output(output_path)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn discard_output(&self, output_path: &Path) -> Result<(), String> {
+        let canonical_target = fs::canonicalize(output_path).ok();
+        {
+            let mut jobs = self
+                .jobs
+                .lock()
+                .map_err(|_| "External preview job registry is unavailable.".to_owned())?;
+            jobs.session_outputs.retain(|_, session| {
+                !(session.output_path == output_path
+                    || canonical_target
+                        .as_ref()
+                        .is_some_and(|c| &session.canonical_output_path == c))
+            });
+        }
+        self.cleanup_output(output_path)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn cleanup_all(&self) -> Result<(), String> {
+        let targets: Vec<(PathBuf, PathBuf)> = {
+            let mut jobs = self
+                .jobs
+                .lock()
+                .map_err(|_| "External preview job registry is unavailable.".to_owned())?;
+            for active in jobs.active.values() {
+                active.cancelled.store(true, Ordering::Release);
+            }
+            let mut seen = HashSet::new();
+            let mut collected = Vec::new();
+            for completed in jobs.completed.drain().map(|(_, v)| v) {
+                if seen.insert(completed.canonical_output_path.clone()) {
+                    collected.push((completed.output_path, completed.work_root));
+                }
+            }
+            for session in jobs.session_outputs.drain().map(|(_, v)| v) {
+                if seen.insert(session.canonical_output_path.clone()) {
+                    collected.push((session.output_path, session.work_root));
+                }
+            }
+            jobs.latest_by_input.clear();
+            jobs.cancelled_before_start.clear();
+            collected
+        };
+
+        let mut errors = Vec::new();
+        for (output_path, work_root) in targets {
+            if let Err(error) = cleanup_job(&output_path, &work_root) {
+                errors.push(error);
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn lookup_session_output(
+        &self,
+        input_path: &Path,
+        executable: &str,
+        args: &[String],
+        output_format: ExternalPreviewFormat,
+    ) -> Result<Option<PathBuf>, String> {
+        let canonical_input = validate_input_path(input_path)?;
+        let key = input_key(&canonical_input);
+        let candidate = {
+            let jobs = self
+                .jobs
+                .lock()
+                .map_err(|_| "External preview job registry is unavailable.".to_owned())?;
+            jobs.session_outputs.get(&key).cloned()
+        };
+        let Some(entry) = candidate else {
+            return Ok(None);
+        };
+        let requested_config = ExternalPreviewConfigKey::normalized(executable, args, output_format);
+        if entry.config != requested_config {
+            return Ok(None);
+        }
+        let current_sha256 = hash_input_file(&canonical_input)?;
+        if entry.input_sha256 != current_sha256 {
+            return Ok(None);
+        }
+        let valid = entry
+            .output_path
+            .parent()
+            .and_then(|job_dir| {
+                let canonical_job = canonical_directory(job_dir, "external preview job directory").ok()?;
+                validate_output_tree(job_dir, &canonical_job, &AtomicBool::new(false)).ok()?;
+                verify_output(&entry.output_path, &canonical_job).ok()
+            })
+            .is_some();
+        if !valid {
+            if let Ok(mut jobs) = self.jobs.lock() {
+                if jobs
+                    .session_outputs
+                    .get(&key)
+                    .is_some_and(|existing| existing.request_id == entry.request_id)
+                {
+                    jobs.session_outputs.remove(&key);
+                }
+                jobs.completed.remove(&entry.request_id);
+            }
+            return Ok(None);
+        }
+        Ok(Some(strip_windows_verbatim_prefix_local(&entry.output_path)))
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn resolve_reusable_output(
+        &self,
+        input_path: &Path,
+        executable: &str,
+        args: &[String],
+        output_format: ExternalPreviewFormat,
+    ) -> Result<Option<ExternalPreviewResolved>, String> {
+        if let Some(path) = saved_output(input_path, output_format)? {
+            return Ok(Some(ExternalPreviewResolved {
+                kind: ExternalPreviewSourceKind::Saved,
+                output_path: path.to_string_lossy().into_owned(),
+            }));
+        }
+        if let Some(path) = existing_output(input_path, output_format) {
+            return Ok(Some(ExternalPreviewResolved {
+                kind: ExternalPreviewSourceKind::Sibling,
+                output_path: strip_windows_verbatim_prefix_local(&path)
+                    .to_string_lossy()
+                    .into_owned(),
+            }));
+        }
+        if let Some(path) = self.lookup_session_output(input_path, executable, args, output_format)? {
+            return Ok(Some(ExternalPreviewResolved {
+                kind: ExternalPreviewSourceKind::Temporary,
+                output_path: path.to_string_lossy().into_owned(),
+            }));
+        }
+        Ok(None)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn save_external_preview(
+        &self,
+        input_path: &Path,
+        source_output_path: &Path,
+        output_format: ExternalPreviewFormat,
+        overwrite: bool,
+    ) -> Result<ExternalPreviewSaveOutcome, String> {
+        let canonical_input = validate_input_path(input_path)?;
+        let key = input_key(&canonical_input);
+        let parent = input_path
+            .parent()
+            .ok_or_else(|| "External preview input has no parent directory".to_owned())?;
+        let canonical_parent = canonical_directory(parent, "external preview parent directory")?;
+        let canonical_source = fs::canonicalize(source_output_path)
+            .map_err(|error| format!("保存元の外部プレビューが見つかりません: {error}"))?;
+
+        let (managed_output, _work_root) = {
             let jobs = self
                 .jobs
                 .lock()
                 .map_err(|_| "External preview job registry is unavailable.".to_owned())?;
             jobs.completed
                 .values()
-                .find(|completed| completed.output_path == output_path)
-                .map(|completed| completed.work_root.clone())
+                .find(|completed| {
+                    completed.input_key == key
+                        && (completed.output_path == source_output_path
+                            || completed.canonical_output_path == canonical_source)
+                })
+                .map(|completed| (completed.output_path.clone(), completed.work_root.clone()))
+                .ok_or_else(|| "保存対象の一時外部プレビューが見つかりません".to_owned())?
         };
-        let Some(work_root) = work_root else {
-            return Ok(());
+
+        let expected_name = format!("index.{}", output_format.extension());
+        if managed_output.file_name().and_then(|n| n.to_str()) != Some(expected_name.as_str()) {
+            return Err("保存対象の出力形式が一致しません".to_owned());
+        }
+        let source_job_dir = managed_output
+            .parent()
+            .ok_or_else(|| "保存元のジョブフォルダが見つかりません".to_owned())?;
+        let canonical_source_dir =
+            canonical_directory(source_job_dir, "external preview job directory")?;
+        validate_output_tree(source_job_dir, &canonical_source_dir, &AtomicBool::new(false))?;
+        let _ = verify_output(&managed_output, &canonical_source_dir)?;
+
+        let target_dir = saved_preview_dir(input_path)
+            .ok_or_else(|| "保存先フォルダ名を決定できませんでした".to_owned())?;
+        let target_exists = match fs::symlink_metadata(&target_dir) {
+            Ok(meta) => {
+                if is_symlink_or_reparse_point(&meta) {
+                    return Err(
+                        "保存先パスがシンボリックリンクのため保存できません".to_owned(),
+                    );
+                }
+                if !meta.is_dir() {
+                    return Err(
+                        "保存先と同じ名前のファイルが既に存在するため保存できません".to_owned(),
+                    );
+                }
+                true
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => {
+                return Err(format!("保存先フォルダを確認できませんでした: {error}"));
+            }
         };
-        cleanup_job(output_path, &work_root)?;
-        self.release_output(output_path);
-        Ok(())
+
+        if target_exists && !overwrite {
+            return Ok(ExternalPreviewSaveOutcome::OverwriteRequired {
+                directory_path: strip_windows_verbatim_prefix_local(&target_dir)
+                    .to_string_lossy()
+                    .into_owned(),
+            });
+        }
+
+        let staging_dir = create_staging_directory(&canonical_parent, ".wasabipad-preview-save-")?;
+        let mut staging_guard = StagingDirGuard {
+            path: staging_dir.clone(),
+            keep: false,
+        };
+        copy_output_tree(&canonical_source_dir, &staging_dir)?;
+        let canonical_staging =
+            canonical_directory(&staging_dir, "external preview staging directory")?;
+        validate_output_tree_with_marker(
+            &staging_dir,
+            &canonical_staging,
+            &AtomicBool::new(false),
+            false,
+        )?;
+        let _ = verify_output(&staging_dir.join(&expected_name), &canonical_staging)?;
+
+        if target_exists {
+            let backup_dir = reserve_unique_sibling_path(&canonical_parent, ".wasabipad-preview-backup-");
+            rename_dir_with_retry(&target_dir, &backup_dir).map_err(|error| {
+                format!("保存済みフォルダ内のファイルが使用中のため上書きできませんでした: {error}")
+            })?;
+            if let Err(error) = fs::rename(&staging_dir, &target_dir) {
+                let _ = rename_dir_with_retry(&backup_dir, &target_dir);
+                return Err(format!("保存済みフォルダの置き換えに失敗しました: {error}"));
+            }
+            staging_guard.keep = true;
+            let _ = remove_dir_all_with_retry(&backup_dir);
+        } else {
+            fs::rename(&staging_dir, &target_dir)
+                .map_err(|error| format!("保存済みフォルダの配置に失敗しました: {error}"))?;
+            staging_guard.keep = true;
+        }
+
+        let saved_entry = strip_windows_verbatim_prefix_local(&target_dir.join(&expected_name));
+        Ok(ExternalPreviewSaveOutcome::Saved {
+            output_path: saved_entry.to_string_lossy().into_owned(),
+        })
     }
 
     pub(crate) fn cleanup_stale_roots(&self, work_roots: &[PathBuf]) -> Result<(), String> {
@@ -270,6 +704,7 @@ impl ExternalPreviewOperations {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub(crate) fn finish_success(
         &self,
         request_id: &str,
@@ -277,7 +712,24 @@ impl ExternalPreviewOperations {
         output_path: &Path,
         work_root: &Path,
     ) -> Result<(), String> {
-        let stale_reason = {
+        self.finish_session_success(request_id, cancelled, output_path, work_root, None, None)
+    }
+
+    pub(crate) fn finish_session_success(
+        &self,
+        request_id: &str,
+        cancelled: &Arc<AtomicBool>,
+        output_path: &Path,
+        work_root: &Path,
+        session_record: Option<([u8; 32], ExternalPreviewConfigKey)>,
+        protected_displayed_output: Option<&Path>,
+    ) -> Result<(), String> {
+        let canonical_output =
+            fs::canonicalize(output_path).unwrap_or_else(|_| output_path.to_path_buf());
+        let protected_canonical =
+            protected_displayed_output.map(|p| fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()));
+
+        let (stale_reason, retired_previous) = {
             let mut jobs = self
                 .jobs
                 .lock()
@@ -287,7 +739,10 @@ impl ExternalPreviewOperations {
                 .get(request_id)
                 .is_some_and(|active| Arc::ptr_eq(&active.cancelled, cancelled))
             {
-                Some("External preview generation was cancelled or superseded")
+                (
+                    Some("External preview generation was cancelled or superseded"),
+                    None,
+                )
             } else {
                 let active = jobs
                     .active
@@ -301,21 +756,46 @@ impl ExternalPreviewOperations {
                     if current {
                         jobs.latest_by_input.remove(&active.input_key);
                     }
-                    Some(if cancelled.load(Ordering::Acquire) {
-                        "External preview cancelled"
-                    } else {
-                        "External preview generation was superseded"
-                    })
+                    (
+                        Some(if cancelled.load(Ordering::Acquire) {
+                            "External preview cancelled"
+                        } else {
+                            "External preview generation was superseded"
+                        }),
+                        None,
+                    )
                 } else {
+                    let input_key = active.input_key;
                     jobs.completed.insert(
                         request_id.to_owned(),
                         CompletedJob {
-                            input_key: active.input_key,
+                            input_key: input_key.clone(),
                             output_path: output_path.to_path_buf(),
+                            canonical_output_path: canonical_output.clone(),
                             work_root: work_root.to_path_buf(),
                         },
                     );
-                    None
+                    let retired = if let Some((input_sha256, config)) = session_record {
+                        let normalized_config = ExternalPreviewConfigKey::normalized(
+                            &config.executable,
+                            &config.args,
+                            config.output_format,
+                        );
+                        jobs.session_outputs.insert(
+                            input_key,
+                            SessionOutput {
+                                request_id: request_id.to_owned(),
+                                input_sha256,
+                                config: normalized_config,
+                                output_path: output_path.to_path_buf(),
+                                canonical_output_path: canonical_output.clone(),
+                                work_root: work_root.to_path_buf(),
+                            },
+                        )
+                    } else {
+                        None
+                    };
+                    (None, retired)
                 }
             }
         };
@@ -323,13 +803,29 @@ impl ExternalPreviewOperations {
             let _ = cleanup_job(output_path, work_root);
             return Err(reason.to_owned());
         }
+        if let Some(previous) = retired_previous {
+            let is_same = previous.canonical_output_path == canonical_output;
+            let is_protected = protected_canonical
+                .as_ref()
+                .is_some_and(|p| p == &previous.canonical_output_path);
+            if !is_same && !is_protected && cleanup_job(&previous.output_path, &previous.work_root).is_ok() {
+                if let Ok(mut jobs) = self.jobs.lock() {
+                    jobs.completed.remove(&previous.request_id);
+                }
+            }
+        }
         Ok(())
     }
 
     pub(crate) fn release_output(&self, output_path: &Path) {
+        let canonical_target = fs::canonicalize(output_path).ok();
         if let Ok(mut jobs) = self.jobs.lock() {
             let request_id = jobs.completed.iter().find_map(|(id, completed)| {
-                (completed.output_path == output_path).then(|| id.clone())
+                (completed.output_path == output_path
+                    || canonical_target
+                        .as_ref()
+                        .is_some_and(|c| &completed.canonical_output_path == c))
+                .then(|| id.clone())
             });
             if let Some(request_id) = request_id {
                 if let Some(completed) = jobs.completed.remove(&request_id) {
@@ -339,6 +835,13 @@ impl ExternalPreviewOperations {
                         .is_some_and(|id| id == &request_id)
                     {
                         jobs.latest_by_input.remove(&completed.input_key);
+                    }
+                    if jobs
+                        .session_outputs
+                        .get(&completed.input_key)
+                        .is_some_and(|s| s.request_id == request_id)
+                    {
+                        jobs.session_outputs.remove(&completed.input_key);
                     }
                 }
             }
@@ -371,6 +874,7 @@ struct JobRegistry {
     cancelled_before_start: HashMap<String, Instant>,
     latest_by_input: HashMap<String, String>,
     completed: HashMap<String, CompletedJob>,
+    session_outputs: HashMap<String, SessionOutput>,
 }
 
 struct ActiveJob {
@@ -381,6 +885,17 @@ struct ActiveJob {
 struct CompletedJob {
     input_key: String,
     output_path: PathBuf,
+    canonical_output_path: PathBuf,
+    work_root: PathBuf,
+}
+
+#[derive(Clone)]
+struct SessionOutput {
+    request_id: String,
+    input_sha256: [u8; 32],
+    config: ExternalPreviewConfigKey,
+    output_path: PathBuf,
+    canonical_output_path: PathBuf,
     work_root: PathBuf,
 }
 
@@ -826,6 +1341,15 @@ fn validate_output_tree(
     canonical_job_root: &Path,
     cancelled: &AtomicBool,
 ) -> Result<(), String> {
+    validate_output_tree_with_marker(job_root, canonical_job_root, cancelled, true)
+}
+
+fn validate_output_tree_with_marker(
+    job_root: &Path,
+    canonical_job_root: &Path,
+    cancelled: &AtomicBool,
+    skip_job_marker: bool,
+) -> Result<(), String> {
     let mut directories = vec![job_root.to_path_buf()];
 
     while let Some(directory) = directories.pop() {
@@ -838,13 +1362,13 @@ fn validate_output_tree(
             let entry = entry
                 .map_err(|error| format!("Could not inspect external preview output: {error}"))?;
             let path = entry.path();
-            if path == job_root.join(JOB_MARKER) {
+            if skip_job_marker && path == job_root.join(JOB_MARKER) {
                 continue;
             }
 
             let metadata = fs::symlink_metadata(&path)
                 .map_err(|error| format!("Could not inspect external preview output: {error}"))?;
-            if metadata.file_type().is_symlink() {
+            if is_symlink_or_reparse_point(&metadata) {
                 return Err("External preview output contains a symbolic link".to_owned());
             }
             let canonical_path = fs::canonicalize(&path)
@@ -864,6 +1388,132 @@ fn validate_output_tree(
     Ok(())
 }
 
+fn is_symlink_or_reparse_point(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        if (metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
+            return true;
+        }
+    }
+    false
+}
+
+struct StagingDirGuard {
+    path: PathBuf,
+    keep: bool,
+}
+
+impl Drop for StagingDirGuard {
+    fn drop(&mut self) {
+        if !self.keep {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
+fn reserve_unique_sibling_path(parent: &Path, prefix: &str) -> PathBuf {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let id = NEXT_JOB_ID.fetch_add(1, Ordering::Relaxed);
+    parent.join(format!("{prefix}{}-{timestamp}-{id}", std::process::id()))
+}
+
+fn create_staging_directory(parent: &Path, prefix: &str) -> Result<PathBuf, String> {
+    let builder = DirBuilder::new();
+    for _ in 0..32 {
+        let path = reserve_unique_sibling_path(parent, prefix);
+        match builder.create(&path) {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!("保存用の一時フォルダを作成できませんでした: {error}"));
+            }
+        }
+    }
+    Err("保存用の一時フォルダ名を確保できませんでした".to_owned())
+}
+
+fn copy_output_tree(source_root: &Path, target_root: &Path) -> Result<(), String> {
+    let mut stack = vec![(source_root.to_path_buf(), target_root.to_path_buf(), true)];
+    while let Some((src_dir, dst_dir, is_root)) = stack.pop() {
+        for entry in fs::read_dir(&src_dir)
+            .map_err(|error| format!("保存元の外部プレビューを読み取れませんでした: {error}"))?
+        {
+            let entry = entry
+                .map_err(|error| format!("保存元の外部プレビューを読み取れませんでした: {error}"))?;
+            let name = entry.file_name();
+            if is_root {
+                if let Some(name_str) = name.to_str() {
+                    if name_str == JOB_MARKER
+                        || name_str == STDOUT_CAPTURE_FILE
+                        || name_str == STDERR_CAPTURE_FILE
+                    {
+                        continue;
+                    }
+                }
+            }
+            let src_path = entry.path();
+            let dst_path = dst_dir.join(&name);
+            let meta = fs::symlink_metadata(&src_path)
+                .map_err(|error| format!("保存元の情報を読み取れませんでした: {error}"))?;
+            if is_symlink_or_reparse_point(&meta) {
+                return Err("保存元にシンボリックリンクが含まれるため保存できません".to_owned());
+            }
+            if meta.is_dir() {
+                fs::create_dir(&dst_path)
+                    .map_err(|error| format!("保存先サブフォルダを作成できませんでした: {error}"))?;
+                stack.push((src_path, dst_path, false));
+            } else if meta.is_file() {
+                fs::copy(&src_path, &dst_path)
+                    .map_err(|error| format!("保存先へファイルをコピーできませんでした: {error}"))?;
+            } else {
+                return Err("保存元に通常ファイル以外の項目が含まれるため保存できません".to_owned());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn rename_dir_with_retry(from: &Path, to: &Path) -> io::Result<()> {
+    let mut last_error = None;
+    for attempt in 0..3 {
+        match fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                last_error = Some(error);
+                if attempt < 2 {
+                    thread::sleep(Duration::from_millis(30));
+                }
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| io::Error::other("rename failed")))
+}
+
+fn remove_dir_all_with_retry(path: &Path) -> io::Result<()> {
+    let mut last_error = None;
+    for attempt in 0..3 {
+        match fs::remove_dir_all(path) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                last_error = Some(error);
+                if attempt < 2 {
+                    thread::sleep(Duration::from_millis(30));
+                }
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| io::Error::other("remove_dir_all failed")))
+}
+
 fn canonical_directory(path: &Path, label: &str) -> Result<PathBuf, String> {
     let canonical =
         fs::canonicalize(path).map_err(|error| format!("Could not resolve {label}: {error}"))?;
@@ -877,6 +1527,21 @@ fn is_regular_file(path: &Path) -> bool {
     fs::symlink_metadata(path)
         .map(|metadata| metadata.file_type().is_file())
         .unwrap_or(false)
+}
+
+fn strip_windows_verbatim_prefix_local(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        if let Some(raw) = path.to_str() {
+            if let Some(unc) = raw.strip_prefix(r"\\?\UNC\") {
+                return PathBuf::from(format!(r"\\{unc}"));
+            }
+            if let Some(stripped) = raw.strip_prefix(r"\\?\") {
+                return PathBuf::from(stripped);
+            }
+        }
+    }
+    path.to_path_buf()
 }
 
 fn absolute_path(path: &Path) -> io::Result<PathBuf> {

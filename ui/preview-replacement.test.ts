@@ -787,4 +787,24 @@ describe("Feature: preview replacement lifecycle", () => {
     expect(cleanedPaths).toEqual([outputPath]);
   });
 
+  // Feature: 一時生成物の保存昇格
+  // Scenario: 保存成功で表示パス昇格時に元の一時生成物を削除しない
+  // Given: 一時生成物を表示中の ExternalPreviewOutputLifecycle
+  // When: adoptSavedOutputPath(savedPath) を呼ぶ
+  // Then: displayedOutputPath() が savedPath に切り替わり、cleanup は呼ばれない
+  it("Scenario: adopts a saved output path without cleaning up the temporary output", () => {
+    const cleanedPaths: string[] = [];
+    const outputLifecycle = createExternalPreviewOutputLifecycle((path) => {
+      cleanedPaths.push(path);
+    });
+    const tempPath = "C:\\Temp\\WasabiPad\\job-1\\index.html";
+    const savedPath = "C:\\Docs\\song.abc.wasabi-preview\\index.html";
+
+    outputLifecycle.replaceDisplayedOutput(tempPath);
+    outputLifecycle.adoptSavedOutputPath(savedPath);
+
+    expect(outputLifecycle.displayedOutputPath()).toBe(savedPath);
+    expect(cleanedPaths).toEqual([]);
+  });
+
 });

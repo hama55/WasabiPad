@@ -28,6 +28,8 @@ export const INLINE_PREVIEW_MESSAGES = {
   REFRESH_MESSAGE: "wasabipad-viewer-refresh",
   OUTPUT_FOLDER_STATE_MESSAGE: "wasabipad-viewer-output-folder-state",
   REVEAL_OUTPUT_MESSAGE: "wasabipad-viewer-reveal-output",
+  EXTERNAL_SAVE_STATE_MESSAGE: "wasabipad-viewer-external-save-state",
+  SAVE_EXTERNAL_PREVIEW_MESSAGE: "wasabipad-viewer-save-external-preview",
   GIT_OPEN_FILE_MESSAGE: "wasabipad-viewer-git-open-file",
   FOCUS_CLOSE_MESSAGE: "wasabipad-viewer-focus-close",
   SELECTION_CHANGE_MESSAGE: "wasabipad-viewer-selection-change",
@@ -35,8 +37,13 @@ export const INLINE_PREVIEW_MESSAGES = {
   MARKDOWN_FRAGMENT_MESSAGE: "wasabipad-viewer-markdown-fragment",
 } as const;
 
+import type { ExternalPreviewSourceKind } from "./generated/ExternalPreviewSourceKind";
+
+export type ExternalPreviewHeaderSourceKind = ExternalPreviewSourceKind;
+
 export interface PreviewStatus {
   message: string;
   busy: boolean;
   kind?: "standard" | "external";
+  error?: boolean;
 }

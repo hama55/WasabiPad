@@ -214,26 +214,32 @@ fn format_name(format: ExternalPreviewFormat) -> &'static str {
     }
 }
 
-pub(crate) fn validate_external_preview_request_against_settings(
+pub(crate) fn validate_external_preview_adapter_against_settings(
     settings_json: &str,
-    request: &ExternalPreviewRequest,
-) -> Result<(), String> {
+    adapter_id: &str,
+    executable: &str,
+    args: &[String],
+    output_format: ExternalPreviewFormat,
+    require_trusted: bool,
+) -> Result<Value, String> {
     let root: Value = serde_json::from_str(settings_json)
         .map_err(|error| format!("設定を読み込めませんでした: {error}"))?;
     let object = root
         .as_object()
         .ok_or_else(|| "設定形式が不正です".to_string())?;
 
-    let adapter_id = request.adapter_id.trim();
+    let adapter_id = adapter_id.trim();
     if adapter_id.is_empty() {
         return Err("外部プレビューのアダプタIDが指定されていません".to_string());
     }
-    let trusted = object
-        .get("trustedExternalPreviewAdapterIds")
-        .and_then(Value::as_array)
-        .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(adapter_id)));
-    if !trusted {
-        return Err("信頼済みとして許可されていない外部プレビューは実行できません".to_string());
+    if require_trusted {
+        let trusted = object
+            .get("trustedExternalPreviewAdapterIds")
+            .and_then(Value::as_array)
+            .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(adapter_id)));
+        if !trusted {
+            return Err("信頼済みとして許可されていない外部プレビューは実行できません".to_string());
+        }
     }
 
     let adapter = object
@@ -266,12 +272,31 @@ pub(crate) fn validate_external_preview_request_against_settings(
         .and_then(Value::as_str)
         .ok_or_else(|| "外部プレビューの出力形式設定が不正です".to_string())?;
 
-    if request.executable.trim() != expected_command
-        || request.args != expected_args
-        || format_name(request.output_format) != expected_format
+    if executable.trim() != expected_command
+        || args != expected_args.as_slice()
+        || format_name(output_format) != expected_format
     {
         return Err("外部プレビューの実行内容が設定と一致しません".to_string());
     }
+
+    Ok(root)
+}
+
+pub(crate) fn validate_external_preview_request_against_settings(
+    settings_json: &str,
+    request: &ExternalPreviewRequest,
+) -> Result<(), String> {
+    let root = validate_external_preview_adapter_against_settings(
+        settings_json,
+        &request.adapter_id,
+        &request.executable,
+        &request.args,
+        request.output_format,
+        true,
+    )?;
+    let object = root
+        .as_object()
+        .ok_or_else(|| "設定形式が不正です".to_string())?;
 
     if let Some(requested_work_root) = request.work_root.as_deref() {
         let configured_work_root = object
@@ -684,5 +709,63 @@ mod tests {
         assert!(
             validate_preview_cache_directory_against_settings(settings, Some("C:/Windows")).is_err()
         );
+    }
+
+    // Feature: 未信頼アダプタでの保存済み表示許可
+    // Scenario: 信頼済み未登録でも解決照合を許可し、生成実行だけ拒否する
+    // Given: trustedExternalPreviewAdapterIds に含まれない登録済みアダプタ
+    // When: validate_external_preview_adapter_against_settings を require_trusted=false と true で呼ぶ
+    // Then: 解決用照合(false)は成功し、生成実行照合(true)は拒否する
+    #[test]
+    fn allows_untrusted_adapter_for_resolve_but_rejects_for_execute() {
+        let settings = r#"{
+            "externalPreviewAdapters": [{
+                "id": "abc-html",
+                "command": "C:/Tools/abc.exe",
+                "args": "--in \"{file}\" --out \"{output}\"",
+                "outputFormat": "html"
+            }],
+            "trustedExternalPreviewAdapterIds": []
+        }"#;
+        let args = vec![
+            "--in".to_string(),
+            "{file}".to_string(),
+            "{output}".to_string(),
+        ];
+        // 引数不一致は未信頼でも拒否
+        assert!(validate_external_preview_adapter_against_settings(
+            settings,
+            "abc-html",
+            "C:/Tools/abc.exe",
+            &args,
+            ExternalPreviewFormat::Html,
+            false,
+        )
+        .is_err());
+
+        let valid_args = vec![
+            "--in".to_string(),
+            "{file}".to_string(),
+            "--out".to_string(),
+            "{output}".to_string(),
+        ];
+        assert!(validate_external_preview_adapter_against_settings(
+            settings,
+            "abc-html",
+            "C:/Tools/abc.exe",
+            &valid_args,
+            ExternalPreviewFormat::Html,
+            false,
+        )
+        .is_ok());
+        assert!(validate_external_preview_adapter_against_settings(
+            settings,
+            "abc-html",
+            "C:/Tools/abc.exe",
+            &valid_args,
+            ExternalPreviewFormat::Html,
+            true,
+        )
+        .is_err());
     }
 }

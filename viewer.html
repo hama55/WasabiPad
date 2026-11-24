@@ -11,6 +11,7 @@
   <div id="titlebar">
     <div id="viewer-title-spacer"></div>
     <span id="viewer-preview-kind">標準プレビュー</span>
+    <span id="viewer-external-saved-badge" hidden>保存済み</span>
     <div id="viewer-title" data-tauri-drag-region>
       <span id="viewer-title-text">読込み中…</span>
       <div id="viewer-format"></div>
@@ -22,6 +23,7 @@
       <button id="win-close" title="閉じる">&#xE8BB;</button>
     </div>
     <button id="viewer-html-mode" type="button" aria-pressed="false" hidden>動的表示</button>
+    <button id="viewer-external-save" type="button" title="外部プレビューを保存" aria-label="外部プレビューを保存" hidden disabled>保存</button>
     <button id="viewer-output-folder" type="button" title="生成結果のフォルダを開く" aria-label="生成結果のフォルダを開く" hidden disabled>📂</button>
     <button id="viewer-refresh" type="button" title="外部プレビューを更新" aria-label="外部プレビューを更新" hidden>⟳</button>
     <button id="viewer-fullscreen"></button>

@@ -52,6 +52,9 @@ export function createExternalPreviewOutputLifecycle(cleanup: (path: string) => 
       if (retiredPath && retiredPath !== path) cleanup(retiredPath);
       return true;
     },
+    adoptSavedOutputPath(path: string) {
+      displayedOutputPath = path;
+    },
     discardGeneratedOutput(path: string, stillReferenced = false) {
       if (path !== displayedOutputPath && !stillReferenced) cleanup(path);
     },

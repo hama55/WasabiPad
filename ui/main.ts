@@ -512,6 +512,7 @@ const inlinePreviewPorts = {
     if (previewFullscreen) previewCollapsed = false;
     updatePreviewVisibility();
   },
+  onSaveExternalPreview: () => runBackground("外部プレビューを保存できませんでした", () => saveCurrentExternalPreview()),
   onError: (error) => reportBackgroundError("プレビュー通知を処理できませんでした", error),
 } satisfies InlinePreviewPorts;
 
@@ -526,6 +527,8 @@ let externalPreviewRequestId: string | null = null;
 let openingPreviewRequestGeneration: number | null = null;
 let externalPreviewRefreshPending = false;
 let displayedExternalPreviewSource: string | null = null;
+let displayedExternalPreviewKind: api.ExternalPreviewSourceKind | null = null;
+let externalPreviewSaving = false;
 let pendingPreviewClear: Promise<void> = Promise.resolve();
 
 function cleanupExternalPreviewOutput(path: string | null) {
@@ -546,7 +549,10 @@ function cancelPendingExternalPreviewRequest() {
 
 function clearDisplayedExternalPreviewOutput() {
   displayedExternalPreviewSource = null;
+  displayedExternalPreviewKind = null;
+  externalPreviewSaving = false;
   inlinePreview?.setExternalOutputPath(null);
+  inlinePreview?.setExternalSaveState(null, false);
   externalPreviewOutputLifecycle.replaceDisplayedOutput(null);
 }
 
@@ -645,9 +651,11 @@ function openPreviewFormat(
   const initialStatus = {
     kind: externalAdapter ? "external" : "standard",
     message: externalAdapter
-      ? getSetting("trustedExternalPreviewAdapterIds").includes(externalAdapter.id)
-        ? keepCurrentUntilOpened && externalPreviewOutputLifecycle.displayedOutputPath() ? "更新中…" : "変換中…"
-        : "実行確認待ち…"
+      ? keepCurrentUntilOpened && externalPreviewOutputLifecycle.displayedOutputPath()
+        ? getSetting("trustedExternalPreviewAdapterIds").includes(externalAdapter.id)
+          ? "更新中…"
+          : "実行確認待ち…"
+        : "読み込み中…"
       : "読み込み中…",
     busy: true,
   } as const;
@@ -660,13 +668,15 @@ function openPreviewFormat(
     inlinePreview.setPreviewStatus(displayedExternalPreviewSource
       ? { kind: "external", busy: false, message: displayedExternalPreviewSource }
       : null);
+    inlinePreview.setExternalSaveState(displayedExternalPreviewKind, externalPreviewSaving);
     if (!previousPreviewDocument) clearPreview(session);
   };
   runBackground(errorTitle, async () => {
     const started = performance.now();
     let requestId: string | null = null;
     let generatedOutputPath: string | null = null;
-    let existingOutputPath: string | null = null;
+    let resolvedExternalKind: api.ExternalPreviewSourceKind = "temporary";
+    let displayAttemptFailed = false;
     try {
       await pendingViewerOpenCancellation;
       await pendingContentClear;
@@ -678,17 +688,26 @@ function openPreviewFormat(
       if (externalAdapter) {
         const inputPath = externalPreviewInputPath(session);
         if (!inputPath) throw new Error("外部プレビューは保存済みの通常ファイルだけに対応しています");
-        existingOutputPath = keepCurrentUntilOpened ? null
-          : await api.externalPreviewExisting(inputPath, externalAdapter.outputFormat);
+        const parsedArgs = parseExternalPreviewArguments(externalAdapter.args);
+        const resolved = keepCurrentUntilOpened
+          ? null
+          : await api.externalPreviewResolve({
+            adapterId: externalAdapter.id,
+            inputPath,
+            executable: externalAdapter.command,
+            args: parsedArgs,
+            outputFormat: externalAdapter.outputFormat,
+          });
         if (!isCurrentRequest()) return;
-        if (existingOutputPath) {
-          if (externalAdapter.outputFormat === "html") {
-            const existingKey = existingOutputPath.replaceAll("/", "\\").toLowerCase();
+        if (resolved) {
+          resolvedExternalKind = resolved.kind;
+          if (resolved.kind === "sibling" && externalAdapter.outputFormat === "html") {
+            const existingKey = resolved.outputPath.replaceAll("/", "\\").toLowerCase();
             if (!confirmedExistingPreviewHtmlPaths.has(existingKey)) {
               const approved = await confirmMessage(
                 "既存の外部HTMLプレビューの表示確認",
                 "同じフォルダにある既存のHTMLファイルを外部プレビューとして表示します。このHTML内のスクリプトが実行されます。信頼できるファイルの場合だけ続行してください。\n\n"
-                  + "ファイル: " + existingOutputPath,
+                  + "ファイル: " + resolved.outputPath,
                 "信頼して表示",
               );
               if (!approved || !isCurrentRequest()) {
@@ -698,9 +717,15 @@ function openPreviewFormat(
               confirmedExistingPreviewHtmlPaths.add(existingKey);
             }
           }
-          generatedOutputPath = existingOutputPath;
+          generatedOutputPath = resolved.outputPath;
+          const navigateSource = await editor.createExternalSourceNavigator(() =>
+            document.ownerTabId === (tabs?.state.activeId ?? null) && document.path === documentPathOf(doc.current));
+          if (!isCurrentRequest()) return;
+          inlinePreview.setExternalSourceNavigator(generatedOutputPath, navigateSource);
         } else {
+          resolvedExternalKind = "temporary";
           if (!getSetting("trustedExternalPreviewAdapterIds").includes(externalAdapter.id)) {
+            inlinePreview.setPreviewStatus({ kind: "external", message: "実行確認待ち…", busy: true });
             const isSelectedAdapterCurrent = () => {
               const classificationPath = classificationPathOf(session);
               const selectedAdapter = externalPreviewAdapterForPath(
@@ -738,6 +763,7 @@ function openPreviewFormat(
             }
           }
           inlinePreview.setPreviewStatus({
+            kind: "external",
             message: externalPreviewOutputLifecycle.displayedOutputPath() ? "更新中…" : "変換中…",
             busy: true,
           });
@@ -746,15 +772,18 @@ function openPreviewFormat(
           const navigateSource = await editor.createExternalSourceNavigator(() =>
             document.ownerTabId === (tabs?.state.activeId ?? null) && document.path === documentPathOf(doc.current));
           if (!isCurrentRequest()) return;
-          generatedOutputPath = await api.externalPreviewGenerate({
-            adapterId: externalAdapter.id,
-            inputPath,
-            executable: externalAdapter.command,
-            args: parseExternalPreviewArguments(externalAdapter.args),
-            outputFormat: externalAdapter.outputFormat,
-            requestId,
-            workRoot: getSetting("externalPreviewTemporaryDirectory"),
-          });
+          generatedOutputPath = await api.externalPreviewGenerate(
+            {
+              adapterId: externalAdapter.id,
+              inputPath,
+              executable: externalAdapter.command,
+              args: parsedArgs,
+              outputFormat: externalAdapter.outputFormat,
+              requestId,
+              workRoot: getSetting("externalPreviewTemporaryDirectory"),
+            },
+            externalPreviewOutputLifecycle.displayedOutputPath(),
+          );
           if (externalPreviewRequestId === requestId) externalPreviewRequestId = null;
           if (!isCurrentRequest()) {
             externalPreviewOutputLifecycle.discardGeneratedOutput(
@@ -822,7 +851,10 @@ function openPreviewFormat(
         return;
       }
       if (openedLabel === null || !previewReplacementLifecycle.isActive(openedLabel)) {
-        if (externalAdapter) throw new Error("外部プレビューの表示を完了できませんでした");
+        if (externalAdapter) {
+          displayAttemptFailed = true;
+          throw new Error("外部プレビューの表示を完了できませんでした");
+        }
         throw new Error("プレビューの表示を完了できませんでした");
       }
 
@@ -835,7 +867,9 @@ function openPreviewFormat(
           );
           return;
         }
+        displayedExternalPreviewKind = resolvedExternalKind;
         inlinePreview.setExternalOutputPath(generatedOutputPath);
+        inlinePreview.setExternalSaveState(resolvedExternalKind, false);
       } else {
         clearDisplayedExternalPreviewOutput();
       }
@@ -844,8 +878,8 @@ function openPreviewFormat(
         previewCollapsed = true;
         updatePreviewVisibility();
       }
-      displayedExternalPreviewSource = existingOutputPath
-        ? `同じフォルダの ${basename(existingOutputPath)} を表示中` : null;
+      displayedExternalPreviewSource = generatedOutputPath && resolvedExternalKind === "sibling"
+        ? `同じフォルダの ${basename(generatedOutputPath)} を表示中` : null;
       inlinePreview.setPreviewStatus(displayedExternalPreviewSource
         ? { kind: "external", busy: false, message: displayedExternalPreviewSource }
         : null);
@@ -855,10 +889,17 @@ function openPreviewFormat(
     } catch (error) {
       if (requestId && externalPreviewRequestId === requestId) cancelPendingExternalPreviewRequest();
       if (generatedOutputPath) {
-        externalPreviewOutputLifecycle.discardGeneratedOutput(
-          generatedOutputPath,
-          inlinePreview.mayReferenceExternalOutputPath(generatedOutputPath),
-        );
+        if (displayAttemptFailed && resolvedExternalKind === "temporary"
+          && generatedOutputPath !== externalPreviewOutputLifecycle.displayedOutputPath()) {
+          void api.externalPreviewDiscard(generatedOutputPath).catch((discardError) => {
+            console.warn("表示に失敗した外部プレビューの一時生成物を削除できませんでした", discardError);
+          });
+        } else {
+          externalPreviewOutputLifecycle.discardGeneratedOutput(
+            generatedOutputPath,
+            inlinePreview.mayReferenceExternalOutputPath(generatedOutputPath),
+          );
+        }
       }
       throw error;
     } finally {
@@ -885,10 +926,12 @@ function openPreviewFormat(
     }
     setExternalPreviewLog(detail);
     inlinePreview.setPreviewStatus({
+      kind: "external",
       message: [displayedExternalPreviewSource,
         "変換失敗: " + detail + "\n「更新」から再試行できます。ログは上部の「実行ログ」から確認できます。"]
         .filter(Boolean).join("\n"),
       busy: false,
+      error: true,
     });
   });
 }
@@ -1594,6 +1637,9 @@ const externalWatch = new ExternalWatch($("external-banner"), {
 }, api);
 window.addEventListener("beforeunload", () => {
   clearExternalPreviewOutput();
+  void api.externalPreviewCleanupAll().catch((error) => {
+    console.warn("外部プレビューの一時生成物を終了清掃できませんでした", error);
+  });
   workspaceSearchListener.dispose();
   documentLoadListener.dispose();
   externalWindowListener.dispose();
@@ -1994,6 +2040,53 @@ try {
     await tabs.init({ tabs: [], activeId: null }, null);
   } catch (fallbackError) {
     await reportBackgroundError("空の文書を開始できませんでした", fallbackError);
+  }
+}
+
+async function saveCurrentExternalPreview() {
+  if (externalPreviewSaving || previewReplacementLifecycle.isReplacing() || externalPreviewRefreshPending) return;
+  const opened = previewDocument;
+  const adapter = opened?.externalAdapter;
+  const outputPath = externalPreviewOutputLifecycle.displayedOutputPath();
+  const inputPath = externalPreviewInputPath(doc.current);
+  if (!opened || !adapter || !outputPath || !inputPath
+    || displayedExternalPreviewKind !== "temporary"
+    || !isCurrentPreviewDocument(opened, tabs.state.activeId, documentPathOf(doc.current))) return;
+
+  const saveGeneration = previewRequestGeneration;
+  const isSameSaveTarget = () => saveGeneration === previewRequestGeneration
+    && previewDocument === opened
+    && displayedExternalPreviewKind === "temporary"
+    && externalPreviewOutputLifecycle.displayedOutputPath() === outputPath
+    && externalPreviewInputPath(doc.current) === inputPath;
+
+  externalPreviewSaving = true;
+  inlinePreview.setExternalSaveState("temporary", true);
+  try {
+    let outcome = await api.externalPreviewSave(inputPath, outputPath, adapter.outputFormat, false);
+    if (!isSameSaveTarget()) return;
+    if (outcome.kind === "overwriterequired") {
+      const approved = await confirmMessage(
+        "保存済み外部プレビューの上書き確認",
+        "すでに保存済み外部プレビューが存在します。上書き保存しますか？\n\n保存先: " + outcome.directory_path,
+        "上書き保存",
+      );
+      if (!approved || !isSameSaveTarget()) return;
+      outcome = await api.externalPreviewSave(inputPath, outputPath, adapter.outputFormat, true);
+      if (!isSameSaveTarget()) return;
+    }
+    if (outcome.kind === "saved") {
+      displayedExternalPreviewKind = "saved";
+      externalPreviewOutputLifecycle.adoptSavedOutputPath(outcome.output_path);
+      inlinePreview.promoteSavedExternalOutputPath(outputPath, outcome.output_path);
+      if (doc.current.folderRoot) void sidebar.refreshFolderEntries();
+      windowChrome.notify("外部プレビューを保存しました");
+    }
+  } finally {
+    externalPreviewSaving = false;
+    if (saveGeneration === previewRequestGeneration && previewDocument === opened) {
+      inlinePreview.setExternalSaveState(displayedExternalPreviewKind, false);
+    }
   }
 }
 

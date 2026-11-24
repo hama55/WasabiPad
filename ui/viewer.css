@@ -117,6 +117,37 @@ body.inline-viewer #viewer-close { display: block; }
 body.inline-viewer #viewer-refresh:not([hidden]) { display: block; }
 body.inline-viewer #viewer-output-folder:not([hidden]) { display: block; }
 #viewer-output-folder:disabled { opacity: .45; }
+#viewer-external-saved-badge {
+  flex: none;
+  align-self: center;
+  margin-right: 8px;
+  padding: 1px 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  background: var(--bg-side);
+  color: var(--fg);
+  font: 11px var(--font-ui);
+  white-space: nowrap;
+}
+#viewer-external-saved-badge[hidden],
+body:not(.inline-viewer) #viewer-external-saved-badge { display: none; }
+#viewer-external-save {
+  display: none;
+  flex: none;
+  padding: 0 9px;
+  border: 0;
+  background: none;
+  color: var(--fg);
+  font: 12px var(--font-ui);
+  white-space: nowrap;
+  cursor: default;
+}
+body.inline-viewer #viewer-external-save:not([hidden]) {
+  display: inline-flex;
+  align-items: center;
+}
+#viewer-external-save:hover:not(:disabled) { background: var(--hover); }
+#viewer-external-save:disabled { opacity: .45; }
 
 main {
   position: relative;

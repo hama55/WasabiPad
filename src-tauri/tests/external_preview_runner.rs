@@ -2,8 +2,9 @@
 mod external_preview_runner;
 
 use external_preview_runner::{
-    cleanup_job, cleanup_stale_jobs, existing_output, run_external_preview, ExternalPreviewFormat,
-    ExternalPreviewOperations,
+    cleanup_job, cleanup_stale_jobs, existing_output, hash_input_file, run_external_preview,
+    saved_output, saved_preview_dir, ExternalPreviewConfigKey, ExternalPreviewFormat,
+    ExternalPreviewOperations, ExternalPreviewSaveOutcome, ExternalPreviewSourceKind,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -245,6 +246,25 @@ fn fake_failure_program(root: &Path) -> PathBuf {
     #[cfg(unix)]
     let body = "#!/bin/sh\nprintf 'adapter stdout\\n'\nprintf 'adapter failure\\n' >&2\nexit 7\n";
     fake_program_with_body(root, body)
+}
+
+fn fake_success_program(root: &Path) -> PathBuf {
+    #[cfg(windows)]
+    let path = root.join("fake external success.cmd");
+    #[cfg(unix)]
+    let path = root.join("fake external success");
+    #[cfg(windows)]
+    let body = "@echo off\r\necho ^<html^>preview^</html^> > \"%~2\"\r\nexit /b 0\r\n";
+    #[cfg(unix)]
+    let body = "#!/bin/sh\nprintf '<html>preview</html>' > \"$2\"\nexit 0\n";
+    fs::write(&path, body).expect("write fake external success program");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700))
+            .expect("make fake external success program executable");
+    }
+    path
 }
 
 fn fake_missing_output_program(root: &Path) -> PathBuf {
@@ -649,4 +669,491 @@ fn waits_for_generation_longer_than_thirty_seconds() {
     assert!(started.elapsed() >= Duration::from_secs(30));
     assert!(result.output_path.is_file());
     cleanup_job(&result.output_path, &root).unwrap();
+}
+
+// Feature: セッション内外部プレビューの再利用
+// Scenario: 同一入力と同一設定なら再変換せず一時生成物を再利用する
+// Given: 入力ファイルAを変換して一時生成物をセッション保持へ記録済み
+// When: 同じファイル内容と同じ実行ファイル・引数・出力形式で lookup_session_output を呼ぶ
+// Then: 既存の一時生成物パスを返す
+#[test]
+fn reuses_session_output_when_input_and_config_match() {
+    let directory = TestDirectory::new();
+    let input_path = directory.path().join("song.abc");
+    fs::write(&input_path, "X:1\nT:Test\n").unwrap();
+    let executable = fake_success_program(directory.path());
+    let args = vec!["{file}".to_owned(), "{output}".to_owned()];
+    let work_root = directory.path().join("jobs");
+    let operations = ExternalPreviewOperations::default();
+
+    let (cancelled, canonical_input) = operations.register("session-reuse-1", &input_path).unwrap();
+    let sha256 = hash_input_file(&canonical_input).unwrap();
+    let result = run_external_preview(
+        &executable,
+        &args,
+        &input_path,
+        ExternalPreviewFormat::Html,
+        &work_root,
+        &cancelled,
+    )
+    .unwrap();
+    let config = ExternalPreviewConfigKey {
+        executable: executable.to_string_lossy().into_owned(),
+        args: args.clone(),
+        output_format: ExternalPreviewFormat::Html,
+    };
+    operations
+        .finish_session_success(
+            "session-reuse-1",
+            &cancelled,
+            &result.output_path,
+            &work_root,
+            Some((sha256, config)),
+            None,
+        )
+        .unwrap();
+
+    let reused = operations
+        .lookup_session_output(
+            &input_path,
+            &executable.to_string_lossy(),
+            &args,
+            ExternalPreviewFormat::Html,
+        )
+        .unwrap()
+        .expect("matching session output must be reused");
+    assert_eq!(
+        fs::canonicalize(&reused).unwrap(),
+        fs::canonicalize(&result.output_path).unwrap()
+    );
+}
+
+// Feature: セッション内外部プレビューの鮮度と設定一致
+// Scenario: ファイル内容変更または設定変更時は再利用せず、再変換成功時に旧世代を即削除する
+// Given: 入力ファイルAの第1世代一時生成物が保持されている
+// When: 入力内容を変更して lookup_session_output を呼び、再変換成功を finish_session_success で記録する
+// Then: 変更後は再利用せず、設定変更も再利用せず、再変換成功後に旧世代フォルダだけ即削除される
+#[test]
+fn replaces_previous_session_output_when_input_or_config_changes() {
+    let directory = TestDirectory::new();
+    let input_path = directory.path().join("song.abc");
+    fs::write(&input_path, "version-1").unwrap();
+    let executable = fake_success_program(directory.path());
+    let args = vec!["{file}".to_owned(), "{output}".to_owned()];
+    let work_root = directory.path().join("jobs");
+    let operations = ExternalPreviewOperations::default();
+
+    let (first_cancelled, canonical_input) = operations.register("gen-1", &input_path).unwrap();
+    let first_sha = hash_input_file(&canonical_input).unwrap();
+    let first = run_external_preview(
+        &executable,
+        &args,
+        &input_path,
+        ExternalPreviewFormat::Html,
+        &work_root,
+        &first_cancelled,
+    )
+    .unwrap();
+    operations
+        .finish_session_success(
+            "gen-1",
+            &first_cancelled,
+            &first.output_path,
+            &work_root,
+            Some((
+                first_sha,
+                ExternalPreviewConfigKey {
+                    executable: executable.to_string_lossy().into_owned(),
+                    args: args.clone(),
+                    output_format: ExternalPreviewFormat::Html,
+                },
+            )),
+            None,
+        )
+        .unwrap();
+
+    // 設定違い（出力形式変更・引数変更）は再利用しない
+    assert!(operations
+        .lookup_session_output(
+            &input_path,
+            &executable.to_string_lossy(),
+            &args,
+            ExternalPreviewFormat::Svg,
+        )
+        .unwrap()
+        .is_none());
+    assert!(operations
+        .lookup_session_output(
+            &input_path,
+            &executable.to_string_lossy(),
+            &["--other".to_owned(), "{file}".to_owned(), "{output}".to_owned()],
+            ExternalPreviewFormat::Html,
+        )
+        .unwrap()
+        .is_none());
+    assert!(first.output_path.is_file());
+
+    // 入力内容変更時は再利用しない
+    fs::write(&input_path, "version-2").unwrap();
+    assert!(operations
+        .lookup_session_output(
+            &input_path,
+            &executable.to_string_lossy(),
+            &args,
+            ExternalPreviewFormat::Html,
+        )
+        .unwrap()
+        .is_none());
+    assert!(first.output_path.is_file());
+
+    // 再変換成功で旧世代は即削除され最新1世代のみ残る
+    let (second_cancelled, canonical_input) = operations.register("gen-2", &input_path).unwrap();
+    let second_sha = hash_input_file(&canonical_input).unwrap();
+    let second = run_external_preview(
+        &executable,
+        &args,
+        &input_path,
+        ExternalPreviewFormat::Html,
+        &work_root,
+        &second_cancelled,
+    )
+    .unwrap();
+    operations
+        .finish_session_success(
+            "gen-2",
+            &second_cancelled,
+            &second.output_path,
+            &work_root,
+            Some((
+                second_sha,
+                ExternalPreviewConfigKey {
+                    executable: executable.to_string_lossy().into_owned(),
+                    args: args.clone(),
+                    output_format: ExternalPreviewFormat::Html,
+                },
+            )),
+            None,
+        )
+        .unwrap();
+
+    assert!(!first.output_path.exists());
+    assert!(second.output_path.is_file());
+    let reused = operations
+        .lookup_session_output(
+            &input_path,
+            &executable.to_string_lossy(),
+            &args,
+            ExternalPreviewFormat::Html,
+        )
+        .unwrap()
+        .expect("latest session output must be reused");
+    assert_eq!(
+        fs::canonicalize(&reused).unwrap(),
+        fs::canonicalize(&second.output_path).unwrap()
+    );
+}
+
+// Feature: 表示中旧出力の遅延削除
+// Scenario: 更新表示中の旧世代は描画完了まで残し、セッション保持中の出力は通常cleanupで消さない
+// Given: 入力ファイルAの旧出力が表示中として protected_displayed_output に渡され、新世代で finish_session_success が完了した
+// When: cleanup_retired_output を新出力と旧出力にそれぞれ呼ぶ
+// Then: 新出力はセッション保持のため削除されず、表示役目を終えた旧出力だけが削除される
+#[test]
+fn preserves_session_output_on_retired_cleanup_and_removes_replaced_displayed_output() {
+    let directory = TestDirectory::new();
+    let input_path = directory.path().join("song.abc");
+    fs::write(&input_path, "v1").unwrap();
+    let executable = fake_success_program(directory.path());
+    let args = vec!["{file}".to_owned(), "{output}".to_owned()];
+    let work_root = directory.path().join("jobs");
+    let operations = ExternalPreviewOperations::default();
+
+    let (c1, canonical) = operations.register("disp-1", &input_path).unwrap();
+    let sha1 = hash_input_file(&canonical).unwrap();
+    let first = run_external_preview(
+        &executable,
+        &args,
+        &input_path,
+        ExternalPreviewFormat::Html,
+        &work_root,
+        &c1,
+    )
+    .unwrap();
+    let config = ExternalPreviewConfigKey {
+        executable: executable.to_string_lossy().into_owned(),
+        args: args.clone(),
+        output_format: ExternalPreviewFormat::Html,
+    };
+    operations
+        .finish_session_success("disp-1", &c1, &first.output_path, &work_root, Some((sha1, config.clone())), None)
+        .unwrap();
+
+    // 更新中: first が画面表示中のため protected_displayed_output に渡す
+    let (c2, _) = operations.register("disp-2", &input_path).unwrap();
+    let second = run_external_preview(
+        &executable,
+        &args,
+        &input_path,
+        ExternalPreviewFormat::Html,
+        &work_root,
+        &c2,
+    )
+    .unwrap();
+    operations
+        .finish_session_success(
+            "disp-2",
+            &c2,
+            &second.output_path,
+            &work_root,
+            Some((sha1, config)),
+            Some(&first.output_path),
+        )
+        .unwrap();
+
+    // 旧出力はまだ残っている
+    assert!(first.output_path.is_file());
+    assert!(second.output_path.is_file());
+
+    // 新出力への retired cleanup はセッション保持中のため消さない
+    operations.cleanup_retired_output(&second.output_path).unwrap();
+    assert!(second.output_path.is_file());
+
+    // 旧出力への retired cleanup は削除する
+    operations.cleanup_retired_output(&first.output_path).unwrap();
+    assert!(!first.output_path.exists());
+    assert!(second.output_path.is_file());
+}
+
+// Feature: セッション終了時清掃と一時保存先変更耐性
+// Scenario: 異なる一時保存先にある全セッション保持生成物を一括削除する
+// Given: 2つの入力ファイルがそれぞれ異なる work_root に一時生成物を保持している
+// When: cleanup_all を実行する
+// Then: 両方の work_root 配下のジョブディレクトリがすべて削除され、以降の lookup_session_output は None になる
+#[test]
+fn cleans_all_session_outputs_across_work_roots() {
+    let directory = TestDirectory::new();
+    let input_a = directory.path().join("a.abc");
+    let input_b = directory.path().join("b.abc");
+    fs::write(&input_a, "a").unwrap();
+    fs::write(&input_b, "b").unwrap();
+    let executable = fake_success_program(directory.path());
+    let args = vec!["{file}".to_owned(), "{output}".to_owned()];
+    let root_a = directory.path().join("jobs-a");
+    let root_b = directory.path().join("jobs-b");
+    let operations = ExternalPreviewOperations::default();
+    let config = ExternalPreviewConfigKey {
+        executable: executable.to_string_lossy().into_owned(),
+        args: args.clone(),
+        output_format: ExternalPreviewFormat::Html,
+    };
+
+    let (ca, can_a) = operations.register("all-a", &input_a).unwrap();
+    let sha_a = hash_input_file(&can_a).unwrap();
+    let out_a = run_external_preview(&executable, &args, &input_a, ExternalPreviewFormat::Html, &root_a, &ca).unwrap();
+    operations
+        .finish_session_success("all-a", &ca, &out_a.output_path, &root_a, Some((sha_a, config.clone())), None)
+        .unwrap();
+
+    let (cb, can_b) = operations.register("all-b", &input_b).unwrap();
+    let sha_b = hash_input_file(&can_b).unwrap();
+    let out_b = run_external_preview(&executable, &args, &input_b, ExternalPreviewFormat::Html, &root_b, &cb).unwrap();
+    operations
+        .finish_session_success("all-b", &cb, &out_b.output_path, &root_b, Some((sha_b, config)), None)
+        .unwrap();
+
+    assert!(out_a.output_path.is_file());
+    assert!(out_b.output_path.is_file());
+
+    operations.cleanup_all().unwrap();
+
+    assert!(!out_a.output_path.exists());
+    assert!(!out_b.output_path.exists());
+    assert!(operations
+        .lookup_session_output(&input_a, &executable.to_string_lossy(), &args, ExternalPreviewFormat::Html)
+        .unwrap()
+        .is_none());
+    assert!(operations
+        .lookup_session_output(&input_b, &executable.to_string_lossy(), &args, ExternalPreviewFormat::Html)
+        .unwrap()
+        .is_none());
+}
+
+// Feature: 保存済み外部プレビューの安全保存と上書き確認
+// Scenario: 初回保存で不要ログを除いた一式を保存し、既存時は確認要求後に安全置換する
+// Given: 付属資産・サブディレクトリ・ジョブマーカーを含む一時生成物
+// When: save_external_preview を overwrite=false、続いて既存状態で overwrite=false と overwrite=true で呼ぶ
+// Then: 初回は <元ファイル名>.wasabi-preview/ へ保存し、2回目は OverwriteRequired、承認後のみ安全に置換する
+#[test]
+fn saves_external_preview_safely_and_requires_overwrite_confirmation() {
+    let directory = TestDirectory::new();
+    let input_path = directory.path().join("song.abc");
+    fs::write(&input_path, "v1").unwrap();
+    let executable = fake_success_program(directory.path());
+    let args = vec!["{file}".to_owned(), "{output}".to_owned()];
+    let work_root = directory.path().join("jobs");
+    let operations = ExternalPreviewOperations::default();
+    let config = ExternalPreviewConfigKey {
+        executable: executable.to_string_lossy().into_owned(),
+        args: args.clone(),
+        output_format: ExternalPreviewFormat::Html,
+    };
+
+    let (c1, can1) = operations.register("save-1", &input_path).unwrap();
+    let sha1 = hash_input_file(&can1).unwrap();
+    let first = run_external_preview(&executable, &args, &input_path, ExternalPreviewFormat::Html, &work_root, &c1).unwrap();
+    let first_dir = first.output_path.parent().unwrap();
+    fs::create_dir_all(first_dir.join("assets")).unwrap();
+    fs::write(first_dir.join("assets").join("audio.wav"), "wave-v1").unwrap();
+    operations
+        .finish_session_success("save-1", &c1, &first.output_path, &work_root, Some((sha1, config.clone())), None)
+        .unwrap();
+
+    let saved_dir = saved_preview_dir(&input_path).unwrap();
+    assert_eq!(saved_dir.file_name().unwrap(), "song.abc.wasabi-preview");
+
+    // 初回保存
+    let outcome = operations
+        .save_external_preview(&input_path, &first.output_path, ExternalPreviewFormat::Html, false)
+        .unwrap();
+    match outcome {
+        ExternalPreviewSaveOutcome::Saved { output_path } => {
+            assert_eq!(
+                fs::canonicalize(&output_path).unwrap(),
+                fs::canonicalize(saved_dir.join("index.html")).unwrap()
+            );
+        }
+        other => panic!("expected Saved, got {other:?}"),
+    }
+    assert!(saved_dir.join("assets").join("audio.wav").is_file());
+    assert!(!saved_dir.join(".wasabipad-external-preview-job").exists());
+
+    // 第2世代を生成し、上書き確認なしで保存しようとすると OverwriteRequired
+    fs::write(&input_path, "v2").unwrap();
+    let (c2, can2) = operations.register("save-2", &input_path).unwrap();
+    let sha2 = hash_input_file(&can2).unwrap();
+    let second = run_external_preview(&executable, &args, &input_path, ExternalPreviewFormat::Html, &work_root, &c2).unwrap();
+    let second_dir = second.output_path.parent().unwrap();
+    fs::create_dir_all(second_dir.join("assets")).unwrap();
+    fs::write(second_dir.join("assets").join("audio.wav"), "wave-v2").unwrap();
+    operations
+        .finish_session_success("save-2", &c2, &second.output_path, &work_root, Some((sha2, config)), None)
+        .unwrap();
+
+    let confirm_needed = operations
+        .save_external_preview(&input_path, &second.output_path, ExternalPreviewFormat::Html, false)
+        .unwrap();
+    assert!(matches!(
+        confirm_needed,
+        ExternalPreviewSaveOutcome::OverwriteRequired { .. }
+    ));
+    assert_eq!(
+        fs::read_to_string(saved_dir.join("assets").join("audio.wav")).unwrap(),
+        "wave-v1"
+    );
+
+    // 上書き許可で安全に置換され、ステージング/バックアップ残骸が残らない
+    let overwritten = operations
+        .save_external_preview(&input_path, &second.output_path, ExternalPreviewFormat::Html, true)
+        .unwrap();
+    assert!(matches!(overwritten, ExternalPreviewSaveOutcome::Saved { .. }));
+    assert_eq!(
+        fs::read_to_string(saved_dir.join("assets").join("audio.wav")).unwrap(),
+        "wave-v2"
+    );
+    for entry in fs::read_dir(directory.path()).unwrap() {
+        let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+        assert!(!name.starts_with(".wasabipad-preview-"), "no leftover staging/backup dir: {name}");
+    }
+}
+
+// Feature: 読み込み優先順位と鮮度非依存
+// Scenario: 保存済み → 同フォルダ → セッション保持 → なしの順で解決し、保存済みは元ファイル編集後も優先される
+// Given: 1つの入力ファイルに対し保存済み・同フォルダファイル・セッション保持を揃えた状態
+// When: 元ファイル編集後、形式違い、保存済み削除後、同フォルダ削除後の各段階で resolve_reusable_output を呼ぶ
+// Then: 優先順位通りに解決し、出力形式不一致の保存済みはスキップされる
+#[test]
+fn resolves_reusable_output_in_priority_order_ignoring_saved_freshness() {
+    let directory = TestDirectory::new();
+    let input_path = directory.path().join("song.abc");
+    fs::write(&input_path, "v1").unwrap();
+    let executable = fake_success_program(directory.path());
+    let args = vec!["{file}".to_owned(), "{output}".to_owned()];
+    let work_root = directory.path().join("jobs");
+    let operations = ExternalPreviewOperations::default();
+    let config = ExternalPreviewConfigKey {
+        executable: executable.to_string_lossy().into_owned(),
+        args: args.clone(),
+        output_format: ExternalPreviewFormat::Html,
+    };
+
+    let (c1, can1) = operations.register("prio-1", &input_path).unwrap();
+    let sha1 = hash_input_file(&can1).unwrap();
+    let temp = run_external_preview(&executable, &args, &input_path, ExternalPreviewFormat::Html, &work_root, &c1).unwrap();
+    operations
+        .finish_session_success("prio-1", &c1, &temp.output_path, &work_root, Some((sha1, config)), None)
+        .unwrap();
+
+    // 1) 保存済み作成 + 同フォルダファイル作成
+    operations
+        .save_external_preview(&input_path, &temp.output_path, ExternalPreviewFormat::Html, false)
+        .unwrap();
+    let sibling_html = directory.path().join("song.html");
+    fs::write(&sibling_html, "<html>sibling</html>").unwrap();
+
+    // 元ファイルを編集しても保存済みは鮮度確認なしで最優先
+    fs::write(&input_path, "v2-edited").unwrap();
+    let resolved = operations
+        .resolve_reusable_output(&input_path, &executable.to_string_lossy(), &args, ExternalPreviewFormat::Html)
+        .unwrap()
+        .expect("saved must be resolved");
+    assert_eq!(resolved.kind, ExternalPreviewSourceKind::Saved);
+
+    // 出力形式不一致（Svg）なら保存済み(index.html)はスキップされる
+    assert!(operations
+        .resolve_reusable_output(&input_path, &executable.to_string_lossy(), &args, ExternalPreviewFormat::Svg)
+        .unwrap()
+        .is_none());
+
+    // 2) 保存済み削除 → 同フォルダファイルが選ばれる
+    fs::remove_dir_all(saved_preview_dir(&input_path).unwrap()).unwrap();
+    let resolved = operations
+        .resolve_reusable_output(&input_path, &executable.to_string_lossy(), &args, ExternalPreviewFormat::Html)
+        .unwrap()
+        .expect("sibling must be resolved");
+    assert_eq!(resolved.kind, ExternalPreviewSourceKind::Sibling);
+
+    // 3) 同フォルダファイル削除 → 元内容を v1 に戻せばセッション保持が選ばれる
+    fs::remove_file(&sibling_html).unwrap();
+    fs::write(&input_path, "v1").unwrap();
+    let resolved = operations
+        .resolve_reusable_output(&input_path, &executable.to_string_lossy(), &args, ExternalPreviewFormat::Html)
+        .unwrap()
+        .expect("temporary session output must be resolved");
+    assert_eq!(resolved.kind, ExternalPreviewSourceKind::Temporary);
+}
+
+// Feature: 保存済み外部プレビューの境界検証
+// Scenario: シンボリックリンクやファイル衝突を含む保存済みフォルダを拒否する
+// Given: .wasabi-preview のパスに通常ファイルがある状態、またはシンボリックリンクを含む状態
+// When: saved_output を呼ぶ
+// Then: 通常ファイルは None（無視）、シンボリックリンクはエラーで拒否する
+#[test]
+fn validates_saved_preview_boundaries() {
+    let directory = TestDirectory::new();
+    let input_path = directory.path().join("song.abc");
+    fs::write(&input_path, "v1").unwrap();
+    let saved_dir = saved_preview_dir(&input_path).unwrap();
+
+    // 同名の通常ファイルがある場合は保存済みフォルダ扱いせず None
+    fs::write(&saved_dir, "not a directory").unwrap();
+    assert!(saved_output(&input_path, ExternalPreviewFormat::Html).unwrap().is_none());
+    fs::remove_file(&saved_dir).unwrap();
+
+    // 空ディレクトリ（index.html なし）も None
+    fs::create_dir(&saved_dir).unwrap();
+    assert!(saved_output(&input_path, ExternalPreviewFormat::Html).unwrap().is_none());
+
+    // index.html があれば Ok(Some)
+    fs::write(saved_dir.join("index.html"), "<html>ok</html>").unwrap();
+    assert!(saved_output(&input_path, ExternalPreviewFormat::Html).unwrap().is_some());
 }
