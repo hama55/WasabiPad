@@ -11,6 +11,7 @@ opt-level = "z"
 lto = true
 codegen-units = 1
 strip = true
+panic = "abort"
 
 # 検索エンジンだけは速度優先で積む。アプリ全体の "z" のままだと
 # ripgrep の SIMD リテラル検索が本来の速度を出せない。
